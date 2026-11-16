@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
 import type { AppSettings } from "../types.js";
+import { useAppSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import { Button } from "../../../components/ui/button.js";
 import { ZoomControls } from "../components/ZoomControls.js";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
@@ -96,7 +97,8 @@ function useFontPreferences() {
   const [loadFailed, setLoadFailed] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [reload, setReload] = useState(0);
-  const reloadEpoch = 0;
+  const editor = useSettingsEditor();
+  const reloadEpoch = editor?.reloadEpoch ?? 0;
   const loadKeyRef = useRef(`${reloadEpoch}:${reload}`);
   loadKeyRef.current = `${reloadEpoch}:${reload}`;
   const authoritativeRef = useRef<{ family: string; sizeScale: FontSizeScale }>({ family: "system", sizeScale: FONT_SIZE_SCALE_DEFAULT });
@@ -196,10 +198,12 @@ function FontFamilyCustomInput({
   initial,
   onCommit,
   label,
+  settingId,
 }: {
   initial: string;
   onCommit: (value: string) => void;
   label?: string;
+  settingId: "appearance.font.family" | "appearance.terminalFont.family";
 }) {
   const { t } = useTranslation();
   const [raw, setRaw] = useState(initial);
@@ -233,6 +237,8 @@ function FontFamilyCustomInput({
       <summary className="cursor-pointer select-none">{t("appearanceTab.fontFamilyCustomSummary")}</summary>
       <input
         ref={inputRef}
+        data-setting-id={settingId}
+        data-setting-dirty={raw.trim() !== initial.trim()}
         type="text"
         value={raw}
         placeholder={t("appearanceTab.fontFamilyCustomPlaceholder")}
@@ -285,7 +291,7 @@ function LanguageSection() {
       description={t("settings.appearance.language.description")}
     >
       {(localeError ?? error) !== null && <p role="alert" className="text-sm text-destructive">{localeError ?? error}</p>}
-      <div role="radiogroup" onKeyDown={handleRadioGroupKeyDown} aria-label={t("settings.appearance.language.title")} className="flex flex-wrap gap-2">
+      <div role="radiogroup" data-setting-id="appearance.language" onKeyDown={handleRadioGroupKeyDown} aria-label={t("settings.appearance.language.title")} className="flex flex-wrap gap-2">
         {visibleLocales.map((code) => {
           const selected = locale === code;
           return (
@@ -316,6 +322,7 @@ function LanguageSection() {
 }
 
 export function AppearanceTab() {
+  useAppSettingsControls(["appearance-language", "appearance-theme", "appearance-font", "appearance-terminal"]);
   const { t } = useTranslation();
   const { mode, setMode, darkScheme, lightScheme, setScheme, persistenceError: themeError } = useTheme();
   const { family, sizeScale, setFamily, setSizeScale, loaded: fontLoaded, loadFailed: fontLoadFailed, saveFailed: fontSaveFailed, retry: retryFonts } = useFontPreferences();
@@ -346,7 +353,7 @@ export function AppearanceTab() {
         title={t("appearanceTab.schemeTitle")}
         description={t("appearanceTab.schemeDescription")}
       >
-        <div role="radiogroup" onKeyDown={handleRadioGroupKeyDown} aria-label={t("appearanceTab.mode")} className="flex gap-2">
+        <div role="radiogroup" data-setting-id="appearance.mode" onKeyDown={handleRadioGroupKeyDown} aria-label={t("appearanceTab.mode")} className="flex gap-2">
           {(["system", "dark", "light"] as const).map((value) => (
             <button key={value} type="button" role="radio" aria-checked={mode === value} tabIndex={mode === value ? 0 : -1}
               data-testid={`appearance-mode-${value}`}
@@ -357,9 +364,9 @@ export function AppearanceTab() {
           ))}
         </div>
         {(["dark", "light"] as const).filter((shell) => mode === "system" || mode === shell).map((shell) => (
-          <div key={shell} className="space-y-2">
+          <div key={shell} data-setting-row={shell === "dark" ? "appearance.darkScheme" : "appearance.lightScheme"} className="space-y-2">
             <h3 className="text-sm font-medium">{t(`appearanceTab.scheme.${shell}`)}</h3>
-            <div role="radiogroup" onKeyDown={handleRadioGroupKeyDown} aria-label={t(`appearanceTab.scheme.${shell}`)} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div role="radiogroup" data-setting-id={`appearance.${shell}Scheme`} onKeyDown={handleRadioGroupKeyDown} aria-label={t(`appearanceTab.scheme.${shell}`)} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {SCHEMES.filter((scheme) => scheme.shell === shell).map((scheme) => {
                 const selected = scheme.id === (shell === "dark" ? darkScheme : lightScheme);
                 return <button key={scheme.id} type="button" role="radio" aria-checked={selected} tabIndex={selected ? 0 : -1}
@@ -405,6 +412,7 @@ export function AppearanceTab() {
             onKeyDown={handleRadioGroupKeyDown}
             aria-label={t("appearanceTab.fontFamilyRadioGroupLabel")}
             data-testid="font-family-presets"
+            data-setting-id="appearance.font.family"
             className="flex flex-wrap gap-2"
           >
             {fontOptions.map((opt, index) => {
@@ -433,6 +441,7 @@ export function AppearanceTab() {
 
           {/* 사용자 stack 직접 입력 — commit on blur / Enter only. */}
           <FontFamilyCustomInput
+            settingId="appearance.font.family"
             initial={customStack}
             onCommit={(value) => setFamily(value)}
           />
@@ -446,6 +455,7 @@ export function AppearanceTab() {
             onKeyDown={handleRadioGroupKeyDown}
             aria-label={t("appearanceTab.fontSizeRadioGroupLabel")}
             data-testid="font-size-scale"
+            data-setting-id="appearance.font.sizeScale"
             className="grid grid-cols-4 overflow-hidden rounded-md border border-border"
           >
             {FONT_SIZE_OPTIONS.map((opt) => {
@@ -530,6 +540,7 @@ function GlassTintControl() {
       </div>
       <input
         id="appearance-glass-tint-input"
+        data-setting-id="appearance.glassTint"
         type="range"
         min={GLASS_TINT_MIN}
         max={GLASS_TINT_MAX}
@@ -616,9 +627,9 @@ function TerminalFontSection({ font, failed, updateFont }: ReturnType<typeof use
   const activePreset = presetForStack(font.family, CODE_FONT_PRESETS);
   return <SettingsSection data-settings-section="appearance-terminal" title={t("appearanceTab.terminalTitle")}>
     {failed && <p role="alert" className="text-sm text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
-    <div className="space-y-2">
+    <div className="space-y-2" data-setting-row="appearance.terminalFont.family">
       <label className="text-dense text-muted-foreground">{t("appearanceTab.terminalFamily")}</label>
-      <div role="radiogroup" aria-label={t("appearanceTab.terminalFamily")} data-testid="code-font-presets"
+      <div role="radiogroup" data-setting-id="appearance.terminalFont.family" aria-label={t("appearanceTab.terminalFamily")} data-testid="code-font-presets"
         onKeyDown={handleRadioGroupKeyDown} className="flex flex-wrap gap-2">
         {CODE_FONT_PRESETS.map((preset, index) => (
           // biome-ignore lint/a11y/useSemanticElements: Button radios support roving focus and arrow-key selection.
@@ -629,26 +640,27 @@ function TerminalFontSection({ font, failed, updateFont }: ReturnType<typeof use
           {t(preset.label)}
         </button>))}
       </div>
-      <FontFamilyCustomInput initial={activePreset === "custom" ? font.family : ""}
+      <FontFamilyCustomInput settingId="appearance.terminalFont.family" initial={activePreset === "custom" ? font.family : ""}
         label={t("appearanceTab.codeFontCustomAriaLabel")} onCommit={(family) => updateFont({ family: family || DEFAULT_APPEARANCE.terminalFont.family })} />
     </div>
     <div className="flex flex-wrap gap-6">
-      <FontMetricStepper label={t("appearanceTab.terminalSize")} value={font.size} step={1} validate={isTerminalFontSize}
+      <FontMetricStepper settingId="appearance.terminalFont.size" label={t("appearanceTab.terminalSize")} value={font.size} step={1} validate={isTerminalFontSize}
         format={(value) => `${String(value)}px`} onChange={(size) => updateFont({ size })} />
-      <FontMetricStepper label={t("appearanceTab.terminalLineHeight")} value={font.lineHeight} step={0.1} validate={isTerminalLineHeight}
+      <FontMetricStepper settingId="appearance.terminalFont.lineHeight" label={t("appearanceTab.terminalLineHeight")} value={font.lineHeight} step={0.1} validate={isTerminalLineHeight}
         format={(value) => value.toFixed(1)} onChange={(lineHeight) => updateFont({ lineHeight })} />
     </div>
     <TerminalBehaviorFields />
   </SettingsSection>;
 }
 
-function FontMetricStepper({ label, value, step, validate, format, onChange }: {
+function FontMetricStepper({ label, value, step, validate, format, onChange, settingId }: {
+  settingId: "appearance.terminalFont.size" | "appearance.terminalFont.lineHeight";
   label: string; value: number; step: number; validate: (value: unknown) => boolean;
   format: (value: number) => string; onChange: (value: number) => void;
 }) {
   const previous = Math.round((value - step) * 10) / 10;
   const next = Math.round((value + step) * 10) / 10;
-  return <fieldset aria-label={label} className="space-y-1">
+  return <fieldset aria-label={label} data-setting-id={settingId} className="space-y-1">
     <legend className="text-dense text-muted-foreground">{label}</legend>
     <div className="flex items-center gap-2 text-sm">
       <button type="button" aria-label={`${label} −`} disabled={!validate(previous)} onClick={() => onChange(previous)}

@@ -8,6 +8,7 @@ import type { PluginConfigSchemaPropertySummary, PluginConfigSchemaSummary } fro
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 import { resolvePluginLocalizedText } from "../../../shared/plugin-localized-text.js";
+import { useSettingsControls } from "../context/SettingsEditorContext.js";
 export type PluginConfigFormValues = Record<string, unknown>;
 
 export interface PluginConfigSchemaFormProps {
@@ -19,9 +20,13 @@ export interface PluginConfigSchemaFormProps {
   secretsPresent: Record<string, boolean>;
   onSave: (values: PluginConfigFormValues) => Promise<void> | void;
   onSetSecret: (key: string, value: string) => Promise<void> | void;
+  /** Remove only this field's saved override through its owning cleartext or secret writer. */
+  onResetField: (key: string) => Promise<void> | void;
+  loading?: boolean;
+  loadError?: string;
 }
 
-function deriveLabel(key: string, prop: PluginConfigSchemaPropertySummary, locale: string): string {
+export function pluginConfigFieldLabel(key: string, prop: PluginConfigSchemaPropertySummary, locale: string): string {
   return resolvePluginLocalizedText(prop, prop.locales, locale, ["title"]) ?? key;
 }
 
@@ -105,6 +110,9 @@ export function PluginConfigSchemaForm({
   secretsPresent,
   onSave,
   onSetSecret,
+  onResetField,
+  loading,
+  loadError,
 }: PluginConfigSchemaFormProps) {
   const { t, locale } = useTranslation();
   const properties = schema.properties ?? {};
@@ -272,6 +280,33 @@ export function PluginConfigSchemaForm({
     [draft, values],
   );
 
+  useSettingsControls(propertyKeys.map((key) => {
+    const prop = properties[key];
+    const secret = prop.type === "string" && prop.format === "secret";
+    const resetError = secret && required.has(key) ? t("pluginConfigSchemaForm.errorRequired")
+      : !secret ? fieldError(prop, prop.default, required.has(key))
+        ?? (hasMissingRequiredSecrets ? t("pluginConfigSchemaForm.errorRequired") : undefined) : undefined;
+    return {
+      id: `pluginConfig.${pluginId}.${key}`,
+      section: "plugin-config-installed",
+      label: `${pluginId}: ${pluginConfigFieldLabel(key, prop, locale)}`,
+      modified: secret ? Boolean(secretsPresent[key]) : !isSameConfigValue(values[key], prop.default),
+      loading,
+      loadError,
+      ...(resetError ? { disabledReason: resetError } : {}),
+      reset: async () => {
+        if (secret) {
+          await onResetField(key);
+          setSecretDrafts((previous) => ({ ...previous, [key]: "" }));
+        } else {
+          await onResetField(key);
+          dirtyKeysRef.current.delete(key);
+          setDraft((previous) => ({ ...previous, [key]: prop.default }));
+        }
+      },
+    };
+  }));
+
   return (
     <div data-testid={`plugin-config-form:${pluginId}`} className="flex flex-col gap-3">
       {propertyKeys.length === 0 && (
@@ -279,16 +314,17 @@ export function PluginConfigSchemaForm({
       )}
       {propertyKeys.map((key) => {
         const prop = properties[key];
-        const label = deriveLabel(key, prop, locale);
+        const label = pluginConfigFieldLabel(key, prop, locale);
         const description = deriveDescription(prop, locale);
         const isSecret = prop.type === "string" && prop.format === "secret";
         const fieldId = `pcfg:${pluginId}:${key}`;
+        const settingId = `pluginConfig.${pluginId}.${key}`;
         const value = draft[key];
         const error = isSecret
           ? fieldError(prop, secretDrafts[key], required.has(key) && !secretsPresent[key])
           : fieldError(prop, value, required.has(key));
         return (
-          <div key={key} className="flex flex-col gap-1">
+          <div key={key} data-setting-row={settingId} className="flex flex-col gap-1">
             <Label htmlFor={fieldId} className="text-xs font-medium">
               {label}
               {required.has(key) && <span className="ml-1 text-destructive">*</span>}
@@ -302,6 +338,7 @@ export function PluginConfigSchemaForm({
                 <div className="flex items-center gap-2">
                   <Input
                     id={fieldId}
+                    data-setting-id={settingId}
                     type="password"
                     className="h-7 text-xs flex-1"
                     placeholder={secretsPresent[key] ? t("pluginConfigSchemaForm.secretSavedPlaceholder") : t("pluginConfigSchemaForm.secretInputPlaceholder")}
@@ -335,6 +372,7 @@ export function PluginConfigSchemaForm({
             ) : prop.enum ? (
               <NativeSelect
                 id={fieldId}
+                data-setting-id={settingId}
                 disabled={hasMissingRequiredSecrets}
                 size="sm"
                 className="w-full"
@@ -363,6 +401,7 @@ export function PluginConfigSchemaForm({
               <Label className="flex items-center gap-2 text-xs">
                 <Checkbox
                   id={fieldId}
+                  data-setting-id={settingId}
                   disabled={hasMissingRequiredSecrets}
                   checked={Boolean(value ?? prop.default ?? false)}
                   onCheckedChange={(checked) => updateImmediate(key, checked === true)}
@@ -373,6 +412,7 @@ export function PluginConfigSchemaForm({
               <div className="flex items-center gap-2">
                 <Input
                   id={fieldId}
+                  data-setting-id={settingId}
                   className="h-7 text-xs flex-1"
                   placeholder={t("pluginConfigSchemaForm.arrayPlaceholder")}
                   value={
@@ -402,6 +442,7 @@ export function PluginConfigSchemaForm({
               <div className="flex items-center gap-2">
                 <Input
                   id={fieldId}
+                  data-setting-id={settingId}
                   type="number"
                   className="h-7 text-xs flex-1"
                   value={
@@ -431,6 +472,7 @@ export function PluginConfigSchemaForm({
               <div className="flex items-center gap-2">
                 <Input
                   id={fieldId}
+                  data-setting-id={settingId}
                   className="h-7 text-xs flex-1"
                   value={typeof value === "string" ? value : (prop.default as string | undefined) ?? ""}
                   onChange={(e) => updateDraft(key, e.target.value)}

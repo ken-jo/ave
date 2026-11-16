@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 import { useCallback, useEffect, useState } from "react";
 import { PrivacyTab } from "./PrivacyTab.js";
 import { Badge } from "../../../components/ui/badge.js";
@@ -74,6 +75,7 @@ export function ChatTab({
   settingsLoaded,
   onImmediateChange,
 }: ChatTabProps) {
+  useAppSettingsControls(["chat-optimization", "chat-stream-smoothing", "chat-processing-display", "chat-experimental"]);
   const { t } = useTranslation();
   const [roundDraft, setRoundDraft] = useState(String(subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT));
   const [roundError, setRoundError] = useState(false);
@@ -97,8 +99,9 @@ export function ChatTab({
         title={t("chatTab.conversationOptimizationTitle")}
         description={t("chatTab.conversationOptimizationDescription")}
       >
-        <div className="flex items-center gap-3 rounded-md border px-3 py-3">
+        <div className="flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="chat.autoCompact">
           <Switch
+            data-setting-id="chat.autoCompact"
             aria-label={t("chatTab.autoCompactLabel")}
             checked={autoCompact}
             disabled={!settingsLoaded}
@@ -121,6 +124,7 @@ export function ChatTab({
         description={t("chatTab.streamSmoothingDescription")}
       >
         <RadioGroup
+          data-setting-id="llm.streamSmoothing"
           className="flex gap-4 text-sm"
           value={streamSmoothing}
           disabled={!settingsLoaded}
@@ -145,7 +149,7 @@ export function ChatTab({
         description={t("chatTab.processingDisplayDescription")}
       >
         <div className="space-y-3 rounded-md border px-3 py-3">
-          <RadioGroup value={processingDisplayLevel} disabled={!settingsLoaded}
+          <RadioGroup data-setting-id="chat.processingDisplayLevel" value={processingDisplayLevel} disabled={!settingsLoaded}
             aria-label={t("chatTab.processingDisplayAriaLabel")}
             className="flex flex-wrap gap-4"
             onValueChange={(value) => {
@@ -174,12 +178,13 @@ export function ChatTab({
           </Badge>
         }
       >
-        <div className="flex items-center gap-3 rounded-md border px-3 py-3">
+        <div className="flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="features.idlePreferenceRefresh">
           <Switch
             checked={idlePreferenceRefresh ?? false}
             disabled={!settingsLoaded}
             aria-label={t("chatTab.idleRefreshLabel")}
             data-testid="idle-preference-refresh-toggle"
+            data-setting-id="features.idlePreferenceRefresh"
             className="shrink-0"
             onCheckedChange={(checked) => {
               setIdlePreferenceRefresh?.(checked === true);
@@ -192,12 +197,13 @@ export function ChatTab({
             </p>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
+        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="features.idleMemoryConsolidation">
           <Switch
             checked={idleMemoryConsolidation ?? false}
             disabled={!settingsLoaded}
             aria-label={t("chatTab.idleMemoryConsolidationLabel")}
             data-testid="idle-memory-consolidation-toggle"
+            data-setting-id="features.idleMemoryConsolidation"
             className="shrink-0"
             onCheckedChange={(checked) => {
               setIdleMemoryConsolidation?.(checked === true);
@@ -210,12 +216,13 @@ export function ChatTab({
             </p>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
+        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="features.subAgentAutonomousWake">
           <Switch
             checked={subAgentAutonomousWake ?? false}
             disabled={!settingsLoaded}
             aria-label={t("chatTab.subAgentWakeLabel")}
             data-testid="subagent-autonomous-wake-toggle"
+            data-setting-id="features.subAgentAutonomousWake"
             className="shrink-0"
             onCheckedChange={(checked) => {
               setSubAgentAutonomousWake?.(checked === true);
@@ -228,7 +235,7 @@ export function ChatTab({
             </p>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
+        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="chat.subAgentMaxRounds">
           <Input
             type="number"
             min={SUBAGENT_MAX_ROUNDS_MIN}
@@ -241,6 +248,7 @@ export function ChatTab({
             disabled={!settingsLoaded}
             aria-label={t("chatTab.subAgentMaxRoundsLabel")}
             data-testid="subagent-max-rounds-input"
+            data-setting-id="chat.subAgentMaxRounds"
             className="w-20"
             onBlur={(e) => {
               const parsed = e.currentTarget.value.trim() === "" ? Number.NaN : Number(e.currentTarget.value);

@@ -59,7 +59,7 @@ export function TerminalBehaviorFields() {
     <div className="space-y-4 border-t border-border pt-4" data-testid="terminal-behavior-fields">
       {failed && <p role="alert" className="text-sm text-destructive" data-testid="terminal-behavior-save-failed">{t("appearanceTab.terminalBehaviorSaveFailed")}</p>}
       <div className="flex flex-wrap gap-6">
-        <fieldset aria-label={t("appearanceTab.terminalScrollback")} className="space-y-1">
+        <fieldset aria-label={t("appearanceTab.terminalScrollback")} data-setting-id="appearance.terminal.scrollback" className="space-y-1">
           <legend className="text-dense text-muted-foreground">{t("appearanceTab.terminalScrollback")}</legend>
           <div className="flex items-center gap-2 text-sm">
             <button type="button" aria-label={`${t("appearanceTab.terminalScrollback")} −`} disabled={!isTerminalScrollback(fewer)} onClick={() => update({ scrollback: fewer })}
@@ -69,7 +69,7 @@ export function TerminalBehaviorFields() {
               className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">+</button>
           </div>
         </fieldset>
-        <fieldset className="space-y-1">
+        <fieldset data-setting-id="appearance.terminal.cursorStyle" className="space-y-1">
           <legend className="text-dense text-muted-foreground">{t("appearanceTab.terminalCursor")}</legend>
           <div className="flex flex-wrap gap-2" data-testid="terminal-cursor-styles">
             {TERMINAL_CURSOR_STYLES.map((style) => (
@@ -84,18 +84,18 @@ export function TerminalBehaviorFields() {
         </fieldset>
       </div>
       <div className="space-y-2">
-        <label className="flex items-start gap-2 text-sm">
+        <label data-setting-id="appearance.terminal.copyOnSelect" className="flex items-start gap-2 text-sm">
           <input type="checkbox" className="mt-0.5" checked={shown.copyOnSelect} data-testid="terminal-copy-on-select" onChange={(event) => update({ copyOnSelect: event.target.checked })} />
           <span>{t("appearanceTab.terminalCopyOnSelect")}</span>
         </label>
         {isDarwin() ? (
-          <label className="flex items-start gap-2 text-sm">
+          <label data-setting-id="appearance.terminal.optionAsMeta" className="flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-0.5" checked={shown.optionAsMeta} data-testid="terminal-option-as-meta" onChange={(event) => update({ optionAsMeta: event.target.checked })} />
             <span>{t("appearanceTab.terminalOptionAsMeta")}<span className="block text-dense text-muted-foreground">{t("appearanceTab.terminalOptionAsMetaHint")}</span></span>
           </label>
         ) : null}
       </div>
-      <div className="space-y-1">
+      <div className="space-y-1" data-setting-id="appearance.terminal.shell">
         <label htmlFor="terminal-shell-path" className="text-dense text-muted-foreground">{t("appearanceTab.terminalShell")}</label>
         <input id="terminal-shell-path" type="text" spellCheck={false} autoComplete="off" value={shellDraft} data-testid="terminal-shell-path"
           placeholder={t("appearanceTab.terminalShellPlaceholder")} aria-invalid={!shellValid} aria-describedby="terminal-shell-hint"

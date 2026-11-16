@@ -1,9 +1,12 @@
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { SettingsEditorProvider, _unregisteredSettingsControlsForTest } from "../../src/ui/renderer/context/SettingsEditorContext.js";
+import { makeMockAveApi } from "./mock-ave-api.js";
 import { SavedToastProvider } from "../../src/ui/renderer/context/SavedToastContext.js";
 import { PermissionJudgeContent } from "../../src/ui/renderer/components/permissions/PermissionJudgeContent.js";
-import { setLocale } from "../../src/i18n/runtime.js";
+import { requiredFixture } from "../../src/__tests__/support/required-fixture.js";
+import { setLocale, t } from "../../src/i18n/runtime.js";
 import type { PermissionJudgeSettings, PermissionJudgeSnapshot, PermissionJudgeWriteResult } from "../../src/shared/permission-judge-settings.js";
 
 function settings(): PermissionJudgeSettings {
@@ -18,7 +21,7 @@ function settings(): PermissionJudgeSettings {
   };
 }
 
-function mount(overrides: Partial<PermissionJudgeSnapshot> = {}) {
+function mount(overrides: Partial<PermissionJudgeSnapshot> = {}, editor = false, modifiedOnly = true) {
   setLocale("en");
   const snapshot: PermissionJudgeSnapshot = {
     settings: settings(),
@@ -33,7 +36,7 @@ function mount(overrides: Partial<PermissionJudgeSnapshot> = {}) {
   const judgeGet = vi.fn(async () => ({ ok: true as const, ...current }));
   // The host merges the patch into the stored settings and answers with the whole result.
   const judgeSet = vi.fn(async (patch: Partial<PermissionJudgeSettings>): Promise<PermissionJudgeWriteResult> => {
-    current = { ...current, settings: { ...current.settings, ...patch } };
+    current = { ...current, settings: { ...current.settings, ...patch }, ...(Object.hasOwn(patch, "chain") ? { storedChainRejected: false } : {}), ...(Object.hasOwn(patch, "model") ? { reviewerModelUnavailable: false } : {}) };
     return { ok: true, ...current };
   });
   let listener: (() => void) | undefined;
@@ -41,8 +44,10 @@ function mount(overrides: Partial<PermissionJudgeSnapshot> = {}) {
   const previous = window.ave;
   window.ave = { permission: { judgeGet, judgeSet, onConfigChanged } } as unknown as typeof window.ave;
   const notifySaved = vi.fn();
-  const rendered = render(<SavedToastProvider value={notifySaved}><PermissionJudgeContent /></SavedToastProvider>);
-  return { ...rendered, judgeGet, judgeSet, notifySaved, notify: () => listener?.(), restore: () => { window.ave = previous; } };
+  const { api } = makeMockAveApi();
+  const content = <SavedToastProvider value={notifySaved}><PermissionJudgeContent /></SavedToastProvider>;
+  const rendered = render(editor ? <SettingsEditorProvider api={api as never} modifiedOnly={modifiedOnly}>{content}</SettingsEditorProvider> : content);
+  return { ...rendered, api, judgeGet, judgeSet, notifySaved, notify: () => listener?.(), restore: () => { window.ave = previous; } };
 }
 
 /** Pick a row of the shared model chooser by its visible text. */
@@ -322,5 +327,71 @@ it("ignores a refresh response that predates an immediate control save", async (
     await act(async () => resolveRead({ ok: true, settings: settings(), issues: [], modelOptions: [], chatModel: null, reviewerModelUnavailable: false, storedChainRejected: false }));
     expect(screen.getByLabelText("Permission reviewer model")).toHaveTextContent("team/reviewer");
     expect(view.judgeSet).toHaveBeenCalledExactlyOnceWith({ model: { vendor: "openai-compatible", model: "team/reviewer" } });
+  } finally { view.restore(); }
+});
+
+
+describe("judge settings canonical reset adapters", () => {
+  it("resets only the reviewer model and preserves a dirty evaluator chain", async () => {
+    const stored = settings();
+    stored.model = { vendor: "openai-compatible", model: "team/reviewer" };
+    stored.chain = [{ id: "review", provider: "builtin-llm" }];
+    const view = mount({ settings: stored }, true);
+    try {
+      await screen.findByLabelText("Stage identifier");
+      fireEvent.change(screen.getByLabelText("Stage identifier"), { target: { value: "draft-stage" } });
+      const row = await waitFor(() => {
+        const found = view.container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id="permissions.judge.model"]');
+        expect(found).toBeTruthy(); return requiredFixture(found);
+      });
+      fireEvent.click(requiredFixture(row.querySelector('button')));
+      await waitFor(() => expect(view.judgeSet).toHaveBeenCalledExactlyOnceWith({ model: null }));
+      expect(screen.getByLabelText("Stage identifier")).toHaveValue("draft-stage");
+      expect(view.api.updateSettings).not.toHaveBeenCalled();
+    } finally { view.restore(); }
+  });
+
+  it("explicitly clears a rejected stored chain instead of treating its normalized empty view as unchanged", async () => {
+    const view = mount({ storedChainRejected: true }, true);
+    try {
+      await screen.findByTestId("permission-judge-chain-rejected");
+      const row = await waitFor(() => {
+        const found = view.container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id="permissions.judge.chain"]');
+        expect(found).toBeTruthy(); return requiredFixture(found);
+      });
+      fireEvent.click(requiredFixture(row.querySelector('button')));
+      await waitFor(() => expect(view.judgeSet).toHaveBeenCalledExactlyOnceWith({ chain: [] }));
+      await waitFor(() => expect(screen.queryByTestId("permission-judge-chain-rejected")).toBeNull());
+      expect(view.api.updateSettings).not.toHaveBeenCalled();
+    } finally { view.restore(); }
+  });
+
+  it("registers every persisted evaluator input against its owning control", async () => {
+    const stored = settings();
+    stored.chain = [{ id: "local", provider: "external", external: { command: ["/opt/judge", "--check"], env: ["POLICY_DIR"] } }, { id: "review", provider: "builtin-llm" }];
+    const view = mount({ settings: stored }, true, false);
+    try {
+      await screen.findByLabelText("Arguments · one per line, blank lines ignored");
+      await waitFor(() => expect(view.container.querySelector('[data-setting-registered="true"][data-setting-id="permissions.judge.chain"]')).toBeTruthy());
+      expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]);
+    } finally { view.restore(); }
+  });
+});
+
+it("keeps the reviewer model modified when its owning reset is refused", async () => {
+  const stored = settings();
+  stored.model = { vendor: "openai-compatible", model: "team/reviewer" };
+  const view = mount({ settings: stored }, true);
+  try {
+    const row = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id="permissions.judge.model"]');
+      expect(found).toBeTruthy(); return requiredFixture(found);
+    });
+    view.judgeSet.mockResolvedValueOnce({ ok: false, error: "judge-save-failed" });
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(row.closest('[data-settings-actions]')).toHaveTextContent(t("settingsEditor.actionFailed")));
+    expect(row.dataset.settingModified).toBe("true");
+    expect(view.notifySaved).not.toHaveBeenCalled();
+    expect(view.api.updateSettings).not.toHaveBeenCalled();
   } finally { view.restore(); }
 });

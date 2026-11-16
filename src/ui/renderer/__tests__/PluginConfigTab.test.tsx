@@ -1422,6 +1422,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
         secretsPresent={{}}
         onSave={async () => {}}
         onSetSecret={async () => {}}
+        onResetField={async () => {}}
       />,
     );
     const input = document.querySelector(
@@ -1438,6 +1439,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
         secretsPresent={{}}
         onSave={async () => {}}
         onSetSecret={async () => {}}
+        onResetField={async () => {}}
       />,
     );
 
@@ -1466,6 +1468,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
         secretsPresent={{}}
         onSave={async () => {}}
         onSetSecret={async () => {}}
+        onResetField={async () => {}}
       />,
     );
     const select = document.querySelector(
@@ -1482,6 +1485,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
         secretsPresent={{}}
         onSave={async () => {}}
         onSetSecret={async () => {}}
+        onResetField={async () => {}}
       />,
     );
 
@@ -1512,6 +1516,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
         secretsPresent={{}}
         onSave={async () => {}}
         onSetSecret={async () => {}}
+        onResetField={async () => {}}
       />,
     );
     const endpoint = document.querySelector(
@@ -1533,6 +1538,7 @@ describe("PluginConfigSchemaForm — values prop sync", () => {
         secretsPresent={{}}
         onSave={async () => {}}
         onSetSecret={async () => {}}
+        onResetField={async () => {}}
       />,
     );
 

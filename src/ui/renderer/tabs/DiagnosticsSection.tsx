@@ -11,6 +11,7 @@ import { requirePersistedResult, useSettingsPersistence } from "../hooks/use-set
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
 import { isRecord, isStringArray } from "../../../shared/is-record.js";
+import { useSettingsControl } from "../context/SettingsEditorContext.js";
 
 interface CrashDumpMeta {
   name: string;
@@ -44,6 +45,9 @@ interface DiagnosticsSectionProps {
 export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: DiagnosticsSectionProps) {
   const { t } = useTranslation();
 
+  const crashDumpConsentControl = useSettingsControl({
+    id: "diagnostics.includeCrashDumps", section: "audit-bundle", label: t("auditTab.bundleIncludeCrashDumps"),
+  });
   const notifySaved = useNotifySaved();
   const { error: saveError, saving, persist } = useSettingsPersistence(notifySaved);
   const [includeCrashDumps, setIncludeCrashDumps] = useState<boolean | null>(null);
@@ -198,6 +202,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
         <p data-testid="diagnostics-export-range" className="text-dense text-muted-foreground">{t("auditTab.bundleDateRange", { from: defaultDateFrom || t("auditTab.bundleAllDates"), to: defaultDateTo || t("auditTab.bundleAllDates") })}</p>
         <label className="flex items-center gap-2 text-xs">
           <input
+            {...crashDumpConsentControl}
             type="checkbox"
             checked={includeCrashDumps === true}
             disabled={includeCrashDumps === null || consentLoading || saving || exporting}
@@ -210,7 +215,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
         {consentLoadError && (
           <div className="space-y-2">
             <p role="alert" className="text-dense text-destructive">{consentLoadError}</p>
-            <Button size="sm" variant="outline" onClick={() => void loadConsent()} disabled={consentLoading}>{t("common.retry")}</Button>
+            <Button data-settings-transient="true" size="sm" variant="outline" onClick={() => void loadConsent()} disabled={consentLoading}>{t("common.retry")}</Button>
           </div>
         )}
         {saveError && <p role="alert" className="text-dense text-destructive">{saveError}</p>}
@@ -218,7 +223,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           <p className="text-dense text-warning">{t("auditTab.bundleCrashDumpWarning")}</p>
         )}
         <div className="flex items-center gap-2">
-          <Button size="sm" className="h-8" onClick={() => void handleExport()} disabled={exporting || saving || consentLoading || includeCrashDumps === null}>
+          <Button data-settings-transient="true" size="sm" className="h-8" onClick={() => void handleExport()} disabled={exporting || saving || consentLoading || includeCrashDumps === null}>
             {exporting ? t("auditTab.bundleExporting") : t("auditTab.bundleExportButton")}
           </Button>
           {exportMsg && <span className="text-dense text-muted-foreground">{exportMsg}</span>}
@@ -239,6 +244,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
             <NativeSelect
               size="sm"
               className="w-28"
+              data-settings-transient="true"
               aria-label={t("auditTab.logLevel")}
               value={logLevel}
               onChange={(e) => setLogLevel(e.target.value)}
@@ -250,7 +256,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
                 </NativeSelectOption>
               ))}
             </NativeSelect>
-            <Button size="sm" className="h-8" variant="outline" onClick={() => void refreshLogs()}>
+            <Button data-settings-transient="true" size="sm" className="h-8" variant="outline" onClick={() => void refreshLogs()}>
               {t("auditTab.logRefresh")}
             </Button>
           </div>
@@ -275,7 +281,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
         data-settings-section="audit-crash"
         title={t("auditTab.crashSectionTitle")}
         actions={
-          <Button size="sm" className="h-8" variant="outline" onClick={() => void refreshCrashes()}>
+          <Button data-settings-transient="true" size="sm" className="h-8" variant="outline" onClick={() => void refreshCrashes()}>
             {t("auditTab.logRefresh")}
           </Button>
         }

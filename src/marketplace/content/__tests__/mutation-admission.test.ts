@@ -28,7 +28,7 @@ const STORE_INTERNALS = ["queue", "options", "ledger", "serialize", "mutate", "r
 const LEDGER_INTERNALS = ["path", "entries", "write", "pendingReview", "reloadIfPending"];
 const SETTINGS_OBSERVERS = ["getAll", "get", "getPersisted", "getProviderConfigRevision", "getSecretGeneration", "isSecretIdentityUsable",
   "onLeaseStateChanged", "onChanged", "getPluginConfig", "getSecret", "getEncryptedSecret", "hasStoredSecret", "isSecretStorageEncrypted",
-  "loadedMainLayout"];
+  "loadedMainLayout", "getSettingsFilePath"];
 const SETTINGS_OTHER_WRITES = ["migrateSecrets", "deleteRetiredLlmVendorApiKeys",
   "replaceLlm", "setPluginConfig", "deletePluginConfig", "setSecret", "deleteSecret", "deletePluginSecrets"];
 const SETTINGS_INTERNALS = ["changeListeners", "providerConfigRevision", "secretGenerations", "observedSecretFingerprint",

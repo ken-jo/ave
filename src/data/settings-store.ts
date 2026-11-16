@@ -926,6 +926,10 @@ export class SettingsService {
     }
   }
 
+  getSettingsFilePath(): string {
+    return this.settingsPath;
+  }
+
   getAll(): AppSettings {
     return structuredClone(this.settings);
   }

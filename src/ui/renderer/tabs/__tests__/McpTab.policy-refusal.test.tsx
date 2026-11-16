@@ -32,7 +32,7 @@ async function openForm(error: Error) {
   vi.stubGlobal("ave", { mcp: {
     servers: vi.fn(async () => []),
     getConfigs: vi.fn(async () => []),
-    getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
+    getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", policyStatus: "absent", userServersAllowed: true, managedServerIds: [], hasApiKey: {}, servers: {} })),
     getConfigPath: vi.fn(async () => "mcp/servers.json"),
     addConfig,
   } });

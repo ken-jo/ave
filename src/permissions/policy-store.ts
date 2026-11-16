@@ -8,6 +8,7 @@ import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedEr
 import { parsePolicyDocument } from "../shared/configuration-document.js";
 import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
+import { DEFAULT_REQUIRE_EXPLICIT_APPROVAL } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
 import { readAveHomeConfigurationFile, readAveHomeRestrictionSource, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
@@ -73,7 +74,7 @@ export interface LoadedPolicy extends PolicyFile, AdminPolicyDiagnostic {
 function defaultPolicy(): PolicyFile {
   return {
     version: 1,
-    requireExplicitApproval: true,
+    requireExplicitApproval: DEFAULT_REQUIRE_EXPLICIT_APPROVAL,
     managed: false,
     updatedAt: new Date().toISOString(),
   };

@@ -181,6 +181,9 @@ export const PERMISSIONS = {
 } as const;
 
 export const SETTINGS = {
+  defaults: "ave:settings:defaults",
+  openFile: "ave:settings:open-file",
+  pickDirectory: "ave:settings:pick-directory",
   updated: "ave:settings:updated",
 } as const;
 

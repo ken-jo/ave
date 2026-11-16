@@ -50,7 +50,8 @@ import { useDebouncedSave } from "./hooks/use-debounced-save.js";
 import { normalizeSettingsTab, SETTINGS_TAB_LABEL_KEYS, type SettingsTab } from "../../shared/settings-tabs.js";
 import type { PackageKind } from "../../shared/git-marketplace.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
-import { searchSettings } from "./settings-search.js";
+import { clearSettingsFilter, filterRenderedSettings, highlightSettingsMatches } from "./settings-search.js";
+import { SettingsEditorProvider } from "./context/SettingsEditorContext.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 
 type SettingsNavItem = { value: SettingsTab; icon: LucideIcon; labelKey: string };
@@ -158,9 +159,11 @@ export function SettingsContent({
   const appInfo = useAppInfo(api);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
-  const searchResultRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const [searchSection, setSearchSection] = useState<string | null>(null);
-  const searchResults = searchSettings(searchQuery, t);
+  const [modifiedOnly, setModifiedOnly] = useState(false);
+  const [filterCount, setFilterCount] = useState(0);
+  const [editorActionFailed, setEditorActionFailed] = useState(false);
+  const [editorReloadEpoch, setEditorReloadEpoch] = useState(0);
+  const filterActive = searchQuery.trim().length > 0 || modifiedOnly;
   const [tab, setTab] = useState(() => normalizeSettingsTab(initialTab));
   const [pluginSettingsTarget, setPluginSettingsTarget] = useState<string | null>(null);
   const [marketplaceKind, setMarketplaceKind] = useState<PackageKind | null>(null);
@@ -172,7 +175,8 @@ export function SettingsContent({
     notifySaved();
     onSaved();
   }, [notifySaved, onSaved]);
-  const s = useSettingsOrchestration(api, handleSaved);
+  const s = useSettingsOrchestration(api, handleSaved, editorReloadEpoch);
+  const retrySettingsLoad = () => { s.retryLoad(); setEditorReloadEpoch((epoch) => epoch + 1); };
 
   // Cancel pending debounce before explicit Save to avoid duplicate writes; flush pending changes before route unmount or
   // shutdown.
@@ -228,11 +232,8 @@ export function SettingsContent({
 
   // Deep-link arrival. Ordered after the tab reset above so the anchor it looks for belongs to the tab the link named: Radix
   // mounts only the active pane, so a lookup run before that commit would find nothing.
-  const activeSectionTarget = searchSection ?? sectionTarget;
-  const noteSectionApplied = useCallback(() => {
-    if (searchSection !== null) setSearchSection(null);
-    else onSectionApplied?.();
-  }, [searchSection, onSectionApplied]);
+  const activeSectionTarget = sectionTarget;
+  const noteSectionApplied = useCallback(() => onSectionApplied?.(), [onSectionApplied]);
   useSettingsSectionArrival(activeSectionTarget, noteSectionApplied);
 
   useEffect(() => {
@@ -293,6 +294,38 @@ export function SettingsContent({
     }
   }, [mobileDepth, isNarrow, rootElement]);
 
+  useEffect(() => {
+    if (!rootElement) return;
+    if (!filterActive) { clearSettingsFilter(rootElement); return; }
+    const applyFilter = () => {
+      const matches = filterRenderedSettings(rootElement, searchQuery, modifiedOnly);
+      highlightSettingsMatches(matches, searchQuery);
+      setFilterCount(matches.length);
+    };
+    applyFilter();
+    const observer = new MutationObserver(applyFilter);
+    observer.observe(rootElement, { childList: true, characterData: true, subtree: true });
+    return () => { observer.disconnect(); clearSettingsFilter(rootElement); };
+  }, [rootElement, searchQuery, modifiedOnly, filterActive]);
+
+  useEffect(() => {
+    if (!rootElement || !filterActive) return;
+    const clearFilter = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setSearchQuery(""); setModifiedOnly(false); searchInputRef.current?.focus();
+    };
+    rootElement.addEventListener("keydown", clearFilter);
+    return () => rootElement.removeEventListener("keydown", clearFilter);
+  }, [rootElement, filterActive]);
+
+  const focusFirstMatch = () => {
+    if (!rootElement) return;
+    const first = filterRenderedSettings(rootElement, searchQuery, modifiedOnly)[0]?.section;
+    const controls = first?.querySelectorAll<HTMLElement>('input:not([disabled]), select:not([disabled]), [role="switch"]:not([disabled]), [role="radio"]:not([disabled]), button:not([disabled])');
+    const control = controls && [...controls].find((element) => !element.closest('details:not([open])'));
+    (control ?? first)?.focus();
+  };
+
   // Override primitive active/alignment styles for vertical rows; keep scaled labels on one clipped line.
   const sideTriggerCls =
     "flex w-full items-center justify-start gap-2.5 whitespace-normal rounded-md px-3 py-2 text-sm font-medium " +
@@ -305,13 +338,27 @@ export function SettingsContent({
   // and the last control lands flush against the window edge. Active panels
   // are flex columns so split-pane children can still use `flex-1 min-h-0`.
   const tabContentCls =
-    "min-h-[calc(100%_-_0.5rem)] min-w-0 w-full shrink-0 outline-none data-[state=active]:flex data-[state=active]:flex-col";
+    filterActive ? "min-h-0 min-w-0 w-full shrink-0 outline-none flex flex-col" : "min-h-[calc(100%_-_0.5rem)] min-w-0 w-full shrink-0 outline-none data-[state=active]:flex data-[state=active]:flex-col";
   // Common icon class so the 12 nav entries render at a uniform 16px.
   const navIconCls = "size-4 shrink-0";
 
   return (
     <SavedToastProvider value={notifySaved}>
-    <div ref={setRootElement} className="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
+    <SettingsEditorProvider api={api} modifiedOnly={modifiedOnly} reloadEpoch={editorReloadEpoch} onRetryLoad={retrySettingsLoad}>
+    <div ref={setRootElement} className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <style>{"::highlight(ave-settings-match) { background: var(--accent); color: var(--accent-foreground); }"}</style>
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border p-2">
+      <input data-settings-transient="settings-query" ref={searchInputRef} type="search" value={searchQuery}
+        onChange={(event) => { setSearchQuery(event.target.value); setMobileDepth("detail"); }}
+        onKeyDown={(event) => { if ((event.key === "ArrowDown" || event.key === "Enter") && filterActive) { event.preventDefault(); focusFirstMatch(); } }}
+        aria-label={t("settingsContent.search")} placeholder={t("settingsContent.search")}
+        className="min-w-32 flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-sm" />
+      <Button type="button" size="sm" variant={modifiedOnly ? "default" : "outline"} aria-pressed={modifiedOnly}
+        onClick={() => { setModifiedOnly(!modifiedOnly); setMobileDepth("detail"); }}>{t("settingsEditor.modifiedOnly")}</Button>
+      <Button type="button" size="sm" variant="ghost" onClick={() => { setEditorActionFailed(false); void api.openSettingsFile().then((result) => { if (!result.ok) setEditorActionFailed(true); }).catch(() => setEditorActionFailed(true)); }}>{t("settingsEditor.openFile")}</Button>
+      {filterActive && <p role="status" aria-live="polite" className="w-full text-xs text-muted-foreground">{filterCount === 0 ? t(modifiedOnly ? "settingsEditor.noModified" : "settingsContent.searchEmpty") : t("settingsEditor.filteredCount", { count: filterCount })}</p>}
+      {editorActionFailed && <p role="alert" className="w-full text-xs text-destructive">{t("settingsEditor.actionFailed")}</p>}
+    </div>
     <Tabs
       orientation="vertical"
       // Keyboard activation: automatic on wide (arrowing a trigger instantly
@@ -349,40 +396,6 @@ export function SettingsContent({
           isNarrow && mobileDepth === "detail" && "hidden",
         )}
       >
-      <div className="border-b border-border p-2">
-        <input ref={searchInputRef} type="search" value={searchQuery} onKeyDown={(event) => {
-          if (event.key === "ArrowDown" && searchResults.length) { event.preventDefault(); searchResultRefs.current[0]?.focus(); }
-          if (event.key === "Escape") setSearchQuery("");
-        }} onChange={(event) => setSearchQuery(event.target.value)}
-          aria-label={t("settingsContent.search")} placeholder={t("settingsContent.search")}
-          className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs" />
-        <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-          {searchQuery.trim() ? t("settingsContent.searchCount", { count: searchResults.length }) : ""}
-        </span>
-        {searchQuery.trim() && <ul aria-label={t("settingsContent.search")} className="mt-2 max-h-64 overflow-y-auto">
-          {searchResults.length === 0 && <li className="p-2 text-xs text-muted-foreground">{t("settingsContent.searchEmpty")}</li>}
-          {searchResults.map((result, index) => <li key={result.section}><button type="button"
-            ref={(element) => { searchResultRefs.current[index] = element; }}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                event.preventDefault();
-                const next = (index + (event.key === "ArrowDown" ? 1 : -1) + searchResults.length) % searchResults.length;
-                searchResultRefs.current[next]?.focus();
-              }
-              if (event.key === "Escape") { setSearchQuery(""); searchInputRef.current?.focus(); }
-            }}
-            className="block w-full rounded px-2 py-2 text-left text-xs hover:bg-accent"
-            onClick={() => {
-              selectTab(result.tab);
-              setMobileDepth("detail");
-              setSearchSection(result.section);
-              setSearchQuery("");
-            }}>
-            <span className="block text-muted-foreground">{t(SETTINGS_TAB_LABEL_KEYS[result.tab])}</span>
-            {result.matchedLabel ?? t(result.title)}
-          </button></li>)}
-        </ul>}
-      </div>
       {/* No heading above this list. The pane's header carries "Settings" —
           the same 36px band every other pane gets — so a second title here
           would name the place twice, once large and once small. The list's own
@@ -509,7 +522,7 @@ export function SettingsContent({
           isNarrow ? "px-4" : "px-8",
         )}
       >
-        {s.loadError && <div role="alert" className="mb-3 rounded-md border border-destructive p-3 text-sm text-destructive">{s.loadError} <Button size="sm" variant="outline" onClick={s.retryLoad}>{t("settingsEditor.retry")}</Button></div>}
+        {s.loadError && <div role="alert" className="mb-3 rounded-md border border-destructive p-3 text-sm text-destructive">{s.loadError} <Button size="sm" variant="outline" onClick={retrySettingsLoad}>{t("settingsEditor.retry")}</Button></div>}
         {s.lastSaveError && (
           <div
             role="alert"
@@ -530,11 +543,11 @@ export function SettingsContent({
           </div>
         )}
 
-          <TabsContent value="about" className={tabContentCls}>
+          <TabsContent data-settings-panel="about" forceMount={filterActive ? true : undefined} value="about" className={tabContentCls}>
             <AboutTab api={api} />
           </TabsContent>
 
-          <TabsContent value="llm" className={tabContentCls}>
+          <TabsContent data-settings-panel="llm" forceMount={filterActive ? true : undefined} value="llm" className={tabContentCls}>
             <LlmTab
               api={api}
               vendor={s.vendor}
@@ -572,11 +585,11 @@ export function SettingsContent({
             />
           </TabsContent>
 
-          <TabsContent value="appearance" className={tabContentCls}>
+          <TabsContent data-settings-panel="appearance" forceMount={filterActive ? true : undefined} value="appearance" className={tabContentCls}>
             <AppearanceTab />
           </TabsContent>
 
-          <TabsContent value="chat" className={tabContentCls}>
+          <TabsContent data-settings-panel="chat" forceMount={filterActive ? true : undefined} value="chat" className={tabContentCls}>
             <ChatTab
               autoCompact={s.autoCompact}
               setAutoCompact={s.setAutoCompact}
@@ -602,9 +615,9 @@ export function SettingsContent({
             {/* ChatTab is fully immediate-apply — no deferred-save bar needed. */}
           </TabsContent>
 
-          <TabsContent value="notifications" className={tabContentCls}><NotificationsTab api={api} /></TabsContent>
+          <TabsContent data-settings-panel="notifications" forceMount={filterActive ? true : undefined} value="notifications" className={tabContentCls}><NotificationsTab api={api} /></TabsContent>
 
-          <TabsContent value="web" className={tabContentCls}>
+          <TabsContent data-settings-panel="web" forceMount={filterActive ? true : undefined} value="web" className={tabContentCls}>
             <WebTab
               api={api}
               webProvider={s.webProvider}
@@ -621,9 +634,9 @@ export function SettingsContent({
 
           </TabsContent>
 
-          <TabsContent value="startup" className={tabContentCls}><StartupTab /></TabsContent>
-          <TabsContent value="shortcuts" className={tabContentCls}><ShortcutsTab /></TabsContent>
-          <TabsContent value="permissions" className={tabContentCls}>
+          <TabsContent data-settings-panel="startup" forceMount={filterActive ? true : undefined} value="startup" className={tabContentCls}><StartupTab /></TabsContent>
+          <TabsContent data-settings-panel="shortcuts" forceMount={filterActive ? true : undefined} value="shortcuts" className={tabContentCls}><ShortcutsTab /></TabsContent>
+          <TabsContent data-settings-panel="permissions" forceMount={filterActive ? true : undefined} value="permissions" className={tabContentCls}>
             <PermissionsTab
               exactDenyDraft={exactDenyDraft}
               onExactDenySaved={onExactDenySaved}
@@ -633,18 +646,18 @@ export function SettingsContent({
           {/* The only tab that needs the raw target: its sections live inside
               collapsed rows, so it has to open the right one before arrival
               goes looking for the anchor. */}
-          <TabsContent value="remote-surfaces" className={tabContentCls}><RemoteSurfacesTab api={api} sectionTarget={activeSectionTarget} /></TabsContent>
-          <TabsContent value="roles" className={tabContentCls}><RolesTab api={api} /></TabsContent>
-          <TabsContent value="usage" className={tabContentCls}>
+          <TabsContent data-settings-panel="remote-surfaces" forceMount={filterActive ? true : undefined} value="remote-surfaces" className={tabContentCls}><RemoteSurfacesTab api={api} sectionTarget={activeSectionTarget} /></TabsContent>
+          <TabsContent data-settings-panel="roles" forceMount={filterActive ? true : undefined} value="roles" className={tabContentCls}><RolesTab api={api} /></TabsContent>
+          <TabsContent data-settings-panel="usage" forceMount={filterActive ? true : undefined} value="usage" className={tabContentCls}>
             <UsageDashboard
               api={api}
               onNavigate={handleTabValueChange}
             />
           </TabsContent>
-          <TabsContent value="audit" className={tabContentCls}><AuditTab /></TabsContent>
-          <TabsContent value="mcp" className={tabContentCls}><McpTab onNavigate={handleTabValueChange} /></TabsContent>
-          <TabsContent value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} initialPluginId={pluginSettingsTarget} onNavigate={handleTabValueChange} /></TabsContent>
-          <TabsContent value="marketplace" className={tabContentCls}>
+          <TabsContent data-settings-panel="audit" forceMount={filterActive ? true : undefined} value="audit" className={tabContentCls}><AuditTab /></TabsContent>
+          <TabsContent data-settings-panel="mcp" forceMount={filterActive ? true : undefined} value="mcp" className={tabContentCls}><McpTab onNavigate={handleTabValueChange} /></TabsContent>
+          <TabsContent data-settings-panel="plugin-config" forceMount={filterActive ? true : undefined} value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} initialPluginId={pluginSettingsTarget} onNavigate={handleTabValueChange} /></TabsContent>
+          <TabsContent data-settings-panel="marketplace" forceMount={filterActive ? true : undefined} value="marketplace" className={tabContentCls}>
             <GitMarketplaceTab
               api={api}
               initialKind={marketplaceKind}
@@ -656,6 +669,7 @@ export function SettingsContent({
       </div>
     </Tabs>
     </div>
+    </SettingsEditorProvider>
     </SavedToastProvider>
   );
 }

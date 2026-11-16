@@ -374,6 +374,7 @@ export const CHANNELS = {
     managementState: "ave:mcp:management-state",
     startServer: "ave:mcp:start-server",
     undoRemove: "ave:mcp:undo-remove",
+    clearApiKey: "ave:mcp:clear-api-key",
     configAdd: "ave:mcp:config:add",
     configSetApiKey: "ave:mcp:config:set-api-key",
     configRemove: "ave:mcp:config:remove",

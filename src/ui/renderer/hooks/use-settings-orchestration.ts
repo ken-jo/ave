@@ -182,12 +182,22 @@ export function useSettingsOrchestration(
   const [webKeyInput, setWebKeyInputState] = useState("");
   const webKeyDraftRef = useRef<{ provider: AppSettings["webSearch"]["provider"]; key: string } | null>(null);
   const webProviderRef = useRef(webProvider);
-  const setWebProvider = useCallback((next: AppSettings["webSearch"]["provider"]) => {
+  // A provider choice is a local edit until its save settles; only then may stored values (a reset, another window) replace it.
+  const webProviderDraftRevisionRef = useRef(0);
+  const webProviderSavedRevisionRef = useRef(0);
+  // Host broadcasts arrive in store order, and a save's reply follows its own broadcast, so the newest broadcast received after a
+  // save began is at least as new as that save's reply snapshot.
+  const webProviderBroadcastRef = useRef<{ sequence: number; provider: AppSettings["webSearch"]["provider"] | null }>({ sequence: 0, provider: null });
+  const applyWebProvider = useCallback((next: AppSettings["webSearch"]["provider"]) => {
     webProviderRef.current = next;
     webKeyDraftRef.current = null;
     setWebKeyInputState("");
     setWebProviderState(next);
   }, []);
+  const setWebProvider = useCallback((next: AppSettings["webSearch"]["provider"]) => {
+    webProviderDraftRevisionRef.current += 1;
+    applyWebProvider(next);
+  }, [applyWebProvider]);
   const setWebKeyInput = useCallback((key: string) => {
     webKeyDraftRef.current = { provider: webProviderRef.current, key };
     setWebKeyInputState(key);
@@ -311,7 +321,8 @@ export function useSettingsOrchestration(
         s.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
       );
       setHasKey(apiKeySet);
-      setWebProvider(s.webSearch.provider);
+      webProviderSavedRevisionRef.current = webProviderDraftRevisionRef.current;
+      applyWebProvider(s.webSearch.provider);
       setHasWebKey(webApiKeySet);
       setPiiRedactEnabledState(s.privacy?.piiRedactEnabled ?? false);
       const liveValues = liveSettingsValues(s);
@@ -324,10 +335,10 @@ export function useSettingsOrchestration(
       setSettingsLoaded(true);
       setLoadError(null);
     })().catch(() => {
-      if (!cancelled) setLoadError(t("useSettingsOrchestration.loadFailed"));
+      if (!cancelled && currentHydrationKeyRef.current === hydrationKey) setLoadError(t("useSettingsOrchestration.loadFailed"));
     });
     return () => { cancelled = true; };
-  }, [api, loadRevision, reloadEpoch]);
+  }, [api, hydrationKey, hydrateVendorBlock, setSettingsSnapshot, applyWebProvider]);
 
   // Stay in sync with cross-window settings broadcasts. Updating the snapshot refreshes the cached source that the
   // vendor-switch effect consults; the userTouchedRef-style guards in this hook protect in-flight form edits.
@@ -362,6 +373,10 @@ export function useSettingsOrchestration(
       if (draft.fallback === saved.fallback) {
         setFallbackChainState(next.llm.fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model })));
       }
+      webProviderBroadcastRef.current = { sequence: webProviderBroadcastRef.current.sequence + 1, provider: next.webSearch.provider };
+      // The key-presence effect re-queries for the adopted provider.
+      if (webProviderDraftRevisionRef.current === webProviderSavedRevisionRef.current
+        && next.webSearch.provider !== webProviderRef.current) applyWebProvider(next.webSearch.provider);
       const liveValues = liveSettingsValues(next);
       liveAuthoritativeRef.current = liveValues;
       if (!livePendingRef.current.has("idlePreferenceRefresh")) setIdlePreferenceRefresh(liveValues.idlePreferenceRefresh);
@@ -376,7 +391,7 @@ export function useSettingsOrchestration(
       // Follow installed-preset broadcasts without overwriting the form's unsaved provider selection or endpoint fields.
       setMarketplaceProviderPresets(next.marketplace?.installedProviderPresets ?? []);
     });
-  }, [api, marketplaceProviderPresetId, setSettingsSnapshot]);
+  }, [api, marketplaceProviderPresetId, setSettingsSnapshot, applyWebProvider]);
 
   // Re-hydrate every vendor-specific field when the active vendor changes.
   useEffect(() => {
@@ -402,7 +417,7 @@ export function useSettingsOrchestration(
     return () => { cancelled = true; };
   }, [
     vendor, api, settingsLoaded, settingsSnapshot, activeCredentialProviderId,
-    marketplaceProviderPresetId,
+    marketplaceProviderPresetId, hydrateVendorBlock,
   ]);
 
   // Re-check web key when webProvider changes
@@ -532,6 +547,8 @@ export function useSettingsOrchestration(
     const processingDisplayLevelRevision = processingDisplayLevelDraftRef.current.revision;
     const llmRevisions = { ...llmDraftRef.current };
     const chatRevisions = { ...chatDraftRef.current };
+    const webProviderRevision = webProviderDraftRevisionRef.current;
+    const webProviderBroadcastSequence = webProviderBroadcastRef.current.sequence;
     const chatDirty = {
       autoCompact: chatRevisions.autoCompact !== chatSavedRevisionRef.current.autoCompact,
       streamSmoothing: chatRevisions.streamSmoothing !== chatSavedRevisionRef.current.streamSmoothing,
@@ -586,6 +603,13 @@ export function useSettingsOrchestration(
           if (llmDraftRef.current.fallback === llmRevisions.fallback) {
             setFallbackChainState(updateResult.llm.fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model })));
           }
+        }
+        if (tab === "web" && webProviderDraftRevisionRef.current === webProviderRevision) {
+          webProviderSavedRevisionRef.current = webProviderRevision;
+          const broadcast = webProviderBroadcastRef.current;
+          const stored = broadcast.sequence !== webProviderBroadcastSequence && broadcast.provider !== null
+            ? broadcast.provider : updateResult.webSearch.provider;
+          if (stored !== webProviderRef.current) applyWebProvider(stored);
         }
         if (tab === "chat") {
           chatSavedRevisionRef.current = chatRevisions;
@@ -652,7 +676,10 @@ export function useSettingsOrchestration(
           setThinkingBudgetState(block.thinkingBudgetTokens);
         }
       }
-      if (tab === "web" && authoritative) setWebProvider(authoritative.webSearch.provider);
+      if (tab === "web" && authoritative && webProviderDraftRevisionRef.current === webProviderRevision) {
+        webProviderSavedRevisionRef.current = webProviderRevision;
+        applyWebProvider(authoritative.webSearch.provider);
+      }
       setLastSaveError({ tab, message });
     } finally {
       savingRef.current = false;

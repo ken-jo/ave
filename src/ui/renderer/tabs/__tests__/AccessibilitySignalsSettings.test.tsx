@@ -4,10 +4,8 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { AccessibilitySignalsSettings } from "../AccessibilitySignalsSettings.js";
 import { AccessibilitySignalEngine, setAccessibilitySignalEngineForTest } from "../../accessibility-signal-engine.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
-import { searchSettings } from "../../settings-search.js";
-import { t } from "../../../../i18n/index.js";
-import { en as englishMessages } from "../../../../i18n/messages/en.js";
-import { ko as koreanMessages } from "../../../../i18n/messages/ko.js";
+import { filterRenderedSettings } from "../../settings-search.js";
+import { t, getLocale, setLocale } from "../../../../i18n/index.js";
 
 function install(system: Record<string, unknown> = {}) {
   const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, system } });
@@ -69,13 +67,16 @@ describe("accessibility signal settings", () => {
     expect(view.getByTestId("accessibility-signal:turnFinished")).toContainElement(alert);
   });
 
-  it("is found by settings search in both locales", () => {
-    const tr = (messages: Record<string, string>) => (key: string) => messages[key] ?? key;
-    for (const query of ["sound", "chime", "turn failed", "unfocused"]) {
-      expect(searchSettings(query, tr(englishMessages)).map((r) => r.section)).toContain("chat-signals");
-    }
-    for (const query of ["소리", "알림음", "결정 필요"]) {
-      expect(searchSettings(query, tr(koreanMessages)).map((r) => r.section)).toContain("chat-signals");
-    }
+  it("is found from its rendered labels and keywords in both locales", async () => {
+    const previous = getLocale();
+    try {
+      for (const [locale, queries] of [["en", ["sound", "chime", "turn failed", "unfocused"]], ["ko", ["소리", "알림음", "결정 필요"]]] as const) {
+        setLocale(locale); install();
+        const view = render(<div data-settings-panel="notifications"><AccessibilitySignalsSettings /></div>);
+        await waitFor(() => expect(mode(view, "turnFinished")).toBeEnabled());
+        for (const query of queries) expect(filterRenderedSettings(view.container, query).map((match) => match.section.dataset.settingsSection)).toContain("chat-signals");
+        view.unmount();
+      }
+    } finally { setLocale(previous); }
   });
 });

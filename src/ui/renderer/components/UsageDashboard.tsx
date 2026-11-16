@@ -171,7 +171,7 @@ export function UsageDashboard({
           <CardTitle className="text-xs text-muted-foreground">{t("usageDashboard.periodSelect")}</CardTitle>
           <div className="flex gap-1 flex-wrap">
             {(["7d", "30d", "90d", "all", "custom"] as Preset[]).map((p) => (
-              <Button key={p} size="sm" variant={preset === p ? "default" : "outline"} onClick={() => setPreset(p)} className="h-6 px-2 text-dense">
+              <Button data-settings-transient="true" key={p} size="sm" variant={preset === p ? "default" : "outline"} onClick={() => setPreset(p)} className="h-6 px-2 text-dense">
                 {p === "all" ? t("usageDashboard.presetAll") : p === "custom" ? t("usageDashboard.presetCustom") : t("usageDashboard.presetDays", { count: Number.parseInt(p, 10) })}
               </Button>
             ))}
@@ -179,9 +179,9 @@ export function UsageDashboard({
         </CardHeader>
         {preset === "custom" && (
           <CardContent className="px-3 pb-3 flex gap-2 items-center">
-            <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateFrom")} />
+            <Input data-settings-transient="true" type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateFrom")} />
             <span className="text-xs text-muted-foreground">~</span>
-            <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateTo")} />
+            <Input data-settings-transient="true" type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateTo")} />
           </CardContent>
         )}
       </Card>
@@ -205,7 +205,7 @@ export function UsageDashboard({
         {workspaceStats}
         {periodPicker}
         <div role="alert" className="py-6 text-center text-sm text-destructive">{loadError ?? t("usageDashboard.loadError")}</div>
-        <Button variant="outline" onClick={load}>{t("usageDashboard.retry")}</Button>
+        <Button data-settings-transient="true" variant="outline" onClick={load}>{t("usageDashboard.retry")}</Button>
       </div>
     );
   }
@@ -433,7 +433,7 @@ export function UsageDashboard({
       )}
 
       <div className="flex justify-end">
-        <Button size="sm" variant="outline" onClick={handleExportCsv} disabled={exporting || summary.trend.length === 0} className="h-7 px-3 text-dense">
+        <Button size="sm" variant="outline" data-settings-transient="true" onClick={handleExportCsv} disabled={exporting || summary.trend.length === 0} className="h-7 px-3 text-dense">
           {exporting ? t("usageDashboard.exporting") : t("usageDashboard.exportCsv")}
         </Button>
       </div>

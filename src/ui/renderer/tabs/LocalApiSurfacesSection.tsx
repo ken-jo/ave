@@ -1,5 +1,7 @@
+import { formatIpcError } from "../format-ipc-error.js";
+import { useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
 /** Boot-only API gates require restart; show environment overrides beside the stored setting. */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Switch } from "../../../components/ui/switch.js";
 import { SettingsSection } from "../components/PageShell.js";
@@ -98,6 +100,11 @@ function remoteA2AStartFailureText(reason: string | undefined, t: (key: string, 
 
 export function LocalApiSurfacesSection() {
   const { t } = useTranslation();
+  const editor = useSettingsEditor();
+  const latestGates = useRef<GateState>(ALL_OFF);
+  const pendingGate = useRef<GateRow["path"] | null>(null);
+  const authorityRevision = useRef(0);
+  useSettingsControls(ROWS.map((row) => ({ id: row.path, section: "remote-local-api", label: t(row.labelKey) })));
   const [gates, setGates] = useState<GateState>(ALL_OFF);
   const forced = useEnvForcedSettings();
   const [loading, setLoading] = useState(true);
@@ -130,12 +137,13 @@ export function LocalApiSurfacesSection() {
     readRemoteA2ARuntime();
     try {
       const settings = await getApi().getSettings();
-      setGates({
+      const nextGates = {
         "system.localApiServer": settings.system?.localApiServer === true,
         "features.a2aLoopbackServer": settings.features?.a2aLoopbackServer === true,
         "features.a2aRemoteRouting": settings.features?.a2aRemoteRouting === true,
         "features.a2aRemoteReceiver": settings.features?.a2aRemoteReceiver === true,
-      });
+      };
+      if (authorityRevision.current === 0) { latestGates.current = nextGates; setGates(nextGates); }
       setError(null);
     } catch {
       setError(t("localApiSurfaces.loadFailed"));
@@ -143,13 +151,30 @@ export function LocalApiSurfacesSection() {
     setLoading(false);
   }, [readRemoteA2ARuntime, t]);
 
+  const loadRequest = useMemo(() => ({ refresh, reloadEpoch: editor?.reloadEpoch }), [refresh, editor?.reloadEpoch]);
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void loadRequest.refresh();
+  }, [loadRequest]);
+
+  const applyGates = useCallback((settings: AppSettings) => {
+    authorityRevision.current++;
+    latestGates.current = {
+      "system.localApiServer": settings.system?.localApiServer === true,
+      "features.a2aLoopbackServer": settings.features?.a2aLoopbackServer === true,
+      "features.a2aRemoteRouting": settings.features?.a2aRemoteRouting === true,
+      "features.a2aRemoteReceiver": settings.features?.a2aRemoteReceiver === true,
+    };
+    setGates((current) => pendingGate.current === null ? { ...latestGates.current }
+      : { ...latestGates.current, [pendingGate.current]: current[pendingGate.current] });
+  }, []);
+  useEffect(() => getApi().onSettingsUpdated(applyGates), [applyGates]);
+  useEffect(() => { if (editor?.settings) applyGates(editor.settings); }, [editor?.settings, applyGates]);
 
   const toggle = useCallback(async (path: GateRow["path"], next: boolean) => {
     if (busy !== null) return;
     setBusy(path);
+    pendingGate.current = path;
+    const revision = authorityRevision.current;
     // Optimistic, then reverted on refusal: the switch is the only feedback the user gets for a change whose effect is a
     // launch away.
     setGates((current) => ({ ...current, [path]: next }));
@@ -157,8 +182,9 @@ export function LocalApiSurfacesSection() {
       const result = await window.ave.permission.updateSecuritySettings(patchFor(path, next));
       if (isIpcErrorResult(result)) {
         setGates((current) => ({ ...current, [path]: !next }));
-        setError(t("localApiSurfaces.saveFailed"));
+        setError(formatIpcError(result.error, undefined));
       } else {
+        if (revision === authorityRevision.current) applyGates(result);
         setError(null);
         readRemoteA2ARuntime();
       }
@@ -166,9 +192,11 @@ export function LocalApiSurfacesSection() {
       setGates((current) => ({ ...current, [path]: !next }));
       setError(t("localApiSurfaces.saveFailed"));
     } finally {
+      pendingGate.current = null;
+      setGates({ ...latestGates.current });
       setBusy(null);
     }
-  }, [busy, readRemoteA2ARuntime, t]);
+  }, [busy, readRemoteA2ARuntime, t, applyGates]);
 
   if (loading) {
     return (
@@ -189,7 +217,7 @@ export function LocalApiSurfacesSection() {
       <div className="space-y-4">
         {ROWS.map((row) => {
           return (
-            <div key={row.path} className="grid gap-1">
+            <div key={row.path} data-setting-row={row.path} className="grid gap-1">
               <div className="flex items-center justify-between gap-4">
                 <span className="min-w-0 text-sm font-medium">{t(row.labelKey)}</span>
                 <Switch
@@ -197,6 +225,7 @@ export function LocalApiSurfacesSection() {
                   onCheckedChange={(next: boolean) => void toggle(row.path, next)}
                   disabled={busy !== null}
                   aria-label={t(row.labelKey)}
+                  data-setting-id={row.path}
                   data-testid={row.testId}
                 />
               </div>
@@ -235,7 +264,7 @@ export function LocalApiSurfacesSection() {
       </p>
 
       {error !== null ? (
-        <p className="mt-2 text-xs text-destructive" data-testid="local-api-surfaces-error">
+        <p role="alert" className="mt-2 text-xs text-destructive" data-testid="local-api-surfaces-error">
           {error}
         </p>
       ) : null}

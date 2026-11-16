@@ -21,6 +21,7 @@ import {
 } from "../../../shared/shortcuts.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
+import { useSettingsControls } from "../context/SettingsEditorContext.js";
 import { getApi } from "../api-client.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { rendererShortcutPlatform, setShortcutCaptureActive, useShortcutSettings } from "../hooks/use-shortcuts.js";
@@ -97,6 +98,15 @@ export function ShortcutsTab() {
   }, [notifySaved, t]);
 
   const persist = useCallback((id: ShortcutId, accelerator: string) => persistBindings({ [id]: accelerator }, id), [persistBindings]);
+
+  useSettingsControls(rows.filter((row) => row.rebindable).map((row) => ({
+    id: `shortcuts.bindings.${row.id}`, section: "shortcuts-list", label: t(row.definition.labelKey), modified: row.modified,
+    reset: async () => {
+      const result = await getApi().updateSettings({ shortcuts: { bindings: { [row.id]: null } } });
+      if (isIpcErrorResult(result)) throw new Error(formatIpcError(result.error, result.message));
+      notifySaved();
+    },
+  })));
 
   // While recording, the next chord is the new binding: a capture-phase listener takes it before anything else, and the
   // shortcut matcher goes quiet so app commands registered earlier on the same phase do not run either.
@@ -208,6 +218,7 @@ export function ShortcutsTab() {
             placeholder={t("shortcutsTab.searchPlaceholder")}
             aria-label={t("shortcutsTab.searchPlaceholder")}
             data-testid="shortcuts:search"
+            data-settings-transient="true"
           />
           <fieldset className="m-0 flex min-w-0 flex-wrap gap-1.5 border-0 p-0">
             <legend className="sr-only">{t("shortcutsTab.filterLabel")}</legend>
@@ -215,6 +226,7 @@ export function ShortcutsTab() {
               <button
                 key={id}
                 type="button"
+                data-settings-transient="true"
                 aria-pressed={filter === id}
                 onClick={() => setFilter(id)}
                 data-testid={`shortcuts:filter-${id}`}
@@ -252,7 +264,7 @@ export function ShortcutsTab() {
                     ? <span className="text-xs text-muted-foreground">{t("shortcutsTab.unset")}</span>
                     : <Keycaps accelerator={row.accelerator} platform={platform} />;
                   return (
-                    <li key={row.id} className="flex min-w-0 items-center gap-3 px-3 py-2" data-testid={`shortcuts:row-${row.id}`}>
+                    <li key={row.id} data-setting-row={`shortcuts.bindings.${row.id}`} data-setting-id={row.rebindable ? `shortcuts.bindings.${row.id}` : undefined} className="flex min-w-0 items-center gap-3 px-3 py-2" data-testid={`shortcuts:row-${row.id}`}>
                       <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-1.5">
                           <span className="min-w-0 truncate text-sm">{label}</span>
@@ -281,6 +293,7 @@ export function ShortcutsTab() {
                             type="button"
                             data-shortcut-nav=""
                             data-testid={`shortcuts:record-${row.id}`}
+                            data-settings-transient="true"
                             aria-label={t("shortcutsTab.recordAria", { label, keys: keyText(row) })}
                             aria-pressed={recording}
                             onClick={() => { setNotice(null); setRecordingId(recording ? null : row.id); }}

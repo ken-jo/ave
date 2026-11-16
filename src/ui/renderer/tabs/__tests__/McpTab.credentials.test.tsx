@@ -14,7 +14,7 @@ describe("McpTab encrypted credentials", () => {
     vi.stubGlobal("ave", { mcp: {
       servers: vi.fn(async () => []),
       getConfigs: vi.fn(async () => { throw new Error(`Error invoking remote method: ${rawMessage}`); }),
-      getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
+      getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", policyStatus: "absent", userServersAllowed: true, managedServerIds: [], hasApiKey: {}, servers: {} })),
       getConfigPath: vi.fn(async () => "mcp/servers.json"),
     } });
     render(<McpTab />);

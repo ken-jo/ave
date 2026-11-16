@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 /** Reject malformed pricing rows before saving because normalization silently drops them. Overrides correct reported spend
  * and CSV export. */
 import { EmptyState } from "../../../components/ui/empty-state.js";
@@ -71,6 +72,7 @@ function sameAsSaved(rows: readonly DraftRow[], saved: readonly PricingOverride[
 }
 
 export function PricingOverridesSection() {
+  useAppSettingsControls(["llm-pricing-overrides"]);
   const { t } = useTranslation();
   const api = getApi();
   const persistence = useSettingsPersistence();
@@ -120,6 +122,7 @@ export function PricingOverridesSection() {
   return (
     <SettingsSection
       data-settings-section="llm-pricing-overrides"
+      data-setting-id="llm.pricingOverrides"
       title={t("llmTab.pricingOverridesTitle")}
       description={t("llmTab.pricingOverridesDesc")}
     >

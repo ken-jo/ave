@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../../context/SettingsEditorContext.js";
 import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -127,6 +128,7 @@ function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: C
 
 export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, onOpenPluginSettings }: GitMarketplaceTabProps) {
   const { t, locale } = useTranslation();
+  useAppSettingsControls(["marketplace-maintenance"]);
   const market = api.gitMarketplace;
   const [view, setView] = useState<View>("browse");
   const [sources, setSources] = useState<SourceView[]>([]);
@@ -545,6 +547,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         {view === "browse" && (
           <div className="mt-3 space-y-3">
             <Input
+              data-settings-transient="catalog-search-query"
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -674,9 +677,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         {flagSaveFailure !== null && (
           <MarketplaceProblem tone="error" text={t("gitMarketplace.maintenance.saveFailed")} details={flagSaveFailure} className="mt-4" testId="git-marketplace:maintenance:save-error" />
         )}
-        <div className="mt-4 flex items-center justify-between gap-4">
+        <div data-setting-row="marketplace.updateCheckEnabled" className="mt-4 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>
           <Switch
+            data-setting-id="marketplace.updateCheckEnabled"
             checked={updateCheckEnabled}
             disabled={!flagsLoaded || flagSaving}
             aria-label={t("gitMarketplace.maintenance.updateCheck")}
@@ -687,7 +691,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             }}
           />
         </div>
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:update-check:help">{t("gitMarketplace.maintenance.updateCheckHelp")}</p>
+        <p data-setting-row="marketplace.updateCheckEnabled" className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:update-check:help">{t("gitMarketplace.maintenance.updateCheckHelp")}</p>
         <EnvForcedNotice
           settingsPath="marketplace.updateCheckEnabled"
           forcedPaths={envForcedPaths}
@@ -695,9 +699,10 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           testId="git-marketplace:update-check:forced"
           className="mt-1"
         />
-        <div className="mt-3 flex items-center justify-between gap-4">
+        <div data-setting-row="marketplace.offlineCacheEnabled" className="mt-3 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.offlineCache")}</span>
           <Switch
+            data-setting-id="marketplace.offlineCacheEnabled"
             checked={offlineCacheEnabled}
             disabled={!flagsLoaded || flagSaving}
             aria-label={t("gitMarketplace.maintenance.offlineCache")}
@@ -708,7 +713,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             }}
           />
         </div>
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:offline-cache:help">{t("gitMarketplace.maintenance.offlineCacheHelp")}</p>
+        <p data-setting-row="marketplace.offlineCacheEnabled" className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:offline-cache:help">{t("gitMarketplace.maintenance.offlineCacheHelp")}</p>
         <EnvForcedNotice
           settingsPath="marketplace.offlineCacheEnabled"
           forcedPaths={envForcedPaths}

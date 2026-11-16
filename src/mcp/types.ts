@@ -431,4 +431,6 @@ export interface McpManagementState {
   userServersAllowed: boolean;
   managedServerIds: string[];
   servers: Record<string, McpServerLaunchSummary>;
+  /** Presence only; encrypted credentials never cross this boundary. */
+  hasApiKey: Record<string, boolean>;
 }

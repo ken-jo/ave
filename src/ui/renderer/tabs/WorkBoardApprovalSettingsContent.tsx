@@ -65,6 +65,7 @@ export function WorkBoardApprovalSettingsContent({
         </p>
       ) : (
         <RadioGroup
+          data-setting-id="workBoard.toolApprovalSurface"
           value={surface ?? undefined}
           onValueChange={(value) => { if (isWorkBoardToolApprovalSurface(value)) void handleChange(value); }}
           disabled={surface === null || saving}

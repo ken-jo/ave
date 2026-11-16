@@ -674,7 +674,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const write = securitySettingsWrite.then(async () => {
       const previous = deps.settingsService.getAll();
       const changes = Object.entries(patch).flatMap(([group, fields]) => Object.entries(fields).map(([key, value]) => ({
-        path: group + "." + key, previous: (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key], value,
+        path: `${group}.${key}`, previous: (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key], value,
       })));
       const record = (phase: string) => auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
         input: JSON.stringify({ action: "security_settings_changed", phase, changes, gestureSequence: gesture.sequence, gesturePayloadDigest: gesture.payloadDigest }) });

@@ -1,3 +1,4 @@
+import type { BootSettingsSnapshot } from "../../../shared/restart-settings.js";
 import { DocumentSettingsContent } from "./DocumentSettingsContent.js";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -5,10 +6,10 @@ import { Button } from "../../../components/ui/button.js";
 import { Brain, Cpu, FolderOpen } from "lucide-react";
 import { Switch } from "../../../components/ui/switch.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
+import { useSettingsControl } from "../context/SettingsEditorContext.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
-import type { BootSettingsSnapshot } from "../../../shared/restart-settings.js";
 
 export interface AboutTabProps {
   api: AveApi;
@@ -71,6 +72,7 @@ export function useAppInfo(api: Pick<AveApi, "getAppInfo">): AppInfo | null {
 export function AboutTab({ api }: AboutTabProps) {
   const { t } = useTranslation();
   const appInfo = useAppInfo(api);
+  const updateControl = useSettingsControl({ id: "updates.autoCheckEnabled", section: "about-updates", label: t("aboutUpdates.autoCheck") });
   const [autoCheckEnabled, setAutoCheckEnabled] = useState<boolean | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -120,10 +122,10 @@ export function AboutTab({ api }: AboutTabProps) {
       <SettingsSection data-settings-section="about-updates" title={t("aboutUpdates.title")} description={t("aboutUpdates.description")}>
         <div className="flex items-center justify-between gap-4">
           <span className="min-w-0 flex-1 text-sm">{t("aboutUpdates.autoCheck")}</span>
-          <Switch aria-label={t("aboutUpdates.autoCheck")} checked={autoCheckEnabled === true} disabled={autoCheckEnabled === null || updateBusy}
+          <Switch {...updateControl} aria-label={t("aboutUpdates.autoCheck")} checked={autoCheckEnabled === true} disabled={autoCheckEnabled === null || updateBusy}
             onCheckedChange={(enabled) => void handleAutoCheckChange(enabled)} data-testid="about-auto-check-updates" />
         </div>
-        <Button className="mt-3" variant="outline" disabled={updateBusy} onClick={() => void handleCheck()} data-testid="about-check-updates">{t("aboutUpdates.checkNow")}</Button>
+        <Button className="mt-3" variant="outline" disabled={updateBusy} onClick={() => void handleCheck()} data-testid="about-check-updates" data-settings-transient="true">{t("aboutUpdates.checkNow")}</Button>
         {updateError !== null ? <p role="alert" className="mt-2 text-sm text-destructive">{updateError}</p> : null}
         {updateChecked ? <p role="status" className="mt-2 text-sm text-muted-foreground">{t("aboutUpdates.checked")}</p> : null}
       </SettingsSection>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -13,6 +13,7 @@ import { FileEditDiff } from "../components/FileEditDiff.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { formatIpcError } from "../format-ipc-error.js";
+import { useSettingsControl, useSettingsControls } from "../context/SettingsEditorContext.js";
 
 const EMPTY_DRAFT: RolePreset = { id: "", name: "", systemPromptAdd: "" };
 
@@ -46,8 +47,24 @@ export function RolesTab({ api }: { api: AveApi }) {
   const [saving, setSaving] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const settingsRevision = useRef(0);
+
+  const keepLatestControl = useSettingsControl({ id: "homeDocs.keepLatest", section: "roles-agents", label: t("rolesTab.keepLatestLabel") });
+  const agentsDocumentId = keepLatest ? "homeDocuments.customAgents" : "homeDocuments.agents";
+  useSettingsControls([
+    { id: agentsDocumentId, section: "roles-agents", label: t(keepLatest ? "rolesTab.customAgentsLabel" : "rolesTab.sectionAgents"),
+      ...(keepLatest ? { modified: customBase !== "" } : {}),
+      disabledReason: t(keepLatest ? "rolesTab.customResetUnavailable" : "rolesTab.documentResetUnavailable") },
+    ...(keepLatest ? [{ id: "homeDocuments.agents", section: "roles-agents", label: t("rolesTab.packagedAgents"), disabledReason: t("rolesTab.documentResetUnavailable") }] : []),
+    { id: "homeDocuments.memory", section: "roles-memory", label: t("rolesTab.sectionMemory"), disabledReason: t("rolesTab.documentResetUnavailable") },
+    { id: "homeDocuments.preferences", section: "roles-preferences", label: t("rolesTab.sectionPreferences"), disabledReason: t("rolesTab.documentResetUnavailable") },
+    ...rolePresets.map((preset) => ({ id: `personaPrompts.${preset.id}`, section: "roles-presets", label: preset.name,
+      modified: !preset.isDefault && !preset.origin,
+      disabledReason: t(preset.isDefault || preset.origin ? "rolesTab.suppliedPersonaResetUnavailable" : "rolesTab.personaResetUnavailable") })),
+  ]);
 
   const loadSources = useCallback(async () => {
+    const revision = settingsRevision.current;
     setLoading(true);
     setError(null);
     const failures: string[] = [];
@@ -81,8 +98,9 @@ export function RolesTab({ api }: { api: AveApi }) {
       setCustomDraft(custom.value);
       setCustomBase(custom.value);
     } else failures.push(`agents.custom.md: ${errorMessage(custom.reason)}`);
-    if (settings.status === "fulfilled") setKeepLatest(settings.value.homeDocs.keepLatest);
-    else failures.push(`settings: ${errorMessage(settings.reason)}`);
+    if (settings.status === "fulfilled") {
+      if (revision === settingsRevision.current) setKeepLatest(settings.value.homeDocs.keepLatest);
+    } else failures.push(`settings: ${errorMessage(settings.reason)}`);
     if (memory.status === "fulfilled") {
       setMemoryIndex(memory.value);
       setMemoryIndexBase(memory.value);
@@ -114,6 +132,11 @@ export function RolesTab({ api }: { api: AveApi }) {
       unsubscribe?.();
     };
   }, [api, loadSources]);
+
+  useEffect(() => api.onSettingsUpdated((settings) => {
+    settingsRevision.current++;
+    setKeepLatest(settings.homeDocs.keepLatest);
+  }), [api]);
 
   const reloadPersonaPrompts = useCallback(async () => {
     const { prompts } = await api.listPersonaPrompts();
@@ -497,6 +520,7 @@ export function RolesTab({ api }: { api: AveApi }) {
                 {t("rolesTab.keepLatestLabel")}
               </span>
               <Switch
+                {...keepLatestControl}
                 checked={keepLatest}
                 onCheckedChange={(next: boolean) => void toggleKeepLatest(next)}
                 disabled={homeDocsBusy}
@@ -508,6 +532,7 @@ export function RolesTab({ api }: { api: AveApi }) {
           <p className="text-xs text-muted-foreground">{t("rolesTab.keepLatestHint")}</p>
 
           <Textarea
+            data-setting-id={agentsDocumentId}
             aria-label={t("rolesTab.sectionAgents")}
             value={keepLatest ? customDraft : agentsDraft}
             onChange={(event) =>
@@ -539,6 +564,7 @@ export function RolesTab({ api }: { api: AveApi }) {
                 </span>
               </div>
               <Textarea
+                data-setting-id="homeDocuments.agents"
                 aria-label={t("rolesTab.packagedAgents")}
             value={agentsDraft}
                 readOnly
@@ -629,6 +655,7 @@ export function RolesTab({ api }: { api: AveApi }) {
                 {t("rolesTab.mergedTitle")}
               </div>
               <Textarea
+                data-settings-transient="true"
                 aria-label={t("rolesTab.mergedTitle")}
             value={merged}
                 readOnly
@@ -661,6 +688,7 @@ export function RolesTab({ api }: { api: AveApi }) {
       <SettingsSection data-settings-section="roles-memory" title={t("rolesTab.sectionMemory")}>
         <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_320px]">
           <Textarea
+            data-setting-id="homeDocuments.memory"
             aria-label={t("rolesTab.sectionMemory")}
             value={memoryIndex}
             onChange={(event) => setMemoryIndex(event.target.value)}
@@ -669,7 +697,8 @@ export function RolesTab({ api }: { api: AveApi }) {
           <div className="min-w-0 space-y-4">
             <div className="min-w-0 space-y-2">
               <Textarea
-                aria-label={t("rolesTab.quickMemoryPlaceholder")}
+                data-setting-id="homeDocuments.memory"
+            aria-label={t("rolesTab.quickMemoryPlaceholder")}
             value={quickMemory}
                 maxLength={520}
                 onChange={(event) => setQuickMemory(event.target.value)}
@@ -680,7 +709,8 @@ export function RolesTab({ api }: { api: AveApi }) {
                 {quickMemory.length}/520
               </div>
               <Textarea
-                aria-label={t("rolesTab.referenceLinkPlaceholder")}
+                data-setting-id="homeDocuments.memory"
+            aria-label={t("rolesTab.referenceLinkPlaceholder")}
             value={quickLinks}
                 onChange={(event) => setQuickLinks(event.target.value)}
                 placeholder={t("rolesTab.referenceLinkPlaceholder")}
@@ -730,6 +760,7 @@ export function RolesTab({ api }: { api: AveApi }) {
       <SettingsSection data-settings-section="roles-preferences" title={t("rolesTab.sectionPreferences")}>
         <div className="space-y-3">
           <Textarea
+            data-setting-id="homeDocuments.preferences"
             aria-label={t("rolesTab.sectionPreferences")}
             value={userPrefsDraft}
             onChange={(event) => setUserPrefsDraft(event.target.value)}
@@ -765,6 +796,7 @@ export function RolesTab({ api }: { api: AveApi }) {
             {rolePresets.map((preset) => (
               <div
                 key={preset.id}
+                data-setting-id={`personaPrompts.${preset.id}`}
                 className="rounded-md border border-border/(--opacity-stronger) p-2"
               >
                 <div className="flex items-center justify-between gap-2">
@@ -816,6 +848,8 @@ export function RolesTab({ api }: { api: AveApi }) {
             <div className="space-y-2">
               <Input
                 placeholder={t("rolesTab.namePlaceholder")}
+                data-setting-id={editingId ? `personaPrompts.${editingId}` : undefined}
+                data-settings-transient={editingId === null ? "true" : undefined}
                 aria-label={t("rolesTab.namePlaceholder")}
             value={draft.name}
                 onChange={(event) =>
@@ -824,6 +858,8 @@ export function RolesTab({ api }: { api: AveApi }) {
               />
               <Textarea
                 placeholder={t("rolesTab.systemPromptPlaceholder")}
+                data-setting-id={editingId ? `personaPrompts.${editingId}` : undefined}
+                data-settings-transient={editingId === null ? "true" : undefined}
                 aria-label={t("rolesTab.systemPromptPlaceholder")}
             value={draft.systemPromptAdd}
                 onChange={(event) =>

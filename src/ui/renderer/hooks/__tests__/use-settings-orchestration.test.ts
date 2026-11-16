@@ -107,7 +107,7 @@ describe("useSettingsOrchestration", () => {
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
     expect(result.current.loadError).toBeNull();
     expect(getSettings).toHaveBeenCalledTimes(2);
-    expect(result.current.model).toBe(settings.llm.vendors.openai!.model);
+    expect(result.current.model).toBe(openaiBlock(settings).model);
   });
 
   it("keeps a newer feature edit across unrelated broadcasts and an older write failure", async () => {
@@ -258,6 +258,43 @@ describe("useSettingsOrchestration", () => {
     expect(api.setWebApiKey).toHaveBeenCalledExactlyOnceWith("serper", "second-provider-key");
   });
 
+  it("keeps an unsaved web provider choice when another window's provider arrives", async () => {
+    const settings = makeSettings();
+    let finish!: (value: AppSettings) => void;
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(() => new Promise<AppSettings>((resolve) => { finish = resolve; })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    const broadcast = settingsBroadcast(api);
+    act(() => result.current.setWebProvider("serper"));
+    let saving!: Promise<boolean>;
+    act(() => { saving = result.current.save("web"); });
+    act(() => broadcast({ ...settings, webSearch: { provider: "tavily" } }));
+    expect(result.current.webProvider).toBe("serper");
+    // The host broadcasts this window's own write before replying to it.
+    act(() => broadcast({ ...settings, webSearch: { provider: "serper" } }));
+    await act(async () => { finish({ ...settings, webSearch: { provider: "serper" } }); await saving; });
+    expect(result.current.webProvider).toBe("serper");
+    act(() => broadcast({ ...settings, webSearch: { provider: "tavily" } }));
+    expect(result.current.webProvider).toBe("tavily");
+  });
+
+  it("follows a newer provider another window saved before this window's earlier reply arrived", async () => {
+    const settings = makeSettings();
+    let finish!: (value: AppSettings) => void;
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(() => new Promise<AppSettings>((resolve) => { finish = resolve; })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    const broadcast = settingsBroadcast(api);
+    act(() => result.current.setWebProvider("serper"));
+    let saving!: Promise<boolean>;
+    act(() => { saving = result.current.save("web"); });
+    // This window's write committed and was broadcast, then another window saved a newer provider before the reply landed.
+    act(() => broadcast({ ...settings, webSearch: { provider: "serper" } }));
+    act(() => broadcast({ ...settings, webSearch: { provider: "tavily" } }));
+    await act(async () => { finish({ ...settings, webSearch: { provider: "serper" } }); await saving; });
+    expect(result.current.webProvider).toBe("tavily");
+  });
+
   it("retains a web key draft and reports a refused explicit secret save", async () => {
     const settings = makeSettings();
     const onSaved = vi.fn();
@@ -386,7 +423,7 @@ describe("useSettingsOrchestration", () => {
     await waitFor(() => expect(result.current.retiredLlmProvider).toBe("copilot"));
     const next = structuredClone(settings);
     delete next.llm.retiredProvider;
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
     act(() => broadcast(next));
     expect(result.current.retiredLlmProvider).toBeNull();
   });

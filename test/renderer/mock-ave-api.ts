@@ -1,5 +1,5 @@
-import { DEFAULT_CORP_CA_COMMON_NAME } from "../../src/shared/corp-ca-common-name.js";
 import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
+import { DEFAULT_CORP_CA_COMMON_NAME } from "../../src/shared/corp-ca-common-name.js";
 import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
 import type { AveApi } from "../../src/ui/renderer/types.js";
@@ -472,6 +472,9 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       listPending: vi.fn(async () => ({ ok: true, pending: [] })),
       answer: vi.fn(async () => ({ ok: true, pending: [] })),
     } as unknown as Mock,
+    getSettingsDefaults: vi.fn(async () => structuredClone(DEFAULT_SETTINGS)),
+    openSettingsFile: vi.fn(async () => ({ ok: true as const })),
+    pickSettingsDirectory: vi.fn(async () => ({ ok: true as const, path: null })),
     getSettings: vi.fn(overrides.getSettings ?? (async () => projectSnapshot(settings))),
     updateSettings: vi.fn(async (p: unknown) => {
       // Like the settings store, a patch replaces the fields it names within a section and keeps the section's others.
@@ -481,7 +484,17 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         const patch = (p as Record<string, unknown>)[key];
         if (patch === undefined) return [key, before];
         const section = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
-        return [key, section(before) && section(patch) ? { ...(before as object), ...(patch as object) } : patch];
+        if (!section(before) || !section(patch)) return [key, patch];
+        const merged: Record<string, unknown> = { ...(before as object), ...(patch as object) };
+        // Appearance keeps its terminal font and terminal behaviour groups field by field, as the store does.
+        if (key === "appearance") {
+          for (const group of ["terminalFont", "terminal"]) {
+            const groupBefore = (before as Record<string, unknown>)[group];
+            const groupPatch = (patch as Record<string, unknown>)[group];
+            if (section(groupBefore) && section(groupPatch)) merged[group] = { ...(groupBefore as object), ...(groupPatch as object) };
+          }
+        }
+        return [key, merged];
       }));
       const snapshot = projectSnapshot(settings);
       settingsUpdatedHandlers.forEach((handler) => handler(snapshot));
@@ -1062,6 +1075,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
     ns: {
       permission: {
         getMode: vi.fn(async () => ({ mode: "default" })),
+        updateSecuritySettings: vi.fn(async (_patch: import("../../src/shared/security-settings.js").SecuritySettingsPatch) => structuredClone(DEFAULT_SETTINGS)),
         setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
         recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [] })),
         recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),

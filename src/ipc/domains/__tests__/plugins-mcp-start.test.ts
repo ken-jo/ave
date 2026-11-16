@@ -15,6 +15,9 @@ vi.mock("electron", () => ({
 }));
 const startServer = vi.fn(async () => ({ connected: true }));
 const undoRemove = vi.fn(async () => undefined);
+const clearApiKey = vi.fn(async () => undefined);
+const clearBundledApiKey = vi.fn(async () => undefined);
+const bundledCredentialRefForConfigId = vi.fn(() => null as { packageRef: { kind: "plugin"; name: string }; server: string } | null);
 const audit = vi.fn();
 const activeIntent = { inputOrigin: "user-keyboard", userActivation: true };
 
@@ -27,13 +30,13 @@ function getHandler(channel: string) {
 async function register() {
   const { registerPluginsHandlers } = await import("../plugins.js");
   registerPluginsHandlers({ pluginRuntime: { subscribePluginStateChange: vi.fn(() => () => undefined) },
-    mcpManager: { startServer, undoRemove }, auditLogger: { log: audit } } as unknown as IpcDeps);
+    mcpManager: { startServer, undoRemove, clearApiKey, clearBundledApiKey, bundledCredentialRefForConfigId }, auditLogger: { log: audit } } as unknown as IpcDeps);
   const contents = Object.assign(new EventEmitter(), { mainFrame: hostFrameEvent().senderFrame });
   securitySettingsGestures.observe(contents as never);
   return { contents, event: { sender: contents, senderFrame: contents.mainFrame } };
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); bundledCredentialRefForConfigId.mockReturnValue(null); });
 
 describe("MCP server start authority", () => {
   it("requires a main-observed native gesture and consumes it once", async () => {
@@ -95,5 +98,29 @@ describe("MCP server start authority", () => {
     contents.emit("before-input-event", {}, { type: "keyDown", isAutoRepeat: false });
     await expect(undo(event, "local-notes", activeIntent)).resolves.toBeUndefined();
     expect(undoRemove).toHaveBeenCalledExactlyOnceWith("local-notes");
+  });
+});
+
+describe("MCP credential clear authority", () => {
+  it("requires current activation, native input and the main frame", async () => {
+    const { contents, event } = await register();
+    const clear = getHandler(CHANNELS.mcp.clearApiKey);
+    contents.emit("before-input-event", {}, { type: "keyDown", isAutoRepeat: false });
+    await expect(clear(event, "local-notes", { inputOrigin: "user-keyboard", userActivation: false })).rejects.toThrow("user-keyboard-required");
+    await expect(clear({ ...event, senderFrame: { ...event.senderFrame } }, "local-notes", activeIntent)).rejects.toThrow("unauthorized-frame");
+    expect(clearApiKey).not.toHaveBeenCalled();
+    await expect(clear(event, "local-notes", activeIntent)).resolves.toBeUndefined();
+    expect(clearApiKey).toHaveBeenCalledExactlyOnceWith("local-notes");
+    await expect(clear(event, "local-notes", activeIntent)).rejects.toThrow("user-keyboard-required");
+  });
+
+  it("routes a bundled credential through its owning package lifecycle", async () => {
+    const { contents, event } = await register();
+    const ref = { packageRef: { kind: "plugin" as const, name: "meeting-kit" }, server: "notes" };
+    bundledCredentialRefForConfigId.mockReturnValue(ref);
+    contents.emit("before-mouse-event", {}, { type: "mouseUp" });
+    await expect(getHandler(CHANNELS.mcp.clearApiKey)(event, 'bundled:["plugin","meeting-kit","notes"]', activeIntent)).resolves.toBeUndefined();
+    expect(clearBundledApiKey).toHaveBeenCalledExactlyOnceWith(ref.packageRef, ref.server);
+    expect(clearApiKey).not.toHaveBeenCalled();
   });
 });

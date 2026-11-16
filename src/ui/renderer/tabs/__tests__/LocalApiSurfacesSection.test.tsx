@@ -1,16 +1,19 @@
+import { requiredFixture } from "../../../../__tests__/support/required-fixture.js";
 import "../../../../../test/renderer/setup.js";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { LocalApiSurfacesSection } from "../LocalApiSurfacesSection.js";
 
 const getSettings = vi.fn();
 const updateSettings = vi.fn();
 const envForcedSettings = vi.fn();
 const remoteA2aStatus = vi.fn();
+const onSettingsUpdated = vi.fn();
+let broadcastSettings: ((settings: unknown) => void) | undefined;
 
 vi.mock("../../api-client.js", () => ({
-  getApi: () => ({ getSettings, updateSettings, envForcedSettings, remoteA2a: { status: remoteA2aStatus } }),
+  getApi: () => ({ getSettings, updateSettings, onSettingsUpdated, envForcedSettings, remoteA2a: { status: remoteA2aStatus } }),
 }));
 
 let localeBeforeTest = getLocale();
@@ -20,7 +23,9 @@ beforeEach(() => {
   localeBeforeTest = getLocale();
   setLocale("en");
   getSettings.mockResolvedValue({ system: {}, features: {} });
-  updateSettings.mockResolvedValue({});
+  let stored = { system: {}, features: {} };
+  updateSettings.mockImplementation(async (patch: typeof stored) => { stored = { system: { ...stored.system, ...patch.system }, features: { ...stored.features, ...patch.features } }; return stored; });
+  onSettingsUpdated.mockImplementation((listener) => { broadcastSettings = listener; return () => { broadcastSettings = undefined; }; });
   envForcedSettings.mockResolvedValue([]);
   remoteA2aStatus.mockResolvedValue({ ok: false, error: "a2a-remote-disabled" });
 });
@@ -58,14 +63,16 @@ describe("LocalApiSurfacesSection", () => {
   });
 
   it("puts the switch back when the host refuses the change", async () => {
-    updateSettings.mockResolvedValue({ ok: false, error: "managed", message: "Managed by policy" });
+    updateSettings.mockResolvedValue({ ok: false, error: "managed", message: "Untrusted host diagnostic" });
     render(<LocalApiSurfacesSection />);
     const toggle = await screen.findByTestId("local-api-surfaces-local-api");
 
     fireEvent.click(toggle);
 
     const error = await screen.findByTestId("local-api-surfaces-error");
-    expect(error.textContent).toContain("Managed by policy");
+    expect(error).toHaveTextContent(t("formatIpcError.managed"));
+    expect(error.textContent).not.toContain("Untrusted host diagnostic");
+    expect(toggle).not.toBeDisabled();
     await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
   });
 
@@ -166,4 +173,14 @@ it('restores security toggle state and permits retry after an IPC rejection', as
   fireEvent.click(toggle);
   await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
   expect(updateSettings).toHaveBeenCalledTimes(2);
+});
+
+it('reconciles a persisted reset broadcast without remounting the security section', async () => {
+  getSettings.mockResolvedValue({ system: {}, features: { a2aRemoteRouting: true } });
+  render(<LocalApiSurfacesSection />);
+  const toggle = await screen.findByTestId('local-api-surfaces-a2a-remote-routing');
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+  act(() => requiredFixture(broadcastSettings)({ system: {}, features: { a2aRemoteRouting: false } }));
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+  expect(updateSettings).not.toHaveBeenCalled();
 });

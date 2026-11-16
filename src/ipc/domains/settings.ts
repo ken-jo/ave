@@ -1,8 +1,11 @@
-import { isWebSearchProvider } from "../../data/settings-normalization.js";
+import { securitySettingsGestures } from "../security-settings-gesture.js";
+import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
-import { containsSecuritySettings } from "../../shared/security-settings.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
+import { containsSecuritySettings } from "../../shared/security-settings.js";
+import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
+import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { app, dialog, ipcMain } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { OpenOAuthLogin } from "../../main/oauth-login.js";
@@ -596,6 +599,37 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
   };
 
+  const authorizeSettingsEditorAction = (event: import("electron").IpcMainInvokeEvent, payload: unknown, channel: string) => {
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow?.()];
+    const mainFrame = event.senderFrame !== null && event.senderFrame === event.sender?.mainFrame
+      && windows.some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
+    if (!validateHostRendererSender(event) || !mainFrame) { auditUnauthorized(auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
+    const intent = typeof payload === "object" && payload !== null ? (payload as { intent?: unknown }).intent : undefined;
+    if (!hasUserKeyboardIntent(intent) || !securitySettingsGestures.consume(event.sender, { channel, payload })) return USER_KEYBOARD_REQUIRED;
+    return null;
+  };
+
+  ipcMain.handle(SETTINGS.defaults, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, SETTINGS.defaults, event); return UNAUTHORIZED_FRAME; }
+    return rendererSettingsSnapshot(settingsService, DEFAULT_SETTINGS);
+  });
+
+  ipcMain.handle(SETTINGS.openFile, async (event, payload: unknown) => {
+    const refused = authorizeSettingsEditorAction(event, payload, SETTINGS.openFile);
+    if (refused) return refused;
+    const { shell } = await import("electron");
+    const error = await shell.openPath(settingsService.getSettingsFilePath());
+    return error ? { ok: false, error: "settings-file-open-failed" } : { ok: true };
+  });
+
+  ipcMain.handle(SETTINGS.pickDirectory, async (event, payload: unknown) => {
+    const refused = authorizeSettingsEditorAction(event, payload, SETTINGS.pickDirectory);
+    if (refused) return refused;
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    if (!result.canceled && !result.filePaths[0]) return { ok: false, error: "directory-picker-empty-result" };
+    return { ok: true, path: result.canceled ? null : result.filePaths[0] };
+  });
+
   ipcMain.handle(CHANNELS.settings.get, (event) => {
     if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
     return rendererSettingsSnapshot(settingsService);
@@ -603,8 +637,8 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
   // showed the saved value alone would be describing a state the running app is not in, since every one of these gates resolves as `settings || env`.
-  ipcMain.handle(CHANNELS.settings.envForcedSettings, (event) => {
-    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.envForcedSettings, event); return UNAUTHORIZED_FRAME; }
+  ipcMain.handle(CHANNELS.settings.envForcedSettings, (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.envForcedSettings, e); return UNAUTHORIZED_FRAME; }
     return envForcedSettingsPaths();
   });
 

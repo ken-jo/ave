@@ -111,7 +111,7 @@ describe("teardown paths EMIT onServerDisconnected (exactly once each)", () => {
 describe("reconnect/replace paths EMIT ZERO (MINOR-1 regression)", () => {
   it("setApiKey does NOT emit (disconnect immediately followed by reconnect)", async () => {
     const servers: McpServerConfig[] = [
-      { id: "key-srv", transport: "http", url: "https://example.com/mcp", auth: "api-key", apiKeyEnv: "MY_KEY" },
+      { id: "key-srv", transport: "http", url: "https://example.com/mcp", auth: "api-key", apiKey: "throwaway-prior-key", apiKeyEnv: "MY_KEY" },
     ];
     await writeFile(testConfigPath, JSON.stringify({ servers }), "utf-8");
     const sink = vi.fn();

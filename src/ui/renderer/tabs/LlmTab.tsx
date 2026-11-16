@@ -1,3 +1,4 @@
+import { useAppSettingsControls, useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import { requirePersistedResult, useSettingsPersistence } from "../hooks/use-settings-persistence.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
@@ -364,6 +365,7 @@ function ProviderSelect({
         id={triggerId}
         className={triggerClassName}
         data-testid={triggerTestId}
+        data-settings-transient={triggerTestId === "llm-tab:add-provider" ? "provider-composition" : undefined}
       >
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
@@ -373,6 +375,7 @@ function ProviderSelect({
       >
         <div className="sticky top-0 z-10 border-b border-border/(--opacity-medium) bg-popover p-2">
           <Input
+            data-settings-transient="provider-filter"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => event.stopPropagation()}
@@ -1228,6 +1231,7 @@ function UnifiedModelSelect({
       >
         <div className="sticky top-0 z-10 border-b border-border/(--opacity-medium) bg-popover p-2">
           <Input
+            data-settings-transient="model-filter"
             ref={searchInputRef}
             value={query}
             onFocus={() => { searchFocusPreferredRef.current = true; }}
@@ -1416,6 +1420,11 @@ export function LlmTab(props: LlmTabProps) {
   } = props;
   const { t } = useTranslation();
   const persistence = useSettingsPersistence(onSaved);
+  const editor = useSettingsEditor();
+  useAppSettingsControls(["llm-providers", "llm-compaction", "llm-fallback"]);
+  const [credentialPresenceLoading, setCredentialPresenceLoading] = useState(true);
+  const [credentialPresenceError, setCredentialPresenceError] = useState<string | undefined>(undefined);
+  const [providerSnapshotError, setProviderSnapshotError] = useState<string | undefined>(undefined);
   const selectedMarketplaceProviderPreset = vendor === "openai-compatible" && marketplaceProviderPresetId
     ? marketplaceProviderPresets.find((preset) => preset.providerId === marketplaceProviderPresetId)
     : undefined;
@@ -1651,6 +1660,7 @@ export function LlmTab(props: LlmTabProps) {
   const compactionModelDirtyRef = useRef(false);
   const handleCompactionModelChange = async (nextModel: JudgeModel | null) => {
     if (compactionSaving || JSON.stringify(nextModel) === JSON.stringify(compactionModel) && !compactionUnavailableSelection) return;
+    if (savedCompactionSelectionRef.current === null) { setCompactionSaveFailed(true); return; }
     setCompactionSaving(true);
     setCompactionSaveFailed(false);
     compactionModelDirtyRef.current = true;
@@ -1666,9 +1676,11 @@ export function LlmTab(props: LlmTabProps) {
       onSaved();
     } catch {
       compactionModelDirtyRef.current = false;
-      const selection = savedCompactionSelectionRef.current!;
-      setCompactionModel(selection.model);
-      setCompactionUnavailableSelection(selection.unavailableLabel);
+      const selection = savedCompactionSelectionRef.current;
+      if (selection !== null) {
+        setCompactionModel(selection.model);
+        setCompactionUnavailableSelection(selection.unavailableLabel);
+      }
       setCompactionSaveFailed(true);
     } finally {
       setCompactionSaving(false);
@@ -1703,6 +1715,9 @@ export function LlmTab(props: LlmTabProps) {
     [marketplaceProviderPresets],
   );
 
+  const providerSnapshotKey = JSON.stringify([editor?.reloadEpoch]);
+  const providerSnapshotKeyRef = useRef(providerSnapshotKey);
+  providerSnapshotKeyRef.current = providerSnapshotKey;
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
@@ -1710,7 +1725,7 @@ export function LlmTab(props: LlmTabProps) {
     const applySettings = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
       const revision = ++compactionOptionsRevision;
       void Promise.resolve().then(() => window.ave.permission.judgeGet()).then((result) => {
-        if (cancelled || revision !== compactionOptionsRevision) return;
+        if (cancelled || providerSnapshotKeyRef.current !== providerSnapshotKey || revision !== compactionOptionsRevision) return;
         if (result.ok) {
           setCompactionSnapshot(result);
           setCompactionOptionsFailed(false);
@@ -1718,7 +1733,7 @@ export function LlmTab(props: LlmTabProps) {
           setCompactionOptionsFailed(true);
         }
       }).catch(() => {
-        if (!cancelled && revision === compactionOptionsRevision) setCompactionOptionsFailed(true);
+        if (!cancelled && providerSnapshotKeyRef.current === providerSnapshotKey && revision === compactionOptionsRevision) setCompactionOptionsFailed(true);
       });
       // Content-compared, like the credential set below it: a broadcast arrives for every settings write, and a fresh object identity
       // each time would re-run every effect that reads a row's endpoint; including the one that asks endpoints for their catalogues.
@@ -1748,21 +1763,22 @@ export function LlmTab(props: LlmTabProps) {
     void (async () => {
       try {
         const settings = await api.getSettings();
-        if (cancelled) return;
+        if (cancelled || providerSnapshotKeyRef.current !== providerSnapshotKey) return;
         applySettings(settings);
+        setProviderSnapshotError(undefined);
         unsubscribe = api.onSettingsUpdated((nextSettings) => {
           if (cancelled) return;
           applySettings(nextSettings);
         });
       } catch {
-        /* defaults remain */
+        setProviderSnapshotError(t("settingsEditor.defaultsFailed"));
       }
     })();
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [api, marketplaceProviderPresets]);
+  }, [api, marketplaceProviderPresets, providerSnapshotKey, t]);
   const providerSelectOptions = useMemo(
     () => [
       ...visibleVendorsFor(),
@@ -1779,26 +1795,21 @@ export function LlmTab(props: LlmTabProps) {
     ])].filter(Boolean).sort().join("\n"),
     [providerSelectOptions],
   );
+  const credentialPresenceKey = JSON.stringify([settingsRevision, editor?.reloadEpoch]);
+  const credentialPresenceKeyRef = useRef(credentialPresenceKey);
+  credentialPresenceKeyRef.current = credentialPresenceKey;
   useEffect(() => {
     let cancelled = false;
     const candidates = credentialCandidateKey.split("\n").filter(Boolean);
-    void (async () => {
-      const found = new Set<string>();
-      await Promise.all(candidates.map(async (providerId) => {
-        try {
-          if (await api.hasApiKey(providerId)) found.add(providerId);
-        } catch {
-          /* a provider we cannot ask about is not one we can claim is keyed */
-        }
-      }));
-      if (cancelled) return;
-      setCredentialedProviderIds((current) =>
-        current.size === found.size && [...found].every((id) => current.has(id))
-          ? current
-          : found);
-    })();
+    setCredentialPresenceLoading(true);
+    void Promise.all(candidates.map(async (providerId) => { const present = await api.hasApiKey(providerId); if (typeof present !== "boolean") throw new Error("Invalid credential presence response"); return [providerId, present] as const; })).then((entries) => {
+      if (cancelled || credentialPresenceKeyRef.current !== credentialPresenceKey) return;
+      setCredentialedProviderIds(new Set(entries.filter(([, present]) => present).map(([id]) => id)));
+      setCredentialPresenceError(undefined);
+    }).catch(() => { if (!cancelled && credentialPresenceKeyRef.current === credentialPresenceKey) setCredentialPresenceError(t("settingsEditor.secretPresenceFailed")); })
+      .finally(() => { if (!cancelled && credentialPresenceKeyRef.current === credentialPresenceKey) setCredentialPresenceLoading(false); });
     return () => { cancelled = true; };
-  }, [api, credentialCandidateKey, settingsRevision]);
+  }, [api, credentialCandidateKey, credentialPresenceKey, t]);
   const fallbackProviderKey = useMemo(
     () => [...new Set(fallbackChain.map((entry) => entry.provider).filter(Boolean))]
       .sort()
@@ -2068,6 +2079,39 @@ export function LlmTab(props: LlmTabProps) {
 
   // The order the user built the list in: everything already connected, then each provider they added, in the order they added it. A newly added card therefore lands at the END; directly above the button that created it; instead of wherever the catalogue
   // happens to sort it. A provider picked from "add a provider" also has to STAY on screen while it is being set up: signing in to a subscription runtime happens on its row, and a row that vanishes because it is not connected yet takes the login button with it.
+  useSettingsControls([
+    ...credentialCandidateKey.split("\n").filter(Boolean).map((providerId) => ({
+      id: `llm.apiKey.${providerId}`, section: "llm-providers", label: `${providerSelectOptions.find((option) => option.id === providerId)?.label ?? providerId} · ${t("llmTab.apiKey")}`,
+      modified: credentialedProviderIds.has(providerId), loading: credentialPresenceLoading,
+      loadError: credentialPresenceError,
+      reset: async () => {
+        const result = await api.deleteApiKey(providerId); if (result.ok !== true) throw new Error("Provider secret reset failed");
+        setCredentialedProviderIds((current) => { const next = new Set(current); next.delete(providerId); return next; });
+        if (providerId === vendor || providerId === activeModelListCredentialScope) setHasKey(false);
+        const row = connections.find((entry) => rowCredentialId(entry) === providerId);
+        if (row) { const draft = draftForRow(row.id); if (draft) putDraft({ ...draft, keyInput: "" }); }
+        setSettingsRevision((revision) => revision + 1); onSaved?.();
+      },
+    })),
+    ...providerCredentialDrafts.flatMap((draft) => [
+      { id: `llm.vendors.${draft.vendorId}.baseUrl`, section: "llm-providers", label: t("llmTab.endpointBaseUrlLabel") },
+      { id: `llm.vendors.${draft.vendorId}.wire`, section: "llm-providers", label: t("llmTab.apiFormat") },
+      { id: `llm.vendors.${draft.vendorId}.vertexProject`, section: "llm-providers", label: t("llmTab.gcpProjectIdLabel") },
+      { id: `llm.vendors.${draft.vendorId}.vertexLocation`, section: "llm-providers", label: t("llmTab.vertexLocationLabel", { optional: t("llmTab.optional") }) },
+    ]),
+    { id: `llm.vendors.${vendor}.model`, section: "llm-providers", label: t("llmTab.model"), loadError: providerSnapshotError },
+    { id: `llm.vendors.${vendor}.enableThinking`, section: "llm-thinking", label: t("llmTab.thinkingTitle") },
+    { id: `llm.vendors.${vendor}.thinkingBudgetTokens`, section: "llm-thinking", label: t("llmTab.reasoningEffortLabel") },
+    { id: "llm.imageInput", section: "llm-providers", label: t("llmTab.imageInput"), modified: selectedImageInput !== undefined,
+      reset: async () => {
+        if (!isLLMVendor(vendor) || !activeModelValue) throw new Error("Model selection unavailable");
+        const key = llmImageInputKey(activeModelValue, imageInputPresetId);
+        const result = await api.updateSettings({ llm: { vendors: { [vendor]: { imageInput: { [key]: undefined } } } } });
+        if (isIpcErrorResult(result)) throw new Error("Model setting reset failed");
+      },
+    },
+  ]);
+
   const visibleRows = useMemo<ProviderConnection[]>(() => {
     const rows = connections.filter((row) => row.connected);
     const seen = new Set(rows.map((row) => row.id));
@@ -2687,10 +2731,10 @@ export function LlmTab(props: LlmTabProps) {
     return (
       <div className="space-y-3" data-testid="llm-tab:manual-section">
         {rowVendorId === "openai-compatible" && !rowEndpointLocked && (
-          <div className="space-y-2">
+          <div className="space-y-2" data-setting-row={`llm.vendors.${rowVendorId}.wire`}>
             <Label htmlFor="custom-provider-wire">{t("llmTab.apiFormat")}</Label>
             <Select value={customProviderWire(draft.wire)} onValueChange={(value) => patchDraft({ wire: customProviderWire(value) })}>
-              <SelectTrigger id="custom-provider-wire" data-testid="llm-tab:custom-wire"><SelectValue /></SelectTrigger>
+              <SelectTrigger id="custom-provider-wire" data-setting-id={`llm.vendors.${rowVendorId}.wire`} data-testid="llm-tab:custom-wire"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {CUSTOM_PROVIDER_WIRES.map((wire) => (
                   <SelectItem key={wire} value={wire}>{t(CUSTOM_WIRE_LABEL_KEYS[wire])}</SelectItem>
@@ -2701,11 +2745,12 @@ export function LlmTab(props: LlmTabProps) {
           </div>
         )}
         {rowVendorId !== "vertex-ai" && endpointIsUserSupplied(rowVendorId, rowInfo, rowEndpointLocked) && (
-          <div className="space-y-2">
+          <div className="space-y-2" data-setting-row={`llm.vendors.${rowVendorId}.baseUrl`}>
             <Label className="text-sm font-medium">
               {t("llmTab.endpointBaseUrlLabel")} *
             </Label>
             <Input
+              data-setting-id={`llm.vendors.${rowVendorId}.baseUrl`}
               data-testid="llm-base-url-input"
               value={draft.baseUrl}
               onChange={(e) => patchDraft({ baseUrl: e.target.value })}
@@ -2730,19 +2775,21 @@ export function LlmTab(props: LlmTabProps) {
               {t("llmTab.vertexAuthDesc1")}<code>gcloud auth application-default login</code>{t("llmTab.vertexAuthDesc2")}
               {t("llmTab.vertexAuthDesc3")}<code>GOOGLE_APPLICATION_CREDENTIALS</code>{t("llmTab.vertexAuthDesc4")}
             </p>
-            <div className="space-y-1">
+            <div className="space-y-1" data-setting-row={`llm.vendors.${rowVendorId}.vertexProject`}>
               <Label className="text-xs text-muted-foreground">{t("llmTab.gcpProjectIdLabel")}</Label>
               <Input
+                data-setting-id={`llm.vendors.${rowVendorId}.vertexProject`}
                 value={draft.vertexProject}
                 onChange={(e) => patchDraft({ vertexProject: e.target.value })}
                 placeholder="my-gcp-project"
               />
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1" data-setting-row={`llm.vendors.${rowVendorId}.vertexLocation`}>
               <Label className="text-xs text-muted-foreground">
                 {t("llmTab.vertexLocationLabel", { optional: t("llmTab.optional") })}
               </Label>
               <Input
+                data-setting-id={`llm.vendors.${rowVendorId}.vertexLocation`}
                 value={draft.vertexLocation}
                 onChange={(e) => patchDraft({ vertexLocation: e.target.value })}
                 placeholder={t("llmTab.vertexLocationPlaceholder")}
@@ -2754,6 +2801,7 @@ export function LlmTab(props: LlmTabProps) {
           <div
             className="min-w-0 space-y-2"
             data-testid="llm-tab:api-key-section"
+            data-setting-row={`llm.apiKey.${rowCredentialId(row)}`}
             data-api-key-required={rowNeedsApiKey ? "true" : "false"}
           >
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -2785,6 +2833,7 @@ export function LlmTab(props: LlmTabProps) {
               </p>
             ) : null}
             <Input
+              data-setting-id={`llm.apiKey.${rowCredentialId(row)}`}
               data-testid="llm-api-key-input"
               type="password"
               placeholder={rowHasKey ? t("llmTab.replaceKey") : rowInfo.placeholder}
@@ -3265,7 +3314,7 @@ export function LlmTab(props: LlmTabProps) {
             {/* ONE chooser across every connected provider. Picking a model
                 is what selects the provider — there is no second "switch"
                 control, because there was never a second choice to make. */}
-            <UnifiedModelSelect
+            <div data-setting-id={`llm.vendors.${vendor}.model`}><UnifiedModelSelect
               options={unifiedOptions}
               value={selectedUnifiedValue}
               onValueChange={handleUnifiedModelChange}
@@ -3274,7 +3323,7 @@ export function LlmTab(props: LlmTabProps) {
               placeholder={unifiedPlaceholder}
               popupClassName={SELECT_POPUP_LAYOUT}
               disabled={subscription.props.chatSelectionBusy ?? false}
-            />
+            /></div>
             {unlistedModel && subscription.activeRuntime.kind === "api" && (
               <p
                 role="alert"
@@ -3296,7 +3345,7 @@ export function LlmTab(props: LlmTabProps) {
                 onValueChange={(value) => { void handleImageInputChange(value); }}
                 disabled={!settingsLoaded || !isLLMVendor(vendor) || imageInputSaving || Boolean(subscription.props.chatSelectionBusy)}
               >
-                <SelectTrigger id="model-image-input" data-testid="llm-tab:image-input" aria-describedby="model-image-input-help">
+                <SelectTrigger id="model-image-input" data-testid="llm-tab:image-input" data-setting-id="llm.imageInput" aria-describedby="model-image-input-help">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -3316,7 +3365,7 @@ export function LlmTab(props: LlmTabProps) {
       </SettingsSection>
 
       {/* Section B — Extended Thinking / Reasoning */}
-      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction" data-settings-section="llm-compaction" badge={<ImmediateBadge />}>
+      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction" data-setting-id="llm.compactionModelSelection" data-settings-section="llm-compaction" badge={<ImmediateBadge />}>
         <div className="space-y-2">
           <Label htmlFor="compaction-model">{t("compactionSettings.model")}</Label>
           <SystemSubagentModelSelect
@@ -3349,6 +3398,7 @@ export function LlmTab(props: LlmTabProps) {
         badge={<ImmediateBadge />}
         actions={
           <Switch
+            data-setting-id={`llm.vendors.${vendor}.enableThinking`}
             checked={enableThinking}
             onCheckedChange={(c) => {
               setEnableThinking(c);
@@ -3364,7 +3414,7 @@ export function LlmTab(props: LlmTabProps) {
           data-testid="llm-tab:section-thinking"
         >
           {enableThinking && (
-            <div className="space-y-2">
+            <div data-setting-row={`llm.vendors.${vendor}.thinkingBudgetTokens`} className="space-y-2">
               <div className="flex min-w-0 items-center justify-between gap-2">
                 <span className="flex min-w-0 items-center gap-1.5">
                   <Label className="text-xs text-muted-foreground">{t("llmTab.reasoningEffortLabel")}</Label>
@@ -3390,6 +3440,7 @@ export function LlmTab(props: LlmTabProps) {
                   setThinkingBudget(rung.budget);
                   onImmediateChange?.();
                 }}
+                data-setting-id={`llm.vendors.${vendor}.thinkingBudgetTokens`}
                 aria-label={t("llmTab.reasoningEffortAriaLabel")}
               />}
               <div className="flex justify-between text-tiny text-muted-foreground">
@@ -3408,6 +3459,7 @@ export function LlmTab(props: LlmTabProps) {
       {/* Section C — Fallback Chain */}
       <SettingsSection
         data-settings-section="llm-fallback"
+        data-setting-id="llm.fallbackChain"
         title={t("llmTab.fallbackTitle")}
         description={t("llmTab.fallbackDesc")}
         id="llm-fallback"

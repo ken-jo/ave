@@ -5,9 +5,8 @@ import { act, fireEvent, render, renderHook, screen } from "@testing-library/rea
 import { afterEach, describe, expect, it } from "vitest";
 import { HiddenNoticesReset } from "../HiddenNoticesReset.js";
 import { useStatusNotices } from "../../hooks/use-status-bar.js";
-import { searchSettings } from "../../settings-search.js";
-import { en as englishMessages } from "../../../../i18n/messages/en.js";
-import { ko as koreanMessages } from "../../../../i18n/messages/ko.js";
+import { filterRenderedSettings } from "../../settings-search.js";
+import { getLocale, setLocale } from "../../../../i18n/index.js";
 
 afterEach(() => {
   window.localStorage.removeItem("ave.notices.suppressed");
@@ -48,10 +47,15 @@ describe("HiddenNoticesReset", () => {
     expect(reset).toBeDisabled();
   });
 
-  it("is found by settings search in both locales", () => {
-    const en: Record<string, string> = englishMessages;
-    const ko: Record<string, string> = koreanMessages;
-    expect(searchSettings("show hidden notices", (key) => en[key] ?? key).map((r) => r.section)).toContain("permissions-approval-dialog");
-    expect(searchSettings("숨긴 알림", (key) => ko[key] ?? key).map((r) => r.section)).toContain("permissions-approval-dialog");
+  it("is found from its rendered label in both locales", () => {
+    const previous = getLocale();
+    try {
+      for (const [locale, query] of [["en", "show hidden notices"], ["ko", "숨긴 알림"]] as const) {
+        setLocale(locale);
+        const view = render(<div data-settings-panel="notifications"><section data-settings-section="notifications-notices"><HiddenNoticesReset /></section></div>);
+        expect(filterRenderedSettings(view.container, query).map((match) => match.section.dataset.settingsSection)).toContain("notifications-notices");
+        view.unmount();
+      }
+    } finally { setLocale(previous); }
   });
 });

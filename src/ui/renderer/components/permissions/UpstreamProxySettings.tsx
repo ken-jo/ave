@@ -17,6 +17,8 @@ import type {
 } from "../../../../shared/upstream-proxy.js";
 import { formatIpcError } from "../../format-ipc-error.js";
 import { isIpcErrorResult } from "../../types.js";
+import { DEFAULT_UPSTREAM_PROXY, UPSTREAM_PROXY_CREDENTIALS_SECRET } from "../../../../shared/upstream-proxy.js";
+import { useSettingsControls } from "../../context/SettingsEditorContext.js";
 
 interface UpstreamProxySettingsProps {
   /** Override reader for tests. Defaults to window.ave.permission.upstreamProxyGet. */
@@ -60,10 +62,14 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
   const [mode, setMode] = useState<UpstreamProxyMode>("system");
   const [manualUrl, setManualUrl] = useState("");
   const [bypass, setBypass] = useState("");
+  const manualUrlDraftRef = useRef("");
+  const bypassDraftRef = useRef("");
 
   const adopt = useCallback((next: UpstreamProxyView) => {
     setView(next);
     setMode(next.settings.mode);
+    manualUrlDraftRef.current = next.settings.manualUrl;
+    bypassDraftRef.current = next.settings.bypass;
     setManualUrl(next.settings.manualUrl);
     setBypass(next.settings.bypass);
   }, []);
@@ -84,6 +90,8 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
   const save = useCallback(async (patch: UpstreamProxyPatch, successNotice?: string): Promise<boolean> => {
     if (busyRef.current) return false;
     busyRef.current = true;
+    const submittedManualDraft = manualUrlDraftRef.current;
+    const submittedBypassDraft = bypassDraftRef.current;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -102,7 +110,17 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
         if (view) setMode(view.settings.mode);
         return false;
       }
+      const latestManualDraft = manualUrlDraftRef.current;
+      const latestBypassDraft = bypassDraftRef.current;
+      const preserveManualDraft = patch.manualUrl === undefined
+        ? view !== null && latestManualDraft !== view.settings.manualUrl
+        : latestManualDraft !== submittedManualDraft;
+      const preserveBypassDraft = patch.bypass === undefined
+        ? view !== null && latestBypassDraft !== view.settings.bypass
+        : latestBypassDraft !== submittedBypassDraft;
       adopt(next);
+      if (preserveManualDraft) { manualUrlDraftRef.current = latestManualDraft; setManualUrl(latestManualDraft); }
+      if (preserveBypassDraft) { bypassDraftRef.current = latestBypassDraft; setBypass(latestBypassDraft); }
       // Credentials bound to the previous proxy are removed by main; say so whatever was saved, so the person is not surprised
       // by a 407 later.
       if ((result as { credentialsRemoved?: unknown }).credentialsRemoved === true) {
@@ -131,6 +149,21 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
     void save({ mode: next });
   };
 
+  const resetDisabledReason = view === null ? translate("upstreamProxySettings.effectiveLoading") : busy ? translate("permissionJudge.saving") : undefined;
+  useSettingsControls([
+    { id: "upstreamProxy.mode", section: "permissions-os-sandbox", label: translate("upstreamProxySettings.modeAriaLabel"), modified: view !== null && view.settings.mode !== DEFAULT_UPSTREAM_PROXY.mode,
+      disabledReason: resetDisabledReason, reset: async () => { if (!await save({ mode: DEFAULT_UPSTREAM_PROXY.mode })) throw new Error("Proxy mode reset failed"); } },
+    { id: "upstreamProxy.manualUrl", section: "permissions-os-sandbox", label: translate("upstreamProxySettings.urlLabel"), modified: view !== null && view.settings.manualUrl !== DEFAULT_UPSTREAM_PROXY.manualUrl,
+      disabledReason: resetDisabledReason ?? (view?.settings.mode === "manual" ? translate("upstreamProxySettings.switchModeBeforeReset") : undefined),
+      reset: async () => { if (!await save({ manualUrl: DEFAULT_UPSTREAM_PROXY.manualUrl })) throw new Error("Proxy URL reset failed"); } },
+    { id: "upstreamProxy.bypass", section: "permissions-os-sandbox", label: translate("upstreamProxySettings.bypassLabel"), modified: view !== null && view.settings.bypass !== DEFAULT_UPSTREAM_PROXY.bypass,
+      disabledReason: resetDisabledReason, reset: async () => { if (!await save({ bypass: DEFAULT_UPSTREAM_PROXY.bypass })) throw new Error("Proxy bypass reset failed"); } },
+    { id: "upstreamProxy.resolvesNames", section: "permissions-os-sandbox", label: translate("upstreamProxySettings.resolvesNamesLabel"), modified: view !== null && view.settings.resolvesNames !== DEFAULT_UPSTREAM_PROXY.resolvesNames,
+      disabledReason: resetDisabledReason, reset: async () => { if (!await save({ resolvesNames: DEFAULT_UPSTREAM_PROXY.resolvesNames })) throw new Error("Proxy trust reset failed"); } },
+    { id: UPSTREAM_PROXY_CREDENTIALS_SECRET, section: "permissions-os-sandbox", label: translate("upstreamProxySettings.credentialsStored"), modified: view?.hasCredentials === true,
+      disabledReason: resetDisabledReason, reset: async () => { if (!await save({ clearCredentials: true })) throw new Error("Proxy credentials reset failed"); } },
+  ]);
+
   const settings = view?.settings;
   return (
     <div className="mt-3 space-y-3 border-t pt-3" data-testid="upstream-proxy-settings">
@@ -140,6 +173,7 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
       </div>
       <RadioGroup
         value={mode}
+        data-setting-id="upstreamProxy.mode"
         onValueChange={onModeChange}
         aria-label={translate("upstreamProxySettings.modeAriaLabel")}
         className="gap-2"
@@ -169,9 +203,10 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
             void save({ mode: "manual", manualUrl, bypass }, translate("upstreamProxySettings.saved"));
           }}
         >
-          <div className="space-y-1">
+          <div className="space-y-1" data-setting-row="upstreamProxy.manualUrl">
             <Label htmlFor="upstream-proxy-url" className="text-body-sm">{translate("upstreamProxySettings.urlLabel")}</Label>
             <Input
+              data-setting-id="upstreamProxy.manualUrl"
               id="upstream-proxy-url"
               data-testid="upstream-proxy-url"
               className="h-8 font-mono text-body-sm"
@@ -179,13 +214,14 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
               autoComplete="off"
               spellCheck={false}
               placeholder={translate("upstreamProxySettings.urlPlaceholder")}
-              onChange={(event) => setManualUrl(event.target.value)}
+              onChange={(event) => { manualUrlDraftRef.current = event.target.value; setManualUrl(event.target.value); }}
             />
             <p className="text-dense text-muted-foreground">{translate("upstreamProxySettings.urlHint")}</p>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1" data-setting-row="upstreamProxy.bypass">
             <Label htmlFor="upstream-proxy-bypass" className="text-body-sm">{translate("upstreamProxySettings.bypassLabel")}</Label>
             <Input
+              data-setting-id="upstreamProxy.bypass"
               id="upstream-proxy-bypass"
               data-testid="upstream-proxy-bypass"
               className="h-8 font-mono text-body-sm"
@@ -193,12 +229,12 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
               autoComplete="off"
               spellCheck={false}
               placeholder={translate("upstreamProxySettings.bypassPlaceholder")}
-              onChange={(event) => setBypass(event.target.value)}
+              onChange={(event) => { bypassDraftRef.current = event.target.value; setBypass(event.target.value); }}
             />
             <p className="text-dense text-muted-foreground">{translate("upstreamProxySettings.bypassHint")}</p>
           </div>
           {view?.hasCredentials ? (
-            <div className="flex flex-wrap items-center gap-2 text-dense text-muted-foreground" data-testid="upstream-proxy-credentials">
+            <div className="flex flex-wrap items-center gap-2 text-dense text-muted-foreground" data-testid="upstream-proxy-credentials" data-setting-id={UPSTREAM_PROXY_CREDENTIALS_SECRET}>
               <span>{translate("upstreamProxySettings.credentialsStored")}</span>
               <Button
                 type="button"
@@ -218,9 +254,10 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
           </Button>
         </form>
       ) : null}
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3" data-setting-row="upstreamProxy.resolvesNames">
         <Checkbox
           checked={settings?.resolvesNames ?? false}
+          data-setting-id="upstreamProxy.resolvesNames"
           data-testid="upstream-proxy-resolves-names"
           aria-label={translate("upstreamProxySettings.resolvesNamesLabel")}
           disabled={busy || view === null}

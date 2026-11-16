@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 import { useEffect, useState } from "react";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
@@ -14,6 +15,7 @@ const OPEN_MODE_OPTIONS: readonly { value: DocumentOpenMode; label: string; hint
 ];
 
 export function DocumentSettingsContent() {
+  useAppSettingsControls(["chat-documents"]);
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
   const [openMode, setOpenMode] = useState<DocumentOpenMode>("direct");
@@ -59,7 +61,7 @@ export function DocumentSettingsContent() {
   };
 
   return (
-    <SettingsSection data-settings-section="chat-documents" title={t("documentSettings.title")} description={t("documentSettings.description")}>
+    <SettingsSection data-setting-id="documents.openMode" data-settings-section="chat-documents" title={t("documentSettings.title")} description={t("documentSettings.description")}>
       <DocumentEngineInstallContent />
       <RadioGroup
         value={openMode}

@@ -61,7 +61,7 @@ describe("user server launch trust", () => {
     await expect(owner.addConfig(config)).resolves.toEqual({ connected: false, requiresTrust: true });
     expect(connect).not.toHaveBeenCalled();
     expect(JSON.parse(await readFile(configPath, "utf8"))).toEqual({ servers: [config] });
-    expect(await owner.getManagementState()).toEqual({ policyPath, policyStatus: "absent", userServersAllowed: true, managedServerIds: [], servers: {
+    expect(await owner.getManagementState()).toEqual({ policyPath, policyStatus: "absent", userServersAllowed: true, managedServerIds: [], hasApiKey: { [config.id]: false }, servers: {
       [config.id]: { fingerprint: userServerFingerprint(config), trusted: false, arguments: config.args,
         argumentCount: 2, environmentKeys: ["PROFILE"] } } });
     await expect(owner.startServer(config.id)).rejects.toThrow("mcp-trust-required");
@@ -292,9 +292,8 @@ describe("user server configuration transactions", () => {
     } finally { saveSpy.mockRestore(); renameSpy.mockRestore(); }
     const restarted = manager();
     expect(await restarted.loadFromConfig()).toEqual([replacement]);
-    await restarted.startServer(replacement.id);
-    expect(constructed.at(-1)).toMatchObject({ url: replacement.url });
-    expect(constructed.at(-1)).not.toHaveProperty("apiKey");
+    await expect(restarted.startServer(replacement.id)).rejects.toThrow("mcp-api-key-required");
+    expect(constructed).toEqual([]);
   });
 
   it("blocks further mutations and connections when compensation cannot restore a secret", async () => {
@@ -307,5 +306,43 @@ describe("user server configuration transactions", () => {
     await expect(owner.connectServer(keyed)).rejects.toThrow("mcp-config-recovery-required");
     expect(disconnect).not.toHaveBeenCalled();
     expect(connect).toHaveBeenCalledOnce();
+  });
+});
+
+describe("user server credential clearing", () => {
+  const keyed: McpServerConfig = { ...config, auth: "api-key", apiKeyEnv: "NOTES_API_KEY", apiKey: "throwaway-reset-key" };
+  it("exposes presence only, clears the key, stops the server and preserves reviewed launch trust", async () => {
+    const owner = manager();
+    await owner.addConfig(keyed);
+    await owner.startServer(keyed.id, userServerFingerprint(keyed));
+    const trust = stored.get(userServerTrustSecretId(keyed.id));
+    const management = await owner.getManagementState();
+    expect(management.hasApiKey[keyed.id]).toBe(true);
+    expect(JSON.stringify(management)).not.toContain(keyed.apiKey);
+    await owner.clearApiKey(keyed.id);
+    expect(stored.has("mcp.server.apiKey.local-notes")).toBe(false);
+    expect(stored.get(userServerTrustSecretId(keyed.id))).toBe(trust);
+    expect((await owner.getManagementState()).hasApiKey[keyed.id]).toBe(false);
+    expect(owner.listServers()).toEqual([]);
+    expect(disconnect).toHaveBeenCalledOnce();
+    await expect(owner.startServer(keyed.id)).rejects.toThrow("mcp-api-key-required");
+    await expect(owner.setApiKey(keyed.id, "throwaway-replacement-key")).resolves.toEqual({ connected: true });
+    expect(stored.get(userServerTrustSecretId(keyed.id))).toBe(trust);
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves the credential and running server if a clear transaction cannot save", async () => {
+    const owner = manager();
+    await owner.addConfig(keyed);
+    await owner.startServer(keyed.id, userServerFingerprint(keyed));
+    const before = await readFile(configPath, "utf8");
+    const rename = vi.spyOn(fileSystem, "rename").mockRejectedValueOnce(new Error("Configuration write refused"));
+    try {
+      await expect(owner.clearApiKey(keyed.id)).rejects.toThrow("Configuration write refused");
+      expect(await readFile(configPath, "utf8")).toBe(before);
+      expect(stored.get("mcp.server.apiKey.local-notes")).toBe(keyed.apiKey);
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(owner.listServers()).toMatchObject([{ id: keyed.id, status: "connected" }]);
+    } finally { rename.mockRestore(); }
   });
 });

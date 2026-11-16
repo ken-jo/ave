@@ -14,6 +14,7 @@ export const mcpApiSurface = {
   getManagementState: async () => ipcRenderer.invoke(CHANNELS.mcp.managementState),
   startServer: async (id: string, approvedFingerprint?: string) => ipcRenderer.invoke(CHANNELS.mcp.startServer, id, approvedFingerprint, ipcUserKeyboardIntent()),
   undoRemove: async (id: string) => ipcRenderer.invoke(CHANNELS.mcp.undoRemove, id, ipcUserKeyboardIntent()),
+  clearApiKey: async (id: string) => ipcRenderer.invoke(CHANNELS.mcp.clearApiKey, id, ipcUserKeyboardIntent()),
   addConfig: async (config: McpServerConfig) => ipcRenderer.invoke(CHANNELS.mcp.configAdd, config),
   setApiKey: async (id: string, apiKey: string) => ipcRenderer.invoke(CHANNELS.mcp.configSetApiKey, id, apiKey),
   removeConfig: async (id: string) => ipcRenderer.invoke(CHANNELS.mcp.configRemove, id),

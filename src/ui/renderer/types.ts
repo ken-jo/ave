@@ -460,6 +460,9 @@ export type AvePreloadApi = {
     tokens: Record<string, string>;
   }) => Promise<{ ok: boolean; error?: string }>;
   getSettings: () => Promise<AppSettings>;
+  getSettingsDefaults: () => Promise<AppSettings>;
+  openSettingsFile: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  pickSettingsDirectory: () => Promise<{ ok: true; path: string | null } | { ok: false; error: string }>;
   updateSettings: (patch: DeepPartial<AppSettings>) => Promise<SettingsUpdateResult>;
   /** Settings paths the boot environment is forcing ON; presence only, never values. */
   envForcedSettings: () => Promise<readonly string[]>;
@@ -505,7 +508,7 @@ export type AvePreloadApi = {
 
   setWebApiKey: (provider: string, k: string) => Promise<{ ok: true }>;
   hasWebApiKey: (provider: string) => Promise<boolean>;
-  deleteWebApiKey: (provider: string) => Promise<{ ok: true }>;
+  deleteWebApiKey: (provider: string) => Promise<{ ok: true } | IpcErrorResult>;
   /**
    * Browser tabs for the agent browser tools (shared/browser-surface.ts):
    * bind a tab id to its guest <webview> after attach, revoke control on stop or user navigation,
@@ -1655,6 +1658,7 @@ export type AveMcpApi = {
   getManagementState: () => Promise<import("../../mcp/types.js").McpManagementState>;
   startServer: (id: string, approvedFingerprint?: string) => Promise<McpConfigMutationResult>;
   undoRemove: (id: string) => Promise<void>;
+  clearApiKey: (id: string) => Promise<void>;
   addConfig: (config: McpServerConfig) => Promise<McpConfigMutationResult>;
   setApiKey: (id: string, apiKey: string) => Promise<{ connected: boolean; warning?: string }>;
   removeConfig: (id: string) => Promise<void>;

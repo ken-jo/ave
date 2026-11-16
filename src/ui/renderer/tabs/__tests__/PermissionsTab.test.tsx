@@ -23,6 +23,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 }));
 
 import { PermissionsTab } from "../PermissionsTab.js";
+import { SettingsEditorProvider } from "../../context/SettingsEditorContext.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 import type { HookTrustRow, PermissionReviewerDispatchResult, ScopedPermissionRuleError } from "../../types.js";
@@ -32,6 +33,7 @@ import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
 import { LONG_TOAST_TTL_MS } from "../../constants.js";
 import { buildInternalApiSurface } from "../../../../preload/internal-api-surface.js";
 import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
+import { requiredFixture } from "../../../../__tests__/support/required-fixture.js";
 import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
 import { assertSandboxWindowsExtensionPlan, type SandboxWindowsExtensionPlan, type SandboxWindowsExtensionReason } from "../../../../shared/sandbox-capability-info.js";
@@ -656,7 +658,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
   it("keeps the active mode unchanged when main cannot configure the reviewer", async () => {
     const api = installApi([[]]);
-    api.permission.setMode.mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: "missing provider" });
+    api.permission.setMode.mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: "missing provider" } as never);
     await renderPermissionsTab();
     await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
     expect(api.permission.setMode).toHaveBeenCalledExactlyOnceWith("auto");
@@ -2575,7 +2577,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: detail });
     await renderPermissionsTab();
     await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
-    expect(screen.getByText(t("permissionsTab.errorModeChangeFailed") + " (reviewer-mode-change-failed)")).toBeTruthy();
+    expect(screen.getByText(`${t("permissionsTab.errorModeChangeFailed")} (reviewer-mode-change-failed)`)).toBeTruthy();
     expect(document.body.textContent).not.toContain("unknown subcommand");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("mode change failed"), "reviewer-mode-change-failed", detail);
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
@@ -3164,5 +3166,93 @@ describe("PermissionsTab rule editor safeguards", () => {
     await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
     expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.rulePatternInvalid"));
     expect((input as HTMLInputElement).value).toBe("Bash(");
+  });
+});
+
+
+describe("permission settings modified/reset adapters", () => {
+  async function renderEditor() {
+    const api = window.aveApi;
+    const rendered = render(<SettingsEditorProvider api={api} modifiedOnly><PermissionsTab /></SettingsEditorProvider>);
+    await screen.findByTestId("permissions-rule-pattern-input");
+    return rendered;
+  }
+
+  it("resets the execution mode to the canonical default through its permission channel", async () => {
+    const ave = installApi([[]]);
+    ave.permission.getMode.mockResolvedValue({ mode: "allow" });
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id="permissions.executionMode"]');
+      expect(found).toBeTruthy(); return requiredFixture(found);
+    });
+    expect(row.dataset.settingModified).toBe("true");
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(ave.permission.setMode).toHaveBeenCalledExactlyOnceWith("strict"));
+    await waitFor(() => expect(container.querySelector('[data-setting-registered="true"][data-setting-id="permissions.executionMode"]')).toBeNull());
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+    expect(screen.getByTestId(execModeTestId("strict")).className).toContain("border-primary");
+  });
+
+  it("removes only the selected user rule when its modified row is reset", async () => {
+    const ave = installApi([[]]);
+    const rule = { pattern: "custom_tool", action: "allow" as const, scope: "user" as const };
+    let remaining = [rule];
+    ave.permission.listScopedRules.mockImplementation(async () => ({ rules: remaining, errors: [] }) as never);
+    ave.permission.removeScopedRule.mockImplementation(async () => { remaining = []; return { ok: true }; });
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id^="permissions.rules."]');
+      expect(found).toHaveTextContent(rule.pattern); return requiredFixture(found);
+    });
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(ave.permission.removeScopedRule).toHaveBeenCalledExactlyOnceWith(rule));
+    await waitFor(() => expect(container.querySelector('[data-setting-registered="true"][data-setting-id^="permissions.rules."]')).toBeNull());
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps a refused rule reset marked modified and reports the failed action", async () => {
+    const ave = installApi([[]]);
+    ave.permission.listScopedRules.mockResolvedValue({ rules: [{ pattern: "custom_tool", action: "allow", scope: "user" }], errors: [] } as never);
+    ave.permission.removeScopedRule.mockResolvedValue({ ok: false, error: "remove-failed" } as never);
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id^="permissions.rules."]');
+      expect(found).toBeTruthy(); return requiredFixture(found);
+    });
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(row.closest('[data-settings-actions]')).toHaveTextContent(t("settingsEditor.actionFailed")));
+    expect(row.dataset.settingModified).toBe("true");
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows an administrator policy as modified with a disabled reset and its reason", async () => {
+    const ave = installApi([[]]);
+    ave.policy.get.mockResolvedValue(policyGetPayload({ requireExplicitApproval: false, managed: false, source: "admin" }));
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id="policy.requireExplicitApproval"]');
+      expect(found).toBeTruthy(); return requiredFixture(found);
+    });
+    expect(row.querySelector('button')).toBeDisabled();
+    expect(row).toHaveTextContent(t("permissionsTab.adminManagedTitle"));
+    expect(ave.policy.set).not.toHaveBeenCalled();
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("resets a user directory addition through the owning directory command", async () => {
+    const ave = installApi([[]]);
+    ave.permission.dirDispatch.mockImplementation(async (...[command]: unknown[]) => command === "list"
+      ? { ok: true, verb: "list", defaults: ["/workspace/default"], userAdditions: ["/workspace/extra"], effective: ["/workspace/default", "/workspace/extra"] } as never
+      : { ok: true, verb: "deny", persisted: [] } as never);
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id^="permissions.directories."]');
+      expect(found).toHaveTextContent("/workspace/extra"); return requiredFixture(found);
+    });
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(ave.permission.dirDispatch).toHaveBeenCalledWith("deny /workspace/extra"));
+    await waitFor(() => expect(container.querySelector('[data-setting-registered="true"][data-setting-id^="permissions.directories."]')).toBeNull());
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
   });
 });

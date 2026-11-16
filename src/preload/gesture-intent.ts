@@ -2,9 +2,11 @@
 import { randomUUID } from "node:crypto";
 import { hasActiveUserGesture } from "./user-activation.js";
 export { ipcUserKeyboardIntent } from "./user-activation.js";
-import type { UserKeyboardIntentSnapshot } from "../shared/chat-origin.js";
+import {
+  USER_GESTURE_LIFETIME_MS,
+  type UserKeyboardIntentSnapshot,
+} from "../shared/chat-origin.js";
 
-const USER_KEYBOARD_INTENT_TTL_MS = 5_000;
 const userKeyboardIntentTokens = new Map<string, number>();
 
 function pruneExpiredUserKeyboardIntents(now = Date.now()): void {
@@ -20,7 +22,7 @@ export function captureUserKeyboardIntent(): UserKeyboardIntentSnapshot {
   const now = Date.now();
   pruneExpiredUserKeyboardIntents(now);
   const token = randomUUID();
-  userKeyboardIntentTokens.set(token, now + USER_KEYBOARD_INTENT_TTL_MS);
+  userKeyboardIntentTokens.set(token, now + USER_GESTURE_LIFETIME_MS);
   return { inputOrigin: "user-keyboard", token };
 }
 

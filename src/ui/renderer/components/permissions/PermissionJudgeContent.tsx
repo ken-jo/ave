@@ -5,12 +5,15 @@ import { Label } from "../../../../components/ui/label.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import {
   MAX_PERMISSION_JUDGE_STAGES,
+  DEFAULT_PERMISSION_JUDGE_MODE,
+  DEFAULT_PERMISSION_JUDGE_CATEGORIES,
   serializePermissionJudgeSettingsPatch,
   type PermissionJudgeSettings,
   type PermissionJudgeSnapshot,
 } from "../../../../shared/permission-judge-settings.js";
 import { SettingsSection } from "../PageShell.js";
 import { useNotifySaved } from "../../context/SavedToastContext.js";
+import { useSettingsControls } from "../../context/SettingsEditorContext.js";
 import {
   SystemSubagentModelSelect,
 } from "../../tabs/LlmTab.js";
@@ -120,13 +123,13 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
     return JSON.stringify(serializePermissionJudgeSettingsPatch({ chain })) !== JSON.stringify(serializePermissionJudgeSettingsPatch({ chain: savedChain }));
   }
 
-  async function persist(patch: Partial<PermissionJudgeSettings>, chainSave = false) {
-    if (!snapshot || busyRef.current) return;
+  async function persist(patch: Partial<PermissionJudgeSettings>, chainSave = false): Promise<boolean> {
+    if (!snapshot || busyRef.current) return false;
     const wire = (settings: Partial<PermissionJudgeSettings>) => JSON.stringify(serializePermissionJudgeSettingsPatch(settings));
     const changed = Object.fromEntries((Object.keys(patch) as Array<keyof PermissionJudgeSettings>)
-      .filter((key) => wire({ [key]: patch[key] }) !== wire({ [key]: snapshot.settings[key] }))
+      .filter((key) => (key === "chain" && snapshot.storedChainRejected) || wire({ [key]: patch[key] }) !== wire({ [key]: snapshot.settings[key] }))
       .map((key) => [key, patch[key]])) as Partial<PermissionJudgeSettings>;
-    if (Object.keys(changed).length === 0) return;
+    if (Object.keys(changed).length === 0) return true;
     busyRef.current = true;
     const requestRevision = ++requestRevisionRef.current;
     const submittedEditRevision = editRevisionRef.current;
@@ -139,13 +142,13 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
       // The invocation happens in this user handler, before any await, so main can check its gesture.
       const request = window.ave.permission.judgeSet(changed);
       const result = await request;
-      if (requestRevision !== requestRevisionRef.current) return;
+      if (requestRevision !== requestRevisionRef.current) return false;
       if (!result.ok) {
         setError(result.error === "invalid-judge-settings" ? "invalid"
           : result.error === "user-keyboard-required" ? "keyboard"
           : result.error === "judge-rewire-failed" ? "rewire"
           : result.error === "judge-rollback-failed" ? "rollback" : "save");
-        return;
+        return false;
       }
       const preserveChain = dirtyRef.current && (!chainSave || submittedEditRevision !== editRevisionRef.current);
       const next = preserveChain && draftRef.current
@@ -158,8 +161,10 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
       setExternalChange(false);
       setSaved(chainSave);
       if (!chainSave) notifySaved();
+      return true;
     } catch {
       if (requestRevision === requestRevisionRef.current) setError("save");
+      return false;
     } finally {
       if (requestRevision === requestRevisionRef.current) {
         setPendingPatch(null);
@@ -180,17 +185,37 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
         ...(stage.external.env ? { env: stage.external.env.filter(Boolean) } : {}),
       },
     } : stage);
-    void persist({ chain, ...(chain.length === 0 ? { mode: "shadow" as const } : {}) }, true);
+    void persist({ chain, ...(chain.length === 0 ? { mode: DEFAULT_PERMISSION_JUDGE_MODE } : {}) }, true);
   }
 
   function handleModeChange(mode: string) {
     if (!snapshot || reviewerModeInvalid) return;
-    if (mode === "off") void persist({ chain: [], mode: "shadow" });
+    if (mode === "off") void persist({ chain: [], mode: DEFAULT_PERMISSION_JUDGE_MODE });
     else if (mode === "shadow" || mode === "active") {
       // Enabling an empty chain creates the standard stage, never an unsaved editor draft.
       void persist({ mode, ...(snapshot.settings.chain.length === 0 ? { chain: [nextStage([])] } : {}) });
     }
   }
+
+  useSettingsControls(snapshot ? [
+    { id: "permissions.judge.model", section: "permissions-judge", label: t("permissionJudge.reviewerModel"), modified: snapshot.settings.model !== null,
+      disabledReason: busy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await persist({ model: null })) throw new Error("Reviewer model reset failed"); } },
+    { id: "permissions.judge.mode", section: "permissions-judge", label: t("permissionJudge.mode"), modified: snapshot.settings.mode !== DEFAULT_PERMISSION_JUDGE_MODE,
+      disabledReason: reviewerModeInvalid ? t("permissionJudge.modeChoiceRequired") : busy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await persist({ mode: DEFAULT_PERMISSION_JUDGE_MODE })) throw new Error("Evaluator mode reset failed"); } },
+    { id: "permissions.judge.categories", section: "permissions-judge", label: t("permissionJudge.categories"), modified: Object.entries(DEFAULT_PERMISSION_JUDGE_CATEGORIES).some(([category, value]) => snapshot.settings.categories[category as keyof typeof DEFAULT_PERMISSION_JUDGE_CATEGORIES] !== value),
+      disabledReason: busy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await persist({ categories: { ...DEFAULT_PERMISSION_JUDGE_CATEGORIES } })) throw new Error("Evaluator categories reset failed"); } },
+    { id: "permissions.judge.chain", section: "permissions-judge", label: t("permissionJudge.chainSetting"), modified: snapshot.storedChainRejected || snapshot.settings.chain.length > 0 || dirtyRef.current,
+      disabledReason: busy ? t("permissionJudge.saving") : undefined,
+      reset: async () => {
+        if (!snapshot.storedChainRejected && snapshot.settings.chain.length === 0) {
+          draftRef.current = snapshot.settings; setDraft(snapshot.settings); dirtyRef.current = false; setSaved(false); return;
+        }
+        if (!await persist({ chain: [], mode: DEFAULT_PERMISSION_JUDGE_MODE }, true)) throw new Error("Evaluator chain reset failed");
+      } },
+  ] : []);
 
   const controls = snapshot ? { ...snapshot.settings, ...pendingPatch } : null;
 
@@ -223,7 +248,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
       {draft && controls && snapshot && (
         <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="space-y-4">
           <fieldset disabled={busy && savingChain} className="space-y-4">
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" data-setting-id="permissions.judge.model">
               <Label htmlFor="permission-reviewer-model">{t("permissionJudge.reviewerModel")}</Label>
               <SystemSubagentModelSelect
                 id="permission-reviewer-model"
@@ -244,7 +269,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
                 </p>
               )}
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" data-setting-id="permissions.judge.mode">
               <Label htmlFor="permission-judge-mode">{t("permissionJudge.mode")}</Label>
               <select
                 id="permission-judge-mode"
@@ -263,7 +288,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
             </div>
             {draft.chain.length > 0 && (
               <>
-                <fieldset className="flex flex-wrap gap-4">
+                <fieldset className="flex flex-wrap gap-4" data-setting-id="permissions.judge.categories">
                   <legend className="mb-2 text-sm font-medium">{t("permissionJudge.categories")}</legend>
                   {(["shell", "write", "network"] as const).map((category) => (
                     <Label key={category} className="flex items-center gap-2">
@@ -273,7 +298,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
                   ))}
                 </fieldset>
                 <p className="text-xs text-muted-foreground">{t("permissionJudge.chainHelp")}</p>
-                <ol className="space-y-3">
+                <ol className="space-y-3" data-setting-id="permissions.judge.chain">
                   {draft.chain.map((stage, index) => {
                     const transport = transportFor(stage);
                     const prefix = `permission-judge-stage-${index}`;
@@ -360,7 +385,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
             )}
             {dirtyRef.current && <p role="status" className="text-sm text-warning">{t("permissionJudge.chainUnsaved")}</p>}
             <div className="flex flex-wrap gap-2">
-              <Button type="button" variant="outline" disabled={draft.chain.length >= MAX_PERMISSION_JUDGE_STAGES} onClick={() => update({ ...draft, mode: draft.chain.length ? draft.mode : "shadow", chain: [...draft.chain, nextStage(draft.chain)] })}>{t("permissionJudge.addStage")}</Button>
+              <Button type="button" variant="outline" disabled={draft.chain.length >= MAX_PERMISSION_JUDGE_STAGES} onClick={() => update({ ...draft, mode: draft.chain.length ? draft.mode : DEFAULT_PERMISSION_JUDGE_MODE, chain: [...draft.chain, nextStage(draft.chain)] })}>{t("permissionJudge.addStage")}</Button>
               <Button type="submit" disabled={busy || !dirtyRef.current}>{savingChain ? t("permissionJudge.saving") : t("permissionJudge.save")}</Button>
             </div>
           </fieldset>

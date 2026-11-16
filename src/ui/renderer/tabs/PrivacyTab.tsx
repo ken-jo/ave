@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 import { useCallback, useEffect, useState } from "react";
 import { Switch } from "../../../components/ui/switch.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
@@ -73,6 +74,7 @@ interface PrivacyTabProps {
 }
 
 export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
+  useAppSettingsControls(["chat-privacy"]);
   const { t } = useTranslation();
   const [stats, setStats] = useState<DlpStats | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
@@ -112,6 +114,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
           </p>
           <div className="flex items-center gap-3 rounded-lg border bg-background px-3 py-3 shadow-sm focus-within:ring-2 focus-within:ring-ring">
             <Switch
+              data-setting-id="privacy.piiRedactEnabled"
               checked={piiRedactEnabled}
               aria-labelledby="pii-redact-toggle-label"
               className="shrink-0"
@@ -139,6 +142,7 @@ export function PrivacyTab({ piiRedactEnabled, onToggle }: PrivacyTabProps) {
                 {t("privacyTab.dlpStatsTitle")}
               </p>
               <NativeSelect
+                data-settings-transient="statistics-period"
                 size="sm"
                 className="w-28"
                 value={days}

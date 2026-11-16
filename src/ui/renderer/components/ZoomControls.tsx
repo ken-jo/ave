@@ -1,3 +1,5 @@
+import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 import { ToolbarStatusMenuButton } from "./toolbar-status-menu.js";
 import { useEffect, useRef, useState } from "react";
 import { ZoomIn, ZoomOut } from "lucide-react";
@@ -6,7 +8,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, nextZoomLevel, normalizeZoomLevel, zoomLevelToZoomFactor, type ZoomCommand } from "../../../shared/app-zoom.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
-import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { useTheme } from "../theme/index.js";
 import { defaultAccelerator, formatAccelerator } from "../../../shared/shortcuts.js";
@@ -20,6 +21,7 @@ function zoomShortcut(id: "menu.zoomIn" | "menu.zoomOut" | "menu.resetZoom"): st
 }
 
 export function ZoomControls() {
+  useAppSettingsControls(["appearance-zoom"]);
   const { t } = useTranslation();
   const { appearance } = useTheme();
   const [level, setLevel] = useState(normalizeZoomLevel(appearance.zoomLevel));
@@ -51,7 +53,7 @@ export function ZoomControls() {
       setFailed(true);
     });
   };
-  return <div className="space-y-1" data-testid="zoom-controls">
+  return <div className="space-y-1" data-testid="zoom-controls" data-setting-id="appearance.zoomLevel">
     <fieldset className="flex items-center gap-2 text-sm" aria-label={t("appearanceTab.zoom")}>
       <Button type="button" variant="outline" size="icon" aria-label={t("appearanceTab.shortcutLabel", { label: t("be_main.menuZoomOut"), shortcut: zoomShortcut("menu.zoomOut") })} disabled={level === MIN_ZOOM_LEVEL} onClick={() => run("out")}>−</Button>
       <span className="min-w-12 text-center tabular-nums">{Math.round(zoomLevelToZoomFactor(level) * 100)}%</span>

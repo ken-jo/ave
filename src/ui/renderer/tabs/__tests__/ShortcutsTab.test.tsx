@@ -8,6 +8,8 @@ import * as shortcutHooks from "../../hooks/use-shortcuts.js";
 import type { AveApi } from "../../types.js";
 import { ShortcutsTab } from "../ShortcutsTab.js";
 import { ko } from "../../../../i18n/messages/ko.js";
+import { SettingsEditorProvider, _unregisteredSettingsControlsForTest } from "../../context/SettingsEditorContext.js";
+import { filterRenderedSettings } from "../../settings-search.js";
 
 /** The mock's generic section merge replaces `bindings` wholesale; apply rebinds the way the store does instead, so a
  * reset (writing the default) really leaves no override behind. These tests run as a non-Mac renderer in Korean. */
@@ -248,6 +250,31 @@ describe("ShortcutsTab", () => {
     await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ shortcuts: { bindings: { "app.commandPalette": null, "app.search": null } } }));
     await waitFor(() => expect(screen.getByTestId("shortcuts:reset-all")).toBeDisabled());
     expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key: "f", ctrlKey: true }))).toBe(true);
+  });
+
+  it("shows modified shortcut actions and resets one without resetting another", async () => {
+    const api = installApi({ "app.commandPalette": "Alt+Shift+K", "app.search": "Alt+Shift+F" });
+    const { container } = render(<SettingsEditorProvider api={api as never} modifiedOnly>
+      <div data-settings-panel="shortcuts"><Harness api={api} /></div>
+    </SettingsEditorProvider>);
+    const selected = await waitFor(() => {
+      const row = container.querySelector<HTMLElement>('[data-setting-id="shortcuts.bindings.app.search"][data-setting-registered="true"]');
+      expect(row).toBeTruthy();
+      if (row === null) throw new Error("Expected the modified shortcut actions");
+      return row;
+    });
+    expect(selected.dataset.settingModified).toBe("true");
+    expect(_unregisteredSettingsControlsForTest(container)).toEqual([]);
+    expect(container.querySelector('[data-setting-id="shortcuts.bindings.edit.copy"][data-setting-registered="true"]')).toBeNull();
+    expect(filterRenderedSettings(container, "", true).some((match) => match.section.dataset.settingsSection === "shortcuts-list")).toBe(true);
+    expect(screen.getByTestId("shortcuts:row-edit.copy")).not.toBeVisible();
+    const resetLabel = ko["settingsEditor.resetLabel"].replace("{label}", ko["shortcuts.label.search"]);
+    fireEvent.click(within(selected).getByRole("button", { name: resetLabel }));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": null } } }));
+    await waitFor(() => expect(container.querySelector('[data-setting-id="shortcuts.bindings.app.search"][data-setting-registered="true"]')).toBeNull());
+    expect(container.querySelector('[data-setting-id="shortcuts.bindings.app.commandPalette"][data-setting-registered="true"]')).toBeTruthy();
+    expect(screen.getByTestId("shortcuts:record-app.commandPalette").textContent).toBe("AltShiftK");
+    expect(screen.getByTestId("shortcuts:record-app.search").textContent).toBe("CtrlF");
   });
 
   it("moves between rows with the arrow keys", async () => {

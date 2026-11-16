@@ -622,7 +622,7 @@ describe("McpManager — addConfig()", () => {
 
   it("setApiKey — disconnects existing client then reconnects with new key (MEDIUM-1)", async () => {
     const servers: McpServerConfig[] = [
-      { id: "rotate-srv", transport: "stdio", command: "uvx", auth: "api-key", apiKeyEnv: "MY_KEY" },
+      { id: "rotate-srv", transport: "stdio", command: "uvx", auth: "api-key", apiKey: "throwaway-prior-key", apiKeyEnv: "MY_KEY" },
     ];
     await writeFile(testConfigPath, JSON.stringify({ servers }), "utf-8");
     const mgr = await makeManager();

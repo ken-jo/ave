@@ -1,3 +1,4 @@
+import { useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Switch } from "../../../components/ui/switch.js";
@@ -31,6 +32,17 @@ function AlertKindControl({ row, api, refresh }: { row: AlertKindRow; api: Alert
     } catch { setError(t("alerts.saveFailed")); return { ok: false }; }
     finally { setWorking(false); }
   }, [api, row.kindKey, refresh, t]);
+
+  useSettingsControls([
+    { id: `alerts.kind.${row.kindKey}.enabled`, section: "notifications-delivery", label: t("alerts.enabledLabel", { label }),
+      modified: row.choice.enabled !== row.declaration.defaultEnabled,
+      reset: async () => { if (!(await save({ enabled: row.declaration.defaultEnabled })).ok) throw new Error("Alert setting reset failed"); },
+    },
+    ...(row.declaration.osNotification ? [{ id: `alerts.kind.${row.kindKey}.osNotification`, section: "notifications-delivery", label: t("alerts.osLabel", { label }),
+      modified: row.choice.osNotification !== (row.declaration.osNotification.defaultEnabled ?? false),
+      reset: async () => { if (!(await save({ osNotification: row.declaration.osNotification?.defaultEnabled ?? false })).ok) throw new Error("Alert setting reset failed"); },
+    }] : []),
+  ]);
 
   // Prefetching a plugin's kinds is not a visit. A row must reach the viewport.
   useEffect(() => {
@@ -69,11 +81,11 @@ function AlertKindControl({ row, api, refresh }: { row: AlertKindRow; api: Alert
         {row.pluginId === ALERT_HOST_PLUGIN_ID && row.reasoning && <p className="mt-1 text-xs text-muted-foreground">{row.reasoning}</p>}
         {row.declaration.description && <p className="mt-1 text-xs text-muted-foreground">{localeText(row.declaration.description, locale)}</p>}
       </div>
-      <Switch className="shrink-0" aria-label={t("alerts.enabledLabel", { label })} checked={row.choice.enabled} disabled={working} onCheckedChange={(enabled) => void save({ enabled })} />
+      <Switch data-setting-id={`alerts.kind.${row.kindKey}.enabled`} className="shrink-0" aria-label={t("alerts.enabledLabel", { label })} checked={row.choice.enabled} disabled={working} onCheckedChange={(enabled) => void save({ enabled })} />
     </div>
-    {row.declaration.osNotification && <label className="flex min-w-0 items-center justify-between gap-3 text-xs">
+    {row.declaration.osNotification && <label data-setting-row={`alerts.kind.${row.kindKey}.osNotification`} className="flex min-w-0 items-center justify-between gap-3 text-xs">
       <span className="min-w-0 break-words">{t("alerts.osNotification")}</span>
-      <Switch className="shrink-0" aria-label={t("alerts.osLabel", { label })} checked={row.choice.osNotification} disabled={working} onCheckedChange={(osNotification) => void save({ osNotification })} />
+      <Switch data-setting-id={`alerts.kind.${row.kindKey}.osNotification`} className="shrink-0" aria-label={t("alerts.osLabel", { label })} checked={row.choice.osNotification} disabled={working} onCheckedChange={(osNotification) => void save({ osNotification })} />
     </label>}
     {row.blockedByPredecessor && <div className="space-y-1 break-words [overflow-wrap:anywhere] text-xs text-muted-foreground" data-testid={`alert-predecessor:${row.kindKey}`}>
       <p>{t("alerts.waiting", { label: row.predecessor?.label ?? row.blockedByPredecessor })}</p>
@@ -96,10 +108,15 @@ export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh }:
   pluginId: string; rows: AlertKindRow[]; api: AlertsApi; osEnabled: boolean; refresh: () => Promise<void>;
 }) {
   const { t } = useTranslation();
+  const editor = useSettingsEditor();
   const kinds = rows.filter((row) => row.pluginId === pluginId);
   const builtIn = pluginId === ALERT_HOST_PLUGIN_ID;
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useSettingsControls(builtIn ? [{ id: "alerts.osNotificationsEnabled", section: "notifications-delivery", label: t("alerts.osMaster"),
+    modified: editor?.defaults ? osEnabled !== editor.defaults.alerts.osNotificationsEnabled : false,
+    reset: async () => { if (!editor?.defaults) throw new Error("Settings defaults unavailable"); const result = await api.setOsNotificationsEnabled(editor.defaults.alerts.osNotificationsEnabled); if ("error" in result) throw new Error("Alert setting reset failed"); await refresh(); },
+  }] : []);
   if (!builtIn && kinds.length === 0) return null;
   async function setMaster(enabled: boolean) {
     setWorking(true); setError(null);
@@ -112,7 +129,7 @@ export function PluginAlertsSection({ pluginId, rows, api, osEnabled, refresh }:
   }
   return <section data-testid={`plugin-alerts:${pluginId}`} className="min-w-0 space-y-3 border-t border-border pt-3">
     <h3 className="text-sm font-semibold">{t(builtIn ? "alerts.builtIn" : "alerts.title")}</h3>
-    {builtIn && <label className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.osMaster")}</span><Switch className="shrink-0" aria-label={t("alerts.osMaster")} checked={osEnabled} disabled={working} onCheckedChange={(enabled) => void setMaster(enabled)} /></label>}
+    {builtIn && <label data-setting-row="alerts.osNotificationsEnabled" className="flex items-center justify-between gap-3 text-xs"><span>{t("alerts.osMaster")}</span><Switch data-setting-id="alerts.osNotificationsEnabled" className="shrink-0" aria-label={t("alerts.osMaster")} checked={osEnabled} disabled={working} onCheckedChange={(enabled) => void setMaster(enabled)} /></label>}
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {!builtIn && kinds[0]?.reasoning && <p className="break-words [overflow-wrap:anywhere] text-xs text-muted-foreground">{kinds[0].reasoning}</p>}
     {kinds.map((row) => <AlertKindControl key={`${row.kindKey}:${row.declaration.visibility}`} row={row} api={api} refresh={refresh} />)}

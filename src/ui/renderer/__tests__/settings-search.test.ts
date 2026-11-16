@@ -1,63 +1,70 @@
-import { describe, expect, it } from "vitest";
-import { searchSettings } from "../settings-search.js";
-import { SETTINGS_SECTIONS } from "../../../shared/settings-tabs.js";
-import { en as englishMessages } from "../../../i18n/messages/en.js";
-import { ko as koreanMessages } from "../../../i18n/messages/ko.js";
+import "../../../../test/renderer/setup.js";
+import { assert, describe, expect, it } from "vitest";
+import { clearSettingsFilter, filterRenderedSettings, renderedSettingText, settingsTextMatchesQuery } from "../settings-search.js";
 
-const en: Record<string, string> = englishMessages;
-const ko: Record<string, string> = koreanMessages;
-const translate = (messages: Record<string, string>) => (key: string) => messages[key] ?? key;
+function settingsFixture() {
+  const root = document.createElement("div");
+  root.innerHTML = `<div data-settings-panel="appearance"><h2>Appearance</h2><section data-settings-section="appearance-theme" data-settings-description="Choose the application's color theme"><label>Color scheme</label><button role="radio" aria-label="Dark mode">Dark</button><div data-setting-id="appearance.mode" data-setting-modified="true">Mode</div></section><section data-settings-section="appearance-terminal"><label>Terminal font size</label><input aria-label="Terminal font size" value="12" /></section></div><div data-settings-panel="web"><section data-settings-section="web-api-key"><label>Search API key</label><input type="password" aria-label="Search API key" value="fixture-secret" /></section></div>`;
+  document.body.append(root); return root;
+}
 
-describe("settings search", () => {
-  it("matches localized setting labels and section titles", () => {
-    expect(searchSettings(" LINE HEIGHT ", translate(en)).map((result) => result.section)).toContain("appearance-terminal");
-    expect(searchSettings("줄 높이", translate(ko)).map((result) => result.section)).toContain("appearance-terminal");
-    expect(searchSettings("색상 스킴", translate(ko)).map((result) => result.section)).toContain("appearance-theme");
-    for (const query of ["glass", "transparency", "유리", "투명도"]) {
-      expect(searchSettings(query, translate(query.match(/[a-z]/) ? en : ko)).map((result) => result.section)).toContain("appearance-theme");
-    }
-    for (const [key, section] of [["privacyTab.piiRedactToggleLabel", "chat-privacy"], ["documentSettings.link", "chat-documents"], ["localApiSurfaces.a2aRemoteReceiverLabel", "remote-local-api"], ["tailnetObserver.portLabel", "remote-tailnet-observer"]]) {
-      expect(searchSettings(en[key]!, translate(en)).map((result) => result.section)).toContain(section);
-      expect(searchSettings(ko[key]!, translate(ko)).map((result) => result.section)).toContain(section);
-    }
+describe("rendered settings search", () => {
+  it("filters actual settings in place across tabs without changing control state", () => {
+    const root = settingsFixture();
+    const input = root.querySelector<HTMLInputElement>('[aria-label="Terminal font size"]');
+    const web = root.querySelector<HTMLElement>('[data-settings-panel="web"]');
+    assert(input); assert(web);
+    const matches = filterRenderedSettings(root, "terminal font");
+    expect(matches.map((match) => match.section.dataset.settingsSection)).toEqual(["appearance-terminal"]);
+    expect(web.hidden).toBe(true);
+    expect(input.value).toBe("12");
+    clearSettingsFilter(root); expect(web.hidden).toBe(false);
+    root.remove();
   });
-
-  it("finds the shortcuts page by any shortcut's label", () => {
-    for (const key of ["shortcuts.label.search", "mainPanels.command.reopenClosed", "be_main.menuNewWindow"]) {
-      expect(searchSettings(String(en[key]), translate(en)).map((result) => result.section)).toContain("shortcuts-list");
-      expect(searchSettings(String(ko[key]), translate(ko)).map((result) => result.section)).toContain("shortcuts-list");
-    }
-    expect(searchSettings("keyboard", translate(en)).map((result) => result.section)).toContain("shortcuts-list");
+  it("leaves no inline display on an inactive tab panel, so the panel shows once it becomes active", () => {
+    const root = settingsFixture();
+    const web = root.querySelector<HTMLElement>('[data-settings-panel="web"]');
+    assert(web);
+    web.dataset.state = "inactive";
+    filterRenderedSettings(root, "terminal font");
+    clearSettingsFilter(root);
+    expect(web.hidden).toBe(true);
+    expect(web.style.display).toBe("");
+    // The tab library flips these when the user selects the tab; nothing else is rewritten.
+    web.dataset.state = "active"; web.hidden = false;
+    expect(web.style.display).toBe("");
+    root.remove();
   });
-
-  it("returns no results for an empty or unknown query", () => {
-    expect(searchSettings("  ", translate(en))).toEqual([]);
-    expect(searchSettings("unrecognized-setting-9999", translate(en))).toEqual([]);
+  it("automatically indexes newly rendered labels, descriptions, ids and accessible names", () => {
+    const root = settingsFixture();
+    const section = root.querySelector<HTMLElement>("section");
+    assert(section);
+    expect(filterRenderedSettings(root, "theme")[0]?.section).toBe(section);
+    expect(filterRenderedSettings(root, "appearance.mode")[0]?.section).toBe(section);
+    section.insertAdjacentHTML("beforeend", '<label>New setting without an index entry</label><input aria-label="새 설정" />');
+    expect(filterRenderedSettings(root, "without an index")[0]?.section).toBe(section);
+    expect(filterRenderedSettings(root, "새 설정")[0]?.section).toBe(section);
+    root.remove();
   });
-
-  it("indexes every registered section once using catalog keys", () => {
-    const results = searchSettings("match", () => "match");
-    expect(results.map((entry) => entry.section).sort()).toEqual(Object.values(SETTINGS_SECTIONS).flat().sort());
-    for (const entry of results) {
-      expect(SETTINGS_SECTIONS[entry.tab]).toContain(entry.section);
-      for (const key of [entry.title, ...entry.labels]) {
-        expect(en[key], key).toBeTruthy();
-        expect(ko[key], key).toBeTruthy();
-      }
-    }
+  it("never indexes input values or secrets", () => {
+    const root = settingsFixture();
+    const section = root.querySelector<HTMLElement>('[data-settings-section="web-api-key"]');
+    assert(section);
+    section.insertAdjacentHTML("beforeend", "<textarea>fixture-private-secret</textarea>");
+    expect(renderedSettingText(section)).not.toContain("fixture-private-secret");
+    expect(filterRenderedSettings(root, "fixture-private-secret")).toEqual([]);
+    expect(renderedSettingText(section)).not.toContain("fixture-secret");
+    expect(filterRenderedSettings(root, "fixture-secret")).toEqual([]);
+    expect(filterRenderedSettings(root, "api key")[0]?.section).toBe(section);
+    root.remove();
   });
-});
-
-it("finds common terms and returns the actual matched label without placeholders", () => {
-  const expected = {
-    compaction: "llm-compaction", proxy: "permissions-network", upstream: "permissions-network",
-    theme: "appearance-theme", plugin: "plugin-config-installed", openai: "llm-providers",
-    tavily: "web-search-engine", duckduckgo: "web-search-engine", download: "chat-documents", zoom: "appearance-zoom",
-    notification: "notifications-delivery", update: "marketplace-maintenance",
-  };
-  for (const [query, section] of Object.entries(expected)) {
-    expect(searchSettings(query, translate(en)).map((entry) => entry.section), query).toContain(section);
-  }
-  expect(searchSettings("api key", translate(en)).every((entry) => !entry.matchedLabel?.includes("{"))).toBe(true);
-  expect(searchSettings("line height", translate(en)).find((entry) => entry.section === "appearance-terminal")?.matchedLabel).toBe(en["appearanceTab.terminalLineHeight"]);
+  it("combines Modified with text filters and restores sections when cleared", () => {
+    const root = settingsFixture();
+    expect(filterRenderedSettings(root, "", true).map((match) => match.section.dataset.settingsSection)).toEqual(["appearance-theme"]);
+    expect(filterRenderedSettings(root, "font", true)).toEqual([]);
+    clearSettingsFilter(root);
+    expect([...root.querySelectorAll<HTMLElement>("section")].every((section) => !section.hidden)).toBe(true);
+    expect(settingsTextMatchesQuery("Search API key", " KEY search ")).toBe(true);
+    root.remove();
+  });
 });

@@ -25,7 +25,9 @@ import {
   type PluginProtocolUpdatePath,
 } from "./plugin-doctor-match.js";
 import { requestDirectInstall, requestUpdateReview } from "./git-marketplace/update-review-request.js";
-import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
+import { PluginConfigSchemaForm, pluginConfigFieldLabel } from "./PluginConfigSchemaForm.js";
+import { SettingsControlActions, useSettingsControls, useSettingsEditor, type SettingsControlDescriptor } from "../context/SettingsEditorContext.js";
+import { settingValuesEqual } from "../settings-modified.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
@@ -39,6 +41,13 @@ import { useAlertKinds } from "../hooks/use-alert-kinds.js";
 
 type KV = { key: string; value: string };
 type BannerType = "error" | "success" | "warning";
+type PluginSettingsRead = {
+  requestId: string;
+  loading: boolean;
+  error?: string;
+  config?: Record<string, unknown>;
+  secrets?: Record<string, boolean>;
+};
 
 const PREPARATION_PHASE_I18N_KEY: Record<string, string> = {
   pending: "pluginConfigTab.prepPhasePending",
@@ -196,7 +205,10 @@ function entriesToConfig(entries: KV[]): Record<string, unknown> {
 export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: AveApi; initialPluginId?: string | null; onNavigate?: (tab: string) => void } = {}) {
   const alertsApi = api ?? (() => { try { return getApi(); } catch { return null; } })();
   const alerts = useAlertKinds(alertsApi);
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
+  const settingsEditor = useSettingsEditor();
+  const reloadEpoch = settingsEditor?.reloadEpoch;
+  const [registryRevision, setRegistryRevision] = useState(0);
   // Pull the dialog-wide "저장되었습니다" notifier so every successful
   // plugin-config write — manual key/value editor save, schema-form save,
   // and per-secret writes — surfaces a uniform toast next to the user's
@@ -204,6 +216,9 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const notifySaved = useNotifySaved();
   const [plugins, setPlugins] = useState<PluginCardSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+  const pluginSettingsRequestId = JSON.stringify([selectedId, reloadEpoch, registryRevision]);
   useEffect(() => { if (initialPluginId) setSelectedId(initialPluginId); }, [initialPluginId]);
   const unseen = new Map<string, number>();
   for (const row of alerts.rows) { if (!row.choice.seenByUser) unseen.set(row.pluginId, (unseen.get(row.pluginId) ?? 0) + 1); }
@@ -341,11 +356,13 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         const res = await getApi().setPluginEnabled(pluginId, nextEnabled);
         if (!res.ok) {
           showBanner("error", res.message ?? t("pluginConfigTab.errorToggleEnabled"));
-          return;
+          return { ok: false as const };
         }
         await refreshPlugins();
+        return { ok: true as const };
       } catch (e) {
         showBanner("error", errorMessage(e) || t("pluginConfigTab.errorToggleEnabled"));
+        return { ok: false as const };
       } finally {
         setToggling(null);
       }
@@ -415,13 +432,16 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
 
   // Load config for selected plugin
   const [savedConfig, setSavedConfig] = useState<Record<string, unknown>>({});
+  const [configRead, setConfigRead] = useState<{ requestId: string; loading: boolean; error?: string }>({ requestId: "", loading: false });
   useEffect(() => {
     if (!selectedId) {
       setEntries([]);
       setSavedConfig({});
+      setConfigRead({ requestId: pluginSettingsRequestId, loading: false });
       return;
     }
     let cancelled = false;
+    setConfigRead({ requestId: pluginSettingsRequestId, loading: true });
     (async () => {
       try {
         const result = await window.ave.pluginConfig.get(selectedId);
@@ -429,17 +449,22 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         if (!result.ok) {
           setEntries([]);
           setSavedConfig({});
+          setConfigRead({ requestId: pluginSettingsRequestId, loading: false, error: t("pluginConfigTab.errorLoadConfig") });
           showBanner("error", result.message ?? t("pluginConfigTab.errorLoadConfig"));
           return;
         }
         setEntries(configToEntries(result.config));
         setSavedConfig(result.config as Record<string, unknown>);
-      } catch (e) {
-        if (!cancelled) showBanner("error", errorMessage(e) || t("pluginConfigTab.errorLoadConfig"));
+        setConfigRead({ requestId: pluginSettingsRequestId, loading: false });
+      } catch {
+        if (!cancelled) {
+          setConfigRead({ requestId: pluginSettingsRequestId, loading: false, error: t("pluginConfigTab.errorLoadConfig") });
+          showBanner("error", t("pluginConfigTab.errorLoadConfig"));
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedId, showBanner]);
+  }, [selectedId, showBanner, pluginSettingsRequestId, t]);
 
   const handleAddEntry = useCallback(() => {
     let k: string;
@@ -478,6 +503,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         return;
       }
       setEntries(configToEntries(result.config));
+      setSavedConfig(result.config as Record<string, unknown>);
       showBanner("success", t("pluginConfigTab.successSaved"));
       notifySaved();
     } catch (e) {
@@ -531,12 +557,18 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   // which secret fields already have a value in the keychain, so the masked input shows
 
   const [secretsPresent, setSecretsPresent] = useState<Record<string, boolean>>({});
+  const [secretRead, setSecretRead] = useState<{ requestId: string; loading: boolean; error?: string }>({ requestId: "", loading: false });
+  const secretFieldKeys = Object.entries(selectedPlugin?.configSchema?.properties ?? {})
+    .filter(([, property]) => property.type === "string" && property.format === "secret").map(([key]) => key).join("\n");
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedId || !secretFieldKeys) {
       setSecretsPresent({});
+      setSecretRead({ requestId: pluginSettingsRequestId, loading: false });
       return;
     }
     let cancelled = false;
+    setSecretsPresent({});
+    setSecretRead({ requestId: pluginSettingsRequestId, loading: true });
     (async () => {
       try {
         const result = await window.ave.pluginConfig.listSecretKeys(selectedId);
@@ -547,15 +579,102 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
             map[k] = true;
           }
           setSecretsPresent(map);
+          setSecretRead({ requestId: pluginSettingsRequestId, loading: false });
         } else {
-          setSecretsPresent({});
+          setSecretRead({ requestId: pluginSettingsRequestId, loading: false, error: t("pluginConfigTab.errorLoadConfig") });
         }
       } catch {
-        if (!cancelled) setSecretsPresent({});
+        if (!cancelled) setSecretRead({ requestId: pluginSettingsRequestId, loading: false, error: t("pluginConfigTab.errorLoadConfig") });
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedId]);
+  }, [selectedId, secretFieldKeys, pluginSettingsRequestId, t]);
+
+  const [otherSettings, setOtherSettings] = useState<Record<string, PluginSettingsRead>>({});
+  const editorEnabled = settingsEditor !== null;
+  useEffect(() => {
+    if (!editorEnabled) return;
+    let current = true;
+    const others = plugins.filter((plugin) => plugin.id !== selectedId);
+    setOtherSettings(Object.fromEntries(others.map((plugin) => [plugin.id, { requestId: pluginSettingsRequestId, loading: true }])));
+    void Promise.all(others.map(async (plugin): Promise<[string, PluginSettingsRead]> => {
+      try {
+        const hasSecrets = Object.values(plugin.configSchema?.properties ?? {})
+          .some((property) => property.type === "string" && property.format === "secret");
+        const [config, secrets] = await Promise.all([
+          window.ave.pluginConfig.get(plugin.id),
+          hasSecrets ? window.ave.pluginConfig.listSecretKeys(plugin.id) : Promise.resolve({ ok: true as const, keys: [] as string[] }),
+        ]);
+        if (!config.ok || !secrets.ok) throw new Error("Extension settings unavailable");
+        return [plugin.id, { requestId: pluginSettingsRequestId, loading: false, config: config.config,
+          secrets: Object.fromEntries(secrets.keys.map((key) => [key, true])) }];
+      } catch {
+        return [plugin.id, { requestId: pluginSettingsRequestId, loading: false, error: t("pluginConfigTab.errorLoadConfig") }];
+      }
+    })).then((rows) => { if (current) setOtherSettings(Object.fromEntries(rows)); });
+    return () => { current = false; };
+  }, [editorEnabled, plugins, selectedId, pluginSettingsRequestId, t]);
+
+  const resetPluginField = useCallback(async (pluginId: string, key: string) => {
+    const current = await window.ave.pluginConfig.get(pluginId);
+    if (!current.ok) throw new Error(t("pluginConfigTab.errorLoadConfig"));
+    const next = { ...current.config };
+    delete next[key];
+    const result = await window.ave.pluginConfig.set(pluginId, next);
+    if (!result.ok) throw new Error(t("pluginConfigTab.errorSave"));
+    if (selectedIdRef.current === pluginId) {
+      setSavedConfig(result.config);
+      setEntries(configToEntries(result.config));
+    }
+    setRegistryRevision((revision) => revision + 1);
+    await refreshPlugins();
+  }, [refreshPlugins, t]);
+
+  const resetPluginSecret = useCallback(async (pluginId: string, key: string) => {
+    const result = await window.ave.pluginConfig.setSecret(pluginId, key, "");
+    if (!result.ok) throw new Error(t("pluginConfigTab.errorSaveSecret"));
+    const presence = await window.ave.pluginConfig.listSecretKeys(pluginId);
+    if (!presence.ok) throw new Error(t("pluginConfigTab.errorLoadConfig"));
+    if (selectedIdRef.current === pluginId) {
+      setSecretsPresent(Object.fromEntries(presence.keys.map((present) => [present, true])));
+    }
+    setRegistryRevision((revision) => revision + 1);
+    await refreshPlugins();
+  }, [refreshPlugins, t]);
+
+  const selectedConfigLoading = configRead.requestId !== pluginSettingsRequestId || configRead.loading;
+  const selectedSecretsLoading = secretRead.requestId !== pluginSettingsRequestId || secretRead.loading;
+  const registeredControls: SettingsControlDescriptor[] = [];
+  for (const plugin of plugins) {
+    if (isRuntimeCallablePlugin(plugin) || plugin.loadStatus === "disabled") registeredControls.push({
+      id: `plugins.${plugin.id}.enabled`, section: "plugin-config-installed",
+      label: t("pluginConfigTab.toggleAriaLabel", { name: plugin.name }), modified: !(plugin.active ?? plugin.loadStatus !== "disabled"),
+      ...(plugin.stopping || toggling?.pluginId === plugin.id ? { disabledReason: t("pluginConfigTab.statusStopping") } : {}),
+      reset: async () => { const result = await handleToggleEnabled(plugin.id, true); if (!result.ok) throw new Error(t("pluginConfigTab.errorToggleEnabled")); },
+    });
+    if (plugin.id === selectedId && plugin.configSchema) continue;
+    const snapshot = plugin.id === selectedId
+      ? { requestId: pluginSettingsRequestId, loading: selectedConfigLoading, error: configRead.error, config: savedConfig, secrets: secretsPresent }
+      : otherSettings[plugin.id];
+    const properties = plugin.configSchema?.properties;
+    const keys = properties ? Object.keys(properties) : Object.keys(snapshot?.config ?? {});
+    for (const key of keys) {
+      const property = properties?.[key];
+      const secret = property?.type === "string" && property.format === "secret";
+      const required = plugin.configSchema?.required?.includes(key);
+      const storedValue = snapshot?.config?.[key];
+      const value = storedValue === undefined ? property?.default : storedValue;
+      registeredControls.push({
+        id: `pluginConfig.${plugin.id}.${key}`, section: "plugin-config-installed",
+        label: `${plugin.name}: ${property ? pluginConfigFieldLabel(key, property, locale) : key}`,
+        modified: secret ? Boolean(snapshot?.secrets?.[key]) : !settingValuesEqual(value, property?.default),
+        loading: !snapshot || snapshot.requestId !== pluginSettingsRequestId || snapshot.loading, loadError: snapshot?.error,
+        ...(required && (secret || property?.default === undefined) ? { disabledReason: t("pluginConfigSchemaForm.errorRequired") } : {}),
+        reset: () => secret ? resetPluginSecret(plugin.id, key) : resetPluginField(plugin.id, key),
+      });
+    }
+  }
+  useSettingsControls(registeredControls);
 
   const isDevMode = window.ave?.env?.isDev === true;
   const [localInstalling, setLocalInstalling] = useState(false);
@@ -682,6 +801,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         onConfirm={(id) => handleUninstall(id, uninstallTarget?.name ?? id)}
       />
       <NoticeLiveRegion toast={banner} />
+      {(configRead.error || Object.values(otherSettings).some((snapshot) => snapshot.error)) && (
+        <p role="alert" className="text-xs text-destructive">{t("pluginConfigTab.errorLoadConfig")}
+          <Button size="sm" variant="outline" onClick={() => setRegistryRevision((revision) => revision + 1)}>{t("common.retry")}</Button>
+        </p>
+      )}
       {banner && (
         <div data-testid="plugin-config:banner" data-severity={banner.severity}>
           <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />
@@ -880,10 +1004,11 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       </span>
                     )}
                     {selectedPluginToggleable ? (
-                      <label className="flex items-center gap-1.5 text-tiny text-muted-foreground">
+                      <label data-setting-row={`plugins.${selectedPlugin.id}.enabled`} className="flex items-center gap-1.5 text-tiny text-muted-foreground">
                         <span>{selectedPluginActive ? t("pluginConfigTab.activeLabel") : t("pluginConfigTab.inactiveLabel")}</span>
                         <Switch
                           size="sm"
+                          data-setting-id={`plugins.${selectedPlugin.id}.enabled`}
                           data-testid={`plugin-config:enabled-toggle:${selectedPlugin.id}`}
                           checked={selectedPluginActive}
                           disabled={selectedPluginStopping || toggling?.pluginId === selectedPlugin.id}
@@ -1195,6 +1320,13 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         schema={selectedPlugin.configSchema}
                         values={mergedConfigValues}
                         secretsPresent={secretsPresent}
+                        loading={selectedConfigLoading || selectedSecretsLoading}
+                        loadError={configRead.error ?? secretRead.error}
+                        onResetField={(key) => {
+                          const property = selectedPlugin.configSchema?.properties[key];
+                          return property?.type === "string" && property.format === "secret"
+                            ? resetPluginSecret(selectedPlugin.id, key) : resetPluginField(selectedPlugin.id, key);
+                        }}
                         onSave={async (values) => {
                           setSaving(true);
                           try {
@@ -1266,11 +1398,15 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           <div key={entry.key} className="flex items-center gap-2">
                             <Input
                               className="h-7 text-xs font-mono flex-[0_0_30%]"
+                              data-settings-transient="true"
                               value={entry.key}
                               readOnly
                             />
                             <Input
                               className="h-7 text-xs font-mono flex-1"
+                              {...(Object.hasOwn(savedConfig, entry.key)
+                                ? { "data-setting-id": `pluginConfig.${selectedPlugin.id}.${entry.key}` }
+                                : { "data-settings-transient": "true" })}
                               value={entry.value}
                               onChange={(e) => handleUpdateValue(entry.key, e.target.value)}
                             />
@@ -1292,12 +1428,14 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     <div className="flex items-center gap-2">
                       <Input
                         className="h-7 text-xs font-mono flex-[0_0_30%]"
+                        data-settings-transient="true"
                         placeholder="key"
                         value={newKey}
                         onChange={(e) => setNewKey(e.target.value)}
                       />
                       <Input
                         className="h-7 text-xs font-mono flex-1"
+                        data-settings-transient="true"
                         placeholder={t("pluginConfigTab.valuePlaceholder")}
                         value={newValue}
                         onChange={(e) => setNewValue(e.target.value)}
@@ -1321,6 +1459,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
           </div>
         </div>
       )}
+      <SettingsControlActions section="plugin-config-installed" />
       {alerts.failed && <div role="alert" className="text-xs text-destructive">{t("alerts.loadFailed")} <Button size="sm" variant="outline" onClick={() => void alerts.refresh()}>{t("alerts.retry")}</Button></div>}
       {/* Performance section — the former standalone plugin-perf tab was
           merged here ("성능만 병합"); it renders as a section below the

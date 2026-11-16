@@ -22,6 +22,7 @@ import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
 import { useSettingsPersistence } from "../hooks/use-settings-persistence.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 
 /** Offer bounded shutdown deadlines from policy; free-form overrides remain deployment-owned and the default must stay
  * selectable. */
@@ -47,6 +48,7 @@ export function StartupTab() {
   const notifySaved = useNotifySaved();
   const { error: saveError, persist } = useSettingsPersistence(notifySaved);
   const latestSettings = useRef<AppSettings | null>(null);
+  useAppSettingsControls(["startup-shortcut", "startup-launch", "startup-rendering", "startup-corp-ca", "startup-system-behavior"]);
 
   const [loaded, setLoaded] = useState(false);
   const [bootSettings, setBootSettings] = useState<BootSystemSettings | null>(null);
@@ -315,7 +317,7 @@ export function StartupTab() {
         title={t("startupTab.shortcutSectionTitle")}
         description={t("startupTab.shortcutSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="shortcuts.enabled">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.shortcutEnabledLabel")}
@@ -327,10 +329,11 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.shortcutEnabledLabel")}
             data-testid="startup-shortcut-enabled"
+            data-setting-id="shortcuts.enabled"
           />
         </div>
 
-        <div className="mt-4 min-w-0 space-y-2">
+        <div className="mt-4 min-w-0 space-y-2" data-setting-id="shortcuts.toggleWindow">
           <div className="text-sm font-medium">
             {t("startupTab.shortcutAcceleratorLabel")}
           </div>
@@ -343,6 +346,7 @@ export function StartupTab() {
               onKeyDown={handleKeyCapture}
               onBlur={() => setCapturing(false)}
               data-testid="startup-accelerator-capture"
+              data-settings-transient="true"
               className={[
                 "flex h-9 w-full min-w-0 items-center rounded-md border px-3 text-sm sm:w-auto sm:min-w-[220px]",
                 capturing
@@ -362,6 +366,7 @@ export function StartupTab() {
                 onClick={startCapture}
                 disabled={!loaded}
                 data-testid="startup-accelerator-record"
+                data-settings-transient="true"
               >
                 {t("startupTab.shortcutRecord")}
               </Button>
@@ -392,7 +397,7 @@ export function StartupTab() {
         title={t("startupTab.launchSectionTitle")}
         description={t("startupTab.launchSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="system.launchAtStartup">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.launchAtStartupLabel")}
@@ -404,10 +409,11 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.launchAtStartupLabel")}
             data-testid="startup-launch-at-startup"
+            data-setting-id="system.launchAtStartup"
           />
         </div>
 
-        <div className="mt-4 flex items-center justify-between gap-4">
+        <div className="mt-4 flex items-center justify-between gap-4" data-setting-row="system.launchMinimized">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.launchMinimizedLabel")}
@@ -419,6 +425,7 @@ export function StartupTab() {
             disabled={!loaded || !launchAtStartup}
             aria-label={t("startupTab.launchMinimizedLabel")}
             data-testid="startup-launch-minimized"
+            data-setting-id="system.launchMinimized"
           />
         </div>
       </SettingsSection>
@@ -431,7 +438,7 @@ export function StartupTab() {
         title={t("startupTab.renderingSectionTitle")}
         description={t("startupTab.renderingSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="system.hardwareAcceleration">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.hardwareAccelerationLabel")}
@@ -444,11 +451,13 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.hardwareAccelerationLabel")}
             data-testid="startup-hardware-acceleration"
+            data-setting-id="system.hardwareAcceleration"
           />
         </div>
         <p
           className="mt-2 text-xs text-muted-foreground"
           data-testid="startup-hardware-acceleration-help"
+          data-setting-row="system.hardwareAcceleration"
         >
           {t("startupTab.hardwareAccelerationHelp")}
         </p>
@@ -470,7 +479,7 @@ export function StartupTab() {
         title={t("startupTab.corpCaSectionTitle")}
         description={t("startupTab.corpCaSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="system.corpCaEnabled">
           <span className="min-w-0 text-sm font-medium">
             {t("startupTab.corpCaEnabledLabel")}
             <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaEnabled !== corpCaEnabled} />
@@ -481,9 +490,10 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.corpCaEnabledLabel")}
             data-testid="startup-corp-ca-enabled"
+            data-setting-id="system.corpCaEnabled"
           />
         </div>
-        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-help">
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-help" data-setting-row="system.corpCaEnabled">
           {t("startupTab.corpCaEnabledHelp")}
         </p>
         <EnvForcedNotice
@@ -494,27 +504,29 @@ export function StartupTab() {
           className="mt-2"
         />
 
-        <SettingsTextField
-          id="startup-corp-ca-common-name"
-          label={t("startupTab.corpCaCommonNameLabel")}
-          help={t("startupTab.corpCaCommonNameHelp")}
-          value={corpCaCommonName}
-          onCommit={commitCorpCaCommonName}
-          normalize={normalizeCorpCaCommonName}
-          validate={(raw) => raw.trim().length === 0 ? t("startupTab.corpCaNameRequired") : null}
-          disabled={!loaded || !corpCaEnabled}
-          className="mt-4"
-        >
-          <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaCommonName !== corpCaCommonName} />
-          <EnvForcedNotice
-            settingsPath="system.corpCaCommonName"
-            forcedPaths={envForcedPaths}
-            messageKey="startupTab.corpCaCommonNameEnvForced"
-            testId="startup-corp-ca-common-name-forced"
-          />
-        </SettingsTextField>
+        <div data-setting-id="system.corpCaCommonName">
+          <SettingsTextField
+            id="startup-corp-ca-common-name"
+            label={t("startupTab.corpCaCommonNameLabel")}
+            help={t("startupTab.corpCaCommonNameHelp")}
+            value={corpCaCommonName}
+            onCommit={commitCorpCaCommonName}
+            normalize={normalizeCorpCaCommonName}
+            validate={(raw) => raw.trim().length === 0 ? t("startupTab.corpCaNameRequired") : null}
+            disabled={!loaded || !corpCaEnabled}
+            className="mt-4"
+          >
+            <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaCommonName !== corpCaCommonName} />
+            <EnvForcedNotice
+              settingsPath="system.corpCaCommonName"
+              forcedPaths={envForcedPaths}
+              messageKey="startupTab.corpCaCommonNameEnvForced"
+              testId="startup-corp-ca-common-name-forced"
+            />
+          </SettingsTextField>
+        </div>
 
-        <div className="mt-4 flex items-center justify-between gap-4">
+        <div className="mt-4 flex items-center justify-between gap-4" data-setting-row="system.corpCaDebugLog">
           <span className="min-w-0 text-sm font-medium">
             {t("startupTab.corpCaDebugLabel")}
             <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaDebugLog !== corpCaDebugLog} />
@@ -525,9 +537,10 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.corpCaDebugLabel")}
             data-testid="startup-corp-ca-debug"
+            data-setting-id="system.corpCaDebugLog"
           />
         </div>
-        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-debug-help">
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-debug-help" data-setting-row="system.corpCaDebugLog">
           {t("startupTab.corpCaDebugHelp")}
         </p>
         <EnvForcedNotice
@@ -546,6 +559,7 @@ export function StartupTab() {
         description={t("generalTab.systemBehaviorDescription")}
       >
         <RadioGroup
+          data-setting-id="system.closeBehavior"
           value={closeBehavior}
           onValueChange={handleCloseBehaviorChange}
           className="gap-3"
@@ -576,7 +590,7 @@ export function StartupTab() {
           </div>
         </RadioGroup>
 
-        <div className="mt-4 border-t pt-4">
+        <div className="mt-4 border-t pt-4" data-setting-row="system.shutdownCleanupTimeoutMs">
           <Label htmlFor="shutdown-cleanup-timeout" className="font-medium">
             {t("startupTab.shutdownTimeoutLabel")}
           </Label>
@@ -587,6 +601,7 @@ export function StartupTab() {
             onChange={handleShutdownTimeoutChange}
             disabled={!loaded || envForcedPaths.includes("system.shutdownCleanupTimeoutMs")}
             data-testid="startup-shutdown-timeout"
+            data-setting-id="system.shutdownCleanupTimeoutMs"
           >
             {[...new Set([...SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS, shutdownCleanupTimeoutMs])].sort((a, b) => a - b).map((ms) => (
               <NativeSelectOption key={ms} value={String(ms)}>

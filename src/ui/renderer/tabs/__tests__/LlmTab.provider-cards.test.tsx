@@ -2,7 +2,7 @@ import "../../../../../test/renderer/setup.js";
 import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { assert, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { installMockAveApi, makeMockAveNamespace, mockJudgeGet, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
@@ -729,8 +729,10 @@ describe("LlmTab provider cards", () => {
     await renderTab(api, { fallbackOpen: true, marketplaceProviderPresetId: "fixture-preset", fallbackChain: [{ provider: "openai", model: "draft-model" }] });
     const fallback = screen.getByTestId("fallback-chain-section");
     expect(within(fallback).getByRole("status")).toHaveTextContent(t("llmTab.fallbackPresetUnavailable"));
-    openMenu(within(fallback).getAllByRole("combobox")[0]!);
-    expect(await screen.findByRole("option", { name: getVendorOption("openai-compatible").label, exact: true })).toHaveAttribute("aria-disabled", "true");
+    const [providerPicker] = within(fallback).getAllByRole("combobox");
+    assert.exists(providerPicker);
+    openMenu(providerPicker);
+    expect(await screen.findByRole("option", { name: getVendorOption("openai-compatible").label })).toHaveAttribute("aria-disabled", "true");
   });
 
   it("offers the catalog in release order in the fallback chooser without a key", async () => {
@@ -2030,9 +2032,11 @@ describe("LlmTab grouped model search", () => {
   it("rolls back a pin when its settings write is refused", async () => {
     const { api, list } = await openSearchCatalogue();
     api.updateSettings.mockResolvedValueOnce({ ok: false, error: "invalid-args" });
-    const option = within(list).getAllByRole("option").find((node) => node.querySelector('[data-model-id="openai/gpt-paid"]'))!;
+    const option = within(list).getAllByRole("option").find((node) => node.querySelector('[data-model-id="openai/gpt-paid"]'));
+    assert.exists(option);
     const pin = within(option).getByRole("button", { name: t("llmTab.modelPin") });
-    const id = pin.getAttribute("data-testid")!;
+    const id = pin.getAttribute("data-testid");
+    assert.exists(id);
     fireEvent.click(pin);
     await waitFor(() => expect(screen.getByTestId(id)).toHaveAttribute("aria-pressed", "false"));
     expect(await screen.findByTestId("llm-settings-persist-error")).toHaveAttribute("role", "alert");

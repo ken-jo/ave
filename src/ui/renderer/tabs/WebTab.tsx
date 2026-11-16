@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useAppSettingsControls, useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -66,10 +67,45 @@ export interface WebTabProps {
 
 export function WebTab(props: WebTabProps) {
   const { t } = useTranslation();
+  useAppSettingsControls(["web-search-engine", "web-view-flow"]);
+  const editor = useSettingsEditor();
   const { api, webProvider, setWebProvider, hasWebKey, setHasWebKey, webKeyInput, setWebKeyInput, onSaved, onSaveKey, saving, onImmediateChange } = props;
   const webInfo = WEB_PROVIDERS.find((p) => p.id === webProvider) ?? WEB_PROVIDERS[0];
   const { flow: webViewFlow, setFlow: setWebViewFlow, loaded: webViewLoaded, saving: webViewSaving, error: webViewError } = useWebViewPreferredFlow(api, onSaved);
+  const webViewOption = WEBVIEW_OPTIONS.find((option) => option.value === webViewFlow);
   const keyPersistence = useSettingsPersistence(onSaved);
+  const [keyPresence, setKeyPresence] = useState<Readonly<Record<string, boolean>>>({});
+  const [presenceLoading, setPresenceLoading] = useState(true);
+  const [presenceError, setPresenceError] = useState<string | undefined>(undefined);
+  const presenceKey = JSON.stringify([hasWebKey, webProvider, editor?.reloadEpoch]);
+  const presenceKeyRef = useRef(presenceKey);
+  presenceKeyRef.current = presenceKey;
+  useEffect(() => {
+    let active = true; let revision = 0;
+    const refresh = async () => {
+      const request = ++revision; setPresenceLoading(true);
+      try {
+        const entries = await Promise.all(WEB_PROVIDERS.filter((provider) => provider.needsKey).map(async (provider) => { const present = await api.hasWebApiKey(provider.id); if (typeof present !== "boolean") throw new Error("Invalid credential presence response"); return [provider.id, present] as const; }));
+        if (active && presenceKeyRef.current === presenceKey && request === revision) { setKeyPresence(Object.fromEntries(entries)); setPresenceError(undefined); }
+      } catch { if (active && presenceKeyRef.current === presenceKey && request === revision) setPresenceError(t("settingsEditor.secretPresenceFailed")); }
+      finally { if (active && presenceKeyRef.current === presenceKey && request === revision) setPresenceLoading(false); }
+    };
+    void refresh(); const unsubscribe = api.onSettingsUpdated(() => void refresh());
+    return () => { active = false; unsubscribe(); };
+  }, [api, presenceKey, t]);
+  useSettingsControls(WEB_PROVIDERS.filter((provider) => provider.needsKey).map((provider) => ({
+    id: `webSearch.apiKey.${provider.id}`, section: "web-api-key", label: `${provider.label} · ${t("webTab.apiKeyStaticTitle")}`,
+    modified: keyPresence[provider.id] === true, loading: presenceLoading, loadError: presenceError,
+    reset: async () => {
+      const result = await api.deleteWebApiKey(provider.id); if (result.ok !== true) throw new Error("Web secret reset failed");
+      setKeyPresence((current) => ({ ...current, [provider.id]: false }));
+      if (provider.id === webProvider) { setHasWebKey(false); setWebKeyInput(""); }
+      onSaved();
+    },
+  })));
+
+
+  if (!webViewOption) throw new Error("Invalid browsing flow");
 
   return (
     <div className="space-y-6">
@@ -90,7 +126,7 @@ export function WebTab(props: WebTabProps) {
       >
         <fieldset aria-label={t("webTab.searchEngineTitle")} className="grid min-w-0 grid-cols-2 gap-2">
           {WEB_PROVIDERS.map((p) => (
-            <Button key={p.id} aria-pressed={webProvider === p.id} size="sm" variant={webProvider === p.id ? "default" : "outline"} className="justify-start text-xs" onClick={() => { setWebProvider(p.id); onImmediateChange?.(); }}>
+            <Button key={p.id} aria-pressed={webProvider === p.id} size="sm" variant={webProvider === p.id ? "default" : "outline"} className="justify-start text-xs" disabled={saving || keyPersistence.saving} onClick={() => { setWebProvider(p.id); onImmediateChange?.(); }}>
               {p.label}
             </Button>
           ))}
@@ -110,7 +146,7 @@ export function WebTab(props: WebTabProps) {
               {hasWebKey ? <Badge variant="default" className="text-xs">{t("webTab.keySet")}</Badge> : <Badge variant="secondary" className="text-xs">{t("webTab.keyNotSet")}</Badge>}
               {hasWebKey && <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" disabled={saving || keyPersistence.saving} onClick={() => { void keyPersistence.persist(() => api.deleteWebApiKey(webProvider)).then((result) => { if (result !== null) setHasWebKey(false); }); }}>{t("webTab.deleteButton")}</Button>}
             </div>
-            <Input id="web-api-key-input" disabled={!webInfo.needsKey || saving} aria-label={t("webTab.apiKeyStaticTitle")} type="password" placeholder={hasWebKey ? t("webTab.replaceKeyPlaceholder") : webInfo.placeholder} value={webKeyInput} onChange={(e) => setWebKeyInput(e.target.value)} />
+            <Input data-setting-id={`webSearch.apiKey.${webProvider}`} data-settings-transient={!webInfo.needsKey ? "not-applicable" : undefined} id="web-api-key-input" disabled={!webInfo.needsKey || saving} aria-label={t("webTab.apiKeyStaticTitle")} type="password" placeholder={hasWebKey ? t("webTab.replaceKeyPlaceholder") : webInfo.placeholder} value={webKeyInput} onChange={(e) => setWebKeyInput(e.target.value)} />
             {webKeyInput.trim() && <Badge variant="secondary">{t("llmTab.unsavedChanges")}</Badge>}
             {keyPersistence.error && <p role="alert" className="text-xs text-destructive">{keyPersistence.error}</p>}
             {webInfo.needsKey && <div className="flex justify-end"><Button size="sm" disabled={saving || keyPersistence.saving || !webKeyInput.trim()} onClick={() => { void onSaveKey(); }} data-testid="web-api-key-save">{t("webTab.saveKey")}</Button></div>}
@@ -125,12 +161,13 @@ export function WebTab(props: WebTabProps) {
         description={t("appearanceTab.webViewSectionDescription")}
         actions={
           <span className="text-dense text-muted-foreground">
-            {t("appearanceTab.webViewCurrentLabel")} <span className="text-foreground">{t(WEBVIEW_OPTIONS.find((option) => option.value === webViewFlow)!.label)}</span>
+            {t("appearanceTab.webViewCurrentLabel")} <span className="text-foreground">{t(webViewOption.label)}</span>
           </span>
         }
       >
         <div
           role="radiogroup"
+          data-setting-id="webView.preferredFlow"
           aria-label={t("appearanceTab.webViewRadioGroupLabel")}
           data-testid="webview-preferred-flow"
           className="flex flex-wrap gap-2"

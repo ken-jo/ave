@@ -198,6 +198,7 @@ export function AuditTab() {
             <div className="space-y-1">
               <Label htmlFor="audit-date-from" className="text-dense text-muted-foreground">{t("auditTab.filterDateFrom")}</Label>
               <Input
+                data-settings-transient="true"
                 type="date"
                 className="h-8 text-xs"
                 id="audit-date-from"
@@ -209,6 +210,7 @@ export function AuditTab() {
             <div className="space-y-1">
               <Label htmlFor="audit-date-to" className="text-dense text-muted-foreground">{t("auditTab.filterDateTo")}</Label>
               <Input
+                data-settings-transient="true"
                 type="date"
                 className="h-8 text-xs"
                 id="audit-date-to"
@@ -222,6 +224,7 @@ export function AuditTab() {
             <NativeSelect
               size="sm"
               className="w-32 flex-shrink-0"
+              data-settings-transient="true"
               aria-label={t("auditTab.filterType")}
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
@@ -237,13 +240,14 @@ export function AuditTab() {
             </NativeSelect>
             <Input
               className="h-8 flex-1 text-xs"
+              data-settings-transient="true"
               aria-label={t("auditTab.filterTextPlaceholder")}
               placeholder={t("auditTab.filterTextPlaceholder")}
               value={textSearch}
               onChange={(e) => setTextSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}
             />
-            <Button size="sm" className="h-8" onClick={handleSearch} disabled={loading}>
+            <Button data-settings-transient="true" size="sm" className="h-8" onClick={handleSearch} disabled={loading}>
               {loading ? "..." : t("auditTab.searchButton")}
             </Button>
           </div>
@@ -258,6 +262,7 @@ export function AuditTab() {
               <div className="flex items-center gap-1 text-dense">
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
+                  data-settings-transient="true"
                   aria-label={t("auditTab.previousPage")}
                   disabled={loading || page === 0}
                   onClick={() => handlePage(page - 1)}
@@ -267,6 +272,7 @@ export function AuditTab() {
                 <span>{page + 1} / {totalPages}</span>
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
+                  data-settings-transient="true"
                   aria-label={t("auditTab.nextPage")}
                   disabled={loading || page >= totalPages - 1}
                   onClick={() => handlePage(page + 1)}
@@ -331,6 +337,7 @@ export function AuditTab() {
                             <button
                               type="button"
                               className="w-full cursor-pointer text-left underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+                              data-settings-transient="true"
                               aria-expanded={isExpanded}
                               aria-controls={`audit-entry-details-${i}`}
                               aria-label={t("auditTab.toggleDetails", { number: i + 1 })}

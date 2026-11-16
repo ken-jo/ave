@@ -17,7 +17,7 @@ function install(trusted = false, policy: { policyStatus: string; userServersAll
     getConfigs: vi.fn(async () => present ? [config] : []),
     getConfigPath: vi.fn(async () => "mcp/servers.json"),
     getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", ...policy,
-      managedServerIds: [], servers: { [config.id]: { fingerprint, trusted, arguments: ["--profile", "team alpha"], argumentCount: 2, environmentKeys: ["PROFILE"] } } })),
+      managedServerIds: [], hasApiKey: {}, servers: { [config.id]: { fingerprint, trusted, arguments: ["--profile", "team alpha"], argumentCount: 2, environmentKeys: ["PROFILE"] } } })),
     startServer: vi.fn(async () => { connected = true; return { connected: true }; }),
     kill: vi.fn(async () => { connected = false; }),
     removeConfig: vi.fn(async () => { present = false; connected = false; }),

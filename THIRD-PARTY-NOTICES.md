@@ -346,10 +346,11 @@ License texts and the native API header notices embedded by the FFI and terminal
 
 ## microsoft/vscode (Code - OSS)
 
-- **Source:** `src/vs/base/common/filters.ts` at commit `6659689e6b03ec062f5b7bcea9850b4c59045807`
+- **Source:** `src/vs/base/common/filters.ts` and `src/vs/base/common/objects.ts` at commit `6659689e6b03ec062f5b7bcea9850b4c59045807`
 - **License:** MIT
 - **Ave files containing adapted code:**
   - `src/ui/renderer/settings-text-match.ts`
+  - `src/ui/renderer/settings-modified.ts`
 
 ```text
 MIT License

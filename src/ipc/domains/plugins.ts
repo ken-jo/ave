@@ -838,6 +838,18 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!isUsableMcpServerId(serverId)) throw new Error("invalid-mcp-undo: Invalid server restore request");
     return deps.mcpManager.undoRemove(serverId);
   });
+  ipcMain.handle(CHANNELS.mcp.clearApiKey, async (event, serverId: unknown, intent?: unknown) => {
+    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.mcp.clearApiKey, event);
+      throw new Error("unauthorized-frame: Credential changes require the host main frame");
+    }
+    if (!hasUserKeyboardIntent(intent)
+      || !securitySettingsGestures.consume(event.sender, { channel: CHANNELS.mcp.clearApiKey, payload: { serverId } })) throw new Error("user-keyboard-required: A native user gesture is required");
+    if (!isUsableMcpServerId(serverId) && !isBundledMcpConfigId(serverId)) throw new Error("invalid-mcp-key-clear: Invalid server credential request");
+    const bundled = deps.mcpManager.bundledCredentialRefForConfigId(serverId);
+    if (bundled) await deps.mcpManager.clearBundledApiKey(bundled.packageRef, bundled.server);
+    else await deps.mcpManager.clearApiKey(serverId);
+  });
   ipcMain.handle(CHANNELS.mcp.configAdd, async (e, config: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configAdd, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.addConfig(config as import("../../mcp/types.js").McpServerConfig);

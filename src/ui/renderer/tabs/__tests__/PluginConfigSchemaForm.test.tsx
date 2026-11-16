@@ -29,6 +29,7 @@ describe("PluginConfigSchemaForm field text language", () => {
         schema={schema}
         values={{}}
         secretsPresent={{}}
+        onResetField={() => undefined}
         onSave={() => undefined}
         onSetSecret={() => undefined}
       />
@@ -59,9 +60,9 @@ describe("PluginConfigSchemaForm validation and secret persistence", () => {
     const onSave = vi.fn(async (_values: Record<string, unknown>) => undefined);
     const onSetSecret = vi.fn(async (_key: string, _value: string) => undefined);
     const { rerender } = render(<PluginConfigSchemaForm pluginId="settings-extension" schema={schema} values={values}
-      secretsPresent={secretsPresent} onSave={onSave} onSetSecret={onSetSecret} />);
+      secretsPresent={secretsPresent} onResetField={() => undefined} onSave={onSave} onSetSecret={onSetSecret} />);
     const updateSecretPresence = (next: Record<string, boolean>) => rerender(<PluginConfigSchemaForm
-      pluginId="settings-extension" schema={schema} values={values} secretsPresent={next} onSave={onSave} onSetSecret={onSetSecret} />);
+      pluginId="settings-extension" schema={schema} values={values} secretsPresent={next} onResetField={() => undefined} onSave={onSave} onSetSecret={onSetSecret} />);
     return { onSave, onSetSecret, updateSecretPresence };
   }
 
