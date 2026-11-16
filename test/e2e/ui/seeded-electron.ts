@@ -322,7 +322,7 @@ export async function launchSeededElectron(opts: {
   }
 }
 
-/** Keep automation through native cleanup and require process and inherited-pipe closure. */
+/** Request graceful shutdown once and require process and inherited-pipe closure. */
 export async function quitElectron(app: ElectronApplication): Promise<void> {
   const child = electronProcesses.get(app);
   if (!child) throw new Error("The native process was not registered at launch");
@@ -335,18 +335,14 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
   }
   const exited = once(child, "exit").then(() => {});
   const stopped = Promise.all([exited, closed]);
-  const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
-    runtimeApp.once("will-quit", () => resolve());
-    runtimeApp.quit();
-  })).catch((error: unknown) => {
-    if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
+  // close() owns the quit request and debugger disconnection. Calling it after will-quit can strand its second
+  // quit request behind native shutdown's wait for that same debugger to disconnect.
+  const closing = app.close().catch((error: unknown) => {
+    if (child.exitCode === null && child.signalCode === null) console.warn("Native close response failed before process exit", error);
     return exited;
   });
-  await Promise.race([readyToExit, stopped]);
-  if (child.exitCode === null && child.signalCode === null) {
-    // Native exit can overtake an in-flight context request, but never substitutes for pipe closure.
-    await Promise.race([app.close(), exited]);
-  }
+  // Native closure can overtake an in-flight close response, but never substitutes for pipe closure.
+  await Promise.race([closing, stopped]);
   await stopped;
   if (child.exitCode !== 0 || child.signalCode !== null) {
     throw new Error(`Native application quit failed: exit=${child.exitCode}, signal=${child.signalCode}`);

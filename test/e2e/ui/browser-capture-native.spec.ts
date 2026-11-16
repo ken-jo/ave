@@ -421,12 +421,31 @@ test("native parked agent tab wakes for full-page capture without selecting its 
   await host.locator("#slot").evaluate((element) => { element.style.display = "none"; });
   await expect.poll(async () => (await inspectBrowserTarget(app, target.windowId, target.pageUrl)).attached, { timeout: 15_000 }).toBe(false);
   const result = await capture(app, { fullPage: true });
+  await attachImage(testInfo, "parked-full-page-capture", result);
   expect(result.dimensions.height).toBeGreaterThan(result.viewport.height * 2);
   expect(result.dimensions).toEqual({ width: result.viewport.width, height: result.content.height });
   expectFixtureBands(result);
   await expect(host.locator("#slot")).toBeHidden();
   expect(await inspectBrowserTarget(app, target.windowId, target.pageUrl)).toMatchObject({ id: target.targetId, attached: false });
-  await attachImage(testInfo, "parked-full-page-capture", result);
+});
+
+test("native full-page capture includes content painted when scrolling completes", async ({ sharedApp: app }, testInfo) => {
+  await app.evaluate(async ({ webContents }) => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
+    if (!guest) throw new Error("Capture fixture guest is unavailable");
+    await guest.executeJavaScript(`(() => {
+      const marker = document.createElement('div');
+      marker.style.cssText = 'position:absolute;left:650px;top:1920px;width:100px;height:400px;background:white';
+      document.body.append(marker);
+      window.addEventListener('scrollend', () => {
+        if (scrollY >= 1300) marker.style.background = '#00a65a';
+      });
+    })()`);
+  });
+  const result = await capture(app, { fullPage: true });
+  await attachImage(testInfo, "scroll-completion-capture", result);
+  expectFixtureBands(result);
 });
 
 test("parked native page retains compositor frames and trusted clicks without disturbing the host editor", async ({ sharedApp: app }, testInfo) => {

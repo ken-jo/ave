@@ -839,6 +839,29 @@ describe("native browser pane presentation", () => {
     expect(nativePage().loadURL).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["hide", "minimize"])("ignores a late %s notification for an already visible owner", async event => {
+    const state = await create();
+    await present(state);
+    if (event === "hide") owner.visible = false;
+    else owner.minimized = true;
+    owner.emit(event);
+    expectParkedPage();
+    owner.visible = true;
+    owner.minimized = false;
+    owner.emit(event === "hide" ? "show" : "restore");
+    const container = requiredValue(ownerChildren()[0], "native presentation container");
+    const bounds = container.getBounds();
+    vi.mocked(deps.bind).mockClear();
+    vi.mocked(deps.changed).mockClear();
+
+    owner.emit(event);
+
+    expect(container.getBounds()).toEqual(bounds);
+    expect(deps.bind).not.toHaveBeenCalled();
+    expect(deps.changed).not.toHaveBeenCalled();
+    expect(host.input(owner.id, pointer(state))).toBe(true);
+  });
+
   it("retains native presentation and epoch through subframe loading and same-document UI navigation", async () => {
     const state = await create();
     await present(state);
