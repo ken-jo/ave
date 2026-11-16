@@ -45,6 +45,19 @@ describe("CustomTitleBar", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["native", "trailing", "leading"] as const)("keeps native resize edges outside the %s drag band", (placement) => {
+    setupBridges(placement === "native", placement);
+    const view = render(<CustomTitleBar />);
+    const band = view.getByTestId(placement === "native" ? "custom-titlebar-darwin" : "custom-titlebar");
+    const interior = view.getByTestId("titlebar-drag-region");
+    const region = (element: HTMLElement) => element.style.getPropertyValue("-webkit-app-region")
+      || (element.style as unknown as Record<string, string>).WebkitAppRegion;
+    expect(region(band)).toBe("no-drag");
+    expect(region(interior)).toBe("drag");
+    expect(interior).toHaveClass("inset-x-(--chrome-gap-tight)", "top-(--chrome-gap-tight)", "pointer-events-none");
+    if (placement !== "native") expect(region(view.getByTestId("titlebar-controls"))).toBe("no-drag");
+  });
+
   describe("macOS (isDarwin=true)", () => {
     beforeEach(() => setupBridges(true));
 

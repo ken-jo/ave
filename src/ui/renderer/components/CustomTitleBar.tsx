@@ -27,8 +27,8 @@ export interface CustomTitleBarProps {
    * Band content — the app toolbar cluster (collapse toggle,
    * Dev badge, search / star / export). Rendered in the band's left + middle,
    * LEFT of the native window controls. Interactive controls inside must wrap
-   * themselves `WebkitAppRegion: "no-drag"`; the band itself is a drag region
-   * in the gaps between them.
+   * themselves `WebkitAppRegion: "no-drag"`; the inset band interior drags
+   * in the gaps between them, leaving the window edges to native resizing.
    */
   children?: ReactNode;
   /** Use the larger of sidebar and native-control leading reserves, never stack both paddings. */
@@ -97,21 +97,33 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     );
   }
 
+  // Keep the top and side edges outside the drag rectangle. Native hit testing
+  // must reach the resize border before treating a point as a window move.
+  const dragRegion = (
+    <div
+      aria-hidden="true"
+      data-testid="titlebar-drag-region"
+      className="pointer-events-none absolute inset-x-(--chrome-gap-tight) top-(--chrome-gap-tight) bottom-0"
+      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+    />
+  );
+
   if (isDarwin) {
     // Keep chrome dimensions in pixels to align native controls across font scales; move band height and traffic-light
     // geometry together.
     return (
       <div
         data-testid="custom-titlebar-darwin"
-        className="ave-glass-clear flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="ave-glass-clear relative flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_LEAD_PAD_DARWIN, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
           // @ts-expect-error — Electron-specific CSS extension
-          WebkitAppRegion: "drag",
+          WebkitAppRegion: "no-drag",
         }}
         onDoubleClick={handleDoubleClick}
       >
+        {dragRegion}
         {children}
       </div>
     );
@@ -166,15 +178,16 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     <div
       data-testid="custom-titlebar"
       data-window-controls={leading ? "leading" : "trailing"}
-      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
+      className="ave-glass-clear relative flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
       style={{
         paddingLeft: `${Math.max(leading ? BAND_LEAD_PAD_LINUX : BAND_EDGE_PAD, leadClearance)}px`,
         paddingRight: leading ? `${BAND_EDGE_PAD}px` : undefined,
         // @ts-expect-error — Electron-specific CSS extension
-        WebkitAppRegion: "drag",
+        WebkitAppRegion: "no-drag",
       }}
       onDoubleClick={handleDoubleClick}
     >
+      {dragRegion}
       {leading ? controls : null}
       {children}
       {leading ? null : controls}
