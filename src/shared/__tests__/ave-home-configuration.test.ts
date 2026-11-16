@@ -278,7 +278,7 @@ describe("protected home configuration", () => {
       expect(readFileSync(asideOf(diagnostics, dir, name), "utf8")).toBe(bytes);
     }
     // A home with legacy content starts its trust manifest pending review.
-    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toMatchObject({ version: 1, state: "bootstrapped:false", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
+    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toEqual({ version: 1, state: "bootstrapped:false", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
     _resetAveHomePrivacyForTest();
     expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir))).toEqual([]);
   });
@@ -435,7 +435,7 @@ describe("protected home configuration", () => {
     expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(DEFAULT_SETTINGS);
     expect(JSON.parse(readFileSync(join(dir, "config", "policy.json"), "utf8"))).toEqual(DEFAULT_POLICY);
     // Placeholders are not legacy content, so the home starts fresh rather than pending review.
-    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toMatchObject({ version: 1, state: "fresh", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
+    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toEqual({ version: 1, state: "fresh", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
     for (const name of names) expect(statSync(join(dir, name)).size).toBe(0);
     expect(readdirSync(dir).filter((name) => name.includes(".post-migration-"))).toEqual([]);
   });

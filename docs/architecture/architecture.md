@@ -3652,14 +3652,21 @@ with its own owner rule:
   relative, `/`-separated, lower-cased on Windows) holds `current` and at most
   one `pendingWrite` SHA-256. `coveredFiles` records the known single-file keys;
   an absent record identifies a manifest written before board coverage. At boot
-  the owner may adopt an existing `work-board/board.json` when coverage is absent
-  or explicitly excludes it, it has no entry or permanent `adoptedFiles` marker, and
+  the owner may adopt an existing `work-board/board.json` when coverage is absent,
+  it has no entry or permanent `adoptedFiles` marker, and
   ownership evidence is clean. Template authority and stage state are stripped
   using the same helper as legacy plugin-board migration before its hash, marker
   and current coverage are recorded in one atomic manifest replacement.
   Rebuilt missing or corrupt manifests never adopt existing inputs. The current
   coverage set is recorded even when the board is absent, so later files cannot
-  reopen adoption. Covered inputs are `permissions.json` and the
+  reopen adoption. A definite refusal (recorded coverage, an existing entry or marker,
+  successfully read foreign-edit or ownership evidence, or invalid board content)
+  consumes the transition and leaves the board for review. A transient ownership,
+  permission or filesystem read error, or a failed strip or manifest write, records
+  neither coverage nor an adoption marker: the board stays pending for this boot
+  (fail-closed), with no retry until the next boot re-evaluates it. A failed strip
+  write logs only its error code and never throws through boot.
+  Covered inputs are `permissions.json` and the
   `permissions/` stores, `mcp/servers.json`, `governance/mcp-policy.json`,
   `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
   plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,

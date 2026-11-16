@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
 import type { AveApi } from "../../types.js";
 import type { WorkItemResolved } from "../../../../shared/work-board-types.js";
+import { t } from "../../../../i18n/index.js";
 
 const result: WorkItemResolved = { id: 2, title: "Export journal", status: "in_progress", status_resolved: "overdue", mutationRevision: "a".repeat(64), priority: "high", runStatus: "completed", output: "Export finished with 3 files", runId: "run-2", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-02T00:00:00Z" };
 function apiFor(items: WorkItemResolved[]) {
@@ -29,7 +30,10 @@ describe("work board review", () => {
     let changed = () => {};
     api.onWorkBoardItemChanged = handler => { changed = handler; return () => {}; };
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
-    expect(await screen.findByTestId("work-board-pending-review")).toHaveTextContent("검토");
+    const notice = await screen.findByTestId("work-board-pending-review");
+    expect(notice).toHaveTextContent(t("settingsContent.tabPermissions"));
+    expect(notice).toHaveTextContent(t("permissionsTab.homeTrustTitle"));
+    expect(notice.textContent).not.toMatch(/\{(?:tabPermissions|homeTrustTitle)\}/);
     expect(screen.queryByTestId("work-board-card")).toBeNull();
     changed();
     expect(await screen.findByTestId("work-board-card")).toBeTruthy();

@@ -395,15 +395,15 @@ export class WorkBoardStore {
   readonly boardChanged = new ChangeSignal((err) => log.warn("[work-board] change listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
-  private pendingReview = false;
   private readonly warnedTemplateRows = new Set<number>();
-  private readBoard(): Promise<BoardFile> {
-    this.pendingReview = false;
-    return readFileOrEmpty(this.filePath, item => {
+  private async readBoard(): Promise<{ board: BoardFile; pendingReview: boolean }> {
+    let pendingReview = false;
+    const board = await readFileOrEmpty(this.filePath, item => {
       if (this.warnedTemplateRows.has(item.id)) return;
       this.warnedTemplateRows.add(item.id);
       log.warn("[work-board-store] unreadable template state on item %d; execution refused", item.id);
-    }, () => { this.pendingReview = true; });
+    }, () => { pendingReview = true; });
+    return { board, pendingReview };
   }
   private readonly filePath: string;
   // Activity-log storage rooted in the same directory as `board.json`.
@@ -433,8 +433,10 @@ export class WorkBoardStore {
   }
 
   async load(): Promise<void> {
-    this.cache = await this.readBoard();
-    this.loaded = true;
+    await withInProcessFileQueue(this.filePath, async () => {
+      this.cache = (await this.readBoard()).board;
+      this.loaded = true;
+    });
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -443,14 +445,14 @@ export class WorkBoardStore {
 
   // List items, newest-id first, with `status_resolved` computed + filter applied.
   async list(filter: WorkItemListFilter = {}): Promise<WorkItemListResult> {
-    await this.load();
-    if (this.pendingReview) return { status: "pending-review" };
+    const { board, pendingReview } = await this.readBoard();
+    if (pendingReview) return { status: "pending-review" };
     if (filter.limit !== undefined && (!Number.isFinite(filter.limit) || filter.limit < 0)) {
       return { status: "invalid", reason: "limit must be a non-negative number" };
     }
     const projectRoot = normalizeOptionalString(filter.projectRoot, MAX_PROJECT_ROOT_LENGTH);
     const nowMs = this.now();
-    let rows = this.cache.items
+    let rows = board.items
       .map((item) => decorate(cloneItem(item), nowMs))
       .sort((a, b) => b.id - a.id);
     if (projectRoot) {
@@ -511,7 +513,7 @@ export class WorkBoardStore {
     const projectName = normalizeOptionalString(input.projectName, MAX_PROJECT_NAME_LENGTH);
 
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
@@ -579,7 +581,7 @@ export class WorkBoardStore {
     }
 
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -626,7 +628,7 @@ export class WorkBoardStore {
     }
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -696,7 +698,7 @@ export class WorkBoardStore {
   ): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -730,7 +732,7 @@ export class WorkBoardStore {
   async beginRun(id: number, runId: string, startedAt: string, pin?: TemplateRunStart): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -785,7 +787,7 @@ export class WorkBoardStore {
   async updateStageRun(id: number, runId: string, mutate: (item: WorkItem) => WorkItem | null): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex(item => item.id === id);
       if (idx === -1) return { status: "not_found", itemId: id };
       const prior = board.items[idx];
@@ -805,7 +807,7 @@ export class WorkBoardStore {
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const iso = new Date(this.now()).toISOString();
       let count = 0;
       for (let i = 0; i < board.items.length; i++) {
@@ -843,7 +845,7 @@ export class WorkBoardStore {
   async setRunSessionId(id: number, runSessionId: string): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -870,7 +872,7 @@ export class WorkBoardStore {
   async setRunResult(id: number, result: RunResultPatch): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -905,7 +907,7 @@ export class WorkBoardStore {
   ): Promise<WorkItemUpdateResult | null> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -948,7 +950,7 @@ export class WorkBoardStore {
   async decidePlan(id: number, input: PlanDecisionInput): Promise<PlanDecisionResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       // The board is mutated below, so the cache takes it only after the write lands; a refusal caches the board as read.
       const refuse = (reason: Extract<PlanDecisionResult, { status: "refused" }>["reason"]): PlanDecisionResult => {
         this.cache = board;
@@ -1004,7 +1006,7 @@ export class WorkBoardStore {
   async remove(id: number): Promise<WorkItemDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard();
+      const { board } = await this.readBoard();
       const item = board.items.find((i) => i.id === id);
       if (!item) {
         this.cache = board;

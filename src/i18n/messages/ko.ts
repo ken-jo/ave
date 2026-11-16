@@ -6196,7 +6196,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // workBoard
   "workBoard.panelTitle": "업무 보드",
-  "workBoard.pendingReview": "이 보드는 검토가 필요합니다. 설정 > 권한 > Ave 폴더의 콘텐츠 검토에서 work-board/board.json을 검토한 뒤 Ave를 다시 시작하세요.",
+  "workBoard.pendingReview": "이 보드는 검토가 필요합니다. 설정 > {tabPermissions} > {homeTrustTitle}에서 work-board/board.json을 검토한 뒤 Ave를 다시 시작하세요.",
   "workBoard.panelDescription": "예정·진행 중·검토·완료 단계로 업무를 추적합니다.",
   "workBoard.addItemButton": "작업 추가",
   "workBoard.refreshButton": "새로고침",

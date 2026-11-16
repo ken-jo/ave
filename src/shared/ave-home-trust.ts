@@ -646,7 +646,7 @@ function parseManifest(bytes: Buffer): TrustManifest | undefined {
 }
 
 /** The hash of an input as it is on disk now, or undefined when it is absent, a link or unreadable. */
-function currentHash(input: Omit<CoveredInput, "name">, home: string): { hash: string; uids: number[]; bytes?: Buffer; files?: readonly string[] } | undefined {
+function currentHash(input: Omit<CoveredInput, "name">, home: string, propagateErrors = false): { hash: string; uids: number[]; bytes?: Buffer; files?: readonly string[] } | undefined {
   try {
     const pinned = assertNoLinkBelow(home, input.path);
     if (pinned === undefined) return undefined;
@@ -656,7 +656,8 @@ function currentHash(input: Omit<CoveredInput, "name">, home: string): { hash: s
     }
     const read = readRegularFile(input.path, pinned);
     return { hash: input.kind === "entry" ? entryFileDigestOf(read.bytes) : sha256Hex(read.bytes), uids: [read.uid], bytes: read.bytes };
-  } catch {
+  } catch (error) {
+    if (propagateErrors) throw error;
     return undefined;
   }
 }
@@ -664,7 +665,7 @@ function currentHash(input: Omit<CoveredInput, "name">, home: string): { hash: s
 const WINDOWS_TRUSTED_OWNERS = new Set(["S-1-5-18", "S-1-5-32-544"]);
 
 /** The Windows owner/ACL overlay: owner or ACE evidence of another principal withdraws an item's trust for this run (R1). */
-function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean } {
+function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean; readFailed?: true } {
   if (process.platform !== "win32" || inputs.length === 0) return { withdrawn: new Map(), clean: true };
   const paths: string[] = [];
   const keys: string[] = [];
@@ -684,7 +685,7 @@ function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withd
   }
   let facts: readonly WindowsDaclFacts[];
   try { facts = readWindowsDacls(paths); }
-  catch { return { withdrawn: new Map(), clean: false }; }
+  catch { return { withdrawn: new Map(), clean: false, readFailed: true }; }
   return classifyWindowsHomeEvidence(facts, keys);
 }
 
@@ -692,12 +693,13 @@ function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withd
  * Classify the owner and DACL facts read for each covered key (one row per path, `keys[i]` naming the item `facts[i]` belongs
  * to). Pure, so the Windows overlay is tested on every platform.
  */
-export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], keys: readonly string[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean } {
+export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], keys: readonly string[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean; readFailed?: true } {
   const withdrawn = new Map<string, "foreign-owner" | "foreign-access">();
   let clean = facts.length === keys.length;
+  let readFailed = !clean;
   facts.forEach((row, index) => {
     const key = keys[index]!;
-    if (row.exists !== true || !row.dacl) { clean = false; return; }
+    if (row.exists !== true || !row.dacl) { clean = false; readFailed = true; return; }
     const user = row.currentUserSid;
     if (row.dacl.owner !== user && !WINDOWS_TRUSTED_OWNERS.has(row.dacl.owner ?? "")) {
       withdrawn.set(key, "foreign-owner");
@@ -706,38 +708,52 @@ export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], 
     }
     let rules;
     try { rules = windowsOwnerRules(row.dacl); }
-    catch { withdrawn.set(key, "foreign-access"); clean = false; return; }
+    catch { withdrawn.set(key, "foreign-access"); clean = false; readFailed = true; return; }
     if (rules.some((rule) => rule.accessControlType === 0 && rule.sid !== user && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid))) {
       if (!withdrawn.has(key)) withdrawn.set(key, "foreign-access");
       clean = false;
     }
   });
-  return { withdrawn, clean };
+  return { withdrawn, clean, ...(readFailed ? { readFailed: true as const } : {}) };
+}
+
+type BoardAdoptionResult = "adopted" | "refused" | "deferred";
+
+function reportBoardAdoptionError(error: unknown): void {
+  const code = isRecord(error) && typeof error.code === "string" && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? error.code : "UNKNOWN";
+  console.warn(`[home-trust] Board adoption deferred: ${code}`);
 }
 
 /** Missing coverage identifies a pre-coverage manifest; recorded coverage is authoritative. */
-function adoptPreCoverageBoard(trust: ActiveTrust, inputs: readonly CoveredInput[]): boolean {
+function adoptPreCoverageBoard(trust: ActiveTrust, inputs: readonly CoveredInput[], evidenceReadFailed: boolean): BoardAdoptionResult {
   const key = "work-board/board.json";
   const manifest = trust.manifest;
-  if (manifest.coveredFiles?.includes(key) || manifest.adoptedFiles?.includes(key) || manifest.entries[key] !== undefined) return false;
-  if (!isAveHomeConfigurationOwner() || !trust.evidenceClean || trust.withdrawn.has(key)) return false;
+  if (manifest.coveredFiles !== undefined || manifest.adoptedFiles?.includes(key) || manifest.entries[key] !== undefined) return "refused";
   const input = inputs.find(input => input.key === key);
-  if (input === undefined || input.blocked !== undefined) return false;
-  const current = currentHash(input, trust.home);
-  if (current?.bytes === undefined || posixForeign(current.uids)) return false;
-  let parsed: unknown;
-  try { parsed = JSON.parse(current.bytes.toString("utf8")); } catch { return false; }
-  if (!isRecord(parsed) || !Array.isArray(parsed.items)) return false;
-  const stripped = stripLegacyBoardTemplateRunFields({ ...parsed, items: parsed.items });
-  const body = JSON.stringify(stripped) === JSON.stringify(parsed) ? current.bytes.toString("utf8") : `${JSON.stringify(stripped, null, 2)}\n`;
-  const unchanged = (): boolean => isAveHomeConfigurationOwner() && currentHash(input, trust.home)?.hash === current.hash;
-  if (body !== current.bytes.toString("utf8") && !replaceUtf8FileAtomicSyncIf(input.path, body, unchanged)) return false;
-  if (!isAveHomeConfigurationOwner() || currentHash(input, trust.home)?.hash !== sha256Hex(body)) return false;
-  const adopted: TrustManifest = { ...manifest, coveredFiles: [...COVERED_FILE_KEYS], adoptedFiles: [...(manifest.adoptedFiles ?? []), key], entries: { ...manifest.entries, [key]: { current: sha256Hex(body) } } };
-  // The hash and the permanent per-key marker land in the same atomic manifest replacement.
-  persist({ ...trust, manifest: adopted });
-  trust.manifest = adopted;
-  return true;
+  if (input === undefined || input.blocked !== undefined) return "refused";
+  if (evidenceReadFailed) return "deferred";
+  if (!isAveHomeConfigurationOwner() || !trust.evidenceClean || trust.withdrawn.has(key)) return "refused";
+  try {
+    const current = currentHash(input, trust.home, true);
+    if (current?.bytes === undefined || posixForeign(current.uids)) return "refused";
+    let parsed: unknown;
+    try { parsed = JSON.parse(current.bytes.toString("utf8")); } catch { return "refused"; }
+    if (!isRecord(parsed) || !Array.isArray(parsed.items)) return "refused";
+    const stripped = stripLegacyBoardTemplateRunFields({ ...parsed, items: parsed.items });
+    const body = JSON.stringify(stripped) === JSON.stringify(parsed) ? current.bytes.toString("utf8") : `${JSON.stringify(stripped, null, 2)}\n`;
+    const unchanged = (): boolean => isAveHomeConfigurationOwner() && currentHash(input, trust.home, true)?.hash === current.hash;
+    if (body !== current.bytes.toString("utf8") && !replaceUtf8FileAtomicSyncIf(input.path, body, unchanged)) return "refused";
+    if (!isAveHomeConfigurationOwner() || currentHash(input, trust.home, true)?.hash !== sha256Hex(body)) return "refused";
+    const adopted: TrustManifest = { ...manifest, coveredFiles: [...COVERED_FILE_KEYS], adoptedFiles: [...(manifest.adoptedFiles ?? []), key], entries: { ...manifest.entries, [key]: { current: sha256Hex(body) } } };
+    // The hash and the permanent per-key marker land in the same atomic manifest replacement.
+    persist({ ...trust, manifest: adopted });
+    trust.manifest = adopted;
+    return "adopted";
+  } catch (error) {
+    if (error instanceof LinkedInputError || error instanceof AmbiguousInputError) return "refused";
+    reportBoardAdoptionError(error);
+    return "deferred";
+  }
 }
 
 export interface AveHomeTrustVerdict {
@@ -785,15 +801,22 @@ export function evaluateAveHomeTrustAtBoot(home: string): AveHomeTrustVerdict {
   }
   const evidence = windowsEvidence(root, inputs);
   active = { home: root, manifest, withdrawn: evidence.withdrawn, evidenceClean: evidence.clean, pendingAtBoot: false };
+  let adoption: BoardAdoptionResult = "refused";
   if (isAveHomeConfigurationOwner()) {
-    if (adoptPreCoverageBoard(active, inputs)) manifest = active.manifest;
-    if (JSON.stringify(manifest.coveredFiles) !== JSON.stringify([...COVERED_FILE_KEYS])) {
-      manifest.coveredFiles = [...COVERED_FILE_KEYS];
-      changed = true;
+    adoption = adoptPreCoverageBoard(active, inputs, evidence.readFailed === true);
+    if (adoption === "adopted") manifest = active.manifest;
+    else if (adoption === "refused" && (changed || JSON.stringify(manifest.coveredFiles) !== JSON.stringify([...COVERED_FILE_KEYS]))) {
+      const covered = { ...manifest, coveredFiles: [...COVERED_FILE_KEYS] };
+      try {
+        persist({ ...active, manifest: covered });
+        active.manifest = manifest = covered;
+      } catch (error) {
+        reportBoardAdoptionError(error);
+        adoption = "deferred";
+      }
     }
-    if (changed) persist(active);
   }
-  const pending = reviewRows(active).length > 0;
+  const pending = adoption === "deferred" || reviewRows(active).length > 0;
   active = { ...active, pendingAtBoot: pending };
   setAtomicWriteGuard(guardWrite);
   return { pending, state: manifest.state };

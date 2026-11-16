@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { WorkBoardStore, itemDigestOf, planHashOf } from "../work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { localDateKey } from "../../shared/local-date.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import * as featureNamespace from "../storage/feature-namespace.js";
 
 // Lets a test fail the next board write; every other write goes to disk as usual.
 const writeFault = vi.hoisted(() => ({ failNext: false }));
@@ -42,6 +44,58 @@ const FIXED_NOW = Date.parse("2026-06-15T12:00:00.000Z");
 const fixedClock = () => FIXED_NOW;
 
 describe("WorkBoardStore — CRUD round-trip", () => {
+  it("keeps an untrusted list pending while another read is suspended", async () => {
+    const { store, cleanup } = tempBoard();
+    const release = deferred<void>();
+    const read = featureNamespace.readJsonFileOrEmpty;
+    let overlappingRead: Promise<void> | undefined;
+    const spy = vi.spyOn(featureNamespace, "readJsonFileOrEmpty")
+      .mockImplementationOnce(async (_path, empty, _hydrate, onPendingReview) => {
+        onPendingReview?.();
+        overlappingRead = store.load();
+        return empty();
+      })
+      .mockImplementationOnce(async (...args) => {
+        await release.promise;
+        return read(...args);
+      });
+    try {
+      expect(await store.list()).toEqual({ status: "pending-review" });
+    } finally {
+      release.resolve();
+      await overlappingRead;
+      spy.mockRestore();
+      await cleanup();
+    }
+  });
+  it("keeps a committed item cached when an older list read finishes later", async () => {
+    const { store, cleanup } = tempBoard(fixedClock);
+    const created = await store.create({ title: "Before" });
+    if (created.status !== "created") throw new Error("Setup failed");
+    await store.load();
+    const captured = deferred<void>();
+    const release = deferred<void>();
+    const read = featureNamespace.readJsonFileOrEmpty;
+    const spy = vi.spyOn(featureNamespace, "readJsonFileOrEmpty").mockImplementationOnce(async (...args) => {
+      const board = await read(...args);
+      captured.resolve();
+      await release.promise;
+      return board;
+    });
+    const listing = store.list();
+    try {
+      await captured.promise;
+      expect(await store.update(created.itemId, { title: "After" })).toMatchObject({ status: "updated" });
+      release.resolve();
+      await listing;
+      expect(await store.get(created.itemId)).toMatchObject({ status: "found", item: { title: "After" } });
+    } finally {
+      release.resolve();
+      await listing;
+      spy.mockRestore();
+      await cleanup();
+    }
+  });
   it("creates, lists, gets, updates, transitions, completes, reopens, and removes", async () => {
     const { store, cleanup } = tempBoard(fixedClock);
     try {

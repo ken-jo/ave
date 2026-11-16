@@ -6194,7 +6194,7 @@ export const en = {
 
   // workBoard
   "workBoard.panelTitle": "Work Board",
-  "workBoard.pendingReview": "This board needs review. Open Settings > Permissions > Review content in the Ave folder, review work-board/board.json, then restart Ave.",
+  "workBoard.pendingReview": "This board needs review. Open Settings > {tabPermissions} > {homeTrustTitle}, review work-board/board.json, then restart Ave.",
   "workBoard.panelDescription": "Track work through Planned, In progress, Review, and Completed.",
   "workBoard.addItemButton": "Add task",
   "workBoard.refreshButton": "Refresh",
