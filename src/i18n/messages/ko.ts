@@ -6540,4 +6540,11 @@ export const ko: Record<MessageCatalogKey, string> = {
   "shortcutsTab.unbind": "해제",
   "shortcutsTab.unbindAria": "{label} 단축키 해제",
   "shortcutsTab.saveFailed": "키보드 단축키를 저장하지 못했습니다.",
+  "auditTab.filterType": "이벤트 유형",
+  "auditTab.previousPage": "이전 페이지",
+  "auditTab.nextPage": "다음 페이지",
+  "auditTab.toggleDetails": "이벤트 {number} 상세 내용 펼치기 또는 접기",
+  "auditTab.entryDetails": "이벤트 상세 내용",
+  "auditTab.logLevel": "로그 수준",
+  "rolesTab.packagedAgents": "기본 에이전트 지침",
 };

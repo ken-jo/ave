@@ -204,6 +204,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
             <NativeSelect
               size="sm"
               className="w-28"
+              aria-label={t("auditTab.logLevel")}
               value={logLevel}
               onChange={(e) => setLogLevel(e.target.value)}
             >

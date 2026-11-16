@@ -1,7 +1,8 @@
 /** Keep testid and data-value stable for the browser toggle contract. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
+import { t } from "../../../../i18n/runtime.js";
 import { WEB_PROVIDERS } from "../../constants.js";
 import { WebTab } from "../WebTab.js";
 import type { AveApi } from "../../types.js";
@@ -36,6 +37,10 @@ function renderWebTab(api = installApi()) {
 describe("WebTab — webView preferredFlow section", () => {
   it("offers only implemented search providers", () => {
     expect(WEB_PROVIDERS.map((provider) => provider.id)).toEqual(["duckduckgo", "tavily", "serper"]);
+    const view = renderWebTab();
+    const buttons = within(view.getByRole("group", { name: t("webTab.searchEngineTitle") })).getAllByRole("button");
+    expect(buttons).toHaveLength(3);
+    expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
   });
 
   it("discloses fallback when a selected provider has no stored key", () => {

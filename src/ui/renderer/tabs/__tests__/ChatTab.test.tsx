@@ -108,3 +108,11 @@ describe("ChatTab memory capture", () => {
     expect(screen.queryByText("기억 자동 캡처")).toBeNull();
   });
 });
+
+describe('chat settings accessible names', () => {
+  it('names every experimental toggle and the round budget input', () => {
+    renderChatTab();
+    for (const id of ['idle-preference-refresh-toggle', 'idle-memory-consolidation-toggle', 'subagent-autonomous-wake-toggle']) expect(screen.getByTestId(id)).toHaveAccessibleName();
+    expect(screen.getByRole('spinbutton', { name: '서브에이전트 라운드 예산' })).toHaveAccessibleName();
+  });
+});

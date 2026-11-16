@@ -6538,6 +6538,13 @@ export const en = {
   "shortcutsTab.unbind": "Unbind",
   "shortcutsTab.unbindAria": "Unbind {label}",
   "shortcutsTab.saveFailed": "Could not save keyboard shortcuts.",
+  "auditTab.filterType": "Event type",
+  "auditTab.previousPage": "Previous page",
+  "auditTab.nextPage": "Next page",
+  "auditTab.toggleDetails": "Toggle details for event {number}",
+  "auditTab.entryDetails": "Event details",
+  "auditTab.logLevel": "Log level",
+  "rolesTab.packagedAgents": "Shipped agent instructions",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

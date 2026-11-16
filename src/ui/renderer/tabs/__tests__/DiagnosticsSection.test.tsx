@@ -23,7 +23,7 @@ describe("DiagnosticsSection filters", () => {
     tail.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
     const view = render(<DiagnosticsSection defaultDateFrom="2026-01-01" defaultDateTo="2026-01-31" />);
     await waitFor(() => expect(tail).toHaveBeenCalledTimes(1));
-    fireEvent.change(view.getByRole("combobox"), { target: { value: "error" } });
+    fireEvent.change(view.getByRole("combobox", { name: t("auditTab.logLevel") }), { target: { value: "error" } });
     await view.findByText("latest log");
     expect(tail).toHaveBeenLastCalledWith({ lines: 200, level: "error" });
     await act(async () => finishOld({ ok: true, lines: ["stale log"] }));

@@ -196,20 +196,22 @@ export function AuditTab() {
         <SettingsSection data-settings-section="audit-filter" title={t("auditTab.filterTitle")}>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <Label className="text-dense text-muted-foreground">{t("auditTab.filterDateFrom")}</Label>
+              <Label htmlFor="audit-date-from" className="text-dense text-muted-foreground">{t("auditTab.filterDateFrom")}</Label>
               <Input
                 type="date"
                 className="h-8 text-xs"
+                id="audit-date-from"
                 data-testid="audit-date-from"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-dense text-muted-foreground">{t("auditTab.filterDateTo")}</Label>
+              <Label htmlFor="audit-date-to" className="text-dense text-muted-foreground">{t("auditTab.filterDateTo")}</Label>
               <Input
                 type="date"
                 className="h-8 text-xs"
+                id="audit-date-to"
                 data-testid="audit-date-to"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
@@ -220,6 +222,7 @@ export function AuditTab() {
             <NativeSelect
               size="sm"
               className="w-32 flex-shrink-0"
+              aria-label={t("auditTab.filterType")}
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
             >
@@ -234,6 +237,7 @@ export function AuditTab() {
             </NativeSelect>
             <Input
               className="h-8 flex-1 text-xs"
+              aria-label={t("auditTab.filterTextPlaceholder")}
               placeholder={t("auditTab.filterTextPlaceholder")}
               value={textSearch}
               onChange={(e) => setTextSearch(e.target.value)}
@@ -254,6 +258,7 @@ export function AuditTab() {
               <div className="flex items-center gap-1 text-dense">
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
+                  aria-label={t("auditTab.previousPage")}
                   disabled={loading || page === 0}
                   onClick={() => handlePage(page - 1)}
                 >
@@ -262,6 +267,7 @@ export function AuditTab() {
                 <span>{page + 1} / {totalPages}</span>
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
+                  aria-label={t("auditTab.nextPage")}
                   disabled={loading || page >= totalPages - 1}
                   onClick={() => handlePage(page + 1)}
                 >
@@ -307,8 +313,7 @@ export function AuditTab() {
                     return (
                       <React.Fragment key={i}>
                         <tr
-                          className="cursor-pointer border-b last:border-0 hover:bg-muted/(--opacity-light)"
-                          onClick={() => setExpandedIdx(isExpanded ? null : i)}
+                          className="border-b last:border-0 hover:bg-muted/(--opacity-light)"
                         >
                           <td
                             className="px-3 py-1.5 font-mono text-tiny text-muted-foreground whitespace-nowrap"
@@ -323,12 +328,21 @@ export function AuditTab() {
                             {routeOrTool ?? "—"}
                           </td>
                           <td className="max-w-[200px] truncate px-3 py-1.5 text-muted-foreground">
-                            {preview.slice(0, 80)}
+                            <button
+                              type="button"
+                              className="w-full cursor-pointer text-left underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+                              aria-expanded={isExpanded}
+                              aria-controls={`audit-entry-details-${i}`}
+                              aria-label={t("auditTab.toggleDetails", { number: i + 1 })}
+                              onClick={() => setExpandedIdx(isExpanded ? null : i)}
+                            >
+                              {preview.slice(0, 80) || t("auditTab.entryDetails")}
+                            </button>
                           </td>
                         </tr>
                         {isExpanded && (
                           <tr className="border-b last:border-0 bg-muted/(--opacity-muted)">
-                            <td colSpan={4} className="px-3 py-2">
+                            <td id={`audit-entry-details-${i}`} colSpan={4} className="px-3 py-2">
                               <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-tiny">
                                 {JSON.stringify(entry, null, 2)}
                               </pre>

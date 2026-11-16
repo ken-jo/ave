@@ -102,13 +102,13 @@ export function WebTab(props: WebTabProps) {
           </span>
         }
       >
-        <div className="grid grid-cols-2 gap-2">
+        <fieldset aria-label={t("webTab.searchEngineTitle")} className="grid min-w-0 grid-cols-2 gap-2">
           {WEB_PROVIDERS.map((p) => (
-            <Button key={p.id} size="sm" variant={webProvider === p.id ? "default" : "outline"} className="justify-start text-xs" onClick={() => { setWebProvider(p.id); onImmediateChange?.(); }}>
+            <Button key={p.id} aria-pressed={webProvider === p.id} size="sm" variant={webProvider === p.id ? "default" : "outline"} className="justify-start text-xs" onClick={() => { setWebProvider(p.id); onImmediateChange?.(); }}>
               {p.label}
             </Button>
           ))}
-        </div>
+        </fieldset>
       </SettingsSection>
 
       {(

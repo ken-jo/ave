@@ -242,3 +242,14 @@ describe("RolesTab — ~/.ave reference doc upgrades", () => {
     );
   });
 });
+
+describe("RolesTab accessible editors", () => {
+  it("gives every visible text editor an accessible name", async () => {
+    const { api } = makeMockAveApi();
+    renderRolesTab(api);
+    await screen.findByTestId("roles-tab:agents-editor");
+    const editors = screen.getAllByRole("textbox");
+    expect(editors.length).toBeGreaterThanOrEqual(6);
+    for (const editor of editors) expect(editor).toHaveAccessibleName();
+  });
+});

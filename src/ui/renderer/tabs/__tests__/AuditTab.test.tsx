@@ -97,7 +97,7 @@ describe("AuditTab submitted filters", () => {
     const original = search.mock.calls[0][0] as { dateFrom: string };
     const { fireEvent } = await import("@testing-library/react");
     fireEvent.change(view.getByTestId("audit-date-from"), { target: { value: "2020-01-01" } });
-    fireEvent.click(await view.findByRole("button", { name: "›" }));
+    fireEvent.click(await view.findByRole("button", { name: (await import("../../../../i18n/runtime.js")).t("auditTab.nextPage") }));
     await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
     expect(search.mock.calls[1][0]).toMatchObject({ dateFrom: original.dateFrom, offset: 50 });
   });
@@ -126,5 +126,26 @@ describe("AuditTab submitted filters", () => {
     expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.searchFailed"));
     expect(view.queryByText("previous data")).toBeNull();
     expect(view.queryByText("raw internal error")).toBeNull();
+  });
+});
+
+describe("AuditTab accessible controls", () => {
+  it("labels date, type and text filters and exposes row details as an expandable button", async () => {
+    installAuditApi([{ timestamp: new Date().toISOString(), sessionId: "session-1", type: "turn", input: "keyboard entry" }]);
+    const view = render(<AuditTab />);
+    const { t } = await import("../../../../i18n/runtime.js");
+    expect(view.getByLabelText(t("auditTab.filterDateFrom"))).toBe(view.getByTestId("audit-date-from"));
+    expect(view.getByLabelText(t("auditTab.filterDateTo"))).toBe(view.getByTestId("audit-date-to"));
+    expect(view.getByRole("combobox", { name: t("auditTab.filterType") })).toBeVisible();
+    expect(view.getByRole("textbox", { name: t("auditTab.filterTextPlaceholder") })).toBeVisible();
+    const toggle = await view.findByRole("button", { name: t("auditTab.toggleDetails", { number: 1 }) });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const detailsId = toggle.getAttribute("aria-controls");
+    expect(detailsId).toBeTruthy();
+    if (!detailsId) throw new Error("Audit details control target is missing.");
+    expect(document.getElementById(detailsId)).toHaveTextContent('"keyboard entry"');
   });
 });

@@ -508,6 +508,7 @@ export function RolesTab({ api }: { api: AveApi }) {
           <p className="text-xs text-muted-foreground">{t("rolesTab.keepLatestHint")}</p>
 
           <Textarea
+            aria-label={t("rolesTab.sectionAgents")}
             value={keepLatest ? customDraft : agentsDraft}
             onChange={(event) =>
               keepLatest
@@ -538,7 +539,8 @@ export function RolesTab({ api }: { api: AveApi }) {
                 </span>
               </div>
               <Textarea
-                value={agentsDraft}
+                aria-label={t("rolesTab.packagedAgents")}
+            value={agentsDraft}
                 readOnly
                 className="min-h-[160px] font-mono text-xs"
               />
@@ -627,7 +629,8 @@ export function RolesTab({ api }: { api: AveApi }) {
                 {t("rolesTab.mergedTitle")}
               </div>
               <Textarea
-                value={merged}
+                aria-label={t("rolesTab.mergedTitle")}
+            value={merged}
                 readOnly
                 className="min-h-[240px] font-mono text-xs"
               />
@@ -658,6 +661,7 @@ export function RolesTab({ api }: { api: AveApi }) {
       <SettingsSection data-settings-section="roles-memory" title={t("rolesTab.sectionMemory")}>
         <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_320px]">
           <Textarea
+            aria-label={t("rolesTab.sectionMemory")}
             value={memoryIndex}
             onChange={(event) => setMemoryIndex(event.target.value)}
             className="min-w-0 min-h-[420px] font-mono text-xs"
@@ -665,7 +669,8 @@ export function RolesTab({ api }: { api: AveApi }) {
           <div className="min-w-0 space-y-4">
             <div className="min-w-0 space-y-2">
               <Textarea
-                value={quickMemory}
+                aria-label={t("rolesTab.quickMemoryPlaceholder")}
+            value={quickMemory}
                 maxLength={520}
                 onChange={(event) => setQuickMemory(event.target.value)}
                 placeholder={t("rolesTab.quickMemoryPlaceholder")}
@@ -675,7 +680,8 @@ export function RolesTab({ api }: { api: AveApi }) {
                 {quickMemory.length}/520
               </div>
               <Textarea
-                value={quickLinks}
+                aria-label={t("rolesTab.referenceLinkPlaceholder")}
+            value={quickLinks}
                 onChange={(event) => setQuickLinks(event.target.value)}
                 placeholder={t("rolesTab.referenceLinkPlaceholder")}
                 className="min-w-0 min-h-[70px] text-xs"
@@ -724,6 +730,7 @@ export function RolesTab({ api }: { api: AveApi }) {
       <SettingsSection data-settings-section="roles-preferences" title={t("rolesTab.sectionPreferences")}>
         <div className="space-y-3">
           <Textarea
+            aria-label={t("rolesTab.sectionPreferences")}
             value={userPrefsDraft}
             onChange={(event) => setUserPrefsDraft(event.target.value)}
             className="min-h-[320px] font-mono text-xs"
@@ -809,14 +816,16 @@ export function RolesTab({ api }: { api: AveApi }) {
             <div className="space-y-2">
               <Input
                 placeholder={t("rolesTab.namePlaceholder")}
-                value={draft.name}
+                aria-label={t("rolesTab.namePlaceholder")}
+            value={draft.name}
                 onChange={(event) =>
                   setDraft({ ...draft, name: event.target.value })
                 }
               />
               <Textarea
                 placeholder={t("rolesTab.systemPromptPlaceholder")}
-                value={draft.systemPromptAdd}
+                aria-label={t("rolesTab.systemPromptPlaceholder")}
+            value={draft.systemPromptAdd}
                 onChange={(event) =>
                   setDraft({ ...draft, systemPromptAdd: event.target.value })
                 }

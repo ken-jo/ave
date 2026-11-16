@@ -258,3 +258,11 @@ it.each(["en", "ko"] as const)("puts the default marker on its own line in %s", 
   act(() => setLocale(previous));
  }
 });
+
+it('moves language selection with the arrow keys', async () => {
+  const view = renderAppearance();
+  const radios = within(view.getByRole('radiogroup', { name: /Language|언어/ })).getAllByRole('radio');
+  radios[0].focus();
+  fireEvent.keyDown(radios[0], { key: 'ArrowRight' });
+  await waitFor(() => expect(radios[1]).toHaveFocus());
+});

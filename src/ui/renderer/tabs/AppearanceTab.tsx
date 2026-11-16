@@ -246,7 +246,7 @@ function LanguageSection() {
       title={t("settings.appearance.language.title")}
       description={t("settings.appearance.language.description")}
     >
-      <div role="radiogroup" aria-label={t("settings.appearance.language.title")} className="flex flex-wrap gap-2">
+      <div role="radiogroup" onKeyDown={handleRadioGroupKeyDown} aria-label={t("settings.appearance.language.title")} className="flex flex-wrap gap-2">
         {visibleLocales.map((code) => {
           const selected = locale === code;
           return (

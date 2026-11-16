@@ -98,6 +98,7 @@ export function ChatTab({
       >
         <div className="flex items-center gap-3 rounded-md border px-3 py-3">
           <Checkbox
+            aria-label={t("chatTab.autoCompactLabel")}
             checked={autoCompact}
             disabled={!settingsLoaded}
             className="size-5"
@@ -200,6 +201,7 @@ export function ChatTab({
           <Checkbox
             checked={idlePreferenceRefresh ?? false}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.idleRefreshLabel")}
             data-testid="idle-preference-refresh-toggle"
             className="size-5"
             onCheckedChange={(checked) => {
@@ -217,6 +219,7 @@ export function ChatTab({
           <Checkbox
             checked={idleMemoryConsolidation ?? false}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.idleMemoryConsolidationLabel")}
             data-testid="idle-memory-consolidation-toggle"
             className="size-5"
             onCheckedChange={(checked) => {
@@ -234,6 +237,7 @@ export function ChatTab({
           <Checkbox
             checked={subAgentAutonomousWake ?? false}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.subAgentWakeLabel")}
             data-testid="subagent-autonomous-wake-toggle"
             className="size-5"
             onCheckedChange={(checked) => {
@@ -260,6 +264,7 @@ export function ChatTab({
             key={subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT}
             defaultValue={subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.subAgentMaxRoundsLabel")}
             data-testid="subagent-max-rounds-input"
             className="w-20"
             onBlur={(e) => {
