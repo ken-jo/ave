@@ -1350,6 +1350,7 @@ export function ChatSidePanel({
               visible={visible}
               showChanges={terminalChangesTabId === activeTab.id}
               onShowChanges={(show) => setTerminalChangesTabId(show ? activeTab.id : null)}
+              onCloseTab={() => closeWorkspaceTab(activeTab.id)}
               {...(onAttachText ? { onAttachText } : {})}
             />
           ) : activeTab.kind === "subagent" ? (

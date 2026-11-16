@@ -345,6 +345,7 @@ export function SurfacePane({
             attended={frame.focused ?? false}
             headerSlot={terminalHeader}
             onCwd={setLiveCwd}
+            {...(frame.onClose ? { onCloseTab: frame.onClose } : {})}
             {...(onAttachText ? { onAttachText } : {})}
           />
         ) : (

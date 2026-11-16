@@ -14,7 +14,7 @@ import { useSurfaceMount } from "../preview/surface-mounts.js";
 import type { TerminalControlAction, TerminalPurpose } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
-const NO_LIVE_STATE: LiveTerminalState = { session: null, control: null, blockRevision: 0 };
+const NO_LIVE_STATE: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null };
 const noLiveState = (): LiveTerminalState => NO_LIVE_STATE;
 const subscribeNothing = (): (() => void) => () => {};
 const INTEGRATION_UNAVAILABLE_KEYS = {
@@ -42,6 +42,8 @@ interface PtyTerminalViewProps {
   headerSlot?: HTMLElement | null;
   /** The directory the shell last reported (never the launch directory), for a header that shows it. */
   onCwd?: (cwd: string) => void;
+  /** Close this terminal's tab; offered once its shell has ended. */
+  onCloseTab?: () => void;
 }
 
 /**
@@ -95,10 +97,10 @@ function focusAttendedTerminal(term: Terminal, tabId: string): void {
   if (active === null || active === document.body || activatedHere) term.focus();
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd, onCloseTab, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
   const [live, setLive] = useState<LiveTerminal | null>(null);
-  const { session, control, blockRevision } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
+  const { session, control, blockRevision, ended } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
@@ -226,6 +228,15 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-user-control" role="status">
           <span className="min-w-0 flex-1">{t("ptyTerminal.takenOver")}</span>
           <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-hand-back" onClick={() => changeControl("hand-back")}>{t("ptyTerminal.handBack")}</button>
+        </div>
+      ) : null}
+      {ended ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-muted-foreground border-border px-2 py-1 text-xs" data-testid="terminal-ended" role="status">
+          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-medium" data-testid="terminal-ended-chip">{t("ptyTerminal.endedChip")}</span>
+          <span className="min-w-0 flex-1 text-muted-foreground">{ended.kind === "exited" ? t("ptyTerminal.endedExit", { code: ended.code }) : t("ptyTerminal.endedNotStarted")}</span>
+          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-restart"
+            onClick={() => { live?.restart(); live?.term.focus(); }}>{t("ptyTerminal.restartShell")}</button>
+          {onCloseTab ? <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-close-tab" onClick={onCloseTab}>{t("ptyTerminal.closeTab")}</button> : null}
         </div>
       ) : null}
       {controlNotice ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-destructive" data-testid="terminal-control-notice" role="alert">{controlNotice}</p> : null}

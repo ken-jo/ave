@@ -801,3 +801,78 @@ describe("a terminal the user opens takes the keyboard", () => {
     } finally { launcher.remove(); }
   });
 });
+
+describe("a terminal whose shell ended", () => {
+  async function endedTerminal(tabId: string, onCloseTab?: () => void) {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const first = { ...terminalSessionFixture(tabId, "manual", "first-shell"), currentCwd: "/repo/app", cwdSource: "shell-marker" as const };
+    terminal.spawn.mockResolvedValueOnce({ ok: true, tabId, replayed: false, session: first, blockMarkerToken: "view-token" });
+    terminal.listBlocks.mockImplementation(async (session: TerminalSessionInfo) => ({ ok: true as const, session, integrated: true, blocks: [] }));
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" {...(onCloseTab ? { onCloseTab } : {})} />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: "first-shell" }), "get"));
+    expect(screen.queryByTestId("terminal-ended")).toBeNull();
+    act(() => terminal.onExit.mock.calls.at(-1)![0]({ ...first, exitCode: 3 }));
+    return { terminal, first, xterm: fakeTerm() };
+  }
+
+  it("says it ended, hides the cursor, and offers Restart shell and Close tab", async () => {
+    const close = vi.fn();
+    const { terminal, first, xterm } = await endedTerminal("terminal:51", close);
+    const strip = screen.getByTestId("terminal-ended");
+    expect(within(strip).getByTestId("terminal-ended-chip")).toHaveTextContent(t("ptyTerminal.endedChip"));
+    expect(strip).toHaveTextContent(t("ptyTerminal.endedExit", { code: 3 }));
+    // DECTCEM hide after the exit line; the buffer names the way back.
+    expect(xterm.written.at(-1)).toContain(t("ptyTerminal.exitedRestartHint"));
+    expect(xterm.written.at(-1)!.endsWith("\x1b[?25l")).toBe(true);
+    // Keys other than Enter go nowhere: the dead incarnation takes no input and no new shell starts.
+    act(() => typeInto(xterm, "ls"));
+    expect(terminal.input).not.toHaveBeenCalled();
+    expect(terminal.spawn).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(strip).getByTestId("terminal-close-tab"));
+    expect(close).toHaveBeenCalledOnce();
+
+    fireEvent.click(within(strip).getByTestId("terminal-restart"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    // The new shell starts where the ended one was, in the same xterm, with the cursor shown again.
+    expect(terminal.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "terminal:51", cwd: "/repo/app", purpose: "workspace" }));
+    expect(terminal.spawn.mock.calls[1]![0]).not.toHaveProperty("replay");
+    await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+    expect(terminals).toHaveLength(1);
+    expect(xterm.written.join("")).toContain("\x1b[?25h");
+    act(() => typeInto(xterm, "pwd\r"));
+    expect(terminal.input).toHaveBeenCalledWith(expect.not.objectContaining({ terminalSessionId: first.terminalSessionId }), "pwd\r");
+  });
+
+  it("restarts on Enter, and offers no Close tab where the tab has no close of its own", async () => {
+    const { terminal, xterm } = await endedTerminal("terminal:52");
+    expect(screen.queryByTestId("terminal-close-tab")).toBeNull();
+    act(() => typeInto(xterm, "\r"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+
+  it("does not start a new shell on its own when the ended tab is shown again", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal } as never;
+    const shown = render(<PtyTerminalView api={ave} location="pane:a" tabId="terminal:53" tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    act(() => terminal.onExit.mock.calls.at(-1)![0]({ ...terminalSessionFixture("terminal:53", "manual"), exitCode: 0 }));
+    shown.unmount();
+    render(<PtyTerminalView api={ave} location="side-panel" tabId="terminal:53" tabLabel="Terminal" />);
+    expect(await screen.findByTestId("terminal-ended")).toBeInTheDocument();
+    expect(terminal.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a restart when the shell could not be started", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn.mockResolvedValueOnce({ ok: false, reason: "spawn-failed", message: "missing directory" } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:54" tabLabel="Terminal" initialCwd="/elsewhere" />);
+    expect(await screen.findByTestId("terminal-ended")).toHaveTextContent(t("ptyTerminal.endedNotStarted"));
+    fireEvent.click(screen.getByTestId("terminal-restart"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});

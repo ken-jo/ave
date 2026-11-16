@@ -29,6 +29,8 @@ export interface LiveTerminalState {
   readonly session: TerminalSessionInfo | null;
   readonly control: HostTerminalControlState | null;
   readonly blockRevision: number;
+  /** Why no shell is running in this tab: its process exited, or it could not be started. Null while one runs or is starting. */
+  readonly ended: { readonly kind: "exited"; readonly code: number } | { readonly kind: "not-started" } | null;
 }
 
 /** The view a terminal is attached to. */
@@ -50,7 +52,9 @@ export class LiveTerminal {
   readonly term: Terminal;
   readonly anchors: XtermBlockAnchors;
   private readonly fitAddon = new FitAddon();
-  private state: LiveTerminalState = { session: null, control: null, blockRevision: 0 };
+  private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null };
+  /** Where a restarted shell starts: the directory the ended one last reported. */
+  private restartCwd: string | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly disposers: Array<() => void> = [];
   private liveRef: TerminalSessionRef | null = null;
@@ -99,6 +103,11 @@ export class LiveTerminal {
     });
     // Forward keystrokes → PTY stdin.
     const inputSub = this.term.onData((data) => {
+      // No shell is running: nothing takes the keys, and Enter starts a new one.
+      if (this.state.ended !== null) {
+        if (data === "\r") this.restart();
+        return;
+      }
       if (!this.liveRef) return;
       void this.api.input(this.liveRef, data);
       if (data.includes("\r")) {
@@ -199,6 +208,19 @@ export class LiveTerminal {
     if (this.host) this.fitToHost();
   }
 
+  /** Start a new shell in this tab after its shell ended or failed to start. The screen and scrollback stay. */
+  restart(): void {
+    if (this.disposed || this.state.ended === null) return;
+    this.restartCwd = this.state.session?.currentCwd ?? this.state.session?.initialCwd ?? null;
+    this.exited = false;
+    this.liveRef = null;
+    this.purpose = null;
+    this.setState({ session: null, control: null, ended: null });
+    // Show the cursor the exit hid.
+    this.term.write("\x1b[?25h");
+    this.chain = this.chain.then(() => this.sync());
+  }
+
   /** The tab closed: release the xterm. Main ends the shell. */
   dispose(): void {
     if (this.disposed) return;
@@ -245,7 +267,9 @@ export class LiveTerminal {
       return;
     }
     this.exited = true;
-    this.term.write(diagnostic(this.t("ptyTerminal.exited", { code: event.exitCode })));
+    // A dead shell has no cursor: hide it (DECTCEM) so the tab does not look like it is waiting for input.
+    this.term.write(`${diagnostic(`${this.t("ptyTerminal.exited", { code: event.exitCode })} ${this.t("ptyTerminal.exitedRestartHint")}`)}\x1b[?25l`);
+    this.setState({ ended: { kind: "exited", code: event.exitCode } });
     this.bumpBlocks();
     setTerminalExited(this.tabId, true);
   }
@@ -281,7 +305,7 @@ export class LiveTerminal {
   /** Bring main in line with the mounted view: start the tab's shell, or tell main where the running one is now shown. */
   private async sync(): Promise<void> {
     const view = this.view;
-    if (this.disposed || !view || this.exited) return;
+    if (this.disposed || !view || this.state.ended !== null) return;
     if (this.liveRef === null) await this.start(view);
     else if (this.purpose !== view.purpose) await this.reattach(view);
   }
@@ -292,7 +316,7 @@ export class LiveTerminal {
     try {
       const restored = takeRestoredTerminal(this.tabId);
       if (restored) this.term.write(diagnostic(this.t("ptyTerminal.restored")));
-      const startCwd = restored ? restored.cwd : view.initialCwd;
+      const startCwd = restored ? restored.cwd : this.restartCwd ?? view.initialCwd;
       const spawnAt = (cwd: string | null) => this.spawn({ tabId: this.tabId, lane: "manual", purpose: view.purpose, cols, rows, ...(cwd ? { cwd } : {}) });
       let result = await spawnAt(startCwd);
       if (!result.ok && restored && startCwd && !this.disposed && (result.reason === "bad-request" || result.reason === "spawn-failed")) {
@@ -303,11 +327,15 @@ export class LiveTerminal {
       if (!result.ok) {
         this.dropPending();
         this.term.write(diagnostic(this.t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : "ptyTerminal.manualUnavailable")));
+        this.setState({ ended: { kind: "not-started" } });
         return;
       }
       await this.adopt(result, view.purpose);
     } catch {
-      if (!this.disposed) this.term.write(diagnostic(this.t("ptyTerminal.startFailed")));
+      if (!this.disposed) {
+        this.term.write(diagnostic(this.t("ptyTerminal.startFailed")));
+        this.setState({ ended: { kind: "not-started" } });
+      }
     } finally {
       if (!this.disposed) setTerminalReplaying(this.tabId, false);
     }
@@ -341,7 +369,7 @@ export class LiveTerminal {
     this.exited = false;
     setTerminalExited(this.tabId, false);
     this.blockMarkerToken = result.blockMarkerToken;
-    this.setState({ session: result.session });
+    this.setState({ session: result.session, ended: null });
     // The replay goes in before anything that can let a live chunk of this incarnation be written ahead of it.
     const waiting = this.pending;
     this.dropPending();
