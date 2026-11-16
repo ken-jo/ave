@@ -32,6 +32,8 @@ export interface BrowserLoadError {
 /** What the host knows about one tab's page beyond its address. One entry per listed tab. */
 export interface BrowserPageStatus {
   readonly tabId: string;
+  /** The main frame is fetching or rendering a navigation. */
+  readonly loading: boolean;
   readonly loadError: BrowserLoadError | null;
 }
 export interface BrowserWorkspaceState {
@@ -47,6 +49,7 @@ export interface BrowserSitePermissionRequest extends BrowserWorkspaceTarget {
 }
 export interface BrowserFindRequest extends BrowserWorkspaceTarget { readonly text: string; readonly forward: boolean; readonly findNext: boolean }
 export interface BrowserZoomRequest extends BrowserWorkspaceTarget { readonly factor: number }
+export interface BrowserLoadRequest extends BrowserWorkspaceTarget { readonly url: string }
 export interface BrowserPreviewImage { readonly dataUrl: string; readonly width: number; readonly height: number }
 export interface BrowserPreview extends BrowserWorkspaceTarget, BrowserPreviewImage {}
 /** User selection geometry is relative to the visible viewport, in page CSS pixels. */
@@ -72,6 +75,10 @@ export interface BrowserWorkspaceApi {
   capture(request: BrowserCaptureRequest): Promise<BrowserWorkspaceResult<BrowserCapture>>;
   /** Load again the address whose load failed in this tab, or restart its crashed page. */
   retryLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
+  /** Load `url` in the tab's existing page, even when the tab is already pointed at it. */
+  load(request: BrowserLoadRequest): Promise<BrowserWorkspaceResult<null>>;
+  /** Stop the tab's load in progress. */
+  stopLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
   onChanged(handler: (state: BrowserWorkspaceState) => void): () => void;
   /** Main refused a page guest before it attached; `src` is the address the refused element carried. */
   onAttachBlocked(handler: (blocked: BrowserAttachBlocked) => void): () => void;
@@ -84,7 +91,7 @@ export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked 
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
-  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget;
+  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
 export const BROWSER_SITE_DECISIONS: readonly BrowserSiteDecision[] = ["ask", "allow", "block"];
@@ -127,6 +134,10 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
       || !BROWSER_SITE_PERMISSIONS.includes(record.permission as BrowserSitePermission) || !BROWSER_SITE_DECISIONS.includes(record.decision as BrowserSiteDecision)) return null;
   } else if (operation === "find") {
     if (!keys(record, ["tabId", "documentGeneration", "text", "forward", "findNext"]) || typeof record.text !== "string" || !record.text.trim() || record.text.length > BROWSER_WORKSPACE_LIMITS.findLength || typeof record.forward !== "boolean" || typeof record.findNext !== "boolean") return null;
+  } else if (operation === "load") {
+    const url = browserWorkspaceUrl(record.url);
+    if (!keys(record, ["tabId", "documentGeneration", "url"]) || !url) return null;
+    return { ...record, url } as unknown as BrowserWorkspaceRequests[K];
   } else if (operation === "zoom") {
     if (!keys(record, ["tabId", "documentGeneration", "factor"]) || typeof record.factor !== "number" || !Number.isFinite(record.factor) || record.factor < 0.5 || record.factor > 3) return null;
   } else if (!keys(record, ["tabId", "documentGeneration"])) return null;
@@ -154,7 +165,7 @@ export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceStat
   })) return null;
   if (!Array.isArray(record.pages) || record.pages.length > record.tabs.length || !record.pages.every((item) => {
     const page = item;
-    return isRecord(page) && keys(page, ["tabId", "loadError"]) && typeof page.tabId === "string"
+    return isRecord(page) && keys(page, ["tabId", "loading", "loadError"]) && typeof page.tabId === "string" && typeof page.loading === "boolean"
       && (record.tabs as readonly Record<string, unknown>[]).some((tab) => tab.tabId === page.tabId)
       && (page.loadError === null || validLoadError(page.loadError));
   })) return null;

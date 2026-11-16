@@ -60,6 +60,21 @@ export function retryBrowserPageLoad(tabId: string): void {
   void navigateBrowserTabAsUser(connected, tabId, () => { void workspace.retryLoad(target); });
 }
 
+/** Load `url` in the tab's existing page. For an address the tab is already pointed at, where pointing it again changes nothing. */
+export function loadBrowserPageUrl(tabId: string, url: string): void {
+  const target = browserPageTarget(tabId);
+  if (target) void api?.browserWorkspace?.load({ ...target, url });
+}
+
+/** The user stops the load in progress. */
+export function stopBrowserPageLoad(tabId: string): void {
+  const connected = api;
+  const target = browserPageTarget(tabId);
+  if (!connected?.browserWorkspace || !target) return;
+  const workspace = connected.browserWorkspace;
+  void navigateBrowserTabAsUser(connected, tabId, () => { void workspace.stopLoad(target); });
+}
+
 export function openBrowserPageInSystemBrowser(url: string): void {
   void api?.openExternalUrl(url);
 }

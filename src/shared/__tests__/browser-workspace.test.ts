@@ -76,17 +76,18 @@ describe("browser workspace wire validation", () => {
   it("accepts a page status only for a listed tab, with a bounded host-classified failure", () => {
     const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
     const failure = { reason: "dns", code: -105, detail: "ERR_NAME_NOT_RESOLVED", url: "https://missing.invalid/" };
-    const state = { ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loadError: failure }] };
+    const state = { ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: true, loadError: failure }] };
     expect(parseBrowserWorkspaceState(state)).toEqual(state);
-    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loadError: null }] })).not.toBeNull();
-    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loadError: { ...failure, url: "" } }] })).not.toBeNull();
+    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: null }] })).not.toBeNull();
+    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "" } }] })).not.toBeNull();
     for (const pages of [
-      undefined, [{ tabId: "browser:other", loadError: null }], [{ tabId: TARGET.tabId }],
-      [{ tabId: TARGET.tabId, loadError: { ...failure, reason: "page says so" } }],
-      [{ tabId: TARGET.tabId, loadError: { ...failure, url: "javascript:alert(1)" } }],
-      [{ tabId: TARGET.tabId, loadError: { ...failure, detail: "x".repeat(101) } }],
-      [{ tabId: TARGET.tabId, loadError: { ...failure, html: "<b>" } }],
-      [{ tabId: TARGET.tabId, loadError: null }, { tabId: TARGET.tabId, loadError: null }],
+      undefined, [{ tabId: "browser:other", loading: false, loadError: null }], [{ tabId: TARGET.tabId, loading: false }],
+      [{ tabId: TARGET.tabId, loadError: null }], [{ tabId: TARGET.tabId, loading: "yes", loadError: null }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, reason: "page says so" } }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "javascript:alert(1)" } }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, detail: "x".repeat(101) } }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, html: "<b>" } }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: null }, { tabId: TARGET.tabId, loading: false, loadError: null }],
     ]) expect(parseBrowserWorkspaceState({ ...state, pages })).toBeNull();
   });
 });

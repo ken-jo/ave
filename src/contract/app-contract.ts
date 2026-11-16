@@ -772,6 +772,8 @@ export const CHANNELS = {
     preview: "ave:browser-workspace:preview",
     capture: "ave:browser-workspace:capture",
     retryLoad: "ave:browser-workspace:retry-load",
+    stopLoad: "ave:browser-workspace:stop-load",
+    load: "ave:browser-workspace:load",
     changed: "ave:browser-workspace:changed",
     attachBlocked: "ave:browser-workspace:attach-blocked", // event main→renderer  a page guest was refused before it attached
   },

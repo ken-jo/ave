@@ -20,13 +20,13 @@ async function setup() {
   let factor = 1;
   let live = true;
   const events = new EventEmitter();
-  const loadURL = vi.fn(async (_url: string) => {}); const reload = vi.fn();
+  const loadURL = vi.fn(async (_url: string) => {}); const reload = vi.fn(); const stop = vi.fn();
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
-  const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload }) as unknown as WebContents;
+  const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
   const onError = vi.fn(); const promptPermission = vi.fn(async () => true);
   const service = new BrowserWorkspaceService({ store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, loadURL, reload, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
@@ -88,13 +88,13 @@ describe("browser workspace service", () => {
     Object.defineProperty(guest, "id", { get: () => { throw new TypeError("Object has been destroyed"); } });
     expect(() => events.emit("destroyed")).not.toThrow();
     expect(events.listenerCount("did-start-navigation")).toBe(0);
-    const replacement = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false }) as unknown as WebContents;
+    const replacement = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false, isLoadingMainFrame: () => false }) as unknown as WebContents;
     expect(() => service.observeGuest(2, replacement)).not.toThrow();
   });
   it("reports a main-frame load failure for the tab until the user navigates away from it", async () => {
     const { service, guest, events } = await setup();
     service.observeGuest(1, guest);
-    expect((await service.getState(1)).pages).toEqual([{ tabId: "browser:one", loadError: null }]);
+    expect((await service.getState(1)).pages).toEqual([{ tabId: "browser:one", loading: false, loadError: null }]);
     events.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://127.0.0.1:1/", true);
     expect((await service.getState(1)).pages[0]?.loadError).toEqual({ reason: "connection", code: -102, detail: "ERR_CONNECTION_REFUSED", url: "http://127.0.0.1:1/" });
     // The browser's own error document commits after the failure; it is not a navigation away.
@@ -144,11 +144,35 @@ describe("browser workspace service", () => {
 
     setLive(true);
     service.tabsChanged(1);
-    await vi.waitFor(() => expect(published.at(-1)).toEqual([{ tabId: "browser:one", loadError: expect.objectContaining({ reason: "connection" }) }]));
+    await vi.waitFor(() => expect(published.at(-1)).toEqual([{ tabId: "browser:one", loading: false, loadError: expect.objectContaining({ reason: "connection" }) }]));
     const settled = published.length;
     service.tabsChanged(1);
     service.tabsChanged(2);
     await new Promise((resolve) => setImmediate(resolve));
     expect(published).toHaveLength(settled);
+  });
+  it("reports the page as loading between the guest's load events and stops the load on request", async () => {
+    const { service, guest, events, stop } = await setup();
+    service.observeGuest(1, guest);
+    const published: boolean[] = [];
+    service.onChanged((_windowId, state) => { const page = state.pages[0]; if (page) published.push(page.loading); });
+    await service.getState(1);
+    events.emit("did-start-loading");
+    await vi.waitFor(() => expect(published.at(-1)).toBe(true));
+    events.emit("did-start-loading");
+    expect(service.stopLoad(1, TARGET)).toBeNull();
+    expect(stop).toHaveBeenCalledOnce();
+    events.emit("did-stop-loading");
+    await vi.waitFor(() => expect(published.at(-1)).toBe(false));
+    expect(() => service.stopLoad(1, { ...TARGET, documentGeneration: 9 })).toThrow("stale-document");
+  });
+  it("loads a validated address in the tab's existing page and refuses anything else", async () => {
+    const { service, loadURL } = await setup();
+    expect(service.load(1, { ...TARGET, url: "https://site.example/again" })).toBeNull();
+    expect(loadURL).toHaveBeenCalledWith("https://site.example/again");
+    expect(() => service.load(1, { ...TARGET, url: "javascript:alert(1)" })).toThrow("bad-request");
+    expect(() => service.load(1, { ...TARGET, url: "https://user:pw@site.example/" })).toThrow("bad-request");
+    expect(() => service.load(2, { ...TARGET, url: "https://site.example/" })).toThrow("no-such-tab");
+    expect(loadURL).toHaveBeenCalledOnce();
   });
 });

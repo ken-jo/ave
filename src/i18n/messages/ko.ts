@@ -1244,6 +1244,8 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // browserWorkspace
   "browserAddressRow.address": "주소",
+  "browserAddressRow.loading": "페이지 로드 중",
+  "browserAddressRow.stop": "로드 중지",
   "browserLoadError.title.dns": "사이트를 찾을 수 없습니다",
   "browserLoadError.title.connection": "사이트에 연결할 수 없습니다",
   "browserLoadError.title.offline": "인터넷에 연결되어 있지 않습니다",

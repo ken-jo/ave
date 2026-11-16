@@ -2,7 +2,7 @@ import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { DownloadItem, WebContents } from "electron";
 import { describeLoadFailure, describePageCrash } from "./browser-load-failure.js";
-import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserPageStatus, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -25,7 +25,7 @@ export class BrowserWorkspaceService {
   private readonly previews: BrowserWorkspacePreview;
   private readonly captures: BrowserWorkspaceCapture;
   private readonly permissions: BrowserSitePermissionPolicy;
-  private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; loadError: BrowserLoadError | null; dispose: () => void }>();
+  private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; loading: boolean; loadError: BrowserLoadError | null; dispose: () => void }>();
   private readonly downloads = new Map<number, BrowserDownload[]>();
   private readonly downloadDisposers = new Map<number, Set<() => void>>();
   private readonly listeners = new Set<(windowId: number, state: BrowserWorkspaceState) => void>();
@@ -70,7 +70,8 @@ export class BrowserWorkspaceService {
     const tabs = this.deps.listTabs(windowId).flatMap((tab) => {
       const live = this.deps.liveTab(windowId, tab.tabId);
       if (!live || live.guest.isDestroyed() || live.documentGeneration !== tab.documentGeneration) return [];
-      pages.push({ tabId: tab.tabId, loadError: this.guests.get(live.guest.id)?.loadError ?? null });
+      const page = this.guests.get(live.guest.id);
+      pages.push({ tabId: tab.tabId, loading: page?.loading ?? false, loadError: page?.loadError ?? null });
       return [{ ...tab, title: tab.title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), zoomFactor: live.guest.getZoomFactor() }];
     });
     this.publishedTabs.set(windowId, tabs.map((tab) => `${tab.tabId}:${tab.documentGeneration}`).join("\n"));
@@ -119,6 +120,14 @@ export class BrowserWorkspaceService {
     void guest.loadURL(failure.url).catch(this.deps.onError);
     return null;
   }
+  load(windowId: number, request: BrowserLoadRequest): null {
+    const parsed = parseBrowserWorkspaceRequest("load", request);
+    if (!parsed) throw new Error("bad-request");
+    // A load that fails rejects here and is reported through the guest's own failure event.
+    void this.target(windowId, parsed).guest.loadURL(parsed.url).catch(this.deps.onError);
+    return null;
+  }
+  stopLoad(windowId: number, request: BrowserWorkspaceTarget): null { this.target(windowId, request).guest.stop(); return null; }
   preview(windowId: number, request: BrowserWorkspaceTarget) { this.target(windowId, request); return this.previews.capture(windowId, request); }
   capture(windowId: number, request: BrowserCaptureRequest) { this.target(windowId, request); return this.captures.capture(windowId, request); }
   recordAgentCapture(windowId: number, preview: BrowserPreview): void { this.previews.remember(windowId, preview); }
@@ -145,6 +154,14 @@ export class BrowserWorkspaceService {
       entry.loadError = describeLoadFailure(code, description, url);
       this.notify();
     };
+    const loading = (value: boolean) => () => {
+      const entry = this.guests.get(guestId);
+      if (!entry || entry.loading === value) return;
+      entry.loading = value;
+      this.notify();
+    };
+    const loadStarted = loading(true);
+    const loadStopped = loading(false);
     const gone = (_event: unknown, details: { reason: string }) => {
       const entry = this.guests.get(guestId);
       if (!entry || details.reason === "clean-exit" || guest.isDestroyed()) return;
@@ -153,10 +170,11 @@ export class BrowserWorkspaceService {
     };
     const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidate(); visit(); } };
     let unsubscribe = () => {};
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
-    this.guests.set(guestId, { guest, windowId, generation: 1, loadError: null, dispose });
+    this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, dispose });
     guest.on("did-fail-load", failed); guest.on("render-process-gone", gone);
+    guest.on("did-start-loading", loadStarted); guest.on("did-stop-loading", loadStopped);
     guest.on("did-start-navigation", started); guest.on("did-navigate", visit); guest.on("did-navigate-in-page", navigatedInPage); guest.on("page-title-updated", titleChanged);
     unsubscribe = subscribeBrowserGuestDestroyed(guest, dispose);
     return dispose;

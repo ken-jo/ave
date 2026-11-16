@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import type { AveApi } from "../../types.js";
 import { setWebSurfaceElement } from "../../preview/web-surfaces.js";
+import { __setBrowserPageStatusForTest } from "../../preview/browser-page-status.js";
+import type { BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
 import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS, WEB_PANEL_ADDRESS_ROW_TEST_IDS, type BrowserAddressRowTestIds } from "../BrowserAddressRow.js";
 
 const TAB = "browser:row";
@@ -26,13 +28,22 @@ function mount(testIds: BrowserAddressRowTestIds, options: { fallbackUrl?: strin
     getSettings: vi.fn(async () => ({ webView: { addressSearchEngine: "duckduckgo" } })),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     browserTabs: { stop: vi.fn(async () => ({ ok: options.stopOk ?? true })) },
+    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })) },
   } as unknown as AveApi;
   render(<TooltipProvider><BrowserAddressRow api={api} tabId={TAB} chrome="card" testIds={testIds}
     fallbackUrl={options.fallbackUrl === undefined ? "https://a.example/start" : options.fallbackUrl} onNavigate={onNavigate} /></TooltipProvider>);
   return { api, onNavigate, address: () => screen.getByTestId(testIds.address) as HTMLInputElement };
 }
 
-afterEach(() => { act(() => setWebSurfaceElement(TAB, null)); });
+afterEach(() => { act(() => { setWebSurfaceElement(TAB, null); __setBrowserPageStatusForTest(null); }); });
+
+function pageState(loading: boolean): BrowserWorkspaceState {
+  return {
+    revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], storageStatus: "ready", capabilities: { fullscreen: false },
+    tabs: [{ tabId: TAB, documentGeneration: 2, url: "https://a.example/start", title: "", zoomFactor: 1 }],
+    pages: [{ tabId: TAB, loading, loadError: null }],
+  };
+}
 
 describe.each([
   ["side panel", SIDE_PANEL_ADDRESS_ROW_TEST_IDS],
@@ -98,5 +109,37 @@ describe.each([
     expect(screen.getByTestId(ids.forward)).toBeDisabled();
     expect(screen.getByTestId(ids.back)).toBeEnabled();
     expect(screen.getByTestId(ids.openExternal)).toBeEnabled();
+  });
+
+  it("turns reload into stop and shows the loading line while the page loads", async () => {
+    const page = guest("https://a.example/start");
+    act(() => setWebSurfaceElement(TAB, page.element));
+    const { api } = mount(ids);
+    expect(screen.getByTestId(ids.reload)).toBeEnabled();
+    expect(screen.queryByTestId("browser-loading-line")).toBeNull();
+
+    act(() => __setBrowserPageStatusForTest(pageState(true), api));
+    expect(screen.queryByTestId(ids.reload)).toBeNull();
+    expect(screen.getByTestId("browser-loading-line")).toHaveAttribute("role", "progressbar");
+    await act(async () => { fireEvent.click(screen.getByTestId(ids.stop)); });
+    expect(api.browserTabs?.stop).toHaveBeenCalledWith(TAB);
+    expect(api.browserWorkspace?.stopLoad).toHaveBeenCalledWith({ tabId: TAB, documentGeneration: 2 });
+
+    act(() => __setBrowserPageStatusForTest(pageState(false), api));
+    expect(screen.queryByTestId(ids.stop)).toBeNull();
+    expect(screen.getByTestId(ids.reload)).toBeEnabled();
+    expect(screen.queryByTestId("browser-loading-line")).toBeNull();
+  });
+
+  it("loads the page again when the user enters the address the tab is already pointed at", async () => {
+    const { api, onNavigate, address } = mount(ids);
+    act(() => __setBrowserPageStatusForTest(pageState(false), api));
+    fireEvent.change(address(), { target: { value: "https://a.example/start" } });
+    await act(async () => { fireEvent.submit(address().closest("form") as HTMLFormElement); });
+    expect(onNavigate).toHaveBeenCalledWith("https://a.example/start");
+    expect(api.browserWorkspace?.load).toHaveBeenCalledWith({ tabId: TAB, documentGeneration: 2, url: "https://a.example/start" });
+    fireEvent.change(address(), { target: { value: "https://a.example/other" } });
+    await act(async () => { fireEvent.submit(address().closest("form") as HTMLFormElement); });
+    expect(api.browserWorkspace?.load).toHaveBeenCalledOnce();
   });
 });

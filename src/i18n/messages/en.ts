@@ -1242,6 +1242,8 @@ export const en = {
 
   // browserWorkspace
   "browserAddressRow.address": "Address",
+  "browserAddressRow.loading": "Page is loading",
+  "browserAddressRow.stop": "Stop loading",
   "browserLoadError.title.dns": "This site can't be found",
   "browserLoadError.title.connection": "This site can't be reached",
   "browserLoadError.title.offline": "No internet connection",

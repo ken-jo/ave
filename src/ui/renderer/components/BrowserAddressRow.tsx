@@ -1,6 +1,6 @@
 /** The one address row every browser host draws: a user tab in the side panel, a web pane, and a tab the agent opened. */
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw } from "lucide-react";
+import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
@@ -8,20 +8,21 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
+import { loadBrowserPageUrl, stopBrowserPageLoad, useBrowserPageStatus } from "../preview/browser-page-status.js";
 import { resolveAddressSubmission } from "../preview/url-safety.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 
 export interface BrowserAddressRowTestIds {
-  readonly back: string; readonly forward: string; readonly reload: string; readonly address: string;
+  readonly back: string; readonly forward: string; readonly reload: string; readonly stop: string; readonly address: string;
   readonly go: string; readonly openExternal: string; readonly error: string;
 }
 
 export const SIDE_PANEL_ADDRESS_ROW_TEST_IDS: BrowserAddressRowTestIds = {
-  back: "browser-back", forward: "browser-forward", reload: "browser-reload", address: "chat-side-panel-browser-address",
+  back: "browser-back", forward: "browser-forward", reload: "browser-reload", stop: "browser-stop", address: "chat-side-panel-browser-address",
   go: "chat-side-panel-browser-go", openExternal: "chat-side-panel-browser-open-external", error: "chat-side-panel-browser-address-error",
 };
 export const WEB_PANEL_ADDRESS_ROW_TEST_IDS: BrowserAddressRowTestIds = {
-  back: "web-panel-back", forward: "web-panel-forward", reload: "web-panel-reload", address: "web-panel-address",
+  back: "web-panel-back", forward: "web-panel-forward", reload: "web-panel-reload", stop: "web-panel-stop", address: "web-panel-address",
   go: "web-panel-go", openExternal: "web-panel-open-external", error: "web-panel-address-error",
 };
 
@@ -49,6 +50,7 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
   const { t } = useTranslation();
   const surface = useBrowserSurface(tabId);
   const navigation = useGuestNavigation(surface);
+  const loading = useBrowserPageStatus(tabId)?.loading ?? false;
   const reported = navigation.url ?? fallbackUrl ?? "";
   // An empty bootstrap page has no address a person would recognise or retype.
   const currentAddress = reported === "about:blank" ? "" : reported;
@@ -83,7 +85,11 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
     draftEditedForTab.current = null;
     setDraft(target.url);
     setError(null);
-    void navigateBrowserTabAsUser(api, tabId, () => onNavigate(target.url));
+    void navigateBrowserTabAsUser(api, tabId, () => {
+      onNavigate(target.url);
+      // Entering the address the tab is already pointed at changes nothing for the host, so the page is loaded directly.
+      if (target.url === fallbackUrl) loadBrowserPageUrl(tabId, target.url);
+    });
   };
   // Only an address the page actually reported, or the host set, as a complete http(s) URL leaves the app: no scheme is
   // guessed for the system browser.
@@ -108,7 +114,8 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
         data-native-page-chrome={chrome}
         data-testid="browser-address-row"
         data-tab-id={tabId}
-        className="flex shrink-0 items-center gap-1 border-b px-2 py-1"
+        className="relative flex shrink-0 items-center gap-1 border-b px-2 py-1"
+        aria-busy={loading}
         onBlur={(event) => {
           // The draft lives while focus stays on the field or the Go button that submits it; focus going anywhere else,
           // from either of them, drops it. Switching away from the whole window is not leaving the edit: focus comes back to
@@ -127,7 +134,10 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
       >
         {iconButton(t("mainPanels.back"), testIds.back, <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />, () => act("back"), !navigation.canGoBack)}
         {iconButton(t("mainPanels.forward"), testIds.forward, <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />, () => act("forward"), !navigation.canGoForward)}
-        {iconButton(t("mainPanels.reload"), testIds.reload, <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />, () => act("reload"), !surface || !currentAddress)}
+        {/* One slot: while the page loads the control stops the load, otherwise it reloads. */}
+        {loading
+          ? iconButton(t("browserAddressRow.stop"), testIds.stop, <X className="h-3.5 w-3.5" aria-hidden="true" />, () => { discardDraft(); stopBrowserPageLoad(tabId); }, false)
+          : iconButton(t("mainPanels.reload"), testIds.reload, <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />, () => act("reload"), !surface || !currentAddress)}
         <Globe className="ml-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <Input
           ref={inputRef}
@@ -156,6 +166,12 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
         </Tooltip>
         {iconButton(t("chatPreviewRail.openUrl"), testIds.openExternal, <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />,
           () => { if (externalUrl) void api.openExternalUrl(externalUrl); }, externalUrl === null)}
+        {loading ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden" data-testid="browser-loading-line" role="progressbar"
+            aria-label={t("browserAddressRow.loading")}>
+            <div className="browser-loading-line h-full w-1/3 bg-primary" />
+          </div>
+        ) : null}
       </form>
       {error ? (
         <div role="alert" className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid={testIds.error}>
