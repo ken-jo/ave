@@ -8,7 +8,7 @@ import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
 import { TerminalPaneHeader, type TerminalPaneAccess } from "./TerminalPaneHeader.js";
 import { LiveTerminal, type LiveTerminalState } from "./live-terminal.js";
-import { liveTerminalFor } from "../preview/live-terminal-registry.js";
+import { liveTerminalFor, takeTerminalFocusRequest } from "../preview/live-terminal-registry.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import type { TerminalControlAction, TerminalPurpose } from "../../../shared/terminal-session.js";
@@ -169,9 +169,13 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     live?.reportAttended();
   }, [live, attended]);
 
-  // On attach and whenever the tab or pane becomes attended.
+  // On attach and whenever the tab or pane becomes attended. A terminal the user just opened takes the keyboard from the
+  // control that opened it (the launcher keeps focus otherwise, and Enter would open another terminal); a passive
+  // remount follows the rule above.
   useEffect(() => {
-    if (attended && live) focusAttendedTerminal(live.term, tabId);
+    if (!live) return;
+    if (takeTerminalFocusRequest(tabId)) live.term.focus();
+    else if (attended) focusAttendedTerminal(live.term, tabId);
   }, [attended, live, tabId]);
 
   // Re-tint the live terminal when the applied theme changes: its options take a new theme in place, so the shell,

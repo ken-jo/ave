@@ -1,4 +1,5 @@
 import type { BrowserSessionActor } from "../../../shared/browser-surface.js";
+import { requestTerminalFocus } from "./live-terminal-registry.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeBrowserNavigationUrl } from "./url-safety.js";
 import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
@@ -211,8 +212,10 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
   }, []);
 
   const addTab = useCallback((kind: WorkspaceTabKind) => {
+    // Minted in the user's event, not in the updater: the id names the focus request, and an updater may run twice.
+    const id = mintTabId(kind);
+    if (kind === "terminal") requestTerminalFocus(id);
     setState((prev) => {
-      const id = mintTabId(kind);
       const ordinal = kind === "terminal" ? terminalOrdinal(id) : nextOrdinalRef.current[kind]++;
       const tab: WorkspaceTab = { id, kind, ordinal, mode: "pinned", content: null };
       return { ...prev, tabs: [...prev.tabs, tab], activeTabId: id };

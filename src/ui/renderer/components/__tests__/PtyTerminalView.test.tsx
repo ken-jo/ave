@@ -15,7 +15,8 @@ import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
 import { terminalCwd } from "../../preview/main-layout-restore.js";
 import { surfaceMountLocation } from "../../preview/surface-mounts.js";
-import { disposeLiveTerminal } from "../../preview/live-terminal-registry.js";
+import { disposeLiveTerminal, requestTerminalFocus } from "../../preview/live-terminal-registry.js";
+import { useMainSurfaces } from "../../preview/main-surfaces.js";
 import { ThemeProvider, useTheme } from "../../theme/ThemeProvider.js";
 import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { requireScheme } from "../../theme/schemes/index.js";
@@ -743,5 +744,60 @@ describe("a terminal tab keeps its xterm across views", () => {
     disposeLiveTerminal("terminal:33");
     expect(fakeTerm().disposed).toBe(true);
     shown.unmount();
+  });
+});
+
+describe("a terminal the user opens takes the keyboard", () => {
+  function launcherWithFocus(): HTMLButtonElement {
+    const launcher = document.createElement("button");
+    document.body.appendChild(launcher);
+    launcher.focus();
+    expect(document.activeElement).toBe(launcher);
+    return launcher;
+  }
+
+  it("focuses a terminal opened from the main launcher or the side panel's new-tab menu while that control still has focus", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal } as never;
+    const launcher = launcherWithFocus();
+    try {
+      // The two open funnels: a main-area surface and a side-panel tab.
+      const surfaces = renderHook(() => useMainSurfaces());
+      let mainTab = "";
+      act(() => { mainTab = surfaces.result.current.create("terminal", { projectRoot: "/repo" }).tabId; });
+      const tabs = renderHook(() => useWorkspaceTabs());
+      act(() => tabs.result.current.addTab("terminal"));
+      const sideTab = tabs.result.current.tabs[0]!.id;
+      render(<PtyTerminalView api={ave} location="pane:a" tabId={mainTab} tabLabel="Terminal" />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      expect(fakeTerm().focusCount).toBe(1);
+      launcher.focus();
+      render(<PtyTerminalView api={ave} location="side-panel" tabId={sideTab} tabLabel="Terminal" />);
+      await waitFor(() => expect(terminals).toHaveLength(2));
+      expect(fakeTerm(1).focusCount).toBe(1);
+    } finally { launcher.remove(); }
+  });
+
+  it("asks once: a later passive remount leaves focus on the control that has it", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal } as never;
+    const launcher = launcherWithFocus();
+    try {
+      requestTerminalFocus("terminal:41");
+      const first = render(<PtyTerminalView api={ave} location="pane:a" tabId="terminal:41" tabLabel="Terminal 41" />);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      expect(fakeTerm().focusCount).toBe(1);
+      first.unmount();
+      launcher.focus();
+      render(<PtyTerminalView api={ave} location="pane:a" tabId="terminal:41" tabLabel="Terminal 41" />);
+      await waitFor(() => expect(fakeTerm().element!.isConnected).toBe(true));
+      expect(fakeTerm().focusCount).toBe(1);
+      // A terminal nobody asked for (a restored tab) never takes it either.
+      render(<PtyTerminalView api={ave} location="pane:b" tabId="terminal:42" tabLabel="Terminal 42" />);
+      await waitFor(() => expect(terminals).toHaveLength(2));
+      expect(fakeTerm(1).focusCount).toBe(0);
+    } finally { launcher.remove(); }
   });
 });
