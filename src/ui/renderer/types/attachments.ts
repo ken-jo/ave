@@ -21,9 +21,6 @@ export const PASTE_TEXT_MAX_CHARS = 128 * 1024;
  */
 export const PATH_COLLAPSE_THRESHOLD = 10;
 
-/** Extensions that are unconditionally rejected by the file picker. Lowercase comparison; users see a non-blocking error
- * toast on attempt. */
-export { DENY_EXTENSIONS } from "../../../shared/attachments-deny-list.js";
 
 export interface ImageAttachment {
   id: string;

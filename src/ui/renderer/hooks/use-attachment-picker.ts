@@ -4,10 +4,10 @@ import type { RefObject } from "react";
 import { flushSync } from "react-dom";
 import {
   ATTACH_MAX_COUNT,
-  DENY_EXTENSIONS,
   PASTE_TEXT_MAX_CHARS,
   type Attachment,
 } from "../types/attachments.js";
+import type { AttachmentRejection } from "../../../shared/attachment-rejection.js";
 import { buildMarkerText } from "../utils/attachment-markers.js";
 import { subscriptionImageAttachmentLimitViolation } from "../utils/subscription-runtime-ui-policy.js";
 import type { ComposerHandle } from "../components/Composer.js";
@@ -28,8 +28,9 @@ export interface UseAttachmentPickerParams {
   onAttachmentUnavailable?: () => void;
   /** Notify the user when a supported image exceeds its current runtime budget. */
   onImageAttachmentLimitExceeded?: () => void;
-  /** Notify the user that `count` dropped items were refused (folder, blocked type, protected path, expired drop). */
-  onDropRejected?: (count: number) => void;
+  /** Tell the user which picked, dropped or pasted files were not attached, each with its reason. Called once per attach, with
+   * every file that attach lost. */
+  onAttachmentRejected?: (rejections: readonly AttachmentRejection[]) => void;
   /** Notify the user that `attachPastedText` kept only part of a long text. */
   onPastedTextClipped?: (info: { keptChars: number; totalChars: number }) => void;
 }
@@ -75,6 +76,17 @@ export interface UseAttachmentPickerResult {
   attachImage: (base64: string) => Promise<boolean>;
 }
 
+/** The names in `all` left after one occurrence of each name in `accounted` is taken out. File names repeat, so this is a
+ * multiset difference. */
+function unaccountedNames(all: readonly string[], accounted: readonly string[]): string[] {
+  const remaining = [...all];
+  for (const name of accounted) {
+    const at = remaining.indexOf(name);
+    if (at >= 0) remaining.splice(at, 1);
+  }
+  return remaining;
+}
+
 /** Read committed attachments in a separate synchronous flush before deciding the cap; React may defer updater execution
  * until after the callback returns. */
 function readCommittedAttachments(
@@ -103,7 +115,7 @@ export function useAttachmentPicker({
   setQuestion,
   onAttachmentUnavailable,
   onImageAttachmentLimitExceeded,
-  onDropRejected,
+  onAttachmentRejected,
   onPastedTextClipped,
   composerRef,
   imagesEnabled = true,
@@ -117,7 +129,13 @@ export function useAttachmentPicker({
 
   // Native attach uses window.ave, not aveApi; picker and drop share authorization, capability checks, commit-time caps and
   // atomic marker insertion.
-  const commitFiles = useCallback(async (files: readonly PickedFile[]) => {
+  const commitFiles = useCallback(async (files: readonly PickedFile[], refusedEarlier: readonly AttachmentRejection[] = []) => {
+    // Every file this attach loses, whoever refused it; reported once, on every way out.
+    const rejections: AttachmentRejection[] = [...refusedEarlier];
+    const reportRejections = () => {
+      if (rejections.length > 0) onAttachmentRejected?.(rejections);
+    };
+    const candidateNames = new Map<string, string>();
     let unavailableAttachmentSkipped = false;
     let imageAttachmentLimitExceeded = false;
     // Build all candidate attachments first. The 5-cap is enforced at *commit*
@@ -144,7 +162,7 @@ export function useAttachmentPicker({
           img.height === undefined ||
           img.bytes === undefined
         ) {
-          console.warn("readImage failed", f.path, img.error);
+          rejections.push({ name: f.name, reason: img.error === "image_too_large" ? "image-too-large" : "unreadable" });
           continue;
         }
         const candidateBudgetViolation = subscriptionImageAttachmentLimitViolation(
@@ -168,8 +186,10 @@ export function useAttachmentPicker({
           unavailableAttachmentSkipped = true;
           continue;
         }
+        const id = `img-${Date.now()}-${n}`;
+        candidateNames.set(id, f.name);
         candidates.push({
-          id: `img-${Date.now()}-${n}`,
+          id,
           n,
           kind: "image",
           path: f.path,
@@ -180,8 +200,10 @@ export function useAttachmentPicker({
           dataUrl: img.dataUrl,
         });
       } else {
+        const id = `file-${Date.now()}-${n}`;
+        candidateNames.set(id, f.name);
         candidates.push({
-          id: `file-${Date.now()}-${n}`,
+          id,
           n,
           kind: "file",
           path: f.path,
@@ -198,6 +220,7 @@ export function useAttachmentPicker({
         else onAttachmentUnavailable?.();
       }
       if (unavailableAttachmentSkipped) onAttachmentUnavailable?.();
+      reportRejections();
       return false;
     }
     // The cap and the image budget are checked against the latest committed list, read just before the commit (see
@@ -214,7 +237,12 @@ export function useAttachmentPicker({
     const remaining = Math.max(0, ATTACH_MAX_COUNT - prev.length);
     const accepted: Attachment[] = [];
     for (const candidate of currentCandidates) {
-      if (accepted.length >= remaining) continue;
+      if (accepted.length >= remaining) {
+        const name = candidateNames.get(candidate.id);
+        if (name === undefined) throw new Error("attachment candidate has no recorded file name");
+        rejections.push({ name, reason: "too-many" });
+        continue;
+      }
       if (candidate.kind === "image") {
         const images = [...prev, ...accepted]
           .filter((attachment) => attachment.kind === "image")
@@ -230,11 +258,6 @@ export function useAttachmentPicker({
         }
       }
       accepted.push(candidate);
-    }
-    if (accepted.length < currentCandidates.length) {
-      console.warn(
-        `${currentCandidates.length - accepted.length} attachment(s) dropped — ${ATTACH_MAX_COUNT}-cap reached during async open/read`,
-      );
     }
     // Atomic commit: setAttachments AND text-insert MUST land in the same
     // render commit, otherwise Composer's marker-sync useEffect runs between
@@ -256,10 +279,11 @@ export function useAttachmentPicker({
       else onAttachmentUnavailable?.();
     }
     if (unavailableAttachmentSkipped || capabilityChangedBeforeCommit) onAttachmentUnavailable?.();
+    reportRejections();
     // Return focus to the composer textarea so the user can keep typing immediately after the file dialog closes.
     composerRef.current?.focus();
     return accepted.length > 0;
-  }, [attachmentNCounter, composerRef, onAttachmentUnavailable, onImageAttachmentLimitExceeded, setAttachments, setQuestion]);
+  }, [attachmentNCounter, composerRef, onAttachmentRejected, onAttachmentUnavailable, onImageAttachmentLimitExceeded, setAttachments, setQuestion]);
 
   const attachImage = useCallback(async (base64: string): Promise<boolean> => {
     if (!capabilityRef.current.imagesEnabled) {
@@ -276,35 +300,43 @@ export function useAttachmentPicker({
   const handleAttach = useCallback(async () => {
     const result = await window.ave.attach.openFile();
     if (result.canceled) return;
-    if (result.rejected.length > 0) {
-      console.warn("attachment rejected (deny-list):", result.rejected, "deny:", DENY_EXTENSIONS);
-    }
-    await commitFiles(result.files);
+    await commitFiles(result.files, result.rejected);
   }, [commitFiles]);
 
   const handleDropFiles = useCallback(async (files: FileList | readonly File[]) => {
-    const dropped = files.length;
-    if (dropped === 0) return;
+    const names = Array.from(files, (file) => file.name);
+    if (names.length === 0) return;
     // Step 1 runs in the preload: it resolves OS-backed paths and registers them with main. This world never sees or sends a
     // path string.
     const prepared = await window.aveDrop.prepareFileDrop(files);
-    const refusedAtRegister = prepared.rejected?.length ?? (prepared.ok ? 0 : dropped);
+    const refusedAtRegister = prepared.rejected ?? [];
     if (!prepared.ok) {
-      onDropRejected?.(Math.max(refusedAtRegister, 1));
+      // Main names what it refused. With nothing named, no item had a path to register ("nothing-attachable") or the request
+      // itself was refused.
+      onAttachmentRejected?.(refusedAtRegister.length > 0
+        ? refusedAtRegister
+        : names.map((name) => ({ name, reason: prepared.error === "nothing-attachable" ? "no-file-path" : "refused" })));
       composerRef.current?.focus();
       return;
     }
-    if (refusedAtRegister > 0) onDropRejected?.(refusedAtRegister);
+    const registered = unaccountedNames(names, refusedAtRegister.map((rejection) => rejection.name));
     // Step 2: redeem the main-owned token; main authorizes exactly its files.
     const redeemed = await window.ave.attach.redeemDrop(prepared.token);
     if (!redeemed.ok) {
-      console.warn("drop token refused:", redeemed.error);
-      onDropRejected?.(dropped - refusedAtRegister);
+      onAttachmentRejected?.([
+        ...refusedAtRegister,
+        ...registered.map((name) => ({ name, reason: redeemed.error === "unauthorized" ? "refused" as const : "drop-expired" as const })),
+      ]);
       composerRef.current?.focus();
       return;
     }
-    await commitFiles(redeemed.files);
-  }, [commitFiles, composerRef, onDropRejected]);
+    // An item the preload found no path for was never sent to main, so main neither accepted nor refused it.
+    const withoutPath = unaccountedNames(registered, redeemed.files.map((file) => file.name));
+    await commitFiles(redeemed.files, [
+      ...refusedAtRegister,
+      ...withoutPath.map((name) => ({ name, reason: "no-file-path" as const })),
+    ]);
+  }, [commitFiles, composerRef, onAttachmentRejected]);
 
   const attachPastedText = useCallback((rawText: string): boolean => {
     const { text, clipped } = clipPastedText(rawText);

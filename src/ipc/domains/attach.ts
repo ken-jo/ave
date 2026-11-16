@@ -17,6 +17,7 @@ import {
   sniffComposerImageFormat,
 } from "../../shared/composer-image-input.js";
 import { errorMessage } from "../../shared/error-message.js";
+import type { AttachFileRejectReason } from "../../shared/attachment-rejection.js";
 import {
   allowKeyMaterialInspection,
   canonicalizePathForMatch,
@@ -76,12 +77,7 @@ function authorizeClipboardTempImage(
 export const DROP_TOKEN_TTL_MS = 60_000;
 const DROP_TOKEN_MAX_PENDING = 32;
 
-type DropRejectReason =
-  | "denied-extension"
-  | "sensitive-path"
-  | "not-a-file"
-  | "not-found"
-  | "too-many";
+type DropRejectReason = AttachFileRejectReason;
 
 type DroppedFile = OpenFileResult["files"][number];
 
@@ -186,7 +182,8 @@ export interface OpenFileResult {
     isImage: boolean;
     mimeType?: string;
   }>;
-  rejected: string[]; // paths rejected by deny-list
+  /** Selected files that were not returned, each with the reason the composer shows. */
+  rejected: Array<{ name: string; reason: AttachFileRejectReason }>;
 }
 
 export type RegisterDropResult =
@@ -252,11 +249,11 @@ export function registerAttachHandlers(deps: IpcDeps): void {
     }
 
     const files: OpenFileResult["files"] = [];
-    const rejected: string[] = [];
+    const rejected: OpenFileResult["rejected"] = [];
     for (const p of result.filePaths) {
       const ext = getExt(p);
       if (DENY_EXTENSIONS.has(ext)) {
-        rejected.push(p);
+        rejected.push({ name: path.basename(p), reason: "denied-extension" });
         continue;
       }
       try {
@@ -274,7 +271,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         // The native picker authorizes this exact path for later reads and opens.
         authorizePath(p);
       } catch {
-        rejected.push(p);
+        rejected.push({ name: path.basename(p), reason: "not-found" });
       }
     }
     return { canceled: false, files, rejected };
@@ -357,10 +354,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         // Stat before buffering so multi-gigabyte files cannot exhaust memory.
         const stat = await fs.stat(target.real);
         if (stat.size > MAX_COMPOSER_IMAGE_BYTES) {
-          return {
-            ok: false,
-            error: `image_too_large: ${stat.size} > ${MAX_COMPOSER_IMAGE_BYTES}`,
-          };
+          return { ok: false, error: "image_too_large" };
         }
         if (!await sniffImageFilePrefix(target.real)) {
           return { ok: false, error: "not_image" };
@@ -375,10 +369,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
           if (!opened.isFile()) return { ok: false, error: "not-a-file" };
           buf = await handle.readFile();
           if (buf.length > MAX_COMPOSER_IMAGE_BYTES) {
-            return {
-              ok: false,
-              error: `image_too_large: ${buf.length} > ${MAX_COMPOSER_IMAGE_BYTES}`,
-            };
+            return { ok: false, error: "image_too_large" };
           }
           // Re-sniff after the full read so a file replacement race cannot make
           // a claimed image MIME disagree with the bytes sent to a provider.

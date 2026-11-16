@@ -80,6 +80,8 @@ export interface ChatComposerDockProps {
   onAttach: () => Promise<void> | void;
   /** Files dropped on the composer (resolved and registered through the preload). */
   onDropFiles?: (files: FileList) => void;
+  /** Shows a composer refusal (attachment limit, clipboard image that could not be saved) to the user. */
+  onComposerWarning?: (message: string) => void;
   /** App-owned warning for a verified image-capability refusal only. */
   onImageAttachmentUnavailable?: () => void;
   /** Canonical selected subscription runtime policy; legacy markers are fallback-only. */
@@ -282,6 +284,7 @@ export function ChatComposerDock({
   ringSlot,
   onAttach,
   onDropFiles,
+  onComposerWarning,
   subscriptionRuntimePolicy,
   subscriptionImageAttachmentProvider,
   subscriptionFileAttachmentProvider,
@@ -452,7 +455,7 @@ export function ChatComposerDock({
           onSelectPlugin={onSelectPlugin}
           disabled={composerInputDisabled}
           sendDisabled={composerSendDisabled}
-          onWarning={(message) => console.warn(message)}
+          onWarning={onComposerWarning}
           onImageAttachmentUnavailable={onImageAttachmentUnavailable}
           onImageAttachmentLimitExceeded={onImageAttachmentLimitExceeded}
           placeholder={computeComposerPlaceholder({

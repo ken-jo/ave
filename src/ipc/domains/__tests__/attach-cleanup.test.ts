@@ -195,3 +195,23 @@ describe("ave:attach image MIME normalization", () => {
     });
   });
 });
+
+describe("ave:attach:openFile refusals (F10)", () => {
+  it("returns each refused selection by name with the reason the composer shows", async () => {
+    const kept = join(root, "notes.txt");
+    writeFileSync(kept, "notes");
+    showOpenDialogMock.mockResolvedValue({
+      canceled: false,
+      filePaths: [join(root, "setup.exe"), kept, join(root, "gone.txt")],
+    });
+
+    expect(await invoke(CHANNELS.attach.openFile)).toMatchObject({
+      canceled: false,
+      files: [{ path: kept, name: "notes.txt" }],
+      rejected: [
+        { name: "setup.exe", reason: "denied-extension" },
+        { name: "gone.txt", reason: "not-found" },
+      ],
+    });
+  });
+});

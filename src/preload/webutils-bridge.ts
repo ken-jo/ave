@@ -1,6 +1,7 @@
 // Resolve real File paths in preload because IPC cannot carry them; candidate paths grant no authority without main validation and user acknowledgment.
 import { ipcRenderer, webUtils } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
+import type { AttachFileRejectReason } from "../shared/attachment-rejection.js";
 
 /** Filter non-backed or synthetic files' empty paths before main validation, preserving drop order. */
 export function resolveDroppedPaths(files: FileList | readonly File[]): string[] {
@@ -16,8 +17,8 @@ export function resolveDroppedPaths(files: FileList | readonly File[]): string[]
 export async function prepareFileDrop(
   files: FileList | readonly File[],
 ): Promise<
-  | { ok: true; token: string; rejected: Array<{ name: string; reason: string }> }
-  | { ok: false; error: string; rejected?: Array<{ name: string; reason: string }> }
+  | { ok: true; token: string; rejected: Array<{ name: string; reason: AttachFileRejectReason }> }
+  | { ok: false; error: string; rejected?: Array<{ name: string; reason: AttachFileRejectReason }> }
 > {
   const paths = resolveDroppedPaths(files);
   if (paths.length === 0) return { ok: false, error: "nothing-attachable" };

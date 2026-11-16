@@ -30,7 +30,7 @@ import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
 import { ApprovalDock } from "./permissions/ApprovalDock.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { sessionOwnedBy } from "./chat-group-session-registry.js";
-import { formatIpcError } from "../format-ipc-error.js";
+import { attachmentRejectionMessage, formatIpcError } from "../format-ipc-error.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-display-level.js";
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
@@ -39,6 +39,7 @@ import { ComposerContextNotice } from "./ComposerContextNotice.js";
 import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
 import { NoticeLiveRegion, StatusBar } from "./StatusBar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
+import type { AttachmentRejection } from "../../../shared/attachment-rejection.js";
 
 /**
  * A sidebar row asking one tile to show a stored side chat.
@@ -214,7 +215,7 @@ function SideChatSession({
     const current = claimRef.current!;
     onSessionClaimRef.current?.(() => current.claims.isClaimCurrent(`side-chat:${next}`, current.ownsSession));
   }, [approvals.claims, hasCurrentClaim]);
-  const { persistent, visibleToast, pendingCount, upsertToast, removeToast } = useStatusNotices();
+  const { persistent, visibleToast, pendingCount, pushToast, upsertToast, removeToast } = useStatusNotices();
   const handleToastDismiss = useCallback((toast: ToastItem) => removeToast(toast.id), [removeToast]);
   const announceProviderFallback = useCallback((message: string) => {
     upsertToast("provider-fallback", { severity: "warning", message, ttlMs: DEFAULT_TOAST_TTL_MS });
@@ -461,16 +462,38 @@ function SideChatSession({
     handleComposerSend(captureComposerKeyboardIntent());
   }, [handleComposerSend]);
 
+  // Composer refusals are about this side chat, so they are drawn in its own status row, as the main chat draws its own.
+  const showComposerWarning = useCallback((message: string) => {
+    pushToast({ severity: "warning", message, ttlMs: 8000 });
+  }, [pushToast]);
+  const attachmentUnavailableProvider = subscriptionRuntimePolicy?.provider
+    ?? runtimeImageAttachmentProvider
+    ?? runtimeFileAttachmentProvider
+    ?? "subscription";
+  const emitAttachmentUnavailable = useCallback(() => {
+    showComposerWarning(t("app.subscriptionAttachmentUnsupported", { provider: attachmentUnavailableProvider }));
+  }, [attachmentUnavailableProvider, showComposerWarning, t]);
+  const emitImageAttachmentLimitExceeded = useCallback(() => {
+    showComposerWarning(t("app.subscriptionImageAttachmentLimitExceeded", { provider: attachmentUnavailableProvider }));
+  }, [attachmentUnavailableProvider, showComposerWarning, t]);
+  const emitPastedTextClipped = useCallback((info: { keptChars: number; totalChars: number }) => {
+    showComposerWarning(t("app.pastedTextClipped", { keptChars: info.keptChars, totalChars: info.totalChars }));
+  }, [showComposerWarning, t]);
+  const emitAttachmentRejected = useCallback((rejections: readonly AttachmentRejection[]) => {
+    showComposerWarning(attachmentRejectionMessage(rejections));
+  }, [showComposerWarning]);
   const { handleAttach, handleDropFiles, attachPastedText, attachImage } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion: setDraft,
     composerRef,
-    // Same channel as this surface's other composer warnings.
-    onDropRejected: (count) => console.warn(`${count} dropped item(s) were not attached`),
+    onAttachmentRejected: emitAttachmentRejected,
     imagesEnabled,
     filesEnabled,
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
+    onAttachmentUnavailable: emitAttachmentUnavailable,
+    onImageAttachmentLimitExceeded: emitImageAttachmentLimitExceeded,
+    onPastedTextClipped: emitPastedTextClipped,
   });
 
   // This side chat's composer, as a place a terminal block in the same side panel can be attached to — while it is the tab
@@ -628,7 +651,9 @@ function SideChatSession({
             onSelectPlugin={NOOP_SELECT_PLUGIN}
             disabled={composerInputDisabled}
             sendDisabled={composerSendDisabled}
-            onWarning={(message) => console.warn(message)}
+            onWarning={showComposerWarning}
+            onImageAttachmentUnavailable={emitAttachmentUnavailable}
+            onImageAttachmentLimitExceeded={emitImageAttachmentLimitExceeded}
             placeholder={computeComposerPlaceholder({
               hasApiKey,
               streaming: isStreaming,

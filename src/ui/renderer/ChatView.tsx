@@ -70,6 +70,8 @@ import { ChatComposerDock } from "./components/ChatComposerDock.js";
 import { ComposerContextNotice } from "./components/ComposerContextNotice.js";
 import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
+import type { AttachmentRejection } from "../../shared/attachment-rejection.js";
+import { attachmentRejectionMessage } from "./format-ipc-error.js";
 import { DockedPanelColumn, useDockedPanelMotion } from "./components/DockedWorkPanel.js";
 import { formatTokensExact } from "../../lib/cost-format.js";
 import { MemorySaveNoticeRows, useComposerTextFlag, useMemorySaveNotices, type MemoryNotice } from "./components/MemorySaveNotices.js";
@@ -742,15 +744,15 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
     }));
   }, [onAttachmentWarning, t]);
 
-  const emitDropRejected = useCallback((count: number) => {
-    onAttachmentWarning?.(t("app.dropRejected", { count }));
-  }, [onAttachmentWarning, t]);
+  const emitAttachmentRejected = useCallback((rejections: readonly AttachmentRejection[]) => {
+    onAttachmentWarning?.(attachmentRejectionMessage(rejections));
+  }, [onAttachmentWarning]);
   const { handleAttach, handleDropFiles, attachPastedText, attachImage } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion,
     composerRef,
-    onDropRejected: emitDropRejected,
+    onAttachmentRejected: emitAttachmentRejected,
     imagesEnabled: subscriptionRuntimePolicy ? subscriptionRuntimePolicy.imagesEnabled : settingsLoaded !== false && runtimeImageAttachmentProvider === undefined,
     filesEnabled: subscriptionRuntimePolicy ? subscriptionRuntimePolicy.filesEnabled : settingsLoaded !== false && runtimeFileAttachmentProvider === undefined,
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
@@ -985,6 +987,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
         onImageAttachmentLimitExceeded={emitImageAttachmentLimitExceeded}
         onAttach={handleAttach}
         onDropFiles={handleDropFiles}
+        onComposerWarning={onAttachmentWarning}
         subscriptionRuntimePolicy={subscriptionRuntimePolicy}
         subscriptionImageAttachmentProvider={runtimeImageAttachmentProvider}
         subscriptionFileAttachmentProvider={runtimeFileAttachmentProvider}

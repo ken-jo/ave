@@ -29,6 +29,7 @@ import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
 import type { SerializedHistoryMessage } from "../../shared/chat-history.js";
+import type { AttachFileRejectReason } from "../../shared/attachment-rejection.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 import type { PluginConfigRecord } from "../../shared/plugin-config.js";
 import type {
@@ -1817,7 +1818,7 @@ export interface AveAttachApi {
       isImage: boolean;
       mimeType?: string;
     }>;
-    rejected: string[];
+    rejected: Array<{ name: string; reason: AttachFileRejectReason }>;
   }>;
   readImage: (filePath: string) => Promise<{
     ok: boolean;
@@ -2025,8 +2026,8 @@ export interface AveDropApi {
    * items main refused, by stable reason code.
    */
   prepareFileDrop: (files: FileList | readonly File[]) => Promise<
-    | { ok: true; token: string; rejected: Array<{ name: string; reason: string }> }
-    | { ok: false; error: string; rejected?: Array<{ name: string; reason: string }> }
+    | { ok: true; token: string; rejected: Array<{ name: string; reason: AttachFileRejectReason }> }
+    | { ok: false; error: string; rejected?: Array<{ name: string; reason: AttachFileRejectReason }> }
   >;
 }
 
