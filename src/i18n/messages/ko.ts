@@ -15,6 +15,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.attachment-missing": "이 템플릿에 연결된 일정이 없습니다.",
   "reasonCodes.attachment-detached": "이 템플릿에서 일정 연결이 해제되었습니다.",
   "reasonCodes.unattended-not-read-only": "읽기 전용 템플릿만 사용자 없이 실행할 수 있습니다.",
+  "reasonCodes.gate-check-unsupported": "명령의 종료 상태를 확인하는 게이트는 사용할 수 없습니다. 검토 게이트나 단계 결과를 사용하세요.",
   "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",

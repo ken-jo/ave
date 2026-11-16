@@ -24,7 +24,8 @@ export interface AuthoriseRunSourceArgs {
   /** false when the stored content no longer hashes to the pin. */
   storedHashMatches: boolean;
   attachment: ScheduleAttachment | null;
-  /** The project the run would use: the item's for Create and run, the snapshot's for a schedule. */
+  /** The project the run would use, resolved by the host and never read from a board row: the authorised registry root of the card's
+   * project for Create and run, the snapshot's for a schedule. */
   runProjectRoot: string | undefined;
   /** Applied to the scope the approval bound, never to the template's live scope. */
   scopeAuthorised: (scope: TemplateScope) => boolean;
@@ -44,9 +45,10 @@ export const authoriseRunSource: AuthoriseRunSource = (a) => {
   if (!a.storedHashMatches) return refuse("graph-mismatch");
   if (!a.template || !a.stored) return refuse("version-missing");
   if (!samePin(a.stored, a.runPin)) return refuse("graph-mismatch");
+  // At start and at every spawn, whoever started the run: an archived template starts nothing more.
+  if (a.template.archivedAt !== undefined) return refuse("template-archived");
 
   if (source.kind === "local-create-and-run") {
-    if (a.template.archivedAt !== undefined) return refuse("template-archived");
     // Which version Create and run may name is a start rule: a run keeps its pinned version when a newer one is confirmed meanwhile.
     if (a.phase === "start" && a.template.currentVersion !== a.runPin.version) return refuse("not-current-version");
     if (source.projectRoot !== a.runProjectRoot) return refuse("project-mismatch");

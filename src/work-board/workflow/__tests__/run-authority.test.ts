@@ -46,6 +46,9 @@ describe("authoriseRunSource", () => {
     ["a schedule on its attachment pin", scheduled(), { ok: true, source: "schedule-attachment", lane: "unattended" }],
     ["a schedule while a newer version is current", scheduled({ template: { ...template, currentVersion: 2 } }), { ok: true, source: "schedule-attachment", lane: "unattended" }],
     ["a schedule on the snapshot's project", scheduled({ template: { ...template, scope: projectScope }, attachment: { ...attachment, approvedScope: projectScope }, runProjectRoot: A }), { ok: true, source: "schedule-attachment", lane: "unattended" }],
+    ["a schedule whose template is archived", scheduled({ template: { ...template, archivedAt: stored.confirmedAt } }), { ok: false, code: "template-archived" }],
+    ["the next spawn of a scheduled run whose template was archived meanwhile", scheduled({ phase: "spawn", template: { ...template, archivedAt: stored.confirmedAt } }), { ok: false, code: "template-archived" }],
+    ["the next spawn of a Create and run whose template was archived meanwhile", args({ phase: "spawn", template: { ...template, archivedAt: stored.confirmedAt } }), { ok: false, code: "template-archived" }],
     ["a schedule with no attachment", scheduled({ attachment: null }), { ok: false, code: "attachment-missing" }],
     ["a schedule naming another attachment", scheduled({ attachment: { ...attachment, id: "att-2" } }), { ok: false, code: "attachment-missing" }],
     ["a detached attachment", scheduled({ attachment: { ...attachment, detachedAt: stored.confirmedAt } }), { ok: false, code: "attachment-detached" }],
@@ -130,7 +133,7 @@ it("a start refused project-mismatch or scope-not-authorised returns that reason
   }
   const codes = [
     "project-mismatch", "scope-not-authorised", "scope-changed", "source-not-authorised", "pin-mismatch", "not-current-version", "template-archived",
-    "version-missing", "graph-mismatch", "attachment-missing", "attachment-detached", "unattended-not-read-only",
+    "version-missing", "graph-mismatch", "attachment-missing", "attachment-detached", "unattended-not-read-only", "gate-check-unsupported",
   ];
   for (const code of codes) for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
 });
