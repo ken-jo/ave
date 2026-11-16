@@ -113,3 +113,20 @@ describe('chat settings accessible names', () => {
     expect(screen.getByRole('spinbutton', { name: '서브에이전트 라운드 예산' })).toHaveAccessibleName();
   });
 });
+
+describe('sub-agent round budget validation', () => {
+  it.each(['', '-5', '0', '1.5', '1001'])('refuses invalid input %s visibly without saving', (value) => {
+    const save = vi.fn(); renderChatTab({ subAgentMaxRounds: 60, setSubAgentMaxRounds: save });
+    const input = screen.getByTestId('subagent-max-rounds-input');
+    fireEvent.change(input, { target: { value } }); fireEvent.blur(input);
+    expect(save).not.toHaveBeenCalled(); expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('1~1000');
+  });
+  it('accepts the inclusive maximum and skips an unchanged value', () => {
+    const save = vi.fn(); renderChatTab({ subAgentMaxRounds: 60, setSubAgentMaxRounds: save });
+    const input = screen.getByTestId('subagent-max-rounds-input');
+    fireEvent.blur(input); expect(save).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '1000' } }); fireEvent.blur(input);
+    expect(save).toHaveBeenCalledExactlyOnceWith(1000); expect(input).toHaveValue(1000);
+  });
+});

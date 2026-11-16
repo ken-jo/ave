@@ -1,3 +1,4 @@
+import { isSubAgentMaxRounds } from "../shared/subagent-policy.js";
 import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
@@ -986,6 +987,7 @@ export class SettingsService {
   }
 
   private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
+    if (partial.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) throw new Error("Invalid sub-agent round budget");
     if (partial.telemetry?.level !== undefined && !isTelemetryLevel(partial.telemetry.level)) throw new Error("Invalid telemetry level");
     const terminalFontPatch = partial.appearance?.terminalFont;
     if (terminalFontPatch && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {

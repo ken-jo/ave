@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { PrivacyTab } from "./PrivacyTab.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Switch } from "../../../components/ui/switch.js";
@@ -8,6 +8,8 @@ import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.j
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
   SUBAGENT_MAX_ROUNDS_MIN,
+  SUBAGENT_MAX_ROUNDS_MAX,
+  isSubAgentMaxRounds,
 } from "../../../shared/subagent-policy.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -73,6 +75,9 @@ export function ChatTab({
   onImmediateChange,
 }: ChatTabProps) {
   const { t } = useTranslation();
+  const [roundDraft, setRoundDraft] = useState(String(subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT));
+  const [roundError, setRoundError] = useState(false);
+  useEffect(() => { setRoundDraft(String(subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT)); setRoundError(false); }, [subAgentMaxRounds]);
   // Memoize the wrapped onToggle so PrivacyTab receives a stable identity across re-renders — if PrivacyTab ever memoizes
   // via React.memo / props comparison, an inline arrow would defeat it.
   const handlePiiRedactToggle = useCallback(() => {
@@ -227,27 +232,29 @@ export function ChatTab({
           <Input
             type="number"
             min={SUBAGENT_MAX_ROUNDS_MIN}
-            // No `max`: the engine runs the configured budget as-is, so the
-            // field must not refuse a value the engine would honour.
-            // Commit on blur, not per keystroke: typing "12" passes through
-            // "1", and a per-keystroke write would persist that and clamp it
-            // back into the field mid-edit. `key` remounts the field when the
-            // stored value changes, so a clamped value is reflected back.
-            key={subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT}
-            defaultValue={subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT}
+            max={SUBAGENT_MAX_ROUNDS_MAX}
+            step={1}
+            value={roundDraft}
+            aria-invalid={roundError}
+            aria-describedby="subagent-round-budget-hint"
+            onChange={(event) => { setRoundDraft(event.target.value); setRoundError(false); }}
             disabled={!settingsLoaded}
             aria-label={t("chatTab.subAgentMaxRoundsLabel")}
             data-testid="subagent-max-rounds-input"
             className="w-20"
             onBlur={(e) => {
-              const parsed = Number.parseInt(e.target.value, 10);
-              if (Number.isFinite(parsed)) setSubAgentMaxRounds?.(parsed);
+              const parsed = e.currentTarget.value.trim() === "" ? Number.NaN : Number(e.currentTarget.value);
+              if (!isSubAgentMaxRounds(parsed)) { setRoundError(true); return; }
+              setRoundError(false);
+              setRoundDraft(String(parsed));
+              if (parsed !== subAgentMaxRounds) setSubAgentMaxRounds?.(parsed);
             }}
           />
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{t("chatTab.subAgentMaxRoundsLabel")}</p>
-            <p className="text-dense text-muted-foreground">
-              {t("chatTab.subAgentMaxRoundsHint")}
+            <p id="subagent-round-budget-hint" className="text-dense text-muted-foreground">
+              {t("chatTab.subAgentMaxRoundsHint", { min: SUBAGENT_MAX_ROUNDS_MIN, max: SUBAGENT_MAX_ROUNDS_MAX })}
+              {roundError && <span role="alert" className="block text-destructive">{t("chatTab.subAgentRoundsInvalid", { min: SUBAGENT_MAX_ROUNDS_MIN, max: SUBAGENT_MAX_ROUNDS_MAX })}</span>}
             </p>
           </div>
         </div>

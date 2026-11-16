@@ -1,3 +1,4 @@
+import { SUBAGENT_MAX_ROUNDS_MAX, SUBAGENT_MAX_ROUNDS_MIN } from "../shared/subagent-policy.js";
 import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags } from "../shared/telemetry-policy.js";
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode } from "../shared/accessibility-signals.js";
@@ -1031,7 +1032,7 @@ export function acceptTelemetryText(
   else target[key] = trimmed;
 }
 
-/** Round budgets require valid positive integers and have no upper clamp; enforce timer bounds where timers are armed. */
+/** Stored round budgets normalize to the shared inclusive bounds. */
 export function normalizeChat(input: unknown): ChatSettings {
   const result: ChatSettings = { ...DEFAULT_SETTINGS.chat };
   if (!isRecord(input)) return result;
@@ -1042,7 +1043,7 @@ export function normalizeChat(input: unknown): ChatSettings {
     result.processingDisplayLevel = chat.processingDisplayLevel;
   }
   if (typeof chat.subAgentMaxRounds === "number" && Number.isFinite(chat.subAgentMaxRounds)) {
-    result.subAgentMaxRounds = Math.max(1, Math.floor(chat.subAgentMaxRounds));
+    result.subAgentMaxRounds = Math.min(SUBAGENT_MAX_ROUNDS_MAX, Math.max(SUBAGENT_MAX_ROUNDS_MIN, Math.floor(chat.subAgentMaxRounds)));
   }
   // Preserve zero as off; invalid fractional or negative notification intervals also read as off.
   if (

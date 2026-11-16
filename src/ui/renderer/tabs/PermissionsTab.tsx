@@ -46,7 +46,7 @@ import type {
 } from "../../../shared/sandbox-capability-info.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { RecentlyDeniedPanel } from "../components/permissions/RecentlyDeniedPanel.js";
-import { isOwnerAwayAutoSkipMinutes } from "../../../shared/owner-away-permission.js";
+import { isOwnerAwayAutoSkipMinutes, OWNER_AWAY_AUTO_SKIP_MAX_MINUTES } from "../../../shared/owner-away-permission.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
@@ -477,6 +477,7 @@ export function PermissionsTab({
   const [ownerAwayAutoSkipMinutes, setOwnerAwayAutoSkipMinutes] = useState(0);
   const [ownerAwayBusy, setOwnerAwayBusy] = useState(false);
   const [ownerAwayRevision, setOwnerAwayRevision] = useState(0);
+  const [ownerAwayError, setOwnerAwayError] = useState<string | null>(null);
 
   // ── Explicit Approval Policy ──────────────────────
   const [requireExplicit, setRequireExplicit] = useState(true);
@@ -860,8 +861,14 @@ export function PermissionsTab({
   };
 
   const handleOwnerAwayAutoSkip = async (value: number) => {
-    if (ownerAwayBusy || value === ownerAwayAutoSkipMinutes) return;
+    if (ownerAwayBusy) return;
+    setOwnerAwayError(null);
     if (!isOwnerAwayAutoSkipMinutes(value)) {
+      setOwnerAwayError(t("permissionsTab.ownerAwayInvalid", { max: OWNER_AWAY_AUTO_SKIP_MAX_MINUTES }));
+      setOwnerAwayRevision((revision) => revision + 1);
+      return;
+    }
+    if (value === ownerAwayAutoSkipMinutes) {
       setOwnerAwayRevision((revision) => revision + 1);
       return;
     }
@@ -869,12 +876,15 @@ export function PermissionsTab({
     try {
       const result = await getApi().updateSettings({ permissions: { ownerAwayAutoSkipMinutes: value } });
       if (isIpcErrorResult(result)) {
-        showBanner("error", ipcFailureText("owner-away auto-skip", result, t("permissionsTab.ownerAwaySaveFailed")));
+        setOwnerAwayError(ipcFailureText("owner-away auto-skip", result, t("permissionsTab.ownerAwaySaveFailed")));
       } else {
-        setOwnerAwayAutoSkipMinutes(value);
+        const applied = result.permissions?.ownerAwayAutoSkipMinutes;
+        if (!isOwnerAwayAutoSkipMinutes(applied)) throw new Error("Invalid owner-away setting returned by host");
+        setOwnerAwayAutoSkipMinutes(applied);
       }
-    } catch {
-      showBanner("error", t("permissionsTab.ownerAwaySaveFailed"));
+    } catch (error) {
+      console.warn("[ave] permissions: owner-away auto-skip failed:", errorMessage(error));
+      setOwnerAwayError(t("permissionsTab.ownerAwaySaveFailed"));
     } finally {
       setOwnerAwayRevision((revision) => revision + 1);
       setOwnerAwayBusy(false);
@@ -1728,20 +1738,25 @@ export function PermissionsTab({
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="owner-away-auto-skip">{t("permissionsTab.ownerAwayAutoSkipLabel")}</Label>
-            <p className="text-xs text-muted-foreground">{t("permissionsTab.ownerAwayAutoSkipHint")}</p>
+            <p id="owner-away-hint" className="text-xs text-muted-foreground">{t("permissionsTab.ownerAwayAutoSkipHint", { max: OWNER_AWAY_AUTO_SKIP_MAX_MINUTES })}</p>
             <Input
               key={ownerAwayRevision}
               id="owner-away-auto-skip"
               data-testid="owner-away-auto-skip"
               type="number"
               min={0}
+              max={OWNER_AWAY_AUTO_SKIP_MAX_MINUTES}
               step={1}
               defaultValue={ownerAwayAutoSkipMinutes}
               disabled={ownerAwayBusy}
               aria-label={t("permissionsTab.ownerAwayAutoSkipLabel")}
+              aria-invalid={ownerAwayError !== null}
+              aria-describedby={ownerAwayError ? "owner-away-hint owner-away-error" : "owner-away-hint"}
               className="w-32"
+              onChange={() => setOwnerAwayError(null)}
               onBlur={(event) => void handleOwnerAwayAutoSkip(event.currentTarget.value === "" ? Number.NaN : Number(event.currentTarget.value))}
             />
+            {ownerAwayError ? <p role="alert" id="owner-away-error" data-testid="owner-away-error" className="text-xs text-destructive">{ownerAwayError}</p> : null}
           </div>
           {policyManaged && (
             <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning">

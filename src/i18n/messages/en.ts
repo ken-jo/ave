@@ -1488,7 +1488,7 @@ export const en = {
   "chatTab.idleMemoryConsolidationHint": "When idle, sends eligible global and current-project memories to the configured model to update their overviews. Manual consolidation in Roles stays available.",
   "chatTab.subAgentWakeLabel": "Autonomously wake parent for sub-agent messages",
   "chatTab.subAgentMaxRoundsLabel": "Sub-agent round budget",
-  "chatTab.subAgentMaxRoundsHint": "Tool rounds a sub-agent runs before handing back. Too low stops work midway.",
+  "chatTab.subAgentMaxRoundsHint": "Maximum tool rounds for one sub-agent run. Enter a whole number from {min} to {max}.",
   "chatTab.subAgentWakeHint": "When an idle parent receives a queued background sub-agent message, start a new turn through the prompt gate.",
   "chatTab.privacyTitle": "Privacy",
   "chatTab.privacyDescription": "Configure privacy behavior before chat messages are sent.",
@@ -3693,7 +3693,7 @@ export const en = {
   "permissionsTab.reviewerModeRecovered": "Permission reviewer setting updated.",
   "permissionsTab.reviewerModeRecoveryRewireFailed": "Your reviewer choice was saved, but the reviewer could not reconnect. Automatic review remains unavailable.",
   "permissionsTab.ownerAwayAutoSkipLabel": "Owner-away auto-skip (minutes)",
-  "permissionsTab.ownerAwayAutoSkipHint": "0 waits without a limit. After the configured wait, deny the request and tell the model not to retry.",
+  "permissionsTab.ownerAwayAutoSkipHint": "Enter a whole number from 0 to {max} minutes (7 days). 0 waits without a limit. After the configured wait, deny the request and tell the model not to retry.",
   "permissionsTab.ownerAwaySaveFailed": "Could not save owner-away auto-skip.",
   "permissionsTab.osSandboxWindowsProfileReadDenyReadable": "{path} is readable by {principals} and cannot be protected by the sandbox",
   "permissionsTab.osSandboxWindowsProfileReadDenyUnverified": "{path} has unverified read protection and cannot be protected by the sandbox",
@@ -6614,6 +6614,8 @@ export const en = {
   "appearanceTab.zoomIndicatorLabel": "{label} {percent}% ({zoomIn} / {zoomOut})",
   "rolesTab.contextFlow": "AGENTS.md                  -> project / org / agent operating context\nagents.custom.md            -> your own agent context under keep-latest, read after AGENTS.md\nAGENTS.md.merged            -> merge awaiting review; never read by the runtime\nmemories/MEMORY.md          -> urgent memory, references, and saved-memory index\nmemories/*.md               -> detailed long-term memories with references\nuser-preferences.md         -> compact durable user preferences only\nprompts/*.md                -> user-editable per-turn persona prompts\n\nIdle:\n  IDLE_SCAN -> optionally refresh user-preferences.md from sources, preferences only\n\nTurn:\n  system prompt reads AGENTS.md + user-preferences.md + MEMORY.md + memories/*.md\n  selected persona prompt is injected as a per-turn system prompt section",
   "llmTab.fallbackPresetUnavailable": "The custom provider cannot be used in the fallback chain while a marketplace provider is active.",
+  "chatTab.subAgentRoundsInvalid": "Enter a whole number from {min} to {max}.",
+  "permissionsTab.ownerAwayInvalid": "Enter a whole number from 0 to {max} minutes. The saved value has been restored.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

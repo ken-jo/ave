@@ -3475,37 +3475,26 @@ describe("SettingsService chat normalization", () => {
     });
   });
 
-  it("floors a fractional sub-agent round budget and drops mistyped fields", async () => {
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({
-      chat: {
-        ...s.get("chat"),
-        subAgentMaxRounds: 12.7,
-        autoCompact: "yes" as never,
-        systemPrompt: 42 as never,
-      },
-    });
-    const chat = s.get("chat");
-    expect(chat.subAgentMaxRounds).toBe(12);
-    // Mistyped values are dropped, so the prior (default) value stands.
-    expect(chat.autoCompact).toBe(DEFAULT_SETTINGS.chat.autoCompact);
-    expect(chat.systemPrompt).toBe(DEFAULT_SETTINGS.chat.systemPrompt);
+  it("rejects fractional sub-agent rounds without changing other fields", async () => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const previous = store.get("chat");
+    await expect(store.patch({ chat: { subAgentMaxRounds: 12.7, autoCompact: false } })).rejects.toThrow("Invalid sub-agent round budget");
+    expect(store.get("chat")).toEqual(previous);
+    await store.patch({ chat: { subAgentMaxRounds: 12, autoCompact: "yes" as never, systemPrompt: 42 as never } });
+    expect(store.get("chat")).toMatchObject({ subAgentMaxRounds: 12, autoCompact: previous.autoCompact, systemPrompt: previous.systemPrompt });
   });
 
-  it("raises a non-positive round budget to the runnable minimum", async () => {
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: 0 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(1);
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: -5 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(1);
+  it.each([0, -5, 1001, 300_000])("refuses an out-of-range round budget %s without changing the stored value", async (value) => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const previous = store.get("chat").subAgentMaxRounds;
+    await expect(store.patch({ chat: { subAgentMaxRounds: value } })).rejects.toThrow("Invalid sub-agent round budget");
+    expect(store.get("chat").subAgentMaxRounds).toBe(previous);
   });
 
-  it("keeps a very large round budget — the budget has no upper clamp", async () => {
-    // Deliberate: an absolute ceiling above the configured budget can only surface as an agent that stops
-    // mid-task. The 32-bit timer bound this could once overflow is enforced where the timer is armed instead.
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: 300_000 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(300_000);
+  it("accepts the inclusive maximum round budget", async () => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await store.patch({ chat: { subAgentMaxRounds: 1000 } });
+    expect(store.get("chat").subAgentMaxRounds).toBe(1000);
   });
 
   it("corrupt on-disk chat falls back to defaults", () => {
@@ -3522,7 +3511,7 @@ describe("SettingsService chat normalization", () => {
 
   it("rejects a non-finite round budget rather than persisting NaN", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: Number.NaN } });
+    await expect(s.patch({ chat: { subAgentMaxRounds: Number.NaN } })).rejects.toThrow("Invalid sub-agent round budget");
     expect(s.get("chat").subAgentMaxRounds).toBe(
       DEFAULT_SETTINGS.chat.subAgentMaxRounds,
     );

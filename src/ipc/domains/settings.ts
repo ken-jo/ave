@@ -1,3 +1,4 @@
+import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
 import { containsSecuritySettings } from "../../shared/security-settings.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
@@ -605,6 +606,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   ipcMain.handle(CHANNELS.settings.update, async (e, partial) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.update, e); return UNAUTHORIZED_FRAME; }
+    if (partial?.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) return { ok: false, error: "invalid-subagent-max-rounds" };
     if (partial?.telemetry !== undefined) {
       const error = telemetryPatchError(partial.telemetry, { isPackaged: app.isPackaged, allowlistEnv: process.env.AVE_TELEMETRY_ALLOWLIST });
       if (error) return { ok: false, error };

@@ -2911,7 +2911,7 @@ describe("owner-away approval auto-skip", () => {
   it("shows unlimited by default and saves the chosen number of minutes", async () => {
     installApi([[]]);
     settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 0 } });
-    settingsApi().updateSettings.mockResolvedValue({ ok: true });
+    settingsApi().updateSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 7 } });
     await renderPermissionsTab();
     const input = screen.getByTestId("owner-away-auto-skip");
     expect(input).toHaveValue(0);
@@ -2935,6 +2935,54 @@ describe("owner-away approval auto-skip", () => {
     fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
     await waitFor(() => expect(settingsApi().updateSettings).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+  });
+
+  it.each(["-1", "1.5", "10081", ""])("refuses invalid minutes %s with a range message", async (draft) => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    expect(input.getAttribute("max")).toBe("10080");
+    fireEvent.change(input, { target: { value: draft } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+    expect(screen.getByTestId("owner-away-error")).toHaveTextContent(t("permissionsTab.ownerAwayInvalid", { max: 10080 }));
+    expect(settingsApi().updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("accepts a seven-day wait and reflects the host response", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 0 } });
+    settingsApi().updateSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 10080 } });
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("owner-away-auto-skip"), { target: { value: "10080" } });
+    fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(10080));
+    expect(settingsApi().updateSettings).toHaveBeenCalledExactlyOnceWith({ permissions: { ownerAwayAutoSkipMinutes: 10080 } });
+    expect(screen.queryByTestId("owner-away-error")).toBeNull();
+  });
+
+  it("normalizes an unchanged spelling without saving or reporting success", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    fireEvent.change(input, { target: { value: "0004" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect((screen.getByTestId("owner-away-auto-skip") as HTMLInputElement).value).toBe("4"));
+    expect(settingsApi().updateSettings).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("owner-away-error")).toBeNull();
+  });
+
+  it("renders the normalized number from the save response", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    settingsApi().updateSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 8 } });
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("owner-away-auto-skip"), { target: { value: "7" } });
+    fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(8));
+    expect(settingsApi().updateSettings).toHaveBeenCalledExactlyOnceWith({ permissions: { ownerAwayAutoSkipMinutes: 7 } });
   });
 });
 

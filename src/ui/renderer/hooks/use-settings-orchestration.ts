@@ -1,6 +1,7 @@
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
   SUBAGENT_MAX_ROUNDS_MIN,
+  SUBAGENT_MAX_ROUNDS_MAX,
 } from "../../../shared/subagent-policy.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -737,16 +738,14 @@ export function useSettingsOrchestration(
 
   const setSubAgentMaxRoundsLive = useCallback((next: number) => {
     const previous = subAgentMaxRounds;
-    // Floor only: below 1 an agent cannot finish a single tool round-trip. No upper clamp — the engine runs whatever is
-    // stored, so narrowing here would make the settings file disagree with what actually runs.
-    const clamped = Math.max(SUBAGENT_MAX_ROUNDS_MIN, Math.floor(next));
-    setSubAgentMaxRounds(clamped);
-    if (!settingsLoaded) return;
+    if (!settingsLoaded || !Number.isInteger(next) || next < SUBAGENT_MAX_ROUNDS_MIN || next > SUBAGENT_MAX_ROUNDS_MAX || next === previous) return;
+    setSubAgentMaxRounds(next);
     void api
-      .updateSettings({ chat: { subAgentMaxRounds: clamped } })
+      .updateSettings({ chat: { subAgentMaxRounds: next } })
       .then((updated) => {
         if (isIpcErrorResult(updated)) throw new Error(updated.message ?? updated.error);
         setSettingsSnapshot(updated);
+        setSubAgentMaxRounds(updated.chat.subAgentMaxRounds);
         onSaved();
       })
       .catch(() => {
