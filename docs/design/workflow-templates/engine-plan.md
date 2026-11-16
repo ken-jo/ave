@@ -123,7 +123,7 @@ type AuthoriseRunSource = (a: {
                                                       // its scope snapshot (R21) must equal template.scope, else scope-changed; a record with no snapshot is scope-changed
   runProjectRoot: string | undefined;                 // the project the run would use: the item's for Create and run, the snapshot's for a schedule
                                                       // Create and run: must equal the project root on the approved card (R21), else project-mismatch
-  scopeAuthorised: (scope: TemplateScope) => boolean; // the project-access check the template handlers use (resolveAuthorizedWorkspaceProject); { kind: "all" } is always true
+  scopeAuthorised: (scope: TemplateScope) => boolean; // the project-access check the template handlers use (resolveAuthorizedWorkspaceProject); applied to the bound scope, never to template.scope; { kind: "all" } is always true
   unattendedAllowed: (v: TemplateVersion) => boolean; // WT-8: isAllReadOnlyVersion (a TemplateVersion is a TemplateGraph); PR-E swaps the predicate
 }) => RunAuthorityVerdict;
 
@@ -239,7 +239,7 @@ Two sources can start a run. Both bind to an exact `(templateId, version, graphH
 | Source | Built by | Version rule | Lane |
 | --- | --- | --- | --- |
 | `local-create-and-run` | The `ave:work-board:run` handler, only after a consumed keyboard gesture, from the tuple the user saw | The tuple must be the template's **current** confirmed version. An older or archived one refuses (`not-current-version`, `template-archived`). The run's project must be the one the card showed (`project-mismatch`). | attended |
-| `schedule-attachment` | WT-8's fire handler, from the stored attachment record; never from a tool call or a renderer payload | The tuple must equal the attachment's. The template's current version is not consulted, so confirming v2 does not move the schedule. A detached or missing attachment refuses. The template's current scope must equal the scope the attachment was approved for (`scope-changed`). `unattendedAllowed(stored)` must hold. | unattended |
+| `schedule-attachment` | WT-8's fire handler, from the stored attachment record; never from a tool call or a renderer payload | The tuple must equal the attachment's. The template's current version is not consulted, so confirming v2 does not move the schedule to v2. A v2 that changes the template's scope does not move it either: it refuses the schedule (`scope-changed`). A detached or missing attachment refuses. The template's current scope must equal the scope the attachment was approved for (`scope-changed`). `unattendedAllowed(stored)` must hold. | unattended |
 
 In both cases the stored version must exist and its stored hash must equal the tuple's hash and the hash recomputed now (`version-missing`, `graph-mismatch`). The shipped store does this in one call: `resolveVersion(pin)` throws `template-not-found` or `unknown-version` (mapped to `version-missing`) and `graph-hash-mismatch` (mapped to `graph-mismatch`), and every store read recomputes `graphHashOf(version)` for every stored version, so a file whose bytes no longer match its hash fails to load. A store error with any other code settles the run `error`. `get(id)` supplies `currentVersion` and `archivedAt`; a template with `archivedAt` set is archived. A refusal writes nothing. On `ok`, `start()` calls `beginRun(id, runId, startedAt, { ...pin, source, stageRuns })` (the shipped `TemplateRunStart`), which stores the tuple as the run pin and the whole source object as `runStartedBy`. `Run again` is a new `Create and run` with a new tuple.
 
@@ -249,19 +249,19 @@ Scope is not part of the pin. It lives on `WorkflowTemplate`, outside `graphHash
 - A scheduled run takes its project only from that snapshot, never from the live `WorkflowTemplate.scope` (§7.2).
 - At fire and before every spawn, the template's current scope must equal the snapshot (same kind, and for a project the same real path). Otherwise the verdict is `scope-changed`, in both directions: project A to project B, `all` to a project, a project to `all`. A record with no snapshot is `scope-changed` too. Nothing repairs it silently. The schedule list shows "needs reattach", and only a new attach approval, which makes a new attachment, starts runs again.
 - The `Create and run` approval binds the project root with `(templateId, version, graphHash)`. The card shows the project; the source carries that root (or none), and the run's project must equal it, else `project-mismatch`. A run cannot start on a project other than the one on the card. The shipped `local-create-and-run` source has no such field; adding it is the same follow-up lane's change (§13).
-- Scope access is revalidated at start and before every spawn, for both sources: `scopeAuthorised` must hold for the template's scope, and for a scheduled run for the snapshot, else `scope-not-authorised`.
+- Scope access is revalidated at start and before every spawn, for both sources: `scopeAuthorised` must hold for the scope the approval bound, else `scope-not-authorised`. That is the project root on the card for `Create and run` and the snapshot for a schedule. The live `WorkflowTemplate.scope` is never the authority; it is only compared with the snapshot.
 
 The function is called again before every spawn with the stored source, so a run whose source it no longer accepts spawns nothing. This covers a detached or missing attachment, a changed or no longer authorised scope, and a predicate that no longer holds. The outcome is the same for every such refusal:
 
 | Part of the run | What happens |
 | --- | --- |
-| A child that is already live | Not interrupted. It runs to its end and its result, gate evaluation and seal are stored as usual. Only Stop interrupts it. |
+| A child that is already live | Not interrupted. It runs to its end and its output is stored. Until a spawn has been refused its stage is handled as usual (gate, seal); after that, see the gate row. Only Stop interrupts it. |
 | The stage whose spawn was refused, and every later one | Never spawned. The spawn throws `run-not-authorised` with the verdict's code. |
-| A human gate that is pending, or opens when a live child ends | Stays decidable. The decision is stored. If it would start another stage, that spawn is refused in the same way. |
-| The run | From the first refused spawn it starts nothing more. When no child is live it settles `cancelled`: every stage that is not terminal becomes `cancelled`, pending gates included, as for Stop. Finished outputs and the run branch or output folder stay. |
+| Human gates | Decidable only until the first refused spawn. At that moment every pending gate becomes `cancelled`, and a decision sent later is refused `not_pending`. A live child that ends afterwards opens no gate: its output is stored and its stage becomes `cancelled`. |
+| The run | From the first refused spawn it starts nothing more and accepts no gate or join decision. When no child is live it settles `cancelled`: every stage that is not terminal becomes `cancelled`, as for Stop. If no child is live at the refusal, it settles at once. Finished outputs and the run branch or output folder stay. |
 | The record | The verdict's code goes out on the settle event and in the audit log. No stored enum gains a value. |
 
-The run does not park. Authority cannot come back to it: a new approval makes a new attachment with a new `id` (§7.2), and the run's stored source names the old one. A run that waits at a gate with no ready stage notices nothing until a decision would spawn; if the gated stage was the last one, approving it completes the run, because no spawn is needed.
+The run does not park. Authority cannot come back to it: a new approval makes a new attachment with a new `id` (§7.2), and the run's stored source names the old one. The check is on the spawn path only, so a run that waits at a gate with no spawn due notices nothing until a decision would spawn: approving a gate that has a later stage leads to the refused spawn and the run settles `cancelled`; approving the gate of the last stage completes the run, because no spawn is needed.
 
 The lane is a property of the stored source. A scheduled run stays unattended for its whole life, whoever is at the desk; an attended run never enters the lane.
 
@@ -279,7 +279,7 @@ The lane is a property of the stored source. A scheduled run stays unattended fo
 | `attempt-out-of-range` | `1 ≤ attempt ≤ 3`. |
 | `run-stopped` | No stop is pending. |
 
-Checked at start and again at every spawn, so confirming v2 or archiving the template never moves a run, and a missing version fails the run instead of running another graph. The child is spawned with `projectRoot` = its stage workspace, `originSessionId = work-board:<id>`, the host-minted `unattendedStage: { runKey, stageId }` for an unattended run (a new host-only spawn input, like `hostInputTaint`), `toolScope` = `exactToolScope(read-tier names)` or `PARENT_ALL_TOOL_SCOPE`, the model of the stage's profile (`TemplateStage.agentName`, when set), and the 20-round budget for read stages. Nothing here touches permission evaluation: each tool call enters `CHILD → H` as today.
+Checked at start and again at every spawn, so confirming v2 or archiving the template never moves a run to another graph or another project, and a missing version fails the run instead of running another graph. One case ends a run instead of leaving it alone: a v2 that changes the template's scope refuses every later spawn of a scheduled run (`scope-changed`), and that run settles `cancelled` as above. The child is spawned with `projectRoot` = its stage workspace, `originSessionId = work-board:<id>`, the host-minted `unattendedStage: { runKey, stageId }` for an unattended run (a new host-only spawn input, like `hostInputTaint`), `toolScope` = `exactToolScope(read-tier names)` or `PARENT_ALL_TOOL_SCOPE`, the model of the stage's profile (`TemplateStage.agentName`, when set), and the 20-round budget for read stages. Nothing here touches permission evaluation: each tool call enters `CHILD → H` as today.
 
 ### 2.5 Input passing (D7)
 
@@ -346,7 +346,7 @@ Nothing spawns at boot. The run continues only on a user decision (gate, join, R
 | | `bounds each input and the total` | size |
 | | `an all-tools stage is told the setup commands in order and a read-scope stage's instructions do not contain them` | R17 |
 | `core/__tests__/work-board-stage-run.test.ts` | `spawns only the pinned version's stages with the stage's tool scope` | D1 |
-| | `a run whose template gained v2 mid-run still spawns v1 stages` | pinning |
+| | `a run whose template gained v2 with the same scope mid-run still spawns v1 stages` | pinning |
 | | `refuses to start when the pinned version is missing` | version skew |
 | | `refuses to start when the Create and run tuple differs from the stored version or hash` | start binding |
 | | `refuses Create and run for a version that is not current, and for an archived template` | current version only |
@@ -359,7 +359,7 @@ Nothing spawns at boot. The run continues only on a user decision (gate, join, R
 | | `a run whose project is no longer an authorised workspace project is refused scope-not-authorised at start and at the next spawn` | scope access recheck |
 | | `detaching between two stages lets the live stage child finish, refuses the next spawn attachment-detached and settles the run cancelled` | detach outcome |
 | | `a replacement attach has the same effect on a run of the earlier attachment` | detach outcome |
-| | `a run parked at its last stage's gate completes on approve after a detach; one with a later stage settles cancelled` | detach outcome |
+| | `a run parked at its last stage's gate completes on approve after a detach; one with a later stage settles cancelled`, `after a refused spawn a sibling's pending gate is cancelled and its decision is refused not_pending`, `a child that ends after a refused spawn opens no gate` | detach outcome |
 | | `a template run with a waiting gate keeps runStatus executing and isAwaitingStageReview is true` | Review lane derivation |
 | | `two stages of one step are live at the same time with different project roots` | parallel in every project kind |
 | `core/__tests__/work-board-stage-revoke.test.ts` | `removing the project interrupts every live stage child of its runs and fails those stages` (red today: F10) | Q13 |
@@ -585,8 +585,8 @@ function isAllReadOnlyVersion(graph: TemplateGraph): boolean;
 ```
 
 - Attach binds to the tuple the user saw, which must be the current version at that moment. The shipped store does not check "current"; WT-8's handler does, before it calls the store.
-- The shipped attach takes the id of a routine that already exists. WT-8's handler keeps "neither exists without the other" by creating the `template-run` routine first (same proof), then calling `attachSchedule` with its id. The two stores are not one transaction. Lead ruling R18 makes the gap fail closed:
-  - If the attachment write fails or is refused after the routine was created, the same handler deletes the routine and returns the error.
+- The shipped attach takes the id of a routine that already exists. WT-8's handler keeps "neither exists without the other" by creating the `template-run` routine first (same proof), then calling `attachSchedule` with its id. A reattach ("needs reattach", after `scope-changed` or on an orphan) names a `template-run` routine that already exists; that path creates no routine and only calls `attachSchedule`. The two stores are not one transaction. Lead ruling R18 makes the gap fail closed:
+  - If the attachment write fails or is refused after the routine was created, the same handler deletes the routine and returns the error. It deletes only a routine it created in that call; a failed reattach leaves the existing routine as it was.
   - A crash between the two writes, or a failed cleanup, leaves a `template-run` routine with no active attachment (an orphan). Its fire refuses `attachment-missing` and starts nothing. The schedule list shows it as "needs reattach or delete". The host never repairs it: it does not attach it, delete it or guess a version for it.
 - A scheduled run's project comes only from the scope snapshot on its attachment (R21, §2.4), never from the live `WorkflowTemplate.scope`: `{ kind: "project", projectRoot }` gives the project root; `{ kind: "all" }` runs with no project (folder kind, §3.3). When the template's current scope no longer equals the snapshot, the fire refuses `scope-changed`, starts nothing, and the schedule list shows "needs reattach".
 - An envelope on a read-only stage qualifies only if it says `writePaths: []` and `outputs: []` explicitly, because the defaults are `["**"]` and `["branch"]`.
@@ -598,7 +598,7 @@ function isAllReadOnlyVersion(graph: TemplateGraph): boolean;
   - Explicit detach: sets `detachedAt`, then the detach handler removes the routine. If the removal fails, the routine is an orphan and is listed as "needs reattach or delete".
   - Replacement attach on the same routine: sets `detachedAt` on the earlier record. A run started from the earlier record is treated exactly as after an explicit detach; the new record authorises only runs fired after it.
   - Removing the routine: for a routine with an active attachment this is the explicit detach above and nothing else (§7.1), so it has the same outcome. No path removes the routine and leaves its attachment active.
-- Confirming a new version changes no attachment. The editor's "schedules still on v1" list reads `listByTemplate`, which also returns detached records; the list shows only those with no `detachedAt`.
+- Confirming a new version changes no attachment record. If the new version changes the template's scope, the unchanged attachment refuses `scope-changed` from then on. The editor's "schedules still on v1" list reads `listByTemplate`, which also returns detached records; the list shows only those with no `detachedAt`.
 
 ### 7.3 Parked gates
 
