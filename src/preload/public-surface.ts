@@ -197,10 +197,10 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     >,
   chatGetSubAgentTranscript: async (opts: SubAgentTranscriptRequest) =>
     ipcRenderer.invoke(CHANNELS.chat.getSubAgentTranscript, opts, chatGroupId) as Promise<SubAgentTranscriptResult>,
-  // Load full write-file diffs lazily when they exceed the preview cap.
+  // Load the host-computed line diff of one file-tool call for its chat card.
   chatGetWriteDiff: async (sessionId: string, toolUseId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.getWriteDiff, { sessionId, toolUseId }) as Promise<
-      { before: string; after: string } | null
+      import("../shared/line-diff.js").WriteDiffRecord | null
     >,
   starredList: async () => ipcRenderer.invoke(CHANNELS.starred.list),
   starredAdd: async (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) =>

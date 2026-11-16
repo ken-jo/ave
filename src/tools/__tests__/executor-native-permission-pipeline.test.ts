@@ -26,7 +26,7 @@ import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { buildApprovalScopeOptions } from "../../permissions/approval-scope-options.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
@@ -34,7 +34,7 @@ import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApprov
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { modelShellPath } from "../../shared/shell-native-path.js";
 import { ToolExecutor } from "../executor.js";
-import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, GrepFilesTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, GlobFilesTool, GrepFilesTool, ListFilesTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
@@ -537,6 +537,46 @@ describe("native invocation permission evidence", () => {
     const dispatch = reviewer();
     await refused("auto mode", "user-keyboard");
     expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps stored write diffs out of every tool's reach, another session's included, in allow mode", async () => {
+    manager.setMode("allow");
+    // The host stores the diff of an edit to a secret file; its rows hold that file's lines.
+    const { writeDiffSidecar } = await import("../write-diff-cache.js");
+    expect(await writeDiffSidecar("other-session", "tool-1", "API_TOKEN=old-value\n", "API_TOKEN=new-value\n", () => undefined)).toBe(true);
+    const store = join(root, "state", "diff-cache");
+    const sidecar = join(store, "other-session", "tool-1.json");
+    expect(await readFile(sidecar, "utf8")).toContain("API_TOKEN=old-value");
+    const execute = vi.spyOn(readTool, "execute");
+    for (const path of [sidecar, join(store, "other-session"), store]) {
+      const [result] = await run(executor(), "read_file", { path }, { additionalDirectories: [root] });
+      expect(result.is_error, path).toBe(true);
+      expect(String(result.content), path).not.toContain("API_TOKEN");
+    }
+    expect(execute).not.toHaveBeenCalled();
+    // Listing and searching cannot discover or quote the store either, and a shell command that names it does not run.
+    const searches: Array<[ListFilesTool | GlobFilesTool | GrepFilesTool | BashTool, Record<string, unknown>]> = [
+      [new ListFilesTool(), { path: join(store, "other-session") }],
+      [new GlobFilesTool(), { pattern: "**/*.json", path: store }],
+      [new GrepFilesTool(), { pattern: "API_TOKEN", path: store }],
+      [new BashTool(), { command: `cat "${sidecar}"`, justification: "Read the stored diff" }],
+    ];
+    for (const [tool, input] of searches) {
+      registry.register(tool);
+      const ran = vi.spyOn(tool, "execute");
+      const [result] = await run(executor(), tool.name, input, { additionalDirectories: [root] });
+      expect(result.is_error, `${tool.name} ${JSON.stringify(input)}`).toBe(true);
+      expect(String(result.content), tool.name).not.toContain("API_TOKEN");
+      // A refusal may repeat the path it was given; it never names an entry the caller did not already know.
+      if (!JSON.stringify(input).includes("tool-1.json")) expect(String(result.content), tool.name).not.toContain("tool-1.json");
+      expect(ran, tool.name).not.toHaveBeenCalled();
+    }
+    // Refused before any card: nobody is asked to let a tool into the store.
+    expect(requests).toHaveLength(0);
+    for (const effect of ["read", "write"] as const) {
+      expect(isAdmissionDeniedPath(sidecar, effect)).toBe("ave-home:diff-cache");
+      expect(isAdmissionDeniedPath(store, effect)).toBe("ave-home:diff-cache");
+    }
   });
 
   it("forces direct protected writes once before allow mode, rules, review or memory", async () => {

@@ -263,6 +263,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     why: "reviewer cache, denial history, permission state",
   },
   { anchor: "ave-home", segments: ["audit"], kind: "dir", why: "audit log directory (self-tampering)" },
+  { anchor: "ave-home", segments: ["diff-cache"], kind: "dir", why: "stored write diffs: changed and surrounding lines of files, any session's, kept for the person's diff cards only" },
   {
     anchor: "ave-home",
     segments: ["audit.log"],
@@ -402,12 +403,14 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/.config/Ave/**",
 ]);
 
-// Credential stores, the process ownership lock and kept host terminal output retain an unconditional admission deny.
+// Credential stores, the process ownership lock, kept host terminal output and the stored write diffs retain an
+// unconditional admission deny. The diffs hold lines of whatever files were changed, a secret file's among them, from
+// every session; only the host reads them, for the person's diff cards, so no tool is ever let in, whatever the mode.
 // User-authored secret files and configuration are classified separately.
 function isAdmissionEntry(entry: SensitiveEntry): boolean {
   const [first, second, third] = entry.segments;
   // `terminal-state` is the user's own terminal screen kept for restoring a tab: no rule, remembered grant, reviewer or mode opens it to a tool.
-  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime", "terminal-state"].includes(first!)
+  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime", "terminal-state", "diff-cache"].includes(first!)
     || (first === "plugins" && second === "auth-partitions.json");
   if (entry.anchor === "root") return second === "shadow";
   if (["Library", "AppData", ".mozilla", ".thunderbird", "snap", ".var", ".password-store"].includes(first!)) return true;

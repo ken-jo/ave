@@ -39,7 +39,8 @@ import {
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { PATCH_ENVELOPE_PATH_FIELD_SUFFIX } from "../shared/dotted-field-value.js";
 import { globToRegExp } from "../lib/glob-matcher.js";
-import { writeDiffSidecar, WRITE_DIFF_PREVIEW_LIMIT } from "./write-diff-cache.js";
+import { writeDiffSidecar } from "./write-diff-cache.js";
+import { createLogger } from "../lib/logger.js";
 import { admissionDeniedFilePattern, ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
 import {
   GREP_FILES_DESCRIPTION,
@@ -1025,6 +1026,19 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
   }
 }
 
+const log = createLogger("file-tools");
+
+/**
+ * Keep the line diff of a completed write for its chat card. Calls without a session and tool-use id
+ * (tests, internal callers) have no card to serve and store nothing.
+ */
+async function storeWriteDiff(ctx: ToolExecutionContext, before: string | null, after: string): Promise<boolean> {
+  const sessionId = typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
+  const toolUseId = typeof ctx.metadata?.toolUseId === "string" ? ctx.metadata.toolUseId : "";
+  if (!sessionId || !toolUseId) return false;
+  return writeDiffSidecar(sessionId, toolUseId, before, after, message => log.warn(message));
+}
+
 export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
   readonly name = "write_file";
   readonly description =
@@ -1112,30 +1126,12 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     const written = await atomicTextWrite(target, after);
     if (readSession !== undefined) await recordOwnWrite(readSession, target, after, skipSidecar ? undefined : existing.value === null ? null : before, written);
 
-    const sessionId =
-      typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
-    const toolUseId =
-      typeof ctx.metadata?.toolUseId === "string" ? ctx.metadata.toolUseId : "";
-    let hasSidecar = false;
-    if (!skipSidecar && sessionId && toolUseId) {
-      // Sidecar failures are logged internally and remain visible through truncated UI state.
-      hasSidecar = await writeDiffSidecar(sessionId, toolUseId, before, after, () => {});
-    }
-
-    const beforeBytes = Buffer.byteLength(before, "utf8");
     const afterBytes = Buffer.byteLength(after, "utf8");
-    const truncated =
-      beforeBytes > WRITE_DIFF_PREVIEW_LIMIT || afterBytes > WRITE_DIFF_PREVIEW_LIMIT;
-
-    return {
-      output: JSON.stringify({
-        path: target,
-        bytes: afterBytes,
-        ...(truncated ? { truncated: true, hasSidecar } : {}),
-      }),
-      isError: false,
-      metadata: { path: target, ...(truncated ? { truncated: true, hasSidecar } : {}) },
-    };
+    const isNewFile = existing.value === null;
+    // A skipped pre-image (oversized or binary) has no honest diff; the card then shows the path and size only.
+    const hasSidecar = skipSidecar ? false : await storeWriteDiff(ctx, isNewFile ? null : before, after);
+    const details = { path: target, bytes: afterBytes, ...(isNewFile ? { isNewFile: true } : {}), ...(hasSidecar ? { hasSidecar: true } : {}) };
+    return { output: JSON.stringify(details), isError: false, metadata: details };
   }
 }
 
@@ -1222,11 +1218,12 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
       : current.replace(oldText, () => newText);
     const written = await atomicTextWrite(target, next);
     await recordOwnWrite(fresh.value.sessionId, target, next, bytes.toString("utf8"), written);
-    return {
-      output: JSON.stringify({ path: target, replacements: input.replaceAll ? occurrences : 1 }),
-      isError: false,
-      metadata: { path: target, replacements: input.replaceAll ? occurrences : 1 },
+    const details = {
+      path: target,
+      replacements: input.replaceAll ? occurrences : 1,
+      ...(await storeWriteDiff(ctx, current, next) ? { hasSidecar: true } : {}),
     };
+    return { output: JSON.stringify(details), isError: false, metadata: details };
   }
 }
 
@@ -1290,7 +1287,8 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
       mtimeMs: fileStat.value.mtimeMs,
     });
     if (!fresh.ok) return fresh.error;
-    let next = bytes.toString("utf8");
+    const current = bytes.toString("utf8");
+    let next = current;
     let totalReplacements = 0;
     for (const [index, replacement] of input.replacements.entries()) {
       const { oldText, newText } = resolveReplacementText(next, replacement.oldText, replacement.newText);
@@ -1311,11 +1309,12 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
 
     const written = await atomicTextWrite(target, next);
     await recordOwnWrite(fresh.value.sessionId, target, next, undefined, written);
-    return {
-      output: JSON.stringify({ path: target, replacements: totalReplacements }),
-      isError: false,
-      metadata: { path: target, replacements: totalReplacements },
+    const details = {
+      path: target,
+      replacements: totalReplacements,
+      ...(await storeWriteDiff(ctx, current, next) ? { hasSidecar: true } : {}),
     };
+    return { output: JSON.stringify(details), isError: false, metadata: details };
   }
 }
 

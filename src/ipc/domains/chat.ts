@@ -51,6 +51,7 @@ import {
 } from "../../main/conversation-command-port.js";
 import { createLogger } from "../../lib/logger.js";
 import { readDiffSidecar, isSafeId } from "../../tools/write-diff-cache.js";
+import type { WriteDiffRecord } from "../../shared/line-diff.js";
 import { isToolResultStubContent } from "../../shared/tool-result-stub.js";
 import {
   getLlmVendorSettings,
@@ -2071,7 +2072,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // Load oversized write diffs from the sidecar instead of truncated tool content.
   ipcMain.handle(
     CHANNELS.chat.getWriteDiff,
-    async (e, payload: unknown): Promise<{ before: string; after: string } | null> => {
+    async (e, payload: unknown): Promise<WriteDiffRecord | null> => {
       if (!validateHostRendererSender(e)) {
         auditUnauthorized(auditLogger, CHANNELS.chat.getWriteDiff, e);
         return null;

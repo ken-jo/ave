@@ -792,13 +792,12 @@ export type AvePreloadApi = {
   ) => Promise<{ content: string; lineCount: number } | null>;
   /** Lazy-load the isolated child-session transcript for a sub-agent row. */
   chatGetSubAgentTranscript?: (opts: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;
-  /** Issue #749: lazy-load full write_file diff when content exceeded preview limit.
-   * Returns { before, after } from ~/.ave/diff-cache/<sessionId>/<toolUseId>.json,
-   * or null when sidecar not found / session id invalid. */
+  /** The host-computed line diff of one write_file, edit_file or multi_edit call, for its chat card.
+   * Null when none is stored (older sessions, cleaned caches) or an id is invalid. */
   chatGetWriteDiff: (
     sessionId: string,
     toolUseId: string,
-  ) => Promise<{ before: string; after: string } | null>;
+  ) => Promise<import("../../shared/line-diff.js").WriteDiffRecord | null>;
   submitFeedback: (payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) => Promise<{ ok: boolean; error?: string }>;
   starredList: () => Promise<Array<{ id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string }>>;
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;

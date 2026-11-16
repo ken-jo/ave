@@ -608,74 +608,65 @@ describe("ToolGroupCard", () => {
     expect(container.textContent).toContain(t("fileEditDiff.nextHunk"));
   });
 
-  it("single write_file (existing): renders before and after", () => {
+  it("single write_file (existing): loads the stored diff of the real tool result", async () => {
+    const chatGetWriteDiff = vi.fn().mockResolvedValue({
+      version: 2,
+      isNewFile: false,
+      view: { added: 1, removed: 1, truncated: false, hunks: [{ oldStart: 1, newStart: 1, oldCount: 1, newCount: 1, rows: [
+        { kind: "removed", text: "before" }, { kind: "added", text: "after" },
+      ] }] },
+    });
+    vi.stubGlobal("aveApi", { chatGetWriteDiff });
     const group = makeGroup({
       tools: [
         makeTool({
           toolUseId: "tu-write-existing",
           name: "write_file",
           input: { path: "src/baz.ts", content: "after\n" },
-          result: JSON.stringify({
-            kind: "ave.write_file",
-            path: "src/baz.ts",
-            bytes: 6,
-            isNewFile: false,
-            truncated: false,
-            before: "before\n",
-            after: "after\n",
-          }),
+          // The exact shape WriteFileTool returns for an overwrite.
+          result: JSON.stringify({ path: "src/baz.ts", bytes: 6, hasSidecar: true }),
         }),
       ],
     });
-    const { container } = render(<ToolGroupCard group={group} />);
+    const { container } = render(<ToolGroupCard group={group} sessionId="session-1" />);
     expect(container.textContent).toContain(t("fileEditDiff.verbWrite"));
-    expect(container.textContent).toContain("before");
+    await waitFor(() => expect(container.textContent).toContain("before"));
+    expect(chatGetWriteDiff).toHaveBeenCalledWith("session-1", "tu-write-existing");
     expect(container.textContent).toContain("after");
+    expect(container.querySelector('[data-testid="file-edit-diff"]')).toHaveAttribute("data-numbered", "true");
   });
 
-  it("single write_file (new file): shows Create verb without before", () => {
+  it("single write_file (new file): shows Create verb and the written lines as additions", () => {
     const group = makeGroup({
       tools: [
         makeTool({
           toolUseId: "tu-write-new",
           name: "write_file",
           input: { path: "src/new.ts", content: "hello\n" },
-          result: JSON.stringify({
-            kind: "ave.write_file",
-            path: "src/new.ts",
-            bytes: 6,
-            isNewFile: true,
-            truncated: false,
-            after: "hello\n",
-          }),
+          result: JSON.stringify({ path: "src/new.ts", bytes: 6, isNewFile: true }),
         }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
     expect(container.textContent).toContain(t("fileEditDiff.verbCreate"));
     expect(container.textContent).toContain("hello");
+    expect(container.querySelector('[data-testid="file-edit-diff"]')).toHaveAttribute("data-added", "1");
   });
 
-  it("single write_file (truncated): shows truncated marker", () => {
+  it("single write_file (no stored diff): says the earlier content is not stored instead of an empty diff", () => {
     const group = makeGroup({
       tools: [
         makeTool({
-          toolUseId: "tu-write-trunc",
+          toolUseId: "tu-write-plain",
           name: "write_file",
           input: { path: "src/big.ts", content: "x".repeat(10000) },
-          result: JSON.stringify({
-            kind: "ave.write_file",
-            path: "src/big.ts",
-            bytes: 10000,
-            isNewFile: false,
-            truncated: true,
-            after: "x".repeat(100),
-          }),
+          result: JSON.stringify({ path: "src/big.ts", bytes: 10000 }),
         }),
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
-    expect(container.textContent).toContain(t("fileEditDiff.truncatedLabel"));
+    expect(container.textContent).toContain(t("fileEditDiff.diffNotStored"));
+    expect(container.textContent).not.toContain(t("fileEditDiff.noChanges"));
   });
 });
 

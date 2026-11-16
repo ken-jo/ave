@@ -40,6 +40,16 @@ export interface FileDiffView {
   lineEndingsOnly?: boolean;
 }
 
+export const WRITE_DIFF_RECORD_VERSION = 2;
+
+/** What a diff card loads for one file-tool call: a bounded whole-file line diff with real line numbers. */
+export interface WriteDiffRecord {
+  version: typeof WRITE_DIFF_RECORD_VERSION;
+  /** True when the tool created the file. */
+  isNewFile: boolean;
+  view: FileDiffView;
+}
+
 export interface FileDiffLimits {
   contextLines: number;
   maxRows: number;

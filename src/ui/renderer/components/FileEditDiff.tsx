@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useRef, useId } from "react";
+import { useState, useEffect, useMemo, useId } from "react";
 import { ChevronDown, ChevronRight, FilePlus2, FilePenLine } from "lucide-react";
 import type { FileEditDiffData, FileEditHunk } from "../utils/file-diff.js";
 import { editDiffView } from "../utils/file-diff.js";
-import type { FileDiffHunk, FileDiffView } from "../../../shared/line-diff.js";
+import type { FileDiffHunk, FileDiffView, WriteDiffRecord } from "../../../shared/line-diff.js";
 import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -26,10 +26,52 @@ export interface FileEditDiffReview {
   onReference?: (reference: FileMentionReference) => void;
 }
 
-export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?: FileEditDiffReview }) {
+/** Identifies the tool call whose host-computed diff the card loads. */
+export interface FileEditDiffSource {
+  sessionId: string;
+  toolUseId: string;
+}
+
+type StoredDiff =
+  | { state: "none" }
+  | { state: "loading" }
+  | { state: "loaded"; record: WriteDiffRecord }
+  | { state: "missing" }
+  | { state: "error"; message: string };
+
+/** Load the stored whole-file diff of one tool call; the card renders from the tool input until it arrives. */
+function useStoredDiff(wanted: boolean, source: FileEditDiffSource | undefined): { stored: StoredDiff; retry: () => void } {
+  const sessionId = wanted ? source?.sessionId : undefined;
+  const toolUseId = wanted ? source?.toolUseId : undefined;
+  const [stored, setStored] = useState<StoredDiff>({ state: "none" });
+  const [attempt, setAttempt] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the retry trigger; it is read by nothing inside the effect.
+  useEffect(() => {
+    if (sessionId === undefined || toolUseId === undefined) {
+      setStored({ state: "none" });
+      return;
+    }
+    let current = true;
+    setStored({ state: "loading" });
+    getApi().chatGetWriteDiff(sessionId, toolUseId).then(
+      (record) => { if (current) setStored(record === null ? { state: "missing" } : { state: "loaded", record }); },
+      (error: unknown) => { if (current) setStored({ state: "error", message: errorMessage(error) }); },
+    );
+    return () => { current = false; };
+  }, [sessionId, toolUseId, attempt]);
+  return { stored, retry: () => setAttempt(value => value + 1) };
+}
+
+export function FileEditDiff({ data: toolData, review, source }: { data: FileEditDiffData; review?: FileEditDiffReview; source?: FileEditDiffSource }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const contentId = useId();
+  const { stored, retry } = useStoredDiff(review === undefined && toolData.hasSidecar === true, source);
+  const data: FileEditDiffData = stored.state === "loaded"
+    ? { ...toolData, view: stored.record.view, isNewFile: stored.record.isNewFile }
+    : toolData;
+  // An overwrite whose earlier content is not available has nothing to compare; say so instead of "no changes".
+  const comparable = data.view !== undefined || data.hunks.length > 0;
   if (review) {
     return (
       <div className="min-w-0 space-y-2.5" data-testid="file-edit-diff" data-tool={data.tool}>
@@ -75,6 +117,9 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
               −{totals.removed}
             </span>
           )}
+          {data.bytes !== undefined && (
+            <span data-testid="file-diff-bytes">{t("fileEditDiff.bytes", { count: data.bytes.toLocaleString() })}</span>
+          )}
           {(data.truncated || view.truncated) && (
             <span className="text-warning" title={t("fileEditDiff.truncatedTitle")}>
               {t("fileEditDiff.truncatedLabel")}
@@ -91,6 +136,7 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
       data-tool={data.tool}
       data-new-file={data.isNewFile ? "true" : "false"}
       data-truncated={data.truncated || view.truncated ? "true" : "false"}
+      data-numbered={data.view !== undefined ? "true" : "false"}
       data-added={totals.added}
       data-removed={totals.removed}
     >
@@ -111,11 +157,20 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
       {open && (
         <div id={contentId} className="font-mono text-xs leading-[1.55]">
           <FileDiffRows view={view} numbered={data.view !== undefined} />
-          {totals.added === 0 && totals.removed === 0 && (
+          {stored.state === "error" ? (
+            <div className="flex items-center gap-2 px-3 py-2 font-sans text-tiny text-destructive" data-testid="file-diff-load-error">
+              <span className="min-w-0 break-words">{t("fileEditDiff.loadFailed", { message: stored.message })}</span>
+              <button type="button" className="shrink-0 text-primary hover:underline" onClick={retry}>{t("fileEditDiff.retry")}</button>
+            </div>
+          ) : !comparable ? (
+            <div className="px-3 py-2 font-sans text-tiny text-muted-foreground" data-testid="file-diff-unavailable">
+              {t(stored.state === "loading" ? "fileEditDiff.loading" : "fileEditDiff.diffNotStored")}
+            </div>
+          ) : totals.added === 0 && totals.removed === 0 ? (
             <div className="px-3 py-2 text-tiny text-muted-foreground" data-testid="file-diff-empty">
               {t(view.lineEndingsOnly ? "fileEditDiff.lineEndingsOnly" : "fileEditDiff.noChanges")}
             </div>
-          )}
+          ) : null}
         </div>
       )}
     </div>
@@ -291,278 +346,6 @@ function DiffLine({
       <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
         {text.length > 0 ? text : " "}
       </span>
-    </div>
-  );
-}
-
-/** Split content into lines (no trailing newline artifact). */
-function sidecarLines(text: string): string[] {
-  if (text === "") return [];
-  const ls = text.split("\n");
-  if (ls[ls.length - 1] === "") ls.pop();
-  return ls;
-}
-
-type SidecarDiffHunk =
-  | { type: "context"; line: string }
-  | { type: "removed"; line: string }
-  | { type: "added"; line: string };
-
-/** Minimal Myers-style unified diff — for display only. Produces `removed` / `added` / `context` hunks. Context window: 3
- * lines around each changed line. */
-function buildDiffHunks(before: string, after: string): SidecarDiffHunk[] {
-  const bLines = sidecarLines(before);
-  const aLines = sidecarLines(after);
-
-  const m = bLines.length;
-  const n = aLines.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = m - 1; i >= 0; i--) {
-    for (let j = n - 1; j >= 0; j--) {
-      if (bLines[i] === aLines[j]) {
-        dp[i][j] = 1 + dp[i + 1][j + 1];
-      } else {
-        dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
-      }
-    }
-  }
-
-  const raw: SidecarDiffHunk[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < m || j < n) {
-    if (i < m && j < n && bLines[i] === aLines[j]) {
-      raw.push({ type: "context", line: bLines[i] });
-      i++;
-      j++;
-    } else if (j < n && (i >= m || dp[i + 1][j] <= dp[i][j + 1])) {
-      raw.push({ type: "added", line: aLines[j] });
-      j++;
-    } else {
-      raw.push({ type: "removed", line: bLines[i] });
-      i++;
-    }
-  }
-
-  const CONTEXT_LINES = 3;
-  const changed = new Set<number>();
-  for (let k = 0; k < raw.length; k++) {
-    if (raw[k].type !== "context") changed.add(k);
-  }
-  const keep = new Set<number>();
-  for (const k of changed) {
-    for (let d = -CONTEXT_LINES; d <= CONTEXT_LINES; d++) {
-      const idx = k + d;
-      if (idx >= 0 && idx < raw.length) keep.add(idx);
-    }
-  }
-
-  const result: SidecarDiffHunk[] = [];
-  let lastKept = -1;
-  for (let k = 0; k < raw.length; k++) {
-    if (!keep.has(k)) continue;
-    if (lastKept >= 0 && k > lastKept + 1) {
-      result.push({ type: "context", line: "⋯" });
-    }
-    result.push(raw[k]);
-    lastKept = k;
-  }
-  return result;
-}
-
-export interface WriteFileSidecarDiffProps {
-  /** Raw JSON string output from WriteFileTool — parsed here for truncated/hasSidecar. */
-  resultJson: string;
-  /** Active session id for IPC guard. */
-  sessionId: string;
-  /** tool_use_id for IPC sidecar lookup. */
-  toolUseId: string;
-  /** Resolved file path (from tool input). */
-  filePath?: string;
-}
-
-interface WriteDiffResult {
-  path?: string;
-  bytes?: number;
-  truncated?: boolean;
-  hasSidecar?: boolean;
-}
-
-function parseWriteResult(json: string): WriteDiffResult {
-  try {
-    const parsed = JSON.parse(json) as unknown;
-    if (parsed !== null && typeof parsed === "object") {
-      return parsed as WriteDiffResult;
-    }
-  } catch {
-    // malformed — treat as non-truncated
-  }
-  return {};
-}
-
-type SidecarDiffState = "idle" | "loading" | "expanded" | "error";
-
-export function WriteFileSidecarDiff({
-  resultJson,
-  sessionId,
-  toolUseId,
-  filePath,
-}: WriteFileSidecarDiffProps) {
-  const { t } = useTranslation();
-  const parsed = parseWriteResult(resultJson);
-  const [diffState, setDiffState] = useState<SidecarDiffState>("idle");
-  const [diffData, setDiffData] = useState<{ before: string; after: string } | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const isMountedRef = useRef(true);
-  useEffect(() => {
-    isMountedRef.current = true;
-    return () => {
-      isMountedRef.current = false;
-    };
-  }, []);
-
-  // If not truncated or no sidecar, render a plain summary.
-  if (!parsed.truncated || !parsed.hasSidecar) {
-    const path = filePath ?? parsed.path ?? "";
-    const bytes = parsed.bytes !== undefined ? `${parsed.bytes.toLocaleString()} bytes` : "";
-    return (
-      <div className="rounded px-2 py-1 font-mono text-tiny text-muted-foreground bg-muted/(--opacity-muted)">
-        {path ? <span className="text-primary/(--opacity-intense)">{path}</span> : null}
-        {bytes ? <span className="ml-2 text-muted-foreground/(--opacity-strong)">{bytes}</span> : null}
-      </div>
-    );
-  }
-
-  async function handleExpand() {
-    if (diffData) {
-      setDiffState("expanded");
-      return;
-    }
-    setDiffState("loading");
-    setErrorMsg(null);
-    try {
-      const result = await getApi().chatGetWriteDiff(sessionId, toolUseId);
-      if (!isMountedRef.current) return;
-      if (result === null) {
-        setErrorMsg(t("fileEditDiff.diffFileLost"));
-        setDiffState("error");
-      } else {
-        setDiffData(result);
-        setDiffState("expanded");
-      }
-    } catch (err) {
-      if (!isMountedRef.current) return;
-      setErrorMsg(errorMessage(err) || t("fileEditDiff.ipcError"));
-      setDiffState("error");
-    }
-  }
-
-  function handleRetry() {
-    setDiffState("idle");
-    setErrorMsg(null);
-  }
-
-  const path = filePath ?? parsed.path ?? "";
-  const bytes = parsed.bytes !== undefined ? `${parsed.bytes.toLocaleString()} bytes` : "";
-
-  if (diffState === "expanded" && diffData) {
-    const hunks = buildDiffHunks(diffData.before, diffData.after);
-    return (
-      <div className="min-w-0 w-full max-w-full rounded-md text-dense">
-        <div
-          className="flex items-center gap-2 px-3 py-1.5 rounded-t-md border-b"
-          style={{ backgroundColor: "hsl(var(--muted) / 0.5)" }}
-        >
-          <span className="font-medium text-primary/(--opacity-intense) truncate min-w-0">{path}</span>
-          {bytes && <span className="shrink-0 text-muted-foreground/(--opacity-strong) text-tiny">{bytes}</span>}
-          <button
-            type="button"
-            className="ml-auto shrink-0 text-tiny text-primary hover:underline"
-            onClick={() => setDiffState("idle")}
-          >
-            {t("fileEditDiff.collapse")}
-          </button>
-        </div>
-        <div
-          className="max-h-(--preview-block-max-height-compact) overflow-y-auto font-mono text-tiny leading-[1.5] rounded-b-md px-0 py-1"
-          style={{ backgroundColor: "hsl(var(--code-bg))", color: "hsl(var(--code-fg))" }}
-        >
-          {hunks.length === 0 ? (
-            <div className="px-3 py-1 text-muted-foreground/(--opacity-strong) italic">{t("fileEditDiff.noChangesShort")}</div>
-          ) : (
-            hunks.map((h, i) => (
-              <div
-                key={i}
-                className="flex px-2 py-0"
-                style={{
-                  backgroundColor:
-                    h.type === "added"
-                      ? "var(--diff-add)"
-                      : h.type === "removed"
-                        ? "var(--diff-remove)"
-                        : "transparent",
-                }}
-              >
-                <span
-                  className="shrink-0 select-none w-4 text-muted-foreground/(--opacity-half)"
-                  style={{
-                    color:
-                      h.type === "added"
-                        ? "var(--diff-add-fg)"
-                        : h.type === "removed"
-                          ? "var(--diff-remove-fg)"
-                          : undefined,
-                  }}
-                >
-                  {h.type === "added" ? "+" : h.type === "removed" ? "-" : " "}
-                </span>
-                <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0">
-                  {h.line}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    );
-  }
-
-  if (diffState === "error") {
-    return (
-      <div className="rounded-md px-3 py-1.5 text-dense text-destructive/(--opacity-intense) bg-destructive/(--opacity-subtle) flex items-center gap-2">
-        <span className="truncate min-w-0">{errorMsg}</span>
-        <button
-          type="button"
-          className="shrink-0 text-tiny text-primary hover:underline"
-          onClick={handleRetry}
-        >
-          {t("fileEditDiff.retry")}
-        </button>
-      </div>
-    );
-  }
-
-  const isLoading = diffState === "loading";
-  return (
-    <div
-      className="min-w-0 w-full max-w-full rounded-md text-dense"
-      style={{ backgroundColor: "hsl(var(--muted) / 0.4)" }}
-    >
-      <div className="flex items-center gap-2 px-3 py-1.5">
-        <span className="font-medium text-primary/(--opacity-intense) truncate min-w-0">{path}</span>
-        {bytes && <span className="shrink-0 text-muted-foreground/(--opacity-strong) text-tiny">{bytes}</span>}
-        <span className="shrink-0 text-tiny text-warning/(--opacity-intense) ml-1">· {t("fileEditDiff.previewLimit")}</span>
-        <button
-          type="button"
-          disabled={isLoading}
-          className="ml-auto shrink-0 text-tiny text-primary hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-          onClick={() => {
-            void handleExpand();
-          }}
-        >
-          {isLoading ? t("fileEditDiff.loading") : t("fileEditDiff.viewFullDiff")}
-        </button>
-      </div>
     </div>
   );
 }
