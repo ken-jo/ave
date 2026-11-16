@@ -316,7 +316,7 @@ describe("native invocation permission evidence", () => {
     });
   });
 
-  // F19: the revised secret table changes which reads take the tree's secret-file edge, not the edge itself.
+  // The revised secret table changes which reads take the tree's secret-file edge, not the edge itself.
   it.each([
     ["certs/server.pem", "**/*.pem"], ["certs/tls.key", "**/*.key"], ["id_dsa", "**/id_dsa"], [".env.test.local", "**/.env.*"],
   ] as const)("asks before reading %s as a secret file", async (name, pattern) => {
@@ -329,7 +329,7 @@ describe("native invocation permission evidence", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ reasonCode: "secret-read", reasonDetail: { secretPattern: pattern } });
-    expect(requests[0]!.allowedChoices).toBeUndefined();
+    expect(requests[0]?.allowedChoices).toBeUndefined();
   });
 
   it.each([
@@ -645,12 +645,12 @@ describe("native invocation permission evidence", () => {
     expect(requests[0]).toMatchObject({
       category: "tool", forceExplicit: true,
       allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
-      // F12: the card gets the stage and the matched list entry; the host reason text stays the raw token for audit rows.
+      // The card gets the stage and the matched list entry; the host reason text stays the raw token for audit rows.
       reasonCode: "protected-path", reasonDetail: { protectedEntry: ".git" }, reason: ".git",
     });
   });
 
-  // F12: a secret read names its stage and the pattern that matched, and both survive the recheck that rebuilds the result.
+  // A secret read names its stage and the pattern that matched, and both survive the recheck that rebuilds the result.
   it("sends the secret-read reason code and matched pattern with a native secret-file read card", async () => {
     const path = join(project, ".env");
     await writeFile(path, "FIXTURE_SECRET=private-value\n");
@@ -661,8 +661,8 @@ describe("native invocation permission evidence", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ reasonCode: "secret-read", reasonDetail: { secretPattern: "**/.env" }, target: { filePath: path } });
-    expect(requests[0]!.reasonDetail).not.toHaveProperty("protectedEntry");
-    const issued = check.mock.results.at(-1)!.value as ReturnType<PermissionManager["checkDetailed"]>;
+    expect(requests[0]?.reasonDetail).not.toHaveProperty("protectedEntry");
+    const issued = check.mock.results.at(-1)?.value as ReturnType<PermissionManager["checkDetailed"]>;
     expect(manager.recheckPermission(issued).pipelineRequest?.pathFacts).toEqual({ secretPattern: "**/.env" });
   });
 
@@ -690,7 +690,7 @@ describe("native invocation permission evidence", () => {
     } });
   });
 
-  // F09: the card must name where the write really lands, in its on-disk spelling, and why the host asks.
+  // The card must name where the write really lands, in its on-disk spelling, and why the host asks.
   it.each([["out-of-allowed-dir", [] as string[]], ["tool", ["<root>"]]] as const)("names the real target and the project-escape reason on a symlink-escape %s card", async (kind, directories) => {
     const outside = join(root, "Outside-Target.txt");
     await writeFile(outside, "outside resource");
@@ -700,7 +700,7 @@ describe("native invocation permission evidence", () => {
     expect(result.is_error).toBe(true);
     expect(await readFile(outside, "utf8")).toBe("outside resource");
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.kind ?? "tool").toBe(kind);
+    expect(requests[0]?.kind ?? "tool").toBe(kind);
     expect(requests[0]).toMatchObject({
       reasonCode: "project-escape", allowedChoices: ["allow-once", "deny-once"],
       target: { filePath: join(project, "linked.txt"), canonicalPath: outside },
@@ -742,8 +742,60 @@ describe("native invocation permission evidence", () => {
     const [result] = await run(executor(), "write_file", { path, content: "changed" });
     expect(result.is_error).toBe(true);
     expect(requests).toHaveLength(1);
-    expect(requests[0]!.target).toEqual({ filePath: path });
-    expect(requests[0]!.reasonCode).toBe("file-write");
+    expect(requests[0]?.target).toEqual({ filePath: path });
+    expect(requests[0]?.reasonCode).toBe("file-write");
+  });
+
+  // A project reached through a link (macOS /tmp is one) is the same project, so its own files are not escapes.
+  describe("project opened through a symlinked root", () => {
+    let linkedProject: string;
+    beforeEach(async () => {
+      linkedProject = join(root, "linked-root");
+      await symlink(project, linkedProject);
+    });
+
+    it.each(["relative", "absolute"] as const)("asks an ordinary, unforced card for a %s in-project write", async (spelling) => {
+      const path = spelling === "relative" ? "notes.txt" : join(linkedProject, "notes.txt");
+      const check = vi.spyOn(manager, "checkDetailed");
+      const [result] = await run(executor(), "write_file", { path, content: "changed" }, { executionCwd: linkedProject });
+      expect(result.is_error).toBe(true);
+      expect(check.mock.results.at(-1)?.value.pipelineRequest?.floor).toBeUndefined();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.kind ?? "tool").toBe("tool");
+      expect(requests[0]).toMatchObject({ reasonCode: "file-write", target: { canonicalPath: join(project, "notes.txt") } });
+      expect(requests[0]?.forceExplicit).toBeUndefined();
+      expect(requests[0]?.allowedChoices).toBeUndefined();
+    });
+
+    it("reads an in-project file without a card", async () => {
+      await writeFile(join(project, "readme.txt"), "project text");
+      const execute = vi.spyOn(readTool, "execute");
+      const [result] = await run(executor(), "read_file", { path: "readme.txt" }, { executionCwd: linkedProject });
+      expect(result.is_error, result.content).not.toBe(true);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(requests).toHaveLength(0);
+    });
+
+    it("still forces a link inside that project which leads outside it", async () => {
+      const outside = join(root, "outside.txt");
+      await writeFile(outside, "outside resource");
+      await symlink(outside, join(project, "linked.txt"));
+      const check = vi.spyOn(manager, "checkDetailed");
+      const [result] = await run(executor(), "write_file", { path: "linked.txt", content: "changed" }, { executionCwd: linkedProject });
+      expect(result.is_error).toBe(true);
+      expect(await readFile(outside, "utf8")).toBe("outside resource");
+      expect(check.mock.results.at(-1)?.value).toMatchObject({ reasonCode: "project-escape", pipelineRequest: { floor: { code: "project-escape" } } });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ reasonCode: "project-escape", forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
+    });
+
+    it("still forces a parent-segment operand that leaves the project", async () => {
+      await writeFile(join(root, "sibling.txt"), "outside resource");
+      const check = vi.spyOn(manager, "checkDetailed");
+      await run(executor(), "read_file", { path: "../sibling.txt" }, { executionCwd: linkedProject, additionalDirectories: [root] });
+      expect(check.mock.results.at(-1)?.value).toMatchObject({ reasonCode: "project-escape" });
+      expect(requests).toHaveLength(1);
+    });
   });
 
   it("allows read-only protocol discovery metadata through the real executor", async () => {

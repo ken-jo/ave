@@ -648,6 +648,7 @@ export function createPermissionPathEvidence(projectRoot: string, canonicalize?:
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
   const root = normalize(projectRoot);
   const within = (value: string) => value === root || value.startsWith(root + "/");
+  const inProject = createProjectMembership(projectRoot, canonicalize);
   const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
   const observations = new Map<string, Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>();
   return path => {
@@ -665,7 +666,7 @@ export function createPermissionPathEvidence(projectRoot: string, canonicalize?:
       secret: matcher.secret(lexical) ?? (canonical === lexical ? null : matcher.secret(canonical)),
       admissionDenial: matcher.admission(lexical) ?? (canonical === lexical ? null : matcher.admission(canonical)),
       protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined,
-      projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !within(canonical),
+      projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !inProject(canonical),
     };
     observations.set(key, observation);
     return { ...path, ...observation };
