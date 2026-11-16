@@ -23,5 +23,10 @@
     "packageName": "@xterm/addon-unicode11",
     "noticeFile": "xterm-addon-unicode11-LICENSE",
     "sha256": "e256f01188af527e4d06d21d06fbf785ae9c50d4b328bf03cbe0ba7f0aa4228f"
+  },
+  {
+    "packageName": "@xterm/addon-search",
+    "noticeFile": "xterm-addon-search-LICENSE",
+    "sha256": "689ceb10716bd7a87a804c14951d7c2b818cbd60aab83d540902470ce3b13444"
   }
 ]

@@ -4331,6 +4331,14 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // ptyTerminal
   "ptyTerminal.hostChip": "호스트",
+  "ptyTerminal.findLabel": "터미널에서 찾기",
+  "ptyTerminal.findPlaceholder": "찾기",
+  "ptyTerminal.findNoResults": "결과 없음",
+  "ptyTerminal.findCount": "{index}/{count}",
+  "ptyTerminal.findCaseSensitive": "대소문자 구분",
+  "ptyTerminal.findPrevious": "이전 결과",
+  "ptyTerminal.findNext": "다음 결과",
+  "ptyTerminal.findClose": "찾기 닫기",
   "ptyTerminal.inputTooLarge": "입력이 1MB를 넘어 셸에 전달되지 않았습니다. 나누어 붙여넣으세요.",
   "ptyTerminal.inputNotDelivered": "입력이 셸에 전달되지 않았습니다. 이 터미널의 셸이 교체되었거나 닫혔습니다.",
   "ptyTerminal.hostChipApproval": "대화별 사용 권한",

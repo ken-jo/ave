@@ -8,6 +8,7 @@ import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
 import { TerminalPaneHeader, type TerminalPaneAccess } from "./TerminalPaneHeader.js";
 import { LiveTerminal, type LiveTerminalState } from "./live-terminal.js";
+import { TerminalFindBar } from "./TerminalFindBar.js";
 import { liveTerminalFor, takeTerminalFocusRequest } from "../preview/live-terminal-registry.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
@@ -114,6 +115,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   attendedRef.current = attended;
   const translateRef = useRef(t);
   translateRef.current = t;
+  const [findOpen, setFindOpen] = useState(false);
   const openLinkRef = useRef(onOpenLink);
   openLinkRef.current = onOpenLink;
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
@@ -136,7 +138,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     const terminal = liveTerminalFor(tabId, () => new LiveTerminal(terminalApi, tabId, terminalStyleRef.current, translateRef.current));
     terminal.applyStyle(terminalStyleRef.current);
     terminal.attach(host, { purpose, initialCwd: initialCwdRef.current, t: translateRef.current, attended: () => attendedRef.current,
-      openLink: (url) => openLinkRef.current?.(url) });
+      openLink: (url) => openLinkRef.current?.(url), openFind: () => setFindOpen(true) });
     setLive(terminal);
     return () => {
       terminal.detach(host);
@@ -263,6 +265,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
           xterm host stays its only in-flow child and no rows are taken. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
         <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
+        {findOpen && live ? <TerminalFindBar live={live} onClose={() => setFindOpen(false)} /> : null}
         {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={live?.anchors ?? null} /> : null}
       </div>
     </div>

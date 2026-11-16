@@ -128,6 +128,25 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+interface FakeSearch {
+  calls: Array<{ direction: "next" | "previous"; query: string; options: { caseSensitive?: boolean; incremental?: boolean; decorations?: Record<string, string> } }>;
+  found: boolean;
+  cleared: number;
+  emit(resultIndex: number, resultCount: number): void;
+}
+const { searches } = vi.hoisted(() => ({ searches: [] as FakeSearch[] }));
+vi.mock("@xterm/addon-search", () => ({ SearchAddon: class {
+  calls: FakeSearch["calls"] = [];
+  found = true;
+  cleared = 0;
+  listeners = new Set<(event: { resultIndex: number; resultCount: number }) => void>();
+  constructor() { searches.push(this); }
+  findNext(query: string, options: FakeSearch["calls"][number]["options"]) { this.calls.push({ direction: "next", query, options }); return this.found; }
+  findPrevious(query: string, options: FakeSearch["calls"][number]["options"]) { this.calls.push({ direction: "previous", query, options }); return this.found; }
+  clearDecorations() { this.cleared++; }
+  onDidChangeResults(listener: (event: { resultIndex: number; resultCount: number }) => void) { this.listeners.add(listener); return { dispose: () => { this.listeners.delete(listener); } }; }
+  emit(resultIndex: number, resultCount: number) { for (const listener of this.listeners) listener({ resultIndex, resultCount }); }
+} }));
 type LinkCallback = (event: MouseEvent, target: string) => void;
 const { webLinks } = vi.hoisted(() => ({ webLinks: [] as Array<{ activate: LinkCallback; hover: LinkCallback; leave: LinkCallback }> }));
 vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {
@@ -908,6 +927,102 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("find in the terminal", () => {
+  async function terminalWithFind(tabId: string) {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    searches.length = 0;
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+    return { xterm: fakeTerm(), search: searches[0]! };
+  }
+  // The test platform is not macOS: the app's search key is Ctrl+F.
+  const searchKey = () => new KeyboardEvent("keydown", { key: "f", code: "KeyF", ctrlKey: true, bubbles: true, cancelable: true });
+
+  it("opens on the app's search key pressed in the terminal, and keeps that key from the shell and from the window's own search", async () => {
+    const { xterm } = await terminalWithFind("terminal:95");
+    expect(screen.queryByTestId("terminal-find-bar")).toBeNull();
+    const windowSearch = vi.fn();
+    window.addEventListener("keydown", windowSearch);
+    try {
+      const key = searchKey();
+      const stop = vi.spyOn(key, "stopPropagation");
+      let handled = true;
+      act(() => { handled = offerKey(xterm, key); });
+      expect(handled).toBe(false);
+      expect(key.defaultPrevented).toBe(true);
+      expect(stop).toHaveBeenCalled();
+      // A plain "f", and the key's release, stay the shell's.
+      expect(offerKey(xterm, new KeyboardEvent("keydown", { key: "f" }))).toBe(true);
+      expect(offerKey(xterm, new KeyboardEvent("keyup", { key: "f", ctrlKey: true }))).toBe(true);
+    } finally { window.removeEventListener("keydown", windowSearch); }
+    const bar = await screen.findByTestId("terminal-find-bar");
+    // The search landmark element: its role is "search" without an attribute.
+    expect(bar.tagName).toBe("SEARCH");
+    expect(document.activeElement).toBe(within(bar).getByTestId("terminal-find-input"));
+  });
+
+  it("searches as the query is typed, steps with Enter and Shift+Enter, and reports where it stands", async () => {
+    const { xterm, search } = await terminalWithFind("terminal:96");
+    act(() => { offerKey(xterm, searchKey()); });
+    const input = await screen.findByTestId("terminal-find-input");
+    const status = screen.getByTestId("terminal-find-status");
+    expect(status).toHaveTextContent("");
+    expect(screen.getByTestId("terminal-find-next")).toBeDisabled();
+
+    fireEvent.change(input, { target: { value: "error" } });
+    expect(search.calls.at(-1)).toMatchObject({ direction: "next", query: "error", options: { caseSensitive: false, incremental: true } });
+    // The other matches are marked, in colours the addon accepts (#RRGGBB).
+    for (const colour of Object.values(search.calls.at(-1)!.options.decorations!)) expect(colour).toMatch(/^#[0-9a-f]{6}$/iu);
+    act(() => search.emit(0, 5));
+    expect(status).toHaveTextContent(t("ptyTerminal.findCount", { index: 1, count: 5 }));
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(search.calls.at(-1)).toMatchObject({ direction: "next", query: "error", options: { incremental: false } });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(search.calls.at(-1)).toMatchObject({ direction: "previous", query: "error" });
+    fireEvent.click(screen.getByTestId("terminal-find-previous"));
+    fireEvent.click(screen.getByTestId("terminal-find-next"));
+    expect(search.calls.slice(-2).map((call) => call.direction)).toEqual(["previous", "next"]);
+    // An IME commit's Enter is the composition's, not a step.
+    const before = search.calls.length;
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(search.calls).toHaveLength(before);
+
+    fireEvent.click(screen.getByTestId("terminal-find-case"));
+    expect(screen.getByTestId("terminal-find-case")).toHaveAttribute("aria-pressed", "true");
+    expect(search.calls.at(-1)).toMatchObject({ query: "error", options: { caseSensitive: true } });
+
+    search.found = false;
+    fireEvent.change(input, { target: { value: "errorz" } });
+    expect(status).toHaveTextContent(t("ptyTerminal.findNoResults"));
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    // An emptied query clears the marks instead of searching for nothing.
+    const cleared = search.cleared;
+    fireEvent.change(input, { target: { value: "" } });
+    expect(search.cleared).toBe(cleared + 1);
+    expect(status).toHaveTextContent("");
+  });
+
+  it("closes on Escape: the marks go and the keyboard returns to the shell", async () => {
+    const { xterm, search } = await terminalWithFind("terminal:97");
+    act(() => { offerKey(xterm, searchKey()); });
+    const input = await screen.findByTestId("terminal-find-input");
+    fireEvent.change(input, { target: { value: "make" } });
+    const focused = xterm.focusCount;
+    const cleared = search.cleared;
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("terminal-find-bar")).toBeNull());
+    expect(search.cleared).toBeGreaterThan(cleared);
+    expect(xterm.focusCount).toBe(focused + 1);
+    // And the close button does the same.
+    act(() => { offerKey(xterm, searchKey()); });
+    fireEvent.click(await screen.findByTestId("terminal-find-close"));
+    await waitFor(() => expect(screen.queryByTestId("terminal-find-bar")).toBeNull());
+    expect(xterm.focusCount).toBe(focused + 2);
   });
 });
 

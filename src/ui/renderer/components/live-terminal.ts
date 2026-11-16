@@ -6,10 +6,12 @@
  */
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { isDarwin } from "../api-client.js";
+import { matchesShortcut } from "../hooks/use-shortcuts.js";
 import { terminalClipboardAction, terminalPlatform } from "./terminal-keys.js";
 import { onTerminalUserInput } from "./terminal-user-input.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
@@ -53,6 +55,14 @@ export interface LiveTerminalView {
   readonly attended: () => boolean;
   /** Open a web link from the terminal in an Ave browser tab. Absent where the view has no place to open one. */
   readonly openLink?: (url: string) => void;
+  /** The user pressed the search key in the terminal: show this view's find bar. */
+  readonly openFind?: () => void;
+}
+
+/** Where the find bar's query stands in the buffer: the selected match (1-based, 0 when none is selected) of how many. */
+export interface TerminalFindResult {
+  readonly index: number;
+  readonly count: number;
 }
 
 /** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
@@ -65,6 +75,7 @@ export class LiveTerminal {
   readonly term: Terminal;
   readonly anchors: XtermBlockAnchors;
   private readonly fitAddon = new FitAddon();
+  private readonly searchAddon = new SearchAddon();
   private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null };
   /** Where a restarted shell starts: the directory the ended one last reported. */
   private restartCwd: string | null = null;
@@ -123,6 +134,7 @@ export class LiveTerminal {
     }));
     // Character widths from Unicode 11, which shells and full-screen programs assume: with the built-in Unicode 6 tables an emoji is one cell here and
     // two cells to the program that printed it, and every column after it is off by one.
+    this.term.loadAddon(this.searchAddon);
     this.term.loadAddon(new Unicode11Addon());
     this.term.unicode.activeVersion = "11";
     this.anchors = new XtermBlockAnchors(this.term);
@@ -140,6 +152,13 @@ export class LiveTerminal {
     // Copy and paste keys where the platform has no menu key for them. Returning false keeps the key from xterm, and the
     // default is prevented so the browser does not paste a second time.
     this.term.attachCustomKeyEventHandler((event) => {
+      // The app's search key, pressed in a terminal, searches that terminal: the key is taken here so the window's own search does not also open.
+      if (event.type === "keydown" && this.view?.openFind && matchesShortcut("app.search", event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.view.openFind();
+        return false;
+      }
       const action = terminalClipboardAction(event, terminalPlatform(), this.term.hasSelection());
       if (action === null) return true;
       event.preventDefault();
@@ -266,6 +285,37 @@ export class LiveTerminal {
     this.term.options.fontSize = style.terminalFont.size;
     this.term.options.lineHeight = style.terminalFont.lineHeight;
     if (this.host) this.fitToHost();
+  }
+
+  /** Select the next or previous match of `query` in the screen and scrollback and mark the others; false when there is none. A typed query
+   * (`incremental`) keeps the current match while it still matches instead of jumping to the following one. */
+  find(query: string, direction: "next" | "previous", options: { caseSensitive: boolean; incremental?: boolean }): boolean {
+    const theme = this.term.options.theme ?? {};
+    // Other matches are outlined and the selected one is the selection itself, so output colours stay readable under both.
+    const mark = theme.yellow;
+    const active = theme.foreground;
+    if (mark === undefined || active === undefined) throw new Error("The terminal palette has no colours to mark search matches with.");
+    const searchOptions = {
+      caseSensitive: options.caseSensitive,
+      incremental: options.incremental === true,
+      decorations: { matchBorder: mark, matchOverviewRuler: mark, activeMatchBorder: active, activeMatchColorOverviewRuler: active },
+    };
+    return direction === "next" ? this.searchAddon.findNext(query, searchOptions) : this.searchAddon.findPrevious(query, searchOptions);
+  }
+
+  /** Remove the find marks and the selected match. */
+  clearFind(): void {
+    this.searchAddon.clearDecorations();
+    this.term.clearSelection();
+  }
+
+  onFindResult(listener: (result: TerminalFindResult) => void): () => void {
+    const subscription = this.searchAddon.onDidChangeResults((event) => listener({ index: event.resultIndex + 1, count: event.resultCount }));
+    return () => subscription.dispose();
+  }
+
+  focus(): void {
+    this.term.focus();
   }
 
   /** Copy the selected text. `clear` drops the selection afterwards, the convention where Ctrl+C both copies and interrupts, so the next Ctrl+C reaches the shell. */

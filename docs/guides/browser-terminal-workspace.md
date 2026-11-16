@@ -262,6 +262,11 @@ links. Hovering one shows where it really goes. Hold Cmd (macOS) or Ctrl
 terminal in the main area, or as a new tab in the side panel. Only `http` and
 `https` links open, and never one that carries a user name or password.
 
+The app's search key (Cmd+F on macOS, Ctrl+F elsewhere, or the key you bound
+to Search) pressed in a terminal opens a find bar over its output. It searches
+the screen and the scrollback as you type; Enter goes to the next match,
+Shift+Enter to the previous one, and Escape closes it.
+
 Copy and paste use the platform's terminal keys. On macOS, Cmd+C and Cmd+V.
 On Windows, Ctrl+C copies when text is selected (otherwise it interrupts, as
 usual) and Ctrl+V pastes; Ctrl+Shift+C and Ctrl+Shift+V also work. On Linux,
