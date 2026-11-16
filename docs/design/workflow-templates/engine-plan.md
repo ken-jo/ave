@@ -28,7 +28,7 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 | F8 | No worktree helper exists. Host git calls go through `buildHostGitArgs` (`shared/host-git.ts:47`); the marketplace `GitRunner` (`marketplace/git/run-git.ts:209`) is transport-specific. | WT-4 adds its own small git module. `HOST_GIT_CONFIG` (`shared/host-git.ts:5`) covers only bare-repository discovery and fsmonitor, plus the hooks path; filters, textconv, credential prompts and signing are not covered and WT-4 must add them for its calls. |
 | F9 | The Ave home is closed twice. Reads: the sandbox denies the whole home and re-opens only the rows of `AVE_HOME_READ_REALLOWS` (`permissions/ave-home-read-boundary.ts:26-42`); there is no `worktrees` row. Writes: `protectedControlEntryFor` (`permissions/sensitive-paths.ts:568-591`) classes every path under the home as `application-home`, a protected-path floor, except `<home>/workspace` (`:580-583`). | A stage workspace under `<home>/worktrees/` is unreadable in the sandbox and every write to it is a forced ask (a deny when nobody can answer) until both places change. WT-4 owns both edits (§3.5). Lead ruling T2: the write and read carve-out is a session binding, not a path prefix. |
 | F10 | `revokeWorkspaceRoot` (`engine/subagent-runner.ts:1066-1095`) cancels only wire children whose `wireProjectRoot` equals the removed root (`:999`); every other active child only has that root removed from its scopes. | A stage child's root is its own workspace, so removing the project does not stop it. The engine must interrupt stage children itself; a test proves it (§2.9, answers Q13). |
-| F11 | `decidePermission` has one call site (`permissions/permission-manager.ts:1432`). In the Allow mode `applyMode` (`permissions/decision-pipeline.ts:54`) returns allow before the no-approver deny for everything but an exfiltration signal, a secret-file read included (`:126`). | A schedule-started child that takes the ambient mode can act with nobody present. WT-8's interim children must not take it (§7.4, R8); WT-15 removes the dependency. |
+| F11 | `decidePermission` has one call site (`permissions/permission-manager.ts:1432`). In the Allow mode `applyMode` (`permissions/decision-pipeline.ts:54-57`) returns allow before the no-approver deny for everything but an exfiltration signal in a headless request (`:55-56`), a secret-file read included (`:126`). | A schedule-started child that takes the ambient mode can act with nobody present. WT-8's interim children must not take it (§7.4, R8); WT-15 removes the dependency. |
 | F12 | A headless tool scope drops every MCP tool and every egress builtin (`engine/turn/tool-scope.ts:119-121, 136`). | The unattended lane needs "declared tools only" instead of "none" (WT-16). |
 | F13 | The only host-assigned budget of a child is `maxRounds` (`subagent-runner.ts:197`). `SubAgentSpawnResult` (`:224`) carries no cost, and routine metrics carry tokens only (`shared/routines-types.ts:142-147`). | WT-18 can enforce rounds and minutes now. A cost budget has no verified source (R11). |
 
@@ -122,6 +122,8 @@ interface StageRunEngine {
   decideGate(itemId: number, i: StageGateDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageJoinDecideResult>;
   retryStage(itemId: number, i: { runId: string; stageId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;
+  continueRun(itemId: number, i: { runId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;   // §2.7
+  projectRootRevoked(canonicalRoot: string): void;   // called beside the existing revocation fan-out (`ipc/domains/workspace.ts:497, 668`, `boot/steps/conversation-wiring.ts:255`); interrupts every live stage child of runs on that project and fails those stages `workspace-revoked` (F10)
   steer(itemId: number, stageId: string, text: string): WorkBoardSteerResult;
   stop(itemId: number): WorkBoardCancelResult;
   liveStageSessions(itemId: number): ReadonlyMap<string, string>;   // stageId → childSessionId
@@ -313,7 +315,7 @@ Commit: `feat(work-board): stage scheduler for template runs`.
 
 ## 3. WT-4 — per-stage workspaces and join collection (W1, W2)
 
-Files: new `src/work-board/workflow/stage-workspaces.ts` (the provider), `workspace-layout.ts` (paths and slugs, pure), `workspace-seed.ts` (bounded no-follow copy), `host-git.ts` (hardened git calls); new `src/permissions/stage-workspace-binding.ts`; changed `permissions/ave-home-read-boundary.ts`, `permissions/asrt-sandbox.ts`, the sites that raise the protected-path floor (`permissions/permission-manager.ts`, `permissions/effect-enforcement.ts`, `tools/file-tools.ts`; `sensitive-paths.ts` itself is not changed), `shared/ave-home.ts` if the new child must be listed (R2); one line in `workflow-engine-extensions.ts`; en/ko for the conflict gate. The join state machine, `decideStageJoin`, the provider call sites, the boot sweep call, the `workspace` fields and their store and board-file validation already exist from WT-3.
+Files: new `src/work-board/workflow/stage-workspaces.ts` (the provider), `workspace-layout.ts` (paths and slugs, pure), `workspace-seed.ts` (bounded no-follow copy), `host-git.ts` (hardened git calls); new `src/permissions/stage-workspace-binding.ts`; changed `permissions/ave-home-read-boundary.ts`, `permissions/asrt-sandbox.ts`, the consumers of the protected-control path fact (see §3.5; `protectedControlEntryFor` itself is not changed), `shared/ave-home.ts` if the new child must be listed (R2); one line in `workflow-engine-extensions.ts`; en/ko for the conflict gate. The join state machine, `decideStageJoin`, the provider call sites, the boot sweep call, the `workspace` fields and their store and board-file validation already exist from WT-3.
 
 ### 3.1 Layout
 
@@ -381,12 +383,13 @@ function unbindStageWorkspace(sessionId: string): void;
 function isOwnStageWorkspacePath(sessionId: string | undefined, path: string): boolean;
 ```
 
-`isOwnStageWorkspacePath` resolves the target the way the floor does (physical path of the deepest existing ancestor, links and reparse points not followed into, `inspectPhysicalFilesystemPath`), refuses any spelling with an uncollapsed `..`, and compares against the stored real path with the platform's case rule. A link inside the workspace that points outside it resolves outside and is not carved out. A nested `.ave` inside the workspace stays protected.
+`isOwnStageWorkspacePath` does its own physical resolution (the floor's `protectedControlEntryFor` only normalises the spelling): the physical path of the deepest existing ancestor through `inspectPhysicalFilesystemPath`, with links and reparse points resolved to where they really point. It refuses any spelling with an uncollapsed `..`, and compares against the stored real path with the platform's case rule. A link inside the workspace that points outside it resolves outside and is not carved out. A nested `.ave` inside the workspace stays protected.
 
 | File | Change |
 | --- | --- |
 | `permissions/stage-workspace-binding.ts` | The binding and the check above. The engine binds when a stage child is linked and binds each grandchild to its stage's root; it unbinds at session end. No other caller. |
-| Floor sites: `permission-manager.ts`, `effect-enforcement.ts`, `tools/file-tools.ts` | Where `protectedControlEntryFor(path)` returns `application-home`, the floor is skipped only if `isOwnStageWorkspacePath(sessionId, path)`. `protectedControlEntryFor` keeps its single `<home>/workspace` exception and gains no new prefix. A session with no binding is decided exactly as today. |
+| Floor consumers | `protectedControlEntryFor` has two callers, both for write effects and neither with a session id: the path facts built at `permissions/sensitive-paths.ts:631` and the rule matcher at `permissions/rules/scoped-rule-matcher.ts:51`. The carve-out goes where the `protectedControl` fact is turned into the floor for a known session (in `permission-manager.ts`; the exact line was not read and is the first task of WT-4): an `application-home` fact is dropped only if `isOwnStageWorkspacePath(sessionId, path)`. `protectedControlEntryFor` keeps its single `<home>/workspace` exception and gains no new prefix. A session with no binding is decided exactly as today. |
+| Host-tool reads | Which existing check stops a host file tool from reading an Ave-home path was not read (the sandbox side is the read boundary, F9). WT-4 finds it and applies the same binding check there; the read tests below must be red first. |
 | `permissions/ave-home-read-boundary.ts` | One ceiling row: `["worktrees", slug, slug, stageDir]`, `stageDir` not `_`-prefixed, so `_join`, `_out` and the levels above a stage folder can never be granted. |
 | `permissions/asrt-sandbox.ts` | The wrap for a bound session re-opens exactly `boundStageWorkspace(sessionId)` for read and write, and nothing else beneath `worktrees`. |
 
@@ -669,11 +672,11 @@ PR-B, in build order: WT-3 → (WT-4, WT-5, WT-7 together) → (WT-6, WT-8 toget
 | Item | PR | After | Parallel with | Files it owns alone | Shared files it touches |
 | --- | --- | --- | --- | --- | --- |
 | WT-3 | B | PR-A (WT-1, WT-2) | — | `src/work-board/workflow/*` except the files named below; `workflow-engine-extensions.ts`; `work-board-stage-run.test.ts`, `work-board-stage-revoke.test.ts` | `work-board-engine.ts`, `work-board-store.ts`, `work-board-types.ts`, `work-board-lifecycle.ts`, `ipc/domains/work-board.ts`, `ipc-channels.ts`, preload, `subagent-runner.ts`, `parent-directive.ts`, `conversation-wiring.ts` |
-| WT-4 | B | WT-3 | WT-5, WT-7 | `stage-workspaces.ts`, `workspace-layout.ts`, `workspace-seed.ts`, `host-git.ts`, `permissions/stage-workspace-binding.ts`, their tests, `work-board-stage-isolation.test.ts` | `ave-home-read-boundary.ts`, `asrt-sandbox.ts`, the floor sites `permission-manager.ts` (one guarded call; agree the order with WT-5), `effect-enforcement.ts`, `tools/file-tools.ts`; `shared/ave-home.ts` (R2); one line in `workflow-engine-extensions.ts`; en/ko |
+| WT-4 | B | WT-3 | WT-5, WT-7 | `stage-workspaces.ts`, `workspace-layout.ts`, `workspace-seed.ts`, `host-git.ts`, `permissions/stage-workspace-binding.ts`, their tests, `work-board-stage-isolation.test.ts` | `ave-home-read-boundary.ts`, `asrt-sandbox.ts`, the floor consumer in `permission-manager.ts` (one guarded call; agree the order with WT-5) and the host-tool read check (§3.5); `shared/ave-home.ts` (R2); one line in `workflow-engine-extensions.ts`; en/ko |
 | WT-5 | B | WT-3 | WT-4, WT-7 | `permissions/run-grants.ts`, the permission files of §4, `use-board-approvals.ts` | `permission-manager.ts`; one line in `workflow-engine-extensions.ts`; en/ko |
 | WT-7 | B | WT-3 | WT-4, WT-5 | `stage-verdict.ts`, its tests, `work-board-stage-verdict-run.test.ts` | one line in `stage-gates.ts`; en/ko |
-| WT-6 | B | WT-3, WT-5 | WT-8 | — | `subagent-runner.ts`, `tools/agent-spawn.ts`, `stage-run-engine.ts` |
-| WT-8 | B | WT-3, WT-5 | WT-6 | `ipc/domains/workflow-schedule.ts`, the routine files of §7.1, its tests | `permission-manager.ts` (after WT-5); `ipc-channels.ts`, preload; en/ko |
+| WT-6 | B | WT-3, WT-4, WT-5 | WT-8 | — | `subagent-runner.ts`, `tools/agent-spawn.ts`, `stage-run-engine.ts` |
+| WT-8 | B | WT-3, WT-4, WT-5 | WT-6 | `ipc/domains/workflow-schedule.ts`, the routine files of §7.1, its tests | `permission-manager.ts` (after WT-5); `ipc-channels.ts`, preload; en/ko |
 | WT-15 | E | PR-B | WT-16, WT-17 | `unattended-lane.ts`, `unattended-lane-registry.ts`, their tests | `decision-pipeline.ts`, `permission-manager.ts`; one line in `workflow-engine-extensions.ts` |
 | WT-16 | E | PR-B | WT-15, WT-17 | `unattended-isolation.ts`, its tests | `asrt-sandbox.ts`, `egress-runtime.ts`, `tool-scope.ts`, `host-shell-execution-plan.ts`, the shell environment builder, the loaders; one line in `workflow-engine-extensions.ts`; last commit edits WT-8's predicate after WT-15 merged |
 | WT-17 | E | PR-B | WT-15, WT-16 | `requested-outputs.ts`, `tools/stage-request-output.ts`, their tests | `stage-run-engine.ts` (hook bodies only), `ipc/domains/work-board.ts`, tool registration; en/ko |
@@ -726,7 +729,9 @@ interface AttachmentReader {
   listByTemplate(templateId: string): Promise<ScheduleAttachment[]>;
   listByRoutine(routineId: string): Promise<ScheduleAttachment[]>;
 }
-interface AttachmentWriter {            // callable only from the attach / detach IPC handlers; takes a host proof object, like the plan decision path
+/** Minted only by a main-process decision handler after its sender, gesture and owner-frame checks; never built from a payload. */
+interface HostDecisionProof { readonly origin: "local-desktop" | "tailnet-surface"; readonly auditId: string; readonly decidedAt: string }
+interface AttachmentWriter {            // callable only from the attach / detach IPC handlers
   attach(input: Omit<ScheduleAttachment, "id" | "attachedAt" | "detachedAt">, proof: HostDecisionProof): Promise<ScheduleAttachment>;
   detach(id: string, proof: HostDecisionProof): Promise<boolean>;
 }
