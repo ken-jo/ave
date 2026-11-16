@@ -28,7 +28,7 @@ import { projectRootEquals, projectRootKey } from "../shared/project-identity.js
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { workBoardMoveRefusal } from "../shared/work-board-lifecycle.js";
 import { ChangeSignal } from "../lib/change-signal.js";
-import { WorkflowRunStore, type WorkflowRunView } from "./workflow-run-store.js";
+import { WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView } from "./workflow-run-store.js";
 import { stripBoardRunFields } from "../work-board/template-run-fields.js";
 import { isTemplateId, requireTemplate } from "../work-board/template-graph.js";
 import type { TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
@@ -344,6 +344,14 @@ function mutationRevision(item: WorkItem): string {
 // A template row names its run by runId alone. The run file decides whether that run can be read and whether it belongs to this row;
 // while the file awaits review no template run can be vouched for. Ordinary rows and unstarted template rows have no run in that file and
 // are never marked.
+// What a settled run keeps once its row names a newer run: how it ended and each stage's status, times and result hash.
+function runSummary(run: WorkflowRunRecord): WorkflowRunRecord {
+  const { runId, itemId, pin, runStartedBy, startedAt, settled } = run;
+  const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash }) =>
+    ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }) }));
+  return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }) };
+}
+
 const namesTemplateRun = (item: WorkItem): boolean => item.templateId !== undefined && item.runId !== undefined;
 function templateRunError(item: WorkItem, runs: WorkflowRunView): WorkItemResolved["templateRunError"] {
   if (!namesTemplateRun(item) || item.runId === undefined) return undefined;
@@ -423,31 +431,33 @@ export class WorkBoardStore {
     this.boardChanged.emit();
   }
 
-  // A stored run may go once it is over and the board no longer lists it. Only the run record says a run is over (`settled`); a record
-  // without it is never removed here, whatever its row shows. A row lists its current run and its run history. A row id this board never
-  // issued (an emptied or replaced board file) proves nothing, so that run stays.
-  private unlisted(board: BoardFile): (run: WorkflowRunRecord) => boolean {
+  // Only the run record says a run is over (`settled`); a record without it stays whole, whatever its row shows. A settled run stays
+  // whole while its row names it as the current run, shrinks to its summary while it is only in the row's run history, and goes once
+  // the board no longer lists it. A row id this board never issued (an emptied or replaced board file) proves nothing, so that run stays.
+  private retention(board: BoardFile): WorkflowRunRetention {
     const rows = new Map(board.items.map((item) => [item.id, item]));
     const issued = board.nextId;
     return (run) => {
-      if (run.settled === undefined) return false;
+      if (run.settled === undefined) return run;
       const row = rows.get(run.itemId);
-      if (!row) return run.itemId < issued;
-      return row.runId !== run.runId && !(Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId));
+      if (!row) return run.itemId < issued ? null : run;
+      if (row.runId === run.runId) return run;
+      return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? runSummary(run) : null;
     };
   }
 
   // Cleanup never fails the board write it follows: whatever it leaves behind goes with the next prune.
-  private async pruneRuns(drop: (run: WorkflowRunRecord) => boolean): Promise<void> {
-    try { await this.runs.prune(drop); }
+  private async pruneRuns(retain: WorkflowRunRetention): Promise<void> {
+    try { await this.runs.prune(retain); }
     catch (error) { log.warn("[work-board-store] run records were not pruned: %s", (error as Error).message); }
   }
 
-  /** For the engine: remove every settled run no row lists. Call it after settling a run whose row is gone or names a newer run. */
+  /** For the engine: remove every settled run no row lists and shrink the ones only a run history lists. Call it after settling a run
+   * whose row is gone or names a newer run. */
   async pruneSettledRuns(): Promise<void> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      await this.pruneRuns(this.unlisted(await readFileOrEmpty(this.filePath)));
+      await this.pruneRuns(this.retention(await readFileOrEmpty(this.filePath)));
     });
   }
 
@@ -792,12 +802,12 @@ export class WorkBoardStore {
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
       }
       // Judged against the board as it is on disk until the row write below lands.
-      const unlisted = this.unlisted(board);
+      const retain = this.retention(board);
       if (pin) {
         const stored = await this.runs.put(structuredClone({
           runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },
           runStartedBy: pin.source, startedAt, stageRuns: pin.stageRuns,
-        }), unlisted);
+        }), retain);
         if (stored.status !== "stored") {
           this.cache = board;
           return { status: "invalid" as const, itemId: id, reason: stored.status === "pending-review" ? "template-runs-pending-review" : stored.status === "too-large" ? "template-runs-too-large" : "invalid-template-run" };
@@ -824,9 +834,11 @@ export class WorkBoardStore {
       try { await this.commit(board); }
       catch (error) {
         // The row never came to name the run just stored and nothing started it, so that record goes with the same prune.
-        if (pin) await this.pruneRuns((run) => run.runId === runId || unlisted(run));
+        if (pin) await this.pruneRuns((run) => run.runId === runId ? null : retain(run));
         throw error;
       }
+      // The run this row named until now is in its history only from this write on.
+      if (pin) await this.pruneRuns(this.retention(board));
       await appendActivity(this.activity, {
         kind: "run-planned",
         itemId: id,
@@ -1053,7 +1065,7 @@ export class WorkBoardStore {
       }
       board.items = board.items.filter((i) => i.id !== id);
       await this.commit(board);
-      if (item.templateId !== undefined) await this.pruneRuns(this.unlisted(board));
+      if (item.templateId !== undefined) await this.pruneRuns(this.retention(board));
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

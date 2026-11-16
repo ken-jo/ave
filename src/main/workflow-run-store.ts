@@ -11,6 +11,8 @@ import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, W
 interface RunsFile { version: 1; runs: unknown[] }
 /** One read of the run file, for a caller that looks up several runs. */
 export interface WorkflowRunView { readonly pendingReview: boolean; get(runId: string): WorkflowRunReadResult }
+/** What a write does with another readable run: null removes it, a record replaces it (same item, pin and start authority). */
+export type WorkflowRunRetention = (run: WorkflowRunRecord) => WorkflowRunRecord | null;
 
 // An unreadable or repeated entry is refused on its own: the other runs stay usable and its stored value is never rewritten.
 function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult; index: number } {
@@ -23,17 +25,23 @@ function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult;
   return { result: { status: "found", run: structuredClone(entry) }, index };
 }
 
-// Entries a write may remove: readable ones `drop` accepts. An unreadable or repeated entry is never offered and always stays.
-function dropRuns(file: RunsFile, drop: (run: WorkflowRunRecord) => boolean): boolean {
+// Applies `retain` to every readable entry. An unreadable or repeated entry is never offered and always stays as it is.
+function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
   const count = new Map<unknown, number>();
   for (const entry of file.runs) if (isRecord(entry)) count.set(entry.runId, (count.get(entry.runId) ?? 0) + 1);
-  const kept = file.runs.filter(entry => {
-    if (!isRecord(entry) || count.get(entry.runId) !== 1) return true;
+  let changed = false;
+  const kept: unknown[] = [];
+  for (const entry of file.runs) {
+    if (!isRecord(entry) || count.get(entry.runId) !== 1) { kept.push(entry); continue; }
     try { assertWorkflowRunRecord(entry); }
-    catch (error) { if (error instanceof WorkflowTemplateError) return true; throw error; }
-    return !drop(entry);
-  });
-  const changed = kept.length !== file.runs.length;
+    catch (error) { if (error instanceof WorkflowTemplateError) { kept.push(entry); continue; } throw error; }
+    const next = retain(structuredClone(entry));
+    if (next === null) { changed = true; continue; }
+    assertWorkflowRunRecord(next);
+    requireTemplate(bindingOf(next) === bindingOf(entry), "invalid-template-run");
+    if (canonicalWorkflowJson(next) !== canonicalWorkflowJson(entry)) changed = true;
+    kept.push(next);
+  }
   file.runs = kept;
   return changed;
 }
@@ -84,17 +92,17 @@ export class WorkflowRunStore {
     return { status: "found", runs };
   }
 
-  /** Store a new run, or replace one whose item, pin and start authority are unchanged. The same write removes the other runs `drop` accepts. */
-  async put(record: WorkflowRunRecord, drop?: (run: WorkflowRunRecord) => boolean): Promise<WorkflowRunWriteResult> {
+  /** Store a new run, or replace one whose item, pin and start authority are unchanged. The same write applies `retain` to the other runs. */
+  async put(record: WorkflowRunRecord, retain?: WorkflowRunRetention): Promise<WorkflowRunWriteResult> {
     assertWorkflowRunRecord(record);
-    return this.write(record.runId, prior => prior ?? record, () => record, drop && (run => run.runId !== record.runId && drop(run)));
+    return this.write(record.runId, prior => prior ?? record, () => record, retain && (run => run.runId === record.runId ? run : retain(run)));
   }
 
-  /** Remove the readable runs `drop` accepts. Nothing is written while the file awaits review or when no run goes. */
-  async prune(drop: (run: WorkflowRunRecord) => boolean): Promise<void> {
+  /** Apply `retain` to every readable run. Nothing is written while the file awaits review or when no run changes. */
+  async prune(retain: WorkflowRunRetention): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      if (file !== undefined && dropRuns(file, drop)) await this.commit(file);
+      if (file !== undefined && retainRuns(file, retain)) await this.commit(file);
     });
   }
 
@@ -107,12 +115,12 @@ export class WorkflowRunStore {
     runId: string,
     base: (prior: WorkflowRunRecord | undefined) => WorkflowRunRecord | undefined,
     next: (run: WorkflowRunRecord) => WorkflowRunRecord | null,
-    drop?: (run: WorkflowRunRecord) => boolean,
+    retain?: WorkflowRunRetention,
   ): Promise<WorkflowRunWriteResult> {
     return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult> => {
       const file = await this.read();
       if (file === undefined) return { status: "pending-review" };
-      if (drop) dropRuns(file, drop);
+      if (retain) retainRuns(file, retain);
       const { result, index } = lookup(file, runId);
       if (result.status === "invalid" || result.status === "pending-review") return result;
       const prior = base(result.status === "found" ? result.run : undefined);

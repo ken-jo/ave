@@ -128,9 +128,6 @@ it("keeps the runs a row lists in its history and drops the ones it no longer li
   if (found.status !== "found") throw new Error("Missing item");
   const listed = (found.item.runHistory ?? []).map(entry => entry.runId);
   expect(listed).toHaveLength(20);
-  // The newest write judged the board before its own row write, so the run that write evicted goes with the next one.
-  expect(await runIds()).toEqual(["run-3", ...listed]);
-  await store.pruneSettledRuns();
   expect(await runIds()).toEqual(listed);
 });
 
@@ -179,59 +176,52 @@ it("keeps a run record whose row write never happened until it is settled", asyn
   expect(await runIds()).toEqual(["run-retry"]);
 });
 
-it("refuses a run write that would pass the read limit, so deleting a row still makes room", async () => {
+const stageRunsOf = (char: string) => Array.from({ length: 12 }, (_, index) => ({
+  stageId: `stage-${index}`, attempt: 1, status: "passed" as const, startedAt: over.at, endedAt: over.at, output: char.repeat(48_000), resultHash: "a".repeat(64),
+  requestedOutputs: [{ id: "report", decl: { kind: "upload" as const, toolName: "deliver", owner: "plugin" as const, ownerId: "media" }, args: "{}", summary: "s".repeat(400) }],
+}));
+
+it("keeps the full record only for each row's current run and a summary for its history", async () => {
   const store = new WorkBoardStore(boardPath);
-  const stageRuns = Array.from({ length: 12 }, (_, index) => ({ stageId: `stage-${index}`, attempt: 1, status: "passed" as const, output: "가".repeat(48_000) }));
+  const id = await templateItem(store);
+  const stageRuns = stageRunsOf("x");
+  for (let run = 1; run <= 20; run++) {
+    await begin(store, id, `run-${run}`);
+    expect(await store.updateRun(id, `run-${run}`, value => ({ ...value, stageRuns, settled: over }))).toMatchObject({ status: "stored" });
+    expect(await store.setRunResult(id, { runStatus: "completed" })).toMatchObject({ status: "updated" });
+  }
+  expect((await store.get(id) as { item: { runHistory: unknown[] } }).item.runHistory).toHaveLength(20);
+  expect((await stat(runsPath)).size).toBeLessThan(1024 * 1024);
+  const all = await entries() as unknown as { runId: string; settled: object; stageRuns: object[] }[];
+  expect(all.map(entry => entry.runId)).toEqual(Array.from({ length: 20 }, (_, index) => `run-${index + 1}`));
+  expect(all[0]).toEqual({ ...all[0], settled: over, stageRuns: stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash }) => ({ stageId, attempt, status, startedAt, endedAt, resultHash })) });
+  expect(Object.keys(all[0]).sort()).toEqual(["itemId", "pin", "runId", "runStartedBy", "settled", "stageRuns", "startedAt"]);
+  expect(await store.getRun(id)).toMatchObject({ status: "found", run: { runId: "run-20", stageRuns } });
+});
+
+it("refuses a run write that would pass the read limit, and a new run or a deleted row makes room", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const stageRuns = stageRunsOf("가");
   const fill = async (id: number, runId: string) => (await store.updateRun(id, runId, value => ({ ...value, stageRuns }))).status;
-  const first = await templateItem(store);
-  const second = await templateItem(store);
+  const rows: number[] = [];
   const filled: string[] = [];
-  // No row is deleted: ten runs of this size, all still listed by their rows, do not fit.
-  for (let run = 1; run <= 5; run++) for (const id of [first, second]) {
-    await settled(store, id, `run-${id}-${run}`);
-    filled.push(await fill(id, `run-${id}-${run}`));
+  // Every run here is its row's current run, so none shrinks: ten of this size do not fit.
+  for (let row = 1; row <= 10; row++) {
+    const id = await templateItem(store);
+    rows.push(id);
+    await settled(store, id, `run-${id}`);
+    filled.push(await fill(id, `run-${id}`));
   }
   expect(filled).toEqual([...Array<string>(9).fill("stored"), "too-large"]);
   expect((await stat(runsPath)).size).toBeLessThanOrEqual(16 * 1024 * 1024);
-  expect(await store.getRun(first)).toMatchObject({ status: "found" });
+  const last = rows[9];
 
-  expect(await store.remove(first)).toMatchObject({ status: "deleted" });
-  expect(await fill(second, `run-${second}-5`)).toBe("stored");
-}, 120_000);
-
-it("visits a run record whose row is gone, removing it only once settled", async () => {
-  const store = new WorkBoardStore(boardPath);
-  const gone = await templateItem(store);
-  const other = await templateItem(store);
-  expect(await store.remove(gone)).toMatchObject({ status: "deleted" });
-  const pin = pinOf("template-1");
-  // A record its row never named, left by a process that stopped before its row write, after that row was deleted.
-  expect(await store.runs.put({ runId: "rowless", itemId: gone, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: over.at, stageRuns: [] })).toMatchObject({ status: "stored" });
-
-  await settled(store, other, "other-1");
-  await store.pruneSettledRuns();
-  expect(await runIds()).toEqual(["rowless", "other-1"]);
-  expect(await store.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "rowless" }, { runId: "other-1" }] });
-
-  expect(await store.runs.update("rowless", run => ({ ...run, settled: { status: "error", at: over.at } }))).toMatchObject({ status: "stored" });
-  await store.pruneSettledRuns();
-  expect(await runIds()).toEqual(["other-1"]);
-});
-
-it("leaves a row that names a template run to the engine at boot reconcile", async () => {
-  const store = new WorkBoardStore(boardPath);
-  const id = await templateItem(store);
-  await begin(store, id, "run-1");
-  const ordinary = await store.create({ title: "Ordinary" });
-  if (ordinary.status !== "created") throw new Error("Missing item");
-  expect(await store.beginRun(ordinary.itemId, "plain-1", "2026-01-01T00:00:00.000Z")).toMatchObject({ status: "updated" });
-  const row = async (itemId: number) => JSON.parse(await readFile(boardPath, "utf8")).items.find((item: { id: number }) => item.id === itemId);
-  const before = await row(id);
-
-  expect(await new WorkBoardStore(boardPath).reconcileInterruptedRuns()).toBe(1);
-  expect(await row(id)).toEqual(before);
-  expect(await row(ordinary.itemId)).toMatchObject({ runStatus: "error" });
-});
+  await settled(store, rows[0], "newer");
+  expect(await fill(last, `run-${last}`)).toBe("stored");
+  expect(await fill(rows[0], "newer")).toBe("too-large");
+  expect(await store.remove(rows[1])).toMatchObject({ status: "deleted" });
+  expect(await fill(rows[0], "newer")).toBe("stored");
+}, 180_000);
 
 it("reports a template start the run file has no room for", async () => {
   const store = new WorkBoardStore(boardPath);

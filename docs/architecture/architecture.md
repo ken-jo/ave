@@ -3676,7 +3676,11 @@ with its own owner rule:
   row. A run record carries `settled` once the run is over, and
   only a settled record is ever removed: when no row lists it as its current
   run or in its run history, checked when a row is deleted and on every later
-  template-run start. A record whose row write failed is removed at once.
+  template-run start. A record whose row write failed is removed at once. A
+  row keeps the full record only for its current run: once the row names a
+  newer run, a settled record its run history still lists keeps only how it
+  ended and each stage's status, times and result hash, in the same covered
+  file.
   Archiving a template keeps its runs.
   Entries that do not parse are never removed, and nothing is removed by age.
   A write that would grow the run file past the read limit is refused, so the
