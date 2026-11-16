@@ -3675,7 +3675,8 @@ with its own owner rule:
   changed; an entry that does not parse is left in place and marks only its own
   row. A run record is removed once this process is not executing it and no
   row lists it as its current run or in its run history: when its row is
-  deleted, and on every later template-run start. Archiving a template removes its settled runs.
+  deleted, when the row write that should have named it failed, and on every
+  later template-run start. Archiving a template removes its settled runs.
   Entries that do not parse are never removed, and nothing is removed by age.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified

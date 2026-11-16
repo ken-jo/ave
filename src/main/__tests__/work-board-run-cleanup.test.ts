@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../work-board-store.js";
+import * as storage from "../storage/feature-namespace.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import type { TemplateRunStart } from "../../shared/workflow-template-types.js";
 
@@ -137,6 +138,37 @@ it("keeps every run when the board file was emptied, since no row id was issued 
   const restarted = new WorkBoardStore(boardPath);
   await restarted.releaseRun("none");
   expect(await runIds()).toEqual(["run-1", "run-2"]);
+});
+
+it("removes the run record when the row write after it fails", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  await settled(store, id, "run-1");
+  const write = storage.writeFileAtomicAtPath;
+  vi.spyOn(storage, "writeFileAtomicAtPath").mockImplementation(async (path, data) => {
+    if (path === boardPath) throw Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" });
+    return write(path, data);
+  });
+  await expect(store.beginRun(id, "run-orphan", "2026-01-01T00:00:00.000Z", start())).rejects.toMatchObject({ code: "EIO" });
+  vi.restoreAllMocks();
+
+  expect(await runIds()).toEqual(["run-1"]);
+  expect(await new WorkBoardStore(boardPath).getRun(id)).toMatchObject({ status: "found", run: { runId: "run-1" } });
+  await begin(store, id, "run-retry");
+  expect(await runIds()).toEqual(["run-1", "run-retry"]);
+});
+
+it("removes on the next start a run record whose row write never happened", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  const pin = pinOf("template-1");
+  // What a process that stopped between the two writes leaves behind.
+  expect(await store.runs.put({ runId: "run-orphan", itemId: id, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z", stageRuns: [] })).toMatchObject({ status: "stored" });
+
+  const restarted = new WorkBoardStore(boardPath);
+  expect(await restarted.getRun(id)).toEqual({ status: "not-found" });
+  await begin(restarted, id, "run-retry");
+  expect(await runIds()).toEqual(["run-retry"]);
 });
 
 it("removes a template's settled runs and keeps the ones still executing or awaited by their row", async () => {

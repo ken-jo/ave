@@ -839,7 +839,12 @@ export class WorkBoardStore {
       delete updated.runSessionId;
       delete updated.planApproval;
       board.items[idx] = updated;
-      await this.commit(board);
+      try { await this.commit(board); }
+      catch (error) {
+        // The row never came to name the run just stored, so that record goes with the same prune.
+        if (pin) await this.pruneRuns(unlisted);
+        throw error;
+      }
       if (pin) this.liveRuns.add(runId);
       await appendActivity(this.activity, {
         kind: "run-planned",
