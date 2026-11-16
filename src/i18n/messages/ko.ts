@@ -1850,7 +1850,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "fileEditDiff.addedLinesAriaLabel": "{count}줄 추가",
   "fileEditDiff.removedLinesAriaLabel": "{count}줄 삭제",
   "fileEditDiff.truncatedLabel": "잘림",
-  "fileEditDiff.nextHunk": "다음 hunk",
+  "fileEditDiff.nextHunk": "다음 변경 부분",
   "fileEditDiff.truncatedTitle": "긴 파일은 미리보기가 잘렸습니다",
   "fileEditDiff.lineEndingsOnly": "줄바꿈 문자만 바뀌었습니다",
   "fileEditDiff.rowsTruncated": "변경 내용의 앞부분만 표시했습니다.",

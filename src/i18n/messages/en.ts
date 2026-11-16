@@ -1848,7 +1848,7 @@ export const en = {
   "fileEditDiff.addedLinesAriaLabel": "Added {count} lines",
   "fileEditDiff.removedLinesAriaLabel": "Removed {count} lines",
   "fileEditDiff.truncatedLabel": "truncated",
-  "fileEditDiff.nextHunk": "next hunk",
+  "fileEditDiff.nextHunk": "next change",
   "fileEditDiff.truncatedTitle": "Long file preview has been truncated",
   "fileEditDiff.lineEndingsOnly": "Only line endings changed",
   "fileEditDiff.rowsTruncated": "Only the first part of this change is shown.",

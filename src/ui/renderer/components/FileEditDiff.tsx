@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useId } from "react";
-import { ChevronDown, ChevronRight, FilePlus2, FilePenLine } from "lucide-react";
+import { ChevronDown, ChevronRight, FilePlus2, FilePenLine, FolderSearch } from "lucide-react";
 import type { FileEditDiffData, FileEditHunk } from "../utils/file-diff.js";
 import { editDiffView } from "../utils/file-diff.js";
 import type { FileDiffHunk, FileDiffView, WriteDiffRecord } from "../../../shared/line-diff.js";
@@ -8,6 +8,8 @@ import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import type { TurnReviewDecision, TurnReviewHunk } from "../../../shared/turn-change-review.js";
 import { TurnDecisionButtons } from "./TurnDecisionButtons.js";
+import { PathLabel } from "./PathLabel.js";
+import { canShowInFolderView, showInFolderView } from "./files/show-in-folder-view.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 
 const REVIEW_PREVIEW_MAX_LINES = 100;
@@ -70,6 +72,7 @@ function useStoredDiff(wanted: boolean, source: FileEditDiffSource | undefined):
 export function FileEditDiff({ data: toolData, review, source }: { data: FileEditDiffData; review?: FileEditDiffReview; source?: FileEditDiffSource }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
+  const [showFailed, setShowFailed] = useState(false);
   const contentId = useId();
   const { stored, retry } = useStoredDiff(review === undefined && toolData.hasSidecar === true, source);
   const data: FileEditDiffData = stored.state === "loaded"
@@ -95,13 +98,13 @@ export function FileEditDiff({ data: toolData, review, source }: { data: FileEdi
   const headerContent = (
     <>
         <Icon className="h-3 w-3 shrink-0 opacity-70" />
-        <span className="min-w-0 truncate text-left">
-          <span className="font-medium">{verb}</span>
-          <span className="opacity-60">(</span>
-          <span className="font-mono">{data.path}</span>
-          <span className="opacity-60">)</span>
+        <span className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left">
+          <span className="shrink-0 font-medium">{verb}</span>
+          {/* The folders give way before the file name, so a narrow card still says which file changed. */}
+          <PathLabel path={data.path} />
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2 text-tiny text-muted-foreground">
+        {/* A card too narrow for one line gives the counts a line of their own, so the file name keeps its room. */}
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-tiny text-muted-foreground @max-[22rem]:ml-8 @max-[22rem]:basis-full">
           {totals.added > 0 && (
             <span
               className="rounded bg-success/(--opacity-subtle) px-1 font-semibold text-foreground"
@@ -136,7 +139,7 @@ export function FileEditDiff({ data: toolData, review, source }: { data: FileEdi
 
   return (
     <div
-      className="overflow-hidden rounded border border-border bg-background"
+      className="@container overflow-hidden rounded border border-border bg-background"
       data-testid="file-edit-diff"
       data-tool={data.tool}
       data-new-file={data.isNewFile ? "true" : "false"}
@@ -145,10 +148,12 @@ export function FileEditDiff({ data: toolData, review, source }: { data: FileEdi
       data-added={totals.added}
       data-removed={totals.removed}
     >
+      {/* Two sibling controls: the header folds the card, the button beside it shows the file where it lives. */}
+      <div className="flex min-w-0 items-stretch border-b border-border bg-muted/(--opacity-muted)">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-dense text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
+        className="flex min-w-0 flex-1 items-center gap-x-2 gap-y-1 px-3 py-1.5 text-dense text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half) @max-[22rem]:flex-wrap"
         aria-expanded={open}
         aria-controls={contentId}
       >
@@ -159,6 +164,28 @@ export function FileEditDiff({ data: toolData, review, source }: { data: FileEdi
         )}
             {headerContent}
       </button>
+        {canShowInFolderView(data.path) && (
+          <button
+            type="button"
+            data-testid="file-diff-show-in-folder-view"
+            title={t("folderView.showInFolderView")}
+            aria-label={t("folderView.showInFolderView")}
+            onClick={() => {
+              setShowFailed(false);
+              const failed = (): void => setShowFailed(true);
+              void showInFolderView(data.path).then((shown) => { if (!shown) failed(); }, failed);
+            }}
+            className="flex shrink-0 items-center px-2 text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"
+          >
+            <FolderSearch aria-hidden="true" className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      {showFailed && (
+        <div role="alert" className="border-b border-border px-3 py-1.5 text-tiny text-destructive" data-testid="file-diff-show-failed">
+          {t("folderView.showInFolderViewFailed")}
+        </div>
+      )}
       {open && (
         <div id={contentId} className="font-mono text-xs leading-[1.55]">
           <FileDiffRows view={view} numbered={data.view !== undefined} />
