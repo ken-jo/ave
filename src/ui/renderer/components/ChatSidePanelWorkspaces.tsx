@@ -492,7 +492,7 @@ function ProjectRootsBrowser({
   const handleFolderDrop = useCallback(
     async (files: FileList) => {
       setOpError(null);
-      const paths = window.aveDrop.resolveDroppedPaths(files);
+      const paths = window.aveDrop.resolveDroppedPaths(Array.from(files));
       const dropped = paths[0]; // first dropped item only — no multi-add fan-out
       if (!dropped) return; // non-file drag (text/url) or unresolvable — no-op
       const res = await window.ave.workspace.dropPrepare(dropped);

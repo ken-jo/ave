@@ -3,10 +3,11 @@ import { ipcRenderer, webUtils } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { AttachFileRejectReason } from "../shared/attachment-rejection.js";
 
-/** Filter non-backed or synthetic files' empty paths before main validation, preserving drop order. */
-export function resolveDroppedPaths(files: FileList | readonly File[]): string[] {
+/** Filter non-backed or synthetic files' empty paths before main validation, preserving drop order. The renderer passes an
+ * array: a `FileList` reaches this world through the context bridge as an object with no files in it. */
+export function resolveDroppedPaths(files: readonly File[]): string[] {
   const out: string[] = [];
-  for (const file of Array.from(files)) {
+  for (const file of files) {
     const resolved = webUtils.getPathForFile(file);
     if (resolved) out.push(resolved);
   }
@@ -15,7 +16,7 @@ export function resolveDroppedPaths(files: FileList | readonly File[]): string[]
 
 /** Resolve File objects and register paths atomically in preload; empty drops perform no IPC and main returns a one-shot token. */
 export async function prepareFileDrop(
-  files: FileList | readonly File[],
+  files: readonly File[],
 ): Promise<
   | { ok: true; token: string; rejected: Array<{ name: string; reason: AttachFileRejectReason }> }
   | { ok: false; error: string; rejected?: Array<{ name: string; reason: AttachFileRejectReason }> }

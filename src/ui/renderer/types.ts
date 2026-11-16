@@ -2015,14 +2015,16 @@ export interface AveWorkspaceApi {
  * `workspace.dropPrepare` gate makes the read-scope decision.
  */
 export interface AveDropApi {
-  resolveDroppedPaths: (files: FileList | readonly File[]) => string[];
+  /** Both calls take an ARRAY of `File`s. A `FileList` does not survive the bridge into the preload: it arrives as an object
+   * with no files in it, so nothing would be resolved. */
+  resolveDroppedPaths: (files: readonly File[]) => string[];
   /**
    * Composer drop, step 1. Takes dropped `File`s (never paths): the preload
    * resolves them and registers them with main in one step, returning a
    * one-shot token to redeem via `ave.attach.redeemDrop`. `rejected` names the
    * items main refused, by stable reason code.
    */
-  prepareFileDrop: (files: FileList | readonly File[]) => Promise<
+  prepareFileDrop: (files: readonly File[]) => Promise<
     | { ok: true; token: string; rejected: Array<{ name: string; reason: AttachFileRejectReason }> }
     | { ok: false; error: string; rejected?: Array<{ name: string; reason: AttachFileRejectReason }> }
   >;
