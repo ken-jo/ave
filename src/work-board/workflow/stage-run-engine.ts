@@ -891,7 +891,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** Boot. The run file is the truth: a row whose run is over is shown as the record says (the process may have died between the two
-   * writes, and the board's own reconcile fails every row it finds running); an unsettled run is parked and taken over. */
+   * writes); an unsettled run is parked and taken over. */
   async function adoptRuns(): Promise<void> {
     const active: string[] = [];
     for (const { item, run } of await records.named()) {

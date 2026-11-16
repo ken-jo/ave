@@ -394,8 +394,8 @@ it("after a restart continueRun starts the waiting stage once, and only while th
       await h.untilLive(3);
       // Every child is on record before the process ends: nothing of the first engine is still queued.
       await h.until(id, item => item.stageRuns.filter(stage => stage.childSessionId !== undefined).length === 3);
-      // The next process: the board fails every row it finds running; the engine then parks the run from its own state and nothing
-      // starts by itself.
+      // The next process: the board's reconcile leaves a template-run row alone; the engine parks the run from the run file and
+      // nothing starts by itself.
       await h.board.reconcileInterruptedRuns();
       const next = h.makeEngine();
       await next.adoptParkedTemplateRuns();

@@ -1,5 +1,5 @@
-/** What a restart leaves of a template run: a run that waits for the user, never an error and never a spawn. The board fails every row it
- * finds running; the scheduler then parks the run from the run file and shows it on the board again. */
+/** What a restart leaves of a template run: a run that waits for the user, never an error and never a spawn. The board's reconcile leaves a
+ * row that names a template run alone; the scheduler parks the run from the run file and shows it on the board again. */
 import { rmSync } from "node:fs";
 import { expect, it } from "vitest";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
