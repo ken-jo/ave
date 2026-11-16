@@ -1,3 +1,4 @@
+import { applyPermissionModeCommand } from "../../../permissions/permission-mode-apply.js";
 import { dispatchPermissionReviewerCommandWithRewire } from "../../../permissions/permission-slash.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 useConfigurationOwner();
@@ -1075,4 +1076,30 @@ it.each([
       expect(after.result).toMatchObject({ decision: headless ? "deny" : "ask", reasonCode: headless ? "no-approver" : "reviewer-human-required" });
     }
   } finally { await Promise.all(wired.map(result => result.cache.flush())); }
+});
+
+
+describe("session permission mode reviewer wiring", () => {
+  it("keeps session automatic review active across rewires without rewriting stored preferences", async () => {
+    const settingsPath = join(tmpDir, "settings.json");
+    await setReviewerSettingsPersist({ mode: "disabled" }, settingsPath);
+    const manager = new PermissionManager(join(tmpDir, "permissions.json"));
+    const wire = () => wireReviewerAgent({
+      permissionManager: manager,
+      networkFetch: unusedNetworkFetch,
+      readSettings: () => readPermissionSettings(settingsPath).permissions.reviewer,
+      readActiveLlm: CHAT_LLM,
+      streamProviderFor: () => stubProvider([]),
+      verdictCachePath: join(tmpDir, "session-review-cache.jsonl"),
+    });
+    expect(wire().classifier).toBeInstanceOf(UnavailableRiskClassifier);
+    expect(await applyPermissionModeCommand({ mode: "auto", durable: false } as never, {
+      permissionManager: manager,
+      reviewerSettingsPath: settingsPath,
+      rewireReviewerAgent: async () => { wire(); },
+      approvalBypass: { source: "local-api-approval", trustOrigin: "local-api", explicitUserAction: true },
+    })).toMatchObject({ ok: true, mode: "auto", durable: false });
+    expect(wire().classifier).toBeInstanceOf(LlmRiskClassifier);
+    expect(readPermissionSettings(settingsPath).permissions.reviewer.mode).toBe("disabled");
+  });
 });

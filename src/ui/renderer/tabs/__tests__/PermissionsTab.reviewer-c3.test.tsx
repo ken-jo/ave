@@ -157,7 +157,8 @@ describe("PermissionsTab C3 — active LLM following", () => {
       expect(screen.getByTestId(TEST_IDS.reviewerPromptPanel)).toBeInTheDocument(),
     );
 
-    // Re-selecting the auto-verification mode auto-wires `mode llm`.
+    // Re-selecting the auto-verification mode wires the llm reviewer through the one host mode operation, which sets
+    // the reviewer with the mode; no second reviewer write follows from the renderer.
     await act(async () => {
       fireEvent.click(screen.getByTestId(execModeTestId("default")));
     });
@@ -165,6 +166,9 @@ describe("PermissionsTab C3 — active LLM following", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
+    expect(api.permission.setMode).toHaveBeenLastCalledWith("auto");
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode disabled");
+    await waitFor(() => expect(screen.getByTestId("auto-review-behavior")).toBeInTheDocument());
   });
 });

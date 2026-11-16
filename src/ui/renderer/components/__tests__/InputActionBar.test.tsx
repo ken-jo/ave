@@ -547,11 +547,11 @@ describe("permission card (status-row permission cell)", () => {
     expect(marked.length).toBe(1);
     expect(marked[0].querySelector("[data-testid='permission-quick-picker-option:auto']")).toBeTruthy();
     // Labels are the ones the cell itself shows (the suite renders in Korean).
-    expect(getByTestId("permission-quick-picker-option:auto").textContent).toContain("auto");
+    expect(getByTestId("permission-quick-picker-option:auto").textContent).toContain(t("constants.execModeAutoLabel"));
     expect(getByTestId("permission-quick-picker-option:strict").textContent).toContain("기본");
   });
 
-  it("persists a pick and enables the reviewer before closing", async () => {
+  it("applies a pick through one host mutation before closing", async () => {
     const { getByTestId, findByTestId, queryByTestId } = renderBar({
       statusRow: { ...defaultStatusRow, permissionMode: "default" },
     });
@@ -559,8 +559,8 @@ describe("permission card (status-row permission cell)", () => {
     await findByTestId("permission-quick-picker");
     fireEvent.click(getByTestId("permission-quick-picker-option:auto"));
     await waitFor(() => expect(setMode).toHaveBeenCalledWith("auto"));
-    await waitFor(() => expect(reviewerDispatch).toHaveBeenCalledTimes(1));
-    expect(reviewerDispatch.mock.calls.map((c) => c[0])).toEqual(["mode llm"]);
+    expect(setMode).toHaveBeenCalledTimes(1);
+    expect(reviewerDispatch).not.toHaveBeenCalled();
     await waitFor(() => expect(queryByTestId("permission-quick-picker")).toBeNull());
   });
 

@@ -57,6 +57,7 @@ export async function handleSetPermissionMode(
     approvalGate: deps.approvalGate,
     auditLogger: deps.auditLogger,
     approvalBypass,
+    rewireReviewerAgent: deps.rewireReviewerAgent,
   });
   if (!result.ok) return result;
   broadcastPermissionModeChanged(deps, result.mode);

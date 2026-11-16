@@ -22,6 +22,9 @@ import { userPermissionContext } from "../../tools/__tests__/tool-context-fixtur
 import { VerdictCache } from "../reviewer/verdict-cache.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../approval-gate.js";
 import { permissionSettingsPath, readPermissionSettings } from "../permission-settings-store.js";
+import { permissionsFilePath } from "../permissions-store.js";
+import { _resetAveHomeTrustForTest, evaluateAveHomeTrustAtBoot, readAveHomeInputSync } from "../../shared/ave-home-trust.js";
+import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 
 let directory: string;
 let project: string;
@@ -58,6 +61,7 @@ afterEach(async () => {
   for (const gate of gates.splice(0)) gate.disposeAll();
   for (const cache of caches.splice(0)) await cache.flush();
   vi.unstubAllEnvs();
+  _resetAveHomeTrustForTest();
   _resetAveHomePrivacyForTest();
   await cleanupTmpDir(directory);
 });
@@ -183,4 +187,61 @@ it.runIf(process.platform === "win32")("refuses an unprotected, inherited-ACL co
   expect(caught).toBeInstanceOf(AveHomeConfigurationUntrustedError);
   // Pin the home-root floor specifically, not the sibling "boundary protection is unverified".
   expect((caught as Error).message).toMatch(/home protection is unverified/);
+});
+
+describe("unreadable mode change record", () => {
+  it.each(["strict", "default", "auto", "allow"] as const)("denies admission in %s even when the reviewer mode is also invalid", async (mode) => {
+    const manager = await createPermissionManager();
+    manager.setMode(mode);
+    manager.setRules([{ pattern: "policy_probe", action: "allow" }]);
+    writeFileSync(policyPath, JSON.stringify({ permissions: { additionalDirectories: [], reviewer: { mode: "sometimes" },
+      pendingModeChange: { operationId: "not-a-uuid", executionMode: "strict", reviewerMode: "disabled" } } }));
+    expect(readPermissionSettings().fault?.kind).toBe("pending-mode-change-malformed");
+    expect(manager.checkDetailed("policy_probe", "builtin", "read")).toMatchObject({ decision: "deny", reasonCode: "policy-unreadable" });
+  });
+
+  it("keeps the reviewer-only fault from blocking admission when the record is readable", async () => {
+    const manager = await createPermissionManager();
+    manager.setMode("allow");
+    manager.setRules([{ pattern: "policy_probe", action: "allow" }]);
+    writeFileSync(policyPath, JSON.stringify({ permissions: { additionalDirectories: [], reviewer: { mode: "sometimes" } } }));
+    expect(readPermissionSettings().fault?.kind).toBe("reviewer-mode-invalid");
+    expect(manager.checkDetailed("policy_probe", "builtin", "read").decision).toBe("allow");
+  });
+});
+
+describe("interrupted mode change at boot", () => {
+  it("finishes the recorded change before the manager reads its mode", async () => {
+    // Writing both stores needs a committed configuration boundary; the Windows setup above already made one.
+    if (process.platform !== "win32") {
+      const home = join(directory, "home");
+      setFixtureOwner(directory);
+      migrateAveHomeConfiguration(home, ensureAveHomePrivate(home));
+    }
+    writeUtf8FileAtomicSync(permissionsFilePath(), JSON.stringify({ version: 1, rules: [], mode: "auto", updatedAt: new Date().toISOString() }));
+    writeUtf8FileAtomicSync(permissionSettingsPath(), JSON.stringify({ permissions: { additionalDirectories: [], reviewer: { mode: "disabled", fallbackOnError: "deny" },
+      pendingModeChange: { operationId: "6f1c2a8e-4b3d-4e5f-9a7b-1c2d3e4f5a6b", executionMode: "strict", reviewerMode: "disabled" } } }));
+    const manager = await createPermissionManager();
+    expect(manager.getMode()).toBe("strict");
+    expect(readPermissionSettings().permissions.pendingModeChange).toBeUndefined();
+    expect(readPermissionSettings().permissions.reviewer.mode).toBe("disabled");
+  });
+
+  it("keeps the recorded change for a later boot while the mode file waits for review", async () => {
+    if (process.platform !== "win32") {
+      const home = join(directory, "home");
+      setFixtureOwner(directory);
+      migrateAveHomeConfiguration(home, ensureAveHomePrivate(home));
+    }
+    writeUtf8FileAtomicSync(permissionsFilePath(), JSON.stringify({ version: 1, rules: [], mode: "auto", updatedAt: new Date().toISOString() }));
+    // Changed outside Ave: the file now waits for home content review and has no authority.
+    writeFileSync(permissionsFilePath(), JSON.stringify({ version: 1, rules: [], mode: "allow", updatedAt: new Date().toISOString() }));
+    writeUtf8FileAtomicSync(permissionSettingsPath(), JSON.stringify({ permissions: { additionalDirectories: [], reviewer: { mode: "disabled", fallbackOnError: "deny" },
+      pendingModeChange: { operationId: "6f1c2a8e-4b3d-4e5f-9a7b-1c2d3e4f5a6b", executionMode: "strict", reviewerMode: "disabled" } } }));
+    evaluateAveHomeTrustAtBoot(join(directory, "home"));
+    expect(readAveHomeInputSync(permissionsFilePath()).status).toBe("untrusted");
+    const manager = await createPermissionManager();
+    expect(manager.getMode()).not.toBe("allow");
+    expect(readPermissionSettings().permissions.pendingModeChange).toMatchObject({ executionMode: "strict" });
+  });
 });

@@ -16,6 +16,7 @@ import {
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { RecentlyDeniedStore } from "../../permissions/reviewer/recently-denied.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { permissionModeReviewerOverride } from "../../permissions/permission-mode-apply.js";
 import {
   readPermissionSettings,
   type ReviewerSettingsBlock,
@@ -142,7 +143,9 @@ type EffectiveReviewerSettings = ReviewerSettingsBlock & {
 /** Rewiring replaces the classifier while reusing lock-protected backing files and renderer notifications; live rerun closures remain attached to their history store. */
 export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
   const loadedSettings = (deps.readSettings ?? defaultReadSettings)();
-  const settings = "permissions" in loadedSettings ? loadedSettings.permissions.reviewer : loadedSettings;
+  const storedSettings = "permissions" in loadedSettings ? loadedSettings.permissions.reviewer : loadedSettings;
+  const runtimeModeOverride = permissionModeReviewerOverride(deps.permissionManager);
+  const settings = runtimeModeOverride === undefined ? storedSettings : { ...storedSettings, mode: runtimeModeOverride };
   const settingsFault = "permissions" in loadedSettings ? loadedSettings.fault : null;
   const reviewerSettingsInvalid = settingsFault?.kind === "reviewer-mode-invalid" || settingsFault?.kind === "file-unreadable";
   const effectiveSettings = resolveEffectiveSettings(settings, deps);

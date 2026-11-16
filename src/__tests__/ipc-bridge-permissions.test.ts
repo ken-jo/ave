@@ -3,6 +3,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fakeLlmSettings } from "../shared/__tests__/fake-llm-settings.js";
 import { t } from "../i18n/runtime.js";
 import { invokeRegisteredHandler, invokeRegisteredHandlerWithEvent } from "./test-helpers.js";
+import { setupCommittedAveHome } from "./support/committed-ave-home.js";
+
+// A durable mode change also saves the reviewer mode in the home's configuration, which only its owner may write.
+setupCommittedAveHome("ave-ipc-permissions-");
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 

@@ -8,6 +8,22 @@ import type { PermissionModeCommand } from "./permission-slash.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
+import { beginPermissionModeChangePersist, finishPermissionModeChangePersist, readPermissionSettings, setSessionReviewerSettings, type ReviewerMode } from "./permission-settings-store.js";
+import { permissionsFilePath, updatePermissionsFile } from "./permissions-store.js";
+import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
+
+const runtimeReviewerModes = new WeakMap<PermissionManager, ReviewerMode>();
+
+/** Session-scoped mode changes must configure review without rewriting the durable preference. */
+export function permissionModeReviewerOverride(manager: PermissionManager): ReviewerMode | undefined {
+  return runtimeReviewerModes.get(manager);
+}
+
+/** An explicit reviewer selection supersedes the session mode's runtime preference. */
+export function setPermissionModeReviewerOverride(manager: PermissionManager, mode: ReviewerMode | undefined): void {
+  if (mode === undefined) runtimeReviewerModes.delete(manager);
+  else runtimeReviewerModes.set(manager, mode);
+}
 
 export type PermissionModeApplyResult =
   | {
@@ -75,14 +91,39 @@ export function isExternalApprovalBypass(
 // Modes the EXTERNAL channel may never select. `allow` is the mode that removes tool prompting entirely, so setting it converts a single ApprovalGate click into blanket, open-ended authority over every later tool call. That is not what the human answered: the dock asks "change the permission mode", not "stop asking me about anything, forever". The in-app surfaces keep `allow` — a user standing in the permission settings choosing it IS the consent — but an out-of-process caller cannot reach it.
 const EXTERNAL_CHANNEL_FORBIDDEN_MODES: readonly ExecutionMode[] = ["allow"];
 
-export async function applyPermissionModeCommand(
-  cmd: PermissionModeCommand,
-  deps: {
+interface PermissionModeApplyDeps {
     permissionManager: PermissionManager;
     approvalGate?: ApprovalGate;
     auditLogger?: Pick<AuditLogger, "isPermissionAuditChainReady" | "appendPermissionAuditEntry">;
     approvalBypass?: PermissionModeApprovalBypass;
-  },
+    rewireReviewerAgent?: () => Promise<void>;
+    reviewerSettingsPath?: string;
+}
+
+const modeChanges = new WeakMap<PermissionManager, Promise<void>>();
+
+/** Serialize changes across windows and transports so mode and reviewer configuration cannot interleave. */
+export async function applyPermissionModeCommand(
+  cmd: PermissionModeCommand,
+  deps: PermissionModeApplyDeps,
+): Promise<PermissionModeApplyResult> {
+  const preceding = modeChanges.get(deps.permissionManager) ?? Promise.resolve();
+  let release!: () => void;
+  const completion = new Promise<void>((resolve) => { release = resolve; });
+  const tail = preceding.then(() => completion);
+  modeChanges.set(deps.permissionManager, tail);
+  await preceding;
+  try {
+    return await applyPermissionModeChange(cmd, deps);
+  } finally {
+    release();
+    if (modeChanges.get(deps.permissionManager) === tail) modeChanges.delete(deps.permissionManager);
+  }
+}
+
+async function applyPermissionModeChange(
+  cmd: PermissionModeCommand,
+  deps: PermissionModeApplyDeps,
 ): Promise<PermissionModeApplyResult> {
   const previous = deps.permissionManager.getMode();
 
@@ -164,23 +205,123 @@ export async function applyPermissionModeCommand(
     }
   }
 
-  if (cmd.durable) {
+  const { dispatchPermissionReviewerCommand } = await import("./permission-slash.js");
+  const previousReviewer = await dispatchPermissionReviewerCommand(
+    { verb: "show", value: "" }, deps.reviewerSettingsPath,
+  );
+  if (!previousReviewer.ok) {
+    return { ok: false, error: "reviewer-mode-change-failed", message: "Reviewer settings could not be read" };
+  }
+  const previousOverride = runtimeReviewerModes.get(deps.permissionManager);
+  const restoreOverride = () => {
+    if (previousOverride === undefined) runtimeReviewerModes.delete(deps.permissionManager);
+    else runtimeReviewerModes.set(deps.permissionManager, previousOverride);
+  };
+  const reviewerMode: ReviewerMode = cmd.mode === "auto" ? "llm" : "disabled";
+  // The session pair: the reviewer as an in-memory override, the mode in memory only.
+  const applyForSession = async (): Promise<PermissionModeApplyResult | null> => {
+    runtimeReviewerModes.set(deps.permissionManager, reviewerMode);
     try {
-      await deps.permissionManager.setModePersist(cmd.mode);
+      await deps.rewireReviewerAgent?.();
     } catch (error) {
-      if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
-      // The user chose this mode; only saving it is refused. Apply it for this session and say why it was not saved.
-      deps.permissionManager.setMode(cmd.mode);
-      return { ok: true, previous, mode: cmd.mode, durable: false, notice: HOME_FOLDER_REFUSED };
+      restoreOverride();
+      await deps.rewireReviewerAgent?.();
+      return { ok: false, error: "reviewer-mode-change-failed", message: (error as Error).message };
     }
-  } else {
     deps.permissionManager.setMode(cmd.mode);
+    return null;
+  };
+
+  if (!cmd.durable) {
+    return await applyForSession() ?? { ok: true, previous, mode: cmd.mode, durable: false };
   }
 
-  return {
-    ok: true,
-    previous,
-    mode: cmd.mode,
-    durable: cmd.durable,
-  };
+  const persisted = await persistModePair(cmd.mode, reviewerMode, previousReviewer.settings.mode, deps);
+  if (typeof persisted === "object") {
+    return { ok: false, error: "reviewer-mode-change-failed", message: persisted.settingsWriteFailed };
+  }
+  if (persisted === "settings-refused") {
+    // The user chose this mode; only saving it is refused. The reviewer choice lives over the absent settings view for this run.
+    setSessionReviewerSettings({ mode: reviewerMode }, deps.reviewerSettingsPath);
+    runtimeReviewerModes.delete(deps.permissionManager);
+    try {
+      await deps.rewireReviewerAgent?.();
+    } catch (error) {
+      setSessionReviewerSettings({ mode: previousReviewer.settings.mode }, deps.reviewerSettingsPath);
+      restoreOverride();
+      await deps.rewireReviewerAgent?.();
+      return { ok: false, error: "reviewer-mode-change-failed", message: (error as Error).message };
+    }
+    deps.permissionManager.setMode(cmd.mode);
+    return { ok: true, previous, mode: cmd.mode, durable: false, notice: HOME_FOLDER_REFUSED };
+  }
+  if (persisted === "mode-refused") {
+    return await applyForSession() ?? { ok: true, previous, mode: cmd.mode, durable: false, notice: HOME_FOLDER_REFUSED };
+  }
+
+  // Both stores hold the new pair and the manager publishes the mode; the reviewer follows from the stored settings.
+  runtimeReviewerModes.delete(deps.permissionManager);
+  try {
+    await deps.rewireReviewerAgent?.();
+  } catch (error) {
+    const restored = await persistModePair(previous, previousReviewer.settings.mode, reviewerMode, deps);
+    if (restored !== "saved") throw new Error("Reviewer reconfiguration failed and the previous permission mode could not be saved again", { cause: error });
+    restoreOverride();
+    await deps.rewireReviewerAgent?.();
+    return { ok: false, error: "reviewer-mode-change-failed", message: (error as Error).message };
+  }
+  return { ok: true, previous, mode: cmd.mode, durable: true };
+}
+
+/**
+ * Save the execution mode and its reviewer mode as one recoverable change: the reviewer mode and the intent first, in one
+ * atomic settings write, then the mode file, then the intent is cleared. Boot finishes an intent a crash left behind, so the
+ * two stores never disagree on disk. A refused mode file abandons the intent and restores the previous reviewer mode.
+ */
+async function persistModePair(
+  executionMode: ExecutionMode,
+  nextReviewerMode: ReviewerMode,
+  previousReviewerMode: ReviewerMode,
+  deps: PermissionModeApplyDeps,
+): Promise<"saved" | "settings-refused" | "mode-refused" | { settingsWriteFailed: string }> {
+  let operationId: string;
+  try {
+    operationId = await beginPermissionModeChangePersist({ executionMode, reviewerMode: nextReviewerMode }, deps.reviewerSettingsPath);
+  } catch (error) {
+    if (error instanceof AveHomeConfigurationRefusedWriteError) return "settings-refused";
+    // Nothing was written, so the caller reports the refusal and both stores keep the previous pair.
+    return { settingsWriteFailed: (error as Error).message };
+  }
+  try {
+    await deps.permissionManager.setModePersist(executionMode);
+  } catch (error) {
+    try {
+      await finishPermissionModeChangePersist(operationId, deps.reviewerSettingsPath, previousReviewerMode);
+    } catch (restoreError) {
+      throw new Error("Permission mode save failed and reviewer settings could not be restored", { cause: new AggregateError([error, restoreError]) });
+    }
+    if (error instanceof AveHomeConfigurationRefusedWriteError) return "mode-refused";
+    throw error;
+  }
+  try {
+    await finishPermissionModeChangePersist(operationId, deps.reviewerSettingsPath);
+  } catch (error) {
+    // Both stores hold the pair and the manager already runs the new mode, so the running reviewer must follow it; the kept
+    // intent is finished again at the next boot.
+    runtimeReviewerModes.delete(deps.permissionManager);
+    await deps.rewireReviewerAgent?.();
+    throw new Error("The permission mode was saved, but its change record could not be cleared", { cause: error });
+  }
+  return "saved";
+}
+
+/** Finish a durable mode change a crash interrupted, before anything reads the stored mode. */
+export async function recoverInterruptedPermissionModeChange(paths: { permissionsFilePath?: string; reviewerSettingsPath?: string } = {}): Promise<void> {
+  const pending = readPermissionSettings(paths.reviewerSettingsPath).permissions.pendingModeChange;
+  if (pending === undefined) return;
+  const modeFile = paths.permissionsFilePath ?? permissionsFilePath();
+  // A mode file waiting for home content review cannot be written and reads as absent; the change is finished on the boot after its approval.
+  if (readAveHomeInputSync(modeFile).status === "untrusted") return;
+  await updatePermissionsFile(modeFile, (file) => { file.mode = pending.executionMode; });
+  await finishPermissionModeChangePersist(pending.operationId, paths.reviewerSettingsPath);
 }

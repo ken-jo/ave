@@ -931,6 +931,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const result = await dispatchPermissionReviewerCommandWithRewire(
         parsed,
         deps.rewireReviewerAgent,
+        undefined,
+        conversationLoop.permissionManager,
       );
       // Surface the runtime degrade flag (persisted mode="llm" but wiring fell back to rule because no provider/key is configured). This is a
       // runtime condition computed at boot wiring, not a persisted setting, so it is read from the live PermissionManager rather than the settings file.

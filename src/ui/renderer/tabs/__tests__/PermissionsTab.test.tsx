@@ -357,7 +357,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("복구 가능한 프로젝트 파일 변경");
     expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("기본");
     expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("일반 읽기와 읽기 전용으로 입증된 샌드박스 명령을 허용");
-    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("auto");
+    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent(t("constants.execModeAutoLabel"));
     expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("나머지는 리뷰어가 검증");
     expect(screen.getByTestId(execModeTestId("allow"))).toHaveTextContent("허용");
   });
@@ -398,12 +398,10 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
-    expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
-      api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
-    );
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+    expect(api.permission.setMode).toHaveBeenCalledTimes(1);
     const autoButton = screen.getByTestId(execModeTestId("auto"));
     expect(autoButton.className).toContain("border-primary");
   });
@@ -426,11 +424,9 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("allow")));
     });
 
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode disabled");
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode disabled");
     expect(api.permission.setMode).toHaveBeenCalledWith("allow");
-    expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
-      api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
-    );
+    expect(api.permission.setMode).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId(execModeTestId("allow")).className).toContain("border-primary");
   });
 
@@ -504,8 +500,8 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
-    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
     expect(screen.queryByTestId("reviewer-active-llm-source")).toBeNull();
     expect(screen.queryByTestId("reviewer-provider-select")).toBeNull();
     expect(screen.queryByTestId("reviewer-fallback-select")).toBeNull();
@@ -663,28 +659,16 @@ describe("PermissionsTab hook quarantine notice", () => {
     }
   });
 
-  it("surfaces the reviewer rewire failure when entering the auto-verification mode", async () => {
+  it("keeps the active mode unchanged when main cannot configure the reviewer", async () => {
     const api = installApi([[]]);
-    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny");
-      }
-      if (rawArgs === "mode llm") {
-        return { ok: false as const, error: "reviewer-rewire-failed: missing provider" };
-      }
-      throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
-    });
-
+    api.permission.setMode.mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: "missing provider" });
     await renderPermissionsTab();
-    await act(async () => {
-      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
-    });
-
-    // The exec mode switch succeeds, but the auto-wired `mode llm` reviewer dispatch fails → surface the rewire-failure banner.
-    expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
-    expect(screen.getByText(/이전 설정으로 복원했습니다/)).toBeTruthy();
-    // The rewire detail is a raw exception message from main: logged, not shown.
+    await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
+    expect(api.permission.setMode).toHaveBeenCalledExactlyOnceWith("auto");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+    expect(screen.getByTestId(execModeTestId("default")).className).toContain("border-primary");
+    expect(screen.getByTestId(execModeTestId("auto")).className).not.toContain("border-primary");
+    expect(screen.getByText(/reviewer-mode-change-failed/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("missing provider");
   });
 
@@ -2588,22 +2572,17 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     warn.mockRestore();
   });
 
-  it("a reviewer dispatch slash-parse failure shows the localized reviewer error, not the parser text", async () => {
+  it("a host reviewer failure shows localized mode context without parser text", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
-    mock(api.permission.reviewerDispatch).mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny");
-      }
-      return { ok: false, error: "unknown subcommand 'llm' — expected show|mode|model" };
-    });
+    const detail = "unknown subcommand 'llm' — expected show|mode|model";
+    mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: detail });
     await renderPermissionsTab();
-    await act(async () => {
-      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
-    });
-    expect(screen.getByText(t("permissionsTab.errorReviewerFallbackContext"))).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
+    expect(screen.getByText(t("permissionsTab.errorModeChangeFailed") + " (reviewer-mode-change-failed)")).toBeTruthy();
     expect(document.body.textContent).not.toContain("unknown subcommand");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("reviewer dispatch failed"), expect.stringContaining("unknown subcommand"), "");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("mode change failed"), "reviewer-mode-change-failed", detail);
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
     warn.mockRestore();
   });
 

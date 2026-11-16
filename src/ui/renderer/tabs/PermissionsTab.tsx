@@ -445,11 +445,6 @@ function preserveSettingsScrollPosition(): () => void {
  * its items inherit it, rather than each item pinning `text-sm` and the menu reading a size larger than the field it belongs to. */
 const DENSE_SELECT_POPUP = "text-dense";
 
-/** Selecting auto enables the reviewer; every other mode disables automatic review. */
-export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMode {
-  return m === "auto" ? "llm" : "disabled";
-}
-
 /** The independent reads behind the panel's sections. */
 const PANEL_LOADS = ["mode", "policy", "rules", "hooks", "directories", "reviewer", "settings"] as const;
 type PanelLoad = (typeof PANEL_LOADS)[number];
@@ -824,44 +819,19 @@ export function PermissionsTab({
   };
 
   const handleModeChange = async (m: ExecutionMode) => {
-    const targetReviewerMode = reviewerModeForExecMode(m);
-    if (
-      (m === mode && reviewer.mode === targetReviewerMode) ||
-      modeBusy || reviewerRecoveryBusy
-    ) {
-      return;
-    }
+    if ((m === mode && reviewer.mode === (m === "auto" ? "llm" : "disabled")) || modeBusy || reviewerRecoveryBusy) return;
     setModeBusy(true);
     try {
-      let modeChanged = m === mode;
-      // Set when the home folder refusal kept a change to this session; the notice is shown once both steps are done.
-      let sessionOnly = false;
-      if (m !== mode) {
-        const res = await window.ave.permission.setMode(m);
-        if (res.ok) {
-          setMode(normalizeExecutionMode(res.mode));
-          modeChanged = true;
-          if (res.notice !== undefined) sessionOnly = true;
-        } else {
-          showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
-          return;
-        }
+      const res = await window.ave.permission.setMode(m);
+      if (!res.ok) {
+        showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
+        return;
       }
-      if (reviewer.mode !== targetReviewerMode) {
-        if (!modeChanged) return;
-        const reviewerRes = await window.ave.permission.reviewerDispatch(`mode ${targetReviewerMode}`);
-        if (reviewerRes.ok) {
-          setReviewer(reviewerRes.settings);
-          setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
-          if (reviewerRes.notice !== undefined) sessionOnly = true;
-        } else {
-          const previousSettingsRestored = !reviewerModeInvalid;
-          if (reviewerModeInvalid) await fetchAll();
-          showBanner("error", formatReviewerDispatchError(reviewerRes.error, previousSettingsRestored));
-          return;
-        }
-      }
-      if (sessionOnly) showBanner("warn", t("permissionsTab.homeFolderRefusedSessionOnly"));
+      const appliedMode = normalizeExecutionMode(res.mode);
+      setMode(appliedMode);
+      setReviewer((current) => ({ ...current, mode: appliedMode === "auto" ? "llm" : "disabled" }));
+      setReviewerModeInvalid(false);
+      if (res.notice !== undefined) showBanner("warn", t("permissionsTab.homeFolderRefusedSessionOnly"));
     } catch (e) {
       showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
     } finally {
