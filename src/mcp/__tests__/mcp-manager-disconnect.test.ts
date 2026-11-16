@@ -26,6 +26,8 @@ vi.mock("../mcp-client.js", () => ({
 vi.mock("../mcp-governance.js", () => ({
   McpGovernance: class {
     validateServer = mockValidateServer;
+    getApproval = () => ({ status: "approved" });
+    unregisterRuntimeApproval = vi.fn();
   },
 }));
 vi.mock("../../tools/registry.js", () => ({

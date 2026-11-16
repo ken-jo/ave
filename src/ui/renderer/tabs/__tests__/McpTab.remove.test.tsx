@@ -20,6 +20,7 @@ describe("McpTab empty state", () => {
     vi.stubGlobal("ave", { mcp: {
       servers: vi.fn(async () => []),
       getConfigs: vi.fn(async () => []),
+      getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
       getConfigPath: vi.fn(async () => configPath),
     } });
     render(<McpTab />);
@@ -40,6 +41,7 @@ describe("McpTab remove flow", () => {
       servers: vi.fn(async () => []),
       getConfigs: vi.fn(async () => [{ id, transport: "http" as const, url: "https://example.test/mcp", auth: "api-key" as const,
         apiKeyHeader: "X-Token", bundled: { kind: "agent-plugin" as const, name: "meeting-kit", server: "notes" } }]),
+      getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
       getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
       setApiKey: vi.fn(async () => ({ connected: false, warning: "server did not connect" })),
       removeConfig: vi.fn(),
@@ -60,6 +62,7 @@ describe("McpTab remove flow", () => {
       servers: vi.fn(async () => []),
       kill: vi.fn(async () => undefined),
       getConfigs: vi.fn(async () => [{ id: "srv-a", transport: "http" as const, url: "https://example.com/mcp" }]),
+      getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
       getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
       addConfig: vi.fn(async () => ({ connected: true })),
       removeConfig: vi.fn(() => removal.promise),
@@ -90,6 +93,7 @@ describe("McpTab contained quarantine (row 6 disclosure)", () => {
     vi.stubGlobal("ave", { mcp: {
       servers: vi.fn(async () => [{ id: "srv-a", status: "error", registeredTools: [], ...state }]),
       getConfigs: vi.fn(async () => [{ id: "srv-a", transport: "stdio" as const, command: "server.exe" }]),
+      getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
       getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
     } });
   }
@@ -110,6 +114,7 @@ describe("McpTab contained quarantine (row 6 disclosure)", () => {
     vi.stubGlobal("ave", { mcp: {
       servers,
       getConfigs: vi.fn(async () => [{ id: "srv-a", transport: "stdio" as const, command: "server.exe" }]),
+      getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
       getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
     } });
     render(<McpTab />);

@@ -29,6 +29,8 @@ export interface McpServerApproval {
   /** Required for every host-owned runtime approval. Managed entries omit it. */
   provenance?: "user" | "policy-fingerprint";
   bundled?: { package: string; server: string; fingerprint: string };
+  /** Exact user-server launch identity, checked against host-stored consent before every connection. */
+  userConfigFingerprint?: string;
   revokedAt?: string;
 
   transport: McpTransportKind;
@@ -259,6 +261,7 @@ export interface McpAuthenticationResult {
 }
 
 export interface McpConfigMutationResult extends McpAuthenticationResult {
+  requiresTrust?: boolean;
   warning?: string;
 }
 
@@ -410,3 +413,22 @@ export interface McpUiResourceBundle {
 export type McpUiToolCallOutcome =
   | { ok: true; result: unknown }
   | { ok: false; error: string; message?: string };
+
+interface McpServerLaunchSummary {
+  fingerprint: string;
+  trusted: boolean;
+  arguments: string[];
+  argumentCount: number;
+  environmentKeys: string[];
+}
+
+/** absent: no policy file; active: a reviewed policy applies; pending-review: an existing file awaits home content review; invalid: it does not parse. */
+export type McpPolicyStatus = "absent" | "active" | "pending-review" | "invalid";
+
+export interface McpManagementState {
+  policyPath: string;
+  policyStatus: McpPolicyStatus;
+  userServersAllowed: boolean;
+  managedServerIds: string[];
+  servers: Record<string, McpServerLaunchSummary>;
+}

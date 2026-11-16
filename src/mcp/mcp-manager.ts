@@ -1,5 +1,5 @@
 import { assertInstalledMcpFilesIntact } from "../marketplace/app/mcp-installer.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import type {
@@ -7,6 +7,7 @@ import type {
   McpAuthStatus,
   McpAuthenticationResult,
   McpHttpServerConfig,
+  McpManagementState,
   McpConfigMutationResult,
   McpResourceSummary,
   McpResourceTemplateSummary,
@@ -37,7 +38,8 @@ import type { PluginMcpOwner, PluginMcpTrustStore, PreparedPluginMcpProjection }
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
 import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey, parseBundledConfigId, readBoundBundledCredential, type BundledPackageRef } from "./bundled-credential.js";
-import { MCP_CREDENTIAL_MIGRATION_FAILED } from "../shared/mcp-error-code.js";
+import { MCP_CONFIG_RECOVERY_REQUIRED, MCP_CREDENTIAL_MIGRATION_FAILED } from "../shared/mcp-error-code.js";
+import { userServerApproval, userServerFingerprint, userServerTrustSecretId } from "./user-server-trust.js";
 const log = createLogger("mcp-manager");
 
 interface BundledCredentialDeclaration {
@@ -82,6 +84,14 @@ class McpCredentialMigrationError extends Error {
   }
 }
 
+class McpConfigRecoveryError extends Error {
+  readonly code = MCP_CONFIG_RECOVERY_REQUIRED;
+  constructor(cause?: unknown) {
+    super(`${MCP_CONFIG_RECOVERY_REQUIRED}: Server configuration recovery failed; repair configuration and credentials before restarting`, cause === undefined ? undefined : { cause });
+    this.name = "McpConfigRecoveryError";
+  }
+}
+
 /** Malformed existing configuration must never be overwritten. */
 class McpConfigFileInvalidError extends Error {
   readonly code = "mcp-config-invalid";
@@ -98,7 +108,7 @@ function oauthErrorCode(error: unknown, status: McpAuthStatus | undefined): McpA
 
 const defaultConfigPath = (): string => join(aveHome(), "mcp", "servers.json");
 
-function validatedApiKey(value: string): string {
+function validatedApiKey(value: unknown): string {
   if (typeof value !== "string") throw new Error("MCP credential must be text");
   if (/[\r\n\x00-\x08\x0B-\x1F\x7F]/u.test(value)) {
     throw new Error(`[mcp-manager] ${t("be_mcpManager.apiKeyControlChars")}`);
@@ -180,6 +190,8 @@ export class McpManager {
   private readonly configLockPath: string;
   /** Serialize config read-modify-write operations to prevent races. */
   private configOpLock: Promise<void> = Promise.resolve();
+  private removedUserServer: { config: McpServerConfig; trust: string | null } | undefined;
+  private configRecoveryBlocked = false;
 
   private withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
     const op = this.configOpLock.then(fn);
@@ -344,12 +356,13 @@ export class McpManager {
 
   /** Move legacy keys before rewriting the file; a failed migration never starts a server. */
   private async loadConfigFile(): Promise<{ servers: McpServerConfig[]; loaded: boolean; primaryInvalid: boolean }> {
+    this.assertConfigRecoverable();
     const result = await this.readConfigFile();
     const legacy = result.servers.filter((config) => config.apiKey !== undefined);
     if (legacy.length > 0) {
       try {
         assertAveHomeInputWritable(this.configPath);
-        for (const config of legacy) await this.storeServerApiKey(config.id, validatedApiKey(config.apiKey!));
+        for (const config of legacy) await this.storeServerApiKey(config.id, validatedApiKey(config.apiKey));
         await this.saveConfigs(result.servers);
       } catch {
         throw new McpCredentialMigrationError();
@@ -461,6 +474,8 @@ export class McpManager {
   }
 
   async connectServer(config: McpServerConfig, opts: { force?: boolean } = {}): Promise<void> {
+    this.assertConfigRecoverable();
+    await this.installUserServerApproval(config);
     const epoch = this.oauthEpoch(config.id);
     const existing = this.clients.get(config.id);
     if (existing && existing.getState().status === "connected" && !opts.force) {
@@ -1440,6 +1455,142 @@ export class McpManager {
     return this.configPath;
   }
 
+  private assertConfigRecoverable(): void {
+    if (this.configRecoveryBlocked) {
+      throw new McpConfigRecoveryError();
+    }
+  }
+
+  /** Call only while holding both configuration locks; no runtime client changes until this commits. */
+  private async commitServerMutation(configs: McpServerConfig[] | undefined, changes: ReadonlyMap<string, string | null>): Promise<void> {
+    this.assertConfigRecoverable();
+    assertAveHomeInputWritable(this.configPath);
+    const previousFile = await readAveHomeInput(this.configPath);
+    if (previousFile.status !== "trusted" && previousFile.status !== "absent") throw new Error("MCP configuration is not writable");
+    const previousBytes = previousFile.status === "trusted" ? previousFile.bytes : undefined;
+    const snapshots = new Map<string, string | null>();
+    for (const key of changes.keys()) snapshots.set(key, await this.bundledSecrets?.getSecret(key) ?? null);
+    const writeSecret = async (key: string, value: string | null): Promise<void> => {
+      if (value === null) await this.bundledSecrets?.deleteSecret(key);
+      else {
+        if (!this.bundledSecrets) throw new Error("MCP credentials require encrypted secret storage");
+        await this.bundledSecrets.setSecret(key, value, { requireEncrypted: true });
+      }
+    };
+    try {
+      for (const [key, value] of changes) await writeSecret(key, value);
+      if (configs !== undefined) await this.saveConfigs(configs);
+    } catch (error) {
+      const recoveryErrors: unknown[] = [];
+      try {
+        const current = await readAveHomeInput(this.configPath);
+        const currentBytes = current.status === "trusted" ? current.bytes : undefined;
+        if (current.status !== "trusted" && current.status !== "absent") throw new Error("MCP configuration changed during recovery");
+        const unchanged = previousBytes === undefined ? currentBytes === undefined : currentBytes?.equals(previousBytes) === true;
+        if (!unchanged) {
+          const written = configs === undefined ? undefined : Buffer.from(this.serializedConfigs(configs));
+          if (!written || currentBytes?.equals(written) !== true) throw new Error("MCP configuration changed during recovery");
+          if (previousBytes === undefined) await unlink(this.configPath);
+          else await writeFileAtomicAtPath(this.configPath, previousBytes);
+        }
+      } catch (recoveryError) { recoveryErrors.push(recoveryError); }
+      // A failed file recovery may leave a different server at this id; never attach its predecessor's credentials.
+      if (recoveryErrors.length === 0) {
+        for (const [key, value] of snapshots) {
+          try { await writeSecret(key, value); }
+          catch (recoveryError) { recoveryErrors.push(recoveryError); }
+        }
+      }
+      if (recoveryErrors.length > 0) {
+        this.configRecoveryBlocked = true;
+        throw new McpConfigRecoveryError(new AggregateError([error, ...recoveryErrors], "MCP configuration transaction failed"));
+      }
+      throw error;
+    }
+  }
+
+  private async installUserServerApproval(config: McpServerConfig): Promise<void> {
+    const approval = this.governance.getApproval(config.id);
+    if (approval && approval.userConfigFingerprint === undefined) {
+      if (!this.governance.validateServer(config).valid) throw new Error("mcp-policy-refused: Server startup is refused by policy");
+      return;
+    }
+    const fingerprint = userServerFingerprint(config);
+    const stored = await this.bundledSecrets?.getSecret(userServerTrustSecretId(config.id));
+    if (stored !== fingerprint) {
+      this.governance.unregisterRuntimeApproval(config.id);
+      throw new Error("mcp-trust-required: Review the server command and arguments before starting");
+    }
+    this.governance.unregisterRuntimeApproval(config.id);
+    this.governance.registerRuntimeApproval(userServerApproval(config));
+  }
+
+  async getManagementState(): Promise<McpManagementState> {
+    const configs = await this.loadFromConfig();
+    const secrets = [...new Set([...configs.flatMap((config) => config.apiKey ? [config.apiKey] : []),
+      ...await this.getStudioStoredCredentialValues()])];
+    const policy = this.governance.getUserServerPolicy();
+    const servers: McpManagementState["servers"] = {};
+    for (const config of configs) {
+      const fingerprint = userServerFingerprint(config);
+      const approval = this.governance.getApproval(config.id);
+      const trusted = approval?.status === "approved" && approval.userConfigFingerprint === undefined
+        || policy.userServersAllowed && await this.bundledSecrets?.getSecret(userServerTrustSecretId(config.id)) === fingerprint;
+      servers[config.id] = { fingerprint, trusted,
+        arguments: (config.args ?? []).map((argument) => secrets.some((secret) => containsStoredCredential(argument, secret)) ? "[redacted]" : argument),
+        argumentCount: config.args?.length ?? 0,
+        environmentKeys: Object.keys(config.env ?? {}) };
+    }
+    return { ...policy, servers };
+  }
+
+  async startServer(serverId: string, approvedFingerprint?: string): Promise<McpConfigMutationResult> {
+    return this.withConfigLock(async () => {
+      const config = await this.withConfigFileLock(async () => {
+        const found = (await this.loadConfigForWrite()).find((server) => server.id === serverId);
+        if (!found) throw new Error("mcp-server-missing: Server configuration does not exist");
+        if (approvedFingerprint !== undefined) {
+          if (approvedFingerprint !== userServerFingerprint(found)) throw new Error("mcp-trust-stale: Server configuration changed; review it again");
+          const validation = this.governance.validateUserConfig(found);
+          if (!validation.valid) throw new Error("mcp-policy-refused: Server trust is refused by policy");
+          if (!this.auditLogger) throw new Error("MCP server trust requires a durable audit logger");
+          await this.auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "mcp-manager", type: "approval",
+            input: JSON.stringify({ action: "mcp_server_trust_requested", serverId, fingerprint: approvedFingerprint }) });
+          await this.commitServerMutation(undefined, new Map([[userServerTrustSecretId(serverId), approvedFingerprint]]));
+        }
+        return found;
+      });
+      try {
+        await this.connectServer(config, { force: true });
+        return { connected: true };
+      } catch (error) {
+        if (config.transport === "http" && config.auth === "oauth") {
+          const status = this.oauthSessions.get(serverId)?.session.getStatus();
+          return { connected: false, errorCode: oauthErrorCode(error, status) };
+        }
+        throw error;
+      }
+    });
+  }
+
+  async undoRemove(serverId: string): Promise<void> {
+    await this.withConfigLock(async () => {
+      const removed = this.removedUserServer;
+      if (!removed || removed.config.id !== serverId) throw new Error("mcp-undo-unavailable: Removed server is no longer available");
+      await this.withConfigFileLock(async () => {
+        const existing = await this.loadConfigForWrite();
+        if (existing.some((config) => config.id === serverId)) throw new Error("mcp-server-exists: A server with this identifier already exists");
+        const validation = this.governance.validateUserConfig(removed.config);
+        if (!validation.valid) throw new Error("mcp-policy-refused: Server restore is refused by policy");
+        await this.commitServerMutation([...existing, removed.config], new Map([
+          [serverApiKeySecretId(serverId), removed.config.apiKey ?? null],
+          [userServerTrustSecretId(serverId), removed.trust],
+        ]));
+        this.removedUserServer = undefined;
+      });
+    });
+  }
+
   /** Serialize additions, persist before connecting, and reject duplicate ids. */
   validateConfig(config: McpServerConfig): ValidationResult {
     return this.governance.validateServer(config);
@@ -1472,10 +1623,15 @@ export class McpManager {
       );
     }
     const normalizedConfig = { ...config, id: normalizedId } as McpServerConfig;
+    let requiresTrust = false;
 
     return this.withConfigLock(async () => {
       await this.withConfigFileLock(async () => {
-        const validation = this.governance.validateServer(normalizedConfig);
+        let validation = this.governance.validateServer(normalizedConfig);
+        if (!validation.valid && validation.layer === 1 && validation.reasonCode === "mcp-governance-unapproved-server") {
+          validation = this.governance.validateUserConfig(normalizedConfig);
+          requiresTrust = validation.valid;
+        }
         if (!validation.valid) {
           const message = `[mcp-manager] ${t("be_mcpManager.governanceValidationFailed", { layer: String(validation.layer), reason: validation.reason })}`;
           // Invoke rejections preserve message text, not custom error fields.
@@ -1486,10 +1642,13 @@ export class McpManager {
         if (existing.some((s) => s.id === normalizedId)) {
           throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdAlreadyExists", { id: normalizedId })}`);
         }
-        if (normalizedConfig.apiKey !== undefined) await this.storeServerApiKey(normalizedId, validatedApiKey(normalizedConfig.apiKey));
         const updated = [...existing, normalizedConfig];
-        await this.saveConfigs(updated);
+        await this.commitServerMutation(updated, new Map([
+          [serverApiKeySecretId(normalizedId), normalizedConfig.apiKey === undefined ? null : validatedApiKey(normalizedConfig.apiKey)],
+          [userServerTrustSecretId(normalizedId), null],
+        ]));
       });
+      if (requiresTrust) return { connected: false, requiresTrust: true };
       try {
         await this.connectServer(normalizedConfig);
         return { connected: true };
@@ -1555,6 +1714,7 @@ export class McpManager {
     const trimmedKey = validatedApiKey(apiKey);
 
     let updatedConfig: McpServerConfig | undefined;
+    let requiresTrust = false;
 
     // Validate under the file lock before persisting any config change.
     await this.withConfigLock(async () => {
@@ -1569,17 +1729,20 @@ export class McpManager {
           throw new Error(`[mcp-manager] ${t("be_mcpManager.serverNotApiKey", { id })}`);
         }
         const candidate = { ...current, apiKey: trimmedKey } as McpServerConfig;
-        const validation = this.governance.validateServer(candidate);
+        let validation = this.governance.validateServer(candidate);
+        if (!validation.valid && validation.reasonCode === "mcp-governance-unapproved-server") {
+          validation = this.governance.validateUserConfig(candidate);
+          requiresTrust = validation.valid;
+        }
         if (!validation.valid) {
           throw new Error(
             `[mcp-manager] ${t("be_mcpManager.governanceValidationFailed", { layer: String(validation.layer), reason: validation.reason })}`,
           );
         }
-        await this.storeServerApiKey(id, trimmedKey);
-        updatedConfig = candidate;
         const updated = [...existing];
-        updated[idx] = updatedConfig;
-        await this.saveConfigs(updated);
+        updated[idx] = candidate;
+        await this.commitServerMutation(updated, new Map([[serverApiKeySecretId(id), trimmedKey]]));
+        updatedConfig = candidate;
       });
     });
 
@@ -1587,6 +1750,7 @@ export class McpManager {
       throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdNotFound", { id })}`);
     }
 
+    if (requiresTrust) return { connected: false, warning: "mcp-trust-required" };
     const existingClient = this.clients.get(id);
     if (existingClient) {
       await existingClient.disconnect().catch((err) => {
@@ -1622,12 +1786,18 @@ export class McpManager {
 
   /** Remove from the effective list, including legacy-backup entries, and write a new primary if needed. */
   async removeConfig(serverId: string): Promise<void> {
-    this.retireOAuth(serverId);
+    this.assertConfigRecoverable();
+    const previousRetirement = this.oauthRetirements.get(serverId) ?? 0;
+    const retirement = previousRetirement + 1;
+    // Retire pending publication immediately; leave a running session intact until disk and secrets commit.
+    this.oauthRetirements.set(serverId, retirement);
+    let committed = false;
     return this.withConfigLock(async () => {
       let removedKey: string | undefined;
       await this.withConfigFileLock(async () => {
         const existing = await this.loadConfigForWrite();
         const removedConfig = existing.find((config) => config.id === serverId);
+        const removedTrust = await this.bundledSecrets?.getSecret(userServerTrustSecretId(serverId)) ?? null;
         // Resolve credentials before rewriting config; invalid OAuth endpoints have no stored key.
         removedKey = removedConfig?.transport === "http" && removedConfig.auth === "oauth"
           ? tryMcpOAuthCredentialKey(removedConfig) : undefined;
@@ -1635,8 +1805,14 @@ export class McpManager {
         if (updated.length === existing.length) {
           return;
         }
-        await this.saveConfigs(updated);
+        await this.commitServerMutation(updated, new Map([
+          [serverApiKeySecretId(serverId), null], [userServerTrustSecretId(serverId), null],
+        ]));
+        if (removedConfig) this.removedUserServer = { config: removedConfig, trust: removedTrust };
       });
+      committed = true;
+      this.retireOAuth(serverId);
+      this.governance.unregisterRuntimeApproval(serverId);
       const session = this.oauthSessions.get(serverId)?.session;
       session?.dispose();
       this.oauthSessions.delete(serverId);
@@ -1652,16 +1828,22 @@ export class McpManager {
       if (session) await session.clear();
       else if (removedKey) await this.oauthPresentation?.secrets.deleteSecret(removedKey);
       await this.queueOAuthIndexUpdate(serverId, undefined);
-      await this.bundledSecrets?.deleteSecret(serverApiKeySecretId(serverId));
+    }).catch((error: unknown) => {
+      if (!committed && this.oauthRetirements.get(serverId) === retirement) {
+        if (previousRetirement === 0) this.oauthRetirements.delete(serverId);
+        else this.oauthRetirements.set(serverId, previousRetirement);
+      }
+      throw error;
     });
+  }
+
+  private serializedConfigs(configs: McpServerConfig[]): string {
+    return JSON.stringify({ servers: configs.map(({ apiKey: _apiKey, ...config }) => config) }, null, 2);
   }
 
   /** Shared atomic writes provide exclusive staging, fsync and Windows transient-lock retries. */
   private async saveConfigs(configs: McpServerConfig[]): Promise<void> {
-    await writeFileAtomicAtPath(
-      this.configPath,
-      JSON.stringify({ servers: configs.map(({ apiKey: _apiKey, ...config }) => config) }, null, 2),
-    );
+    await writeFileAtomicAtPath(this.configPath, this.serializedConfigs(configs));
   }
 
   private toConfigDto(config: McpServerConfig): McpServerConfigDto {

@@ -13,6 +13,7 @@ function setup(
   const mcp = {
     servers: vi.fn(async () => states),
     getConfigs: vi.fn(async () => configs),
+    getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", userServersAllowed: true, managedServerIds: [], servers: {} })),
     getConfigPath: vi.fn(async () => "/tmp/ave-test-fixture/.mcp.json"),
     authenticate: vi.fn(async (): Promise<{ connected: boolean; errorCode?: string }> => ({ connected: true })),
     addConfig: vi.fn(async (): Promise<McpConfigMutationResult> => ({ connected: false })),

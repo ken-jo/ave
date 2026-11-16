@@ -92,7 +92,7 @@ const hostFetch = vi.fn(async () => new Response(null, { status: 200 }));
 
 function manager(onDisconnected?: (serverId: string) => void) {
   return new McpManager(
-    { validateServer } as unknown as McpGovernance,
+    { validateServer, getApproval: () => ({ status: "approved" }), unregisterRuntimeApproval: vi.fn() } as unknown as McpGovernance,
     { unregisterByMcp } as unknown as ToolRegistry,
     hostFetch as typeof fetch, path, undefined, undefined, onDisconnected, secrets,
     { redirectCatchers: new AuthRedirectCatchers(), openAuthorizationUrl: async () => {}, secrets },
@@ -170,6 +170,24 @@ describe("remote authorization lifecycle", () => {
     expect((await authentication).connected).toBe(false);
     expect(harness.clients).toHaveLength(0);
     expect(harness.sessions[0].dispose).toHaveBeenCalled();
+  });
+
+  it("keeps an authenticated session and runtime intact when remove persistence fails", async () => {
+    const owner = manager();
+    await owner.authenticate(config.id);
+    const before = await readFile(path, "utf8");
+    const session = harness.sessions[0];
+    const disposals = session.dispose.mock.calls.length;
+    const disconnects = harness.clients[0].disconnect.mock.calls.length;
+    const writer = owner as unknown as { saveConfigs(configs: unknown[]): Promise<void> };
+    const spy = vi.spyOn(writer, "saveConfigs").mockRejectedValueOnce(new Error("Configuration write refused"));
+    try {
+      await expect(owner.removeConfig(config.id)).rejects.toThrow("Configuration write refused");
+      expect(await readFile(path, "utf8")).toBe(before);
+      expect(session.dispose).toHaveBeenCalledTimes(disposals);
+      expect(harness.clients[0].disconnect).toHaveBeenCalledTimes(disconnects);
+      expect(owner.listServers()).toMatchObject([{ id: config.id, status: "connected", authStatus: "authenticated" }]);
+    } finally { spy.mockRestore(); }
   });
 
   it.each(["remove", "kill", "shutdown"])("does not publish a late authenticated connection after %s", async (retirement) => {
@@ -389,13 +407,15 @@ describe("remote authorization lifecycle", () => {
     expect(harness.sessions).toHaveLength(1);
   });
 
-  it("removes a configuration that can never hold credentials without failing after the file is rewritten", async () => {
+  it("removes an endpoint without creating or clearing an authorization credential", async () => {
     const insecure = { id: "insecure", transport: "http" as const, url: "http://intranet.example.test/mcp", auth: "oauth" as const };
     await writeFile(path, JSON.stringify({ servers: [config, insecure] }));
     const owner = manager();
     await expect(owner.removeConfig(insecure.id)).resolves.toBeUndefined();
     expect(await owner.getConfigs()).toEqual([config]);
-    expect(secrets.deleteSecret).not.toHaveBeenCalledWith(expect.stringContaining("insecure"));
+    expect(secrets.deleteSecret).toHaveBeenCalledTimes(2);
+    expect(secrets.deleteSecret).toHaveBeenNthCalledWith(1, "mcp.server.apiKey.insecure");
+    expect(secrets.deleteSecret).toHaveBeenNthCalledWith(2, "mcp.server.trust.insecure");
   });
 
   it("keeps tools and a connected state while a server asks for step-up", async () => {

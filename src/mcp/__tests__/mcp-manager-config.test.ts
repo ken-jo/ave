@@ -24,6 +24,7 @@ const mockGetState = vi.fn().mockReturnValue({
 const mockAuditLog = vi.fn();
 const constructedConfigs: unknown[] = [];
 const mockValidateServer = vi.fn<() => ValidationResult>(() => ({ valid: true }));
+const mockValidateUserConfig = vi.fn<() => ValidationResult>(() => ({ valid: true }));
 
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
@@ -39,6 +40,9 @@ vi.mock("../mcp-client.js", () => ({
 vi.mock("../mcp-governance.js", () => ({
   McpGovernance: class {
     validateServer = mockValidateServer;
+    validateUserConfig = mockValidateUserConfig;
+    getApproval = () => ({ status: "approved" });
+    unregisterRuntimeApproval = vi.fn();
   },
 }));
 
@@ -86,6 +90,7 @@ beforeEach(async () => {
   storedSecrets.clear();
   secretStore.setSecret.mockImplementation(async (key, value) => { storedSecrets.set(key, value); });
   mockValidateServer.mockImplementation(() => ({ valid: true as const }));
+  mockValidateUserConfig.mockReset().mockReturnValue({ valid: true });
   const actualFsPromises =
     await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
   vi.mocked(rename).mockImplementation(actualFsPromises.rename);
@@ -541,7 +546,9 @@ describe("McpManager — addConfig()", () => {
     [3, MCP_GOVERNANCE_UNAPPROVED_SERVER, false],
     [1, undefined, false],
   ] as const)("tags only an unapproved server refusal at layer %s (%s)", async (layer, reasonCode, coded) => {
-    mockValidateServer.mockReturnValueOnce({ valid: false as const, layer, reason: "unchanged refusal", reasonCode });
+    const refusal = { valid: false as const, layer, reason: "unchanged refusal", reasonCode };
+    mockValidateServer.mockReturnValueOnce(refusal);
+    mockValidateUserConfig.mockReturnValueOnce(refusal);
     const mgr = await makeManager();
     const error = await mgr.addConfig({ id: "blocked", transport: "stdio", command: "notes-server" }).catch((error: unknown) => error);
     expect(error).toBeInstanceOf(Error);

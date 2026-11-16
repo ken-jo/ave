@@ -1,3 +1,5 @@
+import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
+import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "../../main/e2e-window-presentation.js";
 import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
@@ -803,6 +805,35 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.mcp.configPath, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configPath, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.getConfigPath();
+  });
+  ipcMain.handle(CHANNELS.mcp.managementState, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.mcp.managementState, event); return UNAUTHORIZED_FRAME; }
+    return deps.mcpManager.getManagementState();
+  });
+  ipcMain.handle(CHANNELS.mcp.startServer, async (event, serverId: unknown, approvedFingerprint?: unknown, intent?: unknown) => {
+    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.mcp.startServer, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!hasUserKeyboardIntent(intent)
+      || !securitySettingsGestures.consume(event.sender, { channel: CHANNELS.mcp.startServer, payload: { serverId, approvedFingerprint } })) {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "mcp", type: "approval", input: JSON.stringify({ action: "mcp_server_start_refused", reason: "user-keyboard-required" }) });
+      throw new Error("user-keyboard-required: A native user gesture is required");
+    }
+    if (!isUsableMcpServerId(serverId) || approvedFingerprint !== undefined && (typeof approvedFingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(approvedFingerprint))) {
+      throw new Error("invalid-mcp-start: Invalid server start request");
+    }
+    return deps.mcpManager.startServer(serverId, approvedFingerprint as string | undefined);
+  });
+  ipcMain.handle(CHANNELS.mcp.undoRemove, async (event, serverId: unknown, intent?: unknown) => {
+    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.mcp.undoRemove, event);
+      throw new Error("unauthorized-frame: Server restore requires the host main frame");
+    }
+    if (!hasUserKeyboardIntent(intent)
+      || !securitySettingsGestures.consume(event.sender, { channel: CHANNELS.mcp.undoRemove, payload: { serverId } })) throw new Error("user-keyboard-required: A native user gesture is required");
+    if (!isUsableMcpServerId(serverId)) throw new Error("invalid-mcp-undo: Invalid server restore request");
+    return deps.mcpManager.undoRemove(serverId);
   });
   ipcMain.handle(CHANNELS.mcp.configAdd, async (e, config: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configAdd, e); return UNAUTHORIZED_FRAME; }
