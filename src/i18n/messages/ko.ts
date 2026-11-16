@@ -16,6 +16,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.attachment-detached": "이 템플릿에서 일정 연결이 해제되었습니다.",
   "reasonCodes.unattended-not-read-only": "읽기 전용 템플릿만 사용자 없이 실행할 수 있습니다.",
   "reasonCodes.gate-check-unsupported": "명령의 종료 상태를 확인하는 게이트는 사용할 수 없습니다. 검토 게이트나 단계 결과를 사용하세요.",
+  "reasonCodes.template-runs-too-large": "워크플로 실행 파일이 너무 커서 실행을 더 저장할 수 없습니다. 오래된 템플릿 실행 항목을 삭제한 뒤 다시 시도하세요.",
+  "reasonCodes.invalid-template-run": "이 항목의 템플릿 실행을 읽을 수 없습니다.",
   "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",

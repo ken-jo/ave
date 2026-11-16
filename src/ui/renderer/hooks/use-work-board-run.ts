@@ -14,6 +14,7 @@ import type {
 } from "../../../shared/work-board-types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { t } from "../../../i18n/runtime.js";
 
 // Run state is derived only from host events and the persisted transcript. A plan waiting for the user's work approval is not in
 // flight: the run call has returned, and the decision continues it later through decide-plan. The board card and the step panel (LS-2) both read this one state.
@@ -87,6 +88,14 @@ function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
 
 /** Terminal phases end the in-flight window; every phase is named so a new one cannot silently read as in flight or as finished.
  * `cancelled` is a run the user stopped (owner decision 2026-11-04): terminal, and never an error. */
+/** A reason the host sends as a refusal code is shown in the user's language; any other reason is shown as sent. */
+function runReasonText(reason: string | undefined): string | undefined {
+  if (reason === undefined) return undefined;
+  const key = `reasonCodes.${reason}`;
+  const text = t(key);
+  return text === key ? reason : text;
+}
+
 export function isTerminalPhase(phase: RunPhase): boolean {
   switch (phase) {
     case "planning":
@@ -437,7 +446,7 @@ export function useWorkBoardRun(
               ...cur,
               phase,
               turns,
-              reason: phase === "error" || phase === "denied" ? ev.message : undefined,
+              reason: phase === "error" || phase === "denied" ? runReasonText(ev.message) : undefined,
               runSessionId: ev.runSessionId ?? cur.runSessionId,
               sessionIds: withSession(cur.sessionIds, ev.runSessionId),
               phaseAt: cur.phaseAt[phase] === undefined ? { ...cur.phaseAt, [phase]: ev.at } : cur.phaseAt,
@@ -472,7 +481,7 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunFailed === "function") {
       unsubs.push(
         api.onWorkBoardRunFailed(({ itemId, reason }) => {
-          patch(itemId, { busy: false, stopping: false, phase: "error", reason });
+          patch(itemId, { busy: false, stopping: false, phase: "error", reason: runReasonText(reason) });
         }),
       );
     }
@@ -526,7 +535,7 @@ export function useWorkBoardRun(
       void api.runWorkBoardItem(id).then((result) => {
         if (!mountedRef.current) return;
         if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: result.error });
+          patch(id, { busy: false, phase: "error", reason: runReasonText(result.error) });
           return;
         }
         if (result && "status" in result) {
@@ -534,7 +543,7 @@ export function useWorkBoardRun(
             ...cur,
             busy: false,
             phase: phaseForRunResult(result.status),
-            reason: result.reason,
+            reason: runReasonText(result.reason),
             runSessionId: result.runSessionId ?? cur.runSessionId,
           }));
         }

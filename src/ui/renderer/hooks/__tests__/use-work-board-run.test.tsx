@@ -20,6 +20,9 @@ import {
   useNowTick,
   useWorkBoardRun,
 } from "../use-work-board-run.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { t } from "../../../../i18n/runtime.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 
 type Handler<T> = (payload: T) => void;
 
@@ -228,6 +231,27 @@ describe("useWorkBoardRun — transcript backfill", () => {
     });
 
     expect(result.current.runState[4]?.turns).toEqual([]);
+  });
+});
+
+describe("useWorkBoardRun — refusal text", () => {
+  it("shows a refused start by its text, never its code, and leaves any other reason as sent", async () => {
+    const { api } = harness();
+    vi.mocked(api.runWorkBoardItem)
+      .mockResolvedValueOnce({ status: "error", reason: "template-runs-too-large", reasonCode: "template-runs-too-large" })
+      .mockResolvedValueOnce({ status: "error", reason: "disk full" });
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    act(() => result.current.runItem(7));
+    await waitFor(() => expect(result.current.runState[7]?.reason).toBe(t("reasonCodes.template-runs-too-large")));
+    expect(result.current.runState[7]?.reason).not.toBe("template-runs-too-large");
+    act(() => result.current.runItem(8));
+    await waitFor(() => expect(result.current.runState[8]?.reason).toBe("disk full"));
+  });
+
+  it("has the text of every refusal code it maps in both catalogs", () => {
+    for (const code of ["template-runs-too-large", "invalid-template-run"]) {
+      for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
+    }
   });
 });
 
