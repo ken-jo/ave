@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DownloadItem, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserWorkspaceService } from "../browser-workspace.js";
+import { BrowserWorkspaceService, type BrowserPageRequest, type BrowserPageRequestHold } from "../browser-workspace.js";
 import { BrowserWorkspaceStore } from "../browser-workspace-store.js";
 import type { FeatureNamespaceHandle } from "../../storage/feature-namespace.js";
 
@@ -24,9 +24,13 @@ async function setup() {
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
   const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
   const onError = vi.fn(); const promptPermission = vi.fn(async () => true);
-  const service = new BrowserWorkspaceService({ store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
+  let requestHold: BrowserPageRequestHold | null = null;
+  const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
+  /** A request reaching the browser profile: how the hold answered it, or "unheld" when nothing holds requests. */
+  const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
+  const service = new BrowserWorkspaceService({ holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, promptPermission, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
@@ -202,5 +206,115 @@ describe("browser workspace service", () => {
     setLive(false);
     await expect(service.requestPermission(7, "notifications", details)).resolves.toBe(true);
     expect(promptPermission).toHaveBeenCalledWith({ windowId: 1, guestId: 7, origin: "https://site.example", permissions: ["notifications"] });
+  });
+  it("lets the user's own navigation unload a page that asks to stay, without a question", async () => {
+    const { service, guest, events } = await setup();
+    service.observeGuest(1, guest);
+    expect(service.userNavigation(1, TARGET)).toBeNull();
+    const unload = { preventDefault: vi.fn() };
+    const navigation = { preventDefault: vi.fn(), url: "https://site.example/away", isMainFrame: true };
+    events.emit("will-prevent-unload", unload);
+    events.emit("will-navigate", navigation);
+    expect(unload.preventDefault).toHaveBeenCalledOnce();
+    expect(navigation.preventDefault).not.toHaveBeenCalled();
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+    expect(() => service.userNavigation(1, { ...TARGET, documentGeneration: 5 })).toThrow("stale-document");
+  });
+  it("holds the request of a navigation the page started unsent, asks once in the tab, and sends exactly that request on Leave", async () => {
+    const { service, guest, events, loadURL, pageRequest, holding } = await setup();
+    service.observeGuest(1, guest);
+    const unload = { preventDefault: vi.fn() };
+    const navigation = { preventDefault: vi.fn(), url: "https://site.example/away", isMainFrame: true };
+    const away = { webContentsId: 7, resourceType: "mainFrame", url: "https://site.example/away" };
+    // A navigation that met no unload question is none of this guard's business, and nothing holds requests.
+    events.emit("will-navigate", navigation);
+    expect(navigation.preventDefault).not.toHaveBeenCalled();
+    await expect(pageRequest(away)).resolves.toBe("unheld");
+    for (let attempt = 0; attempt < 2; attempt++) { events.emit("will-prevent-unload", unload); events.emit("will-navigate", navigation); }
+    // The navigation itself goes on to its request: cancelling it here and repeating its address would lose a form's
+    // method and body.
+    expect(navigation.preventDefault).not.toHaveBeenCalled();
+    expect(holding()).toBe(true);
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+    // Other requests, of this page or another, pass.
+    await expect(pageRequest({ ...away, resourceType: "image" })).resolves.toBe(true);
+    await expect(pageRequest({ ...away, webContentsId: 8 })).resolves.toBe(true);
+    await expect(pageRequest({ ...away, url: "https://site.example/elsewhere" })).resolves.toBe(true);
+    const sent = pageRequest(away);
+    await vi.waitFor(async () => expect((await service.getState(1)).pages[0]?.prompts).toHaveLength(1));
+    const page = (await service.getState(1)).pages[0];
+    expect(page?.prompts).toEqual([{ id: page?.prompts[0]?.id, kind: "leave", origin: "https://site.example" }]);
+    service.answerPrompt(1, { tabId: "browser:one", promptId: String(page?.prompts[0]?.id), answer: { kind: "leave", leave: true } });
+    await expect(sent).resolves.toBe(true);
+    expect(loadURL).not.toHaveBeenCalled();
+    expect(guest.stop).not.toHaveBeenCalled();
+    // Once answered, nothing holds requests any more.
+    expect(holding()).toBe(false);
+  });
+  it("stops the navigation unsent on Stay, cancels without stopping when the question ends unanswered, and never holds a subframe or a non-web address", async () => {
+    const { service, guest, events, loadURL, stop, pageRequest, holding } = await setup();
+    service.observeGuest(1, guest);
+    const unload = { preventDefault: vi.fn() };
+    const navigation = { preventDefault: vi.fn(), url: "https://site.example/away", isMainFrame: true };
+    const away = { webContentsId: 7, resourceType: "mainFrame", url: "https://site.example/away" };
+    events.emit("will-prevent-unload", unload);
+    events.emit("will-navigate", { ...navigation, isMainFrame: false });
+    expect(holding()).toBe(false);
+    events.emit("will-navigate", navigation);
+    const stayed = pageRequest(away);
+    await vi.waitFor(async () => expect((await service.getState(1)).pages[0]?.prompts).toHaveLength(1));
+    const prompt = (await service.getState(1)).pages[0]?.prompts[0];
+    service.answerPrompt(1, { tabId: "browser:one", promptId: String(prompt?.id), answer: { kind: "leave", leave: false } });
+    await expect(stayed).resolves.toBe(false);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(loadURL).not.toHaveBeenCalled();
+    expect(holding()).toBe(false);
+
+    // The user's own navigation ends the question; the held request is cancelled, and the user's load is not stopped.
+    events.emit("will-prevent-unload", unload);
+    events.emit("will-navigate", navigation);
+    const superseded = pageRequest(away);
+    await vi.waitFor(async () => expect((await service.getState(1)).pages[0]?.prompts).toHaveLength(1));
+    events.emit("did-start-navigation", {}, "https://site.example/typed", false, true);
+    await expect(superseded).resolves.toBe(false);
+    expect(stop).toHaveBeenCalledOnce();
+
+    // A held navigation that commits or fails before its request arrives holds nothing afterwards.
+    events.emit("will-prevent-unload", unload); events.emit("will-navigate", navigation);
+    events.emit("did-navigate", {}, "https://site.example/other");
+    expect(holding()).toBe(false);
+    events.emit("will-prevent-unload", unload); events.emit("will-navigate", navigation);
+    events.emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://site.example/away", true);
+    expect(holding()).toBe(false);
+
+    events.emit("will-prevent-unload", unload);
+    const script = { ...navigation, url: "javascript:alert(1)", preventDefault: vi.fn() };
+    events.emit("will-navigate", script);
+    expect(script.preventDefault).toHaveBeenCalledOnce();
+    expect(holding()).toBe(false);
+    expect((await service.getState(1)).pages[0]?.prompts.filter((item) => item.kind === "leave")).toEqual([]);
+  });
+  it("keeps the user's mark through the end of a load that was already running, and ends it with its own load", async () => {
+    const { service, guest, events, holding } = await setup();
+    service.observeGuest(1, guest);
+    const navigation = { preventDefault: vi.fn(), url: "https://site.example/away", isMainFrame: true };
+    const attempt = () => { events.emit("will-prevent-unload", { preventDefault: () => {} }); events.emit("will-navigate", navigation); };
+    service.userNavigation(1, TARGET);
+    events.emit("did-stop-loading");
+    attempt();
+    expect(holding()).toBe(false);
+
+    service.userNavigation(1, TARGET);
+    events.emit("did-start-loading");
+    events.emit("did-stop-loading");
+    attempt();
+    expect(holding()).toBe(true);
+
+    service.userNavigation(1, TARGET);
+    expect(holding()).toBe(false);
+    events.emit("did-navigate");
+    attempt();
+    expect(holding()).toBe(true);
+    expect(navigation.preventDefault).not.toHaveBeenCalled();
   });
 });

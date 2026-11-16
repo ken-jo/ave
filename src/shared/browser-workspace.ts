@@ -37,9 +37,12 @@ export type BrowserPermissionChoice = "allow-once" | "block" | "always-block";
  * host-computed origin. Text fields that come from the page are bounded and rendered as plain text.
  */
 export type BrowserPagePrompt =
-  | { readonly id: string; readonly kind: "permission"; readonly origin: string; readonly permissions: readonly BrowserSitePermission[] };
+  | { readonly id: string; readonly kind: "permission"; readonly origin: string; readonly permissions: readonly BrowserSitePermission[] }
+  /** The page asked to confirm before a navigation it started itself unloads it. */
+  | { readonly id: string; readonly kind: "leave"; readonly origin: string };
 export type BrowserPromptAnswer =
-  | { readonly kind: "permission"; readonly choice: BrowserPermissionChoice };
+  | { readonly kind: "permission"; readonly choice: BrowserPermissionChoice }
+  | { readonly kind: "leave"; readonly leave: boolean };
 export interface BrowserPromptAnswerRequest { readonly tabId: string; readonly promptId: string; readonly answer: BrowserPromptAnswer }
 /** What the host knows about one tab's page beyond its address. One entry per listed tab. */
 export interface BrowserPageStatus {
@@ -91,6 +94,8 @@ export interface BrowserWorkspaceApi {
   retryLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
   /** Load `url` in the tab's existing page, even when the tab is already pointed at it. */
   load(request: BrowserLoadRequest): Promise<BrowserWorkspaceResult<null>>;
+  /** The user is about to navigate this tab from the app's own controls: the page may not hold that navigation back. */
+  userNavigation(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
   /** Answer one pending page prompt of a tab. */
   answerPrompt(request: BrowserPromptAnswerRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Stop the tab's load in progress. */
@@ -108,7 +113,7 @@ export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
   capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest;
-  answerPrompt: BrowserPromptAnswerRequest;
+  answerPrompt: BrowserPromptAnswerRequest; userNavigation: BrowserWorkspaceTarget;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
 export const BROWSER_SITE_DECISIONS: readonly BrowserSiteDecision[] = ["ask", "allow", "block"];
@@ -135,6 +140,7 @@ const PERMISSION_CHOICES: readonly string[] = ["allow-once", "block", "always-bl
 function validPromptAnswer(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (value.kind === "permission") return keys(value, ["kind", "choice"]) && PERMISSION_CHOICES.includes(value.choice as string);
+  if (value.kind === "leave") return keys(value, ["kind", "leave"]) && typeof value.leave === "boolean";
   return false;
 }
 function validPrompt(value: unknown): boolean {
@@ -143,6 +149,7 @@ function validPrompt(value: unknown): boolean {
     return keys(value, ["id", "kind", "origin", "permissions"]) && Array.isArray(value.permissions) && value.permissions.length > 0
       && value.permissions.length <= BROWSER_SITE_PERMISSIONS.length && value.permissions.every((item) => BROWSER_SITE_PERMISSIONS.includes(item as BrowserSitePermission));
   }
+  if (value.kind === "leave") return keys(value, ["id", "kind", "origin"]);
   return false;
 }
 export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceRequests>(operation: K, value: unknown): BrowserWorkspaceRequests[K] | null {

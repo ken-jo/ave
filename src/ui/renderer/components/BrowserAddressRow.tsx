@@ -7,8 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
-import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
-import { loadBrowserPageUrl, stopBrowserPageLoad, useBrowserPageStatus } from "../preview/browser-page-status.js";
+import { loadBrowserPageUrl, navigateBrowserPageAsUser, stopBrowserPageLoad, useBrowserPageStatus } from "../preview/browser-page-status.js";
 import { BrowserPagePrompts } from "./BrowserPagePrompts.js";
 import { resolveAddressSubmission } from "../preview/url-safety.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
@@ -51,8 +50,10 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
   const { t } = useTranslation();
   const surface = useBrowserSurface(tabId);
   const navigation = useGuestNavigation(surface);
-  const loading = useBrowserPageStatus(tabId)?.loading ?? false;
-  const reported = navigation.url ?? fallbackUrl ?? "";
+  const status = useBrowserPageStatus(tabId);
+  const loading = status?.loading ?? false;
+  // A failed load leaves the previous page's address in the guest; the row keeps showing the address that failed.
+  const reported = (status?.loadError?.url || null) ?? navigation.url ?? fallbackUrl ?? "";
   // An empty bootstrap page has no address a person would recognise or retype.
   const currentAddress = reported === "about:blank" ? "" : reported;
   const [draft, setDraft] = useState(currentAddress);
@@ -72,10 +73,18 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
     setDraft(currentAddress);
     setError(null);
   }, [currentAddress, tabId]);
+  // A submitted address that never became the page's (the load was stopped, or it was a download) must not stay in the
+  // row over a page it does not describe: when a load ends, the row returns to the real address.
+  const wasLoading = useRef(false);
+  useEffect(() => {
+    const ended = wasLoading.current && !loading;
+    wasLoading.current = loading;
+    if (ended && draftEditedForTab.current !== tabId) setDraft(currentAddress);
+  }, [loading, currentAddress, tabId]);
 
   const act = (action: "back" | "forward" | "reload") => {
     discardDraft();
-    void navigateBrowserTabAsUser(api, tabId, () => navigateBrowserSurface(surface, action));
+    navigateBrowserPageAsUser(api, tabId, () => navigateBrowserSurface(surface, action));
   };
   const submit = async () => {
     const target = await resolveAddressSubmission(api, draft);
@@ -86,7 +95,7 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
     draftEditedForTab.current = null;
     setDraft(target.url);
     setError(null);
-    void navigateBrowserTabAsUser(api, tabId, () => {
+    navigateBrowserPageAsUser(api, tabId, () => {
       onNavigate(target.url);
       // Entering the address the tab is already pointed at changes nothing for the host, so the page is loaded directly.
       if (target.url === fallbackUrl) loadBrowserPageUrl(tabId, target.url);

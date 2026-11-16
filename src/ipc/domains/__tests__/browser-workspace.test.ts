@@ -6,7 +6,7 @@ const { handlers, authorize, mainWindow, send, changed } = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>(), authorize: vi.fn(() => true), mainWindow: vi.fn(() => ({ id: 1, isDestroyed: () => false })), send: vi.fn(), changed: { handler: null as null | ((windowId: number, state: unknown) => void) },
 }));
 vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, callback: (event: unknown, payload?: unknown) => Promise<unknown>) => handlers.set(channel, callback) } }));
-vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "retryLoad", "stopLoad", "load", "answerPrompt", "changed"].map((key) => [key, `workspace:${key}`])) } }));
+vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "retryLoad", "stopLoad", "load", "answerPrompt", "userNavigation", "changed"].map((key) => [key, `workspace:${key}`])) } }));
 vi.mock("../../gated.js", () => ({ validateHostRendererSender: authorize, auditUnauthorized: vi.fn() }));
 vi.mock("../../../main/app-state.js", () => ({ mainWindowForContents: mainWindow, getMainWindows: () => [{ id: 1 }, { id: 2 }] }));
 vi.mock("../../safe-send.js", () => ({ sendToWindow: send }));
@@ -23,7 +23,7 @@ const EVENT = { sender: {} };
 describe("private browser workspace IPC", () => {
   it("rejects every invoke from an unauthorized frame before service access", async () => {
     const service = setup(); authorize.mockReturnValue(false);
-    expect(handlers.size).toBe(13);
+    expect(handlers.size).toBe(14);
     for (const handler of handlers.values()) expect(await handler(EVENT)).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(service.getState).not.toHaveBeenCalled(); expect(service.preview).not.toHaveBeenCalled();
     expect(service.capture).not.toHaveBeenCalled();

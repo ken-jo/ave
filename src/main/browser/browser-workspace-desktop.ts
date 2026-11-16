@@ -39,6 +39,12 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       const window = mainWindow(windowId);
       return window !== undefined && window.isVisible() && !window.isMinimized();
     },
+    // Installed only while a page-started navigation waits on the user's Leave or Stay; the profile has no other listener.
+    holdPageRequests: (hold) => {
+      const requests = session.fromPartition(AVE_SIDE_BROWSER_PARTITION).webRequest;
+      if (hold === null) requests.onBeforeRequest(null);
+      else requests.onBeforeRequest((details, callback) => hold(details, (send) => callback(send ? {} : { cancel: true })));
+    },
     promptPermission: async (request) => {
       const window = mainWindow(request.windowId);
       if (!window || !window.isVisible() || window.isMinimized()) return false;

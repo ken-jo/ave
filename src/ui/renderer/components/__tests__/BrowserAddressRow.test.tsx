@@ -28,7 +28,7 @@ function mount(testIds: BrowserAddressRowTestIds, options: { fallbackUrl?: strin
     getSettings: vi.fn(async () => ({ webView: { addressSearchEngine: "duckduckgo" } })),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     browserTabs: { stop: vi.fn(async () => ({ ok: options.stopOk ?? true })) },
-    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })), answerPrompt: vi.fn(async () => ({ ok: true, value: null })) },
+    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })), answerPrompt: vi.fn(async () => ({ ok: true, value: null })), userNavigation: vi.fn(async () => ({ ok: true, value: null })) },
   } as unknown as AveApi;
   render(<TooltipProvider><BrowserAddressRow api={api} tabId={TAB} chrome="card" testIds={testIds}
     fallbackUrl={options.fallbackUrl === undefined ? "https://a.example/start" : options.fallbackUrl} onNavigate={onNavigate} /></TooltipProvider>);
@@ -160,5 +160,51 @@ describe.each([
     fireEvent.click(screen.getByTestId("browser-page-prompt-block"));
     fireEvent.click(screen.getByTestId("browser-page-prompt-allow-once"));
     expect(api.browserWorkspace?.answerPrompt).toHaveBeenCalledTimes(3);
+  });
+
+  it("tells main the unload is the user's before a page with a document navigates, and asks nothing of the user", async () => {
+    const page = guest("https://a.example/start");
+    act(() => setWebSurfaceElement(TAB, page.element));
+    const { api, onNavigate, address } = mount(ids);
+    act(() => __setBrowserPageStatusForTest(pageState(false), api));
+    const order: string[] = [];
+    vi.mocked(api.browserWorkspace?.userNavigation as never as () => Promise<unknown>).mockImplementation(async () => { order.push("mark"); return { ok: true, value: null }; });
+    onNavigate.mockImplementation(() => { order.push("navigate"); });
+    fireEvent.change(address(), { target: { value: "https://b.example/" } });
+    await act(async () => { fireEvent.submit(address().closest("form") as HTMLFormElement); });
+    expect(api.browserWorkspace?.userNavigation).toHaveBeenCalledWith({ tabId: TAB, documentGeneration: 2 });
+    expect(order).toEqual(["mark", "navigate"]);
+    await act(async () => { fireEvent.click(screen.getByTestId(ids.back)); });
+    expect(api.browserWorkspace?.userNavigation).toHaveBeenCalledTimes(2);
+    expect(page.element.goBack).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("browser-page-prompt")).toBeNull();
+  });
+
+  it("asks Leave or Stay in the tab for a navigation the page started", () => {
+    const { api } = mount(ids);
+    act(() => __setBrowserPageStatusForTest({ ...pageState(false), pages: [{ tabId: TAB, loading: false, loadError: null,
+      prompts: [{ id: "prompt-9", kind: "leave", origin: "https://a.example" }] }] }, api));
+    expect(screen.getByTestId("browser-page-prompt")).toHaveAttribute("data-kind", "leave");
+    fireEvent.click(screen.getByTestId("browser-page-prompt-stay"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenCalledWith({ tabId: TAB, promptId: "prompt-9", answer: { kind: "leave", leave: false } });
+    fireEvent.click(screen.getByTestId("browser-page-prompt-leave"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-9", answer: { kind: "leave", leave: true } });
+  });
+
+  it("returns to the page's real address when a load ends without becoming the page, and shows a failed address", async () => {
+    const page = guest("https://a.example/start");
+    act(() => setWebSurfaceElement(TAB, page.element));
+    const { api, address } = mount(ids);
+    act(() => __setBrowserPageStatusForTest(pageState(false), api));
+    fireEvent.change(address(), { target: { value: "https://b.example/file.zip" } });
+    await act(async () => { fireEvent.submit(address().closest("form") as HTMLFormElement); });
+    expect(address().value).toBe("https://b.example/file.zip");
+    act(() => __setBrowserPageStatusForTest({ ...pageState(true), revision: 2 }, api));
+    act(() => __setBrowserPageStatusForTest({ ...pageState(false), revision: 3 }, api));
+    expect(address().value).toBe("https://a.example/start");
+
+    act(() => __setBrowserPageStatusForTest({ ...pageState(false), revision: 4, pages: [{ tabId: TAB, loading: false, prompts: [],
+      loadError: { reason: "dns", code: -105, detail: "ERR_NAME_NOT_RESOLVED", url: "https://missing.invalid/" } }] }, api));
+    expect(address().value).toBe("https://missing.invalid/");
   });
 });

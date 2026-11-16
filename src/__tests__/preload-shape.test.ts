@@ -375,6 +375,7 @@ describe("preload contextBridge world shape lock", () => {
             "setSitePermission",
             "stopFind",
             "stopLoad",
+            "userNavigation",
             "zoom",
           ],
           "callPluginMethod": "function",

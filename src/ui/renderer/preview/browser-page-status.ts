@@ -51,13 +51,27 @@ export function useBrowserPageStatus(tabId: string): BrowserPageStatus | null {
   return useSyncExternalStore(subscribe, () => browserPageStatus(tabId));
 }
 
-/** The user asks for the failed page again: their action, so the tab is first taken back from the agent. */
+/**
+ * A navigation the user starts from the app's own controls. The tab is first taken back from the agent, then main is told
+ * the coming unload is the user's, so a page's unload handler cannot hold it back, and only then does `navigate` run.
+ * A tab with no page yet has nothing to unload and navigates at once.
+ */
+export function navigateBrowserPageAsUser(client: AveApi, tabId: string, navigate: () => void): void {
+  void navigateBrowserTabAsUser(client, tabId, () => {
+    const target = browserPageTarget(tabId);
+    const workspace = client.browserWorkspace;
+    if (!target || !workspace) { navigate(); return; }
+    void workspace.userNavigation(target).then(navigate);
+  });
+}
+
+/** The user asks for the failed page again. */
 export function retryBrowserPageLoad(tabId: string): void {
   const connected = api;
   const target = browserPageTarget(tabId);
   if (!connected?.browserWorkspace || !target) return;
   const workspace = connected.browserWorkspace;
-  void navigateBrowserTabAsUser(connected, tabId, () => { void workspace.retryLoad(target); });
+  navigateBrowserPageAsUser(connected, tabId, () => { void workspace.retryLoad(target); });
 }
 
 /** Load `url` in the tab's existing page. For an address the tab is already pointed at, where pointing it again changes nothing. */

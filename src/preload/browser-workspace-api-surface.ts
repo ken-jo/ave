@@ -55,6 +55,7 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
       (value): value is NonNullable<ReturnType<typeof parseBrowserWorkspaceCapture>> => parseBrowserWorkspaceCapture(value) !== null),
     retryLoad: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.retryLoad, request), (value): value is null => value === null),
     load: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.load, request), (value): value is null => value === null),
+    userNavigation: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.userNavigation, request), (value): value is null => value === null),
     answerPrompt: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.answerPrompt, request), (value): value is null => value === null),
     stopLoad: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.stopLoad, request), (value): value is null => value === null),
     onChanged: (handler) => {

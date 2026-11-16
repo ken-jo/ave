@@ -528,7 +528,8 @@ describe("WebSurfaceLayer", () => {
     const stop = vi.fn(async () => ({ ok: true as const }));
     const retryLoad = vi.fn(async () => ({ ok: true as const, value: null }));
     const openExternalUrl = vi.fn(async () => ({ ok: true }));
-    const client = { openExternalUrl, browserTabs: { stop }, browserWorkspace: { retryLoad } } as unknown as AveApi;
+    const userNavigation = vi.fn(async () => ({ ok: true as const, value: null }));
+    const client = { openExternalUrl, browserTabs: { stop }, browserWorkspace: { retryLoad, userNavigation } } as unknown as AveApi;
     const failed: BrowserWorkspaceState = {
       revision: 5, bookmarks: [], history: [], sitePermissions: [], downloads: [], storageStatus: "ready", capabilities: { fullscreen: false },
       tabs: [{ tabId: "browser:1", documentGeneration: 3, url: "https://example.com/", title: "", zoomFactor: 1 }],
@@ -554,6 +555,7 @@ describe("WebSurfaceLayer", () => {
 
     await act(async () => { screen.getByTestId("browser-load-error-retry").click(); });
     expect(stop).toHaveBeenCalledWith("browser:1");
+    expect(userNavigation).toHaveBeenCalledWith({ tabId: "browser:1", documentGeneration: 3 });
     expect(retryLoad).toHaveBeenCalledWith({ tabId: "browser:1", documentGeneration: 3 });
     screen.getByTestId("browser-load-error-open-external").click();
     expect(openExternalUrl).toHaveBeenCalledWith("https://example.com/");

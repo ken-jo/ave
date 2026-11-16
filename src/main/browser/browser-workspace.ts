@@ -9,11 +9,18 @@ import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
 import { BrowserSitePermissionPolicy, type BrowserPermissionDetails, type BrowserPermissionPrompt } from "./browser-site-permissions.js";
 
+export interface BrowserPageRequest { readonly webContentsId?: number; readonly resourceType: string; readonly url: string }
+export type BrowserPageRequestHold = (request: BrowserPageRequest, answer: (send: boolean) => void) => void;
 export interface BrowserWorkspaceLiveTab { readonly guest: WebContents; readonly documentGeneration: number }
 export interface BrowserWorkspaceServiceDeps {
   liveTab(windowId: number, tabId: string): BrowserWorkspaceLiveTab | null;
   listTabs(windowId: number): readonly Omit<BrowserWorkspaceTab, "zoomFactor">[];
   isWindowVisible(windowId: number): boolean;
+  /**
+   * Routes the browser profile's requests through `hold` until called again with null. `hold` answers every request it
+   * is given: true sends it as the page made it, false cancels it.
+   */
+  holdPageRequests(hold: BrowserPageRequestHold | null): void;
   /** Asks in a native dialog, for a guest that has no tab panel to ask in (a popup window). */
   promptPermission(request: BrowserPermissionPrompt): Promise<boolean>;
   fullscreenAvailable(windowId: number): boolean;
@@ -28,12 +35,16 @@ export class BrowserWorkspaceService {
   private readonly captures: BrowserWorkspaceCapture;
   private readonly permissions: BrowserSitePermissionPolicy;
   private readonly prompts = new BrowserPagePrompts(() => this.notify());
-  private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; loading: boolean; loadError: BrowserLoadError | null; dispose: () => void }>();
+  private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; loading: boolean; loadError: BrowserLoadError | null; userNavigation: "none" | "marked" | "loading"; unloadHeld: boolean; dispose: () => void }>();
   private readonly downloads = new Map<number, BrowserDownload[]>();
   private readonly downloadDisposers = new Map<number, Set<() => void>>();
   private readonly listeners = new Set<(windowId: number, state: BrowserWorkspaceState) => void>();
   private readonly windows = new Set<number>();
   private readonly publishedTabs = new Map<number, string>();
+  /** Page-started navigations whose unload asked to stay, by guest: their request waits unsent for the user's answer. */
+  private readonly heldLeaves = new Map<number, { readonly url: string; readonly origin: string }>();
+  private leaveQuestions = 0;
+  private holdingRequests = false;
   private revision = 0;
   private nextDownload = 1;
   constructor(private readonly deps: BrowserWorkspaceServiceDeps) {
@@ -44,7 +55,7 @@ export class BrowserWorkspaceService {
       if (!deps.isWindowVisible(request.windowId)) return null;
       // A tab asks in its own panel. A popup window has no panel, so it keeps the native question.
       if (this.tabIdForGuest(request.windowId, request.guestId) === null) return await deps.promptPermission(request) ? "allow-once" : null;
-      const answer = await this.prompts.ask(request.guestId, { kind: "permission", origin: request.origin, permissions: request.permissions });
+      const answer = await this.prompts.ask(request.guestId, "permission", { origin: request.origin, permissions: request.permissions });
       if (answer?.choice === "always-block") this.notify();
       return answer?.choice ?? null;
     }, fullscreenAvailable: deps.fullscreenAvailable, currentContext: (guestId) => {
@@ -60,6 +71,35 @@ export class BrowserWorkspaceService {
     }
   }
   private notify(): void { void this.changed().catch(this.deps.onError); }
+  private syncRequestHold(): void {
+    const hold = this.heldLeaves.size > 0 || this.leaveQuestions > 0;
+    if (hold === this.holdingRequests) return;
+    this.holdingRequests = hold;
+    this.deps.holdPageRequests(hold ? this.holdRequest : null);
+  }
+  private releaseLeave(guestId: number): void {
+    if (this.heldLeaves.delete(guestId)) this.syncRequestHold();
+  }
+  /**
+   * The held navigation's own request, exactly as the page made it (a form keeps its method and body), waits here
+   * unsent. Leave sends it; Stay stops the navigation before anything is sent, so the document stays as it was.
+   */
+  private readonly holdRequest: BrowserPageRequestHold = (request, answer) => {
+    const guestId = request.webContentsId;
+    const held = guestId === undefined ? undefined : this.heldLeaves.get(guestId);
+    if (guestId === undefined || !held || request.resourceType !== "mainFrame" || browserWorkspaceUrl(request.url) !== held.url) { answer(true); return; }
+    this.leaveQuestions++;
+    this.releaseLeave(guestId);
+    void this.prompts.ask(guestId, "leave", { origin: held.origin }).then((choice) => {
+      const guest = this.guests.get(guestId)?.guest;
+      // Stay stops the navigation. A question that ended without an answer ended because the page or the user moved on,
+      // and that navigation is already gone: it is only cancelled, never stopped, so a newer navigation goes on.
+      if (choice && !choice.leave && guest && !guest.isDestroyed()) guest.stop();
+      answer(choice?.leave === true);
+      this.leaveQuestions--;
+      this.syncRequestHold();
+    });
+  };
   private tabIdForGuest(windowId: number, guestId: number): string | null {
     for (const tab of this.deps.listTabs(windowId)) {
       const live = this.deps.liveTab(windowId, tab.tabId);
@@ -144,6 +184,14 @@ export class BrowserWorkspaceService {
     void this.target(windowId, parsed).guest.loadURL(parsed.url).catch(this.deps.onError);
     return null;
   }
+  /** Marks the tab's next unload as the user's own, started from the app's controls. Consumed by that unload or navigation. */
+  userNavigation(windowId: number, request: BrowserWorkspaceTarget): null {
+    const entry = this.guests.get(this.target(windowId, request).guest.id);
+    if (!entry) throw new Error("no-such-tab");
+    entry.userNavigation = "marked";
+    this.releaseLeave(entry.guest.id);
+    return null;
+  }
   answerPrompt(windowId: number, request: BrowserPromptAnswerRequest): null {
     const parsed = parseBrowserWorkspaceRequest("answerPrompt", request);
     if (!parsed) throw new Error("bad-request");
@@ -173,9 +221,32 @@ export class BrowserWorkspaceService {
       if (entry && !inPlace && !url.startsWith("chrome-error:")) entry.loadError = null;
       invalidate();
     };
+    // The page's unload handler asked to hold a navigation back. That decision is synchronous and names no destination,
+    // so the unload is always let through here (preventing the event's default lets the page unload) and the question
+    // is asked one step later, where a navigation the page itself started announces its address and can still be
+    // cancelled with the document intact. The user's own navigation from the app's controls is never questioned.
+    const preventUnload = (event: { preventDefault(): void }) => {
+      const entry = this.guests.get(guestId);
+      if (!entry) return;
+      entry.unloadHeld = entry.userNavigation === "none" && this.tabIdForGuest(windowId, guestId) !== null;
+      entry.userNavigation = "none";
+      event.preventDefault();
+    };
+    const pageNavigation = (event: { preventDefault(): void; url?: string; isMainFrame?: boolean }, legacyUrl?: string) => {
+      const entry = this.guests.get(guestId);
+      if (!entry?.unloadHeld || event.isMainFrame === false) return;
+      entry.unloadHeld = false;
+      const destination = browserWorkspaceUrl(typeof event.url === "string" ? event.url : legacyUrl);
+      const origin = browserWorkspaceUrl(guest.getURL());
+      // A destination that sends no web request cannot be held unsent, so the page is not let leave for it.
+      if (destination === null || origin === null || this.prompts.list(guestId).some((prompt) => prompt.kind === "leave")) { event.preventDefault(); return; }
+      this.heldLeaves.set(guestId, { url: destination, origin: new URL(origin).origin });
+      this.syncRequestHold();
+    };
     const failed = (_event: unknown, code: number, description: string, url: string, mainFrame: boolean) => {
       // -3 is a load the user or a newer navigation aborted, not a failure to show.
       const entry = this.guests.get(guestId);
+      if (mainFrame) this.releaseLeave(guestId);
       if (!entry || !mainFrame || code === -3) return;
       entry.loadError = describeLoadFailure(code, description, url);
       this.notify();
@@ -186,8 +257,22 @@ export class BrowserWorkspaceService {
       entry.loading = value;
       this.notify();
     };
-    const loadStarted = loading(true);
-    const loadStopped = loading(false);
+    // The user's mark is spent by the unload question it was made for. A navigation that asks nothing still ends it:
+    // when the page commits, or when a load that began after the mark stops. A load already running when the mark was
+    // made is not that load, so its end leaves the mark alone.
+    const markLoading = loading(true);
+    const stopped = loading(false);
+    const loadStarted = () => {
+      const entry = this.guests.get(guestId);
+      if (entry?.userNavigation === "marked") entry.userNavigation = "loading";
+      markLoading();
+    };
+    const loadStopped = () => {
+      const entry = this.guests.get(guestId);
+      if (entry?.userNavigation === "loading") entry.userNavigation = "none";
+      stopped();
+    };
+    const committed = () => { const entry = this.guests.get(guestId); if (entry) { entry.userNavigation = "none"; entry.unloadHeld = false; } this.releaseLeave(guestId); };
     const gone = (_event: unknown, details: { reason: string }) => {
       const entry = this.guests.get(guestId);
       if (!entry || details.reason === "clean-exit" || guest.isDestroyed()) return;
@@ -196,9 +281,10 @@ export class BrowserWorkspaceService {
     };
     const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidate(); visit(); } };
     let unsubscribe = () => {};
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
-    this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, dispose });
+    this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, userNavigation: "none", unloadHeld: false, dispose });
+    guest.on("will-navigate", pageNavigation); guest.on("did-navigate", committed); guest.on("will-prevent-unload", preventUnload);
     guest.on("did-fail-load", failed); guest.on("render-process-gone", gone);
     guest.on("did-start-loading", loadStarted); guest.on("did-stop-loading", loadStopped);
     guest.on("did-start-navigation", started); guest.on("did-navigate", visit); guest.on("did-navigate-in-page", navigatedInPage); guest.on("page-title-updated", titleChanged);

@@ -31,15 +31,36 @@ function PermissionPrompt({ tabId, prompt }: { tabId: string; prompt: Extract<Br
   );
 }
 
+function LeavePrompt({ tabId, prompt }: { tabId: string; prompt: Extract<BrowserPagePrompt, { kind: "leave" }> }) {
+  const { t } = useTranslation();
+  const answer = (leave: boolean) => answerBrowserPagePrompt(tabId, prompt.id, { kind: "leave", leave });
+  return (
+    <>
+      <p className="min-w-0 flex-1 text-xs">
+        <span className="break-all font-medium" data-testid="browser-page-prompt-origin">{prompt.origin}</span>{" "}
+        {t("browserPagePrompt.leave.message")}
+      </p>
+      <div className="flex shrink-0 flex-wrap gap-1">
+        <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => answer(true)} data-testid="browser-page-prompt-leave">
+          {t("browserPagePrompt.leave.leave")}
+        </Button>
+        <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => answer(false)} data-testid="browser-page-prompt-stay">
+          {t("browserPagePrompt.leave.stay")}
+        </Button>
+      </div>
+    </>
+  );
+}
+
 export function BrowserPagePrompts({ tabId }: { tabId: string }) {
   const { t } = useTranslation();
   const prompt = useBrowserPageStatus(tabId)?.prompts[0];
   if (!prompt) return null;
   return (
-    <section role="alertdialog" aria-label={t("browserWorkspace.permissionPrompt.title")} data-native-page-chrome="background"
+    <section role="alertdialog" aria-label={t(prompt.kind === "permission" ? "browserWorkspace.permissionPrompt.title" : "browserPagePrompt.leave.title")} data-native-page-chrome="background"
       className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/(--opacity-muted) px-3 py-2"
       data-testid="browser-page-prompt" data-kind={prompt.kind} data-tab-id={tabId}>
-      <PermissionPrompt tabId={tabId} prompt={prompt} />
+      {prompt.kind === "permission" ? <PermissionPrompt tabId={tabId} prompt={prompt} /> : <LeavePrompt tabId={tabId} prompt={prompt} />}
     </section>
   );
 }
