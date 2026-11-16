@@ -26,7 +26,7 @@ it("stores a run by runId and returns copies", async () => {
   expect(await stored()).toEqual({ version: 1, runs: [run()] });
   const read = await store.get("run-1");
   if (read.status !== "found") throw new Error("Missing run");
-  read.run.stageRuns[0]!.attempt = 3;
+  for (const entry of read.run.stageRuns) entry.attempt = 3;
   expect(await store.get("run-1")).toEqual({ status: "found", run: run() });
   expect(await store.put(run({ runId: "run-2", itemId: 2 }))).toMatchObject({ status: "stored" });
   expect((await stored()).runs).toHaveLength(2);

@@ -892,6 +892,22 @@ describe("workflow run file", () => {
     expect(getAveHomeTrustReview()?.rows.map(row => row.key)).toContain(manifestKey("work-board/workflow-runs.json"));
   });
 
+  it("leaves the board file outside coverage, so an edit to it is read and written over", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { WorkBoardStore } = await import("../../main/work-board-store.js");
+    const path = join(dir, "work-board", "board.json");
+    const created = await new WorkBoardStore(path).create({ title: "Before" });
+    if (created.status !== "created") throw new Error("Missing item");
+    const raw = JSON.parse(readFileSync(path, "utf8")); raw.items[0].title = "Edited";
+    writeFileSync(path, JSON.stringify(raw));
+    const store = new WorkBoardStore(path);
+    expect(await store.list()).toMatchObject({ status: "ok", items: [{ title: "Edited" }] });
+    expect(await store.update(created.itemId, { detail: "Kept" })).toMatchObject({ status: "updated" });
+    expect(JSON.parse(readFileSync(path, "utf8")).items[0]).toMatchObject({ title: "Edited", detail: "Kept" });
+    expect(manifest(dir).entries[manifestKey("work-board/board.json")]).toBeUndefined();
+    expect(getAveHomeTrustReview()?.rows.map(row => row.key) ?? []).not.toContain(manifestKey("work-board/board.json"));
+  });
+
   it("reports a file over the size limit as pending review instead of throwing", async () => {
     const dir = home(); expect(boot(dir).pending).toBe(false);
     const { path, store } = await runStore(dir);

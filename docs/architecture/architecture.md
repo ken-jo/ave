@@ -3647,31 +3647,15 @@ with its own owner rule:
   merges root data into committed configuration.
   Home content trust. Other inputs in the home that change what Ave runs or
   allows load only when vouched for by `config/.ave-trust-manifest.json`, read on
-  the verified `config/` boundary: `{version:1, state, entries, coveredFiles?, adoptedFiles?}` where `state` is
+  the verified `config/` boundary: `{version:1, state, entries}` where `state` is
   `fresh`, `bootstrapped:false` or `bootstrapped:true` and each entry key (home
   relative, `/`-separated, lower-cased on Windows) holds `current` and at most
-  one `pendingWrite` SHA-256. `coveredFiles` records the known single-file keys;
-  an absent record identifies a manifest written before board coverage. At boot
-  the owner may adopt an existing `work-board/board.json` when coverage is absent,
-  it has no entry or permanent `adoptedFiles` marker, and
-  ownership evidence is clean. Template authority and stage state are stripped
-  using the same helper as legacy plugin-board migration before its hash, marker
-  and current coverage are recorded in one atomic manifest replacement.
-  Rebuilt missing or corrupt manifests never adopt existing inputs. The current
-  coverage set is recorded even when the board is absent, so later files cannot
-  reopen adoption. A definite refusal (recorded coverage, an existing entry or marker,
-  successfully read foreign-edit or ownership evidence, or invalid board content)
-  consumes the transition and leaves the board for review. A transient ownership,
-  permission or filesystem read error, or a failed strip or manifest write, records
-  neither coverage nor an adoption marker: the board stays pending for this boot
-  (fail-closed), with no retry until the next boot re-evaluates it. A failed strip
-  write logs only its error code and never throws through boot.
-  Covered inputs are `permissions.json` and the
+  one `pendingWrite` SHA-256. Covered inputs are `permissions.json` and the
   `permissions/` stores, `mcp/servers.json`, `governance/mcp-policy.json`,
   `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
   plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,
-  `routine/routines.json`, `work-board/board.json`, `work-board/templates.json`,
-  the marketplace sources, states and snapshots,
+  `routine/routines.json`, `work-board/templates.json` and
+  `work-board/workflow-runs.json`, the marketplace sources, states and snapshots,
   `packages/ledger.json` and `packages/mcp-installs.json`, `AGENTS.md`,
   `agents.custom.md`, `user-preferences.md`, `memories/MEMORY.md`, and each
   first-level entry of `skills/`, `agents/` and `commands/` (a file hashed as
@@ -3679,7 +3663,16 @@ with its own owner rule:
   `sha256("ave-tree-v1\n" + sorted "<path>\0<sha256>\n")`, so the two kinds never
   share a digest; names that differ only in case on Windows are refused). An
   empty file with no entry (what a file lock creates before the first write)
-  reads as absent. Marketplace MCP package files under `mcp/<name>/server/` are
+  reads as absent. `work-board/board.json` is not covered. A board row names a
+  workflow run only by `runId`; what the run was started by, its template
+  version pin, stage runs, joins, gate state and result and output hashes are
+  kept per `runId` in `work-board/workflow-runs.json`, which is covered from its
+  first host write, and every reader of run authority reads that file alone.
+  Run fields written into a board row are dropped on load, give no authority
+  and are not shown. While the run file is pending review, or is larger than the
+  read limit, the board list reports pending review and no run is started or
+  changed; an entry that does not parse is left in place and marks only its own
+  row. Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
   in `mcp/<name>/` besides `server` and the host's `sandbox` refuses the launch.
