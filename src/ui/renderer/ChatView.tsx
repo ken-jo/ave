@@ -1091,7 +1091,11 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
             changes={workspaceChanges}
             revealRequest={fileReveal?.sessionId === currentSessionId ? fileReveal.request : null}
             onReference={(reference) => { composerRef.current?.insertFileReference(reference); }}
-            onFileReference={(path) => { composerRef.current?.insertFileMention(path); }}
+            onFileReference={(path) => {
+              // The row that asked reports what did not happen: no composer to take it, or a composer that refused it.
+              const composer = composerRef.current;
+              return composer ? composer.insertFileMention(path).inserted : "no-composer";
+            }}
             selectedId={selectedPreviewId}
             onSelect={setSelectedPreviewId}
             workspaceTabs={workspaceTabs}

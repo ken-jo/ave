@@ -1912,6 +1912,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "folderView.emptyNoHidden": "숨김 파일도 없습니다",
   "folderView.emptyHidden": "보호된 항목 {count}개는 표시하지 않습니다",
   "folderView.openTerminalHere": "터미널에서 열기",
+  "folderView.openTerminalFailed": "여기서 터미널을 열지 못했습니다.",
   "folderView.lockedTitle": "이 폴더를 열 수 없습니다",
   "folderView.lockedBody": "운영체제가 읽기를 허용하지 않았습니다. Ave 와 에이전트 모두 이 폴더의 내용을 볼 수 없습니다.",
   "folderView.goneTitle": "이 폴더가 더 이상 없습니다",

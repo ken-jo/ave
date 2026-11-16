@@ -13,9 +13,9 @@ import type { FolderLocation } from "../../preview/main-surfaces.js";
 import { isInsideRoot, prefixesUnderRoot } from "../../utils/project-path.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { coalesceRefresh, notifyWorkspaceFilesChanged, subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
-import type { WorkspaceListDirResult } from "../../../../ipc/domains/workspace.js";
 import { listNavigationTarget, mightProducePrintableCharacter, TypeNavigationController } from "../../utils/list-keyboard-navigation.js";
 import { fileRowActions } from "../files/file-row-actions.js";
+import { listWorkspaceDir } from "../files/workspace-listing.js";
 import { FileRowMenu, type FileRowMenuState } from "../files/FileRowMenu.js";
 import { FileViewer } from "./FileViewer.js";
 import { FolderColumn } from "./FolderColumn.js";
@@ -95,10 +95,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
       if (column.status !== "loading" || requested.current.has(column.dir)) continue;
       requested.current.add(column.dir);
       const dir = column.dir;
-      void window.ave.workspace.listDir(dir).then(
-        (result) => { requested.current.delete(dir); dispatch({ type: "loaded", dir, result }); },
-        () => { requested.current.delete(dir); dispatch({ type: "loaded", dir, result: { ok: false, error: "read-failed" } }); },
-      );
+      void listWorkspaceDir(dir).then((result) => { requested.current.delete(dir); dispatch({ type: "loaded", dir, result }); });
     }
   }, [state.columns]);
 
@@ -115,9 +112,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
       let request = refreshers.current.get(dir);
       if (!request) {
         request = coalesceRefresh(async () => {
-          const result = await window.ave.workspace.listDir(dir)
-            .catch((): WorkspaceListDirResult => ({ ok: false, error: "read-failed" }));
-          dispatch({ type: "refreshed", dir, result });
+          dispatch({ type: "refreshed", dir, result: await listWorkspaceDir(dir) });
         });
         refreshers.current.set(dir, request);
       }
@@ -246,10 +241,15 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
       path: entry.path,
       actions: fileRowActions(
         { path: entry.path, type: entry.type, outside: entry.outside, parent, root: projectRoot },
-        { attachText: onAttachText, openTerminal: onOpenTerminal, report: setNotice },
+        {
+          open: () => select(columnIndex, entry),
+          addToChat: onAttachText ? (path) => onAttachText(`\`${path}\``) : undefined,
+          openTerminal: onOpenTerminal,
+          report: setNotice,
+        },
       ),
     });
-  }, [state.columns, projectRoot, onAttachText, onOpenTerminal]);
+  }, [state.columns, projectRoot, onAttachText, onOpenTerminal, select]);
   const closeRowMenu = useCallback(() => setRowMenu(null), []);
 
   const typeNavigation = useRef<TypeNavigationController | null>(null);

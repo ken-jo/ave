@@ -1,12 +1,12 @@
 /** What a person can do with one file or folder row. Both file explorers (the folder view's columns and the side panel's
  * tree) build their row menu from this one list, so a row offers the same actions wherever it is shown. */
-import { FolderOpen, Link2, MessageSquarePlus, Route, SquareTerminal } from "lucide-react";
+import { FileSymlink, FolderOpen, Link2, MessageSquarePlus, Route, SquareTerminal } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { relativeToRoot } from "../folder-view/folder-columns.js";
 import { revealKey } from "../folder-view/FolderColumn.js";
 
-type FileRowActionId = "reveal" | "copy-path" | "copy-relative-path" | "add-to-chat" | "open-terminal";
+type FileRowActionId = "open" | "reveal" | "copy-path" | "copy-relative-path" | "add-to-chat" | "open-terminal";
 
 export interface FileRowTarget {
   path: string;
@@ -21,7 +21,10 @@ export interface FileRowTarget {
 
 /** What the surrounding explorer can do; an action whose capability is absent is not offered. */
 export interface FileRowActionHost {
-  attachText?: ((text: string) => AttachTextResult) | undefined;
+  /** Open the row where the explorer shows things: a file in its viewer, a folder as its next level. */
+  open?: (() => void) | undefined;
+  /** Put a reference to `path` into a chat composer. */
+  addToChat?: ((path: string) => AttachTextResult) | undefined;
   openTerminal?: ((dir: string) => void) | undefined;
   /** Show (or with null, clear) the i18n key of a failure next to the list. Every action clears it first. */
   report: (messageKey: string | null) => void;
@@ -36,12 +39,13 @@ export interface FileRowAction {
 }
 
 function copyText(text: string, host: FileRowActionHost): void {
-  void navigator.clipboard.writeText(text).catch(() => host.report("folderView.copyFailed"));
+  void navigator.clipboard.writeText(text).then(undefined, () => host.report("folderView.copyFailed"));
 }
 
 export function fileRowActions(target: FileRowTarget, host: FileRowActionHost): FileRowAction[] {
   const actions: FileRowAction[] = [];
   const act = (run: () => void) => () => { host.report(null); run(); };
+  if (host.open && target.type !== "link") actions.push({ id: "open", labelKey: "chatPreviewRail.ctxOpen", icon: FileSymlink, run: act(host.open) });
   // A link that leaves the project is not handed to the file manager, which would open where it points.
   if (!(target.type === "link" && target.outside)) {
     actions.push({ id: "reveal", labelKey: revealKey(), icon: FolderOpen, run: act(() => {
@@ -57,10 +61,10 @@ export function fileRowActions(target: FileRowTarget, host: FileRowActionHost): 
     actions.push({ id: "copy-relative-path", labelKey: "folderView.copyRelativePath", icon: Route,
       run: act(() => copyText(relativeToRoot(root, target.path), host)) });
   }
-  if (host.attachText && target.type !== "link") {
-    const attachText = host.attachText;
+  if (host.addToChat && target.type !== "link") {
+    const addToChat = host.addToChat;
     actions.push({ id: "add-to-chat", labelKey: "folderView.addToContext", icon: MessageSquarePlus, run: act(() => {
-      const result = attachText(`\`${target.path}\``);
+      const result = addToChat(target.path);
       if (result !== true) host.report(result === false ? "folderView.addToContextFull" : "folderView.addToContextNoComposer");
     }) });
   }

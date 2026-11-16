@@ -310,7 +310,7 @@ describe("FolderView", () => {
       fireEvent.click(row(`${ROOT}/src`));
       await waitFor(() => expect(row(`${ROOT}/src/index.ts`)).toBeDefined());
       fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
-      expect(items()).toEqual(["file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
+      expect(items()).toEqual(["file-row-action-open", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
         "file-row-action-add-to-chat", "file-row-action-open-terminal"]);
       fireEvent.click(screen.getByTestId("file-row-action-copy-relative-path"));
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("src/index.ts"));
@@ -343,7 +343,7 @@ describe("FolderView", () => {
       row(`${ROOT}/package.json`).focus();
       fireEvent.keyDown(row(`${ROOT}/package.json`), { key: "F10", shiftKey: true });
       // No terminal was offered by the host, so the menu has no such action.
-      expect(items()).toEqual(["file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path", "file-row-action-add-to-chat"]);
+      expect(items()).toEqual(["file-row-action-open", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path", "file-row-action-add-to-chat"]);
       fireEvent.keyDown(screen.getByTestId("file-row-menu"), { key: "Escape" });
       await waitFor(() => expect(screen.queryByTestId("file-row-menu")).toBeNull());
       await waitFor(() => expect(document.activeElement).toBe(row(`${ROOT}/package.json`)));

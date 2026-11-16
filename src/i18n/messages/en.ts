@@ -1910,6 +1910,7 @@ export const en = {
   "folderView.emptyNoHidden": "No hidden files either",
   "folderView.emptyHidden": "{count} protected item(s) are not shown",
   "folderView.openTerminalHere": "Open in terminal",
+  "folderView.openTerminalFailed": "A terminal could not be opened here.",
   "folderView.lockedTitle": "This folder can't be opened",
   "folderView.lockedBody": "The operating system did not allow reading it. Neither Ave nor the agent can see what is inside.",
   "folderView.goneTitle": "This folder is no longer here",

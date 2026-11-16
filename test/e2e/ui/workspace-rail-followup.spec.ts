@@ -132,25 +132,23 @@ test.describe("workspace rail follow-up", () => {
     await folderRow.press("ArrowLeft");
     await expect(folderRow).toHaveAttribute("aria-expanded", "false");
 
-    // The row's context menu is the native one (2c9231830). Record the menu main builds instead of showing an OS menu, then
-    // choose its Open item, which must reach the renderer's own handler and expand the folder.
-    await app.evaluate(({ Menu }) => {
-      const state = globalThis as unknown as { aveE2eMenus: Electron.Menu[] };
-      state.aveE2eMenus = [];
-      Menu.prototype.popup = function popup(this: Electron.Menu) { state.aveE2eMenus.push(this); };
-    });
+    // The row's menu is drawn in the page, from the row actions the folder view offers too. Its Open item expands the folder.
     await folderRow.click({ button: "right" });
-    const labels = () => app.evaluate(() => (globalThis as unknown as { aveE2eMenus: Electron.Menu[] }).aveE2eMenus
-      .at(-1)?.items.filter((item) => item.type !== "separator").map((item) => item.label) ?? []);
-    await expect.poll(labels).toEqual([t("chatPreviewRail.ctxOpen"),
-      t(process.platform === "darwin" ? "chatPreviewRail.revealInFinder" : "chatPreviewRail.revealInExplorer"),
-      t("chatPreviewRail.copyPath"), t("chatPreviewRail.copyRelativePath")]);
-    await app.evaluate(() => {
-      const open = (globalThis as unknown as { aveE2eMenus: Electron.Menu[] }).aveE2eMenus.at(-1)?.items[0];
-      if (!open) throw new Error("No native workspace menu was built");
-      open.click();
-    });
+    const menu = page.getByTestId("file-row-menu");
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole("menuitem")).toHaveText([
+      t("chatPreviewRail.ctxOpen"),
+      t(process.platform === "darwin" ? "folderView.revealFinder" : process.platform === "win32" ? "folderView.revealExplorer" : "folderView.revealFileManager"),
+      t("folderView.copyPath"), t("folderView.copyRelativePath"), t("folderView.addToContext"), t("folderView.openTerminalHere"),
+    ]);
+    await menu.getByTestId("file-row-action-open").click();
+    await expect(menu).toHaveCount(0);
     await expect(folderRow).toHaveAttribute("aria-expanded", "true");
+
+    // Reload lists the open folders again and replaces what they showed.
+    writeFileSync(resolve(docsDir, "created-later.md"), "# Later\n", "utf-8");
+    await page.getByTestId("chat-side-panel-files-reload").click();
+    await expect(page.getByTestId("chat-side-panel-fs-file").filter({ hasText: "created-later.md" })).toBeVisible();
 
     await expect(page.getByTestId("chat-side-panel-collapse-all")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-remove-root")).toHaveCount(0);
