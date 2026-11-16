@@ -1,5 +1,6 @@
 import type { MemoryMapFilters, MemoryMapRecord, RetrievalAnswer } from '../../shared/memory-map.js';
-import { cosine, SIMILARITY_CUTOFF, vectorKey, LOCAL_NAMESPACE, type VectorCache } from './graph.js';
+import { cosine, vectorKey, LOCAL_NAMESPACE, type VectorCache } from './graph.js';
+const RETRIEVAL_SIMILARITY_CUTOFF = 0.85;
 export function matchesFilters(record: MemoryMapRecord, filters: MemoryMapFilters): boolean {
   if (filters.sources && !filters.sources.includes(record.sourceKind)) return false;
   if (filters.projectIds?.length && (!record.projectId || !filters.projectIds.includes(record.projectId))) return false;
@@ -11,7 +12,7 @@ export function retrieveMatches(records: MemoryMapRecord[], cache: VectorCache, 
     const vector = cache[vectorKey(record, LOCAL_NAMESPACE)];
     if (!vector) throw new Error('Current memory vector is missing');
     return { record, score: cosine(questionVector, vector) };
-  }).filter(row => row.score >= SIMILARITY_CUTOFF && row.record.text.trim()).sort((a, b) => b.score - a.score || a.record.memoryId.localeCompare(b.record.memoryId));
+  }).filter(row => row.score >= RETRIEVAL_SIMILARITY_CUTOFF && row.record.text.trim()).sort((a, b) => b.score - a.score || a.record.memoryId.localeCompare(b.record.memoryId));
   const seen = new Set<string>(); const matches: RetrievalAnswer['matches'] = [];
   for (const { record, score } of candidates) {
     const content = record.text.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
