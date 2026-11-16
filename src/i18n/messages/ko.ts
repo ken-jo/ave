@@ -3324,7 +3324,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "mcpTab.urlRequiredLabel": "URL *",
   "mcpTab.headersWriteOnlyLabel": "헤더 (HEADER: value, 저장 전용)",
   "mcpTab.allowPrivateNetworksLabel": "사설 네트워크 허용 (localhost/로컬 네트워크)",
-  "mcpTab.secretsNote": "비밀값(API key / headers / env / args)은 저장 후 다시 표시되지 않습니다.",
+  "mcpTab.secretsNote": "API 키는 비밀 저장소에 암호화되며 이 화면에 다시 표시되지 않습니다. 환경 변수와 헤더는 서버 설정 파일에 암호화 없이 저장됩니다.",
   "mcpTab.addingButton": "추가 중…",
   "mcpTab.addButton": "추가",
 
@@ -6525,4 +6525,5 @@ export const ko: Record<MessageCatalogKey, string> = {
   "auditTab.bundleDateRange": "내보낼 기간: {from} ~ {to}",
   "auditTab.bundleAllDates": "전체 기간",
   "auditTab.statsFailed": "감사 통계를 불러오지 못했습니다.",
+  "mcpTab.credentialMigrationFailed": "API 키를 암호화 저장소로 옮기지 못해 서버를 시작하지 않았습니다. 비밀 저장소를 확인한 뒤 새로고침하세요. 저장에 실패하면 기존 키가 유지됩니다.",
 };

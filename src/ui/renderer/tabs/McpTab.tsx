@@ -17,7 +17,7 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
+import { MCP_CREDENTIAL_MIGRATION_FAILED, MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
 import { invokeErrorCode, invokeErrorDetail } from "../format-ipc-error.js";
 import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
@@ -267,7 +267,8 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       setConfigs(configsRes);
       setConfigPath(configPathRes);
     } catch (e) {
-      setError(errorMessage(e) || t("mcpTab.fetchError"));
+      const message = errorMessage(e);
+      setError(message.includes(`${MCP_CREDENTIAL_MIGRATION_FAILED}:`) ? t("mcpTab.credentialMigrationFailed") : message || t("mcpTab.fetchError"));
     } finally {
       setLoading(false);
     }

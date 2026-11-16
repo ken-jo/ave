@@ -53,6 +53,7 @@ async function makeManager(onServerDisconnected: (id: string) => void) {
     { log: vi.fn() } as never,
     undefined,
     onServerDisconnected,
+    { getSecret: async () => null, setSecret: async () => undefined, deleteSecret: async () => undefined },
   );
 }
 

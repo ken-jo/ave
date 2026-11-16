@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFile, writeFile, mkdir, rm, rename, readdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, promises as fileSystem } from "node:fs";
 
 vi.mock("node:fs/promises", async () => {
   const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -59,6 +59,12 @@ import { studioExportFiles } from "../../studio/package.js";
 
 const testDir = join(tmpdir(), `ave-mcp-test-${process.pid}`);
 const testConfigPath = join(testDir, "mcp-servers.json");
+const storedSecrets = new Map<string, string>();
+const secretStore = {
+  getSecret: vi.fn(async (key: string) => storedSecrets.get(key) ?? null),
+  setSecret: vi.fn(async (key: string, value: string, _options?: { requireEncrypted: boolean }) => { storedSecrets.set(key, value); }),
+  deleteSecret: vi.fn(async (key: string) => { storedSecrets.delete(key); }),
+};
 
 async function makeManager(bundledSecrets?: { getSecret(key: string): string | null }) {
   const { McpGovernance } = await import("../mcp-governance.js");
@@ -71,12 +77,14 @@ async function makeManager(bundledSecrets?: { getSecret(key: string): string | n
     { log: mockAuditLog } as never,
     undefined,
     undefined,
-    bundledSecrets as never,
+    (bundledSecrets ?? secretStore) as never,
   );
 }
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  storedSecrets.clear();
+  secretStore.setSecret.mockImplementation(async (key, value) => { storedSecrets.set(key, value); });
   mockValidateServer.mockImplementation(() => ({ valid: true as const }));
   const actualFsPromises =
     await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
@@ -416,9 +424,11 @@ describe("McpManager — addConfig()", () => {
     expect(raw.servers[0]).toMatchObject({
       id: "browser-use",
       auth: "api-key",
-      apiKey: "sk-test",
       apiKeyEnv: "OPENAI_API_KEY",
     });
+    expect(raw.servers[0]).not.toHaveProperty("apiKey");
+    expect(secretStore.setSecret).toHaveBeenCalledWith("mcp.server.apiKey.browser-use", "sk-test", { requireEncrypted: true });
+    expect(constructedConfigs.at(-1)).toMatchObject({ apiKey: "sk-test" });
     expect(mockConnect).toHaveBeenCalledOnce();
   });
 
@@ -441,7 +451,8 @@ describe("McpManager — addConfig()", () => {
     await expect(mgr.setApiKey("browser-use", "new-key")).resolves.toEqual({ connected: true });
 
     const raw = JSON.parse(await readFile(testConfigPath, "utf-8")) as { servers: McpServerConfig[] };
-    expect(raw.servers[0]).toMatchObject({ apiKey: "new-key" });
+    expect(raw.servers[0]).not.toHaveProperty("apiKey");
+    expect(storedSecrets.get("mcp.server.apiKey.browser-use")).toBe("new-key");
     expect(mockDisconnect).toHaveBeenCalledOnce();
     expect(mockConnect).toHaveBeenCalledTimes(2);
   });
@@ -468,7 +479,8 @@ describe("McpManager — addConfig()", () => {
     await expect(mgr.setApiKey("browser-use", "new-key")).rejects.toThrow("거버넌스 검증 실패");
 
     const raw = JSON.parse(await readFile(testConfigPath, "utf-8")) as { servers: McpServerConfig[] };
-    expect(raw.servers[0]).toMatchObject({ apiKey: "old-key" });
+    expect(raw.servers[0]).not.toHaveProperty("apiKey");
+    expect(storedSecrets.get("mcp.server.apiKey.browser-use")).toBe("old-key");
     expect(mockConnect).not.toHaveBeenCalled();
   });
 
@@ -695,5 +707,83 @@ describe("McpManager — removeConfig()", () => {
 
     expect(existsSync(testConfigPath)).toBe(false);
     expect(vi.mocked(rename)).not.toHaveBeenCalled();
+  });
+});
+
+describe("McpManager encrypted user credentials", () => {
+  const server = { id: "private-server", transport: "http" as const, url: "https://example.test/mcp", auth: "api-key" as const, apiKeyHeader: "X-Key" };
+
+  it("stores a newly added key only in encrypted secret storage and hydrates it after restart", async () => {
+    const manager = await makeManager();
+    await manager.addConfig({ ...server, apiKey: "throwaway-new-key" });
+    expect(await readFile(testConfigPath, "utf-8")).not.toContain("throwaway-new-key");
+    expect(secretStore.setSecret).toHaveBeenCalledWith("mcp.server.apiKey.private-server", "throwaway-new-key", { requireEncrypted: true });
+    const restarted = await makeManager();
+    expect(await restarted.loadFromConfig()).toMatchObject([{ ...server, apiKey: "throwaway-new-key" }]);
+    expect(await restarted.getConfigs()).toEqual([server]);
+  });
+
+  it("migrates plaintext keys before scrubbing the file and connecting", async () => {
+    await writeFile(testConfigPath, JSON.stringify({ servers: [{ ...server, apiKey: "throwaway-legacy-key" }] }));
+    const manager = await makeManager();
+    await manager.connectAll();
+    expect(await readFile(testConfigPath, "utf-8")).not.toContain("throwaway-legacy-key");
+    expect(secretStore.setSecret).toHaveBeenCalledWith("mcp.server.apiKey.private-server", "throwaway-legacy-key", { requireEncrypted: true });
+    expect(constructedConfigs.at(-1)).toMatchObject({ apiKey: "throwaway-legacy-key" });
+  });
+
+  it("refuses migration clearly without overwriting the legacy file or starting a server", async () => {
+    const content = JSON.stringify({ servers: [{ ...server, apiKey: "throwaway-preserved-key" }] });
+    await writeFile(testConfigPath, content);
+    secretStore.setSecret.mockRejectedValueOnce(new Error("Encrypted storage unavailable"));
+    const manager = await makeManager();
+    await expect(manager.connectAll()).rejects.toMatchObject({ code: "mcp-credential-migration-failed", message: expect.stringContaining("Server startup is blocked") });
+    expect(await readFile(testConfigPath, "utf-8")).toBe(content);
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it("retains the whole legacy file when one of several secret migrations fails", async () => {
+    const content = JSON.stringify({ servers: [{ ...server, apiKey: "throwaway-first-key" }, { ...server, id: "second-server", apiKey: "throwaway-second-key" }] });
+    await writeFile(testConfigPath, content);
+    secretStore.setSecret.mockImplementationOnce(async (key, value) => { storedSecrets.set(key, value); });
+    secretStore.setSecret.mockRejectedValueOnce(new Error("Encrypted storage unavailable"));
+    const manager = await makeManager();
+    await expect(manager.loadFromConfig()).rejects.toMatchObject({ code: "mcp-credential-migration-failed" });
+    expect(await readFile(testConfigPath, "utf-8")).toBe(content);
+  });
+
+  it("preserves legacy bytes when the scrub write fails after storing the secret", async () => {
+    const content = JSON.stringify({ servers: [{ ...server, apiKey: "throwaway-legacy-key" }] });
+    await writeFile(testConfigPath, content);
+    const renameSpy = vi.spyOn(fileSystem, "rename").mockRejectedValueOnce(Object.assign(new Error("File write refused"), { code: "EACCES" }));
+    try {
+      const manager = await makeManager();
+      await expect(manager.loadFromConfig()).rejects.toMatchObject({ code: "mcp-credential-migration-failed" });
+      expect(await readFile(testConfigPath, "utf-8")).toBe(content);
+      expect(storedSecrets.get("mcp.server.apiKey.private-server")).toBe("throwaway-legacy-key");
+      expect(mockConnect).not.toHaveBeenCalled();
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  it("keeps the old secret and configuration when a replacement key cannot be stored", async () => {
+    await writeFile(testConfigPath, JSON.stringify({ servers: [server] }));
+    storedSecrets.set("mcp.server.apiKey.private-server", "throwaway-old-key");
+    secretStore.setSecret.mockRejectedValueOnce(new Error("Encrypted storage unavailable"));
+    const manager = await makeManager();
+    await expect(manager.setApiKey(server.id, "throwaway-replacement-key")).rejects.toThrow("Encrypted storage unavailable");
+    expect(storedSecrets.get("mcp.server.apiKey.private-server")).toBe("throwaway-old-key");
+    expect(await manager.loadFromConfig()).toMatchObject([{ apiKey: "throwaway-old-key" }]);
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it("removes the encrypted credential when its server is removed", async () => {
+    await writeFile(testConfigPath, JSON.stringify({ servers: [server] }));
+    storedSecrets.set("mcp.server.apiKey.private-server", "throwaway-old-key");
+    const manager = await makeManager();
+    await manager.removeConfig(server.id);
+    expect(secretStore.deleteSecret).toHaveBeenCalledWith("mcp.server.apiKey.private-server");
+    expect(storedSecrets.size).toBe(0);
   });
 });

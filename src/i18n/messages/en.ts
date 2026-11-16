@@ -3322,7 +3322,7 @@ export const en = {
   "mcpTab.urlRequiredLabel": "URL *",
   "mcpTab.headersWriteOnlyLabel": "Headers (HEADER: value, write-only)",
   "mcpTab.allowPrivateNetworksLabel": "Allow private networks (localhost/local network)",
-  "mcpTab.secretsNote": "Secret values (API key / headers / env / args) will not be displayed again after saving.",
+  "mcpTab.secretsNote": "API keys are encrypted in the secret store and never returned here. Environment variables and headers are stored unencrypted in the server configuration.",
   "mcpTab.addingButton": "Adding…",
   "mcpTab.addButton": "Add",
 
@@ -6523,6 +6523,7 @@ export const en = {
   "auditTab.bundleDateRange": "Export range: {from} to {to}",
   "auditTab.bundleAllDates": "All dates",
   "auditTab.statsFailed": "Could not load audit statistics.",
+  "mcpTab.credentialMigrationFailed": "API keys could not be moved to encrypted storage. Servers have not started. Check secret storage, then refresh; the original keys are retained if storage fails.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

@@ -37,6 +37,7 @@ import type { PluginMcpOwner, PluginMcpTrustStore, PreparedPluginMcpProjection }
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
 import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey, parseBundledConfigId, readBoundBundledCredential, type BundledPackageRef } from "./bundled-credential.js";
+import { MCP_CREDENTIAL_MIGRATION_FAILED } from "../shared/mcp-error-code.js";
 const log = createLogger("mcp-manager");
 
 interface BundledCredentialDeclaration {
@@ -63,11 +64,23 @@ export interface BundledCredentialSource {
 
 export interface BundledSecretStore {
   getSecret(key: string): Promise<string | null>;
-  setSecret(key: string, value: string): Promise<void>;
+  setSecret(key: string, value: string, options?: { requireEncrypted: boolean }): Promise<void>;
   deleteSecret(key: string): Promise<void>;
 }
 
 const OAUTH_CREDENTIAL_INDEX_KEY = "mcp.oauth.index";
+
+function serverApiKeySecretId(serverId: string): string {
+  return `mcp.server.apiKey.${encodeURIComponent(serverId)}`;
+}
+
+class McpCredentialMigrationError extends Error {
+  readonly code = MCP_CREDENTIAL_MIGRATION_FAILED;
+  constructor() {
+    super(`${MCP_CREDENTIAL_MIGRATION_FAILED}: MCP API key migration failed. Server startup is blocked; check encrypted secret storage and reload.`);
+    this.name = "McpCredentialMigrationError";
+  }
+}
 
 /** Malformed existing configuration must never be overwritten. */
 class McpConfigFileInvalidError extends Error {
@@ -329,8 +342,35 @@ export class McpManager {
     return (await this.loadConfigFile()).servers;
   }
 
-  /** Only a parsed primary config authorizes credential cleanup; fallback or missing data does not. */
+  /** Move legacy keys before rewriting the file; a failed migration never starts a server. */
   private async loadConfigFile(): Promise<{ servers: McpServerConfig[]; loaded: boolean; primaryInvalid: boolean }> {
+    const result = await this.readConfigFile();
+    const legacy = result.servers.filter((config) => config.apiKey !== undefined);
+    if (legacy.length > 0) {
+      try {
+        assertAveHomeInputWritable(this.configPath);
+        for (const config of legacy) await this.storeServerApiKey(config.id, validatedApiKey(config.apiKey!));
+        await this.saveConfigs(result.servers);
+      } catch {
+        throw new McpCredentialMigrationError();
+      }
+    }
+    const servers = await Promise.all(result.servers.map(async (config) => {
+      const { apiKey: _legacyKey, ...safe } = config;
+      const stored = config.auth === "api-key" || config.apiKey !== undefined
+        ? await this.bundledSecrets?.getSecret(serverApiKeySecretId(config.id)) : null;
+      return { ...safe, ...(stored ? { apiKey: stored } : {}) } as McpServerConfig;
+    }));
+    return { ...result, servers };
+  }
+
+  private async storeServerApiKey(serverId: string, value: string): Promise<void> {
+    if (!this.bundledSecrets) throw new Error("MCP API keys require encrypted secret storage");
+    await this.bundledSecrets.setSecret(serverApiKeySecretId(serverId), value, { requireEncrypted: true });
+  }
+
+  /** Only a parsed primary config authorizes credential cleanup; fallback or missing data does not. */
+  private async readConfigFile(): Promise<{ servers: McpServerConfig[]; loaded: boolean; primaryInvalid: boolean }> {
     // Read one verified primary buffer: a file
     // pending review in the home content trust manifest reads as absent, so its servers neither connect nor survive a rewrite.
     const candidates = new Map<string, string>();
@@ -1446,6 +1486,7 @@ export class McpManager {
         if (existing.some((s) => s.id === normalizedId)) {
           throw new Error(`[mcp-manager] ${t("be_mcpManager.serverIdAlreadyExists", { id: normalizedId })}`);
         }
+        if (normalizedConfig.apiKey !== undefined) await this.storeServerApiKey(normalizedId, validatedApiKey(normalizedConfig.apiKey));
         const updated = [...existing, normalizedConfig];
         await this.saveConfigs(updated);
       });
@@ -1534,6 +1575,7 @@ export class McpManager {
             `[mcp-manager] ${t("be_mcpManager.governanceValidationFailed", { layer: String(validation.layer), reason: validation.reason })}`,
           );
         }
+        await this.storeServerApiKey(id, trimmedKey);
         updatedConfig = candidate;
         const updated = [...existing];
         updated[idx] = updatedConfig;
@@ -1610,6 +1652,7 @@ export class McpManager {
       if (session) await session.clear();
       else if (removedKey) await this.oauthPresentation?.secrets.deleteSecret(removedKey);
       await this.queueOAuthIndexUpdate(serverId, undefined);
+      await this.bundledSecrets?.deleteSecret(serverApiKeySecretId(serverId));
     });
   }
 
@@ -1617,7 +1660,7 @@ export class McpManager {
   private async saveConfigs(configs: McpServerConfig[]): Promise<void> {
     await writeFileAtomicAtPath(
       this.configPath,
-      JSON.stringify({ servers: configs }, null, 2),
+      JSON.stringify({ servers: configs.map(({ apiKey: _apiKey, ...config }) => config) }, null, 2),
     );
   }
 
