@@ -82,6 +82,7 @@ export interface SettingsOrchestrationState {
   setWebProvider: (v: AppSettings["webSearch"]["provider"]) => void;
   webKeyInput: string;
   setWebKeyInput: (v: string) => void;
+  saveWebApiKey: () => Promise<boolean>;
   hasWebKey: boolean;
   setHasWebKey: (v: boolean) => void;
   // Privacy
@@ -159,8 +160,20 @@ export function useSettingsOrchestration(
   const [streamSmoothing, setStreamSmoothing] = useState<"none" | "word" | "char">("none");
   const [fallbackChain, setFallbackChainState] = useState<FallbackEntry[]>([]);
   const [fallbackOpen, setFallbackOpen] = useState(false);
-  const [webProvider, setWebProvider] = useState<AppSettings["webSearch"]["provider"]>("duckduckgo");
-  const [webKeyInput, setWebKeyInput] = useState("");
+  const [webProvider, setWebProviderState] = useState<AppSettings["webSearch"]["provider"]>("duckduckgo");
+  const [webKeyInput, setWebKeyInputState] = useState("");
+  const webKeyDraftRef = useRef<{ provider: AppSettings["webSearch"]["provider"]; key: string } | null>(null);
+  const webProviderRef = useRef(webProvider);
+  const setWebProvider = useCallback((next: AppSettings["webSearch"]["provider"]) => {
+    webProviderRef.current = next;
+    webKeyDraftRef.current = null;
+    setWebKeyInputState("");
+    setWebProviderState(next);
+  }, []);
+  const setWebKeyInput = useCallback((key: string) => {
+    webKeyDraftRef.current = { provider: webProviderRef.current, key };
+    setWebKeyInputState(key);
+  }, []);
   const [hasWebKey, setHasWebKey] = useState(false);
   const [piiRedactEnabled, setPiiRedactEnabled] = useState(false);
   const [idlePreferenceRefresh, setIdlePreferenceRefresh] = useState(false);
@@ -494,16 +507,6 @@ export function useSettingsOrchestration(
     let ok = false;
     try {
       if (tab !== "permissions") {
-        const secretUpdates: Array<Promise<unknown>> = [];
-        if (webKeyInput.trim()) {
-          secretUpdates.push(
-            api.setWebApiKey(webProvider, webKeyInput.trim()).then(() => {
-              setWebKeyInput("");
-              setHasWebKey(true);
-            }),
-          );
-        }
-        await Promise.all(secretUpdates);
         // The row's OWN endpoint, never the active preset's. A preset's address belongs to the preset registry; writing it here
         // would put it in the generic custom provider's block, which is a different row.
         const trimmedBaseUrl = baseUrl.trim();
@@ -649,6 +652,32 @@ export function useSettingsOrchestration(
     saveProviderCredentialRef.current = saveProviderCredential;
   }, [saveProviderCredential]);
 
+  const saveWebApiKey = useCallback(async (): Promise<boolean> => {
+    const draft = webKeyDraftRef.current;
+    if (!settingsLoaded || savingRef.current || !draft?.key.trim()) return false;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const result: unknown = await api.setWebApiKey(draft.provider, draft.key.trim());
+      if (isIpcErrorResult(result)) throw new Error(formatIpcError(result.error, result.message));
+      if (webKeyDraftRef.current === draft) {
+        webKeyDraftRef.current = null;
+        setWebKeyInputState("");
+      }
+      if (webProviderRef.current === draft.provider) setHasWebKey(true);
+      setLastSaveError(null);
+      onSaved();
+      return true;
+    } catch (error) {
+      setLastSaveError({ tab: "web", message: error instanceof Error ? error.message : t("useSettingsOrchestration.saveFailed") });
+      return false;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+      drainPendingSaves();
+    }
+  }, [api, onSaved, settingsLoaded]);
+
   const setIdlePreferenceRefreshLive = useCallback((next: boolean) => {
     const previous = idlePreferenceRefresh;
     setIdlePreferenceRefresh(next);
@@ -736,7 +765,7 @@ export function useSettingsOrchestration(
     fallbackChain, setFallbackChain,
     fallbackOpen, setFallbackOpen,
     webProvider, setWebProvider,
-    webKeyInput, setWebKeyInput,
+    webKeyInput, setWebKeyInput, saveWebApiKey,
     hasWebKey, setHasWebKey,
     piiRedactEnabled, setPiiRedactEnabled,
     idlePreferenceRefresh, setIdlePreferenceRefresh: setIdlePreferenceRefreshLive,

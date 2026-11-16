@@ -639,8 +639,7 @@ export function SettingsContent({
             />
             <TabSaveBar
               onSave={() => {
-                webSave.cancel();
-                void s.save("web");
+                void s.saveWebApiKey();
               }}
               saving={s.saving}
               settingsLoaded={s.settingsLoaded}

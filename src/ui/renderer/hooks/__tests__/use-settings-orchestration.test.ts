@@ -78,6 +78,38 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("never persists a web key draft from automatic tab saves and clears it on provider change", async () => {
+    const settings = makeSettings();
+    const api = makeSettingsApi({ settings });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setWebProvider("tavily"));
+    act(() => result.current.setWebKeyInput("provider-bound-key"));
+    await act(async () => { await result.current.save("chat"); await result.current.save("web"); });
+    expect(api.setWebApiKey).not.toHaveBeenCalled();
+    act(() => result.current.setWebProvider("serper"));
+    expect(result.current.webKeyInput).toBe("");
+    await act(async () => { expect(await result.current.saveWebApiKey()).toBe(false); });
+    expect(api.setWebApiKey).not.toHaveBeenCalled();
+    act(() => result.current.setWebKeyInput("second-provider-key"));
+    await act(async () => { expect(await result.current.saveWebApiKey()).toBe(true); });
+    expect(api.setWebApiKey).toHaveBeenCalledExactlyOnceWith("serper", "second-provider-key");
+  });
+
+  it("retains a web key draft and reports a refused explicit secret save", async () => {
+    const settings = makeSettings();
+    const onSaved = vi.fn();
+    const api = makeSettingsApi({ settings }, { setWebApiKey: vi.fn(async () => ({ ok: false, error: "secret-store-unavailable" })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, onSaved));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => { result.current.setWebProvider("tavily"); });
+    act(() => { result.current.setWebKeyInput("keep-me"); });
+    await act(async () => { expect(await result.current.saveWebApiKey()).toBe(false); });
+    expect(result.current.webKeyInput).toBe("keep-me");
+    expect(result.current.lastSaveError?.tab).toBe("web");
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
   it("preserves an external model and reasoning change through a Chat-tab save", async () => {
     const settings = makeSettings();
     const api = makeSettingsApi({ settings });
