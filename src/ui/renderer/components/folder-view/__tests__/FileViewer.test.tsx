@@ -103,3 +103,59 @@ describe("FileViewer large-file notice", () => {
     expect(screen.getByTestId("folder-open-external")).toBeDefined();
   });
 });
+
+describe("FileViewer failures", () => {
+  it("says why a file could not be read, one sentence per reason, and never shows the code", async () => {
+    const cases: Array<[string, string]> = [
+      ["read-failed", "이 파일을 읽지 못했습니다. 옮겨졌거나 지워졌을 수 있습니다."],
+      ["path-not-allowed", "Ave 가 읽을 수 있는 폴더 밖의 파일입니다."],
+      ["sensitive-path", "보호된 파일이라 Ave 에서 보여 주지 않습니다."],
+      ["not-a-file", "일반 파일이 아니라 보여 줄 내용이 없습니다."],
+      ["some-new-internal-code: detail 42", "이 파일을 읽지 못했습니다."],
+    ];
+    for (const [code, sentence] of cases) {
+      readFile.mockResolvedValueOnce({ ok: false, error: code, message: `internal: ${code}` });
+      const view = render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+      const error = await screen.findByTestId("folder-viewer-error");
+      expect(error.textContent).toBe(sentence);
+      view.unmount();
+    }
+  });
+
+  it("drops a refused default-app open as soon as the user does something else", async () => {
+    openPath.mockResolvedValueOnce({ ok: false, error: "executable" } as never);
+    render(<FileViewer projectRoot={ROOT} entry={entry("notes.md")} onAttachText={() => "no-composer"} />);
+    await waitFor(() => expect(action("open-external")).not.toBeNull());
+    fireEvent.click(action("open-external") as HTMLElement);
+    expect((await screen.findByTestId("folder-viewer-alert")).textContent).toContain("실행 권한");
+    fireEvent.click(action("copy-path") as HTMLElement);
+    await waitFor(() => expect(screen.queryByTestId("folder-viewer-alert")).toBeNull());
+    // A notice from one action is replaced by the next action's own, and cleared by one that succeeds.
+    fireEvent.click(action("add-context") as HTMLElement);
+    expect((await screen.findByTestId("folder-viewer-alert")).textContent).toBe("이 파일을 추가하려면 먼저 채팅을 여세요.");
+    fireEvent.click(action("reveal") as HTMLElement);
+    await waitFor(() => expect(screen.queryByTestId("folder-viewer-alert")).toBeNull());
+  });
+});
+
+describe("FileViewer one notice for the card and the header", () => {
+  it("drops a refusal from the info card as soon as a header action is taken", async () => {
+    openPath.mockResolvedValueOnce({ ok: false, error: "executable" } as never);
+    render(<FileViewer projectRoot={ROOT} entry={entry("big.log", { size: 2_097_152 })} />);
+    fireEvent.click(await screen.findByTestId("folder-open-external"));
+    expect(await screen.findByTestId("folder-viewer-alert")).toBeTruthy();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    fireEvent.click(action("copy-path") as HTMLElement);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("drops a failed reveal from the info card when the header reveals the file", async () => {
+    reveal.mockResolvedValueOnce({ ok: false });
+    render(<FileViewer projectRoot={ROOT} entry={entry("big.log", { size: 2_097_152 })} />);
+    fireEvent.click(await screen.findByTestId("folder-reveal"));
+    expect(await screen.findByTestId("folder-viewer-alert")).toBeTruthy();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    fireEvent.click(action("reveal") as HTMLElement);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+});
