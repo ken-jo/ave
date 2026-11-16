@@ -38,6 +38,15 @@ Revision 5 (2026-11-16) applies the lead's rev4 choices C1–C4 and the fixes fr
 - One run per schedule holds across a reattach: admission looks at every attachment id of the routine, current and detached, through one serialized path (§7.2). WT-8.
 - At `9ead78a61` the gate field is already named `resultHash`, and the store's confirm method is `confirmDraft` with `expectedDraftRevision`. §13 and §13.1 say so where they name them.
 
+Revision 6 (2026-11-16) follows the WT-2 head that shipped, `51d5d582f` (branch `wt/2-store-b`), applies the lead ruling R22 and fixes the two findings of the rev5 review. Where an earlier revision note above says a change is left for a WT-2 follow-up lane, that lane is finished and the change is in `51d5d582f`.
+
+- §13 lists the shapes and names of `51d5d582f`. §13.1 no longer lists requests: it records what shipped for R17 with C3, R20, C2 and R21, and what WT-3, WT-8 and WT-17 must call.
+- Every type the plan tells the engine to import is exported at `51d5d582f`. `RunPin`, `LaneBlockCode`, `OutputExecution`, `JoinConflict`, `OutputFile` and `StageGate` are private to their module there. The engine uses `TemplateVersionPin` for the pin and derives the others from exported aggregates (§2.2). No new WT-2 export is needed.
+- Three shipped facts differ from what rev5 expected, and the plan follows the code: the declaration-time name check for publishing tools is gone, so that denial is run-time only (§8, §13); `setup-outside-commands` no longer compares setup commands with a stage's `commands` (§3.4); a stored attachment with no scope snapshot still loads and is refused `scope-changed` when it is used (§2.4, §13.1).
+- The four reason-code strings shipped in en and ko. WT-3 and WT-17 emit the codes and add the reaching tests; they add no strings for them (§2.4, §10).
+- R22 is decided (§14.1): the engine push may use the git credentials the user already configured, inside the bounds of §10. It replaces the rev5 default that used no credential helper. `remote-not-configured` is a new code with en and ko strings, owned by WT-17.
+- §15 states the owner's port rule in full again, in neutral prose.
+
 Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `waiting`, gate = `awaiting_gate`, stopped = `cancelled`.
 
 ## 0. Findings that change the build
@@ -97,6 +106,7 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 | `src/work-board/workflow/stage-run-engine.ts` | new | Event queue, effect runner, `spawnStageChild`, stop, steer. |
 | `src/work-board/workflow/run-authority.ts` | new | `authoriseRunSource`: the single run-authority function, with the D1 and OD-1 members (§2.4). |
 | `src/work-board/workflow/workflow-errors.ts` | new | `WorkflowInvariantError` with a `code`. |
+| `src/work-board/workflow/shipped-shapes.ts` | new | Type aliases only: the shipped shapes that are private to their module, derived from exported types (§2.2). |
 | `src/core/work-board-engine.ts` | changed | Branch in `runItem`; add `decideStageGate`, `decideStageJoin`, `retryStage`, `continueRun`; `steerRun` / `cancelRun` take the template path. |
 | `src/main/work-board-store.ts` | changed | Stage-aware reconcile only. `beginRun(…, pin?)` and `updateStageRun` shipped with WT-2 (§13). |
 | `src/shared/work-board-types.ts` | changed | Event fields, refusal and result types. |
@@ -105,19 +115,28 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 | `src/engine/subagent-runner.ts` | changed | `hostInputTaint` in, `endTrustOrigin` out (F4). |
 | `src/engine/parent-directive.ts` | changed | `formatStageInputDirective`. |
 | `src/boot/steps/workflow-engine-extensions.ts` | new | One object of optional engine deps; later items add one line each. |
-| `src/i18n/messages/en.ts`, `src/i18n/messages/ko.ts` | changed | Messages for the run-authority refusal codes the board shows, `project-mismatch` and `scope-not-authorised` included (§2.4). |
+| `src/i18n/messages/en.ts`, `src/i18n/messages/ko.ts` | changed | Messages for the run-authority refusal codes the board shows. The strings for `scope-changed`, `project-mismatch` and `scope-not-authorised` already shipped with WT-2 as `reasonCodes.<code>`; WT-3 adds only the codes that have none (§2.4). |
 
 ### 2.2 Types and functions
 
-`RunPin`, `RunAuthoritySource`, `RunWorkspace`, `LaneBlockCode`, `JoinConflict`, `StageJoin`, `RequestedOutput`, `OutputExecution` and `TemplateRunStart` shipped in `src/shared/workflow-template-types.ts`; the engine imports them. They are repeated below only where the text needs them.
+The engine imports these names from `src/shared/workflow-template-types.ts`; each is exported at `51d5d582f`: `TemplateVersionPin`, `RunAuthoritySource`, `RunWorkspace`, `StageJoin`, `RequestedOutput`, `RequestedOutputDecl`, `RequestedOutputKind`, `TemplateRunStart`, `WorkItemStageRun`, `TemplateScope`, `ScheduleAttachment`, `TemplateStage`, `TemplateGraph`, `TemplateVersion`, `WorkflowTemplate`, `StageEnvelope` and `EnvelopeRefusal`. They are repeated below only where the text needs them.
+
+Six shapes exist at `51d5d582f` but are private to that module: `RunPin`, `LaneBlockCode`, `OutputExecution`, `JoinConflict`, `OutputFile` and `StageGate`. The engine does not import them. It writes the pin as `TemplateVersionPin`, which is the same type, and takes the others from exported aggregates in one WT-3 file (`src/work-board/workflow/shipped-shapes.ts`, type aliases only). This needs no change in WT-2. If a later lane finds a shape that cannot be derived this way, adding its export to `workflow-template-types.ts` is a WT-3 task, with its consumer sweep; none is known today.
 
 ```ts
+// WT-3 (work-board/workflow/shipped-shapes.ts): local aliases of shipped shapes; no new shape
+type RunPin = TemplateVersionPin;                                              // { templateId: string; version: number; graphHash: string }
+type LaneBlockCode = NonNullable<WorkItemStageRun["blocked"]>["code"];         // "envelope-missing" | "isolation-unproven" | "lane-unavailable"
+type OutputExecution = NonNullable<WorkItemStageRun["outputExecutions"]>[number];
+type JoinConflict = NonNullable<StageJoin["conflict"]>;
+type OutputFile = NonNullable<RequestedOutput["files"]>[number];               // { path; sha256; size }
+type StageGate = TemplateStage["gate"];
+
 // shipped (shared/workflow-template-types.ts)
-type RunPin = TemplateVersionPin;                    // { templateId: string; version: number; graphHash: string }
 /** Who asked for the run. Both members shipped. WT-9 adds a member for a remote Create and run. */
 type RunAuthoritySource =
-  | { kind: "local-create-and-run"; pin: RunPin }                                    // IPC handler, after hasUserKeyboardIntent, from the tuple the user saw; R21 adds the card's projectRoot (§13 follow-up)
-  | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };   // WT-8 fire handler, from the stored attachment
+  | { kind: "local-create-and-run"; pin: TemplateVersionPin; projectRoot?: string }   // IPC handler, after hasUserKeyboardIntent, from the tuple the user saw; projectRoot is the card's project (R21), absent when the card showed none
+  | { kind: "schedule-attachment"; attachmentId: string; pin: TemplateVersionPin; firedAt: string };   // WT-8 fire handler, from the stored attachment
 
 // stage-run-engine.ts
 type RunAuthorityVerdict =
@@ -132,7 +151,8 @@ type AuthoriseRunSource = (a: {
   stored: TemplateVersion | null;                     // resolveVersion(runPin); null when it threw unknown-version
   storedHashMatches: boolean;                         // false when resolveVersion threw graph-hash-mismatch
   attachment: ScheduleAttachment | null;              // getAttachment(attachmentId); a record with detachedAt set is refused attachment-detached
-                                                      // its scope snapshot (R21) must equal template.scope, else scope-changed; a record with no snapshot is scope-changed
+                                                      // its approvedScope (R21) must equal template.scope, else scope-changed; a record with no snapshot is scope-changed
+                                                      // the comparison is the shipped attachmentScopeMatches(attachment, template); the engine writes no second one
   runProjectRoot: string | undefined;                 // the project the run would use: the item's for Create and run, the snapshot's for a schedule
                                                       // Create and run: must equal the project root on the approved card (R21), else project-mismatch
   scopeAuthorised: (scope: TemplateScope) => boolean; // the project-access check the template handlers use (resolveAuthorizedWorkspaceProject); applied to the bound scope, never to template.scope; { kind: "all" } is always true
@@ -182,7 +202,7 @@ interface LaneHooks {            // signatures fixed here so WT-15, WT-16 and WT
   sessionEnded(sessionId: string): void;
   onDenied(listener: (e: { sessionId: string; code: string }) => void): () => void;   // WT-15 emits, WT-18 counts
 }
-type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";   // shipped
+// LaneBlockCode: the derived alias above
 // shipped (shared/workflow-template-output.ts): sha256 over canonical JSON of { output, requestedOutputs }. Used for the requested-output approval only (§10).
 function outputHashOf(output: string, requestedOutputs: readonly RequestedOutput[]): string;
 
@@ -257,10 +277,10 @@ In both cases the stored version must exist and its stored hash must equal the t
 
 Scope is not part of the pin. It lives on `WorkflowTemplate`, outside `graphHash`, and `confirmDraft` replaces it with the draft's scope, so a version pin says nothing about which project a run may read. Lead ruling R21 closes this with the simplest rule that fails closed:
 
-- At attach, the attachment stores the scope it was approved for (OD-1): `{ kind: "all" }`, or `{ kind: "project", projectRoot }` with the project's real path. The shipped `ScheduleAttachment` has no such field; adding it is a WT-2 follow-up shape change (§13).
+- At attach, the attachment stores the scope it was approved for (OD-1): `{ kind: "all" }`, or `{ kind: "project", projectRoot }` with the project's real path. This shipped at `51d5d582f` as `ScheduleAttachment.approvedScope`: the attach handler resolves and authorises the project root and hands that scope to `attachSchedule`, which refuses `scope-changed` when it differs from the template's scope at that moment and stores a copy (§13.1).
 - A scheduled run takes its project only from that snapshot, never from the live `WorkflowTemplate.scope` (§7.2).
-- At fire and before every spawn, the template's current scope must equal the snapshot (same kind, and for a project the same real path). Otherwise the verdict is `scope-changed`, in both directions: project A to project B, `all` to a project, a project to `all`. A record with no snapshot is `scope-changed` too. Nothing repairs it silently. The schedule list shows "needs reattach", and only a new attach approval, which makes a new attachment, starts runs again.
-- The `Create and run` approval binds the project root with `(templateId, version, graphHash)`. The card shows the project; the source carries that root (or none), and the run's project must equal it, else `project-mismatch`. A run cannot start on a project other than the one on the card. The shipped `local-create-and-run` source has no such field; adding it is the same follow-up lane's change (§13).
+- At fire and before every spawn, the template's current scope must equal the snapshot (same kind, and for a project the same real path). Otherwise the verdict is `scope-changed`, in both directions: project A to project B, `all` to a project, a project to `all`. A record with no snapshot is `scope-changed` too. The comparison is the shipped `attachmentScopeMatches(attachment, template)` (`work-board/template-graph.ts`), which returns `{ ok: false, code: "scope-changed" }` for each of these cases; WT-3 calls it inside `authoriseRunSource` and WT-8 calls it at fire. Nothing repairs it silently. The schedule list shows "needs reattach", and only a new attach approval, which makes a new attachment, starts runs again.
+- The `Create and run` approval binds the project root with `(templateId, version, graphHash)`. The card shows the project; the source carries that root (or none), and the run's project must equal it, else `project-mismatch`. A run cannot start on a project other than the one on the card. This shipped at `51d5d582f`: the `local-create-and-run` source carries `projectRoot?`, and `beginRun` throws `project-mismatch` before it writes when the source's root differs from the item's project. WT-3's run handler must put the approved card's project root into `source.projectRoot`; no shipped code mints it. `authoriseRunSource` makes the same comparison, so a refused start is reported before `beginRun` and the store check stays as the second line.
 - Scope access is revalidated at start and before every spawn, for both sources: `scopeAuthorised` must hold for the scope the approval bound, else `scope-not-authorised`. That is the project root on the card for `Create and run` and the snapshot for a schedule. The live `WorkflowTemplate.scope` is never the authority; it is only compared with the snapshot.
 
 The function is called again before every spawn with the stored source, so a run whose source it no longer accepts spawns nothing. This covers a detached or missing attachment, a changed or no longer authorised scope, and a predicate that no longer holds. The outcome is the same for every such refusal:
@@ -275,7 +295,7 @@ The function is called again before every spawn with the stored source, so a run
 
 The run does not park. Authority cannot come back to it: a new approval makes a new attachment with a new `id` (§7.2), and the run's stored source names the old one. The check is on the spawn path only, so a run that waits at a gate with no spawn due notices nothing until a decision would spawn: approving a gate that has a later stage leads to the refused spawn and the run settles `cancelled`; approving the gate of the last stage completes the run, because no spawn is needed. While such a run waits it is unsettled, so its schedule fires nothing, a new attachment on the same routine included, until someone decides the gate or stops the run (§7.2).
 
-`project-mismatch` and `scope-not-authorised` are confirmed by the lead. A refused start returns the verdict's code as its `reasonCode`, and the settle event of a run that a later spawn refusal ended carries the same field. Each of the two has an en and a ko message in `src/i18n/messages/en.ts` and `ko.ts`, and a test that reaches it (§2.9). WT-3 owns both. `output-not-declared` is WT-17's (§10).
+`project-mismatch` and `scope-not-authorised` are confirmed by the lead. A refused start returns the verdict's code as its `reasonCode`, and the settle event of a run that a later spawn refusal ended carries the same field. Each of the two, and `scope-changed`, is a `WorkflowTemplateErrorCode` at `51d5d582f` and has its en and ko message there as `reasonCodes.<code>` in `src/i18n/messages/en.ts` and `ko.ts`. WT-3 adds no strings for them. It owns the engine verdicts that return them and a test that reaches each from the engine (§2.9). `output-not-declared` has its strings too; emitting it is WT-17's (§10).
 
 The lane is a property of the stored source. A scheduled run stays unattended for its whole life, whoever is at the desk; an attended run never enters the lane.
 
@@ -313,7 +333,7 @@ const STAGE_INPUT_MAX_CHARS = 16_000; const STAGE_INPUTS_TOTAL_MAX_CHARS = 48_00
 
 ### 2.6 Gates, retry, Stop
 
-- Human gate: the host computes `resultHash` over the stored stage output when the stage enters `awaiting_gate` and stores it on the stage run. Lead ruling R16: `resultHash` is the sha256 of the stored stage output, as `planHashOf` is for a plan. The field rename shipped at `9ead78a61`; the WT-2 follow-up lane names the helper. `decideStageGate` checks, inside the board lock, run, stage, attempt, pending status, stored `resultHash` = recomputed = sent (`result_mismatch`), then the pin (§2.4). When the stage run carries requested outputs, the same decision must also carry `outputHash` = `outputHashOf(output, requestedOutputs)` recomputed now (`output_mismatch`), so the gate also binds the requested outputs it shows (§10). A mismatch on either hash refuses the decision and changes nothing. With none, `outputHash` is not sent and not checked. The IPC handler is a copy of decide-plan's (`ipc/domains/work-board.ts:316`): validated sender, consumed keyboard intent, owner frame, note bound and redaction, audit event `work-approval:stage-decided` with origin `local-desktop`.
+- Human gate: the host computes `resultHash` over the stored stage output when the stage enters `awaiting_gate` and stores it on the stage run. Lead ruling R16: `resultHash` is the sha256 of the stored stage output, as `planHashOf` is for a plan. The field `resultHash` and its board validation (a 64-character hex hash) shipped with WT-2. No helper that computes it shipped at `51d5d582f`, so WT-3 adds one, `resultHashOf(output: string): string` in `stage-run-engine.ts`: sha256 over the UTF-8 bytes of the stored output, hex. It is engine code and needs no WT-2 change. `decideStageGate` checks, inside the board lock, run, stage, attempt, pending status, stored `resultHash` = recomputed = sent (`result_mismatch`), then the pin (§2.4). When the stage run carries requested outputs, the same decision must also carry `outputHash` = `outputHashOf(output, requestedOutputs)` recomputed now (`output_mismatch`), so the gate also binds the requested outputs it shows (§10). A mismatch on either hash refuses the decision and changes nothing. With none, `outputHash` is not sent and not checked. The IPC handler is a copy of decide-plan's (`ipc/domains/work-board.ts:316`): validated sender, consumed keyboard intent, owner frame, note bound and redaction, audit event `work-approval:stage-decided` with origin `local-desktop`.
 - Automatic gate: `PassConditionRegistry.evaluate(kind, facts)` where `facts = { result: SubAgentSpawnResult, stage }`. `stage_ok` = `result.ok && !result.incomplete`. `check_exit_zero` reads the stage's own recorded shell step for exactly that command; if the host cannot prove exit zero it fails (Q8). The host runs no command.
 - A stage whose child ends `ok:false` never reaches its gate.
 - Stop: mark, interrupt every live child (`interruptRun`), cancel pending gates, settle `cancelled` when the last child has unwound; with no live child it settles at once (this is how a run parked across a restart is stopped). Finished outputs stay.
@@ -427,7 +447,7 @@ Chosen by `open` when the project root is the top level of a git work tree with 
 
 The user's repository does change in one place: its `.git` gains worktree metadata, objects and the branch ref. The checked-out branch, the index and the working files are never written.
 
-`host-git.ts`: `execFile("git", buildHostGitArgs([...]))`, no shell, timeouts, bounded output, and it honours `isHostGitWorkspaceAvailable` (`shared/host-git.ts:31`). On top of `HOST_GIT_CONFIG` (F8) every call adds: no credential helper and no terminal prompt, no commit or tag signing, no textconv and no external diff, and filter drivers disabled for `add`, `commit`, `merge` and `worktree add`. If a repository requires a filter driver to check out, `open` refuses `git-unavailable` instead of running it.
+`host-git.ts`: `execFile("git", buildHostGitArgs([...]))`, no shell, timeouts, bounded output, and it honours `isHostGitWorkspaceAvailable` (`shared/host-git.ts:31`). On top of `HOST_GIT_CONFIG` (F8) every call adds: no credential helper and no terminal prompt, no commit or tag signing, no textconv and no external diff, and filter drivers disabled for `add`, `commit`, `merge` and `worktree add`. If a repository requires a filter driver to check out, `open` refuses `git-unavailable` instead of running it. One call is an exception to "no credential helper": the push of a `host:git` requested output (WT-17, lead ruling R22) uses the credentials the user configured, inside the bounds of §10. It keeps every other hardening in this paragraph, and no other call in this module may reach a credential.
 
 ### 3.3 Folder kind
 
@@ -451,9 +471,9 @@ Setup commands belong to the template, not to a stage: `TemplateGraph.setupComma
 - The stage child runs them through its ordinary shell tool. Each command asks on its own card (W2); in the unattended lane each must be inside the envelope of the all-tools stage that runs it.
 - A read-scope stage never runs them. It has no shell, and its instructions never contain or mention them.
 - A mixed template is valid: one with read-scope stages, a host-set `plan` stage included, and at least one all-tools stage may carry setup commands. They never run in its read-scope stages.
-- Validation refuses setup commands only when the template has no all-tools stage, because then nothing could run them. The shipped intake and confirm check do not refuse this yet; the refusal and its code are a change for the WT-2 follow-up lane (pre PR-A) (§13.1).
-- The shipped confirm check (`setup-outside-commands` in `validateStageForConfirm`, `9ead78a61`) requires every stage that has an envelope to cover every setup command with one of its `commands` prefixes, whatever its `toolScope`. Left as it is, a mixed template whose read-scope stage has an envelope could not be confirmed. The same follow-up lane narrows the check to all-tools stages (§13.1).
-- The engine does not depend on either validation change: `buildStagePrompt` applies the first and third rule to every version it is given.
+- Validation refuses setup commands only when the template has no all-tools stage, because then nothing could run them. This shipped at `51d5d582f`: intake (`canonicalTemplateGraph`) and confirm (`validateStageForConfirm`) both refuse it with `setup-outside-commands`.
+- At `51d5d582f` that code means only this. The older comparison of setup commands with each stage's envelope `commands` is gone, for all-tools stages too, so a confirmed version says nothing about whether a stage's envelope covers its setup commands. In the unattended lane the second rule above is therefore a run-time check only: a setup command outside the envelope of the stage that runs it is denied `outside-envelope` (§8 step 6).
+- The engine does not depend on the validation: `buildStagePrompt` applies the first and third rule to every version it is given.
 - The host never executes one.
 
 ### 3.5 The Ave-home boundary (F9, lead ruling T2)
@@ -584,7 +604,7 @@ Commit: `feat(work-board): model-judged stage pass condition`.
 | `tools/routine-schedule.ts` | `:139, 262`: the tool refuses `template-run` for create and edit, whatever approval it holds. |
 | `main/routines-scheduler.ts` | A third handler set in `dispatch` (`:183`). |
 | `boot/steps/routines-wiring.ts` | The handler: load the attachment, pass the per-schedule admission of §7.2 (WT-8's own; WT-18 adds only the pause to it), create the item, call `StageRunEngine.start` with the schedule source and `approvalSurface: null`, record the outcome with `recordRunOutcome` (`routines-store.ts:665`). |
-| `src/ipc/workflow-template-handlers.ts` (shipped with WT-2; WT-8 changes it) | The channels exist: `ave:work-board:template-attach-schedule` and `ave:work-board:template-detach-schedule`. Each validates the sender, requires a keyboard gesture from the owner frame, checks project access through the template's scope, mints the proof with `mintHostDecisionProof("local-desktop")`, calls `attachSchedule` / `detachSchedule`, and writes the audit events `template_schedule_attached` / `template_schedule_detached` with the proof's `auditId`. No new IPC file. WT-8 adds to the attach handler the current-version check and the routine creation and cleanup of §7.2 (R18), and to the detach handler the routine removal of §7.2. The attach handler also hands the store the scope it checked, for the R21 snapshot (§13 follow-up). WT-9 adds the remote path; until then the store refuses a proof whose origin is not `local-desktop`. |
+| `src/ipc/workflow-template-handlers.ts` (shipped with WT-2; WT-8 changes it) | The channels exist: `ave:work-board:template-attach-schedule` and `ave:work-board:template-detach-schedule`. Each validates the sender, requires a keyboard gesture from the owner frame, checks project access through the template's scope (`scope-not-authorised` when the project is not an authorised workspace project), mints the proof with `mintHostDecisionProof("local-desktop")`, calls `attachSchedule` / `detachSchedule`, and writes the audit events `template_schedule_attached` / `template_schedule_detached` with the proof's `auditId`. No new IPC file. WT-8 adds to the attach handler the current-version check and the routine creation and cleanup of §7.2 (R18), and to the detach handler the routine removal of §7.2. The shipped attach handler already hands the store the scope it checked, with the resolved project root, as the R21 snapshot (`51d5d582f`); WT-8 keeps that call as it is. WT-9 adds the remote path; until then the store refuses a proof whose origin is not `local-desktop`. |
 | `permissions/permission-manager.ts` | The interim rule of §7.4 for sessions spawned with `unattendedStage`. |
 
 ### 7.2 Attach and fire
@@ -592,12 +612,14 @@ Commit: `feat(work-board): model-judged stage pass condition`.
 ```ts
 // shipped store input and writer (shared/workflow-template-types.ts, main/workflow-template-store.ts)
 interface ScheduleAttachmentInput { templateId: string; version: number; graphHash: string; scheduleId: string }   // scheduleId is the routine id
-attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof): Promise<ScheduleAttachment>;
+attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope): Promise<ScheduleAttachment>;   // stores a copy as attachment.approvedScope
 detachSchedule(id: string, proof: HostDecisionProof): Promise<boolean>;
 // store refusals (WorkflowTemplateErrorCode): "template-not-found" | "template-archived" | "unknown-version" | "graph-hash-mismatch" | "schedule-requires-read-only"
-// WT-8 adds one handler refusal: "not-current-version"
+//   | "scope-changed" (approvedScope differs from the template's scope at that moment; nothing is written)
+// shipped handler refusal: "scope-not-authorised". WT-8 adds one handler refusal: "not-current-version"
 
 // shipped (work-board/template-graph.ts)
+function attachmentScopeMatches(attachment: { approvedScope?: TemplateScope }, template: { scope: TemplateScope }): { ok: true } | { ok: false; code: "scope-changed" };
 function isAllReadOnlyVersion(graph: TemplateGraph): boolean;
 // no template setupCommands; every stage: toolScope "read", allowSubAgents false, no requestedOutputs; envelope absent, or with
 // writePaths, commands, network, outputs, mcpReadOnlyTools, mcpGenerationTools and pluginGenerationTools all empty
@@ -607,7 +629,7 @@ function isAllReadOnlyVersion(graph: TemplateGraph): boolean;
 - The shipped attach takes the id of a routine that already exists. WT-8's handler keeps "neither exists without the other" by creating the `template-run` routine first (same proof), then calling `attachSchedule` with its id. A reattach ("needs reattach", after `scope-changed` or on an orphan) names a `template-run` routine that already exists; that path creates no routine and only calls `attachSchedule`. The two stores are not one transaction. Lead ruling R18 makes the gap fail closed:
   - If the attachment write fails or is refused after the routine was created, the same handler deletes the routine and returns the error. It deletes only a routine it created in that call; a failed reattach leaves the existing routine as it was.
   - A crash between the two writes, or a failed cleanup, leaves a `template-run` routine with no active attachment (an orphan). Its fire refuses `attachment-missing` and starts nothing. The schedule list shows it as "needs reattach or delete". The host never repairs it: it does not attach it, delete it or guess a version for it.
-- A scheduled run's project comes only from the scope snapshot on its attachment (R21, §2.4), never from the live `WorkflowTemplate.scope`: `{ kind: "project", projectRoot }` gives the project root; `{ kind: "all" }` runs with no project (folder kind, §3.3). When the template's current scope no longer equals the snapshot, the fire refuses `scope-changed`, starts nothing, and the schedule list shows "needs reattach".
+- A scheduled run's project comes only from the scope snapshot on its attachment (R21, §2.4), never from the live `WorkflowTemplate.scope`: `{ kind: "project", projectRoot }` gives the project root; `{ kind: "all" }` runs with no project (folder kind, §3.3). The fire handler calls the shipped `attachmentScopeMatches(attachment, template)` before it creates anything. When the template's current scope no longer equals the snapshot, or the record has no snapshot (a record written before `51d5d582f`), the fire refuses `scope-changed`, starts nothing, and the schedule list shows "needs reattach". The schedule list uses the same function for its row state.
 - An envelope on a read-only stage qualifies only if it says `writePaths: []` and `outputs: []` explicitly, because the defaults are `["**"]` and `["branch"]`.
 - One active attachment per `scheduleId`. Attaching the same routine again sets `detachedAt` on the prior record and adds a new one with a new `id`; detached records keep their pins.
 - A fire creates a new board item for that run (R7) and starts it. The source is built from the stored attachment only.
@@ -675,7 +697,7 @@ The lane is keyed on the registry entry, which exists only for a session the eng
 | 7 | read inside; write inside; sandboxed shell with no unproven or destructive signal; a sandboxed connection to an envelope host | allow (`sandbox-auto` for the shell) |
 | 8 | sandboxed shell with an unproven or destructive signal; a declared tool (`mcpReadOnlyTools`, `mcpGenerationTools`, `pluginGenerationTools`). For a generation tool the reviewer is given its declared `effect` and `dataSent`. | reviewer: low or medium and breaker closed → allow; anything else → deny `reviewer-denied` |
 
-`permission-manager.ts` attaches `unattended` from the registry and, for such a request, does not look up allow rules, remembered grants, floor-session grants or run grants, and does not read the mode. Deny rules still apply. Step 8 uses the pipeline's existing review-required intermediate; for a lane session the manager never turns it into a card: with no reviewer evidence the final result is deny. Every deny is reported through `onDenied`. The envelope's forbidden contents are refused again here even though WT-2 refuses them at confirmation. WT-2's check is on the declaration only (names and the declared `effect`); this lane owns the run-time side: resolving each declared name in the tool registry, classifying its real effect, and denying a declared tool whose real effect is a publishing action (a "generate" tool that publishes). `dataSent` is not part of any of this: it is disclosed to the reviewer in step 8 and no step allows or denies on it (R19). An exfiltration signal still denies in step 4, whatever the flag says.
+`permission-manager.ts` attaches `unattended` from the registry and, for such a request, does not look up allow rules, remembered grants, floor-session grants or run grants, and does not read the mode. Deny rules still apply. Step 8 uses the pipeline's existing review-required intermediate; for a lane session the manager never turns it into a card: with no reviewer evidence the final result is deny. Every deny is reported through `onDenied`. The envelope's forbidden contents are refused here whatever confirmation accepted. At `51d5d582f` WT-2's declaration check covers host shell tools, user-owned surfaces, floor and secret paths, tools broader than the stage's scope, and a generation `effect` other than `generate` or `fetch`. It no longer refuses a tool because of what its name reads as: that name check was removed with R20, so a publishing tool can be declared in a confirmed envelope. This lane is therefore the only place that denies it, and it owns the whole run-time side: resolving each declared name in the tool registry, classifying its real effect, and denying a declared tool whose real effect is a publishing action (a "generate" tool that publishes). `dataSent` is not part of any of this: it is disclosed to the reviewer in step 8 and no step allows or denies on it (R19). An exfiltration signal still denies in step 4, whatever the flag says.
 
 Invariants: no lane decision is `ask` or `ask-forced`; the mode never changes a lane outcome; the reviewer never allows what step 6 denies; a session without a registry entry is decided exactly as today.
 
@@ -718,30 +740,26 @@ Commit: `feat(permissions): unattended isolation profile`.
 
 ## 10. WT-17 — requested outputs (OD-4)
 
-Files: new `src/work-board/workflow/requested-outputs.ts`, new `src/tools/stage-request-output.ts`; changed `stage-run-engine.ts` (the `RequestedOutputHooks` call sites exist from WT-3), `ipc/domains/work-board.ts` (`retry-output`); en/ko.
+Files: new `src/work-board/workflow/requested-outputs.ts`, new `src/tools/stage-request-output.ts`; changed `stage-run-engine.ts` (the `RequestedOutputHooks` call sites exist from WT-3), `ipc/domains/work-board.ts` (`retry-output`); `shared/workflow-template-types.ts` (one member, `remote-not-configured`, added to `WorkflowTemplateErrorCode`); `src/i18n/messages/en.ts` and `ko.ts` (`reasonCodes.remote-not-configured`, and the push failure texts below).
 
 ```ts
-// shipped at bf73b8a6e (shared/workflow-template-types.ts), validated on the board by work-board/template-run-fields.ts
-interface OutputFile { path: string; sha256: string; size: number }
-interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }   // detail ≤ 8192 chars
-// shipped at bf73b8a6e and replaced by lead ruling R20 (WT-2 follow-up lane, pre PR-A, §13):
-//   type RequestedOutputKind = "publish" | "upload" | "post" | "send" | "push" | "merge" | "purchase";
-//   type OutputKindDecl = { kind: "git-push"; remote: string; branch: "run" } | { kind: "tool"; tool: string };
-//   TemplateStage.requestedOutputs?: RequestedOutputKind[];   RequestedOutput.decl: OutputKindDecl
-
-// after the follow-up (R20). Field spellings are the follow-up lane's; the content of an entry is the ruling's.
-type RequestedOutputKind = "upload" | "send-message" | "publish-post" | "external-write" | "other";
-// a closed enum, chosen in the envelope editor. The ruling names these as examples; the follow-up lane fixes the final list.
+// shipped at 51d5d582f (shared/workflow-template-types.ts, lead ruling R20); the first three are exported
+type RequestedOutputKind = "upload" | "send-message" | "publish-post" | "external-write" | "other";   // the final closed list
 interface RequestedOutputDecl {                                           // one template entry; every field is inside graphHash
   kind: RequestedOutputKind;                                              // labels and the gate card only; never used for matching
-  toolName: string;                                                       // the exact tool name; no pattern, no prefix
+  toolName: string;                                                       // the exact tool name; no pattern, no prefix; ≤ 256 chars
   owner: "server" | "plugin" | "host"; ownerId: string }                  // server, plugin: the exact id of the MCP server or plugin that owns the tool; never starts with "host:"
                                                                           // host (C2): ownerId is exactly "host:git", toolName exactly "git_push", kind exactly "external-write"; no other host entry exists
-// TemplateStage.requestedOutputs?: RequestedOutputDecl[]
+// TemplateStage.requestedOutputs?: RequestedOutputDecl[]                 // ≤ 256 entries; stored sorted by owner, ownerId, toolName, kind; two entries with the same owner + ownerId + toolName refuse
 interface RequestedOutput { id: string; decl: RequestedOutputDecl;       // a copy of the matched template entry
   args: string;                                                           // a canonical JSON string, ≤ 32 KiB UTF-8; hashed as these exact bytes
   files?: OutputFile[];                                                   // workspace-relative, hashed by the host at request time; ≤ 5 000 files, ≤ 512 MiB
   summary: string }                                                       // ≤ 400 chars, shown as untrusted text
+// shipped but private to the module; the engine derives both (§2.2). Validated on the board by work-board/template-run-fields.ts
+//   OutputFile      = { path: string; sha256: string; size: number }
+//   OutputExecution = { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }   // detail ≤ 8192 chars
+// shipped (work-board/template-graph.ts): the one strict parser of an entry, used by the graph and by the board
+function parseRequestedOutputDecl(raw: unknown): RequestedOutputDecl;    // throws on a missing or unknown field, an old kind string, a bad host triple, a "host:" id under server or plugin
 
 // WT-17
 function declaredOutputOf(stage: TemplateStage, toolName: string, owner: "server" | "plugin" | "host", ownerId: string): RequestedOutputDecl | undefined;
@@ -750,16 +768,18 @@ interface RequestedOutputHooks {
   accept(a: { stage: TemplateStage; workspaceRoot: string; raw: unknown }): { ok: true; output: RequestedOutput } | { ok: false; code: OutputRefusal };
   execute(a: { run: RunRef; stageId: string; output: RequestedOutput; approvalSurface: WebContents | null }): Promise<OutputExecution>;
 }
-type OutputRefusal = "output-not-declared" | "too-many" | "args-too-large" | "file-outside-workspace" | "file-unreadable" | "needs-human-gate";
+type OutputRefusal = "output-not-declared" | "remote-not-configured" | "too-many" | "args-too-large" | "file-outside-workspace" | "file-unreadable" | "needs-human-gate";
 const MAX_REQUESTED_OUTPUTS = 10;
 ```
+
+The kind-only list, `OutputKindDecl` and the old kind values of the first WT-2 head are gone. A graph or a board record in an old shape refuses; there is no migration, because no released file holds one.
 
 Four different things carry the word "outputs". They are kept apart:
 
 | Name | Where | Meaning |
 | --- | --- | --- |
 | `TemplateStage.outputs?: string[]` | graph | Folder-kind collection globs (§3.3). Nothing to do with this item. |
-| `StageEnvelope.outputs` | graph, default `["branch"]` | `"branch"` is the stage's result on the run branch or in the run output folder (§3); it is not a requested output and needs no approval of its own. The shipped type also lets it hold kind classes. The ruling does not mention this list. Plan default: after R20 a kind entry here grants nothing; the engine reads only the entries below. The follow-up lane decides whether the kind entries are removed. |
+| `StageEnvelope.outputs` | graph, default `["branch"]` | `"branch"` is the stage's result on the run branch or in the run output folder (§3); it is not a requested output and needs no approval of its own. The shipped type also lets it hold `RequestedOutputKind` labels. At `51d5d582f` they stay as metadata with no authority: a kind here grants nothing and no check reads it, so the engine reads only the entries below. One shipped side effect remains: `isAllReadOnlyVersion` needs this list to be empty (§7.2). |
 | `TemplateStage.requestedOutputs?: RequestedOutputDecl[]` | graph | What the stage may request: one entry per exact tool, with its kind and owner id. With or without an envelope, this is the only list the engine matches against. |
 | `WorkItemStageRun.requestedOutputs?: RequestedOutput[]` | board | What the stage actually requested in this attempt. At most 10. |
 
@@ -771,34 +791,66 @@ Declaration and matching (lead ruling R20):
 - `kind` drives labels and the gate card only. It never widens or narrows what matches.
 - A call to a tool that is not declared as a requested output and is not in the envelope is denied when the run is unattended (§8 step 6, `outside-envelope`). With a person present it goes to the normal permission tree (R13).
 - "A stage that declares outputs" means its `requestedOutputs` is not empty.
-- `output-not-declared` is confirmed by the lead. `accept` returns it as the request's `reasonCode`; it has an en and a ko message in `src/i18n/messages/en.ts` and `ko.ts`, and a test that reaches it (below). WT-17 owns it.
+- `output-not-declared` is confirmed by the lead. The code and its en and ko message (`reasonCodes.output-not-declared`) shipped at `51d5d582f`, but nothing there can produce it: no store operation matches a request. WT-17 must emit it: `accept` returns it as the request's `reasonCode`, the execution-time match returns it again, and a test reaches it (below).
+- What WT-17 must call or keep, from the WT-2 handoff: match by exact `toolName` + `owner` + `ownerId` at request and at execution; use `kind` for labels only; keep the `resultHash` and `outputHash` approval binding; copy the matched entry into `RequestedOutput.decl`, which the board validates with `parseRequestedOutputDecl`.
 
-The git push target (lead choice C2):
+The git push target (lead choice C2, lead ruling R22):
 
-- A push is declared like any other requested output, as one exact entry: owner id `host:git`, tool name `git_push`, kind `external-write`. The entry is inside `graphHash` with the rest of the stage. It replaces the shipped `{ kind: "git-push" }` declaration.
+- A push is declared like any other requested output, as one exact entry: owner `host`, owner id `host:git`, tool name `git_push`, kind `external-write`. The entry is inside `graphHash` with the rest of the stage. This is the shipped shape at `51d5d582f`; the earlier `{ kind: "git-push" }` declaration is gone.
 - `host:git` is an engine-owned owner id. It is not a server and not a plugin, and nothing can register under it. Matching is the same string equality as for every other entry, so this is one declared target and not a host table from tool names to kinds: the rules above and the invariant below hold unchanged.
 - `git_push` is not a tool. It is in no tool registry and in no model tool schema, for any session, attended or unattended. A stage asks for a push only by recording a request with `stage_request_output`, which executes nothing.
 - The engine performs the push itself, after the human gate was approved with matching `resultHash` and `outputHash`, and never before. It is a host git call through `host-git.ts` (§3.2). No model turn is involved and no tool call is created, so the gate approval is its approval.
 - The `host:` owner prefix is reserved, as a namespace of its own with no alias:
-  - Manifest validation refuses any plugin id and any MCP server id that starts with `host:`. For plugins the check sits with `isValidPluginId` (`src/plugins/public-contract.ts`), whose pattern at `9ead78a61` already admits no `:`; the refusal is made explicit and tested so a later pattern change cannot open it. The validator of MCP server ids was not located; finding it is the first task of the follow-up lane (§13.1).
-  - Template validation refuses a `server` or `plugin` entry whose owner id starts with `host:`, and a `host` entry that is not exactly the triple above.
+  - All three refusals shipped at `51d5d582f`, each with its test; none is left for the engine.
+  - Plugin: the manifest name grammar (`schemas/plugin-manifest.schema.json`) admits no `:`, so a manifest named `host:git` fails shape validation. The spoofing test goes through the real validator (`src/plugins/__tests__/agent-plugin-manifest.test.ts`).
+  - MCP server: `validateServer` (`src/mcp/mcp-governance.ts`) refuses a server id that starts with `host:` before any other check, with an en and a ko message (`be_mcpGovernance.reservedHostOwner`).
+  - Template: `parseRequestedOutputDecl` refuses a `server` or `plugin` entry whose owner id starts with `host:`, and a `host` entry that is not exactly the entry above.
   - A refused id is refused. It is never renamed, mapped or treated as another owner.
-- Lanes: the entry shape, the template validation and the manifest refusal with its spoofing test are the WT-2 follow-up lane's (§13.1). The engine push after the gate is WT-17's.
-- C2 does not say which remote and branch are pushed, or whether the push may use the user's credentials. Plan defaults, both fail closed (R22, §14.3): the request's `args` name a remote by the name it already has in the user's repository, never a URL; only the run branch `ave/workflow/<run>` is pushed, never forced; the call has the hardening of every host git call (no credential helper, no terminal prompt). A request in a run whose workspace is not the git kind, or one that names an unknown remote, is executed as `failed` and sends nothing.
+- Lanes: the entry shape, the template validation and the three refusals are WT-2's and shipped (§13.1). The engine push after the gate is WT-17's.
+
+Which remote, which ref and whose credentials (lead ruling R22). The ruling allows the engine push to use the git credentials the user already configured, inside these bounds. It replaces the rev5 default, which used no credential helper.
+
+- Remote. The request's `args` are exactly `{ "remote": "<name>" }` as canonical JSON, and `<name>` is a remote that is already configured in the project repository. `args` is inside `outputHash`, so the approval is bound to that remote name. The engine never adds or edits a remote and never hands git a URL.
+- `remote-not-configured`. A request whose `remote` is a URL, a path, or a name the repository does not have is refused with this code. It is checked twice:
+  - At request: `accept` refuses it, so nothing reaches the gate. A run whose workspace is not the git kind has no repository and no remote, so this refusal covers it too.
+  - At execution: the host looks the remote up again, because the repository can change after the request. A remote that is no longer configured ends the execution `failed` with the same code, and nothing is sent.
+- The card. The gate shows the remote name, the push URL the host resolved for it from the repository's configuration, and the branch. The URL is shown with any user-info part removed.
+- Ref. Only the run branch is pushed, to the branch of the same name on the remote: the one refspec `refs/heads/ave/workflow/<run>:refs/heads/ave/workflow/<run>`. No force in any form (no force flag, no lease, no `+` refspec), no tags (tag following is off for the call), no other ref, no deletion and no mirror.
+- Who pushes. The host engine, through the one push function in `host-git.ts` (§3.2). A stage, a grandchild and the model never run it and never see it (C2 above).
+- Credentials. The push uses the user's own credential helper or SSH agent, as the user's git would. It runs with `GIT_TERMINAL_PROMPT=0` and with `GIT_ASKPASS` unset, and nothing may prompt: a push that would have to ask for a user name, a password or a passphrase fails instead. The engine supplies no credential, reads none and stores none.
+- Where credentials never appear: in a stage session or its environment (§9 keeps the stage's own environment scrubbed, with no credential helper and no agent socket), in anything given to the model, in a log line, in the audit log, and in the run record.
+- The record. The execution stores only the remote name, the host part of the URL, the branch, the pushed commit SHA and the exit result. They go into the shipped `OutputExecution.detail` as one canonical JSON string (≤ 8192 characters); no field is added. The full URL is not stored.
+- Failures. Each of these ends the execution `failed`, sends nothing more and is not retried:
+  - Authentication: the card shows "push failed: authentication" with git's own message, sanitized (user-info parts of URLs and credential-shaped values removed by the existing redaction, bounded by `detail`).
+  - A run whose workspace is not the git kind.
+  - An unknown remote (`remote-not-configured`, above).
+  - A non-fast-forward: the remote branch exists and does not contain the run branch's history. Nothing is forced.
+- No retry. The engine never repeats a push by itself. Plan reading of the ruling, the stricter one: `retry-output` also refuses a `host:git` output, so one approval pushes at most once and a new push needs a new request and a new gate (R23, §14.3).
+- Strings. `remote-not-configured` is a new code: WT-17 adds it to `WorkflowTemplateErrorCode` and adds `reasonCodes.remote-not-configured` in en and ko, in the same commit as the check and its test. WT-17 also adds the en and ko text of "push failed: authentication".
 
 Behaviour:
 
 - `stage_request_output` is a builtin given only to a stage child whose pinned stage declares outputs. It records data and executes nothing, so it is read-tier and never asks.
 - The requested outputs are part of the stage run. `outputHash = outputHashOf(output, requestedOutputs)` (shipped, §2.2) binds their approval: it changes when the output text, any request, or the order of the list changes; `args` enters as its exact stored bytes. The stage gate itself is bound by `resultHash` (§2.6). Lead ruling R16: a gate on a stage with requested outputs carries both hashes, and a mismatch on either refuses, so approving the gate is the requested-output approval. The gate shows each one in full: kind, tool name, owner id, arguments, files.
-- `outputHash` is recomputed by the host from the stored stage run whenever it is checked. The ruling does not say whether it is also stored after the rename of the gate field; the plan does not assume it is.
-- A stage that declares outputs must have a human gate. WT-2 refuses the version at confirm for a non-`"branch"` envelope kind (`outputs-need-human-gate`); at `bf73b8a6e` it does not check `stage.requestedOutputs`. The follow-up lane moves that check to the entries; the engine's own refusal (`needs-human-gate`) stays in either case.
+- `outputHash` is recomputed by the host from the stored stage run whenever it is checked. It is not a stored field: at `51d5d582f` the stage run stores `resultHash` only.
+- A stage that declares outputs must have a human gate. At `51d5d582f` WT-2 refuses the version at confirm when `stage.requestedOutputs` is not empty and the gate is not human (`outputs-need-human-gate`), with or without an envelope. The engine's own refusal (`needs-human-gate`) stays as the second check.
 - On approve, the stage is `passed` and the host executes each output as a new host call to exactly the declared tool of the declared owner, through the ordinary tree, with the deciding window as the approver, so each can still ask. It is not a replay: no tool call was parked. Files are hashed again first; a mismatch is `failed` and nothing is sent. The `host:git` entry is the one exception to "a host call to a tool": the engine runs the push itself, as described above.
-- An execution that fails or is denied does not change the stage. `retry-output` reruns one output under the same approved `outputHash`.
+- An execution that fails or is denied does not change the stage. `retry-output` reruns one output under the same approved `outputHash`. It refuses a `host:git` output: a failed push is not retried (R22, above).
 - The lane session never executes an output. In an attended run a stage may still call an outward tool directly through cards; requested outputs are optional there (R13).
 
-Invariants: nothing executes before an approve whose `outputHash` matches; executed arguments are byte-equal to the hashed ones; a target whose tool name and owner id do not equal an entry of the pinned stage is refused at request and again at execution; no code path maps a tool name to a kind; `git_push` is in no tool schema and no model call reaches the engine push; no plugin or MCP server holds an id that starts with `host:`; an output is executed at most once per approval unless the user retries it.
+Invariants: nothing executes before an approve whose `outputHash` matches; executed arguments are byte-equal to the hashed ones; a target whose tool name and owner id do not equal an entry of the pinned stage is refused at request and again at execution; no code path maps a tool name to a kind; `git_push` is in no tool schema and no model call reaches the engine push; no plugin or MCP server holds an id that starts with `host:`; an output is executed at most once per approval unless the user retries it, and a push at most once per approval with no retry; a push names a remote the repository already has and never a URL; a push moves only `ave/workflow/<run>` to the same-named remote branch and never forces; no credential, and no URL user-info part, reaches a stage, the model, a log or the run record.
 
-Tests (`work-board/workflow/__tests__/requested-outputs.test.ts`): `records an output and executes nothing`, `refuses a tool the stage does not declare with reasonCode output-not-declared, which has an en and a ko message`, `refuses a declared tool name under another owner id`, `refuses a name that only starts with or contains a declared tool name`, `the kind of an entry does not change what matches`, `changing an entry's kind, tool name or owner id changes graphHash` (with the follow-up lane's shape), `outputHash changes when an output changes and resultHash does not`, `an approve with the right resultHash and a stale outputHash is refused`, `approve executes each output once through the permission check`, `a file changed after the request is not sent`, `a rejected gate executes nothing`, `a failed output leaves the stage passed and can be retried under the same hash`; `core/__tests__/work-board-stage-outputs.test.ts`: `a scheduled run ends at the gate with outputs pending and nothing sent`, `an undeclared outward call is denied in a scheduled run and raises a card in an attended one`. For the push (C2), in `requested-outputs.test.ts`: `a declared host:git git_push entry is pushed by the engine once, after an approve with matching hashes, and not before`, `a rejected gate pushes nothing`, `git_push is in no tool schema of a stage child or a grandchild`, `a call to a plugin tool named git_push does not match the host:git entry`, `a push request in a folder-kind run, or one that names an unknown remote, is executed as failed and sends nothing`. The spoofing tests belong to the WT-2 follow-up lane (§13.1).
+Tests (`work-board/workflow/__tests__/requested-outputs.test.ts`): `records an output and executes nothing`, `refuses a tool the stage does not declare with reasonCode output-not-declared, which has an en and a ko message`, `refuses a declared tool name under another owner id`, `refuses a name that only starts with or contains a declared tool name`, `the kind of an entry does not change what matches`, `changing an entry's kind, tool name, owner or owner id changes graphHash` (already proven for the shipped shape in `src/main/__tests__/workflow-template-authority.test.ts`; WT-17 does not repeat it), `outputHash changes when an output changes and resultHash does not`, `an approve with the right resultHash and a stale outputHash is refused`, `approve executes each output once through the permission check`, `a file changed after the request is not sent`, `a rejected gate executes nothing`, `a failed output leaves the stage passed and can be retried under the same hash`; `core/__tests__/work-board-stage-outputs.test.ts`: `a scheduled run ends at the gate with outputs pending and nothing sent`, `an undeclared outward call is denied in a scheduled run and raises a card in an attended one`. For the push (C2), in `requested-outputs.test.ts`: `a declared host:git git_push entry is pushed by the engine once, after an approve with matching hashes, and not before`, `a rejected gate pushes nothing`, `git_push is in no tool schema of a stage child or a grandchild`, `a call to a plugin tool named git_push does not match the host:git entry`. The spoofing tests shipped with WT-2 (§13.1).
+
+For the push bounds (R22), the five tests of the ruling, in `work-board/workflow/__tests__/requested-outputs-push.test.ts`, against a local bare repository as the remote:
+
+1. `a push to a configured remote sends only ave/workflow/<run> to the same-named remote branch, with no tag and no other ref`.
+2. `a request that names an unknown remote, or a URL, is refused remote-not-configured, which has an en and a ko message, and nothing is sent`.
+3. `a push whose remote branch has diverged is not forced: it ends failed as a non-fast-forward and the remote branch is unchanged`.
+4. `a push that would need a credential prompt fails with "push failed: authentication" and does not hang` (the call runs with `GIT_TERMINAL_PROMPT=0` and no `GIT_ASKPASS`, under a timeout that fails the test).
+5. `after a push through a credential helper, and after a failed one, the run record, the audit log and the logs hold no credential and no URL user-info part; the record holds only the remote name, the URL host, the branch, the pushed SHA and the exit result`.
+
+With them, for the cases the ruling lists as failures: `a push request in a folder-kind run is refused at request, and an execution of one ends failed and sends nothing`, `a remote removed after the approval ends the execution failed remote-not-configured`, `retry-output refuses a failed push`.
 
 Commit: `feat(work-board): requested outputs executed after the human gate`.
 
@@ -838,7 +890,7 @@ PR-B, in build order: WT-3 → (WT-4, WT-5, WT-7 together) → (WT-6, WT-8 toget
 
 | Item | PR | After | Parallel with | Files it owns alone | Shared files it touches |
 | --- | --- | --- | --- | --- | --- |
-| WT-3 | B | PR-A (WT-1, WT-2, and the WT-2 follow-up lane of §13.1) | — | `src/work-board/workflow/*` except the files named below; `workflow-engine-extensions.ts`; `work-board-stage-run.test.ts`, `work-board-stage-revoke.test.ts` | `work-board-engine.ts`, `work-board-store.ts`, `work-board-types.ts`, `work-board-lifecycle.ts`, `ipc/domains/work-board.ts`, `ipc-channels.ts`, preload, `subagent-runner.ts`, `parent-directive.ts`, `conversation-wiring.ts`; en/ko |
+| WT-3 | B | PR-A (WT-1, and WT-2 at `51d5d582f`, which includes the finished follow-up of §13.1) | — | `src/work-board/workflow/*` except the files named below; `workflow-engine-extensions.ts`; `work-board-stage-run.test.ts`, `work-board-stage-revoke.test.ts` | `work-board-engine.ts`, `work-board-store.ts`, `work-board-types.ts`, `work-board-lifecycle.ts`, `ipc/domains/work-board.ts`, `ipc-channels.ts`, preload, `subagent-runner.ts`, `parent-directive.ts`, `conversation-wiring.ts`; en/ko |
 | WT-4 | B | WT-3 | WT-5, WT-7 | `stage-workspaces.ts`, `workspace-layout.ts`, `workspace-seed.ts`, `host-git.ts`, `permissions/stage-workspace-binding.ts`, their tests, `work-board-stage-isolation.test.ts` | `ave-home-read-boundary.ts`, `asrt-sandbox.ts`, the floor consumer in `permission-manager.ts` (one guarded call; agree the order with WT-5) and the host-tool read check (§3.5); `shared/ave-home.ts` (R2); one line in `workflow-engine-extensions.ts`; en/ko |
 | WT-5 | B | WT-3 | WT-4, WT-7 | `permissions/run-grants.ts`, the permission files of §4, `use-board-approvals.ts` | `permission-manager.ts`; one line in `workflow-engine-extensions.ts`; en/ko |
 | WT-7 | B | WT-3 | WT-4, WT-5 | `stage-verdict.ts`, its tests, `work-board-stage-verdict-run.test.ts` | one line in `stage-gates.ts`; en/ko |
@@ -846,16 +898,18 @@ PR-B, in build order: WT-3 → (WT-4, WT-5, WT-7 together) → (WT-6, WT-8 toget
 | WT-8 | B | WT-3, WT-4, WT-5 | WT-6 | the routine files of §7.1, its tests | `ipc/workflow-template-handlers.ts` (the attach handler; channels and preload already exist); `permission-manager.ts` (after WT-5); en/ko |
 | WT-15 | E | PR-B | WT-16, WT-17 | `unattended-lane.ts`, `unattended-lane-registry.ts`, their tests | `decision-pipeline.ts`, `permission-manager.ts`; one line in `workflow-engine-extensions.ts` |
 | WT-16 | E | PR-B | WT-15, WT-17 | `unattended-isolation.ts`, its tests | `asrt-sandbox.ts`, `egress-runtime.ts`, `tool-scope.ts`, `host-shell-execution-plan.ts`, the shell environment builder, the loaders; one line in `workflow-engine-extensions.ts`; last commit edits WT-8's predicate and the two read-only checks in `main/workflow-template-store.ts` after WT-15 merged |
-| WT-17 | E | PR-B | WT-15, WT-16 | `requested-outputs.ts`, `tools/stage-request-output.ts`, their tests | `stage-run-engine.ts` (hook bodies only), `ipc/domains/work-board.ts`, tool registration; one push function in WT-4's `host-git.ts` for the `host:git` output (C2); en/ko |
+| WT-17 | E | PR-B | WT-15, WT-16 | `requested-outputs.ts`, `tools/stage-request-output.ts`, their tests | `stage-run-engine.ts` (hook bodies only), `ipc/domains/work-board.ts`, tool registration; one push function in WT-4's `host-git.ts` for the `host:git` output (C2), the only call there that may use the user's credentials (R22); one code in `shared/workflow-template-types.ts` (`remote-not-configured`); en/ko |
 | WT-18 | E | WT-15 (denial events), WT-8 | WT-16, WT-17 | `run-budget.ts`, `schedule-breaker.ts`, their tests | `stage-run-engine.ts` (timer), `routines-wiring.ts`, `routines-store.ts` |
 
 One owner per hot permission file within a wave: `permission-manager.ts` is WT-5's (WT-4 adds one guarded call at the floor site in the same wave), then WT-8's, then WT-15's; `asrt-sandbox.ts` is WT-4's, then WT-16's; `decision-pipeline.ts` and `tool-scope.ts` have one editor each. `stage-run-engine.ts` in PR-E: WT-17 edits the output hook bodies, WT-18 the budget timer; different functions, but the two lanes should agree the order before merging.
 
-The parallel claims hold only because every seam the later lanes need lands before them. Shipped with WT-2 (`bf73b8a6e`): the `workspace`, `blocked`, `requestedOutputs`, `outputExecutions`, `usage`, `runStartedBy`, `runWorkspace` and `stageJoins` fields with board-file validation; `outputHashOf`; `beginRun(…, pin?)` and `updateStageRun`; both authority source members as data. WT-3 pre-lands the rest: the provider interface with `open` / `prepare` / `seal` / `integrate` / `release` / `sweep` and their call sites; the gate registry's `promptSuffix`; `RunScopeHooks`, `LaneHooks` and `RequestedOutputHooks` with the signatures of §2.2 and §10; the host-minted `unattendedStage` spawn input; the authority function; the `resultHash` and `outputHash` checks in `decideStageGate`. If WT-3 ships without one, the lane that needs it adds it and is no longer parallel-safe on that file. No two lanes add cases to the same test file, except WT-8's one added case in `work-board-stage-run.test.ts`, which lands after WT-3.
+The parallel claims hold only because every seam the later lanes need lands before them. Shipped with WT-2 (`51d5d582f`): the `workspace`, `blocked`, `requestedOutputs`, `outputExecutions`, `usage`, `runStartedBy`, `runWorkspace`, `stageJoins` and `resultHash` fields with board-file validation; `outputHashOf`; `beginRun(…, pin?)` with its `project-mismatch` check, and `updateStageRun`; both authority source members as data, `projectRoot` included; `approvedScope` and `attachmentScopeMatches`; the declared-output entry and `parseRequestedOutputDecl`; the four reason codes with their en and ko strings. WT-3 pre-lands the rest: the derived aliases of §2.2 and `resultHashOf`; the provider interface with `open` / `prepare` / `seal` / `integrate` / `release` / `sweep` and their call sites; the gate registry's `promptSuffix`; `RunScopeHooks`, `LaneHooks` and `RequestedOutputHooks` with the signatures of §2.2 and §10; the host-minted `unattendedStage` spawn input; the authority function; the `resultHash` and `outputHash` checks in `decideStageGate`. If WT-3 ships without one, the lane that needs it adds it and is no longer parallel-safe on that file. No two lanes add cases to the same test file, except WT-8's one added case in `work-board-stage-run.test.ts`, which lands after WT-3.
 
-## 13. Types WT-2 shipped (PR-A, `bf73b8a6e`)
+## 13. Types WT-2 shipped (PR-A, `51d5d582f`)
 
-This section records what shipped; it is no longer a request. Files: `src/shared/workflow-template-types.ts` (data shapes), `src/shared/workflow-template-output.ts` (`outputHashOf`, canonical JSON), `src/work-board/template-graph.ts` (intake, `graphHashOf`, `validateStageForConfirm`, `isAllReadOnlyVersion`), `src/work-board/template-run-fields.ts` (board-field validation), `src/main/workflow-template-store.ts` (store), `src/main/workflow-template-decision.ts` (decision proof), `src/ipc/workflow-template-handlers.ts` (IPC). Where the SSOT spelled out a shape the code kept it, so confirmed hashes stay valid. Everything in the first block is inside `graphHash`; a field added to the hash later would invalidate confirmed versions. The R20 entry fields are such a change, which is why they land in the WT-2 follow-up lane before PR-A merges, while no confirmed version exists outside development data (see the list at the end of this section).
+This section records what shipped at `51d5d582f` (branch `wt/2-store-b`); it is not a request. That head is the first WT-2 head `bf73b8a6e`, plus the review fixes of `9ead78a61`, plus the follow-up for the lead rulings (§13.1), which is finished. Files: `src/shared/workflow-template-types.ts` (data shapes), `src/shared/workflow-template-output.ts` (`outputHashOf`, `canonicalWorkflowJson`), `src/work-board/template-graph.ts` (intake, `graphHashOf`, `validateStageForConfirm`, `isAllReadOnlyVersion`, `parseRequestedOutputDecl`, `attachmentScopeMatches`), `src/work-board/template-run-fields.ts` (board-field validation), `src/main/workflow-template-store.ts` (store), `src/main/workflow-template-decision.ts` (decision proof), `src/ipc/workflow-template-handlers.ts` (IPC). Everything in the first block is inside `graphHash`; a field added to the hash later would invalidate confirmed versions. The R20 entry fields were such a change. They shipped before PR-A merges, while no confirmed version exists outside development data, and a graph in the older kind-only shape refuses with no migration. A graph with no declared outputs hashes as before.
+
+In the blocks below, a name the engine imports is exported at `51d5d582f`, with these exceptions, which are private to `workflow-template-types.ts` and shown only for their shape: `StageGate`, `TemplateEdge`, `TemplateConfirmation`, `WorkflowTemplateDraft`, `RunPin`, `LaneBlockCode`, `OutputFile`, `OutputExecution` and `JoinConflict`. The engine derives the ones it needs (§2.2).
 
 ```ts
 // ---- inside graphHash (shared/workflow-template-types.ts) ----
@@ -871,7 +925,7 @@ interface TemplateStage {
   allowSubAgents: boolean;                  // D2; always stored; false unless set
   gate: StageGate;
   envelope?: StageEnvelope;                 // OD-2; absent = the stage cannot run unattended unless the version is all read-only
-  requestedOutputs?: RequestedOutputKind[]; // §10; R20 replaces the entry with { kind, toolName, owner id } (follow-up lane)
+  requestedOutputs?: RequestedOutputDecl[]; // §10 (R20); ≤ 256; sorted by owner, ownerId, toolName, kind; a duplicate owner + ownerId + toolName refuses; omitted when empty
   inputFiles?: StageInputDecl[];            // W1 folder kind; ≤ 64; default: every upstream stage's collected files
   outputs?: string[];                       // W1 folder kind: globs relative to the stage workspace; default ["**"]; ≤ 32 entries
 }
@@ -879,23 +933,24 @@ type StageInputDecl = { from: "project"; paths: string[] } | { from: "stage"; st
 type StageGate = { type: "human" } | { type: "auto";
   pass: { kind: "stage_ok" } | { kind: "check_exit_zero"; command: string } | { kind: "model_verdict" } };   // D9
 
-type RequestedOutputKind = "publish" | "upload" | "post" | "send" | "push" | "merge" | "purchase";
+type RequestedOutputKind = "upload" | "send-message" | "publish-post" | "external-write" | "other";
+interface RequestedOutputDecl { kind: RequestedOutputKind; toolName: string; owner: "server" | "plugin" | "host"; ownerId: string }   // §10; the host entry is exactly host:git / git_push / external-write
 interface StageGenerationTool { name: string; effect: "generate" | "fetch"; dataSent: boolean }   // dataSent is required: does the tool send stage data out
 interface StageEnvelope {
   tools: string[];                          // exact builtin names; never broader than toolScope
   writePaths: string[];                     // globs relative to the stage workspace; default ["**"]
   readRoots: string[];                      // absolute read-only roots outside the workspace; default []
   network: { host: string; port?: number }[];          // default []
-  commands: string[];                       // command prefixes; a ceiling, not a boundary; must cover every template setupCommand (shipped: on every stage with an envelope; C3 narrows it to all-tools stages, §13.1)
+  commands: string[];                       // command prefixes; a ceiling, not a boundary; no shipped check compares them with the template's setupCommands (§3.4)
   mcpReadOnlyTools: string[];               // "server.tool" names that declare readOnlyHint; default []
   mcpGenerationTools: StageGenerationTool[];      // default []; never on a read-scope stage
   pluginGenerationTools: StageGenerationTool[];   // default []; never on a read-scope stage
-  outputs: ("branch" | RequestedOutputKind)[];    // default ["branch"]; §10
+  outputs: ("branch" | RequestedOutputKind)[];    // default ["branch"]; a kind here is a label with no authority (§10)
   budget: { rounds: number; minutes: number; costUsd: number };   // all required; rounds a positive integer, minutes > 0, costUsd ≥ 0
 }
 ```
 
-There is no `declaredTools` and no `sendsInputsTo`. A tool an envelope declares is a read-only MCP tool, or a generation or fetch tool with its data-sent flag. A publishing tool is never allowed: intake refuses any name in `tools`, `mcpReadOnlyTools` or a generation list, and any generation `effect`, that reads as publish, upload, post, send, push, merge, purchase or deploy (`forbidden-envelope-tool`, reported at confirm as `outward-tool-declared`). An outward action is reachable only as a requested output (§10).
+There is no `declaredTools` and no `sendsInputsTo`. A tool an envelope declares is a read-only MCP tool, or a generation or fetch tool with its data-sent flag. A publishing tool is never allowed to run from an envelope, but at `51d5d582f` the declaration no longer says so by itself. Intake still refuses a generation `effect` other than `generate` or `fetch`. The check that refused a tool by what its name reads as, and its codes (`forbidden-envelope-tool`, `outward-tool-declared`), were removed together with the name-pattern inference that R20 forbids. So a confirmed envelope can name a publishing tool, and the denial is run-time only: WT-15 denies a declared tool whose name or registry effect is a publishing action (§8 step 6) and WT-16 keeps it out of the tool schema (§9). An outward action is reachable only as a requested output (§10).
 
 ```ts
 // ---- not in graphHash: stored records (shared/workflow-template-types.ts) ----
@@ -910,10 +965,12 @@ interface WorkflowTemplateRecord { template: WorkflowTemplate; versions: Templat
 interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }   // scheduleId is the routine id
 interface ScheduleAttachment extends ScheduleAttachmentInput {
   id: string;                                                   // stable UUID, new for every approval
+  approvedScope?: TemplateScope;                                // R21: the scope the attach approval was checked for, a project with its resolved root; always written by attachSchedule
+                                                                // optional only so a record written before 51d5d582f still loads; such a record is scope-changed when used
   who: string; at: string;                                      // at = the proof's decidedAt
   origin: "local-desktop" | "tailnet-surface";
   detachedAt?: string;                                          // history is kept; one active record per scheduleId
-}                                                               // no scope or projectRoot at bf73b8a6e; R21 adds the approved-scope snapshot (follow-up lane)
+}
 
 // ---- main only (main/workflow-template-decision.ts) ----
 /** Opaque: a private symbol brand plus WeakSet membership. An object with the same public fields is refused. */
@@ -925,8 +982,8 @@ function assertHostDecisionProof(proof: HostDecisionProof): void;   // today als
 class WorkflowTemplateStore {
   get(id: string): Promise<WorkflowTemplateRecord>;             // throws "template-not-found"
   resolveVersion(pin: TemplateVersionPin): Promise<TemplateVersion>;   // throws "template-not-found" | "unknown-version" | "graph-hash-mismatch"
-  confirmDraft(id, input: { expectedGraphHash: string; expectedDraftRevision: string }, actor: { who: string; origin }): Promise<TemplateVersion>;   // named confirm at bf73b8a6e; "envelope-refused" carries refusals
-  attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof): Promise<ScheduleAttachment>;
+  confirmDraft(id, input: { expectedGraphHash: string; expectedDraftRevision: string }, actor: { who: string; origin }): Promise<TemplateVersion>;   // "envelope-refused" carries refusals
+  attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope): Promise<ScheduleAttachment>;   // throws "scope-changed" when approvedScope differs from the template's scope; writes nothing then
   detachSchedule(id: string, proof: HostDecisionProof): Promise<boolean>;
   getAttachment(id: string): Promise<ScheduleAttachment | null>;
   listByTemplate(templateId: string): Promise<ScheduleAttachment[]>;   // includes detached records
@@ -938,8 +995,12 @@ class WorkflowTemplateStore {
 function graphHashOf(graph: unknown): string;                   // sha256 of the canonical whole graph: stages, edges, setupCommands
 function validateStageForConfirm(stage: TemplateStage, template: TemplateGraph): EnvelopeRefusal[];   // declaration checks only
 type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor-target" | "secret-path" | "user-owned-surface"
-  | "outward-tool-declared" | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
+  | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
+// outputs-need-human-gate: stage.requestedOutputs is not empty and the gate is not human. setup-outside-commands: setup commands with no all-tools stage (C3)
 function isAllReadOnlyVersion(graph: TemplateGraph): boolean;   // §7.2
+function parseRequestedOutputDecl(raw: unknown): RequestedOutputDecl;   // §10; the one strict parser, for graph and board
+function attachmentScopeMatches(attachment: { approvedScope?: TemplateScope }, template: { scope: TemplateScope }): { ok: true } | { ok: false; code: "scope-changed" };   // §2.4; no snapshot, another kind or another real path all refuse
+type WorkflowTemplateErrorCode = /* … */ | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared" | /* … */;   // each has reasonCodes.<code> in en and ko
 function outputHashOf(output: string, requestedOutputs: readonly RequestedOutput[]): string;   // §10
 ```
 
@@ -951,7 +1012,10 @@ How the engine uses these names (the adapter the WT-2 report asked for is this m
 | The pinned version, verified | `resolveVersion(pin)` | `unknown-version` → `version-missing`; `graph-hash-mismatch` → `graph-mismatch`. |
 | Attachment by id | `getAttachment(id)` | `null` → `attachment-missing`; `detachedAt` set → `attachment-detached`. |
 | Schedules of a template, of a routine | `listByTemplate`, `listByRoutine` | Filter on `detachedAt` for the active ones. |
-| Attach, detach | `attachSchedule`, `detachSchedule` | Only from the IPC handlers, with a minted proof. |
+| Attach, detach | `attachSchedule`, `detachSchedule` | Only from the IPC handlers, with a minted proof. Attach also takes the scope the handler authorised. |
+| Is the attachment still approved for the template's scope | `attachmentScopeMatches(attachment, record.template)` | `{ ok: false }` → `scope-changed`. Called at fire (WT-8) and at start and before every spawn (WT-3). |
+| The project a `Create and run` approval was given for | `source.projectRoot` on the `local-create-and-run` source; `beginRun` compares it with the item's project | A thrown `project-mismatch` is the verdict of the same name. WT-3 mints the field from the card. |
+| A declared-output entry, parsed | `parseRequestedOutputDecl(raw)` | WT-17 uses it for the copy it stores in `RequestedOutput.decl`; matching is WT-17's own string equality (§10). |
 
 Confirmation keeps its `actor` parameter and takes no proof; the attachment writer is the boundary that takes one. Static confirmation is not run-time qualification: `validateStageForConfirm` checks declarations against a conservative known-read set and the existing floor and secret classifiers. Tool-registry resolution, real effect classification, the isolation proof and run-time target checks belong to WT-15 and WT-16 (§8, §9).
 
@@ -976,7 +1040,7 @@ WorkItemStageRun:
   usage?: { rounds: number; startedAt: string; denials: number; costUsd?: number }
   childSessionId?; startedAt?; endedAt?
   output?: string                                                // ≤ 48 000 characters; the engine truncates before storing
-  resultHash?: string                                            // the gate binding; named outputHash at bf73b8a6e, renamed at 9ead78a61
+  resultHash?: string                                            // the gate binding; a 64-character hex hash; computed by WT-3's resultHashOf (§2.6)
   gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?; decidedAt?; revision: number; judgedBy?: "host" | "model" }
        | { type: "auto"; passed: boolean; evidence: string; evaluatedAt: string; judgedBy?: "host" | "model" }
 
@@ -993,21 +1057,31 @@ store.updateStageRun(id, runId, mutate: (item) => WorkItem | null)      // one l
 
 Compatibility noted by WT-2: attachment records written by an earlier development snapshot without `id`, or failing the read-only rule, fail closed; no migration exists.
 
-### 13.1 WT-2 follow-up lane (pre PR-A)
+### 13.1 WT-2 follow-up: shipped at `51d5d582f`
 
-The shapes above are what shipped at `bf73b8a6e`; `9ead78a61` changed only what the comments above and the R16 row below say. The lead rulings need the changes below from WT-2. They land in one WT-2 follow-up lane before PR-A merges, so no released file holds the old shapes. Field spellings and refusal codes are that lane's to choose; this plan fixes only what each change must do. Until the lane lands, the engine's own checks named in the last column hold.
+The changes the lead rulings needed from WT-2 are finished and are part of `51d5d582f`. Nothing in this section is left for WT-2. The follow-up changed no fire code and no engine code, so the last column says what the engine items must call or add.
 
-| Ruling | Change in WT-2 | Kind | Engine check that does not depend on it |
-| --- | --- | --- | --- |
-| R16 | The stage-run gate field `outputHash` is renamed `resultHash`, in `WorkItemStageRun` and in the run-history summary. Already shipped at `9ead78a61`, with the board-field validation. Left for the lane: `resultHash` = sha256 of the stored stage output, and the name of its helper. | shape (board) | `decideStageGate` recomputes both hashes (§2.6). |
-| R17, as refined by C3 | Validation refuses `setupCommands` only when the template has no stage with `toolScope: "all"`. A mixed template is accepted. The shipped `setup-outside-commands` check is narrowed to all-tools stages, so a read-scope stage's envelope need not cover commands it never runs. Tests in this lane: `a template with a read-scope stage, an all-tools stage and setup commands validates and confirms`, `a template whose stages are all read-scope is refused when it has setup commands`, `a read-scope stage's envelope that does not cover the setup commands does not refuse a mixed template`. | validation (intake and confirm) | `buildStagePrompt` gives setup commands to all-tools stages only (§2.5, §3.4). |
-| C2 | The `host:` owner prefix is reserved. Manifest validation refuses a plugin id or an MCP server id that starts with it; nothing is aliased. Template validation accepts exactly one host entry, `host:git` / `git_push` / `external-write`, and refuses a server or plugin entry whose owner id starts with `host:`. Tests in this lane: `a plugin manifest that claims the id host:git is refused` (the spoofing test), `an MCP server id that starts with host: is refused`, `a template entry with owner plugin and owner id host:git is refused`, `a host entry with another tool name, owner id or kind is refused`. WT-17 implements the push itself (§10). | validation (manifest and template) and shape (the host owner) | `declaredOutputOf` matches by string equality on owner, owner id and tool name, and the engine push runs only for the `host` owner (§10). |
-| R20 | Each `TemplateStage.requestedOutputs` entry becomes `{ kind, toolName, owner id }`, with `kind` a closed enum, all inside `graphHash`. The board `RequestedOutput.decl` carries the same three fields. `outputs-need-human-gate` checks these entries. The kind-only list, `OutputKindDecl` and the old `RequestedOutputKind` values go. | shape (graph and board) and validation | `accept` matches by exact tool name and owner id and refuses anything else (§10). |
-| R21 | `ScheduleAttachment` gains the approved scope snapshot: `{ kind: "all" }` or the project's real path. `attachSchedule` stores the scope the handler checked and refuses when it differs from the template's scope at that moment. The `local-create-and-run` source gains the project root shown on the card. File validation refuses an attachment with no snapshot. | shape (attachment record and run source) and validation | `authoriseRunSource` refuses `scope-changed` for a missing or different snapshot and `project-mismatch` for another project (§2.4). |
+| Ruling | What shipped in WT-2 | What WT-3, WT-8 or WT-17 must do |
+| --- | --- | --- |
+| R16 | `resultHash` on `WorkItemStageRun` and in the run-history summary, validated as a 64-character hex hash. No helper computes it, and `outputHash` is not a stored field. | WT-3 adds `resultHashOf`, stores the hash at `awaiting_gate`, and `decideStageGate` recomputes both hashes (§2.6). |
+| R17, as refined by C3 | Intake (`canonicalTemplateGraph`) and confirm (`validateStageForConfirm`) refuse `setup-outside-commands` only when the template has setup commands and no stage with `toolScope: "all"`. A mixed template confirms. The comparison of setup commands with a stage's envelope `commands` is gone. | WT-3: `buildStagePrompt` gives setup commands to all-tools stages only (§2.5, §3.4). WT-15: a setup command outside the envelope of the stage that runs it is denied at run time (§8 step 6); confirmation no longer checks it. |
+| R20 | The declared-output entry is `{ kind, toolName, owner, ownerId }`, exported as `RequestedOutputDecl`, with `kind` the closed `RequestedOutputKind` and `owner` one of `server`, `plugin`, `host`. All four fields are inside `graphHash`. Entries are stored sorted by owner, owner id, tool name, kind; a duplicate owner + owner id + tool name refuses; a missing or unknown field and an old kind string refuse. Graph and board share one parser, `parseRequestedOutputDecl`. `outputs-need-human-gate` is decided from the entries, with or without an envelope. The inference of a tool's effect from its name is removed, with its refusal codes. `StageEnvelope.outputs` keeps kind labels as metadata with no authority. | WT-17: match by exact `toolName` + `owner` + `ownerId` at request and again at execution; use `kind` for labels only; keep the `resultHash` and `outputHash` approval binding; emit `output-not-declared` (§10). WT-15 and WT-16: the denial of a publishing tool in an envelope is theirs alone now (§8, §9). |
+| C2 | The `host:` owner prefix is refused in three places, each tested. Template: `parseRequestedOutputDecl` accepts exactly one host entry, `host:git` / `git_push` / `external-write`, and refuses a `server` or `plugin` entry whose owner id starts with `host:`. MCP: `validateServer` (`src/mcp/mcp-governance.ts`) refuses such a server id, with an en and a ko message. Plugin: the manifest name grammar admits no `:`, proven through the real shape validator. | WT-17 implements the engine push and its bounds (§10, R22). Nothing about the reservation is left. |
+| R21, schedule | `ScheduleAttachment.approvedScope`. The attach handler resolves and authorises the project root (`scope-not-authorised` otherwise) and passes that scope as the third argument of `attachSchedule`. The store compares it with the template's scope inside its write queue, refuses `scope-changed` without writing on a difference, and stores a copy. File validation lets a record with no snapshot load, so records written before this head still read, and refuses a malformed one (`invalid-template-file`). `attachmentScopeMatches`, exported from `work-board/template-graph.ts`, returns `scope-changed` for a missing snapshot, another kind and another real path, in both directions. | WT-3 and WT-8 must call `attachmentScopeMatches` at fire and before every spawn, take the run's project only from `approvedScope`, and require a new attach for a missing or different snapshot; nothing repairs one (§2.4, §7.2). |
+| R21, `Create and run` | The `local-create-and-run` source carries `projectRoot?`, absent when the approval is for no project. The board validates its shape. `beginRun` throws `project-mismatch` before it writes when it differs from the item's project. | WT-3 must put the approved card's project root into `source.projectRoot` and check scope authorisation again at start and before every spawn. No shipped code builds the source or the card (§2.4). |
+| Reason codes | `scope-changed`, `project-mismatch`, `scope-not-authorised` and `output-not-declared` are members of `WorkflowTemplateErrorCode` and have `reasonCodes.<code>` in the en and ko catalogs. Shipped tests reach `scope-changed` (helper and attach), `project-mismatch` (`beginRun`) and `scope-not-authorised` (the draft, confirm and attach handlers). `output-not-declared` has no producer in WT-2. | WT-3: return the first three from `authoriseRunSource`, each with a test that reaches it from the engine (§2.9). WT-17: produce `output-not-declared` in `requested-outputs.ts`, and add `remote-not-configured` as a new code with en and ko strings and its test (§10). |
 
-WT-3 starts after this lane, as it starts after PR-A (§12). WT-17 additionally needs the R20 and C2 rows; WT-8 needs the R21 row.
+Exports. The rev5 review found that four types the plan told the engine to import are private at the WT-2 head. At `51d5d582f` the private ones are `RunPin`, `LaneBlockCode`, `OutputExecution`, `JoinConflict`, `OutputFile` and `StageGate`. The plan no longer imports any of them: the pin is `TemplateVersionPin`, and the others are aliases derived from the exported `WorkItemStageRun`, `StageJoin`, `RequestedOutput` and `TemplateStage` (§2.2). Every name §2.2 imports is exported at `51d5d582f`. WT-2 needs no export change. Should a later item need a shape that cannot be derived, adding that export, and sweeping its consumers, is a WT-3 task and is not assumed here.
 
-The confirmed codes `project-mismatch` and `scope-not-authorised` are engine verdicts (WT-3) and `output-not-declared` is WT-17's. Their reasonCode, en and ko strings and reaching tests are listed with those items (§2.4, §2.9, §10), not in this lane.
+Three shipped facts differ from what rev5 of this plan expected. The plan follows the code in each:
+
+- A stored attachment with no `approvedScope` is not refused when the file loads. It is refused `scope-changed` when it is used, by `attachmentScopeMatches`. The outcome for a run is the same: it fires nothing until someone attaches again.
+- `setup-outside-commands` no longer says anything about envelope `commands`. Coverage of a setup command by the envelope is a run-time question for WT-15.
+- A publishing tool named in an envelope is no longer refused at confirmation. The run-time denial of §8 and §9 is the only one. This weakens what a confirmed version proves, and the lead should know it; the plan adds no declaration check of its own, because a check by name is what R20 removed.
+
+Also unchanged by the follow-up: the shipped detach handler only detaches, and WT-8 changes it for C1 (§7.2). Graphs and board records in the older kind-only shapes refuse on purpose; there is no migration and no compatibility path.
+
+WT-3 starts on `51d5d582f`. WT-17 uses the R20 and C2 rows; WT-8 uses the R21 rows.
 
 ## 14. Open questions
 
@@ -1023,17 +1097,18 @@ The confirmed codes `project-mismatch` and `scope-not-authorised` are engine ver
 | Q14 | A schedule follows its attachment pin; an unattended run never raises tool cards, open window or not. | §2.4, §7.3 |
 | Q16 | Review lane derived from `stageRuns`; `awaiting_approval` never without `planApproval`. | §2.3 |
 | R1 (floor carve-out) | Lead ruling T2: the stage's own workspace is carved out of the protected-path floor for reads and writes, by a host-minted session binding, for the stage session and its grandchildren. | §3.5 |
-| R16 (two hashes) | Lead ruling, accepted: `resultHash` is the sha256 of the stored stage output, computed at `awaiting_gate`. A gate on a stage with requested outputs carries `resultHash` and `outputHash`; a mismatch on either refuses. | §2.6, §10; rename in §13.1 |
+| R16 (two hashes) | Lead ruling, accepted: `resultHash` is the sha256 of the stored stage output, computed at `awaiting_gate`. A gate on a stage with requested outputs carries `resultHash` and `outputHash`; a mismatch on either refuses. | §2.6, §10; field shipped, helper is WT-3's (§13.1) |
 | R17 (setup commands and read-scope stages) | Lead ruling, accepted: setup commands run only in all-tools stages, and each command asks on its own card (W2). A read-only stage never runs them. The ruling's validation wording is replaced by C3 below. | §2.5, §3.4 |
 | R18 (attach writes two stores) | Lead ruling, accepted with fail-closed cleanup: when the attachment write fails after the routine was created, the same handler deletes the routine and returns the error. An orphan routine found later refuses its fire with `attachment-missing`, the schedule list shows "needs reattach or delete", and it is never silently repaired. Both paths are tested in WT-8. | §7.1, §7.2, §7.5 |
 | R19 (`dataSent: true` after tainted content) | Lead ruling, accepted: `dataSent` is a disclosure only. No extra rule. | §8 step 8, §9 |
-| R20 (requested-output binding) | Lead ruling: no host table (it would be a plugin-specific branch, against the `AGENTS.md` invariant). Each template `requestedOutputs` entry declares `kind`, a closed enum chosen in the envelope editor, plus the exact `toolName` and the owner id of its server or plugin, all inside `graphHash`. The engine matches calls by exact `toolName` + owner id only, never by pattern. An undeclared call that is not in the envelope is denied when unattended; with a person present it goes to the normal tree. `kind` drives labels and the gate card only. WT-17 is unblocked. | §10; entry fields in §13.1 (WT-2 follow-up lane, pre PR-A) |
-| R21 (scope is not pinned) | Lead ruling, accepted and tightened: the attachment stores the approved scope, with the project's real path (OD-1). A scheduled run resolves its project only from that snapshot, never from the live `WorkflowTemplate.scope`. Fire and every spawn refuse `scope-changed` when the template's current scope no longer matches; the schedule list shows "needs reattach" and nothing is repaired silently. The `Create and run` approval also binds the project root with `(templateId, version, graphHash)`, so a run cannot start on a project other than the card's. Tests: a v1 schedule for A refused after v2 changes the scope to B; a matching scope fires; `Create and run` on a project that differs from the card refused. | §2.4, §2.9, §7.2, §7.5; shapes in §13.1 (WT-2 follow-up lane, pre PR-A, with R17 and R20) |
+| R20 (requested-output binding) | Lead ruling: no host table (it would be a plugin-specific branch, against the `AGENTS.md` invariant). Each template `requestedOutputs` entry declares `kind`, a closed enum chosen in the envelope editor, plus the exact `toolName` and the owner id of its server or plugin, all inside `graphHash`. The engine matches calls by exact `toolName` + owner id only, never by pattern. An undeclared call that is not in the envelope is denied when unattended; with a person present it goes to the normal tree. `kind` drives labels and the gate card only. WT-17 is unblocked. | §10; entry shape shipped at `51d5d582f` (§13.1) |
+| R21 (scope is not pinned) | Lead ruling, accepted and tightened: the attachment stores the approved scope, with the project's real path (OD-1). A scheduled run resolves its project only from that snapshot, never from the live `WorkflowTemplate.scope`. Fire and every spawn refuse `scope-changed` when the template's current scope no longer matches; the schedule list shows "needs reattach" and nothing is repaired silently. The `Create and run` approval also binds the project root with `(templateId, version, graphHash)`, so a run cannot start on a project other than the card's. Tests: a v1 schedule for A refused after v2 changes the scope to B; a matching scope fires; `Create and run` on a project that differs from the card refused. | §2.4, §2.9, §7.2, §7.5; shapes shipped at `51d5d582f` (§13.1) |
 | WT-16 limit lift | Lead ruling: the limit-lifting commit changes `attachSchedule` and the template-file validation together, and a test proves both lift together. | §9 |
 | C1 (detach and routine removal) | Lead choice, confirmed: an explicit detach removes the routine. Plain removal of a `template-run` routine with an active attachment is refused, and the refusal names detach. Changing the shipped detach handler is allowed. Tests cover both paths. | §7.1, §7.2, §7.5; WT-8 |
-| C2 (git push) | Lead choice: a push is declared with the reserved engine-owned owner id `host:git`, tool name `git_push` and kind `external-write`. The engine performs it after the human gate; it is never a model tool call. The `host:` owner prefix is reserved: manifest validation refuses any plugin or MCP server id that starts with it, as a distinct namespace with no alias. Test: a plugin that claims `host:git` is refused. | §10; reservation, validation and spoofing test in §13.1 (WT-2 follow-up lane, pre PR-A); the push in WT-17 |
-| C3 (R17 refined) | Lead choice, replaces the R17 validation wording: setup commands stay template-level and are injected only into all-tools stages. A template with read-scope stages, a host-set plan stage included, may still carry them; they never run there. Validation refuses setup commands only when the template has no all-tools stage. | §2.5, §2.9, §3.4; validation in §13.1 (WT-2 follow-up lane, pre PR-A) |
-| Reason codes | Lead choice: `project-mismatch`, `scope-not-authorised` and `output-not-declared` are confirmed. Each gets a reasonCode with en and ko strings and a test that reaches it. | §2.4, §2.9 (WT-3); §10 (WT-17) |
+| C2 (git push) | Lead choice: a push is declared with the reserved engine-owned owner id `host:git`, tool name `git_push` and kind `external-write`. The engine performs it after the human gate; it is never a model tool call. The `host:` owner prefix is reserved: manifest validation refuses any plugin or MCP server id that starts with it, as a distinct namespace with no alias. Test: a plugin that claims `host:git` is refused. | §10; reservation, validation and spoofing test shipped at `51d5d582f` (§13.1); the push in WT-17 |
+| R22 (push remote, ref and credentials) | Lead ruling: the engine push may use the git credentials the user already configured, bounded. The remote must already be configured in the project repository, is named in `args` and is bound by `outputHash`; an arbitrary URL is refused `remote-not-configured`; the card shows the resolved URL. Only `ave/workflow/<run>` is pushed, to the same-named remote branch, with no force, no tags and no other ref. The host engine pushes, never a stage or the model, with the user's credential helper or SSH agent, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS` unset and no prompt. Credentials never reach a stage, the model, logs or the run record; the record holds only the remote name, the URL host, the branch, the pushed SHA and the exit result. An authentication failure ("push failed: authentication" with git's sanitized message), a folder-kind run, an unknown remote and a non-fast-forward each end `failed` with no retry. Five tests. It replaces the rev5 default, which used no credential helper. | §10 (the git push target, tests), §3.2; `remote-not-configured` with en and ko strings in WT-17 |
+| C3 (R17 refined) | Lead choice, replaces the R17 validation wording: setup commands stay template-level and are injected only into all-tools stages. A template with read-scope stages, a host-set plan stage included, may still carry them; they never run there. Validation refuses setup commands only when the template has no all-tools stage. | §2.5, §2.9, §3.4; validation shipped at `51d5d582f` (§13.1) |
+| Reason codes | Lead choice: `project-mismatch`, `scope-not-authorised` and `output-not-declared` are confirmed. Each gets a reasonCode with en and ko strings and a test that reaches it. The codes and strings shipped at `51d5d582f`; the engine verdicts and their tests are WT-3's and WT-17's. | §2.4, §2.9 (WT-3); §10 (WT-17); §13.1 |
 | C4 (port rule) | Lead clarification: no external product name in committed prose. The only allowed mentions are the licence header and the notices entry. The candidate list of rev4's §15 moves to the PR body. The diff against `origin/main` is swept before PR-A. | §15 |
 | One run per schedule across a reattach | Rev4 review fix under `unattended-review.md` (one run at a time per schedule): admission looks for unsettled runs across every attachment id of the routine, current and detached, through one serialized path. | §2.4, §7.2, §7.5, §11; WT-8 |
 
@@ -1045,7 +1120,7 @@ Two of them still need a code check by the implementing lane before they are rel
 
 ### 14.3 Remaining
 
-R16–R21 and C1–C4 are decided and listed in §14.1. Three points the rulings leave open are handled by plan defaults that fail closed and block nothing: the final `kind` list (R20, the follow-up lane's), whether `outputHash` is stored (R16, not assumed, §10), and the push details of R22 below.
+R16–R22 and C1–C4 are decided and listed in §14.1. Two points rev5 left open are closed by the shipped code: the `kind` list is final (§10), and `outputHash` is not stored (§10). R22 is decided; what its wording leaves to this plan is R23 below.
 
 | # | Question | What the plan does meanwhile |
 | --- | --- | --- |
@@ -1063,17 +1138,20 @@ R16–R21 and C1–C4 are decided and listed in §14.1. Three points the rulings
 | R13 | Do requested outputs and budgets apply to attended runs? | Outputs are optional there; budgets are unattended only. |
 | R14 | Seed and collection bounds (5 000 files, 512 MiB). | As stated. |
 | R15 | A filter driver the repository needs for checkout is not run, so such a repository cannot use git workspaces. Fall back to the folder kind, or refuse? | Refuses `git-unavailable`; no silent fallback. |
-| R22 | C2 fixes how a push is declared and who performs it. It does not say which remote and branch are pushed, or whether the push may use the user's credential helper. | The request's `args` name a remote the user's repository already has, by name; only the run branch is pushed, never forced; no credential helper and no terminal prompt, as for every host git call. Anything else is executed as `failed` and sends nothing (§10). |
+| R23 | Two points in R22 that the plan had to read. "No retry": does it also rule out the user's own `retry-output` for a failed push? And the ruling binds the remote name through `outputHash`, not the URL behind it, which can change in the repository's configuration between the card and the push. | The stricter reading for the first: `retry-output` refuses a `host:git` output, so one approval pushes at most once (§10). For the second the plan adds no mechanism: the push goes to the remote by name, the host resolves the URL again for the push, and the record's URL host shows where it went. Both go to the lead. |
 
 ## 15. Ported code (owner rule, 2026-11-16; lead clarification C4)
 
-An item may port upstream code instead of writing it again, when the upstream licence allows it. This plan names no upstream product in its prose and lists no candidates; the candidates considered for each item are in the PR body.
+The upstream source of this rule is one repository: the one identified in the attribution literal below. This plan names no upstream product in its prose and lists no candidates; the candidates considered for each item are in the PR body.
 
+- Reuse is required, not optional. Where that repository already implements what an item needs, the item ports that source and adapts it to this repository's contracts, instead of writing it again.
+- The eligible source is that repository's own code and those of its dependencies that are under the MIT or the Apache licence. Nothing from another upstream is ported under this rule.
+- The upstream's dependency-injection and service layer is not taken. A port carries the logic and is wired to this repository's own modules.
 - Ported code carries the upstream licence header `Portions adapted from microsoft/vscode <path> @ <commit>, Copyright (c) Microsoft Corporation, MIT License.` and a THIRD-PARTY-NOTICES.md entry under `## microsoft/vscode (Code - OSS)` with the MIT text and the file list, in the same commit.
 - The header goes on each ported file, and on each ported block inside a file that is otherwise this repository's own, with the upstream path and commit filled in.
 - The first port commit adds the notices section and the licence text. Every later commit that adds or changes a port updates the file list in that same commit.
 - A port commit without both the header and the notices entry does not meet this rule. This design change ports nothing and does not edit the notices file.
 - The licence header and the notices heading are the only places where the upstream name appears. Other committed prose, code comments and commit messages do not name it. The diff against `origin/main` is swept for such names before PR-A.
-- Only code under that permissive licence, or under an equally permissive licence of its dependencies, is ported. Nothing proprietary, no trademark or logo, and no asset under another licence is taken.
+- Never used: the same vendor's proprietary extensions and any component that is not under the MIT or the Apache licence; the upstream's extension distribution service, as a source of code or of extensions; the vendor's trademarks and logos. The upstream's icon glyphs are under another licence (CC BY 4.0), which this rule's header and notices entry do not cover.
 - A port is adapted to this repository's contracts and still meets this plan's invariants and boundaries. A port that needs a host capability the plan forbids (for example a host-run command) is not taken.
 - A lane that ports records the upstream path and commit in the header. A lane that finds nothing suitable says so in its report and builds as planned.
