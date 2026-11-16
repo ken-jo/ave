@@ -1,3 +1,4 @@
+import { mintHostDecisionProof } from "../main/workflow-template-decision.js";
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "./gated.js";
 import { broadcastToAppWindows } from "./window-fanout.js";
@@ -26,7 +27,7 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
       if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return { ...UNAUTHORIZED_FRAME, ok: false }; }
       if (!store) return { ok: false, error: "no-store" };
       try { return { ok: true, value: await action(event, ...args) }; }
-      catch (error) { return { ok: false, error: error instanceof WorkflowTemplateError || error instanceof TemplateGestureError || error instanceof TemplateFrameError ? error.code : "storage-error" }; }
+      catch (error) { return { ok: false, ...(error instanceof WorkflowTemplateError && error.refusals ? { refusals: error.refusals } : {}), error: error instanceof WorkflowTemplateError || error instanceof TemplateGestureError || error instanceof TemplateFrameError ? error.code : "storage-error" }; }
     });
   };
   handle(WORK_BOARD.templateList, async (_event, ...args) => {
@@ -51,9 +52,20 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     requireTemplate(args.length === 0 && hasTemplateKeys(raw, ["templateId", "version", "graphHash", "scheduleId"]) && isTemplateId(raw.templateId) && isTemplateVersion(raw.version) && isGraphHash(raw.graphHash) && isTemplateId(raw.scheduleId));
     requireLocalGesture(event, intent, WORK_BOARD.templateAttachSchedule);
     await load(raw.templateId);
-    const result = await store!.attachSchedule(raw as unknown as ScheduleAttachmentInput, { who: "user", origin: "local-desktop" });
-    deps.auditLogger.log({ timestamp: result.at, sessionId: "work-board:" + result.templateId, type: "approval", output: JSON.stringify({ event: "template_schedule_attached", ...result }) });
+    const proof = mintHostDecisionProof("local-desktop");
+    const result = await store!.attachSchedule(raw as unknown as ScheduleAttachmentInput, proof);
+    deps.auditLogger.log({ timestamp: result.at, sessionId: "work-board:" + result.templateId, type: "approval", output: JSON.stringify({ event: "template_schedule_attached", ...result, auditId: proof.auditId }) });
     return result;
+  });
+  handle(WORK_BOARD.templateDetachSchedule, async (event, id, intent, ...args) => {
+    requireTemplate(args.length === 0 && isTemplateId(id));
+    requireLocalGesture(event, intent, WORK_BOARD.templateDetachSchedule);
+    const attachment = await store!.getAttachment(id); requireTemplate(attachment, "template-not-found");
+    await load(attachment.templateId);
+    const proof = mintHostDecisionProof("local-desktop");
+    const detached = await store!.detachSchedule(id, proof);
+    if (detached) deps.auditLogger.log({ timestamp: proof.decidedAt, sessionId: "work-board:" + attachment.templateId, type: "approval", output: JSON.stringify({ event: "template_schedule_detached", attachmentId: id, ...proof }) });
+    return detached;
   });
   handle(WORK_BOARD.templateConfirm, async (event, id, raw, intent, ...args) => {
     requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash"]) && isGraphHash(raw.expectedGraphHash));

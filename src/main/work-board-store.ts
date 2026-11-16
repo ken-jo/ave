@@ -1,5 +1,6 @@
 import { assertTemplateRunFields } from "../work-board/template-run-fields.js";
-import { isTemplateId } from "../work-board/template-graph.js";
+import type { TemplateRunStart } from "../shared/workflow-template-types.js";
+import { requireTemplate, isTemplateId } from "../work-board/template-graph.js";
 // Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
 // than persisting or duplicating that projection in consumers.
 import { createHash } from "node:crypto";
@@ -699,7 +700,7 @@ export class WorkBoardStore {
   }
 
   // Start a fresh capped history entry and reset latest fields without overwriting prior history or transcripts.
-  async beginRun(id: number, runId: string, startedAt: string): Promise<WorkItemUpdateResult> {
+  async beginRun(id: number, runId: string, startedAt: string, pin?: TemplateRunStart): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await readFileOrEmpty(this.filePath);
@@ -709,24 +710,28 @@ export class WorkBoardStore {
         return { status: "not_found" as const, itemId: id };
       }
       const prior = board.items[idx];
-      if (prior.templateId !== undefined) return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
+      if (prior.templateId !== undefined && !pin) return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
+      if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
       if (prior.status === "completed") {
         this.cache = board;
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
       }
       const history = [
         ...(prior.runHistory ?? []),
-        { runId, startedAt, status: "planning" as WorkItemRunStatus },
+        { runId, startedAt, status: "planning" as WorkItemRunStatus, ...(pin ? { templateVersion: pin.version, templateGraphHash: pin.graphHash, stageRuns: pin.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, outputHash }) => ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(outputHash === undefined ? {} : { outputHash }) })) } : {}) },
       ];
       const capped =
         history.length > RUN_HISTORY_CAP ? history.slice(history.length - RUN_HISTORY_CAP) : history;
       const updated: WorkItem = {
         ...prior,
+        ...(pin ? { runTemplateVersion: pin.version, runTemplateGraphHash: pin.graphHash, runStartedBy: structuredClone(pin.source), stageRuns: structuredClone(pin.stageRuns) } : {}),
         runStatus: "planning",
         runId,
         runUpdatedAt: startedAt,
         runHistory: capped,
       };
+      delete updated.runWorkspace;
+      delete updated.stageJoins;
       delete updated.plan;
       delete updated.output;
       delete updated.runSessionId;
@@ -745,6 +750,23 @@ export class WorkBoardStore {
         itemId: id,
         item: decorate(cloneItem(updated), Date.parse(startedAt)),
       };
+    });
+  }
+
+  async updateStageRun(id: number, runId: string, mutate: (item: WorkItem) => WorkItem | null): Promise<WorkItemUpdateResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      const idx = board.items.findIndex(item => item.id === id);
+      if (idx === -1) return { status: "not_found", itemId: id };
+      const prior = board.items[idx];
+      if (prior.runId !== runId) return { status: "invalid", itemId: id, reason: "run-mismatch" };
+      const updated = mutate(cloneItem(prior));
+      if (updated === null) return { status: "invalid", itemId: id, reason: "mutation-refused" };
+      requireTemplate(updated.id === id && updated.runId === runId && updated.templateId === prior.templateId && updated.runTemplateVersion === prior.runTemplateVersion && updated.runTemplateGraphHash === prior.runTemplateGraphHash, "invalid-template-run");
+      board.items[idx] = updated;
+      await this.commit(board);
+      return { status: "updated", itemId: id, item: decorate(cloneItem(updated), this.now()) };
     });
   }
 

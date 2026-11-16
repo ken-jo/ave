@@ -98,6 +98,10 @@ describe("preload contextBridge world shape lock", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: true });
     mockUserActivation.isActive = false; await api.attachWorkflowTemplateSchedule(attachment);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: false });
+    mockUserActivation.isActive = true; await api.detachWorkflowTemplateSchedule("attachment");
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: true });
+    mockUserActivation.isActive = false; await api.detachWorkflowTemplateSchedule("attachment");
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: false });
     const handler = vi.fn(); const unsubscribe = api.onWorkflowTemplatesChanged(handler);
     const listener = mockOn.mock.calls.at(-1)![1]; listener(); expect(handler).toHaveBeenCalledOnce();
     unsubscribe(); expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.templatesChanged, listener);
@@ -397,6 +401,7 @@ describe("preload contextBridge world shape lock", () => {
           "deleteApiKey": "function",
           "deletePersonaPrompt": "function",
           "deleteWebApiKey": "function",
+          "detachWorkflowTemplateSchedule": "function",
           "dev": [
             "getPreflightStatus",
             "setPreflightOverride",

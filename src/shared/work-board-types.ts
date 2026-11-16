@@ -1,4 +1,4 @@
-import type { WorkItemStageRun, WorkItemStageRunSummary } from "./workflow-template-types.js";
+import type { WorkItemStageRun, WorkItemStageRunSummary, RunAuthoritySource, RunWorkspace, StageJoin } from "./workflow-template-types.js";
 
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
@@ -34,6 +34,9 @@ export interface WorkItem {
   runTemplateVersion?: number;
   runTemplateGraphHash?: string;
   stageRuns?: WorkItemStageRun[];
+  runStartedBy?: RunAuthoritySource;
+  runWorkspace?: RunWorkspace;
+  stageJoins?: StageJoin[];
   id: number;
   title: string;
   detail?: string;

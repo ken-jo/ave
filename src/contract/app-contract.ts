@@ -916,6 +916,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [WORK_BOARD.decidePlan]: "required",
   [WORK_BOARD.templateConfirm]: "required",
   [WORK_BOARD.templateAttachSchedule]: "required",
+  [WORK_BOARD.templateDetachSchedule]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────

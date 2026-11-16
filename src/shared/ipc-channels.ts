@@ -56,6 +56,7 @@ export const WORK_BOARD = {
   templateDraft: "ave:work-board:template-draft",
   templateConfirm: "ave:work-board:template-confirm",
   templateAttachSchedule: "ave:work-board:template-attach-schedule",
+  templateDetachSchedule: "ave:work-board:template-detach-schedule",
   templateArchive: "ave:work-board:template-archive",
   templatesChanged: "ave:work-board:templates-changed",
   list: "ave:work-board:list",

@@ -262,12 +262,13 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
   });
 
   it("keeps template confirmation private and gesture-bound with an outbound changed signal", () => {
-    for (const channel of ["templateList", "templateGet", "templateDraft", "templateConfirm", "templateArchive", "templateAttachSchedule"] as const) {
+    for (const channel of ["templateList", "templateGet", "templateDraft", "templateConfirm", "templateArchive", "templateAttachSchedule", "templateDetachSchedule"] as const) {
       expect(channels.filter(c => c === WORK_BOARD[channel])).toEqual([WORK_BOARD[channel]]);
       expect(isPublicChannel(WORK_BOARD[channel])).toBe(false);
     }
     expect(CHANNEL_GESTURE[WORK_BOARD.templateConfirm]).toBe("required");
     expect(CHANNEL_GESTURE[WORK_BOARD.templateAttachSchedule]).toBe("required");
+    expect(CHANNEL_GESTURE[WORK_BOARD.templateDetachSchedule]).toBe("required");
     expect(channels).not.toContain(WORK_BOARD.templatesChanged);
     expect(isPublicChannel(WORK_BOARD.templatesChanged)).toBe(false);
   });
@@ -638,6 +639,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:work-board:template-archive",
         "ave:work-board:template-attach-schedule",
         "ave:work-board:template-confirm",
+        "ave:work-board:template-detach-schedule",
         "ave:work-board:template-draft",
         "ave:work-board:template-get",
         "ave:work-board:template-list",
