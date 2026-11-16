@@ -78,6 +78,64 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("preserves an external model and reasoning change through a Chat-tab save", async () => {
+    const settings = makeSettings();
+    const api = makeSettingsApi({ settings });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const next = structuredClone(settings);
+    next.llm.vendors.openai!.model = "external-model";
+    next.llm.vendors.openai!.enableThinking = false;
+    act(() => broadcast(next));
+    expect(result.current.model).toBe("external-model");
+    expect(result.current.enableThinking).toBe(false);
+    act(() => result.current.setAutoCompact(false));
+    await act(async () => { await result.current.save("chat"); });
+    expect(api.updateSettings).toHaveBeenCalledWith({
+      llm: { streamSmoothing: "none" },
+      chat: { autoCompact: false, processingDisplayLevel: settings.chat.processingDisplayLevel },
+      privacy: { piiRedactEnabled: false },
+    });
+  });
+
+  it("keeps local model and thinking drafts while hydrating clean fields from a broadcast", async () => {
+    const settings = makeSettings();
+    const api = makeSettingsApi({ settings });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    act(() => { result.current.setModel("local-draft"); result.current.setEnableThinking(false); });
+    const next = structuredClone(settings);
+    next.llm.vendors.openai!.model = "external-model";
+    next.llm.vendors.openai!.baseUrl = "https://new.example/v1";
+    next.llm.fallbackChain = [{ provider: "openai", model: "fallback-model" }];
+    act(() => broadcast(next));
+    expect(result.current.model).toBe("local-draft");
+    expect(result.current.enableThinking).toBe(false);
+    expect(result.current.baseUrl).toBe("https://new.example/v1");
+    expect(result.current.fallbackChain).toEqual(next.llm.fallbackChain);
+  });
+
+  it("does not mark a newer model draft clean when an older save finishes", async () => {
+    const settings = makeSettings();
+    let finish!: (value: AppSettings) => void;
+    const api = makeSettingsApi({ settings }, {
+      updateSettings: vi.fn(() => new Promise<AppSettings>((resolve) => { finish = resolve; })),
+    });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setModel("first"));
+    let saving!: Promise<boolean>;
+    act(() => { saving = result.current.save("llm"); });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledOnce());
+    act(() => result.current.setModel("second"));
+    await act(async () => { finish(settings); await saving; });
+    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    act(() => broadcast(settings));
+    expect(result.current.model).toBe("second");
+  });
+
   it("saves an empty model as an explicit unselected route", async () => {
     const settings = makeSettings();
     settings.llm.vendors.openai!.model = "";
@@ -107,7 +165,7 @@ describe("useSettingsOrchestration", () => {
     act(() => result.current.setProcessingDisplayLevel("tools"));
     await act(async () => { expect(await result.current.save(tab)).toBe(true); });
     expect(settings.llm.retiredProvider).toBe("copilot");
-    expect(api.updateSettings.mock.calls[0]?.[0].llm).not.toHaveProperty("provider");
+    expect(api.updateSettings.mock.calls[0]?.[0].llm ?? {}).not.toHaveProperty("provider");
   });
 
   it("releases retirement after choosing the same provider and model explicitly", async () => {

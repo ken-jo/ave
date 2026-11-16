@@ -656,6 +656,7 @@ async function runTurnInSpan(
         options?.originSource ?? null,
         {
           maxRounds: options?.maxRounds,
+          thinkingOverride: options?.thinkingOverride,
           sessionIdOverride: options?.sessionIdOverride,
           spawnDepth: options?.spawnDepth,
           approvalReasonPrefix: options?.approvalReasonPrefix,

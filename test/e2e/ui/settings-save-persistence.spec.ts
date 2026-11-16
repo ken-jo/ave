@@ -80,3 +80,28 @@ test('inline close flushes a pending immediate-apply setting', async ({
   ).toHaveAttribute('aria-checked', nextState);
   await closeInlineSettings(app, reopenedSettingsPage);
 });
+
+test('Chat settings preserve a model changed while the settings pane is open', async ({ app, mainWindow, t }) => {
+  const settingsPage = await openInlineSettings(app, mainWindow, 'chat');
+  const redactToggle = settingsPage.getByRole('checkbox', { name: t('privacyTab.piiRedactToggleLabel') });
+  await expect(redactToggle).toBeVisible();
+  const expected = await settingsPage.evaluate(async () => {
+    const api = window.aveApi;
+    const settings = await api.getSettings();
+    const provider = settings.llm.provider;
+    const model = 'external-settings-regression-model';
+    const saved = await api.updateSettings({ llm: { vendors: { [provider]: { model } } } });
+    if ('ok' in saved && saved.ok === false) throw new Error(saved.error);
+    return { provider, model };
+  });
+  await redactToggle.click();
+  await expect.poll(() => settingsPage.evaluate(async () => {
+    const settings = await window.aveApi.getSettings();
+    return settings.privacy.piiRedactEnabled;
+  })).toBe((await redactToggle.getAttribute('aria-checked')) === 'true');
+  const savedModel = await settingsPage.evaluate(async ({ provider }) => {
+    const settings = await window.aveApi.getSettings();
+    return settings.llm.vendors[provider]?.model;
+  }, expected);
+  expect(savedModel).toBe(expected.model);
+});

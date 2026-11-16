@@ -6,7 +6,7 @@ import type {
 import { deriveTurnFailureSummary } from "../../engine/turn-failure-summary.js";
 import type { ChatInputOrigin, RemoteControllerAuthority, VerifiedUserKeyboardIntent } from "../../shared/chat-origin.js";
 import type { ActiveRolePrompt } from "../../data/role-presets.js";
-import type { ConversationLoop, TurnResult } from "../../engine/conversation-loop.js";
+import type { ConversationLoop, RunTurnOptions, TurnResult } from "../../engine/conversation-loop.js";
 import type { UserContentPart } from "../../engine/llm/types.js";
 import { createDlpSafeUuid } from "../../shared/dlp-safe-id.js";
 import {
@@ -70,6 +70,7 @@ export async function runStreamedTurn(
   sink: ConversationStreamEventSink,
   options: {
     attachments?: UserContentPart[];
+    thinkingOverride?: RunTurnOptions["thinkingOverride"];
     inputOrigin: ChatInputOrigin;
     /** Main's verified keyboard intent for this exact send; required for a user-keyboard turn and never defaulted. */
     userKeyboardIntent?: VerifiedUserKeyboardIntent;
@@ -299,6 +300,7 @@ export async function runStreamedTurn(
     options.abortSignal,
     {
       ...(options.maxRounds === undefined ? {} : { maxRounds: options.maxRounds }),
+      ...(options.thinkingOverride === undefined ? {} : { thinkingOverride: options.thinkingOverride }),
       ...(originSource ? { originSource } : {}),
       ...(options.attachments && options.attachments.length > 0
         ? { attachments: options.attachments }

@@ -136,7 +136,7 @@ export function useSettingsOrchestration(
   const [vendor, setVendor] = useState<LLMVendor | "">("");
   const [providerCredentialDrafts, setProviderCredentialDrafts] =
     useState<readonly ProviderCredentialDraft[]>([]);
-  const [model, setModel] = useState("");
+  const [model, setModelState] = useState("");
   const [hasKey, setHasKey] = useState(false);
   const [autoCompact, setAutoCompact] = useState(true);
   const [processingDisplayLevel, setProcessingDisplayLevelState] = useState<ProcessingDisplayLevel>(
@@ -150,14 +150,14 @@ export function useSettingsOrchestration(
     processingDisplayLevelDraftRef.current.revision++;
     setProcessingDisplayLevelState(value);
   }, []);
-  const [enableThinking, setEnableThinking] = useState(true);
-  const [thinkingBudget, setThinkingBudget] = useState(() => getLlmVendorSettings(undefined, DEFAULT_LLM_VENDOR).thinkingBudgetTokens);
+  const [enableThinking, setEnableThinkingState] = useState(true);
+  const [thinkingBudget, setThinkingBudgetState] = useState(() => getLlmVendorSettings(undefined, DEFAULT_LLM_VENDOR).thinkingBudgetTokens);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [baseUrl, setBaseUrl] = useState("");
   const [vertexProject, setVertexProject] = useState("");
   const [vertexLocation, setVertexLocation] = useState("");
   const [streamSmoothing, setStreamSmoothing] = useState<"none" | "word" | "char">("none");
-  const [fallbackChain, setFallbackChain] = useState<FallbackEntry[]>([]);
+  const [fallbackChain, setFallbackChainState] = useState<FallbackEntry[]>([]);
   const [fallbackOpen, setFallbackOpen] = useState(false);
   const [webProvider, setWebProvider] = useState<AppSettings["webSearch"]["provider"]>("duckduckgo");
   const [webKeyInput, setWebKeyInput] = useState("");
@@ -178,6 +178,24 @@ export function useSettingsOrchestration(
   const providerSelectionRef = useRef(false);
   const hydratedVendorRef = useRef<string | null>(null);
   const hydratedWebProviderRef = useRef<string | null>(null);
+  const llmDraftRef = useRef({ model: 0, thinking: 0, fallback: 0, selection: 0 });
+  const llmSavedRevisionRef = useRef({ model: 0, thinking: 0, fallback: 0, selection: 0 });
+  const setModel = useCallback((value: string) => {
+    llmDraftRef.current.model++;
+    setModelState(value);
+  }, []);
+  const setEnableThinking = useCallback((value: boolean) => {
+    llmDraftRef.current.thinking++;
+    setEnableThinkingState(value);
+  }, []);
+  const setThinkingBudget = useCallback((value: number) => {
+    llmDraftRef.current.thinking++;
+    setThinkingBudgetState(value);
+  }, []);
+  const setFallbackChain = useCallback((value: FallbackEntry[] | ((current: FallbackEntry[]) => FallbackEntry[])) => {
+    llmDraftRef.current.fallback++;
+    setFallbackChainState(value);
+  }, []);
   const vendorInfo = getVendorOption(vendor);
   // Numeric request limits are applied separately from persisted effort intent.
   const outputTokenLimit = requestedLlmOutputTokenLimit(getLlmVendorSettings(
@@ -233,7 +251,7 @@ export function useSettingsOrchestration(
       setIdleMemoryConsolidation(s.features?.idleMemoryConsolidation ?? false);
       setSubAgentAutonomousWake(s.features?.subAgentAutonomousWake ?? false);
       setSubAgentMaxRounds(s.chat?.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT);
-      setFallbackChain(s.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
+      setFallbackChainState(s.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
       setSettingsLoaded(true);
     })();
     return () => { cancelled = true; };
@@ -245,6 +263,32 @@ export function useSettingsOrchestration(
     return api.onSettingsUpdated((next) => {
       if (!next.llm.retiredProvider) providerSelectionRef.current = false;
       setSettingsSnapshot(next);
+      const draft = llmDraftRef.current;
+      const saved = llmSavedRevisionRef.current;
+      const provider = draft.selection === saved.selection && isLLMVendor(next.llm.provider)
+        ? next.llm.provider : hydratedVendorRef.current;
+      if (provider && isLLMVendor(provider)) {
+        const presetId = draft.selection === saved.selection
+          ? provider === "openai-compatible" ? next.llm.marketplaceProviderPresetId ?? "" : ""
+          : marketplaceProviderPresetId;
+        const block = getLlmVendorSettings(next.llm.vendors, provider);
+        if (draft.selection === saved.selection) {
+          hydratedVendorRef.current = provider;
+          setVendor(provider);
+          setMarketplaceProviderPresetId(presetId);
+        }
+        if (draft.model === saved.model) setModelState(llmRouteModel(block, presetId));
+        if (draft.thinking === saved.thinking) {
+          setEnableThinkingState(block.enableThinking);
+          setThinkingBudgetState(block.thinkingBudgetTokens);
+        }
+        setBaseUrl(block.baseUrl ?? "");
+        setVertexProject(block.vertexProject ?? "");
+        setVertexLocation(block.vertexLocation ?? "");
+      }
+      if (draft.fallback === saved.fallback) {
+        setFallbackChainState(next.llm.fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model })));
+      }
       setIdlePreferenceRefresh(next.features?.idlePreferenceRefresh ?? false);
       setIdleMemoryConsolidation(next.features?.idleMemoryConsolidation ?? false);
       setSubAgentAutonomousWake(next.features?.subAgentAutonomousWake ?? false);
@@ -257,7 +301,7 @@ export function useSettingsOrchestration(
       // Follow installed-preset broadcasts without overwriting the form's unsaved provider selection or endpoint fields.
       setMarketplaceProviderPresets(next.marketplace?.installedProviderPresets ?? []);
     });
-  }, [api]);
+  }, [api, marketplaceProviderPresetId]);
 
   // Re-hydrate every vendor-specific field when the active vendor changes.
   useEffect(() => {
@@ -290,12 +334,12 @@ export function useSettingsOrchestration(
     block: LLMVendorSettings,
     marketplaceProviderPresetIdForBlock = "",
   ): void {
-    setModel(llmRouteModel(block, marketplaceProviderPresetIdForBlock));
+    setModelState(llmRouteModel(block, marketplaceProviderPresetIdForBlock));
     setBaseUrl(block.baseUrl ?? "");
     setVertexProject(block.vertexProject ?? "");
     setVertexLocation(block.vertexLocation ?? "");
-    setEnableThinking(block.enableThinking);
-    setThinkingBudget(block.thinkingBudgetTokens);
+    setEnableThinkingState(block.enableThinking);
+    setThinkingBudgetState(block.thinkingBudgetTokens);
   }
 
   function hydrateLlmFromSettings(next: AppSettings): void {
@@ -314,7 +358,7 @@ export function useSettingsOrchestration(
     setMarketplaceProviderPresets(next.marketplace?.installedProviderPresets ?? []);
     hydrateVendorBlock(block, providerPresetId);
     setStreamSmoothing(next.llm.streamSmoothing);
-    setFallbackChain(next.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
+    setFallbackChainState(next.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
   }
 
   // Re-check web key when webProvider changes
@@ -339,6 +383,9 @@ export function useSettingsOrchestration(
   const selectApiVendorModel = useCallback((vendorId: string, modelId: string) => {
     if (!isLLMVendor(vendorId)) return;
     providerSelectionRef.current = true;
+    llmDraftRef.current.selection++;
+    llmDraftRef.current.model++;
+    llmDraftRef.current.thinking++;
     const block = getLlmVendorSettings(settingsSnapshot?.llm.vendors, vendorId);
     hydratedVendorRef.current = vendorId;
     setVendor(vendorId);
@@ -346,14 +393,17 @@ export function useSettingsOrchestration(
     setBaseUrl(block.baseUrl ?? "");
     setVertexProject(block.vertexProject ?? "");
     setVertexLocation(block.vertexLocation ?? "");
-    setEnableThinking(block.enableThinking);
-    setThinkingBudget(block.thinkingBudgetTokens);
-    setModel(modelId);
+    setEnableThinkingState(block.enableThinking);
+    setThinkingBudgetState(block.thinkingBudgetTokens);
+    setModelState(modelId);
     void api.hasApiKey(vendorId).then((k) => setHasKey(k)).catch(() => setHasKey(false));
   }, [api, settingsSnapshot]);
 
   const selectMarketplaceProviderPreset = useCallback((preset: MarketplaceInstalledProviderPreset) => {
     providerSelectionRef.current = true;
+    llmDraftRef.current.selection++;
+    llmDraftRef.current.model++;
+    llmDraftRef.current.thinking++;
     const openaiCompatibleDefaults = getLlmVendorSettings(
       settingsSnapshot?.llm.vendors,
       "openai-compatible",
@@ -363,13 +413,13 @@ export function useSettingsOrchestration(
     setVendor("openai-compatible");
     // This preset's own stored model, so switching between two presets restores what each was last set to rather than
     // resetting both to a seed.
-    setModel(llmRouteModel(openaiCompatibleDefaults, preset.providerId));
+    setModelState(llmRouteModel(openaiCompatibleDefaults, preset.providerId));
     // Keep the generic row's endpoint in its stored block; resolve preset addresses from their registry.
     setBaseUrl(openaiCompatibleDefaults.baseUrl ?? "");
     setVertexProject("");
     setVertexLocation("");
-    setEnableThinking(openaiCompatibleDefaults.enableThinking);
-    setThinkingBudget(openaiCompatibleDefaults.thinkingBudgetTokens);
+    setEnableThinkingState(openaiCompatibleDefaults.enableThinking);
+    setThinkingBudgetState(openaiCompatibleDefaults.thinkingBudgetTokens);
     void api
       .hasApiKey(marketplaceProviderPresetSecretId(preset.providerId))
       .then((k) => setHasKey(k))
@@ -377,6 +427,9 @@ export function useSettingsOrchestration(
   }, [api, settingsSnapshot]);
 
   const clearMarketplaceProviderPreset = useCallback(() => {
+    llmDraftRef.current.selection++;
+    llmDraftRef.current.model++;
+    llmDraftRef.current.thinking++;
     setMarketplaceProviderPresetId("");
     if (vendor !== "openai-compatible") return;
     // Read the stored generic block even when a preset is active; replacing it with defaults would discard the user's
@@ -437,6 +490,7 @@ export function useSettingsOrchestration(
     savingRef.current = true;
     setSaving(true);
     const processingDisplayLevelRevision = processingDisplayLevelDraftRef.current.revision;
+    const llmRevisions = { ...llmDraftRef.current };
     let ok = false;
     try {
       if (tab !== "permissions") {
@@ -486,16 +540,21 @@ export function useSettingsOrchestration(
           fallbackChain: fallbackChain.filter((e) => e.provider && e.model).map((e) => ({ provider: e.provider, model: e.model })),
         };
         llmPatch.vendors = { [vendor]: activeBlock };
-        const updateResult = await api.updateSettings({
-          llm: llmPatch,
-          webSearch: { provider: webProvider },
-          chat: { autoCompact, processingDisplayLevel },
-          privacy: { piiRedactEnabled },
-        });
+        const patch: DeepPartial<AppSettings> = tab === "llm"
+          ? { llm: llmPatch }
+          : tab === "web"
+            ? { webSearch: { provider: webProvider } }
+            : tab === "chat"
+              ? { llm: { streamSmoothing }, chat: { autoCompact, processingDisplayLevel }, privacy: { piiRedactEnabled } }
+              : {};
+        const updateResult = await api.updateSettings(patch);
         if (isIpcErrorResult(updateResult)) {
           throw new Error(formatIpcError(updateResult.error, updateResult.message));
         }
-        if (processingDisplayLevelDraftRef.current.revision === processingDisplayLevelRevision) {
+        if (tab === "llm") {
+          llmSavedRevisionRef.current = llmRevisions;
+        }
+        if (tab === "chat" && processingDisplayLevelDraftRef.current.revision === processingDisplayLevelRevision) {
           const authoritativeProcessingDisplayLevel = updateResult.chat.processingDisplayLevel;
           if (!isProcessingDisplayLevel(authoritativeProcessingDisplayLevel)) {
             throw new Error("Settings update returned an invalid processing display level.");
