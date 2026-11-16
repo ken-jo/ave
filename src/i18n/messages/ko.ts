@@ -6511,4 +6511,11 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workGroup.completed": "작업 완료",
   "workGroup.completedWithDuration": "작업 완료 {duration}",
   "startupTab.shortcutOverlap": "앱에서도 사용 중: {labels}. 활성화하면 전역 단축키가 우선 적용됩니다.",
+  "permissionsTab.rulePatternInvalid": "공백 없이 도구 패턴을 128자 이내로 입력하거나 올바른 명령 규칙을 입력하세요.",
+  "permissionsTab.ruleDuplicate": "이미 있는 규칙입니다. 패턴이나 동작을 변경하세요.",
+  "permissionsTab.ruleBroad": "광범위",
+  "permissionsTab.ruleAllowAllWarning": "이 규칙은 셸 명령, 파일 변경, 네트워크 요청을 포함한 모든 도구를 일반 승인 없이 허용합니다. 거부 규칙과 매번 새 승인이 필요한 작업은 계속 적용됩니다. 이 광범위한 허용 규칙을 추가할까요?",
+  "permissionsTab.ruleWildcardWarning": "이 허용 규칙은 여러 도구나 작업에 적용되며 앞으로 추가되는 도구에도 적용될 수 있습니다. 일치하는 작업이 일반 승인 없이 실행될 수 있습니다. 이 광범위한 허용 규칙을 추가할까요?",
+  "permissionsTab.ruleWarningConfirm": "광범위 허용 규칙 추가",
+  "permissionsTab.ruleWarningCancel": "취소",
 };

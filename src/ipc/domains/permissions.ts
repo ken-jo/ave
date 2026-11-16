@@ -36,6 +36,7 @@ import {
   isUserOwnedSurfaceChoice,
   type PermissionReviewSuggestionPayload,
   type PermissionReviewSuggestionReason,
+  type ScopedPermissionRule,
 } from "../../shared/permissions-events.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import {
@@ -52,7 +53,6 @@ import type { IpcDeps } from "../types.js";
 import type {
   PermissionDirCommand,
   PermissionReviewerCommand,
-  PermissionRulesCommand,
 } from "../../permissions/permission-slash.js";
 import {
 } from "../../permissions/permission-settings-store.js";
@@ -703,20 +703,17 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
     const action = body.action;
-    if (action !== "allow" && action !== "deny") {
-      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny)` };
+    if (action !== "allow" && action !== "deny" && action !== "ask") {
+      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny, ask)` };
     }
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
-    const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const ruleAction = action === "allow" ? "allow" : "deny";
-    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
-      ? { verb: "rules", sub: "add", action: ruleAction, pattern: validated.pattern }
-      : parsePermissionRulesCommand(`add ${ruleAction} ${validated.pattern}`);
-    if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
-    if (parsed.sub !== "add") return { ok: false, error: "parse-error", message: "add rule command did not parse as add" };
+    const parsed: Pick<ScopedPermissionRule, "pattern" | "action"> = { pattern: validated.pattern, action };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
+    if ((await pm.listPersistedRules()).some((rule) => rule.pattern === parsed.pattern && rule.action === parsed.action)) {
+      return { ok: false, error: "duplicate-rule", message: "This rule already exists" };
+    }
     if (isRuleSpecifier(parsed.pattern)) {
       // The store's own check: refused prefixes, irreversible argv and wildcards outside the allowlist.
       try { validatePermissionRule({ pattern: parsed.pattern, action: parsed.action }); } catch (error) {
@@ -728,6 +725,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         await pm.addRulePersist({ pattern: parsed.pattern, action: parsed.action }, { kind: "user" });
       } else if (parsed.action === "allow") {
         await pm.addAlwaysAllowedPersist(parsed.pattern);
+      } else if (parsed.action === "ask") {
+        await pm.addAlwaysAskedPersist(parsed.pattern);
       } else {
         await pm.addAlwaysDeniedPersist(parsed.pattern);
       }
@@ -745,22 +744,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
     const action = body.action;
-    if (action !== "allow" && action !== "deny") {
-      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny)` };
+    if (action !== "allow" && action !== "deny" && action !== "ask") {
+      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny, ask)` };
     }
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
-    const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const ruleAction = action === "allow" ? "allow" : "deny";
-    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
-      ? { verb: "rules", sub: "remove", action: ruleAction, pattern: validated.pattern }
-      : parsePermissionRulesCommand(`remove ${ruleAction} ${validated.pattern}`);
-    if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
-    if (parsed.sub !== "remove") return { ok: false, error: "parse-error", message: "remove rule command did not parse as remove" };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
     try {
-      await pm.removeRule(parsed.pattern, parsed.action);
+      await pm.removeRule(validated.pattern, action);
       deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
       // No explicit broadcast; PermissionManager.removeRule fires broadcastConfigChanged via the boot-wired setter.
       return { ok: true };

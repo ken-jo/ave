@@ -6509,6 +6509,13 @@ export const en = {
   "workGroup.completed": "Work complete",
   "workGroup.completedWithDuration": "Work complete {duration}",
   "startupTab.shortcutOverlap": "Also used in the app by: {labels}. When enabled, this global shortcut takes precedence.",
+  "permissionsTab.rulePatternInvalid": "Enter a tool pattern without spaces (up to 128 characters), or a valid command rule.",
+  "permissionsTab.ruleDuplicate": "This rule already exists. Change the pattern or action.",
+  "permissionsTab.ruleBroad": "Broad",
+  "permissionsTab.ruleAllowAllWarning": "This rule allows every tool, including shell commands, file changes and network requests, without routine approval. Deny rules and actions requiring fresh approval still apply. Add this broad allow rule?",
+  "permissionsTab.ruleWildcardWarning": "This allow rule matches multiple tools or actions and can also match future tools. Matching actions may run without routine approval. Add this broad allow rule?",
+  "permissionsTab.ruleWarningConfirm": "Add broad allow rule",
+  "permissionsTab.ruleWarningCancel": "Cancel",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

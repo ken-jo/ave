@@ -65,6 +65,7 @@ import { canonicalStringify } from "../../../shared/canonical-json.js";
 import type { ExactDenyDraft } from "../exact-permission-decision.js";
 import { TEST_IDS, execModeTestId, testIdSelector } from "../../../shared/test-ids.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { isRuleSpecifier } from "../../../permissions/rules/rule-specifier.js";
 
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
@@ -494,7 +495,9 @@ export function PermissionsTab({
   // ── Rule Editor ───────────────────────────────────
   const [rules, setRules] = useState<ScopedPermissionRule[]>([]);
   const [newPattern, setNewPattern] = useState("");
-  const [newAction, setNewAction] = useState<"allow" | "deny">("allow");
+  const [newAction, setNewAction] = useState<"allow" | "deny" | "ask">("allow");
+  const [ruleWarningPending, setRuleWarningPending] = useState(false);
+  const [ruleInputError, setRuleInputError] = useState<string | null>(null);
   const [ruleLoadErrors, setRuleLoadErrors] = useState<ScopedPermissionRuleError[]>([]);
   const [approvalLoadError, setApprovalLoadError] = useState(false);
   const [rulesBusy, setRulesBusy] = useState(false);
@@ -1046,20 +1049,39 @@ export function PermissionsTab({
     setRuleLoadErrors(r.errors);
   };
 
-  const handleAddRule = async () => {
+  const handleAddRule = async (confirmed = false) => {
     const pattern = newPattern.trim();
-    if (!pattern) return;
+    if (!pattern || rulesBusy) return;
+    setRuleInputError(null);
+    if (!isRuleSpecifier(pattern) && (pattern.length > 128 || /\s/.test(pattern))) {
+      setRuleInputError(t("permissionsTab.rulePatternInvalid"));
+      return;
+    }
+    if (rules.some((rule) => rule.scope === "user" && rule.pattern === pattern && rule.action === newAction && !rule.source)) {
+      setRuleInputError(t("permissionsTab.ruleDuplicate"));
+      return;
+    }
+    if (newAction === "allow" && /[*?]/.test(pattern) && !confirmed) {
+      setRuleWarningPending(true);
+      return;
+    }
     setRulesBusy(true);
     try {
       const res = await window.ave.permission.addRule(pattern, newAction);
       if (res.ok) {
         setNewPattern("");
+        setRuleWarningPending(false);
         await refreshRules();
       } else {
-        showBanner("error", ipcFailureText("rule add", res, (code) => t("permissionsTab.errorRuleAddFailed", { error: code ?? "-" })));
+        const message = res.error === "invalid-pattern" || res.error === "invalid-rule" || res.error === "parse-error"
+          ? t("permissionsTab.rulePatternInvalid")
+          : res.error === "duplicate-rule" ? t("permissionsTab.ruleDuplicate")
+            : ipcFailureText("rule add", res, (code) => t("permissionsTab.errorRuleAddFailed", { error: code ?? "-" }));
+        setRuleInputError(message);
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorRuleAddError", { message: thrownErrorText("rule add", e) }));
+      const message = t("permissionsTab.errorRuleAddError", { message: thrownErrorText("rule add", e) });
+      setRuleInputError(message);
     } finally {
       setRulesBusy(false);
     }
@@ -1818,6 +1840,9 @@ export function PermissionsTab({
                     <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped">
                       <td className="max-w-[220px] break-all px-3 py-2 font-mono">
                         {rule.pattern}
+                        {rule.action === "allow" && /[*?]/.test(rule.pattern) ? (
+                          <Badge variant="outline" className="ml-2 font-sans" data-testid="permissions-rule-broad">{t("permissionsTab.ruleBroad")}</Badge>
+                        ) : null}
                         {rule.invalidReason !== undefined ? (
                           <p data-testid="permissions-rule-invalid" className="break-normal whitespace-normal font-sans text-tiny text-destructive">
                             {rule.invalidReason === "retired-host-terminal" ? t("permissionsTab.ruleRetiredHostTerminal") : t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
@@ -1870,25 +1895,42 @@ export function PermissionsTab({
               placeholder={t("permissionsTab.patternInputPlaceholder")}
               data-testid="permissions-rule-pattern-input"
               value={newPattern}
-              onChange={(e) => setNewPattern(e.target.value)}
+              onChange={(e) => { setNewPattern(e.target.value); setRuleWarningPending(false); setRuleInputError(null); }}
+              aria-label={t("permissionsTab.rulesColPattern")}
+              aria-invalid={ruleInputError !== null}
+              aria-describedby={ruleInputError ? "permission-rule-input-error" : undefined}
               onKeyDown={(e) => { if (e.key === "Enter" && newPattern.trim()) void handleAddRule(); }}
             />
             <Select
               value={newAction}
-              onValueChange={(value) => setNewAction(value as "allow" | "deny")}
+              onValueChange={(value) => {
+                if (value !== "allow" && value !== "deny" && value !== "ask") return;
+                setNewAction(value); setRuleWarningPending(false); setRuleInputError(null);
+              }}
             >
-              <SelectTrigger className="h-8 w-24 text-xs">
+              <SelectTrigger className="h-8 w-24 text-xs" aria-label={t("permissionsTab.rulesColAction")} data-testid="permissions-rule-action">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className={DENSE_SELECT_POPUP}>
                 <SelectItem value="allow">{t("permissionsTab.actionAllow")}</SelectItem>
                 <SelectItem value="deny">{t("permissionsTab.actionDeny")}</SelectItem>
+                <SelectItem value="ask">{t("permissionsTab.actionAsk")}</SelectItem>
               </SelectContent>
             </Select>
-            <Button size="sm" className="h-8" data-testid="permissions-rule-add" onClick={() => void handleAddRule()} disabled={rulesBusy || !newPattern.trim()}>
+            <Button size="sm" className="h-8" data-testid="permissions-rule-add" onClick={() => void handleAddRule()} disabled={rulesBusy || ruleWarningPending || !newPattern.trim()}>
               {t("permissionsTab.addButton")}
             </Button>
           </div>
+          {ruleInputError ? <p role="alert" id="permission-rule-input-error" data-testid="permissions-rule-input-error" className="text-xs text-destructive">{ruleInputError}</p> : null}
+          {ruleWarningPending ? (
+            <div role="alert" data-testid="permissions-rule-warning" className="space-y-2 rounded-md border border-warning p-3 text-sm">
+              <p>{t(newPattern.trim() === "*" ? "permissionsTab.ruleAllowAllWarning" : "permissionsTab.ruleWildcardWarning")}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" data-testid="permissions-rule-confirm" disabled={rulesBusy} onClick={() => void handleAddRule(true)}>{t("permissionsTab.ruleWarningConfirm")}</Button>
+                <Button size="sm" variant="outline" disabled={rulesBusy} onClick={() => setRuleWarningPending(false)}>{t("permissionsTab.ruleWarningCancel")}</Button>
+              </div>
+            </div>
+          ) : null}
           </>
           )}
         </SettingsSection>

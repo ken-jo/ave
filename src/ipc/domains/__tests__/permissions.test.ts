@@ -137,6 +137,7 @@ function makeDeps(options: {
     addRulePersist: vi.fn(async () => undefined),
     addSessionRule: vi.fn(() => undefined),
     removeRulePersist: vi.fn(async () => undefined),
+    addAlwaysAskedPersist: vi.fn(async () => undefined),
     addAlwaysAllowedPersist: vi.fn(async () => undefined),
     addAlwaysDeniedPersist: vi.fn(async () => undefined),
     removeRule: vi.fn(async () => undefined),
@@ -462,7 +463,7 @@ describe("permissions IPC handlers", () => {
     }
   });
 
-  it("addRule and removeRule mutate only through parsed rule commands", async () => {
+  it("addRule and removeRule apply validated rule mutations", async () => {
     const { deps, permissionManager } = await setup();
 
     await invoke(PERMISSIONS.addRule, {
@@ -1877,4 +1878,12 @@ describe("home content review IPC", () => {
       await cleanupTmpDir(parent);
     }
   });
+});
+
+it('adds and removes ordinary Ask rules through the host boundary', async () => {
+  const { permissionManager } = await setup();
+  expect(await invoke(PERMISSIONS.addRule, { pattern: 'read_*', action: 'ask', intent: USER_INTENT })).toMatchObject({ ok: true });
+  expect(permissionManager.addAlwaysAskedPersist).toHaveBeenCalledExactlyOnceWith('read_*');
+  expect(await invoke(PERMISSIONS.removeRule, { pattern: 'read_*', action: 'ask', intent: USER_INTENT })).toMatchObject({ ok: true });
+  expect(permissionManager.removeRule).toHaveBeenCalledExactlyOnceWith('read_*', 'ask');
 });

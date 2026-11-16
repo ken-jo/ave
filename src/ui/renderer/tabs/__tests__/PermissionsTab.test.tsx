@@ -2874,6 +2874,8 @@ describe("PermissionsTab unified permission rules", () => {
     await waitFor(() => expect(screen.getByTestId("permissions-rule-pattern-input")).toBeVisible());
     fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: rule.pattern } });
     fireEvent.click(screen.getByTestId("permissions-rule-add"));
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("permissions-rule-confirm"));
     await waitFor(() => expect(screen.getByTestId("permissions-rules-table")).toHaveTextContent(rule.pattern));
     fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: rule.pattern }) }));
     await waitFor(() => expect(screen.queryByTestId("permissions-rules-table")).toBeNull());
@@ -3068,5 +3070,78 @@ describe("reviewer mode recovery", () => {
     expect(document.body.textContent).not.toContain("private reviewer transport failure");
     expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
     expect(api.permission.setMode).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("PermissionsTab rule editor safeguards", () => {
+  it.each(["*", "mcp_*", "custom_?"])("requires confirmation before adding wildcard allow %s", async (pattern) => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: pattern } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain(t(pattern === "*" ? "permissionsTab.ruleAllowAllWarning" : "permissionsTab.ruleWildcardWarning"));
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-confirm")); });
+    expect(api.permission.addRule).toHaveBeenCalledWith(pattern, "allow");
+    expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
+  });
+
+  it("invalidates wildcard confirmation when the draft changes", async () => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    const input = screen.getByTestId("permissions-rule-pattern-input");
+    fireEvent.change(input, { target: { value: "mcp_*" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    fireEvent.change(input, { target: { value: "*" } });
+    expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain(t("permissionsTab.ruleAllowAllWarning"));
+  });
+
+  it("shows invalid patterns beside the input and preserves the draft", async () => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    const input = screen.getByTestId("permissions-rule-pattern-input");
+    fireEvent.change(input, { target: { value: "bad name!" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.rulePatternInvalid"));
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect((input as HTMLInputElement).value).toBe("bad name!");
+  });
+
+  it("marks broad persisted rules and explains duplicates before saving", async () => {
+    const api = installApi([[]]);
+    api.permission.listScopedRules.mockResolvedValue({ rules: [{ pattern: "mcp_*", action: "allow", scope: "user" }], errors: [] } as never);
+    await renderPermissionsTab();
+    expect(screen.getByTestId("permissions-rule-broad").textContent).toBe(t("permissionsTab.ruleBroad"));
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: "mcp_*" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.ruleDuplicate"));
+  });
+
+  it("offers Ask and saves it without an allow warning", async () => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: "mcp_*" } });
+    fireEvent.click(screen.getByTestId("permissions-rule-action"));
+    fireEvent.click(screen.getByRole("option", { name: t("permissionsTab.actionAsk") }));
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).toHaveBeenCalledWith("mcp_*", "ask");
+    expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
+  });
+
+  it("keeps a rejected command rule visible with an inline reason", async () => {
+    const api = installApi([[]]);
+    api.permission.addRule.mockResolvedValueOnce({ ok: false, error: "invalid-rule" } as never);
+    await renderPermissionsTab();
+    const input = screen.getByTestId("permissions-rule-pattern-input");
+    fireEvent.change(input, { target: { value: "Bash(" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.rulePatternInvalid"));
+    expect((input as HTMLInputElement).value).toBe("Bash(");
   });
 });

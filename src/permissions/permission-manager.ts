@@ -946,6 +946,29 @@ export class PermissionManager {
     this.revokeAllPluginAccess(`deny-rule-added:${pattern}`);
   }
 
+  // Persist a tool-name ask rule before making it active in the current session.
+  async addAlwaysAskedPersist(pattern: string): Promise<void> {
+    if (isRuleSpecifier(pattern)) {
+      await this.addRulePersist({ pattern, action: "ask" }, { kind: "user" });
+      return;
+    }
+    if (pattern.length === 0 || pattern.length > 128 || /\s/.test(pattern)) {
+      throw new Error("Invalid tool rule pattern");
+    }
+    const rule = { pattern, action: "ask" as const };
+    await this.updateRulesFile((file) => {
+      if (!file.rules.some((existing) => existing.pattern === pattern && existing.action === "ask" && !existing.source)) {
+        file.rules.unshift(rule);
+      }
+    });
+    if (!this.rules.some((existing) => existing.pattern === pattern && existing.action === "ask" && !existing.source)) {
+      this.rules.unshift(rule);
+    }
+    this.policyGeneration += 1;
+    this.broadcastConfigChanged?.();
+    this.revokeAllPluginAccess(`ask-rule-added:${pattern}`);
+  }
+
   // Remove a persistent rule by pattern and action.
   // add a rules-language rule (`Bash(git status *)`, deny/ask/allow) to the user-global scope (permissions.json) or a project's rule file in Ave home. Validation (canonical spelling, enforced kind, refused allow prefixes) runs before anything is written; the live state changes only after the durable write succeeds.
   async addRulePersist(
