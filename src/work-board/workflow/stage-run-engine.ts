@@ -308,7 +308,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** After the run file says the run is over: show it on the row, tell the listeners, and let the item go. */
   async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string): Promise<void> {
-    await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
+    // A row that is gone or names another run is never written; the settled record goes with the prune.
+    if (state.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
+    else await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
     const reason = byAuthority && state.refused
       ? { reasonCode: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) }
@@ -891,8 +893,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** Boot. The run file is the truth: a row whose run is over is shown as the record says (the process may have died between the two
-   * writes); an unsettled run is parked and taken over. */
-  async function adoptRuns(): Promise<void> {
+   * writes); an unsettled run is parked and taken over. A run no row names any more is cancelled by its id alone. False while the run
+   * file awaits review: nothing is settled, swept or taken over. */
+  async function adoptRuns(): Promise<boolean> {
+    const unnamed = await records.unnamed();
+    if (unnamed === null) return false;
     const active: string[] = [];
     for (const { item, run } of await records.named()) {
       // Unreadable, awaiting review or another row's: the row already says so, and nothing is adopted.
@@ -921,11 +926,25 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       emit({ itemId: item.id, phase: "executing", message: "resumed" });
       deps.itemChanged?.(item.id);
     }
+    const at = new Date().toISOString();
+    for (const run of unnamed) {
+      if (run.settled !== undefined) continue;
+      await records.update(run.itemId, run.runId, current => current.settled !== undefined ? null : {
+        ...current,
+        stageRuns: current.stageRuns.map((stage): WorkItemStageRun => stage.status === "waiting" || stage.status === "running" || stage.status === "awaiting_gate" ? { ...stage, status: "cancelled", endedAt: stage.endedAt ?? at } : stage),
+        settled: { status: "cancelled", at },
+      }, true);
+    }
+    await records.pruneSettled();
     await workspace.sweep(active).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    return true;
   }
 
-  /** Once per process; a failed attempt is tried again by the next caller, which is refused until one succeeds. */
-  const adopted = (): Promise<void> => adoption ??= adoptRuns().catch((error: unknown) => { adoption = null; throw error; });
+  /** Once per process; an attempt that failed, or found the run file awaiting review, is tried again by the next caller. */
+  const adopted = (): Promise<void> => adoption ??= adoptRuns().then(
+    (done) => { if (!done) adoption = null; },
+    (error: unknown) => { adoption = null; throw error; },
+  );
 
   /** What a board reader is told about each row's template run, from the run file and the host's own state. Whatever a row itself says
    * under that name is dropped first. */
@@ -941,8 +960,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const owned = state?.runId === run.runId;
       // Over in the run file: that is how it ended, whatever a row not yet restored after a crash says.
       if (run.settled !== undefined) return owned ? clean : { ...clean, runStatus: run.settled.status };
-      // Unsettled and not yet taken over after a restart: it is resuming, never an error.
-      if (!owned) return { ...clean, runStatus: "executing", templateRunState: "resuming" };
+      // Unsettled and not yet taken over after a restart: it is resuming, never an error, and the reader asks for the takeover.
+      if (!owned) {
+        void adopted().catch((error: unknown) => log.warn("template run adoption failed: %s", errorMessage(error)));
+        return { ...clean, runStatus: "executing", templateRunState: "resuming" };
+      }
       return { ...clean, runStatus: "executing", templateRunState: isAwaitingStageReview(run) ? "awaiting_review" : "running" };
     });
   }

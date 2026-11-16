@@ -26,10 +26,15 @@ export interface WorkflowRunState {
   view(): Promise<(row: { id: number; runId?: string }) => RunRecord | null>;
   /** Every board row that names a template run, with that run. Empty while the run file awaits review. */
   named(): Promise<{ item: WorkItemResolved; run: RunRecord | null }[]>;
+  /** Every readable stored run no board row names: its row is gone or names another run. Null while the run file awaits review or the
+   * board cannot be listed. */
+  unnamed(): Promise<RunRecord[] | null>;
+  /** Removes the settled runs no row lists any more. */
+  pruneSettled(): Promise<void>;
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "list" | "runs">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "list" | "runs" | "pruneSettledRuns">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -61,6 +66,15 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const runOf = await view();
       return listed.items.filter(item => item.templateId !== undefined && item.runId !== undefined).map(item => ({ item, run: runOf(item) }));
     },
+    unnamed: async () => {
+      const stored = await store.runs.list();
+      if (stored.status !== "found") return null;
+      const listed = await store.list();
+      if (listed.status !== "ok") return null;
+      const named = new Map(listed.items.filter(item => item.templateId !== undefined).map(item => [item.id, item.runId]));
+      return stored.runs.filter(run => named.get(run.itemId) !== run.runId);
+    },
+    pruneSettled: () => store.pruneSettledRuns(),
   };
 }
 

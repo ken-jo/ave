@@ -1,10 +1,10 @@
 /** How a template run ends, and what survives a crash or a deleted row: the run file is written first and is the truth; the board row is
  * shown from it. */
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { workBoardStage } from "../../shared/work-board-lifecycle.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
 import { WorkflowTemplateError } from "../../work-board/template-graph.js";
-import { boardRunState, type WorkflowRunState } from "../../work-board/workflow/run-state.js";
+import { boardRunState, type RunRecord, type WorkflowRunState } from "../../work-board/workflow/run-state.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
@@ -39,13 +39,16 @@ it("deleting the row of a live run interrupts its child and ends the run cancell
   const run = h.start(id, h.local(version));
   await h.untilLive(1);
   const runId = (await h.item(id)).runId ?? "";
+  const update = vi.spyOn(h.board.runs, "update");
 
   expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
   expect(await run).toMatchObject({ status: "cancelled", reason: "item-removed" });
   expect(h.interrupts).toEqual(["child-1"]);
-  const record = await h.runOf(runId);
+  const record = (await update.mock.results.at(-1)?.value)?.run as RunRecord | undefined;
   expect(record?.settled?.status).toBe("cancelled");
   expect(record?.stageRuns.map(stage => stage.status)).toEqual(["cancelled", "cancelled"]);
+  // Settled with no row left: the record is pruned.
+  expect(await h.runOf(runId)).toBeNull();
   expect(h.children).toHaveLength(1);
   // The item is free again: nothing of the run is left in the engine.
   expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
@@ -185,6 +188,8 @@ it("a state change is reduced from the run as stored at the write: a workspace s
           begin: (...a) => runs().begin(...a),
           view: () => runs().view(),
           named: () => runs().named(),
+          unnamed: () => runs().unnamed(),
+          pruneSettled: () => runs().pruneSettled(),
           // The read of one event returns only after another write has stored the second stage's workspace: what it read is stale.
           get: async (itemId, runId) => {
             const run = await runs().get(itemId, runId);
