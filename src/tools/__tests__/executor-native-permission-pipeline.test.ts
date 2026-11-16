@@ -605,7 +605,25 @@ describe("native invocation permission evidence", () => {
     expect(requests[0]).toMatchObject({
       category: "tool", forceExplicit: true,
       allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
+      // F12: the card gets the stage and the matched list entry; the host reason text stays the raw token for audit rows.
+      reasonCode: "protected-path", reasonDetail: { protectedEntry: ".git" }, reason: ".git",
     });
+  });
+
+  // F12: a secret read names its stage and the pattern that matched, and both survive the recheck that rebuilds the result.
+  it("sends the secret-read reason code and matched pattern with a native secret-file read card", async () => {
+    const path = join(project, ".env");
+    await writeFile(path, "FIXTURE_SECRET=private-value\n");
+    const check = vi.spyOn(manager, "checkDetailed");
+    const execute = vi.spyOn(readTool, "execute");
+    const [result] = await run(executor(), "read_file", { path });
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ reasonCode: "secret-read", reasonDetail: { secretPattern: "**/.env" }, target: { filePath: path } });
+    expect(requests[0]!.reasonDetail).not.toHaveProperty("protectedEntry");
+    const issued = check.mock.results.at(-1)!.value as ReturnType<PermissionManager["checkDetailed"]>;
+    expect(manager.recheckPermission(issued).pipelineRequest?.pathFacts).toEqual({ secretPattern: "**/.env" });
   });
 
   it.each(["symlink", "parent-segment"] as const)("forces a %s escape despite an existing outside grant", async (boundary) => {
@@ -623,7 +641,10 @@ describe("native invocation permission evidence", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ category: "tool", forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] });
+    expect(requests[0]).toMatchObject({ category: "tool", forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], reasonCode: "project-escape" });
+    // Only a link has a second location; a parent-segment operand is already spelled where it lands.
+    if (boundary === "symlink") expect(requests[0]?.target).toEqual({ filePath: join(project, "linked.txt"), canonicalPath: outside });
+    else expect(requests[0]?.target).toEqual({ filePath: outside });
     expect(check.mock.results.at(-1)?.value).toMatchObject({ reasonCode: "project-escape", pipelineRequest: {
       floor: { code: "project-escape" }, paths: [{ canonical: canonicalForMatch(outside), effect: "read" }],
     } });
@@ -644,6 +665,36 @@ describe("native invocation permission evidence", () => {
       reasonCode: "project-escape", allowedChoices: ["allow-once", "deny-once"],
       target: { filePath: join(project, "linked.txt"), canonicalPath: outside },
     });
+  });
+
+  it("names the link that leaves the project, not an earlier link that stays inside it", async () => {
+    const outside = join(root, "Outside-Target.txt");
+    await writeFile(outside, "outside resource");
+    await writeFile(join(project, "inside.txt"), "inside resource");
+    await symlink(join(project, "inside.txt"), join(project, "a-inside-link.txt"));
+    await symlink(outside, join(project, "b-outside-link.txt"));
+    const patch = ["*** Begin Patch", "*** Update File: a-inside-link.txt", "@@", "-inside resource", "+changed inside",
+      "*** Update File: b-outside-link.txt", "@@", "-outside resource", "+changed outside", "*** End Patch"].join("\n");
+    const [result] = await run(executor(), "apply_patch", { patch }, { additionalDirectories: [root] });
+    expect(result.is_error).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ reasonCode: "project-escape",
+      target: { filePath: join(project, "b-outside-link.txt"), canonicalPath: outside } });
+  });
+
+  // The same codes are raised for commands and for write tools that name no file; their cards keep the host's reason text.
+  it("sends no file reason code with a shell card", async () => {
+    registry.register(new BashTool());
+    await mkdir(join(project, ".git"));
+    const check = vi.spyOn(manager, "checkDetailed");
+    const [result] = await run(executor(), "bash", { command: "echo changed > .git/config" });
+    expect(result.is_error).toBe(true);
+    // The protected-path floor did raise this card; it is the card, not the decision, that omits the file wording.
+    expect(check.mock.results.at(-1)?.value).toMatchObject({ reasonCode: "protected-path" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ forceExplicit: true, reason: ".git" });
+    expect(requests[0]?.reasonCode).toBeUndefined();
+    expect(requests[0]?.reasonDetail).toBeUndefined();
   });
 
   it("sends no real target for a write whose spelling is its location", async () => {

@@ -114,6 +114,30 @@ function isBoilerplateApprovalReason(value: string): boolean {
     || /\(\s*(?:category|trust)\s*:[^)]+\)\s*$/i.test(normalized);
 }
 
+/** The host's reason for asking, worded from its code. A protected entry is a list name (`.git`) or one of two host namespaces. */
+function approvalAskReason(
+  request: Pick<ApprovalRequest, "reasonCode" | "reasonDetail" | "target">,
+  translate: typeof t,
+): string | null {
+  switch (request.reasonCode) {
+    // The floor covers a link that leads out and an operand that walks out with parent segments; only the first has a second location.
+    case "project-escape": return translate(request.target?.canonicalPath ? "toolApprovalDialog.reasonProjectEscape" : "toolApprovalDialog.reasonProjectEscapeOperand");
+    case "secret-read": return translate("toolApprovalDialog.reasonSecretRead");
+    case "file-write": return translate("toolApprovalDialog.reasonFileWrite");
+    case "protected-path": {
+      const entry = request.reasonDetail?.protectedEntry;
+      if (entry === undefined) return translate("toolApprovalDialog.reasonProtectedPathGeneric");
+      return translate("toolApprovalDialog.reasonProtectedPath", {
+        entry: entry === "application-home" ? translate("toolApprovalDialog.protectedEntryApplicationHome")
+          : entry === "runtime-settings-file" ? translate("toolApprovalDialog.protectedEntryRuntimeSettings")
+            : revealHiddenCharacters(entry, { lineBreaks: true }),
+      });
+    }
+    // No code, or one that belongs to another card (a user-owned surface's decision): the host's reason text stands.
+    default: return null;
+  }
+}
+
 function enumOptionLabel(value: ElicitationEnumValue): string {
   const label = value === null ? "null" : String(value);
   return label.length > 0 ? label : EMPTY_ENUM_OPTION_LABEL;
@@ -964,7 +988,11 @@ export function ToolApprovalContent({
   const sandboxSummary = approvalSandboxSummary(request);
   const categoryImpact = approvalActionSummary(request, tHook);
   const specificReviewerReason = request.reviewerVerdict?.reason.trim() ?? "";
-  const specificHostReason = request.reason.trim();
+  // A coded reason is worded below in the user's language; its host text is an English literal kept for audit rows and tool results.
+  const specificHostReason = request.reasonCode ? "" : request.reason.trim();
+  const askReason = approvalAskReason(request, tHook);
+  const shownSecretPattern = request.reasonDetail?.secretPattern
+    ? revealHiddenCharacters(request.reasonDetail.secretPattern, { lineBreaks: true }) : null;
   // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.
   const reviewedImpact = isOutOfDir
     ? category === "read"
@@ -1075,9 +1103,15 @@ export function ToolApprovalContent({
                     </p>
                   ) : null}
                   {/* The host's own reason for asking stays on the card whatever the purpose or reviewer text says. */}
-                  {request.reasonCode === "project-escape" ? (
-                    <p className="mt-1 break-words text-xs leading-relaxed" data-testid="approval-ask-reason">
-                      {tHook("toolApprovalDialog.reasonProjectEscape")}
+                  {askReason ? (
+                    <p className="mt-1 break-words text-xs leading-relaxed" data-testid="approval-ask-reason" data-reason-code={request.reasonCode}>
+                      {askReason}
+                    </p>
+                  ) : null}
+                  {shownSecretPattern ? (
+                    <p className="mt-0.5 break-all text-tiny" data-testid="approval-secret-pattern">
+                      {tHook("toolApprovalDialog.secretPattern")}{" "}
+                      <code className="font-mono">{shownSecretPattern}</code>
                     </p>
                   ) : null}
                   {shownRealTarget ? (
@@ -1587,7 +1621,7 @@ function approvalReviewRows(
   const parsed = parseArgs(request.args);
   const reviewer = request.userOwnedSurfaceReviewFallback === true ? request.reviewerVerdict?.reason ?? request.reason : request.reviewerVerdict
     ? `${riskLevelKoLabel(request.reviewerVerdict.level)} · ${request.reviewerVerdict.reason}`
-    : request.reason;
+    : approvalAskReason(request, t) ?? request.reason;
   // Source, trust origin, category, conversation and sandbox now live in the compact always-visible summary. Details contain only additional evidence.
   const rows: ReviewBasisRow[] = [];
   if (isNonUserTrustOrigin(request.trustOrigin)) {

@@ -612,6 +612,25 @@ export interface PermissionPathEvidence {
   deleteIntent?: true;
 }
 
+/**
+ * Whether a physical target lies in the project. A root reached through a link (macOS `/tmp/x` for `/private/tmp/x`) names
+ * the same folder as its real path, so the target is inside when it lies under either spelling. A resolved path never begins
+ * with a link's spelling, so the given spelling can only contain a target that was not resolved. The real root is resolved
+ * once, and only when the given spelling does not already contain the target.
+ */
+export function createProjectMembership(projectRoot: string, canonicalize: (path: string) => string = canonicalizePathForMatch): (canonical: string) => boolean {
+  const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
+  const within = (value: string, base: string) => value === base || value.startsWith(`${base}/`);
+  const root = normalize(projectRoot);
+  let realRoot: string | undefined;
+  return (canonical) => {
+    const target = normalize(canonical);
+    if (within(target, root)) return true;
+    realRoot ??= normalize(canonicalize(projectRoot));
+    return within(target, realRoot);
+  };
+}
+
 /** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
 export function createPermissionPathEvidence(projectRoot: string, canonicalize?: (path: string) => string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");

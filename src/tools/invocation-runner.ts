@@ -64,13 +64,13 @@ import {
   remoteControllerOriginOf,
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { approvalReasonCodeOf, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
+import { approvalReasonFields, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
 import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
 } from "../permissions/evaluation-context.js";
-import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
   sanitizeAllowedDirectories,
@@ -1631,7 +1631,7 @@ async function runToolInvocationAttempt(
           ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
           createdAt: Date.now(),
           target: approvalTargetFor(outOfAllowedTarget.filePath, outOfAllowedTarget.realPath),
-          ...(approvalReasonCodeOf(dirLayerResult.reasonCode) ? { reasonCode: approvalReasonCodeOf(dirLayerResult.reasonCode) } : {}),
+          ...approvalReasonFields(dirLayerResult, { fileTarget: invocationCategory !== "shell", folderCard: true }),
           ownerUnattended: invocationPermissionContext.ownerUnattended,
           ...(dirLayerResult.forceModal === true ? { forceExplicit: true as const } : {}),
           sensitivePathPattern: requestSensitivePathPattern,
@@ -2223,7 +2223,11 @@ async function runToolInvocationAttempt(
         }).sensitiveHit;
     const targetFilePath = canonicalTargets[0]?.filePath;
     // Targets a link sends somewhere other than their spelling; a card shows both.
-    const linkedTargets = canonicalTargets.map((target) => approvalTargetFor(target.filePath, target.runtimePath)).filter((target) => target.canonicalPath !== undefined);
+    const inProject = createProjectMembership(executionCwd);
+    const linkedTargets = canonicalTargets.flatMap((target) => {
+      const { canonicalPath } = approvalTargetFor(target.filePath, target.runtimePath);
+      return canonicalPath === undefined ? [] : [{ filePath: target.filePath, canonicalPath, outsideProject: !inProject(target.canonicalPath) }];
+    });
     const sensitivePathPattern = sensitiveTarget?.pattern ?? null;
 
     // Turn-scope admission. `pluginTurnScopeTarget` answers "which plugin does

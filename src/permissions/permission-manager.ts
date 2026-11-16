@@ -87,6 +87,7 @@ import {
   isAdmissionDeniedPath,
   criticalDeleteTargetFor,
   createPermissionPathEvidence,
+  type PermissionPathEvidence,
   canonicalizePathForMatch,
   caseFoldForMatch,
 } from "./sensitive-paths.js";
@@ -1450,6 +1451,7 @@ export class PermissionManager {
       ...(admissionDenial ? { admissionDenial: Object.freeze({ ...admissionDenial }) } : {}),
       ...(evidence.shell ? { shell: Object.freeze({ ...evidence.shell }) } : {}),
       ...(evidence.fileWrite ? { fileWrite: Object.freeze({ ...evidence.fileWrite }) } : {}),
+      ...(evidence.pathFacts ? { pathFacts: Object.freeze({ ...evidence.pathFacts }) } : {}),
       ...(evidence.reviewer ? { reviewer: Object.freeze({ ...evidence.reviewer }) } : {}),
     });
     const decision = decidePermission(request);
@@ -1573,6 +1575,11 @@ export class PermissionManager {
       floor ??= { code: "other-principal", reason: "This principal requires local approval for the action." };
     }
     let secretRead = context.secretRead === true;
+    const pathFacts: NonNullable<PermissionDecisionRequest["pathFacts"]> = {};
+    const notePathFacts = (evidence: PermissionPathEvidence) => {
+      if (evidence.protectedControl) pathFacts.protectedEntry ??= evidence.protectedControl;
+      if (evidence.effect === "read" && evidence.secret !== null) pathFacts.secretPattern ??= evidence.secret;
+    };
     const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd());
     for (const path of context.paths ?? []) {
       const evidence = evidenceForPath(path);
@@ -1580,6 +1587,7 @@ export class PermissionManager {
       if (evidence.projectEscape) floor ??= { code: "project-escape", reason: "The target escapes the project boundary." };
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };
       secretRead ||= path.effect === "read" && evidence.secret !== null;
+      notePathFacts(evidence);
     }
     const scopedSubject = context.ruleSubject?.kind !== "shell" ? context.ruleSubject : undefined;
     if (scopedSubject && ((scopedSubject.kind === "mcp" && source !== "mcp") || (scopedSubject.kind === "edit" && source !== "builtin") ||
@@ -1639,6 +1647,7 @@ export class PermissionManager {
       if (evidence.projectEscape) floor ??= { code: "project-escape", reason: "The shell target escapes the project boundary." };
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };
       secretRead ||= evidence.effect === "read" && evidence.secret !== null;
+      notePathFacts(evidence);
     }
     const competingFloor = floor !== undefined;
     if (sandboxUnavailableAsk) {
@@ -1687,6 +1696,7 @@ export class PermissionManager {
       rationaleAvailable: context.rationaleAvailable === true,
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, exfiltration, rules, secretRead, manualRerun: context.manualRerun,
+      ...(pathFacts.protectedEntry !== undefined || pathFacts.secretPattern !== undefined ? { pathFacts } : {}),
       ...(floorSessionEligible ? { floorSessionEligible: true as const } : {}),
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
       ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),

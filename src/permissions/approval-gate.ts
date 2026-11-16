@@ -23,7 +23,7 @@ import {
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
-import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -115,11 +115,29 @@ export interface ApprovalRequestTarget {
 }
 
 // The tree stages whose card reason the renderer words itself; any other stage keeps the host's reason text.
-export const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read", "file-write"] as const;
-export type ApprovalReasonCode = typeof APPROVAL_REASON_CODES[number];
+const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read", "file-write"] as const;
 
-export function approvalReasonCodeOf(reasonCode: string | undefined): ApprovalReasonCode | undefined {
-  return APPROVAL_REASON_CODES.find((code) => code === reasonCode);
+// The card's reason fields for a permission result, sent only for a card about a file target: the same codes are raised for
+// shell commands and for write tools that name no file, and those cards keep the host's own reason text. A folder card states
+// its ordinary reason in its headline, so it carries a floor code only. The protected entry is named only on its own floor's
+// card; a matched secret pattern is named on any file card for that read, a reviewed one included.
+export function approvalReasonFields(
+  result: { readonly reasonCode?: string; readonly pipelineRequest?: Pick<PermissionDecisionRequest, "pathFacts"> },
+  card: { readonly fileTarget: boolean; readonly folderCard?: true },
+): Pick<ApprovalRequest, "reasonCode" | "reasonDetail"> {
+  if (!card.fileTarget) return {};
+  const reasonCode = APPROVAL_REASON_CODES.find((code) => code === result.reasonCode
+    && (card.folderCard === undefined || code === "protected-path" || code === "project-escape"));
+  const facts = result.pipelineRequest?.pathFacts;
+  const protectedEntry = reasonCode === "protected-path" ? facts?.protectedEntry : undefined;
+  const secretPattern = facts?.secretPattern;
+  return {
+    ...(reasonCode === undefined ? {} : { reasonCode }),
+    ...(protectedEntry === undefined && secretPattern === undefined ? {} : { reasonDetail: {
+      ...(protectedEntry === undefined ? {} : { protectedEntry }),
+      ...(secretPattern === undefined ? {} : { secretPattern }),
+    } }),
+  };
 }
 
 // A target whose resolved location differs from its spelling carries both; the comparison uses the matcher's own normalization.
@@ -128,14 +146,19 @@ export function approvalTargetFor(filePath: string, realPath: string): ApprovalR
   return identity(pathResolve(filePath)) === identity(realPath) ? { filePath } : { filePath, canonicalPath: realPath };
 }
 
-// The card names the linked operand when the project-escape floor raised it; otherwise the first target, with its real location when linked.
+// A target a link sends elsewhere, and whether that place is outside the project.
+export interface LinkedApprovalTarget { readonly filePath: string; readonly canonicalPath: string; readonly outsideProject: boolean }
+
+// On a project-escape card the target is the linked operand that leaves the project; otherwise the first target, with its real location when linked.
 export function approvalRequestTarget(
   targetFilePath: string | undefined,
-  linkedTargets: readonly (ApprovalRequestTarget & { filePath: string })[],
+  linkedTargets: readonly LinkedApprovalTarget[],
   reasonCode: string | undefined,
 ): ApprovalRequestTarget | undefined {
-  const linked = reasonCode === "project-escape" ? linkedTargets[0] : linkedTargets.find((target) => target.filePath === targetFilePath);
-  return linked ?? (targetFilePath ? { filePath: targetFilePath } : undefined);
+  const linked = (reasonCode === "project-escape" ? linkedTargets.find((target) => target.outsideProject) : undefined)
+    ?? linkedTargets.find((target) => target.filePath === targetFilePath);
+  if (linked) return { filePath: linked.filePath, canonicalPath: linked.canonicalPath };
+  return targetFilePath ? { filePath: targetFilePath } : undefined;
 }
 
 export interface PendingApprovalSummary {
@@ -213,6 +236,8 @@ export interface ApprovalRequest {
   executionCwd?: string;
   // Sensitive target paths hard-block before the dock and cannot be overridden.
   target?: ApprovalRequestTarget;
+  // Display-only: the protected entry (a list name such as `.git`, or `application-home` / `runtime-settings-file`) and the secret pattern the path evidence matched.
+  reasonDetail?: { protectedEntry?: string; secretPattern?: string };
   // Sensitive-pattern metadata is diagnostic only; requestAndWait owns the authoritative hard block before any dock.
   sensitivePathPattern?: string | null;
   // Cache key for approval record/lookup symmetry. Propagated from executor's approvalCacheKeyFor result so the renderer can record and look up entries using the same key that dispatchReviewer uses. Without this field the renderer receives undefined and the record key mismatches the lookup key → approval cache hit rate 0% for tools like routine_schedule / bash / fs_write.
