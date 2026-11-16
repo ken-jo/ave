@@ -17,6 +17,7 @@ import * as allowedDirectories from "../../../permissions/allowed-directories.js
 import * as fileReadCore from "../../../tools/file-read-core.js";
 import { validateHostRendererSender } from "../../gated.js";
 import { setSessionContentsLookup } from "../../../main/app-state.js";
+import { allowKeyMaterialInspectionUnder, canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
 import { observeAgentDocumentMutation, runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
 import type { DocumentObservationEvent } from "../../../shared/agent-observation.js";
 
@@ -452,6 +453,26 @@ describe("read-only observation sender boundary", () => {
     expect(await ack(event, result.observation!.targetId, { sessionId: "different-session" })).toEqual({ ok: false, error: "unauthorized" });
     expect(messageBox).not.toHaveBeenCalled();
     event.sender.emit("destroyed");
+  });
+
+  it("shows the person a long key-extension text without handing it to the agent's observation", async () => {
+    const event = documentEvent(OK_FRAME);
+    await registerSessionOwner(event);
+    // Longer than what is read for a key header, with one past that part: nobody showed it harmless.
+    const path = join(root, "bundle.pem");
+    writeFileSync(path, `${"x".repeat(1024 * 1024)}\n-----BEGIN PRIVATE${" KEY-----"}\nFIXTURE\n`);
+    const withdraw = allowKeyMaterialInspectionUnder(() => [canonicalizePathForMatch(root)]);
+    try {
+      const read = handlers.get(CHANNELS.preview.readFile);
+      if (!read) throw new Error("preview.readFile is not registered");
+      const result = await read(event, path, { sessionId: "session-one" }) as PreviewReadFileResult;
+      // The person's own screen shows it; the agent's observation of the document is judged as the agent's read.
+      expect(result).toMatchObject({ ok: true });
+      expect(result).not.toHaveProperty("observation");
+    } finally {
+      withdraw();
+      event.sender.emit("destroyed");
+    }
   });
 
   it.each(["text", "table"])("opens a successfully read %s file for its actual app frame without widening attachment reads", async (kind) => {

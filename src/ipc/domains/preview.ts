@@ -178,7 +178,9 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
 
       const { cwd, extraAllowed } = currentReadScope();
       const requestedPath = workspaceRoot === undefined ? rawPath : resolve(workspaceRoot, rawPath);
-      const verdict = assertReadableFilePath(requestedPath, cwd, extraAllowed);
+      // This read is drawn on the person's own screen: a key-extension file is refused here only when it holds a key.
+      // Handing the document to the agent's observation is judged separately, as the agent's read.
+      const verdict = assertReadableFilePath(requestedPath, cwd, extraAllowed, "person");
       if (!verdict.ok) {
         // "not-a-file" here means glob/argument, never a concrete file.
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
@@ -233,7 +235,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           ? { content: textDocument.content, lines: textDocument.lines, truncated: textDocument.truncated }
           : await readTextFileWindow(resolved, offset, limit);
         const liveScope = currentReadScope();
-        const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed);
+        const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed, "person");
         if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
           return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
         }

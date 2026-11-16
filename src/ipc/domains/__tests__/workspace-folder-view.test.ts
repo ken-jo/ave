@@ -164,6 +164,34 @@ describe("workspace.listDir folder-view entries", () => {
     }
   });
 
+  it("hides a key-extension file only when it holds a private key (F19)", async () => {
+    const dir = join(root, "key-files");
+    mkdirSync(dir);
+    // The header is written in two parts so no scanner takes this test file for key material.
+    writeFileSync(join(dir, "tls.key"), "-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n");
+    writeFileSync(join(dir, "server.pem"), "-----BEGIN RSA PRIVATE" + " KEY-----\nFIXTURE\n");
+    writeFileSync(join(dir, "Quarterly review.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+    mkdirSync(join(dir, "Roadmap.key"));
+    writeFileSync(join(dir, "chain.pem"), "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
+    // Longer than what is read: a presentation archive nobody could show harmless, and a key whose header is in the part
+    // that was read.
+    const window = 1024 * 1024;
+    writeFileSync(join(dir, "Big deck.key"), Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window * 2, "s")]));
+    writeFileSync(join(dir, "big.key"), Buffer.concat([Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n"), Buffer.alloc(window * 2, "x")]));
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      expect(res.ok).toBe(true);
+      // Only a confirmed key is hidden; the large deck stays the person's to see.
+      expect(res.entries?.map((entry) => entry.name).sort()).toEqual(["Big deck.key", "Quarterly review.key", "Roadmap.key", "chain.pem"]);
+      expect(res.hidden).toBe(3);
+      // An agent read of the large deck still asks: what was not read is not taken for harmless.
+      expect(fileAccessPolicy.sensitiveFilePattern(join(dir, "Big deck.key"), "read")).toBe("**/*.key");
+      expect(fileAccessPolicy.sensitiveFilePattern(join(dir, "Quarterly review.key"), "read")).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("hides a sensitive name that is a link, and counts it", async ({ skip }) => {
     needsFileLinks(skip);
     const dir = join(root, "linked-secret");

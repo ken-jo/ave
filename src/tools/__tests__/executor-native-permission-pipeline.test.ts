@@ -26,7 +26,7 @@ import { mcpToolToTool } from "../../mcp/mcp-tool-adapter.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { getHostShellExecutionPlan, setShellSandboxRequestedAtBoot, setActiveSandboxCapability, __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath } from "../../permissions/sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath, allowKeyMaterialInspectionUnder } from "../../permissions/sensitive-paths.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { buildApprovalScopeOptions } from "../../permissions/approval-scope-options.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
@@ -56,12 +56,15 @@ let requests: ApprovalRequestInput[];
 let readTool: ReadFileTool;
 let writeTool: WriteFileTool;
 
+let restoreKeyInspection: () => void = () => undefined;
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "ave-native-permission-")));
   project = join(root, "project");
   await mkdir(project);
   vi.stubEnv("AVE_HOME", join(root, "state"));
   sessionId = randomUUID();
+  // The project is one the person registered, so key-extension files in it may be looked at.
+  restoreKeyInspection = allowKeyMaterialInspectionUnder(() => [project]);
   __resetSessionStoreForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -74,6 +77,7 @@ beforeEach(async () => {
   requests = [];
 });
 afterEach(async () => {
+  restoreKeyInspection();
   await resources.cleanup();
   await audit.close();
   __resetSessionStoreForTest();
@@ -310,6 +314,42 @@ describe("native invocation permission evidence", () => {
     expect(check.mock.results.at(-1)?.value).toMatchObject({
       reasonCode: "review-required", pipelineRequest: { secretRead: true }, reviewer: { route: "foreground-auto" },
     });
+  });
+
+  // F19: the revised secret table changes which reads take the tree's secret-file edge, not the edge itself.
+  it.each([
+    ["certs/server.pem", "**/*.pem"], ["certs/tls.key", "**/*.key"], ["id_dsa", "**/id_dsa"], [".env.test.local", "**/.env.*"],
+  ] as const)("asks before reading %s as a secret file", async (name, pattern) => {
+    await mkdir(join(project, "certs"), { recursive: true });
+    // The header is written in two parts so no scanner takes this test file for key material.
+    await writeFile(join(project, name), "-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n");
+    const execute = vi.spyOn(readTool, "execute");
+    const [result] = await run(executor(), "read_file", { path: join(project, name) });
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ reasonCode: "secret-read", reasonDetail: { secretPattern: pattern } });
+    expect(requests[0]!.allowedChoices).toBeUndefined();
+  });
+
+  it.each([
+    ["Quarterly review.key", Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00])],
+    ["chain.pem", Buffer.from("-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n")],
+  ] as const)("reads %s, a key-extension file that holds no private key, without a card", async (name, content) => {
+    await writeFile(join(project, name), content);
+    const execute = vi.spyOn(readTool, "execute");
+    await run(executor(), "read_file", { path: join(project, name) });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each([".env.test", ".env.example", "id_ed25519.pub", "id_rsa.pub"])("reads %s without a card", async (name) => {
+    await writeFile(join(project, name), "PUBLIC_FIXTURE=1\n");
+    const execute = vi.spyOn(readTool, "execute");
+    const [result] = await run(executor(), "read_file", { path: join(project, name) });
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(0);
   });
 
   it.each([

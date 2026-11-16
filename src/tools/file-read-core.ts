@@ -10,6 +10,7 @@ import {
   caseFoldForMatch,
   isSensitivePath,
   isConfiguredSessionReadPath,
+  type KeyMaterialAudience,
 } from "../permissions/sensitive-paths.js";
 
 // Text preview and read_file share this size cap; it is defined in shared/ so the renderer reads the same number.
@@ -35,6 +36,7 @@ export function assertReadableFilePath(
   inputPath: string,
   cwd: string,
   extraAllowed: readonly string[],
+  audience: KeyMaterialAudience = "agent",
 ): AssertReadableResult {
   if (isGlobPattern(inputPath)) return { ok: false, error: "not-a-file" };
   const expanded = expandLeadingTilde(inputPath);
@@ -48,8 +50,8 @@ export function assertReadableFilePath(
     resolved = lexical;
   }
   const canonical = canonicalizePathForMatch(resolved);
-  const sensitive = isSensitivePath(caseFoldForMatch(lexical), "read")
-    ?? isSensitivePath(caseFoldForMatch(canonical), "read");
+  const sensitive = isSensitivePath(caseFoldForMatch(lexical), "read", audience)
+    ?? isSensitivePath(caseFoldForMatch(canonical), "read", audience);
   if (sensitive) return { ok: false, error: "sensitive-path" };
   if (isConfiguredSessionReadPath(canonical)) return { ok: true, resolved };
   const check = validateSandboxPath(resolved, cwd, [...extraAllowed]);

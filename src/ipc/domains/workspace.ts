@@ -25,7 +25,9 @@ import {
   caseFoldForMatch,
   foldCanonicalPathSeparators,
   isSensitivePath,
+  allowKeyMaterialInspectionUnder,
 } from "../../permissions/sensitive-paths.js";
+import { listAuthorizedWorkspaceRoots } from "../../permissions/workspace-authorized-roots.js";
 import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import {
   reconcileWorkspaceRoots,
@@ -320,6 +322,17 @@ function computeRoots(): WorkspaceRoot[] {
 }
 
 export function registerWorkspaceHandlers(deps: IpcDeps): void {
+  // A `.pem` or `.key` file is opened to see whether it holds a private key only inside the person's projects: the
+  // registered ones and the folders live conversations work in. If the project list cannot be read, only the latter
+  // qualify and other such names are judged on the name alone.
+  allowKeyMaterialInspectionUnder(() => {
+    const live = listAuthorizedWorkspaceRoots();
+    try { return [...computeRoots().map((root) => root.path), ...live]; }
+    catch (error) {
+      if (error instanceof PermissionSettingsUnreadableError) return live;
+      throw error;
+    }
+  });
   const { auditLogger, getMainWindow } = deps;
   type WorkspaceMemoryLifecycle = {
     allowProjectRoot?: (root: string) => unknown;
@@ -948,8 +961,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           const sensitiveKey = link
             ? caseFoldForMatch(foldCanonicalPathSeparators(join(realDir ?? dir, ent.name)))
             : caseFoldForMatch(canonicalizePathForMatch(full));
-          // Filter sensitive entries using the file tools' policy so browsing cannot offer paths reads refuse.
-          if (isSensitivePath(sensitiveKey)) {
+          // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
+          // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
+          if (isSensitivePath(sensitiveKey, "write", "person")) {
             hidden += 1;
             continue;
           }

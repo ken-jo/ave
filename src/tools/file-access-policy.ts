@@ -1,8 +1,7 @@
 import { pathEffectIsConfined, type PathEffect } from "../permissions/allowed-directories.js";
 import {
   canonicalizePathForMatch,
-  caseFoldForMatch,
-  foldCanonicalPathSeparators,
+  resolvePathForPolicy,
   isAdmissionDeniedPath,
   isSensitivePath,
   isConfiguredSessionReadPath,
@@ -11,13 +10,13 @@ import { validateSandboxPath } from "../sandbox/path-validator.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 
 export function sensitiveFilePattern(path: string, effect: PathEffect = "read"): string | null {
-  return isSensitivePath(caseFoldForMatch(foldCanonicalPathSeparators(path)), effect)
-    ?? isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(path)), effect);
+  return isSensitivePath(path, effect)
+    ?? isSensitivePath(resolvePathForPolicy(path), effect);
 }
 
 export function admissionDeniedFilePattern(path: string, effect: PathEffect = "read"): string | null {
-  return isAdmissionDeniedPath(caseFoldForMatch(foldCanonicalPathSeparators(path)), effect)
-    ?? isAdmissionDeniedPath(caseFoldForMatch(canonicalizePathForMatch(path)), effect);
+  return isAdmissionDeniedPath(path, effect)
+    ?? isAdmissionDeniedPath(resolvePathForPolicy(path), effect);
 }
 
 /** Execute-time sensitive and directory gates shared by native file operations. */

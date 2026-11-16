@@ -1,7 +1,8 @@
 // Registration binds a drop token; only single-use, sender-bound redemption grants authority.
+import { isSensitivePath } from "../../../permissions/sensitive-paths.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { shell } from "electron";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -168,6 +169,38 @@ describe("composer drop token", () => {
       ok: false,
       error: "drop-token-expired",
     });
+  });
+
+  it("refuses a key-extension file that holds a private key and takes one that does not", async () => {
+    // The header is written in two parts so no scanner takes this test file for key material.
+    writeFileSync(join(root, "tls.key"), "-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n");
+    writeFileSync(join(root, "Quarterly review.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+    writeFileSync(join(root, "chain.pem"), "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
+    // Longer than what is read: a presentation archive nobody could show harmless, and a key whose header is in the part
+    // that was read.
+    const window = 1024 * 1024;
+    writeFileSync(join(root, "Big deck.key"), Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window * 2, "s")]));
+    writeFileSync(join(root, "big.key"), Buffer.concat([Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n"), Buffer.alloc(window * 2, "x")]));
+    // Dropping the files is the person bringing them to Ave, from a folder that is no project: each is looked at, and
+    // only the ones that hold a private key are refused. The large deck is the person's own choice and is taken.
+    const dropped = ["tls.key", "Quarterly review.key", "chain.pem", "Big deck.key", "big.key"].map((name) => join(root, name));
+    const reg = await register(7, dropped);
+    expect(reg.ok).toBe(true);
+    expect(reg.rejected).toEqual([{ name: "tls.key", reason: "sensitive-path" }, { name: "big.key", reason: "sensitive-path" }]);
+    const redeemed = await call(CHANNELS.attach.redeemDrop, 7, reg.token) as { ok: boolean; files: Array<{ path: string; name: string; bytes: number }> };
+    expect(redeemed.ok).toBe(true);
+    expect(redeemed.files.map((file) => file.path)).toEqual([join(root, "Quarterly review.key"), join(root, "chain.pem"), join(root, "Big deck.key")]);
+    // The chip shows it as any other file: its own name and size.
+    expect(redeemed.files[2]).toMatchObject({ name: "Big deck.key", bytes: window * 2 + 4 });
+    // The agent reading the attached deck still asks: its unread part is not taken for harmless.
+    expect(isSensitivePath(realpathSync(join(root, "Big deck.key")), "read")).toBe("**/*.key");
+    rmSync(join(root, "Big deck.key"));
+    rmSync(join(root, "big.key"));
+    // That covers the dropped files only. The same folder's other key-extension names, which nobody brought, are still
+    // judged on the name alone by every other reader.
+    writeFileSync(join(root, "Other deck.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+    expect(isSensitivePath(realpathSync(join(root, "Other deck.key")), "read")).toBe("**/*.key");
+    expect(isSensitivePath(realpathSync(join(root, "Quarterly review.key")), "read")).toBeNull();
   });
 
   it("refuses a sensitive path, a blocked type and a folder", async () => {

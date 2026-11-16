@@ -17,6 +17,7 @@ import {
 } from "../../shared/composer-image-input.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
+  allowKeyMaterialInspection,
   canonicalizePathForMatch,
   caseFoldForMatch,
   isSensitivePath,
@@ -32,13 +33,32 @@ const ATTACH_PATH_ALLOWLIST = new Set<string>();
 // Revoke generated-file capabilities without pathname deletion; replacement races could unlink a user-managed file.
 const CLIPBOARD_TEMP_IMAGE_PATHS = new Set<string>();
 
+/** The files the person picked, dropped or pasted, by canonical case-folded path: the ones a key-extension name may be
+ * opened for (see `allowKeyMaterialInspection`). Kept in step with the allow-list; `BEING_CHOSEN` covers a file while it
+ * is being judged, before it is on the list. */
+const CHOSEN_FILES = new Map<string, string>();
+const BEING_CHOSEN = new Set<string>();
+const chosenFileKey = (p: string): string => caseFoldForMatch(canonicalizePathForMatch(p));
+function personChoseFile(canonicalPath: string): boolean {
+  if (BEING_CHOSEN.has(canonicalPath)) return true;
+  for (const chosen of CHOSEN_FILES.values()) if (chosen === canonicalPath) return true;
+  return false;
+}
+let withdrawChosenFileInspection: (() => void) | undefined;
+
+function unauthorizePath(p: string): void {
+  ATTACH_PATH_ALLOWLIST.delete(p);
+  CHOSEN_FILES.delete(p);
+}
+
 function authorizePath(p: string): void {
   if (ATTACH_PATH_ALLOWLIST.has(p)) ATTACH_PATH_ALLOWLIST.delete(p);
   ATTACH_PATH_ALLOWLIST.add(p);
+  CHOSEN_FILES.set(p, chosenFileKey(p));
   while (ATTACH_PATH_ALLOWLIST.size > ATTACH_ALLOWLIST_MAX) {
     const oldest = ATTACH_PATH_ALLOWLIST.values().next().value;
     if (oldest === undefined) break;
-    ATTACH_PATH_ALLOWLIST.delete(oldest);
+    unauthorizePath(oldest);
     CLIPBOARD_TEMP_IMAGE_PATHS.delete(oldest);
   }
 }
@@ -81,8 +101,18 @@ function senderIdOf(e: IpcMainInvokeEvent): number | null {
   return typeof id === "number" ? id : null;
 }
 
+/** Judge a file the person is bringing in right now. Dropping it is what lets a `.pem` or `.key` name be opened to see
+ * whether it holds a private key; without that, a presentation document from the desktop could not be attached. */
 function sensitiveForRead(p: string): boolean {
-  return isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(p)), "read") !== null;
+  const key = chosenFileKey(p);
+  const added = !BEING_CHOSEN.has(key);
+  if (added) BEING_CHOSEN.add(key);
+  try {
+    // The person's own drop: a key-extension file is refused only when it holds a key.
+    return isSensitivePath(key, "read", "person") !== null;
+  } finally {
+    if (added) BEING_CHOSEN.delete(key);
+  }
 }
 
 async function validateDroppedPath(
@@ -198,6 +228,9 @@ export interface DiscardClipboardImageResult {
 
 export function registerAttachHandlers(deps: IpcDeps): void {
   const { auditLogger, getMainWindow } = deps;
+
+  withdrawChosenFileInspection?.();
+  withdrawChosenFileInspection = allowKeyMaterialInspection(personChoseFile);
 
   ipcMain.handle(CHANNELS.attach.openFile, async (e): Promise<OpenFileResult> => {
     if (!validateHostRendererSender(e)) {
@@ -436,7 +469,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
       }
 
       // Revoke instead of unlinking; no cross-platform compare-and-unlink protects against pathname replacement.
-      ATTACH_PATH_ALLOWLIST.delete(filePath);
+      unauthorizePath(filePath);
       CLIPBOARD_TEMP_IMAGE_PATHS.delete(filePath);
       return { ok: true, retained: true };
     },
