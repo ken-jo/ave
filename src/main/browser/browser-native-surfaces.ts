@@ -464,7 +464,8 @@ export class BrowserNativeSurfaceHost {
         this.publish(entry);
       }
     };
-    const hidden = () => park(false);
+    // Visibility notifications can arrive after the owner has already been shown again.
+    const hidden = () => { if (!this.ownerVisible(owner)) park(false); };
     const blurred = () => { this.clearGesture(windowId); };
     const focused = () => {
       if (!this.ownerVisible(owner) || !owner.isFocused()) return;
