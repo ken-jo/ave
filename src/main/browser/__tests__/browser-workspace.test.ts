@@ -1,4 +1,5 @@
-import { parseBrowserWorkspaceState } from "../../../shared/browser-workspace.js";
+import { dismissedPageDialogs, withDismissedDialogs } from "../browser-page-dialogs.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, parseBrowserWorkspaceState } from "../../../shared/browser-workspace.js";
 import { refuseNamespaceFileCreation } from "../../../__tests__/support/feature-namespace.js";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -21,20 +22,23 @@ async function setup() {
   let factor = 1;
   let live = true;
   const events = new EventEmitter();
+  const runtimeDialog = vi.fn(); events.on("-run-dialog", runtimeDialog);
+  let agentDriving = false;
   const loadURL = vi.fn(async (_url: string) => {}); const reload = vi.fn(); const stop = vi.fn();
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
   let hostType = "webview";
-  const guest = Object.assign(events, { id: 7, session: {}, getType: () => hostType, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
+  const guest = Object.assign(events, { id: 7, session: {}, mainFrame: { frameTreeNodeId: 1 }, getType: () => hostType, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
   const onError = vi.fn(); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined);
   let requestHold: BrowserPageRequestHold | null = null;
   const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
   /** A request reaching the browser profile: how the hold answered it, or "unheld" when nothing holds requests. */
   const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
-  const service = new BrowserWorkspaceService({ openExternal, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
+  const service = new BrowserWorkspaceService({ openExternal, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
+const PAGE_FRAME = { origin: "https://site.example", detached: false, top: { frameTreeNodeId: 1 } };
 
 describe("browser workspace service", () => {
   it("resolves only live renderer tabs in their window and proves the document before native operations", async () => {
@@ -94,7 +98,7 @@ describe("browser workspace service", () => {
     Object.defineProperty(guest, "id", { get: () => { throw new TypeError("Object has been destroyed"); } });
     expect(() => events.emit("destroyed")).not.toThrow();
     expect(events.listenerCount("did-start-navigation")).toBe(0);
-    const replacement = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false, isLoadingMainFrame: () => false }) as unknown as WebContents;
+    const replacement = Object.assign(new EventEmitter().on("-run-dialog", () => {}), { id: 7, isDestroyed: () => false, isLoadingMainFrame: () => false }) as unknown as WebContents;
     expect(() => service.observeGuest(2, replacement)).not.toThrow();
   });
   it("reports a main-frame load failure for the tab until the user navigates away from it", async () => {
@@ -181,8 +185,8 @@ describe("browser workspace service", () => {
     expect(() => service.load(2, { ...TARGET, url: "https://site.example/" })).toThrow("no-such-tab");
     expect(loadURL).toHaveBeenCalledOnce();
   });
-  it("asks a tab's permission question in its panel, and a guest without a tab in a native dialog", async () => {
-    const { service, guest, events, promptPermission, setLive } = await setup();
+  it("asks a tab's permission question in its panel, also before the tab is bound, and only a popup window in a native dialog", async () => {
+    const { service, guest, events, promptPermission, setLive, setHostType } = await setup();
     service.observeGuest(1, guest);
     const details = { requestingUrl: "https://site.example/", isMainFrame: true };
     const asked = service.requestPermission(7, "geolocation", details);
@@ -205,9 +209,78 @@ describe("browser workspace service", () => {
     await expect(pending).resolves.toBe(false);
     expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
 
+    // A page in a tab that is not bound yet still asks in the panel: the question waits there for the tab.
     setLive(false);
+    const unbound = service.requestPermission(7, "notifications", details);
+    for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setImmediate(resolve));
+    expect((await service.getState(1)).pages).toEqual([]);
+    expect(promptPermission).not.toHaveBeenCalled();
+    setLive(true);
+    const held = (await service.getState(1)).pages[0]?.prompts[0];
+    expect(held).toMatchObject({ kind: "permission", permissions: ["notifications"] });
+    service.answerPrompt(1, { tabId: "browser:one", promptId: String(held?.id), answer: { kind: "permission", choice: "allow-once" } });
+    await expect(unbound).resolves.toBe(true);
+    // Only a popup window, which has no tab at all, asks in a native dialog.
+    setLive(false); setHostType("window");
+    events.emit("did-navigate", {}, "https://site.example/");
     await expect(service.requestPermission(7, "notifications", details)).resolves.toBe(true);
     expect(promptPermission).toHaveBeenCalledWith({ windowId: 1, guestId: 7, origin: "https://site.example", permissions: ["notifications"] });
+  });
+  it("keeps a document's dialog Block and open questions through a fragment or history change or a navigation that never commits, and ends them with the next document", async () => {
+    const { service, guest, events } = await setup();
+    service.observeGuest(1, guest);
+    const open = (text: string) => { const respond = vi.fn(); events.emit("-run-dialog", { frame: PAGE_FRAME, dialogType: "alert", messageText: text }, respond); return respond; };
+    const answer = async (block: boolean) => service.answerPrompt(1, { tabId: "browser:one", promptId: String((await service.getState(1)).pages[0]?.prompts[0]?.id), answer: { kind: "dialog", accept: false, block } });
+    const first = open("one"); await answer(false);
+    await vi.waitFor(() => expect(first).toHaveBeenCalled());
+    const second = open("two");
+    // A fragment change and a history change leave the open question where it is.
+    events.emit("did-start-navigation", {}, "https://site.example/#part", true, true);
+    events.emit("did-navigate-in-page", {}, "https://site.example/#part", true);
+    expect((await service.getState(1)).pages[0]?.prompts).toMatchObject([{ kind: "dialog", message: "two" }]);
+    await answer(true);
+    await vi.waitFor(() => expect(second).toHaveBeenCalled());
+    events.emit("did-navigate-in-page", {}, "https://site.example/other-route", true);
+    expect(open("three")).toHaveBeenCalledWith(false, "");
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+    // A navigation that starts but never commits (a download, an empty response) leaves the same document behind.
+    events.emit("did-start-navigation", {}, "https://site.example/file.zip", false, true);
+    expect(open("still")).toHaveBeenCalledWith(false, "");
+    // A new document starts clean.
+    events.emit("did-start-navigation", {}, "https://site.example/next", false, true);
+    events.emit("did-navigate", {}, "https://site.example/next");
+    open("four");
+    expect((await service.getState(1)).pages[0]?.prompts).toMatchObject([{ kind: "dialog", message: "four" }]);
+  });
+  it("keeps a document's permission Block through a fragment or history change or a navigation that never commits, and drops it with the next document", async () => {
+    const { service, guest, events, setUrl } = await setup();
+    service.observeGuest(1, guest);
+    const ask = (url: string) => service.requestPermission(7, "geolocation", { requestingUrl: url, isMainFrame: true });
+    const answer = async (choice: "block" | "allow-once") => service.answerPrompt(1, { tabId: "browser:one", promptId: String((await service.getState(1)).pages[0]?.prompts[0]?.id), answer: { kind: "permission", choice } });
+    const blocked = ask("https://site.example/");
+    await vi.waitFor(async () => expect((await service.getState(1)).pages[0]?.prompts).toHaveLength(1));
+    await answer("block");
+    await expect(blocked).resolves.toBe(false);
+    for (const next of ["https://site.example/#part", "https://site.example/route"]) {
+      setUrl(next);
+      events.emit("did-start-navigation", {}, next, true, true);
+      events.emit("did-navigate-in-page", {}, next, true);
+      // Still the same document: no new question, still refused.
+      await expect(ask(next)).resolves.toBe(false);
+      expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+      expect(service.checkPermission(7, "geolocation", { requestingUrl: next, isMainFrame: true })).toBe(false);
+    }
+    // A navigation that starts but never commits leaves the same document, and its Block, behind.
+    events.emit("did-start-navigation", {}, "https://site.example/file.zip", false, true);
+    await expect(ask("https://site.example/route")).resolves.toBe(false);
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+    setUrl("https://site.example/next");
+    events.emit("did-start-navigation", {}, "https://site.example/next", false, true);
+    events.emit("did-navigate", {}, "https://site.example/next");
+    const fresh = ask("https://site.example/next");
+    await vi.waitFor(async () => expect((await service.getState(1)).pages[0]?.prompts).toHaveLength(1));
+    await answer("allow-once");
+    await expect(fresh).resolves.toBe(true);
   });
   it("lets the user's own navigation unload a page that asks to stay, without a question", async () => {
     const { service, guest, events } = await setup();
@@ -411,5 +484,124 @@ describe("browser workspace service", () => {
     expect(answered).not.toHaveBeenCalled();
     setLive(true);
     expect((await service.getState(1)).pages[0]?.prompts).toMatchObject([{ kind: "signIn", realm: "Staff" }]);
+  });
+  it("answers a user tab's page dialogs in its panel, with the origin, and resumes the page with the answer", async () => {
+    const { service, guest, events, runtimeDialog } = await setup();
+    service.observeGuest(1, guest);
+    const open = (dialogType: string, messageText: string) => { const respond = vi.fn(); events.emit("-run-dialog", { frame: PAGE_FRAME, dialogType, messageText, defaultPromptText: "" }, respond); return respond; };
+    const shown = async () => (await service.getState(1)).pages[0]?.prompts ?? [];
+    const answer = async (accept: boolean, block = false) =>
+      service.answerPrompt(1, { tabId: "browser:one", promptId: String((await shown())[0]?.id), answer: { kind: "dialog", accept, block } });
+
+    const alert = open("alert", "Saved\r\nline two\u0007");
+    expect(await shown()).toEqual([{ id: (await shown())[0]?.id, kind: "dialog", origin: "https://site.example", dialog: "alert", message: "Saved\nline two", canBlock: false }]);
+    expect(alert).not.toHaveBeenCalled();
+    await answer(true);
+    await vi.waitFor(() => expect(alert).toHaveBeenCalledWith(true, ""));
+
+    const accepted = open("confirm", "Delete?");
+    expect((await shown())[0]).toMatchObject({ dialog: "confirm", canBlock: true });
+    await answer(true);
+    await vi.waitFor(() => expect(accepted).toHaveBeenCalledWith(true, ""));
+    const refused = open("confirm", "Delete?");
+    await answer(false);
+    await vi.waitFor(() => expect(refused).toHaveBeenCalledWith(false, ""));
+
+    // Leaving the page, or the runtime cancelling its dialogs, resumes the page unanswered.
+    const left = open("confirm", "Still there?");
+    events.emit("did-start-navigation", {}, "https://site.example/next", false, true);
+    await vi.waitFor(() => expect(left).toHaveBeenCalledWith(false, ""));
+    const cancelled = open("alert", "Hi");
+    events.emit("-cancel-dialogs");
+    await vi.waitFor(() => expect(cancelled).toHaveBeenCalledWith(false, ""));
+    // A kind this host does not draw ends unanswered rather than reaching an unlabelled box.
+    for (const kind of ["prompt", "page-defined"]) expect(open(kind, "x")).toHaveBeenCalledWith(false, "");
+    expect(runtimeDialog).not.toHaveBeenCalled();
+    expect(await shown()).toEqual([]);
+  });
+  it("titles a frame's dialog with that frame's own site, and refuses one from a frame with no web origin", async () => {
+    const { service, guest, events, runtimeDialog } = await setup();
+    service.observeGuest(1, guest);
+    const open = (frame: unknown) => { const respond = vi.fn(); events.emit("-run-dialog", { frame, dialogType: "alert", messageText: "from a frame" }, respond); return respond; };
+    open({ origin: "https://ads.other.example:8443", detached: false, top: { frameTreeNodeId: 1 } });
+    expect((await service.getState(1)).pages[0]?.prompts).toMatchObject([{ kind: "dialog", origin: "https://ads.other.example:8443", message: "from a frame" }]);
+    events.emit("-cancel-dialogs");
+    // An opaque origin, a frame that left the page, a frame of another page, a non-web scheme or no frame at all.
+    for (const frame of [
+      { origin: "null", detached: false, top: { frameTreeNodeId: 1 } },
+      { origin: "https://site.example", detached: true, top: { frameTreeNodeId: 1 } },
+      { origin: "https://site.example", detached: false, top: { frameTreeNodeId: 99 } },
+      { origin: "file://", detached: false, top: { frameTreeNodeId: 1 } },
+      { origin: "https://site.example/path", detached: false, top: { frameTreeNodeId: 1 } },
+      undefined,
+    ]) expect(open(frame)).toHaveBeenCalledWith(false, "");
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+    expect(runtimeDialog).not.toHaveBeenCalled();
+  });
+  it("holds a dialog of a tab's page that runs before the tab is bound for its panel, never in the runtime's own box", async () => {
+    const { service, guest, events, runtimeDialog, setLive } = await setup();
+    setLive(false);
+    service.observeGuest(1, guest);
+    const respond = vi.fn();
+    events.emit("-run-dialog", { frame: PAGE_FRAME, dialogType: "alert", messageText: "first document" }, respond);
+    expect(runtimeDialog).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+    setLive(true);
+    const held = (await service.getState(1)).pages[0]?.prompts[0];
+    expect(held).toMatchObject({ kind: "dialog", origin: "https://site.example", message: "first document" });
+    service.answerPrompt(1, { tabId: "browser:one", promptId: String(held?.id), answer: { kind: "dialog", accept: true, block: false } });
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledWith(true, ""));
+  });
+  it("stops a document's dialogs when the user blocks them or the document reaches its limit, until the next document", async () => {
+    const { service, guest, events } = await setup();
+    service.observeGuest(1, guest);
+    const open = () => { const respond = vi.fn(); events.emit("-run-dialog", { frame: PAGE_FRAME, dialogType: "alert", messageText: "again" }, respond); return respond; };
+    const answer = async (block: boolean) => service.answerPrompt(1, { tabId: "browser:one", promptId: String((await service.getState(1)).pages[0]?.prompts[0]?.id), answer: { kind: "dialog", accept: false, block } });
+    open(); await answer(false);
+    const second = open(); await answer(true);
+    await vi.waitFor(() => expect(second).toHaveBeenCalled());
+    expect(open()).toHaveBeenCalledWith(false, "");
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+
+    events.emit("did-start-navigation", {}, "https://site.example/next", false, true);
+    events.emit("did-navigate", {}, "https://site.example/next");
+    for (let count = 0; count < BROWSER_DIALOG_DOCUMENT_LIMIT; count++) { const respond = open(); await answer(false); await vi.waitFor(() => expect(respond).toHaveBeenCalled()); }
+    expect(open()).toHaveBeenCalledWith(false, "");
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+  });
+  it("dismisses a dialog on a page the agent is driving and reports its type and text with the next tool result", async () => {
+    const { service, guest, events, runtimeDialog, setAgentDriving, setHostType, setLive } = await setup();
+    service.observeGuest(1, guest);
+    setAgentDriving(true);
+    for (let count = 0; count < 7; count++) {
+      const respond = vi.fn();
+      events.emit("-run-dialog", { frame: PAGE_FRAME, dialogType: count === 0 ? "confirm" : "alert", messageText: count === 0 ? `Pay now?${"!".repeat(600)}` : `notice ${count}` }, respond);
+      expect(respond).toHaveBeenCalledWith(false, "");
+    }
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+    const reported = withDismissedDialogs(7, { tabId: "tab-1", done: "click" });
+    expect(reported.dismissedDialogs).toHaveLength(5);
+    expect(reported.dismissedDialogs?.[0]).toEqual({ type: "confirm", message: `Pay now?${"!".repeat(492)}` });
+    expect(reported).toMatchObject({ tabId: "tab-1", done: "click", dismissedDialogsOmitted: 2 });
+    // Reported once; a result for another page, or with nothing dismissed, is unchanged.
+    expect(withDismissedDialogs(7, { done: "click" })).toEqual({ done: "click" });
+    expect(withDismissedDialogs(undefined, { done: "click" })).toEqual({ done: "click" });
+
+    // A tab the agent opened and the user took over is still a tab: its dialog is asked in its panel.
+    setAgentDriving(false); setHostType("window");
+    events.emit("-run-dialog", { frame: PAGE_FRAME, dialogType: "alert", messageText: "taken over" }, vi.fn());
+    expect((await service.getState(1)).pages[0]?.prompts).toMatchObject([{ kind: "dialog", message: "taken over" }]);
+    expect(runtimeDialog).not.toHaveBeenCalled();
+    // A window that is no tab has no panel and keeps the runtime's own dialog.
+    setLive(false);
+    const respond = vi.fn();
+    events.emit("-run-dialog", { frame: PAGE_FRAME, dialogType: "alert", messageText: "popup" }, respond);
+    expect(runtimeDialog).toHaveBeenCalledWith({ frame: PAGE_FRAME, dialogType: "alert", messageText: "popup" }, respond);
+    expect(dismissedPageDialogs.take(7)).toBeNull();
+  });
+  it("fails loudly when the runtime no longer offers exactly one dialog handler to replace", async () => {
+    const { service, guest, events } = await setup();
+    events.removeAllListeners("-run-dialog");
+    expect(() => service.observeGuest(1, guest)).toThrow("page-dialog-handler-missing");
   });
 });

@@ -33,6 +33,16 @@ export interface BrowserLoadError {
 export const BROWSER_PAGE_PROMPT_LIMIT = 8;
 export const BROWSER_EXTERNAL_TARGET_LIMIT = 200;
 export const BROWSER_REALM_LIMIT = 100;
+const BROWSER_DIALOG_TEXT_LIMIT = 2_000;
+/** Dialogs one document may show before the rest end unanswered. */
+export const BROWSER_DIALOG_DOCUMENT_LIMIT = 20;
+/** The page dialogs the runtime delivers. It refuses a page's text-input dialog inside the page, so that one never arrives. */
+export const BROWSER_PAGE_DIALOG_TYPES = ["alert", "confirm"] as const;
+export type BrowserPageDialogType = typeof BROWSER_PAGE_DIALOG_TYPES[number];
+/** A page dialog's text as the host shows it: line breaks kept, every other control character removed, bounded. */
+export function browserDialogText(text: string): string {
+  return Array.from(text.replaceAll("\r\n", "\n")).filter((character) => { const code = character.codePointAt(0) ?? 0; return character === "\n" || (code > 0x1f && code !== 0x7f); }).join("").slice(0, BROWSER_DIALOG_TEXT_LIMIT);
+}
 export const BROWSER_CREDENTIAL_LIMIT = 256;
 /** Text with every control character removed, for a page-supplied string the host shows on one line. */
 export function browserPlainText(text: string): string {
@@ -51,12 +61,16 @@ export type BrowserPagePrompt =
   | { readonly id: string; readonly kind: "leave"; readonly origin: string }
   /** The page followed a link that is not a web page. `openable` links can be handed to the system's own app for them. */
   | { readonly id: string; readonly kind: "external"; readonly origin: string; readonly scheme: string; readonly target: string; readonly openable: boolean }
+  /** The page called alert or confirm and waits for the answer. `message` is the page's text, shown as plain text. */
+  | { readonly id: string; readonly kind: "dialog"; readonly origin: string; readonly dialog: BrowserPageDialogType; readonly message: string; readonly canBlock: boolean }
   /** The server asked for a user name and password (HTTP authentication). `realm` is the server's own label, as plain text. */
   | { readonly id: string; readonly kind: "signIn"; readonly origin: string; readonly realm: string };
 export type BrowserPromptAnswer =
   | { readonly kind: "permission"; readonly choice: BrowserPermissionChoice }
   | { readonly kind: "leave"; readonly leave: boolean }
   | { readonly kind: "external"; readonly open: boolean }
+  /** `block` also ends every later dialog of the same document unanswered. */
+  | { readonly kind: "dialog"; readonly accept: boolean; readonly block: boolean }
   /** Null cancels the request. The credentials are passed to the one request that asked and are stored nowhere. */
   | { readonly kind: "signIn"; readonly credentials: { readonly username: string; readonly password: string } | null };
 export interface BrowserPromptAnswerRequest { readonly tabId: string; readonly promptId: string; readonly answer: BrowserPromptAnswer }
@@ -158,6 +172,9 @@ function validPromptAnswer(value: unknown): boolean {
   if (value.kind === "permission") return keys(value, ["kind", "choice"]) && PERMISSION_CHOICES.includes(value.choice as string);
   if (value.kind === "leave") return keys(value, ["kind", "leave"]) && typeof value.leave === "boolean";
   if (value.kind === "external") return keys(value, ["kind", "open"]) && typeof value.open === "boolean";
+  if (value.kind === "dialog") {
+    return keys(value, ["kind", "accept", "block"]) && typeof value.accept === "boolean" && typeof value.block === "boolean";
+  }
   if (value.kind === "signIn") {
     if (!keys(value, ["kind", "credentials"])) return false;
     const credentials = value.credentials;
@@ -173,6 +190,10 @@ function validPrompt(value: unknown): boolean {
       && value.permissions.length <= BROWSER_SITE_PERMISSIONS.length && value.permissions.every((item) => BROWSER_SITE_PERMISSIONS.includes(item as BrowserSitePermission));
   }
   if (value.kind === "leave") return keys(value, ["id", "kind", "origin"]);
+  if (value.kind === "dialog") {
+    return keys(value, ["id", "kind", "origin", "dialog", "message", "canBlock"]) && BROWSER_PAGE_DIALOG_TYPES.includes(value.dialog as BrowserPageDialogType)
+      && typeof value.canBlock === "boolean" && typeof value.message === "string" && value.message === browserDialogText(value.message);
+  }
   if (value.kind === "signIn") {
     return keys(value, ["id", "kind", "origin", "realm"]) && typeof value.realm === "string" && value.realm.length <= BROWSER_REALM_LIMIT && value.realm === browserPlainText(value.realm);
   }

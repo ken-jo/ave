@@ -240,4 +240,26 @@ describe.each([
     fireEvent.click(screen.getByTestId("browser-page-prompt-sign-in-cancel"));
     expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-7", answer: { kind: "signIn", credentials: null } });
   });
+
+  it("shows a page dialog's text as plain text under the origin and sends the user's choice", () => {
+    const { api } = mount(ids);
+    const show = (prompt: object) => act(() => __setBrowserPageStatusForTest({ ...pageState(false), pages: [{ tabId: TAB, loading: false, loadError: null, prompts: [prompt as never] }] }, api));
+    const base = { kind: "dialog", origin: "https://a.example", canBlock: false };
+    show({ ...base, id: "prompt-1", dialog: "alert", message: "<img src=x onerror=alert(1)>\nSaved" });
+    expect(screen.getByTestId("browser-page-prompt-origin").textContent).toBe("https://a.example");
+    expect(screen.getByTestId("browser-page-prompt-message").textContent).toBe("<img src=x onerror=alert(1)>\nSaved");
+    expect(screen.getByTestId("browser-page-prompt-message").querySelector("img")).toBeNull();
+    expect(screen.queryByTestId("browser-page-prompt-cancel")).toBeNull();
+    expect(screen.queryByTestId("browser-page-prompt-block-dialogs")).toBeNull();
+    fireEvent.click(screen.getByTestId("browser-page-prompt-ok"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-1", answer: { kind: "dialog", accept: true, block: false } });
+
+    show({ ...base, id: "prompt-2", dialog: "confirm", message: "Delete?", canBlock: true });
+    fireEvent.submit(screen.getByTestId("browser-page-prompt-dialog"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-2", answer: { kind: "dialog", accept: true, block: false } });
+    fireEvent.click(screen.getByTestId("browser-page-prompt-cancel"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-2", answer: { kind: "dialog", accept: false, block: false } });
+    fireEvent.click(screen.getByTestId("browser-page-prompt-block-dialogs"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-2", answer: { kind: "dialog", accept: false, block: true } });
+  });
 });

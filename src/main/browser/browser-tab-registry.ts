@@ -491,6 +491,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return entry && !entry.guest.isDestroyed() ? entry.windowId : null;
   }
 
+  /** Whether an agent is the one acting on this guest's page right now. */
+  isAgentActiveGuest(guestId: number): boolean {
+    for (const tab of this.tabs.values()) if (tab.guest?.id === guestId && tab.controlMode === "agent-active") return true;
+    return false;
+  }
+
   isIndependentGuest(guestId: number): boolean {
     return this.attached.get(guestId)?.kind === "native-view";
   }

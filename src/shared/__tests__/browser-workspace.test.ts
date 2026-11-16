@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_WORKSPACE_LIMITS, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
 
 const TARGET = { tabId: "browser:one", documentGeneration: 4 };
 const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
@@ -129,5 +129,18 @@ describe("browser workspace wire validation", () => {
     for (const bad of [undefined, "ken:secret", { username: "ken" }, { username: "ken", password: "p".repeat(257) }, { username: 1, password: "p" }, { username: "ken", password: "p", save: true }]) {
       expect(parseBrowserWorkspaceRequest("answerPrompt", answer(bad))).toBeNull();
     }
+  });
+  it("accepts a page dialog prompt only with a known type and bounded host-cleaned text", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "dialog", origin: "https://site.example", dialog: "confirm", message: "Sure?\nPlease", canBlock: true };
+    const withPrompt = (value: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [value] }] });
+    expect(parseBrowserWorkspaceState(withPrompt(prompt))).not.toBeNull();
+    for (const bad of [{ ...prompt, dialog: "beforeunload" }, { ...prompt, dialog: "prompt" }, { ...prompt, message: "a\rb" }, { ...prompt, message: "x".repeat(2_001) }, { ...prompt, message: 1 }, { ...prompt, canBlock: "no" }, { ...prompt, html: "<b>" }]) {
+      expect(parseBrowserWorkspaceState(withPrompt(bad))).toBeNull();
+    }
+    expect(browserDialogText(`a\r\nb\u0000\tc${"x".repeat(3_000)}`)).toBe(`a\nbc${"x".repeat(1_996)}`);
+    const answer = (value: object) => ({ tabId: "browser:one", promptId: "prompt-1", answer: { kind: "dialog", accept: true, block: false, ...value } });
+    expect(parseBrowserWorkspaceRequest("answerPrompt", answer({}))).toEqual(answer({}));
+    for (const bad of [{ value: "typed" }, { accept: "yes" }, { block: 1 }]) expect(parseBrowserWorkspaceRequest("answerPrompt", answer(bad))).toBeNull();
   });
 });

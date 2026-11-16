@@ -45,6 +45,7 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       if (hold === null) requests.onBeforeRequest(null);
       else requests.onBeforeRequest((details, callback) => hold(details, (send) => callback(send ? {} : { cancel: true })));
     },
+    agentDrives: (guestId) => browserTabRegistry.isAgentActiveGuest(guestId),
     openExternal: (url) => shell.openExternal(url),
     promptPermission: async (request) => {
       const window = mainWindow(request.windowId);

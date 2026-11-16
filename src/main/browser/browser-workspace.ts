@@ -2,8 +2,12 @@ import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { DownloadItem, WebContents } from "electron";
 import { describeLoadFailure, describePageCrash } from "./browser-load-failure.js";
+import { dismissedPageDialogs } from "./browser-page-dialogs.js";
 import { BrowserPagePrompts } from "./browser-page-prompts.js";
-import { BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+
+/** The runtime's request to show a page dialog: (details, respond). */
+const RUN_DIALOG = "-run-dialog";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -24,11 +28,24 @@ export interface BrowserWorkspaceServiceDeps {
   /** Asks in a native dialog, for a guest that has no tab panel to ask in (a popup window). */
   promptPermission(request: BrowserPermissionPrompt): Promise<boolean>;
   fullscreenAvailable(windowId: number): boolean;
+  /** Whether the agent is driving this page right now: its dialogs are dismissed and reported, never shown. */
+  agentDrives(guestId: number): boolean;
   /** Hands a link to the system's own app for it. Called only for a scheme in BROWSER_EXTERNAL_SCHEMES the user agreed to. */
   openExternal(url: string): Promise<void>;
   onError(error: unknown): void;
   readonly store?: BrowserWorkspaceStore;
   readonly now?: () => number;
+}
+
+interface PageDialogFrame { readonly origin: string; readonly detached: boolean; readonly top: { readonly frameTreeNodeId: number } | null }
+
+/** The web origin of the frame that called a dialog, or null when the frame is not this page's or its origin is opaque. */
+function pageDialogOrigin(guest: WebContents, frame: unknown): string | null {
+  if (typeof frame !== "object" || frame === null) return null;
+  const { origin, detached, top } = frame as Partial<PageDialogFrame>;
+  if (typeof origin !== "string" || detached !== false || !top || top.frameTreeNodeId !== guest.mainFrame.frameTreeNodeId) return null;
+  const url = browserWorkspaceUrl(origin);
+  return url !== null && new URL(url).origin === origin ? origin : null;
 }
 
 export class BrowserWorkspaceService {
@@ -37,7 +54,7 @@ export class BrowserWorkspaceService {
   private readonly captures: BrowserWorkspaceCapture;
   private readonly permissions: BrowserSitePermissionPolicy;
   private readonly prompts = new BrowserPagePrompts(() => this.notify());
-  private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; loading: boolean; loadError: BrowserLoadError | null; userNavigation: "none" | "marked" | "loading"; unloadHeld: boolean; dispose: () => void }>();
+  private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; loading: boolean; loadError: BrowserLoadError | null; userNavigation: "none" | "marked" | "loading"; unloadHeld: boolean; dialogs: number; dialogsBlocked: boolean; dispose: () => void }>();
   private readonly downloads = new Map<number, BrowserDownload[]>();
   private readonly downloadDisposers = new Map<number, Set<() => void>>();
   private readonly listeners = new Set<(windowId: number, state: BrowserWorkspaceState) => void>();
@@ -55,8 +72,9 @@ export class BrowserWorkspaceService {
     this.captures = new BrowserWorkspaceCapture(deps);
     this.permissions = new BrowserSitePermissionPolicy({ store: this.store, prompt: async (request) => {
       if (!deps.isWindowVisible(request.windowId)) return null;
-      // A tab asks in its own panel. A popup window has no panel, so it keeps the native question.
-      if (this.tabIdForGuest(request.windowId, request.guestId) === null) return await deps.promptPermission(request) ? "allow-once" : null;
+      // A tab asks in its own panel, also while it is not yet bound to its tab: the question waits there until it is.
+      // Only a popup window has no panel, so it keeps the native question.
+      if (this.isPopupGuest(request.windowId, request.guestId)) return await deps.promptPermission(request) ? "allow-once" : null;
       const answer = await this.prompts.ask(request.guestId, "permission", { origin: request.origin, permissions: request.permissions });
       if (answer?.choice === "always-block") this.notify();
       return answer?.choice ?? null;
@@ -102,6 +120,11 @@ export class BrowserWorkspaceService {
       this.syncRequestHold();
     });
   };
+  /** A page with no tab to ask in. An embedded page can run before its tab is bound; that does not make it a popup. */
+  private isPopupGuest(windowId: number, guestId: number): boolean {
+    const guest = this.guests.get(guestId)?.guest;
+    return guest !== undefined && !guest.isDestroyed() && guest.getType() !== "webview" && this.tabIdForGuest(windowId, guestId) === null;
+  }
   private tabIdForGuest(windowId: number, guestId: number): string | null {
     for (const tab of this.deps.listTabs(windowId)) {
       const live = this.deps.liveTab(windowId, tab.tabId);
@@ -216,14 +239,20 @@ export class BrowserWorkspaceService {
     const existing = this.guests.get(guestId);
     if (existing && existing.windowId !== windowId) throw new Error("guest-owner-mismatch");
     if (existing) return existing.dispose;
-    const invalidate = () => { const entry = this.guests.get(guestId); if (entry) entry.generation++; this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    // A picture of the page goes stale with every navigation, and a page that starts leaving drops its open questions.
+    // What belongs to the document (its generation, which keys its permission answers, and its dialog count and Block)
+    // ends only when another document commits: a fragment or history change, or a navigation that never commits
+    // (a download, an empty response, a cancelled load), keeps them.
+    const invalidateView = () => { this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const leaving = () => { this.prompts.dismissGuest(guestId); invalidateView(); };
+    const replaced = () => { const entry = this.guests.get(guestId); if (entry) { entry.generation++; entry.dialogs = 0; entry.dialogsBlocked = false; } this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); invalidateView(); };
     const visit = () => { if (!guest.isDestroyed()) void this.store.recordVisit(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     const started = (_event: unknown, url: string, inPlace: boolean, mainFrame: boolean) => {
       if (!mainFrame) return;
       // The browser commits its own internal error document after a failure; that is not the user leaving the failed page.
       const entry = this.guests.get(guestId);
       if (entry && !inPlace && !url.startsWith("chrome-error:")) entry.loadError = null;
-      invalidate();
+      if (inPlace) invalidateView(); else leaving();
     };
     // The page's unload handler asked to hold a navigation back. That decision is synchronous and names no destination,
     // so the unload is always let through here (preventing the event's default lets the page unload) and the question
@@ -249,6 +278,38 @@ export class BrowserWorkspaceService {
         if (answer?.open && openable) void this.deps.openExternal(url).catch(this.deps.onError);
       });
     };
+    // alert and confirm. The runtime's own handler shows a window-blocking message box that names no site, so
+    // this guest's dialogs are answered here instead, through the runtime's dialog request event (it carries the type,
+    // the text and the callback that resumes the page). Exactly one handler is expected there; anything else means the
+    // runtime changed and must fail loudly, not fall back to the unlabelled box.
+    const runtimeDialogs = guest.listeners(RUN_DIALOG as never) as ((...args: unknown[]) => void)[];
+    if (runtimeDialogs.length !== 1) throw new Error("page-dialog-handler-missing");
+    const pageDialog = (info: { dialogType?: unknown; messageText?: unknown; frame?: unknown }, respond: (accepted: boolean, value: string) => void) => {
+      const entry = this.guests.get(guestId);
+      const type = BROWSER_PAGE_DIALOG_TYPES.find((item) => item === info.dialogType);
+      // The dialog is titled with the site of the frame that called it, which an embedded frame may not share with the
+      // page. A frame that is not this page's, or whose origin names no web site, gets no dialog.
+      const origin = pageDialogOrigin(guest, info.frame);
+      if (!entry || !type || origin === null) { respond(false, ""); return; }
+      const message = typeof info.messageText === "string" ? info.messageText : "";
+      // The agent's turn never waits on a page: the dialog ends unanswered and its text goes back with the tool result.
+      if (this.deps.agentDrives(guestId)) { dismissedPageDialogs.note(guestId, type, message); respond(false, ""); return; }
+      // A popup window has no tab, so no panel to ask in, and keeps the runtime's own dialog. Every tab, whether the
+      // user or the agent opened it and whether or not it is bound yet, has the prompt row.
+      if (this.isPopupGuest(windowId, guestId)) { runtimeDialogs[0]?.(info, respond); return; }
+      entry.dialogs++;
+      if (entry.dialogsBlocked || entry.dialogs > BROWSER_DIALOG_DOCUMENT_LIMIT) { respond(false, ""); return; }
+      void this.prompts.ask(guestId, "dialog", {
+        origin, dialog: type, message: browserDialogText(message), canBlock: entry.dialogs > 1,
+      }).then((answer) => {
+        const current = this.guests.get(guestId);
+        if (answer?.block && current) current.dialogsBlocked = true;
+        respond(answer?.accept ?? false, "");
+      });
+    };
+    const cancelDialogs = () => this.prompts.dismissGuest(guestId, (prompt) => prompt.kind === "dialog");
+    guest.removeAllListeners(RUN_DIALOG as never);
+    guest.on(RUN_DIALOG as never, pageDialog as never); guest.on("-cancel-dialogs" as never, cancelDialogs as never);
     // The server asks for a user name and password. Unhandled, the request is cancelled and the page just fails. A user's
     // own tab asks in its panel, naming the origin of the request as main computed it; the answer goes to that one
     // request and is kept nowhere. A proxy, and a page the agent is driving in its own view, are refused as before.
@@ -306,18 +367,18 @@ export class BrowserWorkspaceService {
       if (entry?.userNavigation === "loading") entry.userNavigation = "none";
       stopped();
     };
-    const committed = () => { const entry = this.guests.get(guestId); if (entry) { entry.userNavigation = "none"; entry.unloadHeld = false; } this.releaseLeave(guestId); };
+    const committed = () => { const entry = this.guests.get(guestId); if (entry) { entry.userNavigation = "none"; entry.unloadHeld = false; } replaced(); this.releaseLeave(guestId); };
     const gone = (_event: unknown, details: { reason: string }) => {
       const entry = this.guests.get(guestId);
       if (!entry || details.reason === "clean-exit" || guest.isDestroyed()) return;
       entry.loadError = describePageCrash(details.reason, guest.getURL());
       this.notify();
     };
-    const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidate(); visit(); } };
+    const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidateView(); visit(); } };
     let unsubscribe = () => {};
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("login", signIn); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener(RUN_DIALOG as never, pageDialog as never); guest.removeListener("-cancel-dialogs" as never, cancelDialogs as never); for (const listener of runtimeDialogs) guest.on(RUN_DIALOG as never, listener as never); dismissedPageDialogs.forget(guestId); guest.removeListener("login", signIn); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
-    this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, userNavigation: "none", unloadHeld: false, dispose });
+    this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, userNavigation: "none", unloadHeld: false, dialogs: 0, dialogsBlocked: false, dispose });
     guest.on("login", signIn); guest.on("will-navigate", pageNavigation); guest.on("did-navigate", committed); guest.on("will-prevent-unload", preventUnload);
     guest.on("did-fail-load", failed); guest.on("render-process-gone", gone);
     guest.on("did-start-loading", loadStarted); guest.on("did-stop-loading", loadStopped);

@@ -9,6 +9,7 @@ import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanit
 import { validateExternalUrl } from "../shared/external-url.js";
 import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS, BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
 import { browserControlLifecycle } from "../main/browser/browser-control-lifecycle.js";
+import { withDismissedDialogs } from "../main/browser/browser-page-dialogs.js";
 import { awaitBrowserPopupNavigation } from "../main/browser/browser-popup-navigation.js";
 import type { BrowserGuest } from "../main/browser/browser-tab-registry.js";
 import {
@@ -362,7 +363,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           },
           ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, url.url, url.origin);
         if (guest) await awaitBrowserPopupNavigation(guest, lease.id);
-        return fenced({ tabId: outcome.tabId, ...loaded, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
+        return fenced(withDismissedDialogs(tab.guest?.id, { tabId: outcome.tabId, ...loaded, title: tab.guest?.getTitle() ?? "", openedBy: "agent" }));
       }), ctx.abortSignal, url.url); } finally { lifecycle?.cancel(); deps.tabs.releaseControl(tab.handle, lease.id); }
   };
 
@@ -387,13 +388,13 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (changed) return changed;
       await act(actions, { ...pageTarget(ctx, fresh, leaseSignal), onObservationTarget: onTarget }, input);
       const outcome = await actions.settle({ tab: fresh.resolved.tab, signal: ctx.abortSignal ?? new AbortController().signal });
-      return fenced({
+      return fenced(withDismissedDialogs(target.resolved.tab.guest?.id, {
         tabId: target.resolved.tab.handle,
         done: name,
         url: outcome.url,
         origin: browserOrigin(outcome.url),
         title: target.resolved.tab.guest?.getTitle() ?? "",
-      });
+      }));
     });
   };
 
@@ -533,7 +534,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (!completed.ok) return completed.result;
         const changedAfterWait = unchangedSinceApproval(ctx, completed.resolved);
         if (changedAfterWait) return changedAfterWait;
-        return fenced({ tabId: target.resolved.tab.handle, ...waited });
+        return fenced(withDismissedDialogs(target.resolved.tab.guest?.id, { tabId: target.resolved.tab.handle, ...waited }));
       }), ctx.abortSignal);
     },
 
@@ -562,7 +563,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           if (changed) return changed;
         }
         const loaded = await actions.navigate(pageTarget(ctx, fresh, leaseSignal), url.url, url.origin);
-        return fenced({ tabId: target.resolved.tab.handle, ...loaded, title: target.resolved.tab.guest?.getTitle() ?? "" });
+        return fenced(withDismissedDialogs(target.resolved.tab.guest?.id, { tabId: target.resolved.tab.handle, ...loaded, title: target.resolved.tab.guest?.getTitle() ?? "" }));
       }, url.url);
     },
 
