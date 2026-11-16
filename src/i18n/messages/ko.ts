@@ -1243,6 +1243,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "bottomActionRow.planSpeedNotApplicable": "이 모델은 추론을 스스로 정하므로 속도 선택이 적용되지 않습니다.",
 
   // browserWorkspace
+  "browserAddressRow.address": "주소",
   "browserWorkspace.title": "브라우저 워크스페이스",
   "browserWorkspace.library": "라이브러리",
   "browserWorkspace.bookmark": "북마크",

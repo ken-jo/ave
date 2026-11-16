@@ -1241,6 +1241,7 @@ export const en = {
   "bottomActionRow.planSpeedNotApplicable": "This model sets its own reasoning, so the speed choice does not apply to it.",
 
   // browserWorkspace
+  "browserAddressRow.address": "Address",
   "browserWorkspace.title": "Browser workspace",
   "browserWorkspace.library": "Library",
   "browserWorkspace.bookmark": "Bookmark",

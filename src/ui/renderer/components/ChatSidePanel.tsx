@@ -1,4 +1,5 @@
 import { EmptyState } from "../../../components/ui/empty-state.js";
+import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS } from "./BrowserAddressRow.js";
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { disposeLiveTerminal } from "../preview/live-terminal-registry.js";
@@ -555,7 +556,9 @@ function ContentTabView({
   if (!content) return null;
   if (browserTarget) {
     return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-full min-h-0 flex-col" data-testid="chat-side-panel-content-browser" data-tab-id={tab.id}>
+      <BrowserAddressRow api={api} tabId={tab.id} chrome="background" testIds={SIDE_PANEL_ADDRESS_ROW_TEST_IDS}
+        fallbackUrl={browserTarget.url} onNavigate={(url) => onBrowserUrlChange(tab.id, url)} />
       <BrowserSurfaceTools api={api} tabId={tab.id} composerGroupId={composerGroupId} onOpenUrl={(url) => {
         void navigateBrowserTabAsUser(api, tab.id, () => onBrowserUrlChange(tab.id, url));
       }} />
@@ -563,6 +566,7 @@ function ContentTabView({
         api={api}
         sessionId={sessionId}
         target={browserTarget}
+        showHeader={false}
         surfaceTabId={tab.id}
         browserTab={{ tabId: tab.id, ...(tab.agentRequestId === undefined ? {} : { agentRequestId: tab.agentRequestId }) }}
       />

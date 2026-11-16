@@ -100,7 +100,13 @@ test("keeps an agent page mounted through blank bootstrap and first navigation",
     }, guestId);
     expect(preferences).toMatchObject({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     expect(await inspectBrowserTarget(ctx.app, host.windowId, url)).toMatchObject({ id: guestId, type: "window", embedded: false });
-    await expect(ctx.page.getByTestId("chat-side-panel-url-viewer")).toContainText(url);
+    // A tab the agent opened carries the same address row as a tab the user opened.
+    const addressRow = ctx.page.locator('[data-testid="browser-address-row"]:visible');
+    await expect(addressRow.getByTestId("chat-side-panel-browser-address")).toHaveValue(url);
+    await expect(addressRow.getByTestId("browser-back")).toBeVisible();
+    await expect(addressRow.getByTestId("browser-forward")).toBeVisible();
+    await expect(addressRow.getByTestId("browser-reload")).toBeEnabled();
+    await expect(addressRow.getByTestId("chat-side-panel-browser-go")).toBeVisible();
     expect(await browserTargetId(ctx.app, url)).toBe(guestId);
     // The shipping preload/IPC/native guest must agree with the visible chrome.
     await ctx.page.getByTestId("browser-workspace-toggle").click();
