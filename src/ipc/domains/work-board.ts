@@ -304,7 +304,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
 
-    if (existing.item.templateRunError) return { status: "error", reason: existing.item.templateRunError } satisfies WorkItemRunResult;
+    if (existing.item.templateRunError) return { status: "error", reason: "invalid-template-run" } satisfies WorkItemRunResult;
     // A template run starts only from a consumed keyboard gesture, for the exact tuple and project the user saw on the card. The source
     // is minted here; nothing in a renderer payload is one.
     let templateSource: RunAuthoritySource | undefined;
