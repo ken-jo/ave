@@ -3687,7 +3687,7 @@ with its own owner rule:
   Entries that do not parse are never removed, and nothing is removed by age.
   A write that would grow the run file past the read limit is refused, so the
   file stays readable and deleting rows makes room again.
-  API for WT-3 (the run engine): `runs.list()` on the board store returns every
+  Run-engine API: `runs.list()` on the board store returns every
   readable run record, whether or not a row names it, or `pending-review`
   while the file awaits review; at boot the engine adopts back each record
   without `settled`, and the board's boot reconcile leaves every row that names
