@@ -27,6 +27,8 @@ export function isTerminalPurpose(value: unknown): value is TerminalPurpose {
 }
 /** The most replayed output one spawn reply carries: main's per-session ring holds this much, and a view waiting for its spawn reply buffers as much. */
 export const TERMINAL_REPLAY_MAX_BYTES = 1024 * 1024;
+/** The most input one write to a shell carries, in UTF-8 bytes; a larger write is refused whole. The view holds no more than this for a shell that is still starting. */
+export const TERMINAL_INPUT_MAX_BYTES = 1024 * 1024;
 export interface TerminalSpawnRequest extends TerminalRef {
   readonly cwd?: string;
   readonly cols?: number;

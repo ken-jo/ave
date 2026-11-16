@@ -4331,6 +4331,8 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // ptyTerminal
   "ptyTerminal.hostChip": "호스트",
+  "ptyTerminal.inputTooLarge": "입력이 1MB를 넘어 셸에 전달되지 않았습니다. 나누어 붙여넣으세요.",
+  "ptyTerminal.inputNotDelivered": "입력이 셸에 전달되지 않았습니다. 이 터미널의 셸이 교체되었거나 닫혔습니다.",
   "ptyTerminal.hostChipApproval": "대화별 사용 권한",
   "ptyTerminal.hostChipNoAgentInput": "에이전트 입력 없음",
   "ptyTerminal.hostChipAgentless": "에이전트 접근 없음",

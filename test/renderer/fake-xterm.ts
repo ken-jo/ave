@@ -14,6 +14,7 @@ export class FakeXterm {
   options: Record<string, unknown>;
   element: HTMLElement | null = null;
   parser = { registerOscHandler: () => disposable };
+  _core = { coreService: { onUserInput: () => disposable } };
   constructor(options: Record<string, unknown> = {}) { this.options = { ...options }; }
   loadAddon() {}
   open(host: HTMLElement) {

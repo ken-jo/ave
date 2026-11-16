@@ -10,10 +10,12 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { isDarwin } from "../api-client.js";
 import { terminalClipboardAction, terminalPlatform } from "./terminal-keys.js";
+import { onTerminalUserInput } from "./terminal-user-input.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
 import {
+  TERMINAL_INPUT_MAX_BYTES,
   sameTerminalSession, TERMINAL_REPLAY_MAX_BYTES, type HostTerminalControlState, type TerminalApi, type TerminalDataEvent, type TerminalExitEvent,
   type TerminalPurpose, type TerminalSessionInfo, type TerminalSessionRef, type TerminalSpawnResult,
 } from "../../../shared/terminal-session.js";
@@ -35,6 +37,9 @@ export interface LiveTerminalState {
   readonly blockRevision: number;
   /** Why no shell is running in this tab: its process exited, or it could not be started. Null while one runs or is starting. */
   readonly ended: { readonly kind: "exited"; readonly code: number } | { readonly kind: "not-started" } | null;
+  /** The last input the shell did not receive, until input next arrives or the shell changes: more than the terminal accepts at once, or refused
+   * for a shell that is no longer this tab's. Typed or pasted text is never dropped without saying so. */
+  readonly inputNotice: "too-large" | "not-delivered" | null;
 }
 
 /** The view a terminal is attached to. */
@@ -54,11 +59,12 @@ function diagnostic(text: string): string {
   return `\r\n\x1b[33m${text}\x1b[0m\r\n`;
 }
 
+const TYPE_AHEAD_ENCODER = new TextEncoder();
 export class LiveTerminal {
   readonly term: Terminal;
   readonly anchors: XtermBlockAnchors;
   private readonly fitAddon = new FitAddon();
-  private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null };
+  private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null };
   /** Where a restarted shell starts: the directory the ended one last reported. */
   private restartCwd: string | null = null;
   private readonly listeners = new Set<() => void>();
@@ -72,6 +78,13 @@ export class LiveTerminal {
   private pendingBytes = 0;
   private spawning = false;
   private exited = false;
+  /** Set just before a data event the user caused (see onTerminalUserInput), and taken by that event. */
+  private userInput = false;
+  /** What the user typed before the shell was there to take it. */
+  private typedAhead = "";
+  private typedAheadBytes = 0;
+  /** Typed-ahead input outgrew what is kept; said until the user's next input is delivered. */
+  private heldTooMuch = false;
   private enterTimer: ReturnType<typeof setTimeout> | null = null;
   private host: HTMLElement | null = null;
   private view: LiveTerminalView | null = null;
@@ -130,14 +143,26 @@ export class LiveTerminal {
       return false;
     });
     // Forward keystrokes → PTY stdin.
+    const userInputSub = onTerminalUserInput(this.term, () => { this.userInput = true; });
     const inputSub = this.term.onData((data) => {
+      const fromUser = this.userInput;
+      this.userInput = false;
+      if (!fromUser) {
+        // The terminal answering a program's question: owed to the running shell and to nothing else.
+        if (this.liveRef && this.state.ended === null) this.send(this.liveRef, data);
+        return;
+      }
       // No shell is running: nothing takes the keys, and Enter starts a new one.
       if (this.state.ended !== null) {
         if (data === "\r") this.restart();
         return;
       }
-      if (!this.liveRef) return;
-      void this.api.input(this.liveRef, data);
+      // The shell is still starting (or restarting): what the user types is kept for it, as a terminal keeps type-ahead.
+      if (!this.liveRef) {
+        this.holdInput(data);
+        return;
+      }
+      this.send(this.liveRef, data);
       if (data.includes("\r")) {
         if (this.enterTimer !== null) clearTimeout(this.enterTimer);
         this.enterTimer = setTimeout(() => {
@@ -149,6 +174,7 @@ export class LiveTerminal {
     this.disposers.push(
       () => markerSub.dispose(),
       () => inputSub.dispose(),
+      () => userInputSub.dispose(),
       api.onData((event) => this.acceptEvent(event)),
       api.onExit((event) => this.acceptEvent(event)),
       // Main owns control; the strip only shows the latest state for this incarnation.
@@ -246,6 +272,18 @@ export class LiveTerminal {
   }
 
   /** Paste the clipboard's text through xterm, which brackets it when the shell asked for bracketed paste. */
+  /** Send input to the shell and say so when it did not arrive. A refusal for a shell that has since ended is the exit's to report, not this. */
+  private send(ref: TerminalSessionRef, data: string): void {
+    const settle = (notice: LiveTerminalState["inputNotice"]): void => {
+      if (this.disposed || this.liveRef !== ref || this.state.ended !== null) return;
+      if (this.state.inputNotice !== notice) this.setState({ inputNotice: notice });
+    };
+    void this.api.input(ref, data).then(
+      (result) => settle(result.ok ? null : result.error === "invalid-params" ? "too-large" : "not-delivered"),
+      () => settle("not-delivered"),
+    );
+  }
+
   pasteClipboard(): void {
     void navigator.clipboard.readText().then((text) => {
       if (!this.disposed && text.length > 0) this.term.paste(text);
@@ -259,7 +297,11 @@ export class LiveTerminal {
     this.exited = false;
     this.liveRef = null;
     this.purpose = null;
-    this.setState({ session: null, control: null, ended: null });
+    // A new start begins with nothing held: input typed for an earlier shell is never the new one's.
+    this.typedAhead = "";
+    this.typedAheadBytes = 0;
+    this.heldTooMuch = false;
+    this.setState({ session: null, control: null, ended: null, inputNotice: null });
     // Show the cursor the exit hid.
     this.term.write("\x1b[?25h");
     this.chain = this.chain.then(() => this.sync());
@@ -353,7 +395,7 @@ export class LiveTerminal {
     this.exited = true;
     // A dead shell has no cursor: hide it (DECTCEM) so the tab does not look like it is waiting for input.
     this.term.write(`${diagnostic(`${this.t("ptyTerminal.exited", { code: event.exitCode })} ${this.t("ptyTerminal.exitedRestartHint")}`)}\x1b[?25l`);
-    this.setState({ ended: { kind: "exited", code: event.exitCode } });
+    this.setState({ ended: { kind: "exited", code: event.exitCode }, inputNotice: null });
     this.bumpBlocks();
     setTerminalExited(this.tabId, true);
   }
@@ -412,6 +454,7 @@ export class LiveTerminal {
         this.dropPending();
         this.term.write(diagnostic(this.t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : "ptyTerminal.manualUnavailable")));
         this.setState({ ended: { kind: "not-started" } });
+        this.discardHeldInput();
         return;
       }
       await this.adopt(result, view.purpose);
@@ -419,6 +462,7 @@ export class LiveTerminal {
       if (!this.disposed) {
         this.term.write(diagnostic(this.t("ptyTerminal.startFailed")));
         this.setState({ ended: { kind: "not-started" } });
+        this.discardHeldInput();
       }
     } finally {
       if (!this.disposed) setTerminalReplaying(this.tabId, false);
@@ -442,6 +486,29 @@ export class LiveTerminal {
     }
   }
 
+  /** Keep input typed while no shell is attached yet. More than a shell accepts in one piece is not kept, and the user is told. */
+  private holdInput(data: string): void {
+    // Counted as the shell's side counts it: what is held is sent in one write, and that write is refused whole above the limit.
+    const bytes = TYPE_AHEAD_ENCODER.encode(data).length;
+    if (this.typedAheadBytes + bytes > TERMINAL_INPUT_MAX_BYTES) {
+      this.typedAhead = "";
+      this.typedAheadBytes = 0;
+      this.heldTooMuch = true;
+      this.setState({ inputNotice: "too-large" });
+      return;
+    }
+    this.typedAhead += data;
+    this.typedAheadBytes += bytes;
+  }
+
+  /** The shell did not start, or ended before it could take it: what was typed for it went nowhere, and the user is told so. */
+  private discardHeldInput(): void {
+    if (this.typedAhead === "") return;
+    this.typedAhead = "";
+    this.typedAheadBytes = 0;
+    this.setState({ inputNotice: "not-delivered" });
+  }
+
   private dropPending(): void {
     this.pending = [];
     this.pendingBytes = 0;
@@ -453,11 +520,21 @@ export class LiveTerminal {
     this.exited = false;
     setTerminalExited(this.tabId, false);
     this.blockMarkerToken = result.blockMarkerToken;
-    this.setState({ session: result.session, ended: null });
+    this.setState({ session: result.session, ended: null, inputNotice: this.heldTooMuch ? "too-large" : null });
+    this.heldTooMuch = false;
     // The replay goes in before anything that can let a live chunk of this incarnation be written ahead of it.
     const waiting = this.pending;
     this.dropPending();
     for (const event of waiting) if (sameTerminalSession(result.session, event)) this.renderEvent(event);
+    // What was typed while this shell was starting is this shell's. One that ended before it could take it leaves the input undelivered:
+    // it is not kept for whichever shell is started next.
+    if (this.exited) this.discardHeldInput();
+    else if (this.typedAhead !== "") {
+      const held = this.typedAhead;
+      this.typedAhead = "";
+      this.typedAheadBytes = 0;
+      this.send(result.session, held);
+    }
     const current = await this.api.control(result.session, "get");
     if (!this.disposed && current.ok && this.liveRef && sameTerminalSession(this.liveRef, result.session)) this.setState({ control: current.control });
   }

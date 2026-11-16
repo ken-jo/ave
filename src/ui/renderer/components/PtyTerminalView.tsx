@@ -14,7 +14,7 @@ import { useSurfaceMount } from "../preview/surface-mounts.js";
 import type { TerminalControlAction, TerminalPurpose } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
-const NO_LIVE_STATE: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null };
+const NO_LIVE_STATE: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null };
 const noLiveState = (): LiveTerminalState => NO_LIVE_STATE;
 const subscribeNothing = (): (() => void) => () => {};
 const INTEGRATION_UNAVAILABLE_KEYS = {
@@ -104,7 +104,7 @@ function focusAttendedTerminal(term: Terminal, tabId: string): void {
 function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, controlMirrorSlot, onCwd, onCloseTab, onOpenLink, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
   const [live, setLive] = useState<LiveTerminal | null>(null);
-  const { session, control, blockRevision, ended } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
+  const { session, control, blockRevision, ended, inputNotice } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
@@ -252,6 +252,9 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
           {onCloseTab ? <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-close-tab" onClick={onCloseTab}>{t("ptyTerminal.closeTab")}</button> : null}
         </div>
       ) : null}
+      {inputNotice ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-destructive" data-testid="terminal-input-notice" role="alert">
+        {t(inputNotice === "too-large" ? "ptyTerminal.inputTooLarge" : "ptyTerminal.inputNotDelivered")}
+      </p> : null}
       {controlNotice ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-destructive" data-testid="terminal-control-notice" role="alert">{controlNotice}</p> : null}
       {session?.integrationUnavailableReason ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-muted-foreground" data-testid="terminal-integration-unavailable">
         {t(INTEGRATION_UNAVAILABLE_KEYS[session.integrationUnavailableReason])}

@@ -43,7 +43,7 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 function terminalApi() {
   return {
     spawn: vi.fn(async (ref) => ({ ok: true, tabId: ref.tabId, replayed: false, session: terminalSessionFixture(ref.tabId, ref.lane), blockMarkerToken: "view-token" })),
-    input: vi.fn(async () => undefined),
+    input: vi.fn(async () => ({ ok: true as const })),
     resize: vi.fn(async () => undefined),
     onData: vi.fn(() => () => {}),
     onExit: vi.fn(() => () => {}),

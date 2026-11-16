@@ -4329,6 +4329,8 @@ export const en = {
 
   // ptyTerminal
   "ptyTerminal.hostChip": "Host",
+  "ptyTerminal.inputTooLarge": "That input is larger than 1 MB, so none of it reached the shell. Paste it in smaller parts.",
+  "ptyTerminal.inputNotDelivered": "The shell did not receive that input: this terminal's shell was replaced or closed.",
   "ptyTerminal.hostChipApproval": "conversation permissions",
   "ptyTerminal.hostChipNoAgentInput": "no agent input",
   "ptyTerminal.hostChipAgentless": "no agent access",

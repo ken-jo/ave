@@ -4,7 +4,7 @@ import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render as renderUnwrapped, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
-import type { TerminalControlAction, TerminalControlEvent, TerminalControlResult, TerminalSessionInfo, TerminalSessionRef, TerminalSpawnRequest, TerminalDataEvent, TerminalExitEvent } from "../../../../shared/terminal-session.js";
+import { TERMINAL_INPUT_MAX_BYTES, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalSessionInfo, type TerminalSessionRef, type TerminalSpawnRequest, type TerminalDataEvent, type TerminalExitEvent } from "../../../../shared/terminal-session.js";
 import { PtyTerminalView } from "../PtyTerminalView.js";
 import { SidePanelTerminal } from "../SidePanelTerminal.js";
 import { forgetTerminalFileReview, requestTerminalFileReview } from "../../preview/terminal-file-review.js";
@@ -31,6 +31,7 @@ interface FakeTerminal {
   commandRow: string;
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
+  userInputListener: (() => void) | null;
   written: string[];
   cursorLine: number;
   focusCount: number;
@@ -96,6 +97,9 @@ vi.mock("@xterm/xterm", () => ({
       this.element.className = "xterm";
       host.appendChild(this.element);
     }
+    /** As the terminal's core announces user input, just before its data event. */
+    userInputListener: (() => void) | null = null;
+    _core = { coreService: { onUserInput: (listener: () => void) => { this.userInputListener = listener; return { dispose: () => { this.userInputListener = null; } }; } } };
     onData(handler: (data: string) => void) {
       this.dataHandler = handler;
       return { dispose: () => { this.dataHandler = null; } };
@@ -137,7 +141,8 @@ function osc133(xterm: FakeTerminal, data: string): boolean {
 }
 /** Type into the terminal as the keyboard does. */
 function typeInto(xterm: FakeTerminal, data: string): void {
-  if (!xterm.dataHandler) throw new Error("the terminal takes no input");
+  if (!xterm.dataHandler || !xterm.userInputListener) throw new Error("the terminal takes no input");
+  xterm.userInputListener();
   xterm.dataHandler(data);
 }
 /** Offer a key event to the terminal's custom key handler; false means the terminal kept the key from xterm. */
@@ -896,6 +901,188 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("input the shell did not receive", () => {
+  async function liveTerminal(tabId: string) {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const session = terminalSessionFixture(tabId, "manual", "live-shell");
+    terminal.spawn.mockResolvedValueOnce({ ok: true, tabId, replayed: false, session, blockMarkerToken: "view-token" });
+    terminal.listBlocks.mockImplementation(async (ref: TerminalSessionInfo) => ({ ok: true as const, session: ref, integrated: true, blocks: [] }));
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: "live-shell" }), "get"));
+    return { terminal, session, xterm: fakeTerm() };
+  }
+
+  it("says a paste over the limit was not sent, and clears once input arrives again", async () => {
+    const { terminal, xterm } = await liveTerminal("terminal:81");
+    expect(screen.queryByTestId("terminal-input-notice")).toBeNull();
+    terminal.input.mockResolvedValueOnce({ ok: false, error: "invalid-params" } as never);
+    await act(async () => { typeInto(xterm, "x".repeat(64)); });
+    expect(await screen.findByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputTooLarge"));
+    expect(screen.getByTestId("terminal-input-notice")).toHaveAttribute("role", "alert");
+    await act(async () => { typeInto(xterm, "a"); });
+    await waitFor(() => expect(screen.queryByTestId("terminal-input-notice")).toBeNull());
+  });
+
+  it("says input for a replaced shell was not delivered, whether main refuses it or the call fails", async () => {
+    const { terminal, xterm } = await liveTerminal("terminal:82");
+    terminal.input.mockResolvedValueOnce({ ok: false, error: "stale-terminal-session" } as never);
+    await act(async () => { typeInto(xterm, "ls\r"); });
+    expect(await screen.findByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputNotDelivered"));
+    await act(async () => { typeInto(xterm, "a"); });
+    await waitFor(() => expect(screen.queryByTestId("terminal-input-notice")).toBeNull());
+    terminal.input.mockRejectedValueOnce(new Error("ipc closed"));
+    await act(async () => { typeInto(xterm, "b"); });
+    expect(await screen.findByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputNotDelivered"));
+  });
+
+  it("leaves a refusal that raced the shell's exit to the Ended strip", async () => {
+    const { terminal, session, xterm } = await liveTerminal("terminal:83");
+    let refuse!: (value: { ok: false; error: string }) => void;
+    terminal.input.mockReturnValueOnce(new Promise((resolve) => { refuse = resolve; }) as never);
+    act(() => typeInto(xterm, "exit\r"));
+    act(() => terminal.onExit.mock.calls.at(-1)![0]({ ...session, exitCode: 0 }));
+    await act(async () => { refuse({ ok: false, error: "stale-terminal-session" }); });
+    expect(screen.getByTestId("terminal-ended")).toBeTruthy();
+    expect(screen.queryByTestId("terminal-input-notice")).toBeNull();
+  });
+});
+
+describe("input typed before the shell is there to take it", () => {
+  /** A terminal whose shell start the test completes when it chooses. */
+  function startingTerminal(tabId: string) {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const session = terminalSessionFixture(tabId, "manual", "slow-shell");
+    let reply: (result: unknown) => void = () => { throw new Error("no shell start is waiting"); };
+    terminal.spawn.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve as (result: unknown) => void; }) as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    const started = async (): Promise<void> => {
+      await act(async () => { reply({ ok: true, tabId, replayed: false, session, blockMarkerToken: "view-token" }); });
+      await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    };
+    const failed = (): Promise<void> => act(async () => { reply({ ok: false, reason: "spawn-failed", message: "no shell" }); });
+    return { terminal, session, started, failed };
+  }
+
+  it("keeps it and gives it to the shell when the shell starts, in the order it was typed", async () => {
+    const { terminal, session, started } = startingTerminal("terminal:91");
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    act(() => { typeInto(fakeTerm(), "echo he"); typeInto(fakeTerm(), "llo\r"); });
+    expect(terminal.input).not.toHaveBeenCalled();
+    await started();
+    expect(terminal.input).toHaveBeenCalledTimes(1);
+    expect(terminal.input).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: session.terminalSessionId }), "echo hello\r");
+    // What is typed from here on goes straight through.
+    act(() => typeInto(fakeTerm(), "x"));
+    expect(terminal.input).toHaveBeenLastCalledWith(expect.objectContaining({ terminalSessionId: session.terminalSessionId }), "x");
+  });
+
+  it("does not keep the terminal's own answers for a shell that never asked", async () => {
+    const { terminal, started } = startingTerminal("terminal:92");
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    // An answer to a question in output drawn before the shell exists (a diagnostic, an earlier shell's output).
+    act(() => fakeTerm().dataHandler?.("\x1b[1;1R"));
+    await started();
+    expect(terminal.input).not.toHaveBeenCalled();
+  });
+
+  it("says the input went nowhere when the shell does not start", async () => {
+    const { terminal, failed } = startingTerminal("terminal:93");
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    act(() => typeInto(fakeTerm(), "make test\r"));
+    await failed();
+    expect(await screen.findByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputNotDelivered"));
+    expect(terminal.input).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when the shell does not start and nothing was typed", async () => {
+    const { terminal, failed } = startingTerminal("terminal:94");
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    await failed();
+    expect(screen.queryByTestId("terminal-input-notice")).toBeNull();
+  });
+
+  it("keeps what is typed while an ended shell restarts", async () => {
+    const tabId = "terminal:95";
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const first = terminalSessionFixture(tabId, "manual", "first-shell");
+    const second = terminalSessionFixture(tabId, "manual", "second-shell");
+    terminal.spawn.mockResolvedValueOnce({ ok: true, tabId, replayed: false, session: first, blockMarkerToken: "view-token" });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    act(() => terminal.onExit.mock.calls.at(-1)?.[0]({ ...first, exitCode: 0 }));
+    let reply: (result: unknown) => void = () => { throw new Error("no restart is waiting"); };
+    terminal.spawn.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve as (result: unknown) => void; }) as never);
+    // Enter on the ended terminal starts a new shell; the user keeps typing while it starts.
+    act(() => typeInto(fakeTerm(), "\r"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    act(() => typeInto(fakeTerm(), "ls\r"));
+    expect(terminal.input).not.toHaveBeenCalled();
+    await act(async () => { reply({ ok: true, tabId, replayed: false, session: second, blockMarkerToken: "view-token" }); });
+    await waitFor(() => expect(terminal.input).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: "second-shell" }), "ls\r"));
+  });
+
+  it("says the input went nowhere when the shell ends before it could take it, and does not give it to the next shell", async () => {
+    const { terminal, session, started } = startingTerminal("terminal:96");
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    act(() => typeInto(fakeTerm(), "echo STALE\r"));
+    // The shell ends while its start is still being answered: its exit arrives ahead of the reply.
+    act(() => terminal.onExit.mock.calls.at(-1)?.[0]({ ...session, exitCode: 1 }));
+    await started();
+    expect(terminal.input).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputNotDelivered"));
+    const replacement = terminalSessionFixture("terminal:96", "manual", "replacement-shell");
+    terminal.spawn.mockResolvedValueOnce({ ok: true, tabId: "terminal:96", replayed: false, session: replacement, blockMarkerToken: "view-token" });
+    act(() => typeInto(fakeTerm(), "\r"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: "replacement-shell" }), "get"));
+    expect(terminal.input).not.toHaveBeenCalled();
+    // What is typed for the new shell reaches it.
+    act(() => typeInto(fakeTerm(), "x"));
+    expect(terminal.input).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: "replacement-shell" }), "x");
+    expect(terminal.input).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds no more UTF-8 bytes than one write to a shell takes", async () => {
+    const { terminal, session, started } = startingTerminal("terminal:97");
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
+    // Each piece is within a write on its own; together they are not, though they are far fewer characters than that.
+    const piece = "가".repeat(200_000);
+    act(() => { typeInto(fakeTerm(), piece); typeInto(fakeTerm(), piece); });
+    expect(await screen.findByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputTooLarge"));
+    await started();
+    expect(terminal.input).not.toHaveBeenCalled();
+    expect(screen.getByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputTooLarge"));
+    act(() => typeInto(fakeTerm(), "x"));
+    expect(terminal.input).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: session.terminalSessionId }), "x");
+  });
+
+  it("holds input of exactly one write's bytes, and not a byte more", async () => {
+    const limit = TERMINAL_INPUT_MAX_BYTES;
+    const exact = `${"가".repeat(Math.floor(limit / 3))}${"a".repeat(limit % 3)}`;
+    expect(new TextEncoder().encode(exact).length).toBe(limit);
+    const whole = startingTerminal("terminal:98");
+    await waitFor(() => expect(whole.terminal.spawn).toHaveBeenCalled());
+    act(() => typeInto(fakeTerm(), exact));
+    await whole.started();
+    expect(whole.terminal.input).toHaveBeenCalledWith(expect.objectContaining({ terminalSessionId: whole.session.terminalSessionId }), exact);
+    expect(screen.queryByTestId("terminal-input-notice")).toBeNull();
+  });
+
+  it("refuses to hold input one byte over a write", async () => {
+    const limit = TERMINAL_INPUT_MAX_BYTES;
+    const exact = `${"가".repeat(Math.floor(limit / 3))}${"a".repeat(limit % 3)}`;
+    const over = startingTerminal("terminal:99");
+    await waitFor(() => expect(over.terminal.spawn).toHaveBeenCalled());
+    act(() => { typeInto(fakeTerm(), exact); typeInto(fakeTerm(), "b"); });
+    expect(await screen.findByTestId("terminal-input-notice")).toHaveTextContent(t("ptyTerminal.inputTooLarge"));
+    await over.started();
+    expect(over.terminal.input).not.toHaveBeenCalled();
   });
 });
 

@@ -58,7 +58,7 @@ import { prepareHostShellIntegration } from "./host-shell-integration.js";
 import { resolveManualShell } from "./manual-shell.js";
 import { prepareTerminalGitPolicyCheck, terminalSandboxWindowNotice } from "./terminal-sandbox-policy.js";
 import { t } from "../../i18n/index.js";
-import { isTerminalLane, isTerminalPurpose, sameTerminalSession, terminalLaneKey, TERMINAL_REPLAY_MAX_BYTES, type HostTerminalAgentInput, type HostTerminalControlState, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
+import { isTerminalLane, isTerminalPurpose, sameTerminalSession, terminalLaneKey, TERMINAL_INPUT_MAX_BYTES, TERMINAL_REPLAY_MAX_BYTES, type HostTerminalAgentInput, type HostTerminalControlState, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
 import { HostTerminalControl, type HostAgentLease, type HostTerminalDisclosure } from "./host-terminal-control.js";
 import type { HostTerminalTurn } from "../../tools/host-terminal-turn.js";
 
@@ -83,9 +83,6 @@ function laneAtCapacity(lane: SpawnTerminalOptions["lane"]): boolean {
   for (const key of terminalSpawnsInFlight.keys()) if (key.endsWith(suffix)) count++;
   return count > (lane === "manual" ? MAX_HOST_TERMINALS : MAX_CONVERSATION_TERMINALS);
 }
-/** Anti-DoS: max bytes accepted for a single {@link writeTerminal} (keystroke / paste) forward. An oversized write is dropped rather than streamed to the PTY. */
-const MAX_INPUT_BYTES = 1024 * 1024;
-
 export interface SpawnTerminalOptions extends TerminalSpawnRequest {
   /** Derived from the authenticated host renderer, never renderer payloads. */
   readonly ownerWindowId?: number | null;
@@ -1059,7 +1056,7 @@ export function terminalOwnedBy(tabId: string, ownerWindowId: number | null): bo
 export function writeTerminal(ref: TerminalSessionRef, data: string): TerminalMutationResult {
   const session = sessions.get(terminalLaneKey(ref));
   if (!session || session.exited || session.closing || !sameTerminalSession(session.info, ref)) return { ok: false, error: "stale-terminal-session" };
-  if (typeof data !== "string" || Buffer.byteLength(data, "utf-8") > MAX_INPUT_BYTES) return { ok: false, error: "invalid-params" };
+  if (typeof data !== "string" || Buffer.byteLength(data, "utf-8") > TERMINAL_INPUT_MAX_BYTES) return { ok: false, error: "invalid-params" };
   const generation = session.blocks.userInputGeneration();
   session.blocks.recordInput(data);
   if (session.blocks.userInputGeneration() !== generation) {

@@ -12,6 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { TERMINAL_INPUT_MAX_BYTES } from "../../../shared/terminal-session.js";
 import { terminalSandboxWindowNotice } from "../terminal-sandbox-policy.js";
 import { t } from "../../../i18n/index.js";
 import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissions/asrt-sandbox.js";
@@ -1067,6 +1068,16 @@ describe("pty-manager anti-DoS caps", () => {
     // A normal write still passes.
     writeTerminal("terminal:0000000a-1", "ls\n");
     expect(lastPty?.written).toContain("ls\n");
+  });
+
+  it("counts the input cap in UTF-8 bytes, the same cap a view holds typed-ahead input to", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const exact = `${"가".repeat(Math.floor(TERMINAL_INPUT_MAX_BYTES / 3))}${"a".repeat(TERMINAL_INPUT_MAX_BYTES % 3)}`;
+    expect(Buffer.byteLength(exact, "utf-8")).toBe(TERMINAL_INPUT_MAX_BYTES);
+    writeTerminal("terminal:0000000a-1", `${exact}b`);
+    expect(lastPty?.written.length ?? 0).toBe(0);
+    writeTerminal("terminal:0000000a-1", exact);
+    expect(lastPty?.written).toContain(exact);
   });
 });
 
