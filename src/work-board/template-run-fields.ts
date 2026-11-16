@@ -1,6 +1,6 @@
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
-import { isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
+import { parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
 function text(value: unknown, max = 2048): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0"); }
 function timestamp(value: unknown): boolean { return text(value, 64) && Number.isFinite(Date.parse(value)); }
@@ -22,8 +22,7 @@ function workspace(value: unknown, run: boolean): boolean {
 }
 function requestedOutput(value: unknown): boolean {
   if (!isRecord(value) || !isTemplateId(value.id) || !isRecord(value.decl) || typeof value.summary !== "string" || value.summary.length > 400 || typeof value.args !== "string" || Buffer.byteLength(value.args, "utf8") > 32 * 1024) return false;
-  const decl = value.decl;
-  if (!(decl.kind === "git-push" ? text(decl.remote) && decl.branch === "run" : decl.kind === "tool" && text(decl.tool, 256))) return false;
+  try { parseRequestedOutputDecl(value.decl); } catch { return false; }
   try { if (canonicalWorkflowJson(JSON.parse(value.args)) !== value.args) return false; } catch { return false; }
   return optional(value, "files", files);
 }
@@ -67,7 +66,7 @@ function authority(value: unknown, raw: Record<string, unknown>): boolean {
   if (!isRecord(value) || !isRecord(value.pin)) return false;
   const pin = value.pin;
   if (pin.templateId !== raw.templateId || pin.version !== raw.runTemplateVersion || pin.graphHash !== raw.runTemplateGraphHash) return false;
-  return value.kind === "local-create-and-run" || (value.kind === "schedule-attachment" && isTemplateId(value.attachmentId) && timestamp(value.firedAt));
+  return (value.kind === "local-create-and-run" && optional(value, "projectRoot", text)) || (value.kind === "schedule-attachment" && isTemplateId(value.attachmentId) && timestamp(value.firedAt));
 }
 /** Optional additive fields keep legacy boards readable; partial authority pins are never repaired. */
 export function assertTemplateRunFields(raw: unknown): void {

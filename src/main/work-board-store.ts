@@ -737,6 +737,7 @@ export class WorkBoardStore {
       assertTemplateRunFields(prior);
       if (prior.templateId !== undefined && !pin) return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
       if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
+      if (pin?.source.kind === "local-create-and-run") requireTemplate(pin.source.projectRoot === prior.projectRoot, "project-mismatch");
       if (prior.status === "completed") {
         this.cache = board;
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };

@@ -6,7 +6,8 @@ type StageGate = { type: "human" } | {
     // Scheduler predicate labelled as a model judgement; never answers, skips or pre-fills a permission card (D9).
     | { kind: "model_verdict" };
 };
-export type RequestedOutputKind = "publish" | "upload" | "post" | "send" | "push" | "merge" | "purchase";
+export type RequestedOutputKind = "upload" | "send-message" | "publish-post" | "external-write" | "other";
+export interface RequestedOutputDecl { kind: RequestedOutputKind; toolName: string; owner: "server" | "plugin" | "host"; ownerId: string }
 export interface StageGenerationTool {
   name: string;
   effect: "generate" | "fetch";
@@ -36,7 +37,7 @@ export interface TemplateStage {
   allowSubAgents: boolean;
   gate: StageGate;
   envelope?: StageEnvelope;
-  requestedOutputs?: RequestedOutputKind[];
+  requestedOutputs?: RequestedOutputDecl[];
   inputFiles?: StageInputDecl[];
   outputs?: string[];
 }
@@ -77,6 +78,7 @@ interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
 export interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }
 export interface ScheduleAttachment extends ScheduleAttachmentInput {
   id: string;
+  approvedScope?: TemplateScope;
   detachedAt?: string;
   who: string;
   at: string;
@@ -93,7 +95,8 @@ export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
   | "bad-stage-id" | "too-many-entries" | "envelope-refused"
-  | "invalid-template-file" | "invalid-template-run" | "forbidden-envelope-tool" | "schedule-requires-read-only";
+  | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
+  | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };
 
 export interface WorkItemStageRun {
@@ -119,15 +122,14 @@ export interface WorkItemStageRun {
 export type WorkItemStageRunSummary = Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "startedAt" | "endedAt" | "resultHash">;
 
 export type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor-target" | "secret-path" | "user-owned-surface"
-  | "outward-tool-declared" | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
+  | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
 type RunPin = TemplateVersionPin;
-export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin }
+export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; projectRoot?: string }
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };
 export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
-type OutputKindDecl = { kind: "git-push"; remote: string; branch: "run" } | { kind: "tool"; tool: string };
 interface OutputFile { path: string; sha256: string; size: number }
-export interface RequestedOutput { id: string; decl: OutputKindDecl; args: string; files?: OutputFile[]; summary: string }
+export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }
 interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
 export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }

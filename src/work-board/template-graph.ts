@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
-import type { StageEnvelope, StageGenerationTool, RequestedOutputKind, TemplateGraph, TemplateStage, WorkflowTemplateDraftInput, WorkflowTemplateErrorCode, EnvelopeRefusal, StageInputDecl } from "../shared/workflow-template-types.js";
+import type { StageEnvelope, StageGenerationTool, RequestedOutputKind, RequestedOutputDecl, TemplateScope, TemplateGraph, TemplateStage, WorkflowTemplateDraftInput, WorkflowTemplateErrorCode, EnvelopeRefusal, StageInputDecl } from "../shared/workflow-template-types.js";
 import { isSensitivePath, protectedControlEntryFor } from "../permissions/sensitive-paths.js";
 import { hasOnlyKeys, isPlainRecord, isRecord } from "../shared/is-record.js";
 
@@ -21,7 +21,7 @@ export function hasTemplateKeys(value: unknown, keys: readonly string[]): value 
 }
 function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 
-const REQUESTED_OUTPUT_KINDS: readonly RequestedOutputKind[] = ["publish", "upload", "post", "send", "push", "merge", "purchase"];
+const REQUESTED_OUTPUT_KINDS: readonly RequestedOutputKind[] = ["upload", "send-message", "publish-post", "external-write", "other"];
 function workspaceGlobs(raw: unknown, max: number): string[] {
   requireTemplate(Array.isArray(raw)); requireTemplate(raw.length <= max, "too-many-entries");
   requireTemplate(raw.every(isWorkspaceGlob)); return [...raw];
@@ -32,30 +32,36 @@ function stringList(raw: unknown, fallback: string[] = []): string[] {
   requireTemplate(value.length <= 256, "too-many-entries");
   return [...new Set(value as string[])].sort(compare);
 }
-function isOutwardAction(value: string): boolean {
-  return /(?:^|[^a-z])(publish|upload|post|send|push|merge|purchase|deploy)(?:$|[^a-z])/.test(value.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2").replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase());
-}
-function envelopeTools(raw: unknown): string[] {
-  const tools = stringList(raw);
-  requireTemplate(tools.every(name => !isOutwardAction(name)), "forbidden-envelope-tool");
-  return tools;
-}
 function generationTools(raw: unknown): StageGenerationTool[] {
   if (raw === undefined) return [];
   requireTemplate(Array.isArray(raw)); requireTemplate(raw.length <= 256, "too-many-entries");
   const tools = raw.map((tool: unknown): StageGenerationTool => {
     requireTemplate(hasTemplateKeys(tool, ["name", "effect", "dataSent"]) && text(tool.name, 256));
-    requireTemplate(!isOutwardAction(tool.name) && !(typeof tool.effect === "string" && isOutwardAction(tool.effect)), "forbidden-envelope-tool");
     requireTemplate((tool.effect === "generate" || tool.effect === "fetch") && typeof tool.dataSent === "boolean");
     return { name: tool.name, effect: tool.effect, dataSent: tool.dataSent };
   }).sort((a, b) => compare(a.name, b.name));
   requireTemplate(new Set(tools.map(t => t.name)).size === tools.length);
   return tools;
 }
-function requestedOutputs(raw: unknown): RequestedOutputKind[] {
-  const outputs = stringList(raw);
-  requireTemplate(outputs.every(kind => REQUESTED_OUTPUT_KINDS.includes(kind as RequestedOutputKind)));
-  return outputs as RequestedOutputKind[];
+export function parseRequestedOutputDecl(raw: unknown): RequestedOutputDecl {
+  requireTemplate(hasTemplateKeys(raw, ["kind", "toolName", "owner", "ownerId"]) && REQUESTED_OUTPUT_KINDS.includes(raw.kind as RequestedOutputKind) && text(raw.toolName, 256) && text(raw.ownerId, 256));
+  requireTemplate(raw.owner === "server" || raw.owner === "plugin" || raw.owner === "host");
+  requireTemplate(raw.owner === "host" ? raw.ownerId === "host:git" && raw.toolName === "git_push" && raw.kind === "external-write" : !raw.ownerId.startsWith("host:"));
+  return { kind: raw.kind as RequestedOutputKind, toolName: raw.toolName, owner: raw.owner, ownerId: raw.ownerId };
+}
+function requestedOutputs(raw: unknown): RequestedOutputDecl[] {
+  if (raw === undefined) return [];
+  requireTemplate(Array.isArray(raw)); requireTemplate(raw.length <= 256, "too-many-entries");
+  const outputs = raw.map(parseRequestedOutputDecl).sort((a, b) => compare(a.owner, b.owner) || compare(a.ownerId, b.ownerId) || compare(a.toolName, b.toolName) || compare(a.kind, b.kind));
+  requireTemplate(new Set(outputs.map(({ owner, ownerId, toolName }) => canonicalWorkflowJson([owner, ownerId, toolName]))).size === outputs.length);
+  return outputs;
+}
+export function isTemplateScope(raw: unknown): raw is TemplateScope {
+  return isRecord(raw) && hasTemplateKeys(raw, raw.kind === "all" ? ["kind"] : ["kind", "projectRoot"]) && (raw.kind === "all" || (raw.kind === "project" && text(raw.projectRoot, 2048)));
+}
+export function attachmentScopeMatches(attachment: { approvedScope?: TemplateScope }, template: { scope: TemplateScope }): { ok: true } | { ok: false; code: "scope-changed" } {
+  const approved = attachment.approvedScope;
+  return approved && isTemplateScope(approved) && approved.kind === template.scope.kind && (approved.kind === "all" || (template.scope.kind === "project" && approved.projectRoot === template.scope.projectRoot)) ? { ok: true } : { ok: false, code: "scope-changed" };
 }
 function canonicalEnvelope(raw: unknown): StageEnvelope {
   requireTemplate(hasTemplateKeys(raw, ["tools", "writePaths", "readRoots", "network", "commands", "mcpReadOnlyTools", "mcpGenerationTools", "pluginGenerationTools", "outputs", "budget"]));
@@ -75,7 +81,7 @@ function canonicalEnvelope(raw: unknown): StageEnvelope {
   requireTemplate(outputs.every(kind => kind === "branch" || REQUESTED_OUTPUT_KINDS.includes(kind as RequestedOutputKind)));
   const writePaths = stringList(raw.writePaths, ["**"]);
   requireTemplate(writePaths.every(isWorkspaceGlob));
-  return { tools: envelopeTools(raw.tools), writePaths, readRoots: stringList(raw.readRoots), network: uniqueNetwork, commands: stringList(raw.commands), mcpReadOnlyTools: envelopeTools(raw.mcpReadOnlyTools), mcpGenerationTools: generationTools(raw.mcpGenerationTools), pluginGenerationTools: generationTools(raw.pluginGenerationTools), outputs: outputs as StageEnvelope["outputs"], budget: { rounds: budget.rounds as number, minutes: budget.minutes, costUsd: budget.costUsd } };
+  return { tools: stringList(raw.tools), writePaths, readRoots: stringList(raw.readRoots), network: uniqueNetwork, commands: stringList(raw.commands), mcpReadOnlyTools: stringList(raw.mcpReadOnlyTools), mcpGenerationTools: generationTools(raw.mcpGenerationTools), pluginGenerationTools: generationTools(raw.pluginGenerationTools), outputs: outputs as StageEnvelope["outputs"], budget: { rounds: budget.rounds as number, minutes: budget.minutes, costUsd: budget.costUsd } };
 }
 
 // Lift this interim restriction when unattended evaluation and isolation are available.
@@ -95,6 +101,7 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
     requireTemplate(s.agentName === undefined || text(s.agentName, 128));
     requireTemplate(s.kind === undefined || s.kind === "plan");
     requireTemplate(s.allowSubAgents === undefined || typeof s.allowSubAgents === "boolean");
+    if (s.requestedOutputs !== undefined) requestedOutputs(s.requestedOutputs);
     const g = s.gate;
     requireTemplate(isRecord(g));
     if (g.type === "human") requireTemplate(hasTemplateKeys(g, ["type"]));
@@ -131,6 +138,7 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
   if (roots.length === 1 && roots[0].toolScope === "read" && roots[0].gate.type === "human") roots[0].kind = "plan";
   for (const rawStage of raw.stages) requireTemplate(rawStage.kind === undefined || rawStage.kind === stages.find(s => s.id === rawStage.id)?.kind);
   if (raw.setupCommands !== undefined) requireTemplate(Array.isArray(raw.setupCommands) && raw.setupCommands.length <= 256 && raw.setupCommands.every(command => text(command, 8192)));
+  if (Array.isArray(raw.setupCommands) && raw.setupCommands.length > 0 && !stages.some(stage => stage.toolScope === "all")) throw new WorkflowTemplateError("envelope-refused", "Setup commands require an all-tools stage", ["setup-outside-commands"]);
   return { stages, edges, ...(Array.isArray(raw.setupCommands) && raw.setupCommands.length > 0 ? { setupCommands: [...raw.setupCommands as string[]] } : {}) };
 }
 export function graphHashOf(graph: unknown): string {
@@ -154,17 +162,16 @@ export function validateStageForConfirm(stage: TemplateStage, template: Template
   if (!isStageId(stage.id)) refusals.push("bad-stage-id");
   try { if (stage.outputs !== undefined) workspaceGlobs(stage.outputs, 32); if (stage.inputFiles !== undefined) { requireTemplate(stage.inputFiles.length <= 64, "too-many-entries"); for (const entry of stage.inputFiles) if (entry.from === "project") workspaceGlobs(entry.paths, 64); } }
   catch (error) { if (error instanceof WorkflowTemplateError && error.code === "too-many-entries") refusals.push("too-many-entries"); }
+  if (stage.requestedOutputs?.length && stage.gate.type !== "human") refusals.push("outputs-need-human-gate");
+  if (template.setupCommands?.length && !template.stages.some(entry => entry.toolScope === "all")) refusals.push("setup-outside-commands");
   const envelope = stage.envelope;
   if (!envelope) return refusals;
   try { canonicalEnvelope(envelope); }
   catch (error) {
     if (error instanceof WorkflowTemplateError) {
-      if (error.code === "forbidden-envelope-tool") refusals.push("outward-tool-declared");
       if (error.code === "too-many-entries") refusals.push("too-many-entries");
     } else throw error;
   }
-  if (envelope.outputs.some(kind => kind !== "branch") && stage.gate.type !== "human") refusals.push("outputs-need-human-gate");
-  if ((template.setupCommands ?? []).some(command => !envelope.commands.some(prefix => command === prefix || command.startsWith(`${prefix} `) || command.startsWith(`${prefix}\t`)))) refusals.push("setup-outside-commands");
   if (stage.toolScope === "read" && (envelope.tools.some(tool => !READ_ENVELOPE_TOOLS.has(tool)) || envelope.mcpGenerationTools.length > 0 || envelope.pluginGenerationTools.length > 0)) refusals.push("tools-broader-than-scope");
   if (envelope.tools.some(tool => ["host_shell", "host_bash", "host_powershell"].includes(tool))) refusals.push("host-shell");
   if (envelope.tools.some(tool => tool.startsWith("browser_") || tool.startsWith("terminal_"))) refusals.push("user-owned-surface");

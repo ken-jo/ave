@@ -58,14 +58,14 @@ it("hides unauthorized project templates and refuses project drafts", async () =
   const { event, store } = setup();
   store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "project", projectRoot: "/private" } } } as never);
   expect(await handler(WORK_BOARD.templateGet)(event, "t")).toEqual({ ok: false, error: "template-not-found" });
-  expect(await handler(WORK_BOARD.templateDraft)(event, null, { ...graph, scope: { kind: "project", projectRoot: "/private" } })).toEqual({ ok: false, error: "invalid-input" });
+  expect(await handler(WORK_BOARD.templateDraft)(event, null, { ...graph, scope: { kind: "project", projectRoot: "/private" } })).toEqual({ ok: false, error: "scope-not-authorised" });
   expect(store.draft).not.toHaveBeenCalled();
 });
 
 it("revalidates a draft project before confirmation", async () => {
   const { event, store } = setup();
   store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "all" } }, draft: { scope: { kind: "project", projectRoot: "/private" } } } as never);
-  expect(await handler(WORK_BOARD.templateConfirm)(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" }, gesture)).toEqual({ ok: false, error: "invalid-input" });
+  expect(await handler(WORK_BOARD.templateConfirm)(event, "t", { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" }, gesture)).toEqual({ ok: false, error: "scope-not-authorised" });
   expect(store.confirmDraft).not.toHaveBeenCalled();
 });
 
@@ -76,13 +76,13 @@ it("requires local gesture and owner frame for schedule attachments and rejects 
   expect(await handler(WORK_BOARD.templateAttachSchedule)({ ...event, senderFrame: {} }, request, gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
   expect(store.attachSchedule).not.toHaveBeenCalled();
   expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toEqual({ ok: true, value: {} });
-  expect(store.attachSchedule).toHaveBeenCalledWith(request, expect.objectContaining({ origin: "local-desktop", auditId: expect.any(String), decidedAt: expect.any(String) }));
+  expect(store.attachSchedule).toHaveBeenCalledWith(request, expect.objectContaining({ origin: "local-desktop", auditId: expect.any(String), decidedAt: expect.any(String) }), { kind: "all" });
 });
 
 it("revalidates attachment project access and does not write on refusal", async () => {
   const { event, store } = setup(); store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "project", projectRoot: "/private" } } } as never);
   const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
-  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toEqual({ ok: false, error: "template-not-found" }); expect(store.attachSchedule).not.toHaveBeenCalled();
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toEqual({ ok: false, error: "scope-not-authorised" }); expect(store.attachSchedule).not.toHaveBeenCalled();
 });
 
 it("requires detach gesture and refuses renderer-supplied host proofs", async () => {
@@ -122,4 +122,14 @@ it("returns typed row refusals over IPC without invoking execution or gates", as
   expect(await handler(WORK_BOARD.decidePlan)(event, 2, { runId: "run", planHash: "a".repeat(64), decision: "approve" }, gesture)).toEqual({ ok: false, reason: "invalid-template-run" });
   expect(engine.runItem).not.toHaveBeenCalled(); expect(engine.decidePlan).not.toHaveBeenCalled();
   expect(await handler(WORK_BOARD.cancelRun)(event, 2, gesture)).toEqual({ ok: false, error: "invalid-template-run" });
+});
+
+it("passes the resolved authorized project snapshot to attachment storage", async () => {
+  const { resolveAuthorizedWorkspaceProject } = await import("../../../main/project-root-authorization.js");
+  vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: true, project: { projectRoot: "/projects/a", projectName: "A", isDefault: false } });
+  const { event, store } = setup(); store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "project", projectRoot: "/projects/a/" } } } as never);
+  const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
+  expect(await handler(WORK_BOARD.templateAttachSchedule)(event, request, gesture)).toMatchObject({ ok: true });
+  expect(store.attachSchedule).toHaveBeenCalledWith(request, expect.anything(), { kind: "project", projectRoot: "/projects/a" });
+  vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: false, project: null });
 });

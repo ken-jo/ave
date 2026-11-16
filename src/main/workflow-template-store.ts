@@ -6,9 +6,9 @@ import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { ChangeSignal } from "../lib/change-signal.js";
 import { createLogger } from "../lib/logger.js";
 import { isRecord } from "../shared/is-record.js";
-import { hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
-import type { ScheduleAttachment, ScheduleAttachmentInput, TemplateConfirmationOrigin, TemplateVersion, TemplateVersionPin, WorkflowTemplate, WorkflowTemplateConfirmInput, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachment, ScheduleAttachmentInput, TemplateScope, TemplateConfirmationOrigin, TemplateVersion, TemplateVersionPin, WorkflowTemplate, WorkflowTemplateConfirmInput, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
 interface TemplatesFile { version: 1; templates: WorkflowTemplateRecord[] }
 const log = createLogger("workflow-templates");
@@ -35,7 +35,8 @@ function validateFile(raw: unknown): TemplatesFile {
     }
     requireTemplate(record.scheduleAttachments === undefined || Array.isArray(record.scheduleAttachments), "invalid-template-file");
     for (const attachment of record.scheduleAttachments ?? []) {
-      requireTemplate(hasTemplateKeys(attachment, ["id", "scheduleId", "templateId", "version", "graphHash", "who", "at", "origin", "detachedAt"]) && isTemplateId(attachment.scheduleId) && (attachment.detachedAt !== undefined || !schedules.has(attachment.scheduleId)) && isTemplateId(attachment.id) && !attachmentIds.has(attachment.id) && (attachment.detachedAt === undefined || timestamp(attachment.detachedAt)) && attachment.templateId === t.id && isTemplateVersion(attachment.version) && isGraphHash(attachment.graphHash) && timestamp(attachment.at) && typeof attachment.who === "string" && attachment.who.length > 0 && attachment.who.length <= 128 && attachment.origin === "local-desktop", "invalid-template-file");
+      requireTemplate(hasTemplateKeys(attachment, ["id", "scheduleId", "templateId", "version", "graphHash", "who", "at", "origin", "detachedAt", "approvedScope"]) && isTemplateId(attachment.scheduleId) && (attachment.detachedAt !== undefined || !schedules.has(attachment.scheduleId)) && isTemplateId(attachment.id) && !attachmentIds.has(attachment.id) && (attachment.detachedAt === undefined || timestamp(attachment.detachedAt)) && attachment.templateId === t.id && isTemplateVersion(attachment.version) && isGraphHash(attachment.graphHash) && timestamp(attachment.at) && typeof attachment.who === "string" && attachment.who.length > 0 && attachment.who.length <= 128 && attachment.origin === "local-desktop", "invalid-template-file");
+      requireTemplate(attachment.approvedScope === undefined || isTemplateScope(attachment.approvedScope), "invalid-template-file");
       const version = record.versions.find((v: TemplateVersion) => v.version === attachment.version);
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === attachment.graphHash, "graph-hash-mismatch");
@@ -134,9 +135,10 @@ export class WorkflowTemplateStore {
       delete record.draft; await this.commit(file); return structuredClone(confirmed);
     });
   }
-  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof): Promise<ScheduleAttachment> {
+  async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope): Promise<ScheduleAttachment> {
     requireTemplate(hasTemplateKeys(input, ["scheduleId", "templateId", "version", "graphHash"]) && isTemplateId(input.scheduleId) && isTemplateId(input.templateId) && isTemplateVersion(input.version) && isGraphHash(input.graphHash));
     assertHostDecisionProof(proof);
+    requireTemplate(isTemplateScope(approvedScope));
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.readFile(); const record = this.find(file, input.templateId);
       requireTemplate(!record.template.archivedAt, "template-archived");
@@ -144,7 +146,8 @@ export class WorkflowTemplateStore {
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === input.graphHash, "graph-hash-mismatch");
       requireTemplate(isAllReadOnlyVersion(canonicalTemplateGraph(version)), "schedule-requires-read-only");
-      const attachment: ScheduleAttachment = { ...input, id: randomUUID(), who: "user", origin: proof.origin, at: proof.decidedAt };
+      requireTemplate(attachmentScopeMatches({ approvedScope }, record.template).ok, "scope-changed");
+      const attachment: ScheduleAttachment = { ...input, approvedScope: structuredClone(approvedScope), id: randomUUID(), who: "user", origin: proof.origin, at: proof.decidedAt };
       for (const r of file.templates) for (const prior of r.scheduleAttachments ?? []) if (prior.scheduleId === input.scheduleId && prior.detachedAt === undefined) prior.detachedAt = proof.decidedAt;
       record.scheduleAttachments ??= [];
       record.scheduleAttachments.push(attachment);

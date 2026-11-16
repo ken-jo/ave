@@ -40,7 +40,7 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     const input = parseTemplateDraft(raw);
     if (input.scope.kind === "project") {
       const resolved = resolveAuthorizedWorkspaceProject(input.scope.projectRoot);
-      requireTemplate(resolved.authorized && resolved.project);
+      requireTemplate(resolved.authorized && resolved.project, "scope-not-authorised");
       input.scope = { kind: "project", projectRoot: resolved.project.projectRoot };
     }
     if (id !== null) await load(id);
@@ -57,9 +57,15 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
   handle(WORK_BOARD.templateAttachSchedule, async (store, event, raw, intent, ...args) => {
     requireTemplate(args.length === 0 && hasTemplateKeys(raw, ["templateId", "version", "graphHash", "scheduleId"]) && isTemplateId(raw.templateId) && isTemplateVersion(raw.version) && isGraphHash(raw.graphHash) && isTemplateId(raw.scheduleId));
     requireLocalGesture(event, intent, WORK_BOARD.templateAttachSchedule);
-    await load(raw.templateId);
+    const record = await store.get(raw.templateId);
+    let approvedScope = record.template.scope;
+    if (approvedScope.kind === "project") {
+      const resolved = resolveAuthorizedWorkspaceProject(approvedScope.projectRoot);
+      requireTemplate(resolved.authorized && resolved.project, "scope-not-authorised");
+      approvedScope = { kind: "project", projectRoot: resolved.project.projectRoot };
+    }
     const proof = mintHostDecisionProof("local-desktop");
-    const result = await store.attachSchedule(raw as unknown as ScheduleAttachmentInput, proof);
+    const result = await store.attachSchedule(raw as unknown as ScheduleAttachmentInput, proof, approvedScope);
     deps.auditLogger.log({ timestamp: result.at, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_attached", ...result, auditId: proof.auditId }) });
     return result;
   });
@@ -77,7 +83,7 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(raw.expectedGraphHash) && isTemplateId(raw.expectedDraftRevision));
     requireLocalGesture(event, intent, WORK_BOARD.templateConfirm);
     const record = await load(id);
-    if (record.draft) requireTemplate(authorizedScope(record.draft.scope));
+    if (record.draft) requireTemplate(authorizedScope(record.draft.scope), "scope-not-authorised");
     const result = await store.confirmDraft(id, raw as unknown as WorkflowTemplateConfirmInput, { who: "user", origin: "local-desktop" });
     deps.auditLogger.log({ timestamp: result.confirmedAt, sessionId: `work-board:${id}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", templateId: id, version: result.version, graphHash: result.graphHash, origin: "local-desktop" }) });
     return result;

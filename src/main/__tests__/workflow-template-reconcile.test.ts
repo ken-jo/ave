@@ -23,10 +23,9 @@ it.each(["/absolute", "C:/absolute", "../out", "a/../out", "a\\..\\out", "\\serv
 it("bounds folder declarations", () => {
   for (const patch of [{ outputs: Array(33).fill("**") }, { inputFiles: Array(65).fill({ from: "project", paths: ["**"] }) }, { inputFiles: [{ from: "project", paths: Array(65).fill("**") }] }]) { const g = graph(); Object.assign(g.stages[0], patch); expect(() => graphHashOf(g)).toThrow(expect.objectContaining({ code: "too-many-entries" })); }
 });
-it.each(["outputs-need-human-gate", "outward-tool-declared", "setup-outside-commands", "tools-broader-than-scope", "bad-stage-id", "too-many-entries", "host-shell", "floor-target", "secret-path", "user-owned-surface"] as const)("returns confirm refusal %s", code => {
+it.each(["outputs-need-human-gate", "setup-outside-commands", "tools-broader-than-scope", "bad-stage-id", "too-many-entries", "host-shell", "floor-target", "secret-path", "user-owned-surface"] as const)("returns confirm refusal %s", code => {
   const g = graph(); const s = g.stages[0];
-  if (code === "outputs-need-human-gate") { s.gate = { type: "auto", pass: { kind: "stage_ok" } }; requiredValue(s.envelope).outputs = ["publish"]; }
-  if (code === "outward-tool-declared") requiredValue(s.envelope).mcpGenerationTools = [{ name: "media.send", effect: "generate", dataSent: true }];
+  if (code === "outputs-need-human-gate") { s.gate = { type: "auto", pass: { kind: "stage_ok" } }; s.requestedOutputs = [{ kind: "publish-post", toolName: "publish", owner: "plugin", ownerId: "media" }]; }
   if (code === "setup-outside-commands") g.setupCommands = ["prepare assets"];
   if (code === "tools-broader-than-scope") requiredValue(s.envelope).tools = ["write_file"];
   if (code === "bad-stage-id") s.id = "_join";
@@ -37,32 +36,32 @@ it.each(["outputs-need-human-gate", "outward-tool-declared", "setup-outside-comm
   if (code === "user-owned-surface") requiredValue(s.envelope).tools = ["browser_click"];
   expect(validateStageForConfirm(s, g)).toContain(code);
 });
-it("uses command prefixes at token boundaries and permits branch-only automatic gates", () => {
-  const g = graph(); const s = g.stages[0]; s.gate = { type: "auto", pass: { kind: "stage_ok" } }; requiredValue(s.envelope).outputs = ["branch"]; requiredValue(s.envelope).commands = ["prepare"];
+it("keeps setup commands at template level and permits branch-only automatic gates", () => {
+  const g = graph(); const s = g.stages[0]; s.toolScope = "all"; s.gate = { type: "auto", pass: { kind: "stage_ok" } }; requiredValue(s.envelope).outputs = ["branch"]; requiredValue(s.envelope).commands = ["prepare"];
   g.setupCommands = ["prepare assets"]; expect(validateStageForConfirm(s, g)).toEqual([]);
-  g.setupCommands = ["prepare-other"]; expect(validateStageForConfirm(s, g)).toContain("setup-outside-commands");
+  g.setupCommands = ["prepare-other"]; expect(validateStageForConfirm(s, g)).toEqual([]);
 });
 it("has one conservative read-only predicate", () => {
   const g = graph(); expect(isAllReadOnlyVersion(g)).toBe(true);
-  for (const patch of [{ allowSubAgents: true }, { requestedOutputs: ["send"] }, { envelope: { ...envelope(), mcpReadOnlyTools: ["media.read"] } }, { envelope: { ...envelope(), network: [{ host: "example.com" }] } }, { envelope: { ...envelope(), outputs: ["branch"] } }]) { const changed = graph(); Object.assign(changed.stages[0], patch); expect(isAllReadOnlyVersion(changed)).toBe(false); }
+  for (const patch of [{ allowSubAgents: true }, { requestedOutputs: [{ kind: "send-message", toolName: "send", owner: "plugin", ownerId: "media" }] }, { envelope: { ...envelope(), mcpReadOnlyTools: ["media.read"] } }, { envelope: { ...envelope(), network: [{ host: "example.com" }] } }, { envelope: { ...envelope(), outputs: ["branch"] } }]) { const changed = graph(); Object.assign(changed.stages[0], patch); expect(isAllReadOnlyVersion(changed)).toBe(false); }
 });
 let dir: string;
 beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "template-reconcile-")); });
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 const proof = () => mintHostDecisionProof("local-desktop");
 it("confirm refuses a typed list without mutating the draft", async () => {
-  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const g = graph(); g.setupCommands = ["prepare"]; requiredValue(g.stages[0].envelope).tools = ["write_file"];
+  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const g = graph(); requiredValue(g.stages[0].envelope).tools = ["write_file"];
   const r = await store.draft(null, { ...g, name: "Template", scope: { kind: "all" } }); const before = await readFile(join(dir, "templates.json"), "utf8");
-  await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" })).rejects.toMatchObject({ code: "envelope-refused", refusals: ["setup-outside-commands", "tools-broader-than-scope"] });
+  await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" })).rejects.toMatchObject({ code: "envelope-refused", refusals: ["tools-broader-than-scope"] });
   expect(await readFile(join(dir, "templates.json"), "utf8")).toBe(before);
 });
 it("retains stable attachment ids and detach history with readers", async () => {
   const store = new WorkflowTemplateStore(join(dir, "templates.json")); const r = await store.draft(null, { ...graph(), name: "Template", scope: { kind: "all" } }); const v = await store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" }); const request = { templateId: v.templateId, version: 1, graphHash: v.graphHash, scheduleId: "daily" };
-  await expect(store.attachSchedule(request, { origin: "local-desktop", auditId: "forged", decidedAt: new Date().toISOString() } as never)).rejects.toMatchObject({ code: "invalid-input" });
-  const a = await store.attachSchedule(request, proof()); expect(a.id).toBeTruthy(); expect(await store.getAttachment(a.id)).toEqual(a); expect(await store.listByTemplate(v.templateId)).toEqual([a]); expect(await store.listByRoutine("daily")).toEqual([a]);
+  await expect(store.attachSchedule(request, { origin: "local-desktop", auditId: "forged", decidedAt: new Date().toISOString() } as never, { kind: "all" })).rejects.toMatchObject({ code: "invalid-input" });
+  const a = await store.attachSchedule(request, proof(), { kind: "all" }); expect(a.id).toBeTruthy(); expect(await store.getAttachment(a.id)).toEqual(a); expect(await store.listByTemplate(v.templateId)).toEqual([a]); expect(await store.listByRoutine("daily")).toEqual([a]);
   await expect(store.detachSchedule(a.id, { origin: "local-desktop" } as never)).rejects.toMatchObject({ code: "invalid-input" });
   expect(await store.detachSchedule(a.id, proof())).toBe(true); const detached = await store.getAttachment(a.id); expect(detached).toMatchObject({ ...a, detachedAt: expect.any(String) }); expect(await store.detachSchedule(a.id, proof())).toBe(false);
-  const b = await store.attachSchedule(request, proof()); expect(b.id).not.toBe(a.id); expect(await store.listByRoutine("daily")).toEqual([detached, b]);
+  const b = await store.attachSchedule(request, proof(), { kind: "all" }); expect(b.id).not.toBe(a.id); expect(await store.listByRoutine("daily")).toEqual([detached, b]);
 });
 
 it("uses transitive upstream inputs and binds their stage references", () => {
@@ -76,7 +75,7 @@ it("retains pre-folder canonical hashes when optional fields are absent", () => 
   expect(canonicalTemplateGraph(g)).toEqual({ stages: [{ ...g.stages[0], kind: "plan" }], edges: [] });
 });
 it("refuses non-human output gates at confirmation", async () => {
-  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const g = graph(); g.stages[0].gate = { type: "auto", pass: { kind: "stage_ok" } }; requiredValue(g.stages[0].envelope).outputs = ["send"];
+  const store = new WorkflowTemplateStore(join(dir, "templates.json")); const g = graph(); g.stages[0].gate = { type: "auto", pass: { kind: "stage_ok" } }; g.stages[0].requestedOutputs = [{ kind: "send-message", toolName: "send", owner: "plugin", ownerId: "media" }];
   const r = await store.draft(null, { ...g, name: "Template", scope: { kind: "all" } });
   await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision }, { who: "user", origin: "local-desktop" })).rejects.toMatchObject({ code: "envelope-refused", refusals: ["outputs-need-human-gate"] });
 });
