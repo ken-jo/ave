@@ -16,7 +16,7 @@ import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
  * imports preload successfully).
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { ALERTS } from "../shared/ipc-channels.js";
+import { WORK_BOARD, ALERTS } from "../shared/ipc-channels.js";
 import type { AveApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -84,6 +84,19 @@ beforeAll(async () => {
 });
 
 describe("preload contextBridge world shape lock", () => {
+  it("bridges template requests, local confirmation intent and change unsubscribe", async () => {
+    const api = exposed.get("aveApi") as AveApi;
+    await api.listWorkflowTemplates(); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateList);
+    await api.getWorkflowTemplate("t"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateGet, "t");
+    const input = { expectedGraphHash: "a".repeat(64) };
+    mockUserActivation.isActive = true; await api.confirmWorkflowTemplate("t", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: true });
+    mockUserActivation.isActive = false; await api.confirmWorkflowTemplate("t", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: false });
+    const handler = vi.fn(); const unsubscribe = api.onWorkflowTemplatesChanged(handler);
+    const listener = mockOn.mock.calls.at(-1)![1]; listener(); expect(handler).toHaveBeenCalledOnce();
+    unsubscribe(); expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.templatesChanged, listener);
+  });
   it("attaches fresh click intent to an internal relaunch request", async () => {
     const api = exposed.get("aveApi") as AveApi;
     mockUserActivation.isActive = true;
@@ -304,6 +317,7 @@ describe("preload contextBridge world shape lock", () => {
             "setOsNotificationsEnabled",
           ],
           "applyClaudeDesktopMcpImport": "function",
+          "archiveWorkflowTemplate": "function",
           "audit": [
             "getStats",
             "search",
@@ -372,6 +386,7 @@ describe("preload contextBridge world shape lock", () => {
           "clearSessionGoal": "function",
           "clearSessionTasks": "function",
           "completeWorkBoardItem": "function",
+          "confirmWorkflowTemplate": "function",
           "decideWorkPlan": "function",
           "deleteApiKey": "function",
           "deletePersonaPrompt": "function",
@@ -395,6 +410,7 @@ describe("preload contextBridge world shape lock", () => {
             "uninstall",
           ],
           "downloadAppUpdate": "function",
+          "draftWorkflowTemplate": "function",
           "e2ePluginBundleSnapshot": "function",
           "envForcedSettings": "function",
           "exportUsageCsv": "function",
@@ -411,6 +427,7 @@ describe("preload contextBridge world shape lock", () => {
           "getUsageRange": "function",
           "getWorkBoardItem": "function",
           "getWorkBoardRunTranscript": "function",
+          "getWorkflowTemplate": "function",
           "gitMarketplace": [
             "acceptRewrite",
             "acknowledgeSource",
@@ -480,6 +497,7 @@ describe("preload contextBridge world shape lock", () => {
           "listSkills": "function",
           "listWorkApprovals": "function",
           "listWorkBoard": "function",
+          "listWorkflowTemplates": "function",
           "logs": [
             "tail",
           ],
@@ -536,6 +554,7 @@ describe("preload contextBridge world shape lock", () => {
           "onWorkBoardRunFinished": "function",
           "onWorkBoardRunProgress": "function",
           "onWorkBoardRunStarted": "function",
+          "onWorkflowTemplatesChanged": "function",
           "onboarding": [
             "answer",
             "listPending",

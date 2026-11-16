@@ -1,3 +1,5 @@
+import type { WorkItemStageRun, WorkItemStageRunSummary } from "./workflow-template-types.js";
+
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
@@ -28,6 +30,10 @@ export type WorkItemRunStatus =
 
 /** Persist ISO timestamps; unset optional fields are omitted rather than null. */
 export interface WorkItem {
+  templateId?: string;
+  runTemplateVersion?: number;
+  runTemplateGraphHash?: string;
+  stageRuns?: WorkItemStageRun[];
   id: number;
   title: string;
   detail?: string;
@@ -64,6 +70,7 @@ export interface WorkPlanApproval {
   runId: string;
   /** sha256 of the stored plan, computed by the host. A decision binds to exactly this plan. */
   planHash: string;
+  templateGraphHash?: string;
   /** sha256 of the item's title, detail and projectRoot when the plan was made; a changed item makes the plan stale. */
   itemDigest: string;
   requestedAt: string;
@@ -119,6 +126,7 @@ export interface WorkItemResolved extends WorkItem {
 }
 
 export interface WorkItemCreateInput {
+  templateId?: string;
   title: string;
   detail?: string;
   /** Omit → defaults to "medium". */
@@ -317,7 +325,10 @@ export interface RunTranscriptEvent {
 }
 
 /** Keep prior run transcript pointers on rerun instead of discarding history. */
-interface WorkItemRunHistoryEntry {
+export interface WorkItemRunHistoryEntry {
+  templateVersion?: number;
+  templateGraphHash?: string;
+  stageRuns?: WorkItemStageRunSummary[];
   runId: string;
   startedAt: string;
   endedAt?: string;

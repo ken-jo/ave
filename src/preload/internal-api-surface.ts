@@ -1,3 +1,4 @@
+import type { WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
@@ -956,6 +957,16 @@ export function buildInternalApiSurface() {
 
   // Personal board CRUD + lifecycle. Each method maps 1:1 to a WORK_BOARD.* channel; the main-process store returns discriminated `status` envelopes (or `{ ok:false, error }` for
   // unauthorized-frame / no-store), forwarded verbatim; no fallback / re-shaping. Shared payload + result types come from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
+  listWorkflowTemplates: async () => ipcRenderer.invoke(WORK_BOARD.templateList) as Promise<WorkflowTemplateIpcResult<WorkflowTemplate[]>>,
+  getWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateGet, id) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
+  draftWorkflowTemplate: async (id: string | null, input: WorkflowTemplateDraftInput) => ipcRenderer.invoke(WORK_BOARD.templateDraft, id, input) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
+  confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => ipcRenderer.invoke(WORK_BOARD.templateConfirm, id, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
+  archiveWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateArchive, id) as Promise<WorkflowTemplateIpcResult<null>>,
+  onWorkflowTemplatesChanged: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on(WORK_BOARD.templatesChanged, listener);
+    return () => ipcRenderer.removeListener(WORK_BOARD.templatesChanged, listener);
+  },
   listWorkBoard: async (filter?: import("../shared/work-board-types.js").WorkItemListFilter) =>
     ipcRenderer.invoke(WORK_BOARD.list, filter) as Promise<
       | import("../shared/work-board-types.js").WorkItemListResult

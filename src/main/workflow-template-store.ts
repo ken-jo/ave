@@ -1,0 +1,122 @@
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { openFeatureNamespace, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
+import { readAveHomeInput } from "../shared/ave-home-trust.js";
+import { withInProcessFileQueue } from "../lib/with-file-lock.js";
+import { ChangeSignal } from "../lib/change-signal.js";
+import { createLogger } from "../lib/logger.js";
+import { isRecord } from "../shared/is-record.js";
+import { hasTemplateKeys, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import type { TemplateConfirmationOrigin, TemplateVersion, TemplateVersionPin, WorkflowTemplate, WorkflowTemplateConfirmInput, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+
+interface TemplatesFile { version: 1; templates: WorkflowTemplateRecord[] }
+const log = createLogger("workflow-templates");
+const emptyFile = (): TemplatesFile => ({ version: 1, templates: [] });
+const timestamp = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
+
+function validateFile(raw: unknown): TemplatesFile {
+  requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.templates), "invalid-template-file");
+  const seen = new Set<string>();
+  for (const record of raw.templates) {
+    requireTemplate(isRecord(record) && isRecord(record.template) && Array.isArray(record.versions), "invalid-template-file");
+    const t = record.template;
+    requireTemplate(isTemplateId(t.id) && !seen.has(t.id) && Number.isSafeInteger(t.currentVersion) && t.currentVersion === record.versions.length, "invalid-template-file"); seen.add(t.id);
+    requireTemplate(timestamp(t.createdAt) && timestamp(t.updatedAt) && (t.archivedAt === undefined || timestamp(t.archivedAt)), "invalid-template-file");
+    for (let i = 0; i < record.versions.length; i++) {
+      const v = record.versions[i];
+      requireTemplate(isRecord(v) && v.templateId === t.id && v.version === i + 1 && timestamp(v.confirmedAt) && isRecord(v.confirmation), "invalid-template-file");
+      requireTemplate(v.basedOn === undefined || (isTemplateVersion(v.basedOn) && v.basedOn < v.version), "unknown-version");
+      requireTemplate(isGraphHash(v.graphHash) && graphHashOf(v) === v.graphHash, "graph-hash-mismatch");
+      const c = v.confirmation;
+      requireTemplate(c.templateId === t.id && c.version === v.version && c.graphHash === v.graphHash && c.at === v.confirmedAt && typeof c.who === "string" && c.who.length > 0 && (c.origin === "local-desktop" || c.origin === "tailnet-surface"), "invalid-template-file");
+    }
+    // Metadata uses the same bounds as draft intake, even when no draft remains.
+    const graph = record.draft ?? record.versions[0];
+    requireTemplate(isRecord(graph), "invalid-template-file");
+    parseTemplateDraft({ name: t.name, scope: t.scope, description: t.description, stages: graph.stages, edges: graph.edges });
+    if (record.draft !== undefined) {
+      const d = record.draft;
+      requireTemplate(isRecord(d) && timestamp(d.updatedAt), "invalid-template-file");
+      const { graphHash, updatedAt: _updatedAt, ...input } = d;
+      const parsed = parseTemplateDraft(input);
+      requireTemplate(parsed.basedOn === undefined || parsed.basedOn <= record.versions.length, "unknown-version");
+      requireTemplate(isGraphHash(graphHash) && graphHashOf(parsed) === graphHash, "graph-hash-mismatch");
+    }
+  }
+  return raw as unknown as TemplatesFile;
+}
+
+export class WorkflowTemplateStore {
+  readonly changed = new ChangeSignal(error => log.warn("Template change listener failed: %s", String(error)));
+  constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "templates.json"), private readonly now: () => number = Date.now) {}
+  private async readFile(): Promise<TemplatesFile> {
+    const input = await readAveHomeInput(this.filePath);
+    if (input.status === "absent") return emptyFile();
+    requireTemplate(input.status === "trusted", "invalid-template-file");
+    let raw: unknown;
+    try { raw = JSON.parse(input.bytes.toString("utf8")); } catch { throw new WorkflowTemplateError("invalid-template-file"); }
+    return validateFile(raw);
+  }
+  private async commit(file: TemplatesFile): Promise<void> {
+    validateFile(file);
+    await writeFileAtomicAtPath(this.filePath, JSON.stringify(file, null, 2) + "\n");
+    this.changed.emit();
+  }
+  private find(file: TemplatesFile, id: string): WorkflowTemplateRecord {
+    requireTemplate(isTemplateId(id));
+    const record = file.templates.find(r => r.template.id === id);
+    requireTemplate(record, "template-not-found"); return record;
+  }
+  async list(): Promise<WorkflowTemplate[]> {
+    return structuredClone((await this.readFile()).templates.filter(r => !r.template.archivedAt).map(r => r.template));
+  }
+  async get(id: string): Promise<WorkflowTemplateRecord> { return structuredClone(this.find(await this.readFile(), id)); }
+  async resolveVersion(pin: TemplateVersionPin): Promise<TemplateVersion> {
+    requireTemplate(isTemplateId(pin?.templateId) && isTemplateVersion(pin.version) && isGraphHash(pin.graphHash));
+    const record = this.find(await this.readFile(), pin.templateId);
+    const version = record.versions.find(v => v.version === pin.version);
+    requireTemplate(version, "unknown-version"); requireTemplate(version.graphHash === pin.graphHash, "graph-hash-mismatch");
+    return structuredClone(version);
+  }
+  async draft(id: string | null, raw: WorkflowTemplateDraftInput): Promise<WorkflowTemplateRecord> {
+    const input = parseTemplateDraft(raw);
+    requireTemplate(id === null || isTemplateId(id));
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.readFile(); const at = new Date(this.now()).toISOString();
+      const record: WorkflowTemplateRecord = id === null
+        ? { template: { id: randomUUID(), name: input.name, scope: input.scope, ...(input.description !== undefined ? { description: input.description } : {}), currentVersion: 0, createdAt: at, updatedAt: at }, versions: [] }
+        : this.find(file, id);
+      requireTemplate(!record.template.archivedAt, "template-archived");
+      const basedOn = input.basedOn ?? (record.template.currentVersion || undefined);
+      requireTemplate(basedOn === undefined || record.versions.some(v => v.version === basedOn), "unknown-version");
+      record.draft = { ...input, ...(basedOn !== undefined ? { basedOn } : {}), graphHash: graphHashOf(input), updatedAt: at };
+      record.template.updatedAt = at;
+      if (id === null) file.templates.push(record);
+      await this.commit(file); return structuredClone(record);
+    });
+  }
+  async confirm(id: string, input: WorkflowTemplateConfirmInput, actor: { who: string; origin: TemplateConfirmationOrigin }): Promise<TemplateVersion> {
+    requireTemplate(hasTemplateKeys(input, ["expectedGraphHash"]) && isGraphHash(input.expectedGraphHash));
+    requireTemplate(actor?.origin === "local-desktop" && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= 128);
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.readFile(); const record = this.find(file, id);
+      requireTemplate(!record.template.archivedAt, "template-archived");
+      const draft = record.draft; requireTemplate(draft, "no-draft");
+      const graphHash = graphHashOf(draft); requireTemplate(graphHash === input.expectedGraphHash, "stale-draft");
+      const at = new Date(this.now()).toISOString(); const version = record.template.currentVersion + 1;
+      const confirmed: TemplateVersion = { templateId: id, version, graphHash, stages: structuredClone(draft.stages), edges: structuredClone(draft.edges), confirmedAt: at, ...(draft.basedOn !== undefined ? { basedOn: draft.basedOn } : {}), confirmation: { templateId: id, version, graphHash, who: actor.who, origin: actor.origin, at } };
+      record.versions.push(confirmed);
+      record.template = { ...record.template, name: draft.name, scope: structuredClone(draft.scope), currentVersion: version, updatedAt: at };
+      if (draft.description === undefined) delete record.template.description; else record.template.description = draft.description;
+      delete record.draft; await this.commit(file); return structuredClone(confirmed);
+    });
+  }
+  async archive(id: string): Promise<void> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.readFile(); const record = this.find(file, id);
+      if (record.template.archivedAt) return;
+      record.template.archivedAt = record.template.updatedAt = new Date(this.now()).toISOString();
+      await this.commit(file);
+    });
+  }
+}

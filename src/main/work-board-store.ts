@@ -1,3 +1,5 @@
+import { assertTemplateRunFields } from "../work-board/template-run-fields.js";
+import { isTemplateId } from "../work-board/template-graph.js";
 // Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
 // than persisting or duplicating that projection in consumers.
 import { createHash } from "node:crypto";
@@ -291,6 +293,7 @@ function readFileOrEmpty(filePath: string): Promise<BoardFile> {
     if (!Array.isArray(file.items)) {
       return emptyBoard();
     }
+    file.items.forEach(assertTemplateRunFields);
     const valid = file.items.filter(isValidRecord).map((item) => {
       if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
       // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
@@ -329,7 +332,7 @@ async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void>
 
 // Deep clone a WorkItem so callers cannot mutate shared cache refs.
 function cloneItem(it: WorkItem): WorkItem {
-  return { ...it };
+  return structuredClone(it);
 }
 
 function mutationRevision(item: WorkItem): string {
@@ -340,7 +343,7 @@ function mutationRevision(item: WorkItem): string {
 function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
   const approval = item.planApproval;
   return {
-    ...item,
+    ...cloneItem(item),
     mutationRevision: mutationRevision(item),
     status_resolved: resolveWorkItemStatus(item, nowMs),
     ...(approval?.status === "pending" ? { planStale: approval.itemDigest !== itemDigestOf(item) } : {}),
@@ -397,6 +400,7 @@ export class WorkBoardStore {
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it.
   private async commit(board: BoardFile): Promise<void> {
+    board.items.forEach(assertTemplateRunFields);
     await writeFileAtomic(this.filePath, board);
     this.cache = board;
     this.boardChanged.emit();
@@ -456,6 +460,7 @@ export class WorkBoardStore {
 
   async create(input: WorkItemCreateInput): Promise<WorkItemCreateResult> {
     await this.ensureLoaded();
+    if (input.templateId !== undefined && !isTemplateId(input.templateId)) return { status: "invalid", reason: "invalid templateId" };
     const title = (input.title ?? "").trim();
     if (!title) {
       return { status: "invalid", reason: "title is required and must be non-empty" };
@@ -484,6 +489,7 @@ export class WorkBoardStore {
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
       const item: WorkItem = {
+        ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
         id: board.nextId,
         title,
         ...(input.detail !== undefined ? { detail: input.detail } : {}),
@@ -703,6 +709,7 @@ export class WorkBoardStore {
         return { status: "not_found" as const, itemId: id };
       }
       const prior = board.items[idx];
+      if (prior.templateId !== undefined) return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
       if (prior.status === "completed") {
         this.cache = board;
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };

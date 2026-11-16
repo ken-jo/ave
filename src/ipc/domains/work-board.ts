@@ -1,3 +1,4 @@
+import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
 // Work-board mutations use the store's lifecycle; execution and reports require their separately wired services.
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
@@ -97,6 +98,7 @@ function parseDecidePlanInput(raw: unknown): WorkPlanDecideInput | null {
 }
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
+  registerWorkflowTemplateHandlers(deps);
   const { workBoardStore, workBoardEngine, workBoardReport, auditLogger } = deps;
 
   const isBoardOwnerFrame = (event: IpcMainInvokeEvent): boolean => {
