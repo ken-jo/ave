@@ -267,6 +267,11 @@ to Search) pressed in a terminal opens a find bar over its output. It searches
 the screen and the scrollback as you type; Enter goes to the next match,
 Shift+Enter to the previous one, and Escape closes it.
 
+Cmd+Up and Cmd+Down (Ctrl+Up and Ctrl+Down on Windows and Linux) scroll to the
+previous and the next command. While a command's output fills the top of the
+view, its command line stays pinned over the first row; click it to scroll
+back to where the command started. Both need shell integration (zsh or bash).
+
 Right-click in a terminal for its own menu: Copy, Paste, Select All and Clear,
 and, on a row that belongs to a command, Copy Command, Copy Output and Attach
 to chat for that command's block.

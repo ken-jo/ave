@@ -23,6 +23,7 @@ export class FakeXterm {
     host.appendChild(this.element);
   }
   onData() { return disposable; }
+  onScroll() { return disposable; }
   write(text: string) { fakeXtermWrites.push(text); }
   focus() {}
   dispose() {}

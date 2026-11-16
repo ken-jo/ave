@@ -26,6 +26,16 @@ export function terminalPlatform(): TerminalPlatform {
   return /Windows/i.test(navigator.userAgent) ? "win32" : "linux";
 }
 
+/**
+ * Cmd+Up / Cmd+Down on macOS and Ctrl+Up / Ctrl+Down elsewhere scroll to the previous or next command, or null when the key is the shell's.
+ * With Shift or Alt the key keeps its other meanings (selection, word movement).
+ */
+export function terminalCommandJump(event: ClipboardKey, platform: TerminalPlatform): "previous" | "next" | null {
+  if (event.type !== "keydown" || event.shiftKey || event.altKey) return null;
+  if (platform === "darwin" ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) return null;
+  return event.key === "ArrowUp" ? "previous" : event.key === "ArrowDown" ? "next" : null;
+}
+
 /** What a key press asks of the terminal's clipboard, or null when the key is the shell's. */
 export function terminalClipboardAction(event: ClipboardKey, platform: TerminalPlatform, hasSelection: boolean): TerminalClipboardAction | null {
   if (platform === "darwin" || event.type !== "keydown" || event.altKey || event.metaKey) return null;

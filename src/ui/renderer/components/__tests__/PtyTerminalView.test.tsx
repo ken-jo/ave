@@ -44,6 +44,10 @@ interface FakeTerminal {
   pasted: string[];
   selectedAll: number;
   clears: number;
+  rowText: Map<number, string>;
+  scrolledTo: Array<number | "bottom">;
+  scrollViewTo(line: number): void;
+  buffer: { active: { viewportY: number; type: string } };
   unicode: { activeVersion: string; providers: Map<string, { version: string; wcwidth(codepoint: number): number }> };
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
@@ -78,8 +82,17 @@ vi.mock("@xterm/xterm", () => ({
     clears = 0;
     selectAll() { this.selectedAll++; this.selection = "everything"; }
     clear() { this.clears++; }
-    buffer = { active: { viewportY: 0, getLine: (_line: number) => {
-      const text = this.commandRow;
+    scrollListeners = new Set<() => void>();
+    onScroll(listener: () => void) { this.scrollListeners.add(listener); return { dispose: () => { this.scrollListeners.delete(listener); } }; }
+    /** Move the view as a wheel or new output does. */
+    scrollViewTo(line: number) { this.buffer.active.viewportY = line; for (const listener of this.scrollListeners) listener(); }
+    scrolledTo: Array<number | "bottom"> = [];
+    scrollToLine(line: number) { this.scrolledTo.push(line); this.scrollViewTo(line); }
+    scrollToBottom() { this.scrolledTo.push("bottom"); this.scrollViewTo(100); }
+    /** Rows that differ from `commandRow`, by buffer line. */
+    rowText = new Map<number, string>();
+    buffer = { active: { viewportY: 0, type: "normal", getLine: (line: number) => {
+      const text = this.rowText.get(line) ?? this.commandRow;
       return { length: this.cols, translateToString: () => text,
         getCell: (x: number) => ({ getChars: () => text[x] ?? "", getWidth: () => 1 }) };
     } } };
@@ -939,6 +952,81 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("moving between commands", () => {
+  async function terminalWithCommands(tabId: string) {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    const xterm = fakeTerm();
+    // Three commands, started on buffer lines 10, 40 and 70 (a marker sits one line above the cursor at the C marker).
+    for (const [id, line, row] of [[1, 10, "~ ❯ make build"], [2, 40, "~ ❯ make test"], [3, 70, "~ ❯ git status"]] as const) {
+      xterm.cursorLine = line + 1;
+      xterm.rowText.set(line, row);
+      act(() => { osc133(xterm, `C;ave-block=${id};ave-view=view-token`); });
+    }
+    // The test platform is not macOS: the keys are Ctrl+Up and Ctrl+Down.
+    const press = (key: string, init: KeyboardEventInit = { ctrlKey: true }) => {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+      let passed = true;
+      act(() => { passed = offerKey(xterm, event); });
+      return { passed, event };
+    };
+    return { xterm, press };
+  }
+
+  it("scrolls to the previous and the next command's row with Ctrl+Up and Ctrl+Down, and to the bottom past the last", async () => {
+    const { xterm, press } = await terminalWithCommands("terminal:61");
+    act(() => xterm.scrollViewTo(75));
+    const up = press("ArrowUp");
+    // The key is the terminal's: the shell does not also receive it as a cursor key.
+    expect(up.passed).toBe(false);
+    expect(up.event.defaultPrevented).toBe(true);
+    press("ArrowUp");
+    press("ArrowUp");
+    expect(xterm.scrolledTo).toEqual([70, 40, 10]);
+    // Above the first command there is nowhere further up to go.
+    press("ArrowUp");
+    expect(xterm.scrolledTo).toHaveLength(3);
+    press("ArrowDown");
+    press("ArrowDown");
+    press("ArrowDown");
+    expect(xterm.scrolledTo.slice(3)).toEqual([40, 70, "bottom"]);
+    // Plain arrows, Shift and Alt forms, and the macOS modifier stay the shell's here.
+    for (const init of [{}, { ctrlKey: true, shiftKey: true }, { ctrlKey: true, altKey: true }, { metaKey: true }]) expect(press("ArrowUp", init).passed).toBe(true);
+    // A full-screen program's screen has no commands to move between.
+    xterm.buffer.active.type = "alternate";
+    const before = xterm.scrolledTo.length;
+    press("ArrowUp");
+    expect(xterm.scrolledTo).toHaveLength(before);
+  });
+
+  it("pins the command whose output fills the top of the view, and a click scrolls back to its row", async () => {
+    const { xterm } = await terminalWithCommands("terminal:62");
+    // At the top, before any command's row has scrolled out, nothing is pinned.
+    expect(screen.queryByTestId("terminal-sticky-command")).toBeNull();
+    act(() => xterm.scrollViewTo(10));
+    expect(screen.queryByTestId("terminal-sticky-command")).toBeNull();
+    act(() => xterm.scrollViewTo(25));
+    const pinned = screen.getByTestId("terminal-sticky-command");
+    expect(pinned).toHaveTextContent("~ ❯ make build");
+    expect(pinned).toHaveAttribute("data-block-id", "1");
+    // It overlays the first row and takes no row of its own.
+    expect(pinned.className).toContain("absolute");
+    expect(screen.getByTestId("terminal-output-area")).toContainElement(pinned);
+    act(() => xterm.scrollViewTo(55));
+    expect(screen.getByTestId("terminal-sticky-command")).toHaveTextContent("~ ❯ make test");
+    const focused = xterm.focusCount;
+    fireEvent.click(screen.getByTestId("terminal-sticky-command"));
+    expect(xterm.scrolledTo.at(-1)).toBe(40);
+    expect(xterm.focusCount).toBe(focused + 1);
+    // Its own row is the first row again: nothing is pinned.
+    expect(screen.queryByTestId("terminal-sticky-command")).toBeNull();
+    act(() => { xterm.buffer.active.type = "alternate"; xterm.scrollViewTo(55); });
+    expect(screen.queryByTestId("terminal-sticky-command")).toBeNull();
   });
 });
 

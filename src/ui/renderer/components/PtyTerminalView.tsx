@@ -20,7 +20,7 @@ import { useSurfaceMount } from "../preview/surface-mounts.js";
 import type { TerminalControlAction, TerminalPurpose } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
-const NO_LIVE_STATE: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null };
+const NO_LIVE_STATE: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null, sticky: null };
 const noLiveState = (): LiveTerminalState => NO_LIVE_STATE;
 const subscribeNothing = (): (() => void) => () => {};
 const INTEGRATION_UNAVAILABLE_KEYS = {
@@ -110,7 +110,7 @@ function focusAttendedTerminal(term: Terminal, tabId: string): void {
 function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, controlMirrorSlot, onCwd, onCloseTab, onOpenLink, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
   const [live, setLive] = useState<LiveTerminal | null>(null);
-  const { session, control, blockRevision, ended, inputNotice } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
+  const { session, control, blockRevision, ended, inputNotice, sticky } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
@@ -309,6 +309,15 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       {/* biome-ignore lint/a11y/noStaticElementInteractions: the menu is asked for on the terminal inside (pointer, or the menu key on its focused input); this wrapper only receives that event as it bubbles. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area" onContextMenu={onContextMenu}>
         <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
+        {/* Over the first row, never above it: a row of its own would change the terminal's size and make the shell redraw. */}
+        {sticky && live ? (
+          <button type="button" data-testid="terminal-sticky-command" data-block-id={sticky.blockId} title={t("ptyTerminal.stickyCommandTitle")}
+            className="absolute inset-x-0 top-0 z-10 truncate border-b border-border bg-popover px-2 py-0.5 text-left text-popover-foreground shadow-sm hover:bg-muted"
+            style={{ fontFamily: terminalFont.family, fontSize: terminalFont.size }}
+            onClick={() => { live.revealStickyCommand(); live.focus(); }}>
+            {sticky.text}
+          </button>
+        ) : null}
         {findOpen && live ? <TerminalFindBar live={live} onClose={() => setFindOpen(false)} /> : null}
         {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={live?.anchors ?? null} /> : null}
       </div>

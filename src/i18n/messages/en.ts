@@ -4329,6 +4329,7 @@ export const en = {
 
   // ptyTerminal
   "ptyTerminal.hostChip": "Host",
+  "ptyTerminal.stickyCommandTitle": "Scroll to this command",
   "ptyTerminal.menuCopy": "Copy",
   "ptyTerminal.menuPaste": "Paste",
   "ptyTerminal.menuSelectAll": "Select All",

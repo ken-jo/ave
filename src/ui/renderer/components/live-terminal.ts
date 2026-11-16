@@ -12,7 +12,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { isDarwin } from "../api-client.js";
 import { matchesShortcut } from "../hooks/use-shortcuts.js";
-import { terminalClipboardAction, terminalPlatform } from "./terminal-keys.js";
+import { terminalClipboardAction, terminalCommandJump, terminalPlatform } from "./terminal-keys.js";
 import { onTerminalUserInput } from "./terminal-user-input.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
@@ -43,6 +43,8 @@ export interface LiveTerminalState {
   /** The last input the shell did not receive, until input next arrives or the shell changes: more than the terminal accepts at once, or refused
    * for a shell that is no longer this tab's. Typed or pasted text is never dropped without saying so. */
   readonly inputNotice: "too-large" | "not-delivered" | null;
+  /** The command whose output fills the top of the view while its own row has scrolled out above it; null at a command's start or before the first. */
+  readonly sticky: { readonly blockId: number; readonly text: string } | null;
 }
 
 /** The view a terminal is attached to. */
@@ -76,7 +78,7 @@ export class LiveTerminal {
   readonly anchors: XtermBlockAnchors;
   private readonly fitAddon = new FitAddon();
   private readonly searchAddon = new SearchAddon();
-  private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null };
+  private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null, sticky: null };
   /** Where a restarted shell starts: the directory the ended one last reported. */
   private restartCwd: string | null = null;
   private readonly listeners = new Set<() => void>();
@@ -159,6 +161,12 @@ export class LiveTerminal {
         this.view.openFind();
         return false;
       }
+      const jump = terminalCommandJump(event, terminalPlatform());
+      if (jump !== null) {
+        event.preventDefault();
+        this.jumpToCommand(jump);
+        return false;
+      }
       const action = terminalClipboardAction(event, terminalPlatform(), this.term.hasSelection());
       if (action === null) return true;
       event.preventDefault();
@@ -195,7 +203,11 @@ export class LiveTerminal {
         }, ENTER_RELIST_DELAY_MS);
       }
     });
+    // The sticky command follows the view: a scroll (the user's or new output's) and a command starting or leaving the scrollback.
+    const scrollSub = this.term.onScroll(() => this.syncSticky());
     this.disposers.push(
+      () => scrollSub.dispose(),
+      this.anchors.subscribe(() => this.syncSticky()),
       () => markerSub.dispose(),
       () => inputSub.dispose(),
       () => userInputSub.dispose(),
@@ -316,6 +328,32 @@ export class LiveTerminal {
 
   focus(): void {
     this.term.focus();
+  }
+
+  /** Scroll so the previous or next command's row is the first row of the view; past the last command, to the bottom. */
+  jumpToCommand(direction: "previous" | "next"): void {
+    const buffer = this.term.buffer.active;
+    if (buffer.type !== "normal") return;
+    const target = this.anchors.commandNear(buffer.viewportY, direction === "previous" ? "before" : "after");
+    if (target) this.term.scrollToLine(target.line);
+    else if (direction === "next") this.term.scrollToBottom();
+  }
+
+  /** Scroll the sticky command's own row back into view. */
+  revealStickyCommand(): void {
+    if (this.state.sticky) this.jumpToCommand("previous");
+  }
+
+  private syncSticky(): void {
+    const buffer = this.term.buffer.active;
+    // A full-screen program draws on the alternate buffer, which has no commands.
+    // The command the first row belongs to; while that row is the command's own, nothing has scrolled out.
+    const owner = buffer.type === "normal" ? this.anchors.commandNear(buffer.viewportY + 1, "before") : null;
+    const above = owner !== null && owner.line < buffer.viewportY ? owner : null;
+    const sticky = above === null || above.text.trim() === "" ? null : { blockId: above.blockId, text: above.text };
+    const current = this.state.sticky;
+    if (current?.blockId === sticky?.blockId && current?.text === sticky?.text) return;
+    this.setState({ sticky });
   }
 
   hasSelection(): boolean {
