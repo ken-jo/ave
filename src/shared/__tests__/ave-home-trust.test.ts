@@ -916,6 +916,10 @@ describe("workflow run file", () => {
     writeFileSync(path, oversized);
     expect(await store.get("run")).toEqual({ status: "pending-review" });
     expect(await store.update("run", value => value)).toEqual({ status: "pending-review" });
+    const { WorkBoardStore } = await import("../../main/work-board-store.js");
+    const board = new WorkBoardStore(join(dir, "work-board", "board.json"));
+    await expect(board.load()).resolves.toBeUndefined();
+    expect(await board.list()).toEqual({ status: "pending-review" });
     expect(readFileSync(path).length).toBe(oversized.length);
   });
 });
