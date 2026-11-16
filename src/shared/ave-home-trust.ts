@@ -88,6 +88,7 @@ const COVERED_FILES: readonly string[] = Object.freeze([
   "skill-approvals.json",
   "routine/routines.json",
   "work-board/templates.json",
+  "work-board/workflow-runs.json",
   "marketplaces/sources.json",
   "AGENTS.md",
   "agents.custom.md",
@@ -145,6 +146,9 @@ function gateFor(path: string): { trust: ActiveTrust; key: string; kind: "file" 
   return covered === undefined ? undefined : { trust: active, ...covered };
 }
 
+/** A covered file larger than the read limit; a loader may report it as pending review instead of failing. */
+export class AveHomeInputSizeLimitError extends Error {}
+
 class LinkedInputError extends Error {
   constructor(path: string) {
     super(`${path} is a link or not a regular file`);
@@ -182,7 +186,7 @@ function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: num
   try {
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || opened.ino !== pinned.ino || opened.dev !== pinned.dev) throw new Error(`${path} changed while it was opened`);
-    if (opened.size > MAX_INPUT_BYTES) throw new Error(`${path} exceeds the size limit`);
+    if (opened.size > MAX_INPUT_BYTES) throw new AveHomeInputSizeLimitError(`${path} exceeds the size limit`);
     const bytes = Buffer.alloc(opened.size);
     let filled = 0;
     while (filled < bytes.length) {

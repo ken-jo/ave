@@ -117,6 +117,7 @@ export interface WorkItemStageRun {
   /** At most 48,000 characters; the engine truncates before storing. */
   output?: string;
   resultHash?: string;
+  outputHash?: string;
   gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?: string; decidedAt?: string; revision: number; judgedBy?: "host" | "model" }
     | { type: "auto"; passed: boolean; evidence: string; evaluatedAt: string; judgedBy?: "host" | "model" };
 }
@@ -135,3 +136,18 @@ interface OutputExecution { id: string; status: "pending" | "done" | "failed" | 
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
 export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
 export interface TemplateRunStart extends RunPin { source: RunAuthoritySource; stageRuns: WorkItemStageRun[] }
+/** Template-run state. It is stored only in the covered run file, keyed by runId; a board row names its run by runId alone. */
+export interface WorkflowRunRecord {
+  runId: string;
+  /** The board row this run belongs to. A row naming another row's run is refused. */
+  itemId: number;
+  pin: TemplateVersionPin;
+  runStartedBy: RunAuthoritySource;
+  startedAt: string;
+  stageRuns: WorkItemStageRun[];
+  stageJoins?: StageJoin[];
+  runWorkspace?: RunWorkspace;
+}
+/** invalid: the stored entry is unreadable and stays untouched. pending-review: the run file awaits home content review. */
+export type WorkflowRunReadResult = { status: "found"; run: WorkflowRunRecord } | { status: "not-found" | "invalid" | "pending-review" };
+export type WorkflowRunWriteResult = { status: "stored"; run: WorkflowRunRecord } | { status: "not-found" | "invalid" | "pending-review" | "refused" };

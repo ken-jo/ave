@@ -1,6 +1,7 @@
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
-import { parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
+import type { WorkflowRunRecord } from "../shared/workflow-template-types.js";
+import { hasTemplateKeys, parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
 function text(value: unknown, max = 2048): value is string { return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0"); }
 function timestamp(value: unknown): boolean { return text(value, 64) && Number.isFinite(Date.parse(value)); }
@@ -43,7 +44,7 @@ function validStage(value: unknown, summary: boolean): boolean {
   if (!isRecord(value) || !isStageId(value.stageId) || !Number.isInteger(value.attempt) || (value.attempt as number) < 1 || (value.attempt as number) > 3 || !STAGE_STATUSES.includes(value.status as string)) return false;
   for (const key of ["startedAt", "endedAt", "childSessionId", "output"]) if (value[key] !== undefined && typeof value[key] !== "string") return false;
   if (typeof value.output === "string" && value.output.length > 48_000) throw new WorkflowTemplateError("invalid-template-run", "Stage output exceeds 48000 characters");
-  if (value.resultHash !== undefined && !isGraphHash(value.resultHash)) return false;
+  if (!optional(value, "resultHash", isGraphHash) || !optional(value, "outputHash", isGraphHash)) return false;
   if (summary && ["output", "gate", "childSessionId", "failure", "taint", "workspace", "blocked", "requestedOutputs", "outputExecutions", "usage"].some(key => value[key] !== undefined)) return false;
   if (!optional(value, "failure", v => ["error", "gate", "interrupted", "denied-tool", "workspace-lost", "workspace-revoked", "budget", "seed"].includes(v as string))
     || !optional(value, "taint", v => v === "file-content" || v === "agent-message") || !optional(value, "workspace", v => workspace(v, false))
@@ -85,6 +86,24 @@ export function assertTemplateRunFields(raw: unknown): void {
     }
   }
   if (isRecord(raw.planApproval) && raw.planApproval.templateGraphHash !== undefined) check(isGraphHash(raw.planApproval.templateGraphHash) && raw.planApproval.templateGraphHash === raw.runTemplateGraphHash);
+}
+
+/** One entry of the covered run file. Unknown keys are refused, so an entry is either fully understood or left untouched. */
+export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRunRecord {
+  const check = (condition: unknown): void => requireTemplate(condition, "invalid-template-run");
+  check(hasTemplateKeys(raw, ["runId", "itemId", "pin", "runStartedBy", "startedAt", "stageRuns", "stageJoins", "runWorkspace"]));
+  const run = raw as Record<string, unknown>;
+  check(text(run.runId, 256) && Number.isSafeInteger(run.itemId) && (run.itemId as number) > 0 && timestamp(run.startedAt));
+  const pin = run.pin;
+  check(hasTemplateKeys(pin, ["templateId", "version", "graphHash"]) && isTemplateId(pin.templateId) && isTemplateVersion(pin.version) && isGraphHash(pin.graphHash));
+  check(stages(run.stageRuns, false));
+  check(authority(run.runStartedBy, { templateId: pin.templateId, runTemplateVersion: pin.version, runTemplateGraphHash: pin.graphHash }));
+  check(optional(run, "runWorkspace", value => workspace(value, true)));
+  if (run.stageJoins !== undefined) {
+    check(joins(run.stageJoins));
+    const stageIds = new Set((run.stageRuns as { stageId: string }[]).map(stage => stage.stageId));
+    check((run.stageJoins as { stageIds: string[] }[]).every(join => join.stageIds.every(id => stageIds.has(id))));
+  }
 }
 
 /** Legacy boards predate template authority; retain ordinary item and run history fields only. */

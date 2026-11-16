@@ -838,10 +838,10 @@ describe.runIf(process.platform !== "win32")("POSIX home protection", () => {
   });
 });
 
-it.each(["templates.json"])("covers work-board %s authority and refuses foreign edits and overwrite", name => {
+it.each(["templates.json", "workflow-runs.json"])("covers work-board %s authority and refuses foreign edits and overwrite", name => {
   const dir = home(); expect(boot(dir).pending).toBe(false);
   const path = join(dir, "work-board", name);
-  const original = JSON.stringify(name === "templates.json" ? { version: 1, templates: [] } : { version: 1, nextId: 1, items: [] });
+  const original = JSON.stringify(name === "templates.json" ? { version: 1, templates: [] } : { version: 1, runs: [] });
   writeUtf8FileAtomicSync(path, original);
   expect(manifest(dir).entries[manifestKey(`work-board/${name}`)]).toEqual({ current: sha256Hex(original) });
   expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
@@ -861,4 +861,45 @@ it("refuses a foreign edit through the covered template store without rewriting 
   await expect(store.resolveVersion({ templateId: record.template.id, version: 1, graphHash: version.graphHash })).rejects.toMatchObject({ code: "invalid-template-file" });
   await expect(store.archive(record.template.id)).rejects.toMatchObject({ code: "invalid-template-file" });
   expect(readFileSync(path, "utf8")).toBe(edited);
+});
+
+describe("workflow run file", () => {
+  const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+  const run = { runId: "run", itemId: 1, pin, runStartedBy: { kind: "local-create-and-run" as const, pin }, startedAt: "2026-01-01T00:00:00.000Z",
+    stageRuns: [{ stageId: "a", attempt: 1, status: "awaiting_gate" as const, gate: { type: "human" as const, status: "pending" as const, revision: 0 } }] };
+  async function runStore(dir: string) {
+    const { WorkflowRunStore } = await import("../../main/workflow-run-store.js");
+    const path = join(dir, "work-board", "workflow-runs.json");
+    return { path, store: new WorkflowRunStore(path) };
+  }
+
+  it("is covered from its first host write and holds a foreign edit for review", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path, store } = await runStore(dir);
+    expect(manifest(dir).entries[manifestKey("work-board/workflow-runs.json")]).toBeUndefined();
+    expect(await store.put(run)).toMatchObject({ status: "stored" });
+    expect(manifest(dir).entries[manifestKey("work-board/workflow-runs.json")]).toEqual({ current: sha256Hex(readFileSync(path)) });
+    expect(await store.get("run")).toEqual({ status: "found", run });
+    const raw = JSON.parse(readFileSync(path, "utf8")); raw.runs[0].stageRuns[0].gate.status = "approved";
+    const edited = JSON.stringify(raw); writeFileSync(path, edited);
+    expect(await store.get("run")).toEqual({ status: "pending-review" });
+    expect((await store.view()).pendingReview).toBe(true);
+    const mutate = vi.fn((value: typeof run) => value);
+    expect(await store.update("run", mutate)).toEqual({ status: "pending-review" });
+    expect(await store.put({ ...run, runId: "other", itemId: 2 })).toEqual({ status: "pending-review" });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(readFileSync(path, "utf8")).toBe(edited);
+    expect(getAveHomeTrustReview()?.rows.map(row => row.key)).toContain(manifestKey("work-board/workflow-runs.json"));
+  });
+
+  it("reports a file over the size limit as pending review instead of throwing", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path, store } = await runStore(dir);
+    expect(await store.put(run)).toMatchObject({ status: "stored" });
+    const oversized = JSON.stringify({ version: 1, runs: [run], padding: " ".repeat(16 * 1024 * 1024) });
+    writeFileSync(path, oversized);
+    expect(await store.get("run")).toEqual({ status: "pending-review" });
+    expect(await store.update("run", value => value)).toEqual({ status: "pending-review" });
+    expect(readFileSync(path).length).toBe(oversized.length);
+  });
 });
