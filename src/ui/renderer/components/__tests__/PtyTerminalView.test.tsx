@@ -42,6 +42,7 @@ interface FakeTerminal {
   keyHandler: ((event: KeyboardEvent) => boolean) | null;
   selection: string;
   pasted: string[];
+  unicode: { activeVersion: string; providers: Map<string, { version: string; wcwidth(codepoint: number): number }> };
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
@@ -89,7 +90,13 @@ vi.mock("@xterm/xterm", () => ({
       return { element, marker: options.marker, onRender: (listener: (element: HTMLElement) => void) => { listener(element); return { dispose() {} }; },
         onDispose: () => ({ dispose() {} }), dispose: () => element.remove() };
     }
-    loadAddon() {}
+    /** Width providers by version, as xterm's unicode service keeps them; the real Unicode 11 addon registers into it. */
+    unicode = {
+      activeVersion: "6",
+      providers: new Map<string, { version: string; wcwidth(codepoint: number): number }>(),
+      register(provider: { version: string; wcwidth(codepoint: number): number }) { this.providers.set(provider.version, provider); },
+    };
+    loadAddon(addon: { activate?: (terminal: unknown) => void }) { addon.activate?.(this); }
     element: HTMLElement | null = null;
     open(host: HTMLElement) {
       this.host = host;
@@ -901,6 +908,20 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("character widths", () => {
+  it("measures with the Unicode 11 tables, so an emoji takes the two cells its program assumed", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:91" tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+    const { unicode } = fakeTerm();
+    expect(unicode.activeVersion).toBe("11");
+    const active = unicode.providers.get(unicode.activeVersion)!;
+    // U+1F91D (handshake, Unicode 9) and U+1F600 are wide; a Hangul syllable stays wide and a Latin letter narrow.
+    expect([0x1f91d, 0x1f600, 0xd55c, 0x41].map((codepoint) => active.wcwidth(codepoint))).toEqual([2, 2, 2, 1]);
   });
 });
 

@@ -6,6 +6,7 @@
  */
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { isDarwin } from "../api-client.js";
@@ -120,6 +121,10 @@ export class LiveTerminal {
       hover: (event, target) => this.showLinkTip(event, target),
       leave: () => this.hideLinkTip(),
     }));
+    // Character widths from Unicode 11, which shells and full-screen programs assume: with the built-in Unicode 6 tables an emoji is one cell here and
+    // two cells to the program that printed it, and every column after it is off by one.
+    this.term.loadAddon(new Unicode11Addon());
+    this.term.unicode.activeVersion = "11";
     this.anchors = new XtermBlockAnchors(this.term);
     // OSC 133 A (prompt) and D (command finished) end a block; C starts one. Returning false leaves the sequence to xterm's
     // default handling.
