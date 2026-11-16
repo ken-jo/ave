@@ -24,7 +24,7 @@ import {
   type ProposalsFile,
 } from "../work-board/board-file.js";
 import { appendActivity } from "../work-board/activity-log.js";
-import { projectRootEquals } from "../shared/project-identity.js";
+import { projectRootEquals, projectRootKey } from "../shared/project-identity.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { workBoardMoveRefusal } from "../shared/work-board-lifecycle.js";
 import { ChangeSignal } from "../lib/change-signal.js";
@@ -795,7 +795,7 @@ export class WorkBoardStore {
         return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
       }
       if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
-      if (pin?.source.kind === "local-create-and-run") requireTemplate(pin.source.projectRoot === prior.projectRoot, "project-mismatch");
+      if (pin?.source.kind === "local-create-and-run") requireTemplate(projectRootKey(pin.source.projectRoot) === projectRootKey(prior.projectRoot), "project-mismatch");
       if (prior.status === "completed") {
         this.cache = board;
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };

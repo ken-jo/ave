@@ -100,6 +100,17 @@ it("refuses a create-and-run project different from the approved project before 
   expect(await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin, projectRoot: "/projects/a" }, stageRuns: [] })).toMatchObject({ status: "updated", item: { runId: "run" } });
   expect(await store.getRun(created.itemId)).toMatchObject({ status: "found", run: { runStartedBy: { projectRoot: "/projects/a" } } });
 });
+it("matches the create-and-run project to the row by its canonical root, and an unscoped row only to an unscoped start", async () => {
+  const store = new WorkBoardStore(join(dir, "board.json"));
+  const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+  const begin = (itemId: number, runId: string, projectRoot?: string) => store.beginRun(itemId, runId, "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin, projectRoot }, stageRuns: [] });
+  const scoped = await store.create({ title: "Work", projectRoot: "C:\\Projects\\A", templateId: "template" });
+  const unscoped = await store.create({ title: "Work", templateId: "template" });
+  if (scoped.status !== "created" || unscoped.status !== "created") throw new Error("Missing item");
+  await expect(begin(unscoped.itemId, "run-u", "/projects/a")).rejects.toMatchObject({ code: "project-mismatch" });
+  expect(await begin(unscoped.itemId, "run-u")).toMatchObject({ status: "updated" });
+  expect(await begin(scoped.itemId, "run-s", "c:/projects/a/")).toMatchObject({ status: "updated", item: { runId: "run-s" } });
+});
 it.each(["scope-changed", "project-mismatch", "scope-not-authorised", "output-not-declared"] as const)("has bilingual refusal text for %s", code => {
   for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
 });
