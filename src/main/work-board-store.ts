@@ -471,21 +471,22 @@ export class WorkBoardStore {
     }
     const at = new Date(this.now()).toISOString();
     const settledRun = await this.runs.update(runId, (run) => run.settled === undefined ? { ...run, settled: { status: "error", at } } : null);
-    if (settledRun.status === "stored") await this.pruneRuns(this.retention(onDisk));
+    if (settledRun.status === "stored") await this.pruneAfterWrite(this.retention(onDisk));
   }
 
-  // Cleanup never fails the board write it follows: whatever it leaves behind goes with the next prune.
-  private async pruneRuns(retain: WorkflowRunRetention): Promise<void> {
+  // Cleanup after a board write never fails that write: whatever it leaves behind goes with the next prune. The engine's
+  // pruneSettledRuns does not go through here, so its failures reach the engine.
+  private async pruneAfterWrite(retain: WorkflowRunRetention): Promise<void> {
     try { await this.runs.prune(retain); }
     catch (error) { log.warn("[work-board-store] run records were not pruned: %s", (error as Error).message); }
   }
 
   /** For the engine: remove every settled run no row lists and shrink the ones only a run history lists. Call it after settling a run
-   * whose row is gone or names a newer run. */
+   * whose row is gone or names a newer run. A run file that cannot be read rejects; one pending review or past the read limit is left as it is. */
   async pruneSettledRuns(): Promise<void> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      await this.pruneRuns(this.retention(await readFileOrEmpty(this.filePath)));
+      await this.runs.prune(this.retention(await readFileOrEmpty(this.filePath)));
     });
   }
 
@@ -865,7 +866,7 @@ export class WorkBoardStore {
         throw error;
       }
       // The run this row named until now is in its history only from this write on.
-      if (pin) await this.pruneRuns(this.retention(board));
+      if (pin) await this.pruneAfterWrite(this.retention(board));
       await appendActivity(this.activity, {
         kind: "run-planned",
         itemId: id,
@@ -1092,7 +1093,7 @@ export class WorkBoardStore {
       }
       board.items = board.items.filter((i) => i.id !== id);
       await this.commit(board);
-      if (item.templateId !== undefined) await this.pruneRuns(this.retention(board));
+      if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(board));
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

@@ -286,3 +286,39 @@ it("reports a template start the run file has no room for", async () => {
   expect(await store.beginRun(id, "run-1", "2026-01-01T00:00:00.000Z", start())).toMatchObject({ status: "invalid", reason: "template-runs-too-large" });
   expect((await store.get(id) as { item: object }).item).not.toHaveProperty("runId");
 });
+
+it("rejects an engine prune when the run file cannot be read", async () => {
+  const store = new WorkBoardStore(boardPath);
+  await settled(store, await templateItem(store), "run-1");
+  const before = await readFile(runsPath, "utf8");
+  const read = homeTrust.readAveHomeInput;
+  vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path => {
+    if (path === runsPath) throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+    return read(path);
+  });
+  await expect(store.pruneSettledRuns()).rejects.toMatchObject({ code: "EIO" });
+  vi.restoreAllMocks();
+  expect(await readFile(runsPath, "utf8")).toBe(before);
+});
+
+it("rejects an engine prune when the run file does not parse, and leaves it as it is", async () => {
+  const store = new WorkBoardStore(boardPath);
+  await settled(store, await templateItem(store), "run-1");
+  await writeFile(runsPath, "{");
+  await expect(new WorkBoardStore(boardPath).pruneSettledRuns()).rejects.toThrow();
+  expect(await readFile(runsPath, "utf8")).toBe("{");
+});
+
+it("leaves a run file pending review as it is on an engine prune", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const gone = await templateItem(store);
+  await settled(store, gone, "gone-1");
+  const before = await readFile(runsPath, "utf8");
+  const read = homeTrust.readAveHomeInput;
+  vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
+    path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
+  expect(await store.remove(gone)).toMatchObject({ status: "deleted" });
+  await expect(store.pruneSettledRuns()).resolves.toBeUndefined();
+  vi.restoreAllMocks();
+  expect(await readFile(runsPath, "utf8")).toBe(before);
+});
