@@ -37,7 +37,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.template-run-unavailable": "지금은 템플릿 실행을 사용할 수 없습니다.",
   "reasonCodes.work-item-completed": "이 항목은 완료되었습니다. 다시 실행하려면 항목을 다시 여세요.",
   "reasonCodes.work-board-file-not-set-aside": "항목을 추가할 수 없습니다. 작업 보드 파일이 손상되었는데 옆으로 옮겨 둘 수 없어 그대로 두었습니다. 파일을 열고 있을 수 있는 프로그램을 닫은 뒤 다시 시도하세요.",
-  "reasonCodes.work-item-ids-exhausted": "항목을 추가할 수 없습니다. 항목 번호가 Ave가 저장할 수 있는 가장 큰 수에 도달했습니다. 작업 보드 파일이나 워크플로 실행 파일에 그런 번호를 직접 적은 경우에만 생기며, 파일에서 그 번호를 되돌리기 전까지는 항목을 추가할 수 없습니다.",
+  "reasonCodes.work-item-ids-exhausted": "항목을 추가할 수 없습니다. 항목 번호가 Ave가 저장할 수 있는 가장 큰 수에 도달했습니다. 작업 보드 파일이나 워크플로 실행 파일에 그런 번호를 직접 적은 경우에만 생기며, 작업 보드 파일과 워크플로 실행 파일 두 곳 모두에서 그 번호를 되돌리기 전까지는 항목을 추가할 수 없습니다.",
   "reasonCodes.work-item-ids-unavailable": "항목을 추가할 수 없습니다. 항목 번호가 두 번 쓰이지 않도록 기록하는 워크플로 실행 파일을 지금 읽거나 저장할 수 없습니다. Ave가 검토를 요청하면 검토한 뒤 다시 시도하세요.",
   "reasonCodes.outward-effect-tool": "이 도구는 실행 바깥에 영향을 주므로 예약 실행이 스스로 사용할 수 없습니다. 대신 요청 출력으로 요청하세요.",
   "reasonCodes.tool-effect-unknown": "지금은 이 도구가 무엇을 하는지 확인할 수 없어 예약 실행에서 사용할 수 없습니다. 직접 실행할 때는 그대로 사용할 수 있습니다.",

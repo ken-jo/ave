@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { WorkItemCreateDialog } from "../WorkBoardPanel.js";
 import { t } from "../../../../i18n/runtime.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 import type { AveApi } from "../../types.js";
 
 afterEach(() => cleanup());
@@ -31,6 +33,12 @@ it("says in words that item numbers have run out, and stays open", async () => {
   expect(error).toBe(t("reasonCodes.work-item-ids-exhausted"));
   expect(onCreated).not.toHaveBeenCalled();
   expect(onClose).not.toHaveBeenCalled();
+});
+
+it("says the number must be set back in both files, the work board file and the workflow run file, in each language", () => {
+  // A new id is above the run file's floor and above every id the board file shows: a number left in either one keeps ids exhausted.
+  expect(en["reasonCodes.work-item-ids-exhausted"]).toMatch(/until that number is set back in both files, the work board file and the workflow run file\.$/);
+  expect(ko["reasonCodes.work-item-ids-exhausted"]).toContain("작업 보드 파일과 워크플로 실행 파일 두 곳 모두에서 그 번호를 되돌리기 전까지는");
 });
 
 it("says in words that a damaged board file was left as it is, and stays open", async () => {

@@ -35,7 +35,7 @@ export const en = {
   "reasonCodes.template-run-unavailable": "Template runs are not available right now.",
   "reasonCodes.work-item-completed": "This item is completed. Reopen it to run it again.",
   "reasonCodes.work-board-file-not-set-aside": "The item could not be added: the work board file is damaged and could not be moved aside, so it was left as it is. Close anything that may hold the file open, then try again.",
-  "reasonCodes.work-item-ids-exhausted": "The item could not be added: item numbers have reached the largest number Ave can store. Only a work board or workflow run file edited by hand to hold such a number causes this; no item can be added until that number is set back in the file.",
+  "reasonCodes.work-item-ids-exhausted": "The item could not be added: item numbers have reached the largest number Ave can store. Only a work board or workflow run file edited by hand to hold such a number causes this; no item can be added until that number is set back in both files, the work board file and the workflow run file.",
   "reasonCodes.work-item-ids-unavailable": "The item could not be added: the workflow run file, which keeps item numbers from being used twice, cannot be read or saved right now. Review it if Ave asks you to, then try again.",
   "reasonCodes.outward-effect-tool": "This tool acts outside the run, so a scheduled run cannot use it by itself. Ask for it as a requested output instead.",
   "reasonCodes.tool-effect-unknown": "Ave cannot tell what this tool does right now, so a scheduled run cannot use it. It still works when you run the workflow yourself.",
