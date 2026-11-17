@@ -307,7 +307,7 @@ it("a boot over a board file replaced by an empty one cancels the run, whose row
   }
 });
 
-it("a board written again after it went missing issues ids above the run's row, and the next start ends that run error as lost, never cancelled, and keeps its record", async () => {
+it("a board written again after it went missing issues ids above the run's row, and the next start ends that run error as lost, never cancelled, and its record goes with the mark", async () => {
   const h = await stageRunHarness();
   try {
     const boot = await bootOverBoard(h, () => rmSync(h.boardPath));
@@ -318,9 +318,11 @@ it("a board written again after it went missing issues ids above the run's row, 
     const ended = vi.spyOn(h.board.runs, "update");
     const started = boot.engine.runItem(created.itemId, { templateSource: h.local(boot.version) });
     await h.untilLive(1);
-    // The board was written over one that showed nothing, below the run's row: the run ends error by its id and keeps its record.
+    // The board was written over one that showed nothing, below the run's row: the run ends error by its id. The new run's row is at the
+    // mark, not below it, so the mark is dropped and the lost run's record goes with it.
     expect(await endsWritten(ended, boot.runId)).toEqual(["error"]);
-    expect((await h.runOf(boot.runId))?.settled?.status).toBe("error");
+    expect(await h.runOf(boot.runId)).toBeNull();
+    expect(JSON.parse(readFileSync(h.boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
     expect(h.sweeps.slice(boot.swept)).toEqual([[]]);
     expect(boot.engine.cancelRun(created.itemId)).toEqual({ ok: true });
     await started;

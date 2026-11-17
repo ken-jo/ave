@@ -591,13 +591,25 @@ export class WorkBoardStore {
 
   /** For the engine: remove every settled run no row lists and shrink the ones only a run history lists, judged by the board file on
    * disk; one that shows nothing prunes nothing. Call it after settling a run whose row is gone or no longer names it. A run file that
-   * cannot be read rejects; one pending review or past the read limit is left as it is. */
+   * cannot be read rejects; one pending review or past the read limit is left as it is. First, once no run that is not over may be on a
+   * row below the board's `unknownBelow`, the mark is dropped, so the runs it kept as lost are pruned as any other; a mark that cannot be
+   * dropped now stays. */
   async pruneSettledRuns(): Promise<void> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
+      const below = (await readBoardOnDisk(this.filePath))?.board.unknownBelow;
+      if (below !== undefined) await this.dropUnknownBelow(below).catch((error: Error) => log.warn("[work-board-store] unknownBelow was not dropped: %s", error.message));
       const onDisk = await readBoardOnDisk(this.filePath);
       if (onDisk) await this.runs.prune(this.retention(onDisk.standing));
     });
+  }
+
+  private async dropUnknownBelow(below: number): Promise<void> {
+    if (await this.runs.openRunBelow(below)) return;
+    const board = await this.readBoard();
+    if (board.unread || board.unknownBelow === undefined) return;
+    delete board.unknownBelow;
+    await this.commit(board);
   }
 
   async load(): Promise<void> {

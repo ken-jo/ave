@@ -134,6 +134,18 @@ export class WorkflowRunStore {
     return this.write(record.runId, prior => prior ?? record, () => record, retain && (run => run.runId === record.runId ? run : retain(run)));
   }
 
+  /** Whether a run that is not over may be on a row below `id`: true for a readable one, and while the file awaits review, is past its read
+   * limit or holds an entry that does not read as a run, since that could be one. A file that cannot be read throws. */
+  async openRunBelow(id: number): Promise<boolean> {
+    const file = await this.read();
+    if (file === undefined) return true;
+    return file.runs.some((entry) => {
+      if (!isRecord(entry) || typeof entry.runId !== "string") return true;
+      const { result } = lookup(file, entry.runId);
+      return result.status !== "found" || (result.run.settled === undefined && result.run.itemId < id);
+    });
+  }
+
   /** Apply `retain` to every readable run. Nothing is written while the file awaits review or when no run changes. */
   async prune(retain: WorkflowRunRetention): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {

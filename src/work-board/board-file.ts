@@ -31,7 +31,8 @@ export interface BoardFile {
   version: number;
   nextId: number;
   /** Set when a create wrote this board over one that showed none of its rows (absent, damaged or without an items list): a row id
-   * below it that the board does not list is unknown, never gone. Every later write keeps it. */
+   * below it that the board does not list is unknown, never gone. Later writes keep it until no run that is not over may be on a row
+   * below it; the engine's prune of settled runs then drops it. */
   unknownBelow?: number;
   items: WorkItem[];
   /** The rows of the file that do not validate, as parsed. Every write puts them back after the valid rows, as JSON writes their parsed

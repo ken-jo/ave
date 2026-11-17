@@ -756,7 +756,7 @@ it("an unconfirmed run end whose row is then deleted is confirmed only by a by-i
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
 
-it("a settled run whose row a board written again after it went missing does not list is kept: the row may have been there", () => withHarness(async (h) => {
+it("a settled run whose row a board written again after it went missing does not list goes with the mark: no run that is not over is below it", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);
   const run = h.start(id, h.local(version));
@@ -768,8 +768,10 @@ it("a settled run whose row a board written again after it went missing does not
   await h.until(id, item => item.runStatus === "cancelled");
   rmSync(h.boardPath);
   await h.addItem(version);
+  expect(JSON.parse(readFileSync(h.boardPath, "utf8")).unknownBelow).toBe(id + 1);
   await h.board.pruneSettledRuns();
-  expect((await h.runOf(runId))?.settled?.status).toBe("cancelled");
+  expect(JSON.parse(readFileSync(h.boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+  expect(await h.runOf(runId)).toBeNull();
 }));
 
 const runFileUnreadable: [string, () => Promise<homeTrust.AveHomeInput>][] = [
@@ -1209,7 +1211,7 @@ for (const [board, spoil] of [
     expect(prune).not.toHaveBeenCalled();
   }));
 
-  it(`a live run whose board file is ${board}, then written again without its row by another board write, is never read as its row deleted${written ? ": it ends error as lost and its record is kept" : ""}`, () => withHarness(async (h) => {
+  it(`a live run whose board file is ${board}, then written again without its row by another board write, is never read as its row deleted${written ? ": it ends error as lost, and its record goes with the mark" : ""}`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const run = h.start(id, h.local(version));
@@ -1224,7 +1226,9 @@ for (const [board, spoil] of [
       expect(await run).toMatchObject({ status: "error", reasonCode: "template-run-lost" });
       expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" }));
       expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
-      expect((await h.runOf(runId))?.settled?.status).toBe("error");
+      // No run that is not over is below the mark now: the mark is dropped, and the lost run's record with it.
+      expect(JSON.parse(readFileSync(h.boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+      expect(await h.runOf(runId)).toBeNull();
       return;
     }
     expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
@@ -1252,7 +1256,7 @@ for (const [board, spoil] of [
     expect(await run).toMatchObject({ status: "cancelled" });
   }));
 
-  it(`an unconfirmed end of a run whose board file is ${board}, after another board write writes it again without the row, ${written ? "is confirmed as lost by the run's id and kept" : "stays unconfirmed"}`, () => withHarness(async (h) => {
+  it(`an unconfirmed end of a run whose board file is ${board}, after another board write writes it again without the row, ${written ? "is confirmed as lost by the run's id, and its record goes with the mark" : "stays unconfirmed"}`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const run = h.start(id, h.local(version));
@@ -1279,11 +1283,11 @@ for (const [board, spoil] of [
       expect(await h.runOf(runId)).toEqual(before);
       return;
     }
-    // Once the board is readable without the row, below the ids it marks unknown, the end is written by the run's id as lost, the record
-    // is kept and the start goes ahead.
+    // Once the board is readable without the row, below the ids it marks unknown, the end is written by the run's id as lost and the
+    // start goes ahead. The new run's row is at the mark, not below it, so the mark is dropped and the lost run's record goes with it.
     const [b] = await h.untilLive(1);
     expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" }));
-    expect((await h.runOf(runId))?.settled?.status).toBe("error");
+    expect(await h.runOf(runId)).toBeNull();
     b.finish();
     for (let i = 0; i < 400 && started === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
     expect(started).toMatchObject({ status: "awaiting_approval" });
@@ -1291,7 +1295,7 @@ for (const [board, spoil] of [
 
   if (!written) continue;
 
-  it(`a board file that is ${board}, written again by a create, then put back by hand, shows the lost run's row ended error`, () => withHarness(async (h) => {
+  it(`a board file that is ${board}, written again by a create, drops its mark once the lost run ends, and the run's record with it; put back by hand, its row starts nothing and cancels nothing`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const run = h.start(id, h.local(version));
@@ -1301,14 +1305,16 @@ for (const [board, spoil] of [
     spoil(h.boardPath);
     await h.board.create({ title: "Unrelated" });
     expect(await run).toMatchObject({ status: "error", reasonCode: "template-run-lost" });
+    expect(JSON.parse(readFileSync(h.boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+    expect(await h.runOf(runId)).toBeNull();
     writeFileSync(h.boardPath, good);
     const next = h.makeEngine();
     await next.adoptParkedTemplateRuns();
-    expect((await h.runOf(runId))?.settled?.status).toBe("error");
-    expect(await shown(h, id)).toMatchObject({ runId, runStatus: "error" });
+    expect(h.live()).toHaveLength(0);
+    expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
   }));
 
-  it(`ids at or above the mark a create over a board file that is ${board} sets are known: a run on such a row that is deleted ends cancelled and leaves nothing`, () => withHarness(async (h) => {
+  it(`ids at or above the mark a create over a board file that is ${board} sets are known, and the mark goes once the lost run ends: a run on a later row that is deleted ends cancelled and leaves nothing`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const lost = h.start(id, h.local(version));
@@ -1317,6 +1323,8 @@ for (const [board, spoil] of [
     spoil(h.boardPath);
     const added = await h.addItem(version);
     expect(await lost).toMatchObject({ status: "error", reasonCode: "template-run-lost" });
+    expect(JSON.parse(readFileSync(h.boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+    expect(await h.runOf(lostId)).toBeNull();
     for (const itemId of [added, await h.addItem(version)]) {
       const run = h.start(itemId, h.local(version));
       await h.untilLive(1);
@@ -1325,11 +1333,10 @@ for (const [board, spoil] of [
       expect(await run).toMatchObject({ status: "cancelled", reason: "item-removed" });
       expect(await h.runOf(runId)).toBeNull();
     }
-    // Only the lost run's record is left.
-    expect(await h.board.runs.list()).toMatchObject({ status: "found", runs: [expect.objectContaining({ runId: lostId })] });
+    expect(await h.board.runs.list()).toEqual({ status: "found", runs: [] });
   }));
 
-  it(`a parked run whose board file is ${board} and written again by another process's create ends error as lost at the next start, its record kept`, () => withHarness(async (h) => {
+  it(`a parked run whose board file is ${board} and written again by another process's create ends error as lost at the next start, and its record goes with the mark`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const run = h.start(id, h.local(version));
@@ -1339,8 +1346,13 @@ for (const [board, spoil] of [
     spoil(h.boardPath);
     await new WorkBoardStore(h.boardPath).create({ title: "Unrelated" });
     const next = h.makeEngine();
+    const ended = vi.spyOn(h.board.runs, "update");
     await next.adoptParkedTemplateRuns();
-    expect((await h.runOf(runId))?.settled?.status).toBe("error");
+    // It ended error by its id; no run that is not over is below the mark, so the mark is dropped and the record goes with it.
+    const writes = await Promise.all(ended.mock.results.map(result => result.value));
+    expect(writes.map(result => result.status === "stored" ? [result.run.runId, result.run.settled?.status] : result.status)).toEqual([[runId, "error"]]);
+    expect(await h.runOf(runId)).toBeNull();
+    expect(JSON.parse(readFileSync(h.boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
   }));
 }

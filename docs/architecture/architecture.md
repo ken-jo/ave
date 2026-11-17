@@ -3744,13 +3744,19 @@ with its own owner rule:
   until both files are set back by hand.
   A create that writes over a board file that showed none of its rows
   (missing, not parsing, without an items list) stores the id it issued as
-  `unknownBelow` in the board, and every later write keeps it; a value that
+  `unknownBelow` in the board; a value that
   is not a row id reads as the board's `nextId`. A row id below it that the
   board does not list is lost: the row may have been in the file written
   over. A later create over a board that again shows nothing stores its own,
   higher id. A run on a lost row ends `error` (`template-run-lost`), written
-  by its run id, at boot and live alike, and keeps its record as a run whose
-  row names it does, so a board put back by hand shows how it ended.
+  by its run id, at boot and live alike, and keeps its record while the mark
+  stands. Every later write keeps the mark until no run that is not over may
+  be on a row below it (none is stored there, and the run file reads with
+  no entry that does not read as a run): the engine's prune of settled runs,
+  at boot and after a run whose row is gone or lost ends, then drops it, and
+  from then on a lost run's record is pruned as a gone row's run is, so lost
+  records do not pile up over repeated damage. A mark that cannot be dropped
+  then (the board write fails) stays until the next prune.
   Invariant: a run's row is gone only when the board file on disk proves it.
   That takes all of these: the file is readable; the id is at or above
   `unknownBelow`, so the board was readable before the write that dropped
