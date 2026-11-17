@@ -50,6 +50,25 @@ it("removes a deleted row's settled runs and leaves every other row's runs", asy
   expect(await store.getRun(kept)).toMatchObject({ status: "found", run: { runId: "kept-2" } });
 });
 
+it("tells a user's delete of a listed row, with the run that row named, before the board changed, and only while the row is as its revision says", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  const plain = await templateItem(store);
+  await begin(store, id, "run-1");
+  const seen: unknown[] = [];
+  store.rowDeleted.subscribe(change => seen.push(change));
+  store.boardChanged.subscribe(() => seen.push("changed"));
+  const before = await store.get(id);
+  if (before.status !== "found") throw new Error("Missing item");
+  expect(await store.remove(id, "0".repeat(64))).toEqual({ status: "invalid", itemId: id, reason: "work-item-changed" });
+  expect(seen).toEqual([]);
+  expect(await store.remove(id, before.item.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId: "run-1" });
+  expect(seen).toEqual([{ itemId: id, runId: "run-1" }, "changed"]);
+  seen.length = 0;
+  expect(await store.remove(plain)).toEqual({ status: "deleted", itemId: plain });
+  expect(seen).toEqual(["changed"]);
+});
+
 it("keeps the unsettled run of a deleted row until its record says it is over", async () => {
   const store = new WorkBoardStore(boardPath);
   const gone = await templateItem(store);

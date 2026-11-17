@@ -1030,7 +1030,8 @@ export type AvePreloadApi = {
     | import("../../shared/work-board-types.js").WorkItemReopenResult
     | { ok: false; error: string }
   >;
-  /** `target.invalidRow`, with a null id: delete the one entry of the board file that does not validate that its invalid card shows. */
+  /** `target.revision`: delete the listed row `id` only while it is as its card showed it. `target.invalidRow`, with a null id: delete the
+   * one entry of the board file that does not validate that its invalid card shows. */
   removeWorkBoardItem: (
     id: number | null,
     target?: import("../../shared/work-board-types.js").WorkItemDeleteTarget,

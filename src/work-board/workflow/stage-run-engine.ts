@@ -57,7 +57,7 @@ interface RequestedOutputHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "setRunStatus" | "setRunResult" | "boardChanged">;
+  store: Pick<WorkBoardStore, "get" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -305,6 +305,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
   store.boardChanged.subscribe(() => {
     if (runs.size > 0) void checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error)));
+  });
+  // The user deleted the row that named this run: its row is gone, whatever else the board file holds.
+  store.rowDeleted.subscribe(({ itemId, runId }) => {
+    const state = runs.get(itemId);
+    if (state?.runId === runId) rowRemoved(state);
   });
 
   /** One write of the run. Null when nothing was stored. */

@@ -167,8 +167,9 @@ export interface WorkItemListFilter {
  * `hash`: the sha-256 of its JSON. Both name it to that delete, which removes nothing else. */
 export type WorkItemUnreadableRow = { id?: number; position: number; hash: string };
 
-/** What a board delete names when it is not a listed row by its id: an entry of the board file that does not validate. */
-export type WorkItemDeleteTarget = { invalidRow: { position: number; hash: string } };
+/** What a board delete names: a listed row by the revision its card showed (with its id), or an entry of the board file that does not
+ * validate (with a null id). */
+export type WorkItemDeleteTarget = { revision: string } | { invalidRow: { position: number; hash: string } };
 
 /** A delete of an entry of the board file; `itemId` when the entry has a usable id. `work-board-row-changed`: the entry at that place
  * is no longer the one named, and nothing was deleted. */
@@ -217,7 +218,8 @@ export type WorkItemReopenResult =
   | { status: "invalid"; itemId: number; reason: string };
 
 export type WorkItemDeleteResult =
-  | { status: "deleted"; itemId: number; reason?: string }
+  // runId: the run the deleted row named.
+  | { status: "deleted"; itemId: number; reason?: string; runId?: string }
   | { status: "not_found"; itemId: number }
   | { status: "invalid"; itemId: number; reason: string };
 

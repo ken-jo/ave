@@ -3779,7 +3779,13 @@ with its own owner rule:
   the run is not gone either; and a row under the run's id that neither
   names nor holds it reads unreadable, not as no longer holding the run,
   while another entry holds the run's id (two rows whose ids were swapped
-  by hand). Every gone id is at or below the floor,
+  by hand). One delete is proof on its own: a user's delete of a listed
+  row, made only while the row is as the revision its card showed
+  (`work-item-changed` otherwise). The run that row named, read off the
+  row deleted and never looked up by its id, is cancelled at once as its
+  row removed, whatever else the file holds (entries without a usable id,
+  a twin that does not validate, an `unknownBelow` mark above it); the run
+  of any other entry is untouched. Every gone id is at or below the floor,
   so the row was issued and then removed, never one not issued yet. A run
   whose row is gone, or holds it only in its run history, is cancelled as by
   Stop and settled with `runs.update`; its

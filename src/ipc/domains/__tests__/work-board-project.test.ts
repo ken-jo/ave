@@ -241,6 +241,25 @@ describe("conditional board mutations", () => {
   });
 });
 
+describe("listed row delete", () => {
+  it("deletes a listed row only by its id with the revision its card showed, and returns the run that row named", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    const created = await store.create({ title: "Export notes", projectRoot: workspace });
+    if (created.status !== "created") throw new Error("Create failed");
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    for (const target of [undefined, {}, { revision: "unknown" }, { revision: created.item.mutationRevision, more: 1 }, "revision"]) {
+      await expect(remove({}, created.itemId, target)).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-item-changed" });
+    }
+    await store.beginRun(created.itemId, "run-1", new Date().toISOString());
+    await expect(remove({}, created.itemId, { revision: created.item.mutationRevision })).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-item-changed" });
+    const current = await store.get(created.itemId);
+    if (current.status !== "found") throw new Error("Missing item");
+    await expect(remove({}, created.itemId, { revision: current.item.mutationRevision })).resolves.toEqual({ status: "deleted", itemId: created.itemId, runId: "run-1" });
+    await expect(store.get(created.itemId)).resolves.toEqual({ status: "not_found", itemId: created.itemId });
+  });
+});
+
 describe("invalid row delete", () => {
   it("deletes an entry that does not validate only as its invalid card names it, by its place and content, and only while the project it names is authorized", async () => {
     const path = join(root, "board.json");

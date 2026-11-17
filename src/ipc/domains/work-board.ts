@@ -101,7 +101,7 @@ function isAuthorizedInvalidRow(row: unknown): boolean {
 const hasExactly = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
-const isInvalidRowTarget = (target: unknown): target is WorkItemDeleteTarget => {
+const isInvalidRowTarget = (target: unknown): target is Extract<WorkItemDeleteTarget, { invalidRow: unknown }> => {
   if (!hasExactly(target, ["invalidRow"]) || !hasExactly(target.invalidRow, ["position", "hash"])) return false;
   const { position, hash } = target.invalidRow;
   return typeof position === "number" && Number.isSafeInteger(position) && position >= 0 && typeof hash === "string" && PLAN_HASH_PATTERN.test(hash);
@@ -303,7 +303,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     if (!workBoardStore) return NO_STORE;
     // An invalid card's delete: by the entry's place and content in the board file, never by an id or through a listed item.
-    if (target !== undefined || id === null) {
+    if (id === null || hasExactly(target, ["invalidRow"])) {
       if (id !== null || !isInvalidRowTarget(target)) return { ok: false, error: "invalid-input" };
       const result = await workBoardStore.removeUnreadable(target.invalidRow, isAuthorizedInvalidRow);
       if (result.status === "deleted") broadcastItemChanged(result.itemId, "removed");
@@ -311,7 +311,10 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     }
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return existing;
-    const result = await workBoardStore.remove(id);
+    // A listed row's delete: only the row as its card showed it, so the run it names is the one the user saw.
+    const revision = hasExactly(target, ["revision"]) ? target.revision : undefined;
+    if (typeof revision !== "string" || !PLAN_HASH_PATTERN.test(revision)) return { status: "invalid", itemId: id, reason: "work-item-changed" };
+    const result = await workBoardStore.remove(id, revision);
     if (result.status === "deleted") broadcastItemChanged(result.itemId, "removed");
     return result;
   });

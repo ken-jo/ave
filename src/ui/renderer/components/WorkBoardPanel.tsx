@@ -1230,7 +1230,7 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
           ? await api.completeWorkBoardItem(item.id, item.mutationRevision)
           : op === "reopen"
             ? await api.reopenWorkBoardItem(item.id, item.mutationRevision)
-            : await api.removeWorkBoardItem(item.id);
+            : await api.removeWorkBoardItem(item.id, { revision: item.mutationRevision ?? "" });
       const ok =
         "status" in result &&
         (result.status === "completed" || result.status === "reopened" || result.status === "deleted");

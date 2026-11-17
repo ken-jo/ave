@@ -506,6 +506,9 @@ export class WorkBoardStore {
   readonly proposalsChanged = new ChangeSignal((err) => log.warn("[work-board-proposals] change listener threw: %s", (err as Error).message));
   // Fires after every board.json write (items, runs and plan approvals), whichever path made it (IPC, engine, model tools, reconcile).
   readonly boardChanged = new ChangeSignal((err) => log.warn("[work-board] change listener threw: %s", (err as Error).message));
+  // Fires as a listed row the user deleted is written gone, before boardChanged, with the run that row named: proof that run's row is gone,
+  // read off the row deleted, never looked up by its id.
+  readonly rowDeleted = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] delete listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
   private readonly filePath: string;
@@ -530,12 +533,13 @@ export class WorkBoardStore {
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it. A board read as unread is
   // written only by a create, which first marks the ids it cannot show.
-  private async commit(board: BoardRead): Promise<void> {
+  private async commit(board: BoardRead, deleted?: { itemId: number; runId: string }): Promise<void> {
     if (board.unread) throw new Error("a board that shows none of its rows is written only by a create");
     if (board.prior) await keepPriorBytes(this.filePath, board.prior);
     const file = cacheOf(board);
     await writeFileAtomic(this.filePath, file);
     this.cache = file;
+    if (deleted) this.rowDeleted.emit(deleted);
     this.boardChanged.emit();
   }
 
@@ -1250,17 +1254,20 @@ export class WorkBoardStore {
     });
   }
 
-  async remove(id: number): Promise<WorkItemDeleteResult> {
+  /** Delete the listed row `id`; given `expectedRevision`, only while the row is still as that revision says. The run the deleted row named
+   * is returned and told to the engine as its row deleted by the user. */
+  async remove(id: number, expectedRevision?: string): Promise<WorkItemDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
       const item = board.items.find((i) => i.id === id);
-      if (!item) {
+      if (!item || (expectedRevision !== undefined && expectedRevision !== mutationRevision(item))) {
         this.cache = cacheOf(board);
-        return { status: "not_found" as const, itemId: id };
+        return item ? { status: "invalid" as const, itemId: id, reason: "work-item-changed" } : { status: "not_found" as const, itemId: id };
       }
-      board.items = board.items.filter((i) => i.id !== id);
-      await this.commit(board);
+      const { runId } = item;
+      board.items = board.items.filter((i) => i !== item);
+      await this.commit(board, runId === undefined ? undefined : { itemId: id, runId });
       if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
       await appendActivity(this.activity, {
         kind: "deleted",
@@ -1268,7 +1275,7 @@ export class WorkBoardStore {
         title: item.title,
         ts: new Date(this.now()).toISOString(),
       });
-      return { status: "deleted" as const, itemId: id };
+      return { status: "deleted" as const, itemId: id, ...(runId === undefined ? {} : { runId }) };
     });
   }
 

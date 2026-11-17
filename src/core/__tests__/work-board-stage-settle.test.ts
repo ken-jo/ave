@@ -1036,6 +1036,54 @@ it("deleting from its invalid card a valid twin added by hand beside a live run'
   await completesUntouched(h, live);
 }));
 
+it("a user's delete of a live run's listed row ends the run cancelled as its row removed, while entries without a usable id are in the board file", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: unknown[] };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...file.items, null, "text"] }));
+  const row = await h.item(live.id);
+  expect(await h.board.remove(live.id, row.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: live.runId });
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("unreadable");
+  expect(await live.run).toMatchObject({ status: "cancelled", reason: "item-removed" });
+  expect(h.interrupts).toEqual([live.child.sessionId]);
+  expect((await h.runOf(live.runId))?.settled?.status).toBe("cancelled");
+}));
+
+it("a user's delete of a listed row whose twin with its id does not validate cancels only the run the deleted row named, never the twin's", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  h.editRow(live.id, row => ({ ...row, priority: 42 }));
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] };
+  const mine = file.items.find(row => row.id === live.id) ?? {};
+  const twin = { id: live.id, title: "valid twin", status: "planned", priority: "medium", created_at: mine.created_at, updated_at: mine.updated_at, runId: "run-old" };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...file.items, twin] }));
+  await h.board.load();
+  const listed = await h.board.get(live.id);
+  if (listed.status !== "found") throw new Error("twin not listed");
+  expect(listed.item.title).toBe(twin.title);
+  const rows = vi.spyOn(h.board, "runRowsOnDisk");
+  const checks = rows.mock.calls.length;
+  expect(await h.board.remove(live.id, listed.item.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: "run-old" });
+  expect(rows.mock.calls.length).toBeGreaterThan(checks);
+  expect((await rows.mock.results[checks].value)?.({ itemId: live.id, runId: live.runId })).toBe("unreadable");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.interrupts).toEqual([]);
+  expect(h.live()).toEqual([live.child]);
+  expect(await h.runOf(live.runId)).toEqual(live.record);
+  h.editRow(live.id, row => ({ ...row, priority: "medium" }));
+  await completesUntouched(h, live);
+}));
+
+it("a user's delete of a live run's listed row below the board's unknownBelow mark ends the run cancelled as its row removed, never as lost", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, unknownBelow: live.id + 1 }));
+  const row = await h.item(live.id);
+  expect(await h.board.remove(live.id, row.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: live.runId });
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("lost");
+  expect(await live.run).toMatchObject({ status: "cancelled", reason: "item-removed" });
+  expect(h.interrupts).toEqual([live.child.sessionId]);
+  expect(h.events.some(event => event.message === "template-run-lost")).toBe(false);
+}));
+
 it("no single damaged entry drawn by a seeded generator in place of a live run's row reads as its row gone: the run waits through every one and completes", () => withHarness(async (h) => {
   let state = 0x2026_1117;
   const pick = (count: number) => {
