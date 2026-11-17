@@ -106,14 +106,17 @@ describe("work-board migration", () => {
     expect(readFileSync(destPath, "utf-8")).toBe(hostText);
   });
 
-  it("skips + warns when more than one legacy board exists (ambiguous source)", async () => {
-    writePluginBoard(home, "samplehub", JSON.stringify(SAMPLE_BOARD));
-    writePluginBoard(home, "sampleassistant", JSON.stringify({ version: 1, nextId: 1, items: [] }));
+  it("skips when more than one legacy board exists (ambiguous source), leaves each byte for byte and names them all", async () => {
+    const legacy = [writePluginBoard(home, "samplehub", JSON.stringify(SAMPLE_BOARD)), writePluginBoard(home, "sampleassistant", JSON.stringify({ version: 1, nextId: 1, items: [] }))];
+    const before = legacy.map((path) => readFileSync(path));
+    const kept = vi.fn();
 
-    const migrated = await migrateLegacyPluginBoardToWorkBoard();
+    const migrated = await migrateLegacyPluginBoardToWorkBoard(kept);
 
     expect(migrated).toBe(false);
     expect(existsSync(destPath)).toBe(false);
+    expect(legacy.map((path) => readFileSync(path))).toEqual(before);
+    expect(kept).toHaveBeenCalledExactlyOnceWith([...legacy].sort());
   });
 
   it("raises the run file's row-id floor over every id the copy holds before it is written, so a new row is above them", async () => {
@@ -295,18 +298,23 @@ describe("work-board migration", () => {
     expect(readFileSync(runsPath(), "utf-8")).toBe(runFile);
   });
 
-  it("returns false when there is no legacy plugin board at all", async () => {
-    expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(false);
+  it("returns false when there is no legacy plugin board at all, and names none", async () => {
+    const kept = vi.fn();
+    expect(await migrateLegacyPluginBoardToWorkBoard(kept)).toBe(false);
     expect(existsSync(destPath)).toBe(false);
+    expect(kept).not.toHaveBeenCalled();
   });
 
-  it("skips when the single legacy board is not valid JSON", async () => {
-    writePluginBoard(home, "samplehub", "{ not valid json");
+  it("skips when the single legacy board is not valid JSON, leaves it byte for byte and names it", async () => {
+    const legacyPath = writePluginBoard(home, "samplehub", "{ not valid json");
+    const kept = vi.fn();
 
-    const migrated = await migrateLegacyPluginBoardToWorkBoard();
+    const migrated = await migrateLegacyPluginBoardToWorkBoard(kept);
 
     expect(migrated).toBe(false);
     expect(existsSync(destPath)).toBe(false);
+    expect(readFileSync(legacyPath, "utf-8")).toBe("{ not valid json");
+    expect(kept).toHaveBeenCalledExactlyOnceWith([legacyPath]);
   });
 
   it.each([
@@ -315,12 +323,15 @@ describe("work-board migration", () => {
     ["a JSON number", "42"],
     ["a JSON null", "null"],
     ["an object whose items is not an array", JSON.stringify({ version: 1, nextId: 1, items: "x" })],
-  ])("skips a parseable-but-wrong-shape legacy board (%s)", async (_label, contents) => {
-    writePluginBoard(home, "samplehub", contents);
+  ])("skips a parseable-but-wrong-shape legacy board (%s), leaves it byte for byte and names it", async (_label, contents) => {
+    const legacyPath = writePluginBoard(home, "samplehub", contents);
+    const kept = vi.fn();
 
-    const migrated = await migrateLegacyPluginBoardToWorkBoard();
+    const migrated = await migrateLegacyPluginBoardToWorkBoard(kept);
 
     expect(migrated).toBe(false);
     expect(existsSync(destPath)).toBe(false);
+    expect(readFileSync(legacyPath, "utf-8")).toBe(contents);
+    expect(kept).toHaveBeenCalledExactlyOnceWith([legacyPath]);
   });
 });

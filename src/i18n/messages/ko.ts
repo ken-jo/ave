@@ -6287,6 +6287,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   // workBoard
   "workBoard.panelTitle": "업무 보드",
   "workBoard.boardLoadFailed": "작업 보드를 불러오지 못했습니다.",
+  "be_workBoard.legacyBoardKeptTitle": "이전 작업 보드를 그대로 두었습니다",
+  "be_workBoard.legacyBoardKept": "보드로 읽을 수 있는 이전 버전의 작업 보드가 정확히 하나가 아니어서 작업 보드로 옮기지 않았습니다. 원래 위치에 그대로 있습니다: {path}",
   "workBoard.unreadableRowsLabel": "작업 보드 파일에서 읽을 수 없는 항목",
   "workBoard.unreadableRowBadge": "읽을 수 없음",
   "workBoard.unreadableRow": "작업 보드 파일의 항목 #{id}을(를) 읽을 수 없어 여기서는 열거나 고칠 수 없고 삭제만 할 수 있습니다. 삭제하면 이 항목만 바로 파일에서 지워집니다. 보드에서 되돌릴 수는 없지만, 지우기 전 파일을 먼저 옆에 복사해 둡니다.",

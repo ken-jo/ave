@@ -6285,6 +6285,8 @@ export const en = {
   // workBoard
   "workBoard.panelTitle": "Work Board",
   "workBoard.boardLoadFailed": "Could not load the work board.",
+  "be_workBoard.legacyBoardKeptTitle": "Old work board left as it was",
+  "be_workBoard.legacyBoardKept": "The work board from an earlier version was not moved to the work board, since there is not exactly one that reads as a board. It was left as it was at {path}.",
   "workBoard.unreadableRowsLabel": "Items in the work board file that cannot be read",
   "workBoard.unreadableRowBadge": "Invalid",
   "workBoard.unreadableRow": "Item #{id} in the work board file cannot be read, so it cannot be opened or edited here; it can only be deleted. Delete removes this entry alone from the file at once. The board cannot undo that, but the file as it was is copied beside it first.",

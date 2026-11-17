@@ -63,11 +63,12 @@ async function findLegacyPluginBoards(pluginsRoot: string): Promise<string[]> {
 
 const sha256 = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
-/** At boot: true when the copy was made, or was started and is not done (no sample rows are seeded then); errors leave boot running. */
-export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
+/** At boot: true when the copy was made, or was started and is not done (no sample rows are seeded then); errors leave boot running.
+ * `kept` hears of legacy boards left as they are, since none or more than one reads as a board. */
+export async function migrateLegacyPluginBoardToWorkBoard(kept?: (paths: readonly string[]) => void): Promise<boolean> {
   const ns = openFeatureNamespace("work-board");
   const runs = new WorkflowRunStore(join(ns.dir, "workflow-runs.json"));
-  const copied = await copyLegacyPluginBoard(join(ns.dir, BOARD_FILE), runs).catch((err: Error) => {
+  const copied = await copyLegacyPluginBoard(join(ns.dir, BOARD_FILE), runs, kept).catch((err: Error) => {
     log.warn("boot: work-board migration failed (non-fatal): %s", err.message);
     return false;
   });
@@ -76,8 +77,9 @@ export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
 
 /** The copy onto `destPath` beside the run file `runs`, made at boot and by a create while one is started and not done: true only when it
  * wrote the board. A board already there is never written over; it marks such a copy done only when it holds the copy's bytes. A skip
- * returns false; a failure before or of the board write throws. */
-export async function copyLegacyPluginBoard(destPath: string, runs: WorkflowRunStore): Promise<boolean> {
+ * returns false; a failure before or of the board write throws. A legacy board is only read, never written over or removed; `kept` hears
+ * of those left so because none or more than one reads as a board. */
+export async function copyLegacyPluginBoard(destPath: string, runs: WorkflowRunStore, kept?: (paths: readonly string[]) => void): Promise<boolean> {
   // Read directly rather than testing existence to avoid a stat/read race.
   let dest: Buffer | undefined;
   try {
@@ -101,6 +103,7 @@ export async function copyLegacyPluginBoard(destPath: string, runs: WorkflowRunS
       "boot: work-board migration skipped — multiple legacy plugin boards found (%s); cannot disambiguate the canonical source",
       legacyBoards.join(", "),
     );
+    kept?.(legacyBoards);
     return false;
   }
 
@@ -116,6 +119,7 @@ export async function copyLegacyPluginBoard(destPath: string, runs: WorkflowRunS
       "boot: work-board migration skipped — legacy plugin board.json (%s) is not valid JSON",
       legacyPath,
     );
+    kept?.(legacyBoards);
     return false;
   }
 
@@ -126,6 +130,7 @@ export async function copyLegacyPluginBoard(destPath: string, runs: WorkflowRunS
       "boot: work-board migration skipped — legacy plugin board.json (%s) is not a board (expected an object with an items array)",
       legacyPath,
     );
+    kept?.(legacyBoards);
     return false;
   }
 
