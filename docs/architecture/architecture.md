@@ -3718,8 +3718,9 @@ with its own owner rule:
   not parse, is not an object with an items list (`null`, a list) or awaits
   review shows nothing. A board write moves a file that does not parse or has
   no items list aside to `board.json.corrupt-<ms>-<hex>.bak` before it starts
-  from an empty board. A move that fails is only logged, and the write then
-  goes on over the file.
+  from an empty board. A move that fails refuses the write
+  (`work-board-file-not-set-aside`, before any row id is issued) and leaves
+  the file byte for byte as it was; a later write tries the move again.
   Row ids come from one counter that `board.json` does not own: the run file
   stores `rowIdFloor`, the highest row id ever issued or seen, and never
   lowers it. Only a create issues an id. It takes the next id above both the

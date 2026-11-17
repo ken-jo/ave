@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import {
   mkdtempSync,
+  promises as fsPromises,
   readFileSync,
   writeFileSync,
   readdirSync,
@@ -332,6 +333,33 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       }
     });
   }
+
+  it("refuses a create over a damaged board file it could not move aside, issues no id and leaves that file byte for byte as it was", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      expect(await store.create({ title: "first" })).toMatchObject({ status: "created", itemId: 1 });
+      const damaged = `${readFileSync(path, "utf-8").slice(0, -5)} damaged by hand`;
+      writeFileSync(path, damaged, "utf-8");
+      const rename = fsPromises.rename.bind(fsPromises);
+      const moves = vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
+        if (String(to).includes(".corrupt-")) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+        return rename(from, to);
+      });
+      const corrupt = () => readdirSync(dir).filter((f) => /\.corrupt-\d+-[0-9a-f]{8}\.bak$/.test(f));
+      for (let i = 0; i < 2; i += 1) {
+        expect(await store.create({ title: "second" })).toEqual({ status: "invalid", reason: "work-board-file-not-set-aside" });
+        expect(readFileSync(path, "utf-8")).toBe(damaged);
+        expect(corrupt()).toEqual([]);
+      }
+      moves.mockRestore();
+      // Once the file can be moved, the next create goes on as over any damaged board, with the next id.
+      expect(await store.create({ title: "third" })).toMatchObject({ status: "created", itemId: 2 });
+      expect(corrupt().map((f) => readFileSync(join(dir, f), "utf-8"))).toEqual([damaged]);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanup();
+    }
+  });
 
   it("lists only the valid records, keeps the tampered ones in the file and repairs nextId", async () => {
     const { store, path, cleanup } = tempBoard();

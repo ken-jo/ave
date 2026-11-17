@@ -117,14 +117,16 @@ export async function readJsonFileOrEmpty<T>(
   return hydrate(parsed);
 }
 
-/** Move a damaged JSON file aside to `<file>.corrupt-<ms>-<hex>.bak`; a failed move is logged. */
-export async function quarantineCorruptJson(filePath: string): Promise<void> {
+/** Move a damaged JSON file aside to `<file>.corrupt-<ms>-<hex>.bak`. False when the move failed, which is logged: the file is still there. */
+export async function quarantineCorruptJson(filePath: string): Promise<boolean> {
   const backup = `${filePath}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}.bak`;
   try {
     await fs.rename(filePath, backup);
-    log.warn(`corrupt JSON in ${filePath}; moved to ${backup}, starting empty`);
+    log.warn(`corrupt JSON in ${filePath}; moved to ${backup}`);
+    return true;
   } catch (err) {
-    log.warn(`corrupt JSON in ${filePath}; could not move it to ${backup} (${(err as Error).message}), starting empty`);
+    log.warn(`corrupt JSON in ${filePath}; could not move it to ${backup} (${(err as Error).message})`);
+    return false;
   }
 }
 

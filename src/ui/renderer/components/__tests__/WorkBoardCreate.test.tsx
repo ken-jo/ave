@@ -33,6 +33,13 @@ it("says in words that item numbers have run out, and stays open", async () => {
   expect(onClose).not.toHaveBeenCalled();
 });
 
+it("says in words that a damaged board file was left as it is, and stays open", async () => {
+  const { error, onCreated, onClose } = await submit("work-board-file-not-set-aside");
+  expect(error).toBe(t("reasonCodes.work-board-file-not-set-aside"));
+  expect(onCreated).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
 it("shows any other refusal as the store sent it", async () => {
   expect((await submit("title exceeds 200 chars")).error).toBe("title exceeds 200 chars");
 });

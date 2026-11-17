@@ -292,9 +292,10 @@ function emptyBoard(): BoardFile {
 }
 
 /** A board as a write read it. `unread`: the file was absent, awaited review, did not parse or had no items list, so the board started
- * empty and shows none of the rows the file may have held. `prior`: the file's bytes, when writing back its rows that do not validate
- * would not give them byte for byte. Neither is written. */
-type BoardRead = BoardFile & { unread?: true; prior?: Buffer };
+ * empty and shows none of the rows the file may have held. `unmoved`: it did not parse or had no items list and could not be moved
+ * aside, so nothing may be written over it. `prior`: the file's bytes, when writing back its rows that do not validate would not give
+ * them byte for byte. None of these is written. */
+type BoardRead = BoardFile & { unread?: true; unmoved?: true; prior?: Buffer };
 
 /** Where a stored run's row stands on a readable board. named: the row names the run. moved: it names another run and holds this one in its
  * history. unnamed: it neither names nor holds the run. lost: the board lists no row with its id, and the id is below the board's
@@ -538,9 +539,9 @@ export class WorkBoardStore {
     return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
-  // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is; a move
-  // that fails is only logged. It and a file that is absent or awaits review start empty. Invalid rows are set aside and nextId is repaired
-  // above every row id in the file.
+  // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is, and one
+  // that cannot be moved is marked so no write goes over it. It and a file that is absent or awaits review start empty. Invalid rows are
+  // set aside and nextId is repaired above every row id in the file.
   private async readBoard(): Promise<BoardRead> {
     const input = await readAveHomeInput(this.filePath);
     if (input.status !== "trusted") return { ...emptyBoard(), unread: true };
@@ -550,8 +551,7 @@ export class WorkBoardStore {
       if (board.unreadable.length > 0 && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`))) board.prior = input.bytes;
       return board;
     }
-    await quarantineCorruptJson(this.filePath);
-    return { ...emptyBoard(), unread: true };
+    return (await quarantineCorruptJson(this.filePath)) ? { ...emptyBoard(), unread: true } : { ...emptyBoard(), unread: true, unmoved: true };
   }
 
   // A failed row write may still have replaced the board (a failed directory sync after the rename). While the board on disk shows the
@@ -600,7 +600,7 @@ export class WorkBoardStore {
   }
 
   async load(): Promise<void> {
-    const { unread: _, prior: __, ...board } = await this.readBoard();
+    const { unread: _, unmoved: __, prior: ___, ...board } = await this.readBoard();
     this.cache = board;
     this.loaded = true;
     // The run file's row-id floor starts from the first board read: every id it shows. One that cannot take it now gets it with the next new row.
@@ -716,6 +716,8 @@ export class WorkBoardStore {
 
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
+      // A damaged board file that could not be moved aside is left byte for byte as it is.
+      if (board.unmoved) return { status: "invalid" as const, reason: "work-board-file-not-set-aside" };
       // The id comes from the run file's row-id floor, above every id this board shows, and the floor is advanced before the row is
       // written: no id is issued twice, whatever board file is read. While the floor cannot be read or stored, no row is added.
       const id = await this.runs.issueRowId(board.nextId - 1).catch((error: unknown) => {
