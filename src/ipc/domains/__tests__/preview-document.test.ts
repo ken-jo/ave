@@ -216,13 +216,13 @@ describe("preview:read-document handler", () => {
   });
 
   it.each(["navigated", "detached"])("cancels a %s document while its replacement request is waiting for admission", async (departure) => {
-    const read = documentInput.readPreviewDocumentInput;
+    const read = documentInput.readJudgedDocumentInput;
     const event = documentEvent(OK_FRAME);
     let entered!: () => void;
     let resume!: () => void;
     const reading = new Promise<void>((resolve) => { entered = resolve; });
     const gate = new Promise<void>((resolve) => { resume = resolve; });
-    const spy = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+    const spy = vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementationOnce(async (...args) => {
       const bytes = await read(...args);
       entered();
       await gate;
@@ -247,7 +247,7 @@ describe("preview:read-document handler", () => {
     let peak = 0;
     let resume!: () => void;
     const gate = new Promise<void>((resolve) => { resume = resolve; });
-    const read = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation(async () => {
+    const read = vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementation(async () => {
       const buffer = Buffer.allocUnsafe(PREVIEW_DOCUMENT_LIMITS.maxFileBytes);
       buffers.add(buffer);
       peak = Math.max(peak, buffers.size);
@@ -269,9 +269,9 @@ describe("preview:read-document handler", () => {
   });
 
   it("supersedes an older parse for the same frame before loading the latest sheet", async () => {
-    const read = documentInput.readPreviewDocumentInput;
+    const read = documentInput.readJudgedDocumentInput;
     const childrenAtRead: number[] = [];
-    const inputReads = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation((...args) => {
+    const inputReads = vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementation((...args) => {
       childrenAtRead.push(getManagedChildProcessCount());
       return read(...args);
     });
@@ -287,12 +287,12 @@ describe("preview:read-document handler", () => {
   });
 
   it("keeps only the latest same-frame request while an older read unwinds", async () => {
-    const read = documentInput.readPreviewDocumentInput;
+    const read = documentInput.readJudgedDocumentInput;
     let entered!: () => void;
     let resume!: () => void;
     const reading = new Promise<void>((resolve) => { entered = resolve; });
     const gate = new Promise<void>((resolve) => { resume = resolve; });
-    const spy = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (path, signal) => {
+    const spy = vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementationOnce(async (path, signal) => {
       const bytes = await read(path, signal);
       entered();
       await gate;
@@ -317,7 +317,7 @@ describe("preview:read-document handler", () => {
   });
 
   it("reports another frame as busy without reading or superseding its owner", async () => {
-    const read = vi.spyOn(documentInput, "readPreviewDocumentInput");
+    const read = vi.spyOn(documentInput, "readJudgedDocumentInput");
     const previous = readDocument(OK_FRAME, join(root, "data", "cyclic.xls"));
     await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
     const otherFrame = await readDocument(OK_FRAME, join(root, "data", "people.csv"), 0, 1, 1);
@@ -331,7 +331,7 @@ describe("preview:read-document handler", () => {
   });
 
   it("rejects a frame without its registered native identity", async () => {
-    const read = vi.spyOn(documentInput, "readPreviewDocumentInput");
+    const read = vi.spyOn(documentInput, "readJudgedDocumentInput");
     const handler = handlers.get(CHANNELS.preview.readDocument)!;
     expect(await handler({ senderFrame: { url: OK_FRAME } }, join(root, "data", "people.csv"), 0))
       .toMatchObject({ ok: false, error: "unauthorized" });
@@ -581,7 +581,7 @@ describe("read-only observation sender boundary", () => {
     await registerSessionOwner(event);
     const path = join(root, "text-reload-race.ts");
     writeFileSync(path, "const value = 1;\n");
-    const read = documentInput.readPreviewDocumentInput;
+    const read = documentInput.readJudgedDocumentInput;
     let resolveFirst!: () => void;
     let resolveSecond!: () => void;
     let startedFirst!: () => void;
@@ -590,7 +590,7 @@ describe("read-only observation sender boundary", () => {
     const secondStarted = new Promise<void>((resolve) => { startedSecond = resolve; });
     const firstGate = new Promise<void>((resolve) => { resolveFirst = resolve; });
     const secondGate = new Promise<void>((resolve) => { resolveSecond = resolve; });
-    vi.spyOn(documentInput, "readPreviewDocumentInput")
+    vi.spyOn(documentInput, "readJudgedDocumentInput")
       .mockImplementationOnce(async (...args) => { const bytes = await read(...args); startedFirst(); await firstGate; return bytes; })
       .mockImplementationOnce(async (...args) => { const bytes = await read(...args); startedSecond(); await secondGate; return bytes; });
     const handler = handlers.get(CHANNELS.preview.readFile)!;
@@ -632,12 +632,12 @@ describe("read-only observation sender boundary", () => {
   it("cancels a pending observed text read on main-frame navigation", async () => {
     const event = documentEvent(OK_FRAME);
     await registerSessionOwner(event);
-    const read = documentInput.readPreviewDocumentInput;
+    const read = documentInput.readJudgedDocumentInput;
     let resolveRead!: () => void;
     let started!: () => void;
     const readStarted = new Promise<void>((resolve) => { started = resolve; });
     const gate = new Promise<void>((resolve) => { resolveRead = resolve; });
-    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+    vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementationOnce(async (...args) => {
       const bytes = await read(...args); started(); await gate; return bytes;
     });
     const pending = handlers.get(CHANNELS.preview.readFile)!(event, join(root, "notes.txt"), { sessionId: "session-one" }) as Promise<PreviewReadFileResult>;
@@ -655,10 +655,10 @@ describe("read-only observation sender boundary", () => {
   it("bounds observed text request ownership and releases it after completion", async () => {
     const event = documentEvent(OK_FRAME);
     event.sender.setMaxListeners(0);
-    const read = documentInput.readPreviewDocumentInput;
+    const read = documentInput.readJudgedDocumentInput;
     let resolveReads!: () => void;
     const gate = new Promise<void>((resolve) => { resolveReads = resolve; });
-    const input = vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementation(async (...args) => {
+    const input = vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementation(async (...args) => {
       const bytes = await read(...args); await gate; return bytes;
     });
     const handler = handlers.get(CHANNELS.preview.readFile)!;
@@ -695,8 +695,8 @@ describe("read-only observation sender boundary", () => {
     const subframe = { ...event, senderFrame: { ...event.senderFrame, routingId: 2 } };
     expect(await handlers.get(CHANNELS.preview.readFile)!(subframe, join(root, "notes.txt"), { sessionId: "session-one" }))
       .toMatchObject({ ok: false, error: "unauthorized" });
-    const read = documentInput.readPreviewDocumentInput;
-    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+    const read = documentInput.readJudgedDocumentInput;
+    vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementationOnce(async (...args) => {
       const bytes = await read(...args);
       appWindows.length = 0;
       return bytes;
@@ -747,8 +747,8 @@ describe("read-only observation sender boundary", () => {
 
   it("refuses an app window unregistered during a read", async () => {
     const event = documentEvent(OK_FRAME);
-    const read = documentInput.readPreviewDocumentInput;
-    vi.spyOn(documentInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+    const read = documentInput.readJudgedDocumentInput;
+    vi.spyOn(documentInput, "readJudgedDocumentInput").mockImplementationOnce(async (...args) => {
       const bytes = await read(...args);
       appWindows.length = 0;
       return bytes;

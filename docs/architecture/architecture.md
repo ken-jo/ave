@@ -626,7 +626,12 @@ Three host-only stores sit behind these surfaces:
   where the open follows a link in the last name (Windows). It is two lookups,
   because Node cannot name an open handle's path on macOS or Windows, so a path
   switched to another file and back between them is not seen; nor is a hard
-  link that stays in an unprotected folder.
+  link that stays in an unprotected folder. The same check binds the other
+  host reads whose bytes reach the model to the path they judged: a previewed
+  file or document the agent then observes, and the agent's `read_document`.
+  For an agent tool, the rules judged when it runs are the admission and
+  directory ones; the other secret-file rules are decided before the call, by
+  the permission tree.
 - **Clipboard images.** A pasted image is written to a per-profile private
   directory together with a receipt of the file's identity. Release and the
   start sweep delete only a file a receipt names and whose identity still

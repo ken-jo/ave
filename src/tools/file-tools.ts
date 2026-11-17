@@ -76,7 +76,7 @@ import { documentToolFailure, formatDocumentToolOutput } from "./document-tool-o
 import { PREVIEW_DOCUMENT_LIMITS, previewDocumentFormatOf } from "../shared/preview-document.js";
 import { previewPageFormatOf } from "../shared/preview-page-document.js";
 import { acquireParseSlot } from "./preview-document-process.js";
-import { readPreviewDocumentInput } from "./preview-document-input.js";
+import { readJudgedDocumentInput } from "./preview-document-input.js";
 import { TableDocumentError } from "./table-document-error.js";
 import { DOCUMENT_PARSE_MESSAGES } from "./preview-document-protocol.js";
 import { RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
@@ -813,7 +813,8 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
             return documentRouteFailure(brokerFailureResult("invalid binary document response"));
           }
         } else {
-          bytes = await readPreviewDocumentInput(target, slot.signal);
+          // The document reaches the model: its bytes count only if `target`, judged above, still names the file read.
+          bytes = await readJudgedDocumentInput(target, slot.signal);
         }
         slot.signal.throwIfAborted();
         const index = selection.kind === "sheet" ? selection.sheet : selection.kind === "page" ? selection.page - 1 : 0;

@@ -32,7 +32,7 @@ import { readPermissionSettings } from "../../permissions/permission-settings-st
 import { buildRuntimeAllowedDirectories } from "../../permissions/allowed-directories.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { TableDocumentError } from "../../tools/table-document-error.js";
-import { readPreviewDocumentInput } from "../../tools/preview-document-input.js";
+import { readJudgedDocumentInput } from "../../tools/preview-document-input.js";
 import { installDocumentObservation } from "../../main/document-observation.js";
 import { parseObservedTextDocument } from "../../observation/text-document.js";
 import { recordPreviewFileAccess } from "../../main/preview-file-access.js";
@@ -224,7 +224,9 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           };
         }
         request?.controller.signal.throwIfAborted();
-        const input = hasLineWindow ? undefined : await readPreviewDocumentInput(resolved, request?.controller.signal, MAX_TEXT_FILE_BYTES);
+        // These bytes may become the agent's observed document: they count only if `resolved`, judged above, still names
+        // the file they were read from.
+        const input = hasLineWindow ? undefined : await readJudgedDocumentInput(resolved, request?.controller.signal, MAX_TEXT_FILE_BYTES);
         request?.controller.signal.throwIfAborted();
         const imageFormat = input ? sniffComposerImageFormat(input) : null;
         if (!imageFormat && await isBinaryFile(resolved)) {
@@ -328,7 +330,8 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             if (!validateAppWindowMainFrameSender(e, deps)) {
               return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
             }
-            const bytes = await readPreviewDocumentInput(resolved, slot.signal);
+            // The parsed document may become the agent's observed document, as above.
+            const bytes = await readJudgedDocumentInput(resolved, slot.signal);
             inputBytes = bytes.length;
             if (!validateAppWindowMainFrameSender(e, deps)) {
               auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);

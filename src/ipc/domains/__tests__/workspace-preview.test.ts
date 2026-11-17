@@ -234,8 +234,8 @@ describe("preview:read-file handler", () => {
   it("rechecks image scope after asynchronous reading before disclosing bytes", async () => {
     const path = join(root, "revoked-image.png");
     writeFileSync(path, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64"));
-    const read = previewInput.readPreviewDocumentInput;
-    const spy = vi.spyOn(previewInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+    const read = previewInput.readJudgedDocumentInput;
+    const spy = vi.spyOn(previewInput, "readJudgedDocumentInput").mockImplementationOnce(async (...args) => {
       const bytes = await read(...args);
       additionalDirectories.value = [];
       return bytes;
