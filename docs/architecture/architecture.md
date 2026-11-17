@@ -3930,13 +3930,17 @@ with its own owner rule:
   row, a deleted entry that does not validate, run history entries a
   start prunes); such a write is refused and writes nothing. While the run
   file cannot be read, the board is written only over bytes that are the
-  text it was read as. A row is changed by no write it was not meant for:
-  one that reading would change is kept as an entry that does not
+  text it was read as. A row is changed by no write it was not meant for,
+  save as JSON reads its bytes (a number past the safe-integer limit,
+  spacing) and by re-anchored due dates, both kept in the copy first: one
+  that reading would change otherwise is kept as an entry that does not
   validate, as above, and the run file keeps what it does not own.
   (d) One property test runs random sequences of every board store write
   over damaged files and checks (a) to (c) after each; targeted tests
   cover a row put under a first `items` key that a second one shadows, a
-  row moved under another top-level key as an escaped string, and a run id
+  valid row whose numbers JSON reads as other values (the file is copied
+  aside first), a row moved under another top-level key as an escaped
+  string, and a run id
   held under each of seven fields of a renumbered or renamed row; one table
   test runs each run file write over a file with keys and entries the
   store does not own.
