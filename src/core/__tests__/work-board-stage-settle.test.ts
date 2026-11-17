@@ -409,6 +409,20 @@ for (const settleFails of [false, true]) {
   });
 }
 
+for (const [refusal, code] of [["refused", "run-state-unavailable"], ["too-large", "template-runs-too-large"]] as const) {
+  it(`a start whose run workspace cannot be stored is refused by a code, and the run ends error (${refusal})`, async () => {
+    await withHarness(async (h) => {
+      const version = await h.confirm([stageOf("a")]);
+      const id = await h.addItem(version);
+      vi.spyOn(h.board, "updateRun").mockResolvedValueOnce({ status: refusal });
+      const result = await h.start(id, h.local(version));
+      expect(result).toEqual({ status: "error", reason: code, reasonCode: code });
+      expect((await h.item(id)).record?.settled?.status).toBe("error");
+      expect(h.children).toHaveLength(0);
+    });
+  });
+}
+
 it("a run ended without its graph whose end cannot be written keeps its workspace and row, and a reader takes it over again", () => {
   let missing = false;
   const released: string[] = [];

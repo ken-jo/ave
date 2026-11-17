@@ -787,7 +787,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (begun.status !== "updated") return await abandonStart(ref, false, refused(begun.status === "invalid" ? begun.reason : begun.status));
       recorded = true;
       const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }));
-      if (!placed.ok) throw new Error("the run workspace could not be stored");
+      if (!placed.ok) {
+        log.warn("the run workspace could not be stored (id=%d): %s", itemId, placed.reason);
+        return await abandonStart(ref, true, refused(writeFault(placed.reason)));
+      }
       const shown = await store.setRunStatus(itemId, "executing");
       if (shown.status !== "updated") throw new Error("the run could not be shown on the board");
     } catch (error) {
