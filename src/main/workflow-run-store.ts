@@ -89,6 +89,11 @@ export class WorkflowRunStore {
     });
   }
 
+  /** The floor as stored. Undefined while the file awaits review or is past its read limit; a file that cannot be read throws. */
+  async rowIdFloor(): Promise<number | undefined> {
+    return withInProcessFileQueue(this.filePath, async () => (await this.read())?.rowIdFloor);
+  }
+
   /** Raise the floor to `seen` when it is lower. A file that awaits review is left as it is. */
   async raiseRowIdFloor(seen: number): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {

@@ -3728,7 +3728,12 @@ with its own owner rule:
   floor as read is never below an `itemId` a stored run names; a run file
   without the field reads it as 0, raised that way, and the first board load
   raises it to the board's `nextId - 1`, which is above every row id in the
-  file. While the floor cannot be read or stored (the run file awaits review,
+  file. The boot copy of a legacy plugin board goes through the floor too:
+  it is made only while `board.json` is absent and the floor is 0, and the
+  floor is raised over every id the copy holds before it is written, so a
+  copy that holds any id is made once and none of its ids is issued again.
+  While the
+  floor cannot be read or stored (the run file awaits review,
   is past its read limit, does not parse or cannot be read), every create is
   refused with `work-item-ids-unavailable`; reads stay as described above.
   Once the next id would pass the safe-integer limit (2^53 - 1), which only

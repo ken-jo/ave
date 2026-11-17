@@ -1,9 +1,11 @@
-/** Copy exactly one valid legacy board only when the host board is absent; use feature-namespace atomic writes. */
+/** Copy exactly one valid legacy board only when the host board is absent and no row id was ever issued; use feature-namespace atomic
+ * writes. */
 import { readFile, readdir } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { WorkflowRunStore } from "../../main/workflow-run-store.js";
 import { createLogger } from "../../lib/logger.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 
@@ -21,6 +23,16 @@ function isBoardShape(value: unknown): value is { items: unknown[] } {
     !Array.isArray(value) &&
     Array.isArray((value as { items?: unknown }).items)
   );
+}
+
+/** The highest row id a board holds: its rows' ids and the id below its `nextId`. */
+function highestRowId(board: { items: unknown[]; nextId?: unknown }): number {
+  const ids = board.items.flatMap((row) => {
+    const id = typeof row === "object" && row !== null ? (row as { id?: unknown }).id : undefined;
+    return typeof id === "number" && Number.isSafeInteger(id) && id >= 1 ? [id] : [];
+  });
+  const below = typeof board.nextId === "number" && Number.isSafeInteger(board.nextId) && board.nextId >= 1 ? board.nextId - 1 : 0;
+  return ids.reduce((highest, id) => Math.max(highest, id), below);
 }
 
 /** Read candidates directly to avoid stat/read races; a missing plugin root means no migration. */
@@ -99,7 +111,21 @@ export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
       return false;
     }
 
-    await ns.writeJson(BOARD_FILE, stripLegacyBoardTemplateRunFields(parsed));
+    // The copy's ids go through the run file's row-id floor: only a home that never issued an id takes the copy, and the floor is
+    // raised over every id it holds before it is written, so a copy that holds any id is made once and none of its ids is issued again.
+    const runs = new WorkflowRunStore(join(ns.dir, "workflow-runs.json"));
+    if ((await runs.rowIdFloor()) !== 0) {
+      log.warn("boot: work-board migration skipped — row ids were already issued on this home, or the workflow run file awaits review");
+      return false;
+    }
+    const copy = stripLegacyBoardTemplateRunFields(parsed);
+    const highest = highestRowId(copy);
+    await runs.raiseRowIdFloor(highest);
+    if (((await runs.rowIdFloor()) ?? -1) < highest) {
+      log.warn("boot: work-board migration skipped — the row-id floor could not be raised over the legacy board's ids");
+      return false;
+    }
+    await ns.writeJson(BOARD_FILE, copy);
     log.info(
       "boot: migrated legacy plugin board → work-board namespace (%s → %s)",
       legacyPath,

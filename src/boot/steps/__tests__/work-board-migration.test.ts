@@ -1,9 +1,10 @@
 /** Use a per-test AVE_HOME so migration never reads or writes the real home. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { migrateLegacyPluginBoardToWorkBoard } from "../work-board-migration.js";
+import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const SAMPLE_BOARD = { version: 1, nextId: 3, items: [{ id: 1, title: "legacy task", status: "planned", priority: "medium", created_at: "x", updated_at: "x" }] };
@@ -31,6 +32,7 @@ describe("work-board migration", () => {
     process.env.AVE_HOME = home;
     destPath = join(home, "work-board", "board.json");
   });
+  const runsPath = () => join(home, "work-board", "workflow-runs.json");
 
   afterEach(async () => {
     if (prevAveHome === undefined) delete process.env.AVE_HOME;
@@ -96,6 +98,33 @@ describe("work-board migration", () => {
 
     expect(migrated).toBe(false);
     expect(existsSync(destPath)).toBe(false);
+  });
+
+  it("raises the run file's row-id floor over every id the copy holds before it is written, so a new row is above them", async () => {
+    writePluginBoard(home, "samplehub", JSON.stringify({ ...SAMPLE_BOARD, items: [5, 1].map(id => ({ ...SAMPLE_BOARD.items[0], id })) }));
+    expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(true);
+    expect(JSON.parse(readFileSync(runsPath(), "utf-8")).rowIdFloor).toBe(5);
+    expect(await new WorkBoardStore(destPath).create({ title: "next" })).toMatchObject({ status: "created", itemId: 6 });
+  });
+
+  it("never copies the legacy board again once it was copied: a host board deleted later stays deleted", async () => {
+    writePluginBoard(home, "samplehub", JSON.stringify(SAMPLE_BOARD));
+    expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(true);
+    rmSync(destPath);
+    expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(false);
+    expect(existsSync(destPath)).toBe(false);
+  });
+
+  it.each([
+    ["has issued row ids", `${JSON.stringify({ version: 1, rowIdFloor: 4, runs: [] })}\n`],
+    ["cannot be read", "{ not valid json"],
+  ])("skips while the workflow run file %s: the legacy ids could be ids already issued", async (_label, runFile) => {
+    writePluginBoard(home, "samplehub", JSON.stringify(SAMPLE_BOARD));
+    mkdirSync(join(home, "work-board"), { recursive: true });
+    writeFileSync(runsPath(), runFile, "utf-8");
+    expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(false);
+    expect(existsSync(destPath)).toBe(false);
+    expect(readFileSync(runsPath(), "utf-8")).toBe(runFile);
   });
 
   it("returns false when there is no legacy plugin board at all", async () => {
