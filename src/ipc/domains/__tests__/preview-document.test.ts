@@ -159,15 +159,16 @@ describe("preview:read-document handler", () => {
   it("aborts a destroyed sender and frees the slot without waiting for the parse deadline", async () => {
     const event = documentEvent(OK_FRAME);
     const unrelated = vi.fn();
+    const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess");
     event.sender.on("destroyed", unrelated);
     const pending = readFromSender(event, join(root, "data", "cyclic.xls"));
     await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
-    const started = performance.now();
     event.sender.isDestroyed = () => true;
     event.sender.emit("destroyed");
     const result = await pending;
     expect(result).toMatchObject({ ok: false, error: "superseded" });
-    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs / 2);
+    // The child must end through the owner abort, not by waiting out the parse deadline.
+    expect(stopped.mock.calls.map(([, reason]) => reason)).toEqual(["document-preview-superseded"]);
     expect(getManagedChildProcessCount()).toBe(0);
     expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"), 0, 2)).toMatchObject({ ok: true });
     expect(event.sender.listenerCount("destroyed")).toBe(1);
@@ -176,15 +177,15 @@ describe("preview:read-document handler", () => {
 
   it.each(["detached", "destroyed", "navigated", "crashed"])("aborts an owner whose frame is %s", async (departure) => {
     const event = documentEvent(OK_FRAME);
+    const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess");
     const pending = readFromSender(event, join(root, "data", "cyclic.xls"));
     await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(1));
-    const started = performance.now();
     if (departure === "detached") event.senderFrame.detached = true;
     else if (departure === "destroyed") event.senderFrame.isDestroyed = () => true;
     else if (departure === "crashed") event.sender.emit("render-process-gone", {}, { reason: "crashed" });
     else event.sender.emit("did-frame-navigate", {}, "file:///app/next.html", 200, "OK", true, 2, 10);
     expect(await pending).toMatchObject({ ok: false, error: "superseded" });
-    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs / 2);
+    expect(stopped.mock.calls.map(([, reason]) => reason)).toEqual(["document-preview-superseded"]);
     expect(getManagedChildProcessCount()).toBe(0);
     expect(event.sender.eventNames()).toEqual([]);
   });

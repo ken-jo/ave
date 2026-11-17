@@ -127,7 +127,8 @@ function runChild(bytes: Buffer, format: PreviewAnyFormat, sheetIndex: number, s
     let termination: void | Promise<void>;
     const stop = (code: "parse-limit" | "read-failed" | "superseded"): void => {
       failure ??= documentError(code);
-      termination = forceKillManagedChildProcess(child, "document-preview-stop");
+      // The reason names the cause so an owner abort is distinguishable from a deadline.
+      termination = forceKillManagedChildProcess(child, `document-preview-${code}`);
     };
     const handleAbort = (): void => stop("superseded");
     const startupTimer = setTimeout(() => stop("read-failed"), PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs);
