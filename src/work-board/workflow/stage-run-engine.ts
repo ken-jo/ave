@@ -334,7 +334,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
     const reason = byAuthority && state.refused
       ? { reasonCode: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) }
-      : runStatus === "error" && message !== undefined && RUN_FILE_REFUSALS.has(message) ? { reasonCode: message } : {};
+      : runStatus === "error" && message !== undefined && RUN_FILE_REFUSALS.has(message) ? { reasonCode: message }
+      : runStatus === "cancelled" && !settled ? { reasonCode: "run-end-unconfirmed" } : {};
     if (byAuthority && state.refused) {
       deps.audit?.({ itemId: state.itemId, runId: state.runId, event: "work-run:authority-refused", code: state.refused.code, ...(state.refused.tool ? { tool: state.refused.tool } : {}) });
     }
@@ -722,6 +723,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function resultOf(state: RunState): Promise<WorkItemRunResult> {
     // An end the run file did not confirm is an error, by the run file's refusal when that is what ended the run; never a run that waits.
     if (unconfirmed.has(state.runId)) {
+      // A stop stays a stop; only its end is not saved yet.
+      if (unconfirmed.get(state.runId)?.status === "cancelled") return { status: "cancelled", reason: "run-end-unconfirmed", reasonCode: "run-end-unconfirmed" };
       return state.faulted !== null && RUN_FILE_REFUSALS.has(state.faulted) ? { status: "error", reason: state.faulted, reasonCode: state.faulted } : { status: "error" };
     }
     const record = await records.get(state.itemId, state.runId);

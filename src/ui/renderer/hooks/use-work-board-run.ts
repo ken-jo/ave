@@ -58,6 +58,8 @@ export interface WorkItemRunState {
   turns: RunTurn[];
   /** Terminal failure / denial reason (error / denied phase or runFailed). */
   reason?: string;
+  /** A stopped run whose end the run file has not saved yet. */
+  endUnconfirmed?: boolean;
   /** Child session id, once an event or the run result carried it. */
   runSessionId?: string;
   /** Every phase child's session this run reported, in link order: the sessions whose tool approvals the board draws. */
@@ -88,6 +90,8 @@ function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
 
 /** Terminal phases end the in-flight window; every phase is named so a new one cannot silently read as in flight or as finished.
  * `cancelled` is a run the user stopped (owner decision 2026-11-04): terminal, and never an error. */
+const END_UNCONFIRMED = "run-end-unconfirmed";
+
 /** A reason the host sends as a refusal code is shown in the user's language; any other reason is shown as sent. */
 function runReasonText(reason: string | undefined): string | undefined {
   if (reason === undefined) return undefined;
@@ -447,6 +451,7 @@ export function useWorkBoardRun(
               phase,
               turns,
               reason: phase === "error" || phase === "denied" ? runReasonText(ev.message) : undefined,
+              endUnconfirmed: phase === "cancelled" && ev.reasonCode === END_UNCONFIRMED,
               runSessionId: ev.runSessionId ?? cur.runSessionId,
               sessionIds: withSession(cur.sessionIds, ev.runSessionId),
               phaseAt: cur.phaseAt[phase] === undefined ? { ...cur.phaseAt, [phase]: ev.at } : cur.phaseAt,
@@ -548,6 +553,7 @@ export function useWorkBoardRun(
               busy: false,
               phase,
               reason: runReasonText(result.reason) ?? kept,
+              endUnconfirmed: phase === "cancelled" && result.reasonCode === END_UNCONFIRMED,
               runSessionId: result.runSessionId ?? cur.runSessionId,
             };
           });

@@ -753,6 +753,21 @@ it("writing unconfirmed run ends again keeps going past one that still fails: th
   expect((await h.runOf(firstId))?.settled).toBeUndefined();
 }));
 
+it("a stopped run whose end the run file did not confirm reads as stopped, with a note that its end is not saved", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  await h.untilLive(1);
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const updateRun = h.board.updateRun.bind(h.board);
+  vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
+    target === runId ? { status: "pending-review" } : updateRun(itemId, target, mutate));
+  expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  expect(await run).toEqual({ status: "cancelled", reason: "run-end-unconfirmed", reasonCode: "run-end-unconfirmed" });
+  expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+  expect((await h.runOf(runId))?.settled).toBeUndefined();
+}));
+
 for (const [write, refusal, code] of [
   ["stage end", "too-large", "template-runs-too-large"],
   ["workspace", "too-large", "template-runs-too-large"],

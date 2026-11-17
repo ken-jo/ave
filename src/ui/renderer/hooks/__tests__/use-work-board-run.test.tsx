@@ -290,6 +290,14 @@ describe("useWorkBoardRun — refusal text", () => {
     });
   }
 
+  it("marks a stopped run whose result says its end is not saved yet, and leaves it stopped", async () => {
+    const { api } = harness();
+    vi.mocked(api.runWorkBoardItem).mockResolvedValueOnce({ status: "cancelled", reason: "run-end-unconfirmed", reasonCode: "run-end-unconfirmed" });
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    act(() => result.current.runItem(7));
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "cancelled", endUnconfirmed: true }));
+  });
+
   it("has the text of every refusal code it maps in both catalogs", () => {
     for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "run-state-unavailable"]) {
       for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
