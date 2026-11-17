@@ -2,6 +2,8 @@
  * shown from it. */
 import { rmSync, writeFileSync } from "node:fs";
 import { expect, it, vi } from "vitest";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
 import { workBoardStage } from "../../shared/work-board-lifecycle.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
 import { WorkflowTemplateError } from "../../work-board/template-graph.js";
@@ -546,6 +548,39 @@ it("while a run end is unconfirmed, starts are refused and nothing is pruned or 
     expect(await runSecond).toMatchObject({ status: "cancelled" });
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
+
+it("an unconfirmed run end refuses only that run's decisions: a decision on another run goes ahead", () => withHarness(async (h) => {
+  const gated = await h.confirm([stageOf("g")]);
+  const plain = await h.confirm([auto("a")]);
+  const other = await h.addItem(gated);
+  const id = await h.addItem(plain);
+  const runOther = h.start(other, h.local(gated));
+  const [g] = await h.untilLive(1);
+  g.finish();
+  await h.untilStage(other, "g", "awaiting_gate");
+
+  const run = h.start(id, h.local(plain));
+  const [a] = await h.untilLive(1);
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const updateRun = h.board.updateRun.bind(h.board);
+  vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
+    target === runId ? { status: "pending-review" } : updateRun(itemId, target, mutate));
+  a.finish();
+  await run;
+  expect((await h.runOf(runId))?.settled).toBeUndefined();
+
+  // That run is never decided, and never taken over by a decision.
+  const refused = await h.engine.decideStageGate(id, { runId, stageId: "a", attempt: 1, resultHash: "", decision: "approve" });
+  expect(refused).toEqual({ ok: false, reason: "run-end-unconfirmed" });
+  expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+  expect(h.children).toHaveLength(2);
+
+  expect(await h.decide(other, "g", "approve")).toEqual({ ok: true, status: "approved" });
+  expect(await runOther).toEqual({ status: "awaiting_approval" });
+  expect((await h.until(other, item => item.runStatus === "completed")).record?.settled?.status).toBe("completed");
+  expect((await h.runOf(runId))?.settled).toBeUndefined();
+  for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.run-end-unconfirmed")).toEqual(expect.stringMatching(/\S/));
+}));
 
 it("a start that threw after storing its run, while the run file awaits review, keeps its workspace until a reader writes the end", () => {
   const released: string[] = [];

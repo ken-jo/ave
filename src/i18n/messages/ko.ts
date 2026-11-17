@@ -21,6 +21,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.template-runs-pending-review": "변경된 워크플로 실행 파일을 검토할 때까지 템플릿 실행이 멈춰 있습니다.",
   "reasonCodes.template-runs-board-unread": "작업 보드 파일이 없거나 읽을 수 없어 이전 실행을 항목과 맞출 수 없으므로 템플릿 실행이 멈춰 있습니다.",
   "reasonCodes.run-state-unavailable": "워크플로 실행 파일에서 템플릿 실행을 읽거나 저장할 수 없습니다. 다시 시도하세요.",
+  "reasonCodes.run-end-unconfirmed": "이 템플릿 실행은 끝났지만 종료가 아직 워크플로 실행 파일에 저장되지 않았습니다. 다시 시도하세요.",
   "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",

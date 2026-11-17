@@ -177,9 +177,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const records = deps.runs;
   const runs = new Map<number, RunState>();
   let adoption: Promise<Adopted> | null = null;
-  /** Run ends the run file did not confirm, by run id: until each is written, nothing starts, is decided, pruned or swept. */
+  /** Run ends the run file did not confirm, by run id: until each is written, nothing starts, nothing is pruned or swept, and that run
+   * is never decided. */
   const unconfirmed = new Map<string, { ref: RunRef; status: Settled; rowGone: boolean }>();
   let confirming: Promise<Adopted> | null = null;
+  /** The boot takeover succeeded: runs it left are decided while another run's end is unconfirmed. */
+  let takenOver = false;
   const unattendedAllowed = deps.unattendedAllowed
     ?? ((version: TemplateVersion): UnattendedQualification => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" });
 
@@ -837,13 +840,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** A user action on an unsettled run: refused before any write unless `precheck` passes and the pin still resolves. */
-  async function decide<R extends string>(itemId: number, runId: string, surface: WebContents | null, event: RunEvent, precheck: Precheck<R>): Promise<R | PinRefusal | "run_mismatch" | "not_found" | "not_pending" | null> {
-    if (!(await adopted()).ok) return "run_mismatch";
+  async function decide<R extends string>(itemId: number, runId: string, surface: WebContents | null, event: RunEvent, precheck: Precheck<R>):
+  Promise<R | PinRefusal | "run_mismatch" | "run-end-unconfirmed" | "not_found" | "not_pending" | null> {
+    // An end the run file did not confirm holds back only its own run's decisions, once the boot takeover has succeeded.
+    if (!(await adopted()).ok && (unconfirmed.size === 0 || !takenOver)) return "run_mismatch";
     const got = await store.get(itemId);
     if (got.status !== "found") return "not_found";
     if (got.item.runId !== runId) return "run_mismatch";
     const record = await records.get(itemId, runId);
     if (!record) return "run_mismatch";
+    // Its record still reads unsettled: taking it over here would undo the end it was given.
+    if (unconfirmed.has(runId)) return "run-end-unconfirmed";
     const state = await stateFor(record, surface);
     if (!state) return "not_pending";
     return enqueue(state, () => handle(state, event, precheck));
@@ -1018,6 +1025,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** Writes again each run end the run file did not confirm, then does what the end left undone. Only those runs: nothing else is pruned or
    * swept, since a start may hold a workspace its record does not name yet. */
   async function confirmSettles(): Promise<Adopted> {
+    let failed: Adopted | null = null;
     for (const [runId, left] of unconfirmed) {
       const at = new Date().toISOString();
       const write = (rowGone: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.status, at), rowGone)
@@ -1028,16 +1036,22 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         left.rowGone = true;
         ended = await write(true);
       }
-      // A write that threw proves nothing.
-      if (!ended) return { ok: false, code: "run-state-unavailable" };
-      if (!ended.ok && ended.reason !== "refused" && !(left.rowGone && ended.reason === "unavailable")) return { ok: false, code: writeFault(ended.reason) };
+      // A write that threw proves nothing. A run whose end is still unwritten does not hold back the others.
+      if (!ended) {
+        failed ??= { ok: false, code: "run-state-unavailable" };
+        continue;
+      }
+      if (!ended.ok && ended.reason !== "refused" && !(left.rowGone && ended.reason === "unavailable")) {
+        failed ??= { ok: false, code: writeFault(ended.reason) };
+        continue;
+      }
       unconfirmed.delete(runId);
       await workspace.release(left.ref, "all").catch(() => undefined);
       if (left.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
       else await showOnRow(left.ref.itemId, left.status, undefined);
       deps.itemChanged?.(left.ref.itemId);
     }
-    return { ok: true };
+    return failed ?? { ok: true };
   }
 
   /** Once per process. An attempt that failed or was refused is tried again by the next start, decision, reader or boot, which is refused
@@ -1049,7 +1063,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (!confirmed.ok) return confirmed;
     }
     adoption ??= adoptRuns().then(
-      (done) => { if (!done.ok) adoption = null; return done; },
+      (done) => {
+        if (done.ok) takenOver = true;
+        else adoption = null;
+        return done;
+      },
       (error: unknown): Adopted => {
         adoption = null;
         log.warn("template run adoption failed: %s", errorMessage(error));
