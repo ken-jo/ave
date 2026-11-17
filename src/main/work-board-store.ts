@@ -390,7 +390,7 @@ function hydrateBoard(file: BoardFile): BoardFile {
 
 /** A copy of the board file as it was, beside it, once per content: a row that does not validate is written back as JSON writes its
  * parsed value, which can differ from its bytes (a number past the safe-integer limit, other spacing). A copy that cannot be made
- * fails the write, and nothing is written. */
+ * fails the write, and the board file is left as it was. */
 async function keepPriorBytes(filePath: string, prior: Buffer): Promise<void> {
   const copy = `${filePath}.invalid-rows-${createHash("sha256").update(prior).digest("hex")}.bak`;
   if (await access(copy).then(() => true, () => false)) return;
@@ -527,8 +527,8 @@ export class WorkBoardStore {
     return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
-  // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is, never
-  // written over as it is; it and a file that is absent or awaits review start empty. Invalid rows are set aside and nextId is repaired
+  // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is; a move
+  // that fails is only logged. It and a file that is absent or awaits review start empty. Invalid rows are set aside and nextId is repaired
   // above every row id in the file.
   private async readBoard(): Promise<BoardRead> {
     const input = await readAveHomeInput(this.filePath);

@@ -3718,7 +3718,8 @@ with its own owner rule:
   not parse, is not an object with an items list (`null`, a list) or awaits
   review shows nothing. A board write moves a file that does not parse or has
   no items list aside to `board.json.corrupt-<ms>-<hex>.bak` before it starts
-  from an empty board, so such a file is never written over.
+  from an empty board. A move that fails is only logged, and the write then
+  goes on over the file.
   Row ids come from one counter that `board.json` does not own: the run file
   stores `rowIdFloor`, the highest row id ever issued or seen, and never
   lowers it. Only a create issues an id. It takes the next id above both the
@@ -3727,15 +3728,15 @@ with its own owner rule:
   deleted, restored from an older copy or edited to a lower `nextId`. The
   floor as read is never below an `itemId` a stored run names; a run file
   without the field reads it as 0, raised that way, and the first board load
-  raises it to the board's `nextId - 1`, which is above every row id in the
-  file. The boot copy of a legacy plugin board goes through the floor too:
-  it is made only while `board.json` is absent and the floor is 0, and the
-  floor is raised over every id the copy holds before it is written, so a
-  copy that holds any id is made once and none of its ids is issued again.
-  While the
-  floor cannot be read or stored (the run file awaits review,
-  is past its read limit, does not parse or cannot be read), every create is
-  refused with `work-item-ids-unavailable`; reads stay as described above.
+  raises it to the board's `nextId - 1`, which is at or above every row id
+  in the file. The boot copy of a legacy plugin board goes through the
+  floor too: it is made only while `board.json` is absent and the floor is
+  0, and the floor is raised over every id the copy holds before it is
+  written, so a copy that holds any id is made once and none of its ids is
+  issued again. While the floor cannot be read or stored (the run file
+  awaits review, is past its read limit, does not parse or cannot be read),
+  every create is refused, never thrown, with `work-item-ids-unavailable`;
+  reads stay as described above.
   Once the next id would pass the safe-integer limit (2^53 - 1), which only
   a hand-edited row id or floor brings about, every create is refused with
   `work-item-ids-exhausted`; the floor never lowers, so creates stay refused
@@ -3763,7 +3764,8 @@ with its own owner rule:
   which can differ from its bytes (a number past the safe-integer limit,
   other spacing). Before the first write that would change those bytes, the
   file as it was is copied to `board.json.invalid-rows-<sha256>.bak` beside
-  it, once per content; a copy that cannot be made refuses the write. The
+  it, once per content; a copy that cannot be made fails the write, and the
+  board file is left as it was. The
   list gives each such row, with its id when it has one (`unreadableRows`),
   and the board shows a read-only card marked invalid for each; nothing on
   it opens, moves or deletes the row. A run whose row does not
