@@ -1046,6 +1046,31 @@ for (const [write, refusal, code] of [
   });
 }
 
+for (const [how, twin] of [
+  ["neither names nor holds it", ({ runId: _, runHistory: __, ...row }: Record<string, unknown>) => row],
+  ["names another run and holds it in its history", (row: Record<string, unknown>) => ({ ...row, runId: "run-other" })],
+] as const) {
+  it(`a live run whose row gets a valid twin by hand that ${how} is never read as moved, lost or deleted: its record stays as it was`, () => withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+    const before = await h.runOf(runId);
+    const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] };
+    const own = file.items.find(item => item.id === id);
+    if (!own) throw new Error("row not found");
+    file.items.push(twin(own));
+    writeFileSync(h.boardPath, JSON.stringify(file));
+    expect((await h.board.runRowsOnDisk())?.({ itemId: id, runId })).toBe("unreadable");
+    await h.addItem(version);
+    a.finish();
+    expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+    expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed" || event.message === "template-run-lost")).toBe(false);
+    expect(await h.runOf(runId)).toEqual(before);
+  }));
+}
+
 for (const [board, spoil] of [
   ["unreadable", (path: string) => writeFileSync(path, "{ not json")],
   ["missing", (path: string) => rmSync(path)],

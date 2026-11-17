@@ -406,6 +406,24 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
+  it("lists no valid row whose id another valid row has too and keeps them all on a write; a valid row with an invalid twin is listed", async () => {
+    const { store, path, cleanup } = tempBoard();
+    try {
+      const valid = (id: number, title: string) => ({ id, title, status: "planned", priority: "medium", created_at: "x", updated_at: "x" });
+      const rows = [valid(1, "one"), valid(2, "a"), valid(2, "b"), valid(3, "three"), { id: 3, title: 5 }];
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 4, items: rows }), "utf-8");
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([3, 1]);
+      expect(listed.status === "ok" && listed.unreadableRows).toEqual([{ id: 2 }, { id: 2 }, { id: 3 }]);
+      const standing = await store.runRowsOnDisk();
+      expect([2, 3].map((itemId) => standing?.({ itemId, runId: "run-1" }))).toEqual(["unreadable", "unnamed"]);
+      expect(await store.create({ title: "next" })).toMatchObject({ status: "created", itemId: 4 });
+      expect(JSON.parse(readFileSync(path, "utf-8")).items).toEqual([rows[0], rows[3], expect.objectContaining({ id: 4 }), rows[1], rows[2], rows[4]]);
+    } finally {
+      await cleanup();
+    }
+  });
+
   // A row whose number is past the safe-integer limit parses to another value: the file would lose its bytes on the next write.
   const bigIntBoard = () => {
     const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };

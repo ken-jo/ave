@@ -3751,8 +3751,10 @@ with its own owner rule:
   record is then pruned, or shrunk to its summary while a run history lists
   it. A run whose row is there without naming or holding it ends `error`
   (`template-run-lost`), written by its run id, at boot and live alike, and
-  its record is pruned. A row that does not validate is kept in the file by
-  every board write, after the valid rows, as JSON writes its parsed value,
+  its record is pruned. Valid rows that share an id are all read as rows
+  that do not validate, so no run is read off a twin.
+  A row that does not validate is kept in the file by every board write,
+  after the valid rows, as JSON writes its parsed value,
   which can differ from its bytes (a number past the safe-integer limit,
   other spacing). Before the first write that would change those bytes, the
   file as it was is copied to `board.json.invalid-rows-<sha256>.bak` beside

@@ -350,8 +350,13 @@ function parseBoard(bytes: Buffer): unknown {
 }
 
 function hydrateBoard(file: BoardFile): BoardFile {
+  // Valid rows that share an id are not listed, so no run is read off a twin: each is kept as a row that does not validate. A valid row
+  // whose id only a row that does not validate has too is still listed.
+  const rowsById = new Map<number, number>();
+  for (const row of file.items) if (isValidRecord(row)) rowsById.set(row.id, (rowsById.get(row.id) ?? 0) + 1);
+  const listed = (row: unknown): row is WorkItem => isValidRecord(row) && rowsById.get(row.id) === 1;
   // Run state lives in the run file. A row carrying run fields was edited by hand: they are dropped here, so nothing reads or shows them.
-  const valid = file.items.filter(isValidRecord).map(stripBoardRunFields).map((item) => {
+  const valid = file.items.filter(listed).map(stripBoardRunFields).map((item) => {
     if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
     // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
     log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
@@ -379,7 +384,7 @@ function hydrateBoard(file: BoardFile): BoardFile {
     : Number.isSafeInteger(file.unknownBelow) && file.unknownBelow >= 1 ? file.unknownBelow : nextId;
   return {
     version: BOARD_VERSION, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items,
-    unreadable: file.items.filter((row) => !isValidRecord(row)),
+    unreadable: file.items.filter((row) => !listed(row)),
   };
 }
 
