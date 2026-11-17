@@ -349,3 +349,35 @@ it("a settled run whose row a crash left executing is restored by the next start
     }
   }
 });
+
+it("a deferred adoption is retried only by an event, never by time", async () => {
+  const h = await stageRunHarness();
+  try {
+    const { id } = await parkedRun(h);
+    const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
+    const read = homeTrust.readAveHomeInput;
+    const held = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
+      path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
+    // Time is faked from the refused boot attempt on, so a retry timer it set would be seen.
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
+    let engine: Awaited<ReturnType<typeof restarted>>;
+    let attempts: ReturnType<typeof vi.spyOn>;
+    try {
+      engine = await restarted(h);
+      held.mockRestore();
+      attempts = vi.spyOn(h.board.runs, "list");
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(attempts).not.toHaveBeenCalled();
+    expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+    // One reader is the event: one attempt, and the run is taken over.
+    await engine.projectTemplateRuns([await h.item(id)]);
+    for (let i = 0; i < 400 && !engine.cancelRun(id).ok; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(attempts).toHaveBeenCalledTimes(1);
+  } finally {
+    await h.cleanup();
+  }
+});
