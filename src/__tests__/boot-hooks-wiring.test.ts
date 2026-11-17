@@ -1,14 +1,18 @@
 /** Untrusted or changed hooks.json must stay quarantined; only trusted, unchanged commands may load. */
-import { afterEach, beforeEach, describe, it, expect } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, it, expect } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createHookRunner } from "../boot/conversation.js";
 import { wireHookSystem } from "../boot/steps/hook-system-wiring.js";
 import { acceptHookTrust } from "../hooks/hook-trust-commands.js";
 import { HOOKS_CONFIG_FILENAME } from "../hooks/hook-config-trust.js";
 import { writeJsonConfig, hookDirLayout, type HookDirLayout } from "../hooks/__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../main/host-resources.js";
+
+// Windows reads the admin policy through a native helper; an uncomposed host reads it as unreadable and closes user hooks.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("boot hook runner wiring", () => {
   it("creates an in-process HookRunner with no external hook surface", async () => {

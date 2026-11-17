@@ -1,12 +1,24 @@
 import { createBootHostFixture, createDesktopHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 /** Audit logger failures must not replace the original approval-origin error. */
 
-import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupTmpDir, createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const tmpDirs = createTmpDirTracker();
+
+// Fixture paths live under the configured test temp root; vi.mock factories read them through this hoisted value.
+const fixture = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "ave-test-"));
+  return { root, path: (...parts: string[]) => join(root, ...parts) };
+});
+afterAll(() => cleanupTmpDir(fixture.root));
 
 const runtimeTestState = vi.hoisted(() => ({
   appPrependOnceListener: vi.fn(),
@@ -24,7 +36,7 @@ const runtimeTestState = vi.hoisted(() => ({
     listPluginIds: vi.fn(() => [] as string[]),
     listPluginManifests: vi.fn(() => [] as Array<{ pluginId: string; manifest: unknown }>,
     ),
-    getPluginRoot: vi.fn((pluginId: string) => `/tmp/ave-test/plugins/${pluginId}`,
+    getPluginRoot: vi.fn((pluginId: string) => fixture.path("plugins", pluginId),
     ),
     getPluginManifest: vi.fn(() => null),
     resolvePluginInstallId: vi.fn((pluginId: string) => pluginId),
@@ -46,7 +58,7 @@ const dnsTestState = vi.hoisted(() => ({
 
 vi.mock("electron", () => ({
   app: {
-    getPath: vi.fn(() => "/tmp/ave-test"),
+    getPath: vi.fn(() => fixture.root),
     isPackaged: false,
     prependOnceListener: runtimeTestState.appPrependOnceListener,
     once: runtimeTestState.appOnceListener,
@@ -86,9 +98,9 @@ vi.mock("../../../main/html-preview-partition.js", () => ({
 
 vi.mock("../../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
-    pluginsRoot: "/tmp/ave-test/plugins",
-    registryPath: "/tmp/ave-test/registry.json",
-    cacheRoot: "/tmp/ave-test/cache",
+    pluginsRoot: fixture.path("plugins"),
+    registryPath: fixture.path("registry.json"),
+    cacheRoot: fixture.path("cache"),
   })),
 }));
 
@@ -382,7 +394,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
@@ -406,7 +418,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       pluginId,
       manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostfetch-data-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostfetch-data-")))),
     );
     return { api, networkFetch, bootAuditLogger };
   }
@@ -555,7 +567,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     const output = await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
@@ -583,7 +595,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-"))));
     const api = invokeHostApiFactory(
       createHostApi!,
       "caller-plugin",
@@ -599,7 +611,7 @@ describe("initPluginRuntime HostApi factory", () => {
     runtimeTestState.capturedRuntimeOptions = null;
     const output = await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
@@ -632,7 +644,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "evil-plugin",
       { id: "samplemail", config: {} },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-")))),
     );
     expect(evilApi).not.toHaveProperty("callTool");
     expect(evilApi).not.toHaveProperty("emitEvent");
@@ -672,7 +684,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: {
         ...stationaryLeaseState,
         get: vi.fn((key: string) => {
@@ -715,7 +727,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-"))));
     // Allow-listing multiple vendors must not grant leases for inactive vendors.
     const api = invokeHostApiFactory(createHostApi!, "meeting", b6Manifest, pluginDataDir);
 
@@ -767,7 +779,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: {
         ...stationaryLeaseState,
         get: vi.fn((key: string) => {
@@ -826,7 +838,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "plugin-marketplace-secret",
       manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-")))),
     );
 
     // Allow-list and active-vendor status do not replace an explicit preset-family grant.
@@ -870,7 +882,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: {
         ...stationaryLeaseState,
         get: vi.fn((key: string) => {
@@ -926,7 +938,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "plugin-generic-compatible-secret",
       manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-")))),
     );
 
     expect(await api.getSecret(genericKey)).toBeNull();
@@ -945,7 +957,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: {
         ...stationaryLeaseState,
         get: vi.fn((key: string) => {
@@ -987,7 +999,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-"))));
     const api = invokeHostApiFactory(
       createHostApi!,
       "plugin-b7",
@@ -1007,7 +1019,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: {
         ...stationaryLeaseState,
         get: vi.fn((key: string) => {
@@ -1052,7 +1064,7 @@ describe("initPluginRuntime HostApi factory", () => {
       | undefined;
     expect(createHostApi).toBeDefined();
 
-    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-")));
+    const pluginDataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-"))));
     const api = invokeHostApiFactory(
       createHostApi!,
       "plugin-q",
@@ -1101,7 +1113,7 @@ describe("initPluginRuntime HostApi factory", () => {
 
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: {
         ...stationaryLeaseState,
         get: vi.fn((key: string) => {
@@ -1150,7 +1162,7 @@ describe("initPluginRuntime HostApi factory", () => {
       createHostApi!,
       "meeting",
       manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-data-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-data-")))),
     );
     const lease = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
     expect(lease).toMatchObject({ ok: true, exposure: "lease" });
@@ -1190,7 +1202,7 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
     runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
     await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       toolRegistry: createRuntimeToolRegistry() as never,
@@ -1212,7 +1224,7 @@ describe("hostApi.hasRoutineBySource — prefix-scoped idempotency probe", () =>
       createHostApi!,
       pluginId,
       { id: pluginId, config: {}, capabilities: [] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hasroutine-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hasroutine-")))),
     );
   }
 
@@ -1282,7 +1294,7 @@ describe("initPluginRuntime sandbox union ordering", () => {
 
     const output = await initPluginRuntime({
     host: createRuntimeHost(),
-      projectRoot: "/tmp/ave-test/project",
+      projectRoot: fixture.path("project"),
       settingsService: createRuntimeSettings() as never,
       memoryManager: {} as never,
       networkFetch: vi.fn() as never,

@@ -36,6 +36,8 @@ const REQUIRED_SECURITY_SUITES = [
   "src/permissions/__tests__/scoped-rules.test.ts",
   "src/permissions/judge/__tests__/judge-dispatch.test.ts",
   "src/main/__tests__/document-open.test.ts",
+  // Its fixture home must stay under the test temp root, which only a restricted Windows lane checks.
+  "src/boot/__tests__/bootstrap-integration.test.ts",
 ] as const;
 function windowsJobFiles(workflow: string): string[] {
   const lines = workflow.split("\n");

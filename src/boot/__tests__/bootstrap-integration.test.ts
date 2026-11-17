@@ -589,7 +589,7 @@ vi.mock("../../audit/audit-logger.js", () => ({
     flush = vi.fn(async () => {});
     close = vi.fn(async () => {});
     rotateAndPrune = vi.fn(async () => {});
-    getAuditDir = vi.fn(() => "C:\\tmp\\ave-boot-test\\audit");
+    getAuditDir = vi.fn(() => `${h.root}/audit`);
     getPermissionAuditSecret = vi.fn(() => "s".repeat(64));
     getPermissionAuditSealStore = vi.fn(() => ({
       read: vi.fn(() => null),

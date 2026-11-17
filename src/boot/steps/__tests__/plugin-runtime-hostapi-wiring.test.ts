@@ -5,7 +5,7 @@ useConfigurationOwner();
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /** Drive the captured boot HostApi factory so config precedence and capability lifetimes are tested at their producer. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { aveHome } from "../../../shared/ave-home.js";
 import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 
-import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupTmpDir, createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { directHostApiChannel } from "../../../__tests__/support/host-protocol-wire.js";
 import { HOSTAPI_DISPATCH_TABLE, HostApiDispatcher, createServiceHostApiPaths } from "../../../plugins/isolation/host-api-dispatcher.js";
 import { startPluginChildRuntime } from "../../../plugins/isolation/plugin-child-runtime.js";
@@ -25,6 +25,16 @@ import type { CredentialIssuanceStage } from "../../../main/host-api/resolve-api
 
 const tmpDirs = createTmpDirTracker();
 
+// Fixture paths live under the configured test temp root; vi.mock factories read them through this hoisted value.
+const fixture = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "ave-test-"));
+  return { root, path: (...parts: string[]) => join(root, ...parts) };
+});
+afterAll(() => cleanupTmpDir(fixture.root));
+
 const runtimeTestState = vi.hoisted(() => ({
   browserWindows: [] as Array<{ isDestroyed: () => boolean; webContents: { send: (channel: string, payload: unknown) => void };
   }>,
@@ -33,7 +43,7 @@ const runtimeTestState = vi.hoisted(() => ({
   receiptReviewedAppVersion: vi.fn(async (): Promise<string | null> => null),
   officialPins: vi.fn(async () => ["a".repeat(64)]),
   /** The registry file whose identity the HostApi's entry cache watches. */
-  registryPath: "/tmp/ave-test/registry.json",
+  registryPath: fixture.path("registry.json"),
   spawnWorker: vi.fn(),
   runtime: {
     // Install partition policies before starting any plugin.
@@ -43,7 +53,7 @@ const runtimeTestState = vi.hoisted(() => ({
     listPluginIds: vi.fn(() => [] as string[]),
     listPluginManifests: vi.fn(() => [] as Array<{ pluginId: string; manifest: unknown }>,
     ),
-    getPluginRoot: vi.fn((pluginId: string) => `/tmp/ave-test/plugins/${pluginId}`,
+    getPluginRoot: vi.fn((pluginId: string) => fixture.path("plugins", pluginId),
     ),
     getPluginManifest: vi.fn(() => null),
     resolvePluginInstallId: vi.fn((pluginId: string) => pluginId),
@@ -62,7 +72,7 @@ const runtimeTestState = vi.hoisted(() => ({
 
 vi.mock("electron", () => ({
   app: {
-    getPath: vi.fn(() => "/tmp/ave-test"),
+    getPath: vi.fn(() => fixture.root),
     isPackaged: false,
     prependOnceListener: vi.fn(),
     once: vi.fn(),
@@ -98,9 +108,9 @@ vi.mock("../../../main/html-preview-partition.js", () => ({
 
 vi.mock("../../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
-    pluginsRoot: "/tmp/ave-test/plugins",
+    pluginsRoot: fixture.path("plugins"),
     registryPath: runtimeTestState.registryPath,
-    cacheRoot: "/tmp/ave-test/cache",
+    cacheRoot: fixture.path("cache"),
   })),
 }));
 
@@ -230,7 +240,7 @@ async function initAndGetFactory(
       getAppWindows: () => runtimeTestState.browserWindows as never[],
       ...(options.getAuthPartition ? { getAuthPartition: options.getAuthPartition as never } : {}),
     }) }),
-    projectRoot: "/tmp/ave-test/project",
+    projectRoot: fixture.path("project"),
     settingsService: settingsService as never,
     ...(options.onCredentialIssuanceStage
       ? { _onCredentialIssuanceStageForTest: options.onCredentialIssuanceStage }
@@ -344,7 +354,7 @@ describe("HostApi.config.get merged-read precedence", () => {
     expect(() => invokeWithoutInstallId(
       "plugin-a",
       { id: "plugin-a", config: {} },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-missing-provenance-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-missing-provenance-")))),
       activeIncarnation(),
     )).toThrow(/HostApi install provenance missing: plugin-a/);
     expect(runtimeTestState.runtime.resolvePluginInstallId).not.toHaveBeenCalled();
@@ -362,7 +372,7 @@ describe("HostApi.config.get merged-read precedence", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: { a: "m", shared: "m" } },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-cfg-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-cfg-")))),
       activeIncarnation(),
       "plugin-a",
     );
@@ -391,7 +401,7 @@ describe("HostApi.config.get merged-read precedence", () => {
           },
         },
       },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-cfg-def-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-cfg-def-")))),
       activeIncarnation(),
       "plugin-a",
     );
@@ -487,7 +497,7 @@ describe("HostApi.config.set round-trip", () => {
     return createHostApi(
       "plugin-a",
       activeManifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-cfg-set-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-cfg-set-")))),
       {
         registerDisposer: vi.fn(),
         trackOperation: <T>(operation: Promise<T>) => operation,
@@ -535,7 +545,7 @@ describe("HostApi.config.set round-trip", () => {
     const api = createHostApi(
       "plugin-a",
       activeManifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-cfg-secret-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-cfg-secret-")))),
       activeIncarnation(),
       "plugin-a",
     );
@@ -592,7 +602,7 @@ describe("HostApi.config.set round-trip", () => {
     const api = createHostApi(
       "plugin-a",
       activeManifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-cfg-lifecycle-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-cfg-lifecycle-")))),
       {
         registerDisposer: vi.fn(),
         trackOperation,
@@ -688,7 +698,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       pluginId,
       manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-alias-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-alias-")))),
       activeIncarnation(),
       installAlias,
     );
@@ -711,7 +721,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       pluginId,
       manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-fresh-admin-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-fresh-admin-")))),
       activeIncarnation(),
       "marketplace-fresh-install",
       { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
@@ -738,7 +748,7 @@ describe("HostApi incarnation authority", () => {
       new Promise((resolve) => { passGate = resolve; }));
     const createHostApi = await initAndGetFactory(settings);
     const api = createHostApi(
-      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-issuing-"))),
+      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-issuing-")))),
       activeIncarnation(), "meeting",
       { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
     );
@@ -768,7 +778,7 @@ describe("HostApi incarnation authority", () => {
     });
     const createHostApi = await initAndGetFactory(settings);
     const api = createHostApi(
-      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-secret-read-"))),
+      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-secret-read-")))),
       activeIncarnation(), "meeting",
       { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
     );
@@ -781,7 +791,7 @@ describe("HostApi incarnation authority", () => {
       .flatMap((stage) => (["rotate", "revoke", "endpoint-switch", "retire"] as const)
         .map((change) => ({ stage, change }))),
   )("fences issuance at $stage after $change", async ({ stage, change }) => {
-    const root = tmpDirs.track(mkdtempSync("/tmp/ave-lease-stage-"));
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-stage-")));
     const settings = new SettingsService(leaseSettingsOptions(root));
     await settings.patch({ llm: { provider: "openai", vendors: { openai: { baseUrl: "https://api.openai.com" } } } } as never);
     await settings.setSecret("llm.apiKey.openai", "synthetic-secret");
@@ -808,7 +818,7 @@ describe("HostApi incarnation authority", () => {
       "meeting", "llm.apiKey.openai", ["api.openai.com", "replacement.example.test"],
     );
     const api = createHostApi(
-      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-stage-plugin-"))),
+      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-stage-plugin-")))),
       {
         registerDisposer: (dispose: () => void) => { disposers.push(dispose); },
         trackOperation: <T>(operation: Promise<T>) => operation,
@@ -913,7 +923,7 @@ describe("HostApi incarnation authority", () => {
     const { manifest, manifestSha256 } = granted("meeting", "llm.apiKey.azure-foundry", ["azure.example.test"]);
     const createHostApi = await initAndGetFactory(settings);
     const api = createHostApi(
-      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-source-table-"))), activeIncarnation(),
+      "meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-source-table-")))), activeIncarnation(),
       "meeting", { installSource: "user", manifestSha256, origin: OFFICIAL_ORIGIN },
     );
     expect(await api.resolveApiKey({ purpose: "llm", vendor: "vertex" }))
@@ -926,7 +936,7 @@ describe("HostApi incarnation authority", () => {
 
   it("re-reads a registry entry another writer bound after the plugin started", async () => {
     // Background origin migration emits no install event.
-    const dir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-registry-"));
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-registry-")));
     runtimeTestState.registryPath = join(dir, "registry.json");
     try {
       const secretKey = "llm.apiKey.openai";
@@ -937,7 +947,7 @@ describe("HostApi incarnation authority", () => {
       const settings = makeSettingsService(new Map());
       settings.getSecret.mockImplementation((key: string) => (key === secretKey ? "bound-secret" : undefined));
       const createHostApi = await initAndGetFactory(settings);
-      const api = createHostApi("meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-bound-"))), activeIncarnation(), "meeting");
+      const api = createHostApi("meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-bound-")))), activeIncarnation(), "meeting");
 
       expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai" })).toMatchObject({ ok: false, reason: "not-whitelisted" });
 
@@ -945,13 +955,13 @@ describe("HostApi incarnation authority", () => {
       writeFileSync(runtimeTestState.registryPath, "bound to the official source");
       expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai" })).toMatchObject({ ok: true, exposure: "lease" });
     } finally {
-      runtimeTestState.registryPath = "/tmp/ave-test/registry.json";
+      runtimeTestState.registryPath = fixture.path("registry.json");
     }
   });
 
   it("lets a committed candidate see a registry entry bound after it started", async () => {
     // Re-enabled legacy entries have no origin until migration binds one.
-    const dir = tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-candidate-bound-"));
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-candidate-bound-")));
     runtimeTestState.registryPath = join(dir, "registry.json");
     try {
       const secretKey = "llm.apiKey.openai";
@@ -965,7 +975,7 @@ describe("HostApi incarnation authority", () => {
       const api = createHostApi(
         "meeting",
         manifest,
-        pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-candidate-"))),
+        pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-candidate-")))),
         activeIncarnation(),
         "meeting",
         { installSource: "user", manifestSha256 },
@@ -977,7 +987,7 @@ describe("HostApi incarnation authority", () => {
       writeFileSync(runtimeTestState.registryPath, "bound to the official source");
       expect(await api.resolveApiKey({ purpose: "llm", vendor: "openai" })).toMatchObject({ ok: true, exposure: "lease" });
     } finally {
-      runtimeTestState.registryPath = "/tmp/ave-test/registry.json";
+      runtimeTestState.registryPath = fixture.path("registry.json");
     }
   });
 
@@ -992,7 +1002,7 @@ describe("HostApi incarnation authority", () => {
     settings.getSecret.mockImplementation((key: string) => (key === secretKey ? "official-secret" : undefined));
     const createHostApi = await initAndGetFactory(settings);
     const candidate = (entry: PluginRegistryTrust) =>
-      createHostApi("meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-other-"))), activeIncarnation(), "meeting", entry);
+      createHostApi("meeting", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-other-")))), activeIncarnation(), "meeting", entry);
 
     const custom = { ...OFFICIAL_ORIGIN, sourceId: "team-mirror", sourceOrigin: "custom" as const };
     expect(await candidate({ installSource: "user", manifestSha256, origin: custom }).resolveApiKey({ purpose: "llm", vendor: "openai" })).toMatchObject({ ok: false, reason: "not-whitelisted" });
@@ -1014,7 +1024,7 @@ describe("HostApi incarnation authority", () => {
       const settings = makeSettingsService(new Map());
       settings.getSecret.mockImplementation((key: string) => (key === secretKey ? "official-secret" : undefined));
       const createHostApi = await initAndGetFactory(settings);
-      return createHostApi("meeting", running, pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-hostapi-pin-"))), activeIncarnation(), "meeting").resolveApiKey({ purpose: "llm", vendor: "openai" });
+      return createHostApi("meeting", running, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-hostapi-pin-")))), activeIncarnation(), "meeting").resolveApiKey({ purpose: "llm", vendor: "openai" });
     };
 
     expect(await call(manifest, manifestSha256)).toMatchObject({ ok: true, exposure: "lease" });
@@ -1039,7 +1049,7 @@ describe("HostApi incarnation authority", () => {
       const api = createHostApi(
         "plugin-a",
         { id: "plugin-a", config: {}, ...(sandbox ? { sandbox } : {}) } as never,
-        pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-worker-pierces-"))),
+        pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-worker-pierces-")))),
         lifecycle,
         "plugin-a",
       );
@@ -1080,7 +1090,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, networkAccess: { allowedDomains: ["api.openai.com"] } },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-issued-capabilities-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-issued-capabilities-")))),
       {
         registerDisposer: (dispose) => disposers.push(dispose),
         trackOperation: <T>(operation: Promise<T>) => operation,
@@ -1144,7 +1154,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["secrets:raw-api-key"] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-raw-denial-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-raw-denial-")))),
       activeIncarnation(),
       "plugin-a",
     );
@@ -1161,7 +1171,7 @@ describe("HostApi incarnation authority", () => {
     const createHostApi = await initAndGetFactory(settings);
     const api = createHostApi(
       "plugin-a", { id: "plugin-a", config: {}, capabilities: ["secrets:raw-api-key"] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-raw-grant-"))), activeIncarnation(), "plugin-a",
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-raw-grant-")))), activeIncarnation(), "plugin-a",
     );
     const result = await api.resolveApiKey({ purpose: "llm", vendor: "openai", exposure: "raw" });
     expect(result).toMatchObject({ ok: true, exposure: "raw", key: "synthetic-secret" });
@@ -1180,7 +1190,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-egress-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-egress-")))),
       activeIncarnation(),
       "plugin-a",
     );
@@ -1246,7 +1256,7 @@ describe("HostApi incarnation authority", () => {
           ...(partition ? { authCookiePartition: "main" } : {}),
         },
       },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-cookie-matrix-"))), activeIncarnation(), "plugin-a",
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-cookie-matrix-")))), activeIncarnation(), "plugin-a",
     );
     const resolved = lease ? await api.resolveApiKey({ purpose: "llm", vendor: "openai" }) : null;
     if (lease && (!resolved?.ok || resolved.exposure !== "lease")) throw new Error("expected lease");
@@ -1289,7 +1299,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-body-audit-"))), activeIncarnation(), "plugin-a",
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-body-audit-")))), activeIncarnation(), "plugin-a",
     );
     const result = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
     if (!result.ok || result.exposure !== "lease") throw new Error("expected lease");
@@ -1326,7 +1336,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["api.openai.com"] } },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-approval-"))), activeIncarnation(), "plugin-a",
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-approval-")))), activeIncarnation(), "plugin-a",
     );
     const result = await api.resolveApiKey({ purpose: "llm", vendor: "openai" });
     if (!result.ok || result.exposure !== "lease") throw new Error("expected lease");
@@ -1359,7 +1369,7 @@ describe("HostApi incarnation authority", () => {
     } as PluginManifest;
     const api = createHostApi(
       "plugin-a", manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-lease-wire-"))), activeIncarnation(), "plugin-a",
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-wire-")))), activeIncarnation(), "plugin-a",
     );
     let host!: HostApiDispatcher;
     let child!: Awaited<ReturnType<typeof startPluginChildRuntime>>;
@@ -1405,7 +1415,7 @@ describe("HostApi incarnation authority", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {} },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-revoked-hostapi-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-revoked-hostapi-")))),
       {
         registerDisposer: vi.fn(),
         trackOperation: <T>(operation: Promise<T>) => operation,

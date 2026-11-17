@@ -1,5 +1,5 @@
 // New or changed config and referenced scripts stay quarantined until explicit acceptance; binary-only commands cannot load (docs/architecture/hook-runtime-expansion-design.md).
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   chmodSync,
   existsSync,
@@ -9,8 +9,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import {
   loadHookConfig,
   syntheticConfigHook,
@@ -28,6 +29,9 @@ let hooksDir: string;
 let disabledDir: string;
 let layout: HookDirLayout;
 let configPath: string;
+
+// Windows reads the admin policy through a native helper; an uncomposed host reads it as unreadable and closes user hooks.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 beforeEach(() => {
   tmpDir = realpathSync(mkdtempSync(join(tmpdir(), "hook-config-trust-")));
