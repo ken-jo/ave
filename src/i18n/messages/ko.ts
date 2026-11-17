@@ -42,7 +42,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.work-item-ids-exhausted": "항목을 추가할 수 없습니다. 항목 번호가 Ave가 저장할 수 있는 가장 큰 수에 도달했습니다. 작업 보드 파일이나 워크플로 실행 파일에 그런 번호를 직접 적은 경우에만 생기며, 작업 보드 파일과 워크플로 실행 파일 두 곳 모두에서 그 번호를 되돌리기 전까지는 항목을 추가할 수 없습니다.",
   "reasonCodes.work-item-ids-unavailable": "항목을 추가할 수 없습니다. 항목 번호가 두 번 쓰이지 않도록 기록하는 워크플로 실행 파일을 지금 읽거나 저장할 수 없습니다. Ave가 검토를 요청하면 검토한 뒤 다시 시도하세요.",
   "reasonCodes.work-board-run-id-held": "저장하지 않았습니다. 이 변경은 끝나지 않은 템플릿 실행의 ID를 작업 보드 파일에서 지웁니다. 먼저 그 실행을 멈추거나, ID가 손상된 항목에만 있다면 파일을 직접 고치세요.",
-  "reasonCodes.work-board-runs-unreadable": "저장하지 않았습니다. 지금은 워크플로 실행 파일을 읽을 수 없어, Ave가 마지막으로 쓴 모습과 다른 작업 보드 파일을 그대로 두었습니다. Ave가 검토를 요청하면 실행 파일을 검토한 뒤 다시 시도하세요.",
+  "reasonCodes.work-board-runs-unreadable": "저장하지 않았습니다. 지금은 워크플로 실행 파일을 읽을 수 없어, 이 변경이 끝나지 않은 템플릿 실행을 작업 보드 파일에서 지우는지 알 수 없으므로 보드를 그대로 두었습니다. Ave가 검토를 요청하면 실행 파일을 검토한 뒤 다시 시도하세요.",
   "reasonCodes.work-board-legacy-copy-unfinished": "저장하지 않았습니다. 이전 작업 보드 확장에서 옮겨 온 보드가 아직 완료로 표시되지 않았습니다. 작업 보드 파일을 열고 있을 수 있는 프로그램을 닫은 뒤 다시 시도하세요.",
   "reasonCodes.work-board-unread": "저장하지 않았습니다. 작업 보드 파일이 없거나 읽을 수 없어 항목을 하나도 보여 주지 않습니다. 이 파일에는 새 항목만 씁니다.",
   "reasonCodes.work-board-write-failed": "항목을 추가할 수 없습니다. 작업 보드 파일을 쓸 수 없었습니다. 다시 시도하고, 계속 실패하면 파일을 열고 있을 수 있는 프로그램을 닫으세요.",

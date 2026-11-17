@@ -463,22 +463,27 @@ function hydrateBoard(file: BoardFile): BoardFile {
 }
 
 /** Throws when writing `next` over the board file's bytes `prior` would take out of it the id of a run the run file holds that is not
- * settled (`runs.held`; see {@link heldIn}). Only the user's delete of the row naming such a run takes its id out (`deleted`), only
- * with its delete intent stored (`runs.intents`), and never over bytes still decoding past 16 levels; nothing the write removes releases
- * an id. While the run file cannot be read (`runs` undefined), only bytes exactly as the board was read (`unchanged`) are written over. */
-function assertKeepsRunIds(prior: Buffer | undefined, next: string, runs: Awaited<ReturnType<WorkflowRunStore["heldRuns"]>>, unchanged: string | undefined, deleted?: DeleteIntent): void {
+ * settled (`runs.held`; see {@link heldIn}). Only the user's delete of the row naming such a run takes its id out (`change.deleted`),
+ * only with its delete intent stored (`runs.intents`), and never over bytes still decoding past 16 levels; nothing the write removes
+ * releases an id. While the run file cannot be read (`runs` undefined), only bytes exactly as the board was read (`unchanged`) are
+ * written over, and never by a write that removes an entry (`change.drops`). */
+function assertKeepsRunIds(prior: Buffer | undefined, next: string, runs: Awaited<ReturnType<WorkflowRunStore["heldRuns"]>>, unchanged: string | undefined, change: BoardChange): void {
   if (prior === undefined) return;
   if (runs === undefined) {
-    if (unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8"))) throw new WorkBoardWriteRefusal("work-board-runs-unreadable");
+    if (change.drops || unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8"))) throw new WorkBoardWriteRefusal("work-board-runs-unreadable");
     return;
   }
   const before = heldStrings(prior.toString("utf8"));
   const after = heldIn(next);
+  const { deleted } = change;
   const freed = before !== undefined && deleted && runs.intents.some((intent) => intent.itemId === deleted.itemId && intent.runId === deleted.runId) ? deleted.runId : undefined;
   for (const runId of runs.held) {
     if (runId !== freed && (before === undefined || before.has(runId)) && !after(runId)) throw new WorkBoardWriteRefusal("work-board-run-id-held");
   }
 }
+
+// What a board write does beyond rewriting fields: `deleted`, the user's delete of the row naming a run; `drops`, it removes an entry.
+interface BoardChange { deleted?: DeleteIntent; drops?: true }
 
 // The board file's text, as every board write writes it.
 function boardText(board: BoardFile): string {
@@ -612,8 +617,9 @@ export class WorkBoardStore {
   // written only by a create, which first marks the ids it cannot show. Bytes on disk that are not the text the board was read as
   // (`unchanged`) are copied aside first; with no such text, any bytes there are. The write is refused over bytes that hold a key twice,
   // and when it would take out of the board file the id of a run that is not settled, unless it is the user's delete of that run's row
-  // (`deleted`) with its intent stored (see assertKeepsRunIds).
-  private async commit(board: BoardRead, change: { deleted?: DeleteIntent } = {}): Promise<void> {
+  // (`deleted`) with its intent stored; one that removes an entry (`drops`) is refused while the run file cannot be read (see
+  // assertKeepsRunIds).
+  private async commit(board: BoardRead, change: BoardChange = {}): Promise<void> {
     if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
     if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
     const file = cacheOf(board);
@@ -627,7 +633,7 @@ export class WorkBoardStore {
           this.repeatedKey = true;
           throw new WorkBoardWriteRefusal("work-board-duplicate-key", this.filePath);
         }
-        assertKeepsRunIds(prior, text, runs, board.unchanged, change.deleted);
+        assertKeepsRunIds(prior, text, runs, board.unchanged, change);
       },
     });
     this.repeatedKey = false;
@@ -1180,7 +1186,7 @@ export class WorkBoardStore {
       delete updated.planApproval;
       board.items[idx] = updated;
       // An entry the cap drops takes its run id out of the row: the write guard refuses it for a run that is not settled.
-      try { await this.commit(board); }
+      try { await this.commit(board, capped.length < history.length ? { drops: true } : {}); }
       catch (error) {
         if (pin) await this.settleUnstarted(id, runId).catch((cleanup: Error) => log.warn("[work-board-store] a failed run start was not settled: %s", cleanup.message));
         throw error;
@@ -1434,7 +1440,7 @@ export class WorkBoardStore {
         return { status: "invalid" as const, itemId: id, reason: marked === "pending-review" ? "template-runs-pending-review" : "template-runs-too-large" };
       }
       board.items = board.items.filter((i) => i !== item);
-      await this.commit(board, runId === undefined ? {} : { deleted: { itemId: id, runId } });
+      await this.commit(board, runId === undefined ? { drops: true } : { drops: true, deleted: { itemId: id, runId } });
       if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
       await appendActivity(this.activity, {
         kind: "deleted",
@@ -1466,7 +1472,7 @@ export class WorkBoardStore {
       }
       // Read again as the file it leaves: a twin left alone with its id is listed. Read so, it has no `unchanged` text: the file is copied.
       const next = hydrateBoard(fileOf({ ...board, unreadable: board.unreadable.filter((_, index) => index !== position) }));
-      await this.commit(next);
+      await this.commit(next, { drops: true });
       await this.pruneAfterWrite(this.retention(boardStanding(next)));
       const id = rowIdOf(row);
       if (id === undefined) return { status: "deleted" as const };

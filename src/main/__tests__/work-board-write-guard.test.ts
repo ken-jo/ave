@@ -9,6 +9,7 @@ import { WorkBoardStore } from "../work-board-store.js";
 import { WorkflowRunStore } from "../workflow-run-store.js";
 import { repeatsKey, rewriteKeepingBytes } from "../storage/rewrite-keeping-bytes.js";
 import { sha256Hex as sha } from "../../lib/hex-digest-equal.js";
+import * as homeTrust from "../../shared/ave-home-trust.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { TemplateRunStart, WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 
@@ -221,6 +222,14 @@ const nested = (value: unknown, levels: number): unknown => {
 };
 // Short text that still decodes past 16 levels: each level turns one `\` into the backslash of the next.
 const OVERFLOW = `\\${"u005c".repeat(20)}`;
+// The ways the run file cannot be read, as the home read gives them, with the code a board write they refuse gives.
+const RUN_FILE_UNREADABLE: [string, () => Promise<homeTrust.AveHomeInput>, string][] = [
+  ["cannot be read", async () => { throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" }); }, "work-board-runs-unreadable"],
+  ["awaits review", async () => ({ status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" }), "work-board-runs-unreadable"],
+  ["is past its read limit", async () => { throw new homeTrust.AveHomeInputSizeLimitError("too large"); }, "work-board-runs-unreadable"],
+  ["does not parse", async () => ({ status: "trusted", bytes: Buffer.from("{") }), "work-board-runs-unreadable"],
+  ["holds a key twice", async () => ({ status: "trusted", bytes: Buffer.from('{"version":1,"rowIdFloor":0,"runs":[],"runs":[]}') }), "work-board-runs-unreadable"],
+];
 
 describe("the evidence scan", () => {
   it.each(["run.with-dot", "run:other", "run space", "실행", "say \"hi\"", "back\\slash", "D:\\", "x".repeat(256)])("holds the stored run id %j wherever a string holds it whole", async (runId) => {
@@ -308,6 +317,29 @@ describe("what lets a write take a live run's id out of board.json", () => {
         }
       } finally { await cleanupTmpDir(dir); }
     }
+  });
+
+  // A write that removes an entry while no run can be read: it cannot tell which runs the entry holds.
+  describe.each(RUN_FILE_UNREADABLE)("while the run file %s", (_, input, code) => {
+    it.each<[string, unknown[], (store: WorkBoardStore) => Promise<() => Promise<unknown>>]>([
+      ["a delete of a row", [row(2, { detail: "run-a" })], async store => () => store.remove(2)],
+      ["an invalid card's delete", [row(2), { id: 3, title: 0, note: "run-a" }], async store => { const shown = await card(store); return () => store.removeUnreadable(shown, () => true); }],
+      ["a run start whose history cap drops an entry", [row(2, { runId: "old-18", runStatus: "completed", runHistory: history })], async store => () => store.beginRun(2, "next-run", AT)],
+    ])("refuses %s over the board as it was last written", async (_, items, prepare) => {
+      const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items }, null, 2)}\n`, [live("run-a"), settled]);
+      try {
+        await store.update(2, { title: "row two" });
+        const write = await prepare(store);
+        const before = readFileSync(path, "utf8");
+        const read = homeTrust.readAveHomeInput;
+        vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(target => target === join(dir, "workflow-runs.json") ? input() : read(target));
+        await expect(write()).rejects.toMatchObject({ code });
+        expect(readFileSync(path, "utf8")).toBe(before);
+      } finally {
+        vi.restoreAllMocks();
+        await cleanupTmpDir(dir);
+      }
+    });
   });
 });
 
