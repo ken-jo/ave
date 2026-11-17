@@ -150,7 +150,7 @@ function writeFault(reason: RunWriteFailure): string {
   return reason === "invalid" ? "invalid-template-run" : "run-state-unavailable";
 }
 /** Run-file refusals the renderer shows in the user's language. */
-const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set(["template-runs-too-large", "template-runs-pending-review", "invalid-template-run"]);
+const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set(["template-runs-too-large", "template-runs-pending-review", "invalid-template-run", "run-state-unavailable"]);
 
 function rootKey(root: string): string {
   const normal = root.replace(/\\/g, "/").replace(/\/+$/, "");

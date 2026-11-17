@@ -451,8 +451,12 @@ it("a run ended without its graph whose end cannot be written keeps its workspac
   }));
 });
 
-for (const write of ["stage end", "workspace"] as const) {
-  it(`a stage write the run file refuses as too large ends the run with the size refusal on its event and its result (${write})`, async () => {
+for (const [write, refusal, code] of [
+  ["stage end", "too-large", "template-runs-too-large"],
+  ["workspace", "too-large", "template-runs-too-large"],
+  ["stage end", "refused", "run-state-unavailable"],
+] as const) {
+  it(`a stage write the run file refuses ends the run with the refusal code on its event and its result (${write}, ${refusal})`, async () => {
     await withHarness(async (h) => {
       const version = await h.confirm([stageOf("a")]);
       const id = await h.addItem(version);
@@ -466,7 +470,7 @@ for (const write of ["stage end", "workspace"] as const) {
         const refuse = write === "workspace" ? !!next?.stageRuns.some(stage => stage.workspace) && !current?.stageRuns.some(stage => stage.workspace) : true;
         if (!armed || !refuse) return updateRun(itemId, runId, mutate);
         armed = false;
-        return { status: "too-large" };
+        return { status: refusal };
       });
       const run = h.start(id, h.local(version));
       if (write === "stage end") {
@@ -475,8 +479,8 @@ for (const write of ["stage end", "workspace"] as const) {
         armed = true;
         child.finish();
       }
-      expect(await run).toMatchObject({ status: "error", reasonCode: "template-runs-too-large" });
-      expect(h.events.find(event => event.phase === "error")).toMatchObject({ itemId: id, message: "template-runs-too-large", reasonCode: "template-runs-too-large" });
+      expect(await run).toMatchObject({ status: "error", reasonCode: code });
+      expect(h.events.find(event => event.phase === "error")).toMatchObject({ itemId: id, message: code, reasonCode: code });
       expect((await h.item(id)).record?.settled?.status).toBe("error");
     });
   });

@@ -18,6 +18,7 @@ export const en = {
   "reasonCodes.invalid-template-run": "This item's template run cannot be read.",
   "reasonCodes.template-runs-pending-review": "Template runs are paused until you review the changed workflow run file.",
   "reasonCodes.template-runs-board-unread": "Template runs are paused: the work board file is missing or cannot be read, so earlier runs cannot be matched to their items.",
+  "reasonCodes.run-state-unavailable": "The template run could not be read or saved in the workflow run file. Try again.",
   "be_mcpGovernance.reservedHostOwner": "Server ids cannot use the reserved host: prefix.",
 
   "notificationCenter.title": "Notifications",
