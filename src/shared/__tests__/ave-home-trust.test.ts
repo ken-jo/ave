@@ -54,6 +54,7 @@ import { updatePermissionsFile } from "../../permissions/permissions-store.js";
 import { storedFileRulesLocation, updateProjectRulesFile } from "../../permissions/rules/project-rule-files.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import type { WindowsDaclFacts } from "../windows-path-facts.js";
+import type { WorkflowRunRecord } from "../workflow-template-types.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const paths = useTempPaths("ave-home-trust-", ".ave");
@@ -884,7 +885,7 @@ describe("workflow run file", () => {
     const edited = JSON.stringify(raw); writeFileSync(path, edited);
     expect(await store.get("run")).toEqual({ status: "pending-review" });
     expect((await store.view()).pendingReview).toBe(true);
-    const mutate = vi.fn((value: typeof run) => value);
+    const mutate = vi.fn((value: WorkflowRunRecord) => value);
     expect(await store.update("run", mutate)).toEqual({ status: "pending-review" });
     expect(await store.put({ ...run, runId: "other", itemId: 2 })).toEqual({ status: "pending-review" });
     expect(mutate).not.toHaveBeenCalled();
