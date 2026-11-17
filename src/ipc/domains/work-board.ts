@@ -261,7 +261,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     // A create never shows the renderer a raw failure.
     const result = await workBoardStore.create(normalized.input).catch((error: unknown) => {
       log.warn("[work-board] an item was not created: %s", errorMessage(error));
-      return { status: "invalid" as const, reason: "work-board-write-failed" };
+      return { status: "invalid" as const, reason: error instanceof WorkBoardWriteRefusal ? error.code : "work-board-write-failed" };
     });
     if (result.status === "created") broadcastItemChanged(result.itemId, "created");
     return result;
@@ -425,14 +425,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       });
       return result;
     } catch (err) {
-      const reason = errorMessage(err);
+      const code = err instanceof WorkBoardWriteRefusal ? err.code : undefined;
+      const reason = code ?? errorMessage(err);
       broadcastToAppWindows(deps, WORK_BOARD.runFailed, {
         itemId: id,
         reason,
         at: new Date().toISOString(),
       });
       // Convert engine failures to its stable error envelope; do not throw across IPC.
-      return { status: "error", reason } satisfies WorkItemRunResult;
+      return { status: "error", reason, ...(code === undefined ? {} : { reasonCode: code }) } satisfies WorkItemRunResult;
     }
   });
 

@@ -185,7 +185,7 @@ export type WorkItemDeleteTarget =
  * is not read either. */
 export type WorkBoardRefusalCode =
   | "work-board-run-id-held" | "work-board-runs-unreadable" | "work-board-legacy-copy-unfinished" | "work-board-unread" | "work-board-write-failed"
-  | "work-board-duplicate-key" | "workflow-runs-duplicate-key" | "work-board-backup-conflict";
+  | "work-board-duplicate-key" | "workflow-runs-duplicate-key" | "work-board-backup-conflict" | "work-board-backup-failed";
 
 /** A delete of an entry of the board or run file; `itemId` when a board entry has a usable id. `work-board-row-changed`: the entry at
  * that place is no longer the one named, and nothing was deleted; `template-runs-too-large`: the run file left would be past its read

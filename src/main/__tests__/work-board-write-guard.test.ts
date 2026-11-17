@@ -4,7 +4,7 @@
  * delete's intent stored, one run at a time, and never over text past the escape cap; its row reads as standing wherever its id is; bytes
  * a write goes over that the store did not write are copied beside the file first; a file holding a key twice is never written. The
  * engine's own fields (plan, output, session id) hold no run id here; their tests below cover them. */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
@@ -700,6 +700,66 @@ describe("the copy kept of bytes a write goes over", () => {
       await write();
       expect([readFileSync(path, "utf8"), readFileSync(copy)]).toEqual(['{"keep":2}\n', before]);
     } finally { await cleanupTmpDir(dir); }
+  });
+
+  it.each([["board.json", "invalid-rows"], ["workflow-runs.json", "invalid-runs"]] as const)("%s is not written over while the copy there is a second name of a file holding its bytes, its own or another", async (name, tag) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-kept-copy-"));
+    try {
+      const path = join(dir, name);
+      const copy = `${path}.${tag}-${sha(before)}.bak`;
+      const write = () => rewriteKeepingBytes(path, '{"keep":2}\n', { tag });
+      writeFileSync(path, before);
+      writeFileSync(join(dir, "elsewhere.json"), before);
+      for (const target of [path, join(dir, "elsewhere.json")]) {
+        linkSync(target, copy);
+        await expect(write()).rejects.toMatchObject({ code: "work-board-backup-conflict", path: copy });
+        expect(readFileSync(path)).toEqual(before);
+        rmSync(copy);
+      }
+      await write();
+      expect([readFileSync(path, "utf8"), readFileSync(copy)]).toEqual(['{"keep":2}\n', before]);
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it.skipIf(process.platform === "win32")("is not written over while the copy there is a symbolic link to a file holding its bytes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-kept-copy-"));
+    try {
+      const path = join(dir, "board.json");
+      const copy = `${path}.invalid-rows-${sha(before)}.bak`;
+      writeFileSync(path, before);
+      writeFileSync(join(dir, "elsewhere.json"), before);
+      for (const target of [path, join(dir, "elsewhere.json")]) {
+        symlinkSync(target, copy);
+        await expect(rewriteKeepingBytes(path, '{"keep":2}\n', { tag: "invalid-rows" })).rejects.toMatchObject({ code: "work-board-backup-conflict", path: copy });
+        expect(readFileSync(path)).toEqual(before);
+        rmSync(copy);
+      }
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it.each<[string, (write: typeof namespace.writeFileAtomicAtPath, target: string) => Promise<void>]>([
+    ["cannot be made", async () => { throw Object.assign(new Error("EACCES: permission denied, open"), { code: "EACCES" }); }],
+    ["once made does not hold them", async (write, target) => write(target, "other bytes")],
+  ])("refuses the write with work-board-backup-failed while the copy %s, and the file stays as it was", async (_, made) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-kept-copy-"));
+    try {
+      const path = join(dir, "board.json");
+      const copy = `${path}.invalid-rows-${sha(before)}.bak`;
+      writeFileSync(path, before);
+      const write = namespace.writeFileAtomicAtPath;
+      const writing = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => target === copy ? made(write, target) : write(target, body));
+      const refused = rewriteKeepingBytes(path, '{"keep":2}\n', { tag: "invalid-rows" });
+      await expect(refused).rejects.toBeInstanceOf(WorkBoardWriteRefusal);
+      await expect(refused).rejects.toMatchObject({ code: "work-board-backup-failed", path: copy });
+      expect(readFileSync(path)).toEqual(before);
+      writing.mockRestore();
+      rmSync(copy, { force: true });
+      await rewriteKeepingBytes(path, '{"keep":2}\n', { tag: "invalid-rows" });
+      expect([readFileSync(path, "utf8"), readFileSync(copy)]).toEqual(['{"keep":2}\n', before]);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
   });
 
   it("a board edit over bytes whose copy there does not hold them is refused with that code, and the board stays as it was", async () => {

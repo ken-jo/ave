@@ -196,7 +196,7 @@ it("shows every entry that does not read as a run by its place and content, and 
   expect(await readFile(file, "utf8")).toBe(text);
   const write = vi.spyOn(namespace, "writeFileAtomicAtPath");
   write.mockRejectedValueOnce(Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" }));
-  await expect(store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) }, () => true)).rejects.toThrow("EBUSY");
+  await expect(store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) }, () => true)).rejects.toMatchObject({ code: "work-board-backup-failed" });
   expect(await readFile(file, "utf8")).toBe(text);
   write.mockRestore();
   expect(await store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) }, () => true)).toBe("discarded");

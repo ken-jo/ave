@@ -1,6 +1,6 @@
 // The one rewrite of a home file whose bytes never go silently. Every board.json and workflow-runs.json rewrite comes through here.
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
@@ -28,11 +28,29 @@ export function repeatsKey(text: string): boolean {
   } catch { return true; }
 }
 
+/** Whether the copy at `copy` stands for the bytes `hash` names, or is absent: only its own regular file does, one that is no symbolic
+ * link, junction or second hard link (nlink 1) and not `filePath` itself, whose bytes, read through a handle on that same file, hash to
+ * the name. */
+async function copyHolds(copy: string, filePath: string, hash: string, size: number): Promise<boolean | "absent"> {
+  try {
+    const entry = await lstat(copy, { bigint: true });
+    const source = await lstat(filePath, { bigint: true }).catch(() => undefined);
+    if (!entry.isFile() || entry.nlink !== 1n || entry.size !== BigInt(size) || (source?.dev === entry.dev && source.ino === entry.ino)) return false;
+    const handle = await open(copy, "r");
+    try {
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile() || opened.nlink !== 1n || opened.dev !== entry.dev || opened.ino !== entry.ino) return false;
+      return createHash("sha256").update(await handle.readFile()).digest("hex") === hash;
+    } finally { await handle.close(); }
+  } catch (error) { return isMissingPathError(error) ? "absent" : false; }
+}
+
 /** Write `body` over `filePath`. The bytes there, unless they are exactly `unchanged` (what writing the file back as its writer read it
  * gives), are first copied beside it to `<file>.<tag>-<sha256>.bak`, once per content. `check` sees those bytes before anything is
- * written and throws to refuse the write. A copy that cannot be made fails the write, and the file stays as it was. A copy already there
- * stands for those bytes only once its own bytes hash to the name: one that does not, or cannot be read, refuses the write with
- * work-board-backup-conflict and its path, and the file stays as it was. */
+ * written and throws to refuse the write. Only a copy that {@link copyHolds} them lets the write go over them: one already there that
+ * does not refuses it with work-board-backup-conflict, and one that cannot be made, or once made does not hold them, with
+ * work-board-backup-failed, each with the copy's path; the file stays as it was. The copy is checked just before the file is replaced:
+ * whoever can swap it in between can as well swap the file itself, which no check here could stop. */
 export async function rewriteKeepingBytes(
   filePath: string,
   body: string,
@@ -44,12 +62,16 @@ export async function rewriteKeepingBytes(
   if (prior !== undefined && (keep.unchanged === undefined || !prior.equals(Buffer.from(keep.unchanged, "utf8")))) {
     const hash = createHash("sha256").update(prior).digest("hex");
     const copy = `${filePath}.${keep.tag}-${hash}.bak`;
-    const held = await readFile(copy).catch((error: unknown) => isMissingPathError(error) ? undefined : null);
-    if (held === undefined) {
-      await writeFileAtomicAtPath(copy, prior);
+    const held = await copyHolds(copy, filePath, hash, prior.length);
+    if (held === "absent") {
+      const made = await writeFileAtomicAtPath(copy, prior).then(() => copyHolds(copy, filePath, hash, prior.length), (error: Error) => error);
+      if (made !== true) {
+        log.warn("%s was not written: its bytes could not be copied to %s: %s", filePath, copy, made instanceof Error ? made.message : "the copy made does not hold them");
+        throw new WorkBoardWriteRefusal("work-board-backup-failed", copy);
+      }
       log.warn("%s holds bytes a write would not give back; kept them at %s", filePath, copy);
-    } else if (held === null || createHash("sha256").update(held).digest("hex") !== hash) {
-      log.warn("%s was not written: the copy of its bytes at %s does not hold them or cannot be read", filePath, copy);
+    } else if (!held) {
+      log.warn("%s was not written: the copy of its bytes at %s does not hold them, is not its own file, or cannot be read", filePath, copy);
       throw new WorkBoardWriteRefusal("work-board-backup-conflict", copy);
     }
   }

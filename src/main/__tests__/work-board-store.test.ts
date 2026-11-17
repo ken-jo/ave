@@ -574,14 +574,14 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
-  it("fails a write over a board whose rows that do not validate would change bytes, and writes nothing, while the copy of it cannot be made", async () => {
+  it("refuses a write over a board whose rows that do not validate would change bytes with work-board-backup-failed, and writes nothing, while the copy of it cannot be made", async () => {
     const { store, dir, path, cleanup } = tempBoard();
     try {
       const text = bigIntBoard();
       writeFileSync(path, text, "utf-8");
       await store.load();
       writeFault.failPath = ".invalid-rows-";
-      await expect(store.update(1, { title: "renamed" })).rejects.toThrow("disk full");
+      await expect(store.update(1, { title: "renamed" })).rejects.toMatchObject({ code: "work-board-backup-failed" });
       expect(readFileSync(path, "utf-8")).toBe(text);
       expect(readdirSync(dir).filter((name) => name.includes(".invalid-rows-"))).toEqual([]);
     } finally {

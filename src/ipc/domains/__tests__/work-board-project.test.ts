@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -10,6 +10,8 @@ import type { IpcDeps } from "../../types.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import type { WorkItemResolved } from "../../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import * as namespace from "../../../main/storage/feature-namespace.js";
+import { createWorkBoardEngine } from "../../../core/work-board-engine.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME } from "../../gated.js";
 
 const ipc = vi.hoisted(() => {
@@ -271,6 +273,87 @@ describe("write refusals", () => {
     vi.spyOn(store, "create").mockRejectedValue(new Error("disk full at C:\\private"));
     registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
     await expect(registeredHandler(WORK_BOARD.add)({}, { title: "Notes", projectRoot: workspace })).resolves.toEqual({ status: "invalid", reason: "work-board-write-failed" });
+  });
+});
+
+describe("a copy of a work board file that cannot be made", () => {
+  const AT = "2026-01-01T00:00:00.000Z";
+  const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
+  const fields = { status: "planned", priority: "medium", created_at: AT, updated_at: AT };
+  const keyboard = { inputOrigin: "user-keyboard", userActivation: true };
+  const revision = async (store: WorkBoardStore, id: number): Promise<string> => {
+    const got = await store.get(id);
+    if (got.status !== "found" || got.item.mutationRevision === undefined) throw new Error("Missing item");
+    return got.item.mutationRevision;
+  };
+  const card = async (store: WorkBoardStore, kind: "unreadableRows" | "unreadableRuns") => {
+    const listed = await store.list();
+    const found = listed.status === "ok" ? listed[kind]?.[0] : undefined;
+    if (!found) throw new Error("no card");
+    return { position: found.position, hash: found.hash };
+  };
+  const awaitingPlan = async (store: WorkBoardStore): Promise<string> => {
+    await store.beginRun(2, "plain-run", AT);
+    const asked = await store.setPlanAwaitingApproval(2, { runId: "plain-run", plan: "plan", runSessionId: "session-1", revision: 1, itemDigest: "d" });
+    const planHash = asked?.status === "updated" ? asked.item.planApproval?.planHash : undefined;
+    if (planHash === undefined) throw new Error("no plan");
+    return planHash;
+  };
+
+  // Both files hold bytes Ave would not write back (compact JSON), so every write over either is copied beside it first.
+  it.each<[string, string, (store: WorkBoardStore) => Promise<[string, unknown[]]>]>([
+    ["an add, by the row id the run file gives it", "workflow-runs.json", async () => [WORK_BOARD.add, [{ title: "New", projectRoot: workspace }]]],
+    ["a proposal's accept", "workflow-runs.json", async store => {
+      const filed = await store.fileBriefingProposals([{ kind: "stale-index", key: "folder:reports", title: "Re-index", summary: "s", state: "t", taskBrief: "b" }]);
+      return [WORK_BOARD.acceptProposal, [filed.filed[0], workspace]];
+    }],
+    ["an edit", "board.json", async () => [WORK_BOARD.update, [2, { detail: "edited" }]]],
+    ["a move", "board.json", async store => [WORK_BOARD.transition, [2, "in_progress", await revision(store, 2)]]],
+    ["a complete", "board.json", async store => [WORK_BOARD.complete, [2, await revision(store, 2)]]],
+    ["a reopen", "board.json", async store => [WORK_BOARD.reopen, [3, await revision(store, 3)]]],
+    ["a delete", "board.json", async store => [WORK_BOARD.remove, [2, { revision: await revision(store, 2) }]]],
+    ["a delete of the row naming a run, by its delete intent", "workflow-runs.json", async store => [WORK_BOARD.remove, [4, { revision: await revision(store, 4) }]]],
+    ["an invalid card's delete", "board.json", async store => [WORK_BOARD.remove, [null, { invalidRow: await card(store, "unreadableRows") }]]],
+    ["an unreadable run record's discard", "workflow-runs.json", async store => [WORK_BOARD.remove, [null, { runRecord: await card(store, "unreadableRuns") }]]],
+    ["a missing run's clear", "board.json", async store => [WORK_BOARD.clearRun, [6, { revision: await revision(store, 6), runId: "missing-1" }]]],
+    ["a run, by its error-state write", "board.json", async () => [WORK_BOARD.run, [2, {}]]],
+    ["a plan decision", "board.json", async store => [WORK_BOARD.decidePlan, [2, { runId: "plain-run", planHash: await awaitingPlan(store), decision: "reject" }, keyboard]]],
+  ])("answers %s with work-board-backup-failed, never a raw failure, and leaves both files as they were", async (_, file, prepare) => {
+    const path = join(root, "board.json");
+    const runsPath = join(root, "workflow-runs.json");
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 7, items: [{ id: 2, title: "row 2", ...fields }, { id: 3, title: "row 3", ...fields, status: "completed", completed_at: AT },
+      { id: 4, title: "row 4", ...fields, templateId: pin.templateId, runId: "run-a", runStatus: "executing" }, { id: 5, title: 0 },
+      { id: 6, title: "row 6", ...fields, templateId: pin.templateId, runId: "missing-1", runStatus: "executing" }] }));
+    writeFileSync(runsPath, JSON.stringify({ version: 1, rowIdFloor: 6, runs: [
+      { runId: "run-a", itemId: 4, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: AT, stageRuns: [] },
+      { runId: "run-1", itemId: 1, runStartedBy: { kind: "local-create-and-run" } }] }));
+    const store = new WorkBoardStore(path);
+    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: vi.fn() };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const engine = createWorkBoardEngine({ store, getRunner: () => undefined, emitProgress: () => {} });
+    // A missing run's clear is the template engine's pass-through to the store.
+    const workBoardEngine = { ...engine, clearMissingRun: (id: number, at: { revision: string; runId: string }) => store.clearMissingRun(id, at.revision, at.runId) };
+    registerWorkBoardHandlers({ workBoardStore: store, workBoardEngine, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const [channel, args] = await prepare(store);
+    for (const written of [path, runsPath]) writeFileSync(written, JSON.stringify(JSON.parse(readFileSync(written, "utf8"))));
+    const before = [readFileSync(path), readFileSync(runsPath)];
+    const kept = () => readdirSync(root).filter(name => name.endsWith(".bak"));
+    const keptBefore = kept();
+    const write = namespace.writeFileAtomicAtPath;
+    const copies: string[] = [];
+    vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (!target.endsWith(".bak")) return write(target, body);
+      copies.push(target);
+      throw Object.assign(new Error("EACCES: permission denied, open 'C:\\private'"), { code: "EACCES" });
+    });
+    try {
+      const answer = JSON.stringify(await registeredHandler(channel)({ sender: owner, senderFrame: owner.mainFrame }, ...args));
+      expect(answer).toContain("\"work-board-backup-failed\"");
+      expect(answer).not.toMatch(/EACCES|private/);
+      expect(copies.map(copy => copy.slice(root.length + 1).split(".").slice(0, 2).join("."))).toEqual([file]);
+      expect([readFileSync(path), readFileSync(runsPath)]).toEqual(before);
+      expect(kept()).toEqual(keptBefore);
+    } finally { vi.restoreAllMocks(); }
   });
 });
 
