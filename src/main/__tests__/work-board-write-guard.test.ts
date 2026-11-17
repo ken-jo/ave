@@ -393,8 +393,8 @@ const RUN_FILE_UNREADABLE: [string, () => Promise<homeTrust.AveHomeInput>, strin
 
 describe("the evidence scan", () => {
   it.each(["run.with-dot", "run:other", "run space", "실행", "say \"hi\"", "back\\slash", "D:\\", "x".repeat(256)])("holds the stored run id %j wherever a string holds it whole", async (runId) => {
-    // Between quotes in decoded text that is not JSON too, for an id that holds neither a quote nor a backslash.
-    const loose = /["\\]/.test(runId) ? [] : [{ archive: `x" "${runId}" y` }];
+    // As a string in decoded text that is not JSON too, for an id that holds neither a quote nor a backslash.
+    const loose = /["\\]/.test(runId) ? [] : [{ archive: `x "${runId}" y` }];
     for (const where of [{ archive: [row(9, { runId })] }, { archive: nested({ runId }, 3) }, ...loose]) {
       const { dir, store } = await home(JSON.stringify({ version: 1, nextId: 51, ...where, items: [row(2)] }), [live(runId)]);
       try { expect((await store.runRowsOnDisk())?.(live(runId))).toBe("unreadable"); } finally { await cleanupTmpDir(dir); }
@@ -407,6 +407,16 @@ describe("the evidence scan", () => {
     try {
       const standing = await store.runRowsOnDisk();
       expect([standing?.(live("run-a")), standing?.(live("run-b"))]).toEqual(["unreadable", "gone"]);
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it.each(["items", ":", "version", "{", "run-k", "x"])("does not hold %j as a key or as text outside strings", async (runId) => {
+    const text = JSON.stringify({ version: 1, nextId: 51, archive: { "run-k": [1, true, null] }, note: nested({ x: 1 }, 2), items: [row(2)] });
+    const { dir, path, store } = await home(text, [live(runId)]);
+    try {
+      expect((await store.runRowsOnDisk())?.(live(runId))).toBe("gone");
+      writeFileSync(path, text.replace("\"note\"", `"keep":${JSON.stringify(runId)},"note"`));
+      expect((await store.runRowsOnDisk())?.(live(runId))).toBe("unreadable");
     } finally { await cleanupTmpDir(dir); }
   });
 

@@ -312,8 +312,8 @@ type BoardRead = BoardFile & { unread?: true; unmoved?: true; unchanged?: string
  * history. unnamed: it neither names nor holds the run. lost: the board lists no row with its id, and the id is below the board's
  * `unknownBelow`: the board was written over one that showed none of its rows, so the row may have been there. gone: the board lists no
  * row with its id, at or above `unknownBelow`. unreadable: whatever could still be the run's row: a row with its id that does not
- * validate, or, where the run would otherwise read unnamed, lost or gone, a board file whose text holds the run's id anywhere (see
- * {@link heldIn}), or (with its row absent) any entry without a usable id. Every stored run's itemId is at or below the run file's row-id
+ * validate, or, where the run would otherwise read unnamed, lost or gone, a board file holding the run's id as a string value anywhere
+ * (see {@link heldIn}), or (with its row absent) any entry without a usable id. Every stored run's itemId is at or below the run file's row-id
  * floor, which no new row is issued under, so a gone row is gone for good. */
 export type RunRowStanding = "named" | "moved" | "unnamed" | "gone" | "lost" | "unreadable";
 type RowStandings = (run: { itemId: number; runId: string }) => RunRowStanding;
@@ -348,38 +348,48 @@ const unescaped = (text: string): string => text.includes("\\")
     hex !== undefined ? String.fromCharCode(Number.parseInt(hex, 16)) : char === undefined ? "" : SIMPLE_ESCAPES[char] ?? char)
   : text;
 
-/** Whether `text` holds a run id, compared whole: the text is cut at every quote no backslash escapes, each piece is decoded as a JSON
- * string, and each decoded piece that holds a quote or a backslash is read the same way again, so a run id the parse does not show (under
- * a key given twice, in a row kept as a string, spelled with escapes) is found, whatever characters it has. Text around an id does not
- * hold it. Text still decoding past 16 levels holds every id. */
+/** Whether `text` holds a run id as a whole JSON string value. The text is read as JSON tokens straight from its bytes, so a value the parse
+ * does not show (under a key given twice) still counts; a key (a string followed by `:`) and text outside strings never do. A value is
+ * decoded, and one that holds a quote or a backslash is read the same way again, as is text outside strings that holds a backslash, so an
+ * id in a row kept as a string or spelled with escapes is found, whatever characters it has. A string left open runs to the text's end.
+ * Text still decoding past 16 levels holds every id. */
 function heldIn(text: string): (runId: string) => boolean {
   const ids = heldStrings(text);
   return (runId) => ids === undefined || ids.has(runId);
 }
 
-// The strings heldIn compares a run id with; undefined for text still decoding past 16 levels.
+const JSON_SPACE = new Set([0x20, 0x09, 0x0a, 0x0d]);
+
+// The string values heldIn compares a run id with; undefined for text still decoding past 16 levels.
 function heldStrings(text: string): ReadonlySet<string> | undefined {
   const ids = new Set<string>();
   let level = [text];
   for (let depth = 0; level.length > 0; depth += 1) {
     if (depth > ESCAPE_LEVELS) return undefined;
     const next: string[] = [];
+    const again = (piece: string): void => {
+      if (piece.includes("\"") || piece.includes("\\")) next.push(piece);
+    };
     for (const value of level) {
-      if (value.length > 0 && value.length <= RUN_ID_MAX) ids.add(value);
-      if (!value.includes("\"") && !value.includes("\\")) continue;
-      let start = 0;
+      let outside = 0;
       let at = 0;
       while (at < value.length) {
         const char = value.charCodeAt(at);
-        if (char === 0x5c) at += 2;
-        else if (char !== 0x22) at += 1;
-        else {
-          next.push(unescaped(value.slice(start, at)));
-          at += 1;
-          start = at;
-        }
+        if (char === 0x5c) { at += 2; continue; }
+        if (char !== 0x22) { at += 1; continue; }
+        again(unescaped(value.slice(outside, at)));
+        let end = at + 1;
+        while (end < value.length && value.charCodeAt(end) !== 0x22) end += value.charCodeAt(end) === 0x5c ? 2 : 1;
+        const decoded = unescaped(value.slice(at + 1, end));
+        at = end + 1;
+        outside = at;
+        let follow = at;
+        while (follow < value.length && JSON_SPACE.has(value.charCodeAt(follow))) follow += 1;
+        if (value.charCodeAt(follow) === 0x3a) continue;
+        if (decoded.length > 0 && decoded.length <= RUN_ID_MAX) ids.add(decoded);
+        again(decoded);
       }
-      next.push(unescaped(value.slice(start)));
+      if (outside < value.length) again(unescaped(value.slice(outside)));
     }
     level = next;
   }
