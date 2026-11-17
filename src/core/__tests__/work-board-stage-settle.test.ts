@@ -630,6 +630,18 @@ it("a start whose checks throw before anything is stored is refused by a code, n
   expect(h.live()).toHaveLength(0);
 }));
 
+it("a start whose run write throws before anything is stored releases its workspace at once", () => {
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    vi.spyOn(h.board, "beginRun").mockRejectedValueOnce(new Error("disk error"));
+    expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
+    expect(released).toHaveLength(1);
+    expect((await h.item(id)).runId).toBeUndefined();
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
+});
+
 it("a start that threw after storing its run, while the run file awaits review, keeps its workspace until a reader writes the end", () => {
   const released: string[] = [];
   return withHarness(async (h) => {
