@@ -6283,7 +6283,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   // workBoard
   "workBoard.panelTitle": "업무 보드",
   "workBoard.boardLoadFailed": "작업 보드를 불러오지 못했습니다.",
-  "workBoard.unreadableRows": "작업 보드 파일에 읽을 수 없는 항목이 {count}개 있습니다. 이 항목은 파일에 그대로 보존되며 여기에는 표시되지 않습니다.",
+  "workBoard.unreadableRows": "작업 보드 파일에 읽을 수 없는 항목이 {count}개 있습니다. 이 항목은 파일에 보존되며 여기에는 표시되지 않습니다. 저장하면 이 항목이 적힌 모양이 바뀔 때는 먼저 원래 파일의 사본을 옆에 남깁니다.",
   "workBoard.pendingReview": "워크플로 실행 상태는 검토가 필요합니다. 설정 > {tabPermissions} > {homeTrustTitle}에서 work-board/workflow-runs.json을 검토한 뒤 Ave를 다시 시작하세요.",
   "workBoard.panelDescription": "예정·진행 중·검토·완료 단계로 업무를 추적합니다.",
   "workBoard.addItemButton": "작업 추가",

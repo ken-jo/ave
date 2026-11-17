@@ -164,7 +164,7 @@ export interface WorkItemListFilter {
 // Discriminated outcomes let callers branch without parsing exception messages.
 
 export type WorkItemListResult =
-  // unreadableRows: how many rows of the board file do not validate; they are kept in the file as they are and are not listed.
+  // unreadableRows: how many rows of the board file do not validate; they are kept in the file and are not listed.
   | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: number }
   | { status: "invalid"; reason: string };
 

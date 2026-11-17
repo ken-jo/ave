@@ -7,20 +7,21 @@ import {
   writeFileSync,
   readdirSync,
 } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore, itemDigestOf, planHashOf } from "../work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { localDateKey } from "../../shared/local-date.js";
 
-// Lets a test fail the next board write; every other write goes to disk as usual.
-const writeFault = vi.hoisted(() => ({ failNext: false }));
+// Lets a test fail the next board write, or every write to a path holding `failPath`; every other write goes to disk as usual.
+const writeFault = vi.hoisted(() => ({ failNext: false, failPath: "" }));
 vi.mock("../storage/feature-namespace.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../storage/feature-namespace.js")>();
   return {
     ...actual,
     writeFileAtomicAtPath: async (...args: Parameters<typeof actual.writeFileAtomicAtPath>) => {
-      if (writeFault.failNext) {
+      if (writeFault.failNext || (writeFault.failPath !== "" && args[0].includes(writeFault.failPath))) {
         writeFault.failNext = false;
         throw new Error("disk full");
       }
@@ -386,7 +387,49 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       const after = readFileSync(path, "utf-8");
       expect(after).toContain(rowText);
       expect(JSON.parse(after).items).toEqual([{ ...valid, title: "renamed", updated_at: expect.any(String) }, invalid]);
+      // Written back byte for byte: no copy of the file is kept.
+      expect(readdirSync(dirname(path)).filter((name) => name.includes(".invalid-rows-"))).toEqual([]);
     } finally {
+      await cleanup();
+    }
+  });
+
+  // A row whose number is past the safe-integer limit parses to another value: the file would lose its bytes on the next write.
+  const bigIntBoard = () => {
+    const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+    const text = `${JSON.stringify({ version: 1, nextId: 3, items: [valid, { id: 2, title: "hand-edited", size: 0 }] }, null, 2)}
+`;
+    return text.replace('"size": 0', '"size": 12345678901234567890');
+  };
+
+  it("keeps the file as it was beside it before a write that would change the bytes of a row that does not validate, once per content", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      const text = bigIntBoard();
+      writeFileSync(path, text, "utf-8");
+      for (let i = 0; i < 3; i += 1) expect(await store.create({ title: `next ${i}` })).toMatchObject({ status: "created" });
+      const copies = readdirSync(dir).filter((name) => name.includes(".invalid-rows-"));
+      expect(copies).toEqual([`board.json.invalid-rows-${createHash("sha256").update(text).digest("hex")}.bak`]);
+      expect(readFileSync(join(dir, copies[0]))).toEqual(Buffer.from(text, "utf-8"));
+      // The row itself is written back with its parsed value, after the valid rows.
+      expect(JSON.parse(readFileSync(path, "utf-8")).items.at(-1)).toEqual(JSON.parse(text).items[1]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("fails a write over a board whose rows that do not validate would change bytes, and writes nothing, while the copy of it cannot be made", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      const text = bigIntBoard();
+      writeFileSync(path, text, "utf-8");
+      await store.load();
+      writeFault.failPath = ".invalid-rows-";
+      await expect(store.update(1, { title: "renamed" })).rejects.toThrow("disk full");
+      expect(readFileSync(path, "utf-8")).toBe(text);
+      expect(readdirSync(dir).filter((name) => name.includes(".invalid-rows-"))).toEqual([]);
+    } finally {
+      writeFault.failPath = "";
       await cleanup();
     }
   });

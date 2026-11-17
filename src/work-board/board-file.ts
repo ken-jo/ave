@@ -34,7 +34,8 @@ export interface BoardFile {
    * below it that the board does not list is unknown, never gone. Every later write keeps it. */
   unknownBelow?: number;
   items: WorkItem[];
-  /** The rows of the file that do not validate, as they were read. Every write puts them back unchanged, after the valid rows. */
+  /** The rows of the file that do not validate, as parsed. Every write puts them back after the valid rows, as JSON writes their parsed
+   * value; before the first write that would change their bytes, the file as it was is copied beside it. */
   unreadable: unknown[];
 }
 

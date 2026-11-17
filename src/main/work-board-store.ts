@@ -1,6 +1,7 @@
 // Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
 // than persisting or duplicating that projection in consumers.
 import { createHash } from "node:crypto";
+import { access } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
@@ -291,8 +292,9 @@ function emptyBoard(): BoardFile {
 }
 
 /** A board as a write read it. `unread`: the file was absent, awaited review, did not parse or had no items list, so the board started
- * empty and shows none of the rows the file may have held. Never written. */
-type BoardRead = BoardFile & { unread?: true };
+ * empty and shows none of the rows the file may have held. `prior`: the file's bytes, when writing back its rows that do not validate
+ * would not give them byte for byte. Neither is written. */
+type BoardRead = BoardFile & { unread?: true; prior?: Buffer };
 
 /** Where a stored run's row stands on a readable board. named: the row names the run. moved: it names another run and holds this one in its
  * history. unnamed: it neither names nor holds the run. unreadable: a row with its id is there but does not validate. lost: the board
@@ -379,6 +381,16 @@ function hydrateBoard(file: BoardFile): BoardFile {
     version: BOARD_VERSION, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items,
     unreadable: file.items.filter((row) => !isValidRecord(row)),
   };
+}
+
+/** A copy of the board file as it was, beside it, once per content: a row that does not validate is written back as JSON writes its
+ * parsed value, which can differ from its bytes (a number past the safe-integer limit, other spacing). A copy that cannot be made
+ * fails the write, and nothing is written. */
+async function keepPriorBytes(filePath: string, prior: Buffer): Promise<void> {
+  const copy = `${filePath}.invalid-rows-${createHash("sha256").update(prior).digest("hex")}.bak`;
+  if (await access(copy).then(() => true, () => false)) return;
+  await writeFileAtomicAtPath(copy, prior);
+  log.warn("[work-board-store] the board file holds rows that do not validate; kept it as it was at %s", copy);
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
@@ -484,9 +496,11 @@ export class WorkBoardStore {
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it. A board read as unread is
   // written only by a create, which first marks the ids it cannot show.
   private async commit(board: BoardRead): Promise<void> {
-    if (board.unread) throw new Error("a board that shows none of its rows is written only by a create");
-    await writeFileAtomic(this.filePath, board);
-    this.cache = board;
+    const { unread, prior, ...file } = board;
+    if (unread) throw new Error("a board that shows none of its rows is written only by a create");
+    if (prior) await keepPriorBytes(this.filePath, prior);
+    await writeFileAtomic(this.filePath, file);
+    this.cache = file;
     this.boardChanged.emit();
   }
 
@@ -515,7 +529,11 @@ export class WorkBoardStore {
     const input = await readAveHomeInput(this.filePath);
     if (input.status !== "trusted") return { ...emptyBoard(), unread: true };
     const parsed = parseBoard(input.bytes);
-    if (readableBoard(parsed)) return hydrateBoard(parsed);
+    if (readableBoard(parsed)) {
+      const board: BoardRead = hydrateBoard(parsed);
+      if (board.unreadable.length > 0 && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`))) board.prior = input.bytes;
+      return board;
+    }
     await quarantineCorruptJson(this.filePath);
     return { ...emptyBoard(), unread: true };
   }
@@ -566,7 +584,8 @@ export class WorkBoardStore {
   }
 
   async load(): Promise<void> {
-    this.cache = await this.readBoard();
+    const { unread: _, prior: __, ...board } = await this.readBoard();
+    this.cache = board;
     this.loaded = true;
     // The run file's row-id floor starts from the first board read: every id it shows. One that cannot take it now gets it with the next new row.
     try { await this.runs.raiseRowIdFloor(this.cache.nextId - 1); }

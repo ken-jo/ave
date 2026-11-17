@@ -3747,9 +3747,13 @@ with its own owner rule:
   record is then pruned, or shrunk to its summary while a run history lists
   it. A run whose row is there without naming or holding it ends `error`
   (`template-run-lost`), written by its run id, at boot and live alike, and
-  its record is pruned. A row that does not validate is kept in the file as
-  it was read, after the valid rows, by every board write; the list counts
-  such rows (`unreadableRows`) and the board says so. A run whose row does not
+  its record is pruned. A row that does not validate is kept in the file by
+  every board write, after the valid rows, as JSON writes its parsed value,
+  which can differ from its bytes (a number past the safe-integer limit,
+  other spacing). Before the first write that would change those bytes, the
+  file as it was is copied to `board.json.invalid-rows-<sha256>.bak` beside
+  it, once per content; a copy that cannot be made refuses the write. The
+  list counts such rows (`unreadableRows`) and the board says so. A run whose row does not
   validate is never read as its row gone, and keeps its record.
   A board file that shows nothing proves nothing: the engine then settles,
   prunes and sweeps nothing and refuses template starts until a later start,
