@@ -686,7 +686,13 @@ export class WorkBoardStore {
       const id = rowIdOf(row);
       return { ...(id === undefined ? {} : { id }), position, hash: sha256(JSON.stringify(row)) };
     });
-    return { status: "ok", items: rows, ...(unreadable.length > 0 ? { unreadableRows: unreadable } : {}) };
+    const unreadableRuns = runs.unreadable?.map(entry => ({ ...entry })) ?? [];
+    return {
+      status: "ok",
+      items: rows,
+      ...(unreadable.length > 0 ? { unreadableRows: unreadable } : {}),
+      ...(unreadableRuns.length > 0 ? { unreadableRuns } : {}),
+    };
   }
 
   // Fetch one item by id.
@@ -1311,6 +1317,18 @@ export class WorkBoardStore {
       });
       return { status: "deleted" as const, itemId: id };
     });
+  }
+
+  /** Discard, as an unreadable run record card asks, the one entry of the run file that does not read as a run at `target.position`,
+   * while its JSON still hashes to `target.hash`. The run file as it was is copied beside it first; there is no undo. Then the board's
+   * unknownBelow mark drops once nothing in the run file could be an unsettled run below it. */
+  async discardUnreadableRun(target: { position: number; hash: string }): Promise<WorkBoardEntryDeleteResult> {
+    await this.ensureLoaded();
+    const outcome = await this.runs.discardUnreadable(target);
+    if (outcome === "changed") return { status: "invalid", reason: "work-board-row-changed" };
+    if (outcome === "too-large") return { status: "invalid", reason: "template-runs-too-large" };
+    await this.pruneSettledRuns().catch((error: Error) => log.warn("[work-board-store] runs were not pruned after a discard: %s", error.message));
+    return { status: "deleted" };
   }
 
   // Keep proposals separate from user-owned board rows within the same feature namespace.

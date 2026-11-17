@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkflowRunStore } from "../workflow-run-store.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
+import * as namespace from "../storage/feature-namespace.js";
 import type { WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 
 let dir: string;
@@ -172,6 +175,53 @@ it("stores how a run ended and refuses a malformed end", async () => {
   for (const bad of [{ status: "idle", at: settled.at }, { status: "error", at: "never" }, { status: "error" }, { ...settled, by: "user" }]) {
     await expect(store.update("run-1", value => ({ ...value, settled: bad as never }))).rejects.toMatchObject({ code: "invalid-template-run" });
   }
+});
+
+const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+
+it("shows every entry that does not read as a run by its place and content, and discards only the one named, after keeping the file as it was", async () => {
+  const store = new WorkflowRunStore(file);
+  const broken = { runId: "broken", itemId: 4 };
+  const entries = [run(), null, broken, run({ runId: "twice" }), run({ runId: "twice", itemId: 3 }), { itemId: "two" }];
+  const text = JSON.stringify({ version: 1, rowIdFloor: 9, runs: entries });
+  await writeFile(file, text);
+  expect((await store.view()).unreadable).toEqual([
+    { position: 1, hash: sha("null") }, { position: 2, hash: sha(JSON.stringify(broken)), itemId: 4 },
+    { position: 3, hash: sha(JSON.stringify(entries[3])), itemId: 1 }, { position: 4, hash: sha(JSON.stringify(entries[4])), itemId: 3 },
+    { position: 5, hash: sha(JSON.stringify(entries[5])) },
+  ]);
+  for (const target of [{ position: 2, hash: sha("null") }, { position: 0, hash: sha(JSON.stringify(run())) }, { position: 6, hash: sha("null") }]) {
+    expect(await store.discardUnreadable(target)).toBe("changed");
+  }
+  expect(await readFile(file, "utf8")).toBe(text);
+  const write = vi.spyOn(namespace, "writeFileAtomicAtPath");
+  write.mockRejectedValueOnce(Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" }));
+  await expect(store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) })).rejects.toThrow("EBUSY");
+  expect(await readFile(file, "utf8")).toBe(text);
+  write.mockRestore();
+  expect(await store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) })).toBe("discarded");
+  expect(await readFile(`${file}.invalid-runs-${sha(text)}.bak`, "utf8")).toBe(text);
+  expect((await stored()).runs).toEqual([run(), null, ...entries.slice(3)]);
+  // The places follow the file as it is now; a repeated runId left once reads as its run.
+  expect(await store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) })).toBe("changed");
+  expect(await store.discardUnreadable({ position: 3, hash: sha(JSON.stringify(entries[4])) })).toBe("discarded");
+  expect(await store.get("twice")).toEqual({ status: "found", run: run({ runId: "twice" }) });
+  expect((await store.view()).unreadable).toEqual([{ position: 1, hash: sha("null") }, { position: 3, hash: sha(JSON.stringify(entries[5])) }]);
+});
+
+it("discards nothing while the run file awaits review, is past its read limit or is not there", async () => {
+  const store = new WorkflowRunStore(file);
+  const target = { position: 0, hash: sha("null") };
+  expect(await store.discardUnreadable(target)).toBe("changed");
+  expect(existsSync(file)).toBe(false);
+  const text = JSON.stringify({ version: 1, runs: [null] });
+  await writeFile(file, text);
+  const read = vi.spyOn(homeTrust, "readAveHomeInput").mockResolvedValueOnce({ status: "untrusted", bytes: Buffer.from(text), reason: "changed" });
+  expect(await store.discardUnreadable(target)).toBe("changed");
+  read.mockRejectedValueOnce(new homeTrust.AveHomeInputSizeLimitError("too large"));
+  expect(await store.discardUnreadable(target)).toBe("changed");
+  expect(await readFile(file, "utf8")).toBe(text);
+  expect((await store.view()).unreadable).toEqual([target]);
 });
 
 it("lists every readable run, leaves out unreadable and repeated entries, and lists nothing while the file awaits review", async () => {

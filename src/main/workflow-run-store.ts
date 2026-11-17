@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { AVE_HOME_INPUT_MAX_BYTES, AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
@@ -12,8 +14,11 @@ import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, W
  * itemId, and every write stores it, so it never goes down. */
 // `legacyBoardCopy`: the boot copy of a legacy board, as stored; it is only read by the copy, and written back as it is.
 interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown }
-/** One read of the run file, for a caller that looks up several runs. */
-export interface WorkflowRunView { readonly pendingReview: boolean; get(runId: string): WorkflowRunReadResult }
+/** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
+ * row it names when that reads as a row id. */
+interface WorkflowRunUnreadable { position: number; hash: string; itemId?: number }
+/** One read of the run file, for a caller that looks up several runs; `unreadable`, every entry of it that does not read as a run. */
+export interface WorkflowRunView { readonly pendingReview: boolean; readonly unreadable?: readonly WorkflowRunUnreadable[]; get(runId: string): WorkflowRunReadResult }
 /** What a write does with another readable run: null removes it, a record replaces it (same item, pin and start authority). */
 export type WorkflowRunRetention = (run: WorkflowRunRecord) => WorkflowRunRecord | null;
 
@@ -49,6 +54,22 @@ function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
   return changed;
 }
 
+// Every entry get() refuses: one that is not a run, does not validate, or shares its runId with another entry.
+function unreadableEntries(file: RunsFile): WorkflowRunUnreadable[] {
+  return file.runs.flatMap((entry, position) => {
+    if (isRecord(entry) && typeof entry.runId === "string" && lookup(file, entry.runId).result.status === "found") return [];
+    const itemId = isRecord(entry) && isRowId(entry.itemId) ? entry.itemId : undefined;
+    return [{ position, hash: createHash("sha256").update(JSON.stringify(entry)).digest("hex"), ...(itemId === undefined ? {} : { itemId }) }];
+  });
+}
+
+// The run file as it was before a discard, once per content; a copy that cannot be written fails the discard.
+async function keepDiscardedBytes(filePath: string, bytes: Buffer): Promise<void> {
+  const copy = `${filePath}.invalid-runs-${createHash("sha256").update(bytes).digest("hex")}.bak`;
+  if (await access(copy).then(() => true, () => false)) return;
+  await writeFileAtomicAtPath(copy, bytes);
+}
+
 const isRowId = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const floorOver = (runs: readonly unknown[], floor: number): number =>
   runs.reduce<number>((highest, entry) => isRecord(entry) && isRowId(entry.itemId) ? Math.max(highest, entry.itemId) : highest, floor);
@@ -69,17 +90,22 @@ export class WorkflowRunStore {
 
   /** The file, or undefined while it awaits home content review. Any other read failure throws. */
   private async read(): Promise<RunsFile | undefined> {
+    return (await this.load())?.file;
+  }
+
+  // The file with the bytes it was read from; no bytes for a file that is not there.
+  private async load(): Promise<{ file: RunsFile; bytes?: Buffer } | undefined> {
     let input: Awaited<ReturnType<typeof readAveHomeInput>>;
     try { input = await readAveHomeInput(this.filePath); }
     catch (error) { if (error instanceof AveHomeInputSizeLimitError) return undefined; throw error; }
-    if (input.status === "absent") return { version: 1, rowIdFloor: 0, runs: [] };
+    if (input.status === "absent") return { file: { version: 1, rowIdFloor: 0, runs: [] } };
     if (input.status === "untrusted") return undefined;
     let raw: unknown;
     try { raw = JSON.parse(input.bytes.toString("utf8")); } catch { throw new WorkflowTemplateError("invalid-template-run"); }
     requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor)), "invalid-template-run");
     const runs: unknown[] = raw.runs;
     const copy = raw.legacyBoardCopy === undefined ? {} : { legacyBoardCopy: raw.legacyBoardCopy };
-    return { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy };
+    return { file: { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy }, bytes: input.bytes };
   }
 
   /** The id for a new board row: above the floor and above `seen` (every id the board file shows), stored as the new floor before the row
@@ -143,7 +169,20 @@ export class WorkflowRunStore {
   async view(): Promise<WorkflowRunView> {
     const file = await this.read();
     if (file === undefined) return { pendingReview: true, get: () => ({ status: "pending-review" }) };
-    return { pendingReview: false, get: runId => lookup(file, runId).result };
+    return { pendingReview: false, unreadable: unreadableEntries(file), get: runId => lookup(file, runId).result };
+  }
+
+  /** Remove the entry at `position` that does not read as a run, only while its hash is `hash`; the file as it was is kept beside it
+   * first. `changed` when no such entry is there or the file awaits review or is past its read limit; `too-large` when the file left
+   * would be past it. A file that cannot be read throws. */
+  async discardUnreadable(target: { position: number; hash: string }): Promise<"discarded" | "changed" | "too-large"> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const read = await this.load();
+      if (!read?.bytes || !unreadableEntries(read.file).some(entry => entry.position === target.position && entry.hash === target.hash)) return "changed";
+      await keepDiscardedBytes(this.filePath, read.bytes);
+      read.file.runs.splice(target.position, 1);
+      return (await this.commit(read.file)) ? "discarded" : "too-large";
+    });
   }
 
   async get(runId: string): Promise<WorkflowRunReadResult> {

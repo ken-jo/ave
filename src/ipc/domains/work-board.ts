@@ -20,7 +20,6 @@ import type {
   WorkPlanDecideInput,
   WorkPlanDecideIpcResult,
   WorkPlanDecision,
-  WorkItemDeleteTarget,
 } from "../../shared/work-board-types.js";
 import { MAX_PLAN_NOTE_LENGTH } from "../../shared/work-board-types.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
@@ -101,11 +100,14 @@ function isAuthorizedInvalidRow(row: unknown): boolean {
 const hasExactly = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
-const isInvalidRowTarget = (target: unknown): target is Extract<WorkItemDeleteTarget, { invalidRow: unknown }> => {
-  if (!hasExactly(target, ["invalidRow"]) || !hasExactly(target.invalidRow, ["position", "hash"])) return false;
-  const { position, hash } = target.invalidRow;
-  return typeof position === "number" && Number.isSafeInteger(position) && position >= 0 && typeof hash === "string" && PLAN_HASH_PATTERN.test(hash);
-};
+// `{ [key]: { position, hash } }` exactly, with a safe non-negative position and a sha-256 hash; anything else names no entry.
+function entryTarget(target: unknown, key: "invalidRow" | "runRecord"): { position: number; hash: string } | undefined {
+  if (!hasExactly(target, [key])) return undefined;
+  const entry = target[key];
+  if (!hasExactly(entry, ["position", "hash"])) return undefined;
+  const { position, hash } = entry;
+  return typeof position === "number" && Number.isSafeInteger(position) && position >= 0 && typeof hash === "string" && PLAN_HASH_PATTERN.test(hash) ? { position, hash } : undefined;
+}
 
 const PLAN_DECISIONS: readonly WorkPlanDecision[] = ["approve", "reject", "request_changes"];
 const PLAN_HASH_PATTERN = /^[0-9a-f]{64}$/;
@@ -302,10 +304,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
-    // An invalid card's delete: by the entry's place and content in the board file, never by an id or through a listed item.
-    if (id === null || hasExactly(target, ["invalidRow"])) {
-      if (id !== null || !isInvalidRowTarget(target)) return { ok: false, error: "invalid-input" };
-      const result = await workBoardStore.removeUnreadable(target.invalidRow, isAuthorizedInvalidRow);
+    // An invalid card's delete or an unreadable run record's discard: by the entry's place and content in its file, never by an id or
+    // through a listed item.
+    if (id === null || hasExactly(target, ["invalidRow"]) || hasExactly(target, ["runRecord"])) {
+      if (id !== null) return { ok: false, error: "invalid-input" };
+      const row = entryTarget(target, "invalidRow");
+      const runRecord = entryTarget(target, "runRecord");
+      const result = row ? await workBoardStore.removeUnreadable(row, isAuthorizedInvalidRow)
+        : runRecord ? await workBoardStore.discardUnreadableRun(runRecord) : undefined;
+      if (result === undefined) return { ok: false, error: "invalid-input" };
       if (result.status === "deleted") broadcastItemChanged(result.itemId, "removed");
       return result;
     }

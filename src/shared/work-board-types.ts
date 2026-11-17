@@ -167,21 +167,29 @@ export interface WorkItemListFilter {
  * `hash`: the sha-256 of its JSON. Both name it to that delete, which removes nothing else. */
 export type WorkItemUnreadableRow = { id?: number; position: number; hash: string };
 
-/** What a board delete names: a listed row by the revision its card showed (with its id), or an entry of the board file that does not
- * validate (with a null id). */
-export type WorkItemDeleteTarget = { revision: string } | { invalidRow: { position: number; hash: string } };
+/** An entry of the run file that does not read as a run, shown only as a placeholder with a discard. `position`: its index among the
+ * file's runs; `hash`: the sha-256 of its JSON; `itemId`: the row it names, when that reads as an id. */
+export type WorkItemUnreadableRun = { itemId?: number; position: number; hash: string };
 
-/** A delete of an entry of the board file; `itemId` when the entry has a usable id. `work-board-row-changed`: the entry at that place
- * is no longer the one named, and nothing was deleted. */
+/** What a board delete names: a listed row by the revision its card showed (with its id), or, with a null id, an entry of the board
+ * file that does not validate or an entry of the run file that does not read as a run. */
+export type WorkItemDeleteTarget =
+  | { revision: string }
+  | { invalidRow: { position: number; hash: string } }
+  | { runRecord: { position: number; hash: string } };
+
+/** A delete of an entry of the board or run file; `itemId` when a board entry has a usable id. `work-board-row-changed`: the entry at
+ * that place is no longer the one named, and nothing was deleted; `template-runs-too-large`: the run file left would be past its read
+ * limit, and nothing was discarded. */
 export type WorkBoardEntryDeleteResult =
   | { status: "deleted"; itemId?: number }
   | { status: "not_found" }
-  | { status: "invalid"; reason: "work-board-row-changed" };
+  | { status: "invalid"; reason: "work-board-row-changed" | "template-runs-too-large" };
 
 export type WorkItemListResult =
   // unreadableRows: one entry per row of the board file that does not validate, with its id when it has one; they are kept in the file
-  // and are not listed.
-  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[] }
+  // and are not listed. unreadableRuns: one per entry of the run file that does not read as a run.
+  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[]; unreadableRuns?: WorkItemUnreadableRun[] }
   | { status: "invalid"; reason: string };
 
 export type WorkItemCreateResult =

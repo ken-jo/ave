@@ -3763,6 +3763,19 @@ with its own owner rule:
   from then on a lost run's record is pruned as a gone row's run is, so lost
   records do not pile up over repeated damage. A mark that cannot be dropped
   then (the board write fails) stays until the next prune.
+  An entry of the run file that does not read as a run (not a run, not
+  valid, or sharing its run id with another entry) is listed with its place
+  among the file's runs, the sha-256 of its JSON and the row it names when
+  that reads as an id (`unreadableRuns`), and the board shows an unreadable
+  run record card for each. Its discard removes, at once and with no
+  confirm, that one entry, named by its place and hash; it starts, cancels
+  and settles no run. One whose place no longer holds such an entry with
+  that hash is refused (`work-board-row-changed`) and writes nothing. Before
+  it, the run file as it was is copied to
+  `workflow-runs.json.invalid-runs-<sha256>.bak` beside it, once per
+  content; a copy that cannot be made fails the discard. The discard then
+  runs the prune above, so the mark drops once nothing else in the run file
+  could be a run below it.
   Invariant: a run's row is gone only when the board file on disk proves it.
   That takes all of these: the file is readable; the id is at or above
   `unknownBelow`, so the board was readable before the write that dropped

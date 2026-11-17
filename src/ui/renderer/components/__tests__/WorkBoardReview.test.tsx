@@ -132,6 +132,41 @@ describe("work board review", () => {
     expect(await screen.findByTestId("work-board-unreadable-row-error")).toHaveTextContent(t(message));
     expect(screen.getByTestId("work-board-unreadable-row")).toBeTruthy();
   });
+  it("shows one card per unreadable run record, which only discards it, and discards it at once by its place and content, then reads the board again", async () => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], unreadableRuns: [{ itemId: 2, position: 1, hash: "a".repeat(64) }, { position: 4, hash: "b".repeat(64) }] });
+    const remove = vi.fn(async () => ({ status: "deleted" as const }));
+    api.removeWorkBoardItem = remove;
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    const list = await screen.findByTestId("work-board-unreadable-runs");
+    expect(list).toHaveAccessibleName(t("workBoard.unreadableRunsLabel"));
+    const cards = within(list).getAllByTestId("work-board-unreadable-run");
+    expect(cards.map(card => card.textContent)).toEqual([
+      `${t("workBoard.unreadableRunBadge")}${t("workBoard.unreadableRun", { id: 2 })}${t("workBoard.discardRunButton")}`,
+      `${t("workBoard.unreadableRunBadge")}${t("workBoard.unreadableRunNoRow")}${t("workBoard.discardRunButton")}`,
+    ]);
+    expect(cards.map(card => within(card).queryAllByRole("button").map(button => button.getAttribute("aria-label")))).toEqual([
+      [t("workBoard.unreadableRunDiscardLabel", { id: 2 })], [t("workBoard.unreadableRunNoRowDiscardLabel", { n: 5 })],
+    ]);
+    fireEvent.click(within(cards[1]).getByTestId("work-board-unreadable-run-discard"));
+    await waitFor(() => expect(screen.queryByTestId("work-board-unreadable-runs")).toBeNull());
+    expect(remove).toHaveBeenCalledExactlyOnceWith(null, { runRecord: { position: 4, hash: "b".repeat(64) } });
+    expect(api.listWorkBoard).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByTestId("work-board-unreadable-row-error")).toBeNull();
+  });
+  it.each([
+    [{ status: "invalid" as const, reason: "template-runs-too-large" as const }, "workBoard.errorMutationRefused"],
+    [{ status: "invalid" as const, reason: "work-board-row-changed" as const }, "workBoard.unreadableRunChanged"],
+  ] as const)("says why a refused unreadable run record discard (%o) did nothing and keeps the card", async (refusal, message) => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValue({ status: "ok", items: [result], unreadableRuns: [{ itemId: 2, position: 0, hash: "a".repeat(64) }] });
+    api.removeWorkBoardItem = vi.fn(async () => refusal);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    fireEvent.click(await screen.findByTestId("work-board-unreadable-run-discard"));
+    expect(await screen.findByTestId("work-board-unreadable-row-error")).toHaveTextContent(t(message));
+    expect(screen.getByTestId("work-board-unreadable-run")).toBeTruthy();
+  });
   it("shows a load error instead of an empty board when the first read fails", async () => {
     const api = apiFor([result]);
     vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ ok: false, error: "invalid-template-run" });

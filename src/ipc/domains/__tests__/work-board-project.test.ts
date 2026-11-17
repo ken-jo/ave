@@ -304,3 +304,37 @@ describe("invalid row delete", () => {
     ]);
   });
 });
+
+describe("unreadable run record discard", () => {
+  it("discards an entry of the run file that does not read as a run only as its card names it, by its place and content, and tells every window", async () => {
+    const path = join(root, "board.json");
+    const runsPath = join(root, "workflow-runs.json");
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 2, items: [] }));
+    const text = JSON.stringify({ version: 1, rowIdFloor: 1, runs: [{ runId: "run-1", itemId: 1 }, null] });
+    writeFileSync(runsPath, text);
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send: broadcast } };
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    const listed = await store.list();
+    const [first, second] = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
+    expect([first, second]).toEqual([
+      { itemId: 1, position: 0, hash: createHash("sha256").update(JSON.stringify({ runId: "run-1", itemId: 1 })).digest("hex") },
+      { position: 1, hash: createHash("sha256").update("null").digest("hex") },
+    ]);
+    const target = { runRecord: { position: first.position, hash: first.hash } };
+    for (const [id, named] of [
+      [1, target], [null, { runRecord: true }], [null, { ...target, invalidRow: target.runRecord }], [null, { runRecord: { ...target.runRecord, more: 1 } }],
+      [null, { runRecord: { position: -1, hash: first.hash } }], [null, { runRecord: { position: 0, hash: "A".repeat(64) } }], [null, "runRecord"],
+    ]) {
+      await expect(remove({}, id, named)).resolves.toEqual({ ok: false, error: "invalid-input" });
+    }
+    await expect(remove({}, null, { runRecord: { position: 0, hash: second.hash } })).resolves.toEqual({ status: "invalid", reason: "work-board-row-changed" });
+    expect(readFileSync(runsPath, "utf8")).toBe(text);
+    expect(broadcast).not.toHaveBeenCalled();
+    await expect(remove({}, null, target)).resolves.toEqual({ status: "deleted" });
+    expect(JSON.parse(readFileSync(runsPath, "utf8")).runs).toEqual([null]);
+    expect(broadcast.mock.calls.map(([, payload]) => payload)).toEqual([{ change: "removed", changedAt: expect.any(String) }]);
+  });
+});

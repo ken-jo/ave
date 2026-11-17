@@ -1084,6 +1084,22 @@ it("a user's delete of a live run's listed row below the board's unknownBelow ma
   expect(h.events.some(event => event.message === "template-run-lost")).toBe(false);
 }));
 
+it("discarding unreadable run records, ones naming the live run's row included, starts, cancels and settles no run: the live run completes untouched", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
+  const file = JSON.parse(readFileSync(runsPath, "utf8")) as { runs: unknown[] };
+  writeFileSync(runsPath, JSON.stringify({ ...file, runs: [...file.runs, { runId: "run-gone", itemId: live.id }, { runId: 7, itemId: live.id }] }));
+  const listed = await h.board.list();
+  const cards = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
+  expect(cards.map(card => card.itemId)).toEqual([live.id, live.id]);
+  for (const card of [...cards].reverse()) expect(await h.board.discardUnreadableRun(card)).toEqual({ status: "deleted" });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.interrupts).toEqual([]);
+  expect(h.live()).toEqual([live.child]);
+  expect(await h.runOf(live.runId)).toEqual(live.record);
+  await completesUntouched(h, live);
+}));
+
 it("no single damaged entry drawn by a seeded generator in place of a live run's row reads as its row gone: the run waits through every one and completes", () => withHarness(async (h) => {
   let state = 0x2026_1117;
   const pick = (count: number) => {

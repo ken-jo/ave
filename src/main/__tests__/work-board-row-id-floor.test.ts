@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -256,6 +257,27 @@ it("keeps the mark while the run file shows an entry that does not read as a run
   }
   await store.pruneSettledRuns();
   expect(JSON.parse(await readFile(boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+});
+
+it("drops the mark once the user discards the last entry of the run file that does not read as a run, the run file kept as it was first", async () => {
+  const mark = async () => JSON.parse(await readFile(boardPath, "utf8")).unknownBelow;
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 6, unknownBelow: 5, items: [5].map(row) }));
+  const entries = [{ runId: "run-3", itemId: 3 }, null];
+  const text = JSON.stringify({ version: 1, rowIdFloor: 5, runs: entries });
+  await writeFile(runsPath, text);
+  const store = new WorkBoardStore(boardPath);
+  const listed = await store.list();
+  const cards = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
+  expect(cards).toEqual([{ itemId: 3, position: 0, hash: sha(JSON.stringify(entries[0])) }, { position: 1, hash: sha("null") }]);
+  expect(await store.discardUnreadableRun(cards[1])).toEqual({ status: "deleted" });
+  expect(await mark()).toBe(5);
+  expect(await store.discardUnreadableRun(cards[1])).toEqual({ status: "invalid", reason: "work-board-row-changed" });
+  expect(await store.discardUnreadableRun(cards[0])).toEqual({ status: "deleted" });
+  expect(JSON.parse(await readFile(boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+  expect((await runFile()).runs).toEqual([]);
+  expect(await readFile(`${runsPath}.invalid-runs-${sha(text)}.bak`, "utf8")).toBe(text);
+  expect(await store.list()).not.toHaveProperty("unreadableRuns");
 });
 
 it("a create on a home with neither file marks no id unknown: none was issued before", async () => {

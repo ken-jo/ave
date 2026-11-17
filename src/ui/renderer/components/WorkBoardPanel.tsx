@@ -39,7 +39,9 @@ import type {
   WorkItemPriority,
   WorkItemResolved,
   WorkItemStatusStored,
+  WorkItemDeleteTarget,
   WorkItemUnreadableRow,
+  WorkItemUnreadableRun,
   WorkItemUpdateInput,
 } from "../../../shared/work-board-types.js";
 import type { WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
@@ -1623,6 +1625,28 @@ function UnreadableRowCards({ rows, onDelete }: { rows: readonly WorkItemUnreada
   );
 }
 
+/** One card per entry of the run file that does not read as a run: it says which row it names, if any. Its discard removes that entry
+ * alone at once, with no confirm; nothing on it starts or stops a run. */
+function UnreadableRunCards({ runs, onDiscard }: { runs: readonly WorkItemUnreadableRun[]; onDiscard: (run: WorkItemUnreadableRun) => void }) {
+  return (
+    <ul className="flex flex-col gap-2 pb-3" aria-label={t("workBoard.unreadableRunsLabel")} data-testid="work-board-unreadable-runs">
+      {runs.map((run) => (
+        <li key={`${run.position}-${run.hash}`} className="rounded-lg border border-destructive/(--opacity-half) bg-destructive/(--opacity-faint) p-3 text-sm" data-testid="work-board-unreadable-run">
+          <Badge variant="outline" className="mb-1.5 border-destructive text-destructive">{t("workBoard.unreadableRunBadge")}</Badge>
+          <p>{run.itemId === undefined ? t("workBoard.unreadableRunNoRow") : t("workBoard.unreadableRun", { id: run.itemId })}</p>
+          <Button
+            size="sm" variant="outline" className="mt-2" data-testid="work-board-unreadable-run-discard"
+            aria-label={run.itemId === undefined ? t("workBoard.unreadableRunNoRowDiscardLabel", { n: run.position + 1 }) : t("workBoard.unreadableRunDiscardLabel", { id: run.itemId })}
+            onClick={() => onDiscard(run)}
+          >
+            {t("workBoard.discardRunButton")}
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function WorkBoardPanel({
   api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, approvalShowAll, onApprovalShowAllConsumed,
   onOpenRoutine, onOpenSchedule, onOpenSession,
@@ -1674,6 +1698,7 @@ export function WorkBoardPanel({
   const [listedOnce, setListedOnce] = useState(false);
   const [pendingReview, setPendingReview] = useState(false);
   const [unreadableRows, setUnreadableRows] = useState<readonly WorkItemUnreadableRow[]>([]);
+  const [unreadableRuns, setUnreadableRuns] = useState<readonly WorkItemUnreadableRun[]>([]);
   // A failed read keeps the rows last listed for the same filter and shows the failure; it never stands in for an empty board.
   const [loadFailed, setLoadFailed] = useState(false);
   const listedKeyRef = useRef<string | null>(null);
@@ -1697,6 +1722,7 @@ export function WorkBoardPanel({
         setItems([]);
         setPendingReview(false);
         setUnreadableRows([]);
+        setUnreadableRuns([]);
       }
       setLoadFailed(true);
     };
@@ -1708,6 +1734,7 @@ export function WorkBoardPanel({
         setItems(result.items);
         setPendingReview(result.items.some((item) => item.templateRunError === "template-runs-pending-review"));
         setUnreadableRows(result.unreadableRows ?? []);
+        setUnreadableRuns(result.unreadableRuns ?? []);
         setLoadFailed(false);
       } else {
         fail();
@@ -1722,19 +1749,20 @@ export function WorkBoardPanel({
     }
   }, [api, project]);
 
-  const [unreadableDeleteError, setUnreadableDeleteError] = useState<"failed" | "changed" | null>(null);
-  const deleteUnreadableRow = useCallback(async (row: WorkItemUnreadableRow) => {
-    setUnreadableDeleteError(null);
-    let outcome: "deleted" | "failed" | "changed" = "failed";
+  // The message for the last invalid card delete or unreadable run record discard that did nothing; `changed` when its entry changed.
+  const [entryError, setEntryError] = useState<string | null>(null);
+  const removeEntry = useCallback(async (target: WorkItemDeleteTarget, changed: string, itemId: number | undefined) => {
+    setEntryError(null);
+    let error: string | null = "workBoard.errorMutationRefused";
     try {
-      const result = await api.removeWorkBoardItem(null, { invalidRow: { position: row.position, hash: row.hash } });
-      if ("status" in result && result.status === "deleted") outcome = "deleted";
-      else if ("reason" in result && result.reason === "work-board-row-changed") outcome = "changed";
-    } catch (error) {
-      console.error("[ave] work-board invalid row delete failed", { itemId: row.id, message: errorMessage(error) });
+      const result = await api.removeWorkBoardItem(null, target);
+      if ("status" in result && result.status === "deleted") error = null;
+      else if ("reason" in result && result.reason === "work-board-row-changed") error = changed;
+    } catch (failure) {
+      console.error("[ave] work-board invalid entry delete failed", { itemId, message: errorMessage(failure) });
     }
     if (!mountedRef.current) return;
-    setUnreadableDeleteError(outcome === "deleted" ? null : outcome);
+    setEntryError(error);
     await refresh();
   }, [api, refresh]);
 
@@ -2130,8 +2158,9 @@ export function WorkBoardPanel({
       </div>
       {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t("workBoard.boardLoadFailed")}</p>}
       {pendingReview && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-pending-review">{t("workBoard.pendingReview", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>}
-      {unreadableDeleteError && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-unreadable-row-error">{t(unreadableDeleteError === "changed" ? "workBoard.unreadableRowChanged" : "workBoard.errorMutationRefused")}</p>}
-      {unreadableRows.length > 0 && <UnreadableRowCards rows={unreadableRows} onDelete={(row) => { void deleteUnreadableRow(row); }} />}
+      {entryError && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-unreadable-row-error">{t(entryError)}</p>}
+      {unreadableRows.length > 0 && <UnreadableRowCards rows={unreadableRows} onDelete={(row) => { void removeEntry({ invalidRow: { position: row.position, hash: row.hash } }, "workBoard.unreadableRowChanged", row.id); }} />}
+      {unreadableRuns.length > 0 && <UnreadableRunCards runs={unreadableRuns} onDiscard={(run) => { void removeEntry({ runRecord: { position: run.position, hash: run.hash } }, "workBoard.unreadableRunChanged", run.itemId); }} />}
       <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {narrow && (
           <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">
