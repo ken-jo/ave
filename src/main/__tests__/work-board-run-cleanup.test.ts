@@ -67,6 +67,17 @@ it("keeps the unsettled run of a deleted row until its record says it is over", 
   expect(await runIds()).toEqual(["other-1"]);
 });
 
+it("shows a run's row gone on disk when the readable board issued its id and lists it no more, never for an id it did not issue", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const deleted = await templateItem(store);
+  const listed = await templateItem(store);
+  expect(await store.remove(deleted)).toMatchObject({ status: "deleted" });
+  const gone = await store.runRowGoneOnDisk();
+  expect(gone?.({ itemId: deleted, runId: "run-deleted" })).toBe(true);
+  expect(gone?.({ itemId: listed, runId: "run-listed" })).toBe(false);
+  expect(gone?.({ itemId: listed + 1, runId: "run-unissued" })).toBe(false);
+});
+
 it("prunes on a later write what an earlier cleanup could not remove", async () => {
   const store = new WorkBoardStore(boardPath);
   const gone = await templateItem(store);

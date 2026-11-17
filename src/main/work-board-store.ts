@@ -475,6 +475,7 @@ export class WorkBoardStore {
     return (run) => {
       const row = rows.get(run.itemId);
       if (row) return row.runId !== run.runId && Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId);
+      // A readable board issued this id and no longer lists it: the row was created, then deleted.
       return run.itemId < board.nextId && !present.has(run.itemId);
     };
   }
