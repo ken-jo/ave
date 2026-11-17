@@ -3,6 +3,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExt
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
+import { disposeLiveTerminal } from "./preview/live-terminal-registry.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { ThemeProvider } from "./theme/index.js";
 import { OverlayContextProvider, type OverlayItem } from "./context/OverlayContext.js";
@@ -37,7 +38,7 @@ import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { PaneChatNavigationProvider, type PaneChatNavigation } from "./context/PaneChatNavigationContext.js";
 import { prunePaneChats } from "./hooks/use-side-chat.js";
 import { subscribeMainLayoutChange } from "./preview/main-layout-restore.js";
-import { SurfacePane } from "./components/MainSurfacePanels.js";
+import { SurfacePane, surfacePaneChatGroup } from "./components/MainSurfacePanels.js";
 import type { SideChatOpenRequest, SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, isToolMainSurface, useMainSurfaces, type ToolMainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
@@ -660,7 +661,10 @@ export function App() {
     }
     surfaces.close(tabId);
     forgetActiveSurface(tabId);
-    if (surface.kind === "terminal") void api.terminal?.kill(tabId);
+    if (surface.kind === "terminal") {
+      void api.terminal?.kill(tabId);
+      disposeLiveTerminal(tabId);
+    }
   }, [api]);
 
   /** 옆에 분할로 열기 (case 20) for a terminal or page: a new pane beside the focused one, or its own pane if it has one. */
@@ -2267,8 +2271,16 @@ export function App() {
           onChatOpenChange={(open) => setPaneChatOpen(surface.tabId, open)}
           onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
-          // Main-terminal blocks attach to the last composer the user typed in.
-          onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
+          // Main-terminal blocks attach to the last composer the user typed in, else to this pane's own open chat.
+          onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId, ownChatGroup: surfacePaneChatGroup(paneId) })}
+          // A link the user modifier-clicks in the terminal opens as a new page beside it when the canvas has room, else in its place.
+          onOpenLink={(url) => {
+            const page = mainSurfaces.create("browser", { url, projectRoot: surface.projectRoot });
+            const location: ViewLocation = { view: "web", surface: page.tabId };
+            const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+              ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+            if (beside === null) chatGroups.setPaneContent(paneId, location);
+          }}
         />
       ));
     }
@@ -2501,7 +2513,7 @@ export function App() {
               <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
-                  className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
+                  className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background ${
                     !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-content-lead)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.

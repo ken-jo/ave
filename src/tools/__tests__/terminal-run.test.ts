@@ -830,7 +830,7 @@ describe("terminal_run into a pane chat's own host terminal", () => {
           return { ok: true, firstBlockId: 2 };
         },
         waitDisclosure: async (_ref, _windowId, sessionId, turnId, blockId) => sessionId === "main" && turnId === "turn-1" && blockId === 2 ? {
-          requestingSessionId: "main", turnId, command: "npm test", cwd: hostDir, blockId: 2, state: "done", exitCode: 0, output: "approved output\n", truncated: false,
+          requestingSessionId: "main", turnId, command: "npm test", cwd: hostDir, blockId: 2, state: "done", exitCode: 0, output: "approved output\n", outputChars: 16, truncated: false,
           ...options.span,
         } : undefined,
       },
@@ -885,6 +885,8 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     expect(result.isError).toBeFalsy();
     expect(hostTyped).toEqual([["main", "npm test", hostDir]]);
     expect(body(result.output)).toMatchObject({ terminal: "host", typed: true, finished: true, block: { id: 2, output: "approved output\n", exitCode: 0 } });
+    // The host block carries the fields an isolated block carries, so one reading fits both lanes.
+    expect(body(result.output).block).toEqual({ id: 2, command: "npm test", cwd: hostDir, exitCode: 0, status: "done", outputChars: 16, truncated: false, output: "approved output\n" });
     expect(result.output).not.toContain("HOST-SCROLLBACK-SECRET");
     expect(result.output).not.toContain("sandboxNotice");
   });
@@ -893,8 +895,9 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     const interrupted = hostDeps({ span: { state: "interrupted", interruption: "take-over", exitCode: null, output: "partial" } });
     const scope = await interrupted.tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
     const stopped = body((await interrupted.tool.execute({ command: "npm test" }, ctxFor(scope))).output);
-    expect(stopped).toMatchObject({ finished: false, interrupted: "take-over", block: { output: "partial" } });
-    expect(stopped.block).not.toHaveProperty("exitCode");
+    expect(stopped).toMatchObject({ finished: false, interrupted: "take-over", block: { output: "partial", status: "interrupted" } });
+    // No exit code was authenticated under the lease: null, as for a running isolated block.
+    expect(stopped).toMatchObject({ block: { exitCode: null } });
     expect(stopped).not.toHaveProperty("continuation");
     __resetTerminalBlocksForTest();
     const mismatched = hostDeps({ span: { state: "interrupted", interruption: "command-mismatch", output: "" } });

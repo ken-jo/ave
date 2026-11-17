@@ -1074,8 +1074,9 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = services.permissionManager.recheckPermission(permissionResult);
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
+    // The surface facts, the code of the decision that asked included, are the recheck's own: a card that is no longer a surface card carries none.
     const liveRequest: ApprovalRequestInput = { ...request,
-      userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined,
+      userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined, reasonCode: undefined,
       ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,

@@ -102,6 +102,9 @@ interface SideChatViewProps {
   /** This tab is the one the panel is showing. The view stays mounted behind another tab so its session and its parked cards
    * survive the switch; this says whether the user can see them. */
   shown?: boolean;
+  /** Whether the user can see this chat's composer now (default: yes). A pane's work panel keeps the chat mounted while it is
+   * closing or showing another tab; content handed to "a composer on screen" must not land there unseen. */
+  composerVisible?: boolean;
   /**
    * The session this side chat holds, reported to the panel that hosts it
    * whenever it changes. The panel keeps the sub-agents that session's turns
@@ -117,7 +120,7 @@ interface SideChatViewProps {
   chatGroupId?: string | undefined;
 }
 
-export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, onSessionIdChange, onSessionClaim, chatGroupId, boundSurface, runtime, targetChip }: SideChatViewProps) {
+export function SideChatView({ api, openRequest, onSessionsChanged, shown = true, composerVisible = true, onSessionIdChange, onSessionClaim, chatGroupId, boundSurface, runtime, targetChip }: SideChatViewProps) {
   const { t } = useTranslation();
   // If side chat is unavailable (preload without the surface), surface a stable disabled state rather than a broken
   // composer.
@@ -139,6 +142,7 @@ export function SideChatView({ api, openRequest, onSessionsChanged, shown = true
       openRequest={openRequest}
       onSessionsChanged={onSessionsChanged}
       shown={shown}
+      composerVisible={composerVisible}
       onSessionIdChange={onSessionIdChange}
       onSessionClaim={onSessionClaim}
       chatGroupId={chatGroupId}
@@ -155,13 +159,14 @@ function SideChatSession({
   openRequest,
   onSessionsChanged,
   shown,
+  composerVisible,
   onSessionIdChange,
   onSessionClaim,
   chatGroupId,
   boundSurface,
   runtime: runtimeProp,
   targetChip,
-}: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean }) {
+}: SideChatViewProps & { sideChat: NonNullable<AveApi["sideChat"]>; shown: boolean; composerVisible: boolean }) {
   const { t } = useTranslation();
   const chatContext = useOptionalChatContext();
   const runtime: SideChatRuntime | null = runtimeProp ?? chatContext;
@@ -489,8 +494,8 @@ function SideChatSession({
     lastAttachNonce = openRequest.nonce;
     attachPastedTextRef.current(openRequest.attachText);
   }, [openRequest, loadSession]);
-  const shownRef = useRef(shown);
-  shownRef.current = shown;
+  const shownRef = useRef(shown && composerVisible);
+  shownRef.current = shown && composerVisible;
   useEffect(() => {
     if (chatGroupId === undefined) return undefined;
     return registerComposerTarget({

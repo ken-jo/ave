@@ -1,5 +1,5 @@
 /** Side-panel blocks use the group's last composer, then its main composer; main-pane blocks use the window's last
- * composer. */
+ * composer, then the pane's own chat. */
 export type ComposerKind = "conversation" | "side-chat";
 
 /** What attaching text did: true, attached; false, the composer was full; "no-composer", no composer the user can see could
@@ -65,17 +65,27 @@ function conversationOf(groupId: string): ComposerTarget | null {
   return null;
 }
 
+/** The chat docked to a surface pane (the terminal's own conversation), when the user can see its composer. */
+function sideChatOf(groupId: string | undefined): ComposerTarget | null {
+  if (groupId === undefined) return null;
+  for (const target of targets.values()) {
+    if (target.groupId === groupId && target.kind === "side-chat" && target.available()) return target;
+  }
+  return null;
+}
+
 function anyConversation(): ComposerTarget | null {
   for (const target of targets.values()) if (target.kind === "conversation" && target.available()) return target;
   return null;
 }
 
 /** Attach a terminal block's text. `fromGroup` is the group whose side panel holds the terminal; omitted for a main-pane
- * terminal, which falls back to `focusedGroupId`'s conversation, then any conversation on screen. */
-export function attachToComposer(text: string, from: { fromGroup: string } | { focusedGroupId: string }): AttachTextResult {
+ * terminal, which goes to the last composer the user used, else the chat docked to its own pane (`ownChatGroup`) when that is
+ * open, else `focusedGroupId`'s conversation, then any conversation on screen. */
+export function attachToComposer(text: string, from: { fromGroup: string } | { focusedGroupId: string; ownChatGroup?: string }): AttachTextResult {
   const target = "fromGroup" in from
     ? usable(lastUsedByGroup.get(from.fromGroup)) ?? conversationOf(from.fromGroup)
-    : usable(lastUsed) ?? conversationOf(from.focusedGroupId) ?? anyConversation();
+    : usable(lastUsed) ?? sideChatOf(from.ownChatGroup) ?? conversationOf(from.focusedGroupId) ?? anyConversation();
   return target ? target.attach(text) : "no-composer";
 }
 

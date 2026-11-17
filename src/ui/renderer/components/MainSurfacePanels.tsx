@@ -157,14 +157,21 @@ type FrameProps = Omit<ComponentProps<typeof PaneFrame>, "title" | "icon" | "chi
 type SurfacePanelTab = "chat" | "changes";
 const PANEL_TAB_CLASS = "flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary";
 
+/** The composer group of the chat docked to a surface pane; a terminal block attached from that pane can go to it. */
+export function surfacePaneChatGroup(paneId: string): string {
+  return `pane:${paneId}`;
+}
+
 /**
  * A surface pane's work panel: the same docked column and raised card a conversation's work panel uses, pushing the
  * page or terminal aside when the tile has room and floating over it when it does not. It holds the side chat bound to
  * this pane's tab and, for a terminal, the terminal's 변경 파일 view.
  */
 function SurfaceWorkPanel({
-  api, surface, paneId, runtime, onSessionsChanged, open, onClose, tab, onTab, changesTab,
+  api, surface, paneId, runtime, onSessionsChanged, open, onClose, tab, onTab, changesTab, onControlSlot,
 }: {
+  /** Receives the element where a terminal repeats its control strip while this panel floats over it, and null when it does not. */
+  onControlSlot?: (slot: HTMLElement | null) => void;
   api: AveApi;
   surface: BoundSurface;
   paneId: string;
@@ -199,7 +206,7 @@ function SurfaceWorkPanel({
   );
   return createPortal(
     <DockedPanelColumn ref={columnRef} testId="pane-work-panel-motion" motion={motion} shouldOpen={open}
-      width={columns.panelWidth} mode={columns.panelLayout.mode} resizing={resizing}>
+      width={columns.panelWidth} mode={columns.panelLayout.mode} resizing={resizing} settledReserve>
       <WorkPanelCard testId="pane-work-panel" className="relative flex shrink-0" width={columns.panelWidth}
         minWidth={columns.panelLayout.min} maxWidth={columns.panelLayout.max} onWidthChange={onWidthChange} onWidthCommit={onWidthCommit}
         resizeElementRef={columnRef} splitterTestId="pane-work-panel-width-splitter">
@@ -219,6 +226,9 @@ function SurfaceWorkPanel({
               <TooltipContent side="bottom">{t("chatPreviewRail.close")}</TooltipContent>
             </Tooltip>
           </div>
+          {/* Floating, this panel covers the terminal's own control strip: the terminal repeats it here. Docked, both are on screen. */}
+          {onControlSlot && columns.panelLayout.mode === "overlay" && open
+            ? <div ref={onControlSlot} className="shrink-0" data-testid="pane-chat-terminal-control" /> : null}
           {/* The chat stays mounted under the changes view: its draft, transcript and pending cards survive the switch.
               Keyed by the tab: a pane that comes to hold another surface shows that surface's own conversation. */}
           <div className={shownTab === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
@@ -227,7 +237,8 @@ function SurfaceWorkPanel({
               api={api}
               boundSurface={surface}
               runtime={runtime}
-              chatGroupId={`pane:${paneId}`}
+              chatGroupId={surfacePaneChatGroup(paneId)}
+              composerVisible={open && shownTab === "chat"}
               onSessionsChanged={onSessionsChanged}
             />
           </div>
@@ -248,6 +259,7 @@ export function SurfacePane({
   frame,
   onNavigate,
   onAttachText,
+  onOpenLink,
   chatRuntime,
   chatOpen,
   onChatOpenChange,
@@ -268,6 +280,8 @@ export function SurfacePane({
   onNavigate: (tabId: string, url: string) => void;
   /** Hand a terminal block's text to a chat composer; false when it is full. */
   onAttachText?: (text: string) => AttachTextResult;
+  /** Open a web link the user modifier-clicked in this pane's terminal. */
+  onOpenLink?: (url: string) => void;
 }) {
   const { t } = useTranslation();
   const view = surface.kind === "terminal" ? "terminal" : "web";
@@ -282,6 +296,7 @@ export function SurfacePane({
   // current as the shell reports it.
   const [terminalHeader, setTerminalHeader] = useState<HTMLElement | null>(null);
   const [liveCwd, setLiveCwd] = useState<string | null>(null);
+  const [controlMirror, setControlMirror] = useState<HTMLElement | null>(null);
   const cwd = liveCwd ?? surface.cwd ?? null;
   const meta = surface.kind === "terminal" && cwd ? { text: directoryName(cwd), title: cwd } : null;
   // The header toggles the owning tab's panel state.
@@ -344,7 +359,10 @@ export function SurfacePane({
             initialCwd={surface.cwd ?? null}
             attended={frame.focused ?? false}
             headerSlot={terminalHeader}
+            controlMirrorSlot={controlMirror}
             onCwd={setLiveCwd}
+            {...(frame.onClose ? { onCloseTab: frame.onClose } : {})}
+            {...(onOpenLink ? { onOpenLink } : {})}
             {...(onAttachText ? { onAttachText } : {})}
           />
         ) : (
@@ -360,7 +378,8 @@ export function SurfacePane({
       </div>
       <SurfaceWorkPanel api={api} surface={boundSurface} paneId={paneId} runtime={chatRuntime} onSessionsChanged={onSessionsChanged}
         open={chatOpen} onClose={() => onChatOpenChange(false)} tab={panelTab} onTab={setPanelTab}
-        changesTab={surface.kind === "terminal" ? review?.changed ?? 0 : null} />
+        changesTab={surface.kind === "terminal" ? review?.changed ?? 0 : null}
+        {...(surface.kind === "terminal" ? { onControlSlot: setControlMirror } : {})} />
     </PaneFrame>
   );
 }

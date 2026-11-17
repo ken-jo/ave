@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT, glassTintAlpha, isGlassTint, normalizeAppearance } from "../appearance-settings.js";
+import { DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT, DEFAULT_TERMINAL_BEHAVIOR, glassTintAlpha, isGlassTint, mergeTerminalBehavior, normalizeAppearance, isTerminalScrollback, isTerminalShellPath } from "../appearance-settings.js";
 
 describe("appearance persistence normalization", () => {
   it.each(["moonstone", "gallery"])("preserves the released light shell for %s", (bundleId) => {
@@ -77,4 +77,45 @@ it("warns on invalid zoom values and leaves an absent zoom field quiet", () => {
  const { zoomLevel: _level, ...appearance } = DEFAULT_APPEARANCE;
  normalizeAppearance(appearance, (field) => warnings.push(field));
  expect(warnings).not.toContain("zoomLevel");
+});
+
+describe("terminal behaviour settings", () => {
+  it.each([null, false, "bar", [], 7])("reports stored terminal settings that are not a set of fields (%j) and starts from the defaults", (broken) => {
+    const warn = vi.fn();
+    expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, terminal: broken }, warn).terminal).toEqual(DEFAULT_TERMINAL_BEHAVIOR);
+    expect(warn).toHaveBeenCalledExactlyOnceWith("terminal");
+  });
+
+  it("says nothing when stored settings have no terminal part, and names a broken part as a whole when merging", () => {
+    const warn = vi.fn();
+    const { terminal: _absent, ...without } = DEFAULT_APPEARANCE;
+    expect(normalizeAppearance(without, warn).terminal).toEqual(DEFAULT_TERMINAL_BEHAVIOR);
+    expect(warn).not.toHaveBeenCalled();
+    const refused: Array<string | null> = [];
+    const target = { ...DEFAULT_TERMINAL_BEHAVIOR };
+    for (const broken of [null, false, "bar", []]) mergeTerminalBehavior(target, broken, (field) => refused.push(field));
+    expect(refused).toEqual([null, null, null, null]);
+    expect(target).toEqual(DEFAULT_TERMINAL_BEHAVIOR);
+  });
+
+ it("defaults every field and keeps valid stored ones", () => {
+  expect(normalizeAppearance(undefined).terminal).toEqual({ scrollback: 5000, cursorStyle: "block", optionAsMeta: false, copyOnSelect: false, shell: "" });
+  const stored = { scrollback: 20_000, cursorStyle: "bar", optionAsMeta: true, copyOnSelect: true, shell: "/opt/homebrew/bin/fish" };
+  expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, terminal: stored }).terminal).toEqual(stored);
+  // The result owns its object: a later change to it is not a change to the defaults.
+  expect(normalizeAppearance(undefined).terminal).not.toBe(DEFAULT_APPEARANCE.terminal);
+ });
+
+ it("replaces each invalid stored field with its default and names it", () => {
+  const warnings: string[] = [];
+  const terminal = normalizeAppearance({ ...DEFAULT_APPEARANCE, terminal: { scrollback: 12.5, cursorStyle: "beam", optionAsMeta: "yes", copyOnSelect: true, shell: "zsh" } }, (field) => warnings.push(field)).terminal;
+  expect(terminal).toEqual({ scrollback: 5000, cursorStyle: "block", optionAsMeta: false, copyOnSelect: true, shell: "" });
+  expect(warnings).toEqual(["terminal.scrollback", "terminal.cursorStyle", "terminal.optionAsMeta", "terminal.shell"]);
+ });
+
+ it("bounds scrollback and takes only an absolute shell path", () => {
+  expect([999, 1000, 100_000, 100_001, 5000.5, "5000"].map(isTerminalScrollback)).toEqual([false, true, true, false, false, false]);
+  expect(["", "/bin/zsh", "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "D:/tools/nu.exe"].every(isTerminalShellPath)).toBe(true);
+  expect(["zsh", "./zsh", "~/bin/zsh", "/bin/zsh\n-c evil", `/${"a".repeat(1024)}`, 7, null].some(isTerminalShellPath)).toBe(false);
+ });
 });

@@ -101,6 +101,26 @@ describe("authenticated user-owned surface choices", () => {
     expect(f.gate.consumeUserOwnedSurfaceChoice(await f.pending, "conversation", "browser")).toBeUndefined();
   });
 
+  it("sends the decision's code to the surface card that shows it and to no card that stopped being one", async () => {
+    const shown = subject("host-terminal", { reasonCode: "user-owned-surface-ask" });
+    expect(shown.card).toMatchObject({ userOwnedSurface: "host-terminal", reasonCode: "user-owned-surface-ask" });
+    shown.gate.resolveFromDesktopRenderer(shown.request.id, shown.answer({ choice: "deny-once", userOwnedSurfaceChoice: undefined }), shown.contents as never);
+    await shown.pending;
+    for (const overrides of [
+      { forceExplicit: true },
+      { childProvenance: { childSessionId: "child", childTitle: "Work", originSessionId: "conversation", spawnTaskSummary: "Edit file" } },
+      { category: "agent-action" },
+      // A failed automatic review is drawn by the ordinary card, with the host's reason.
+      { userOwnedSurfaceReviewFallback: true },
+    ] as const) {
+      const f = subject("host-terminal", { reasonCode: "user-owned-surface-ask", ...overrides } as Partial<ApprovalRequestInput>);
+      if (!f.card) throw new Error(`no card was sent for ${JSON.stringify(overrides)}`);
+      expect(f.card, JSON.stringify(overrides)).not.toHaveProperty("reasonCode");
+      f.gate.resolveFromDesktopRenderer(f.request.id, f.answer({ choice: "deny-once", userOwnedSurfaceChoice: undefined }), f.contents as never);
+      await f.pending;
+    }
+  });
+
   it("retains the selector and native receipt for an outside-directory card", async () => {
     const f = subject("host-terminal", { kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: "/outside", suggestedParent: "/", currentAllowed: [], adjacencyWarnings: [] } });
     expect(f.card).toMatchObject({ kind: "out-of-allowed-dir", userOwnedSurface: "host-terminal", exactRecordAllowed: false });

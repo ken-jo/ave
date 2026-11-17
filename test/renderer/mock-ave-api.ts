@@ -201,6 +201,7 @@ function makeTerminalDouble() {
     spawn: vi.fn(async ({ tabId, lane }: TerminalRef) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" })),
     input: vi.fn(async () => ({ ok: true })),
     resize: vi.fn(async () => ({ ok: true })),
+    keep: vi.fn(async () => ({ ok: true })),
     kill: vi.fn(async () => ({ ok: true })),
     onData: vi.fn((listener: (payload: TerminalDataEvent) => void) => {
       dataListeners.add(listener);

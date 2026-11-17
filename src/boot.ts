@@ -25,6 +25,8 @@ import { configureHostResources } from "./main/host-resources.js";
  *                                 egress chooser + SSRF-guarded LLM fetch).
  *   steps/audit-notification      shared AuditLogger + NotificationService +
  *                                 plugin auth-partition tracker seeding.
+ *   steps/terminal-scrollback-setup  the run's one sweep of closed terminal
+ *                                 tabs' kept output, then the store.
  *   steps/plugin-runtime          PluginRuntime + per-plugin HostApi factory.
  *   steps/work-board-setup        Work Board persistence + due-soon scanner.
  *   steps/workflow-stores         workflow stores + builtin tool registration.
@@ -100,6 +102,7 @@ import { assembleAppServices } from "./boot/assemble-services.js";
 import { setupNetworkFetch } from "./boot/steps/network-fetch-setup.js";
 import { setupAuditAndNotification } from "./boot/steps/audit-notification.js";
 import { notifyHomeBoundaryRepairs, notifyHomeConfigurationPreserved, notifyHomeTrustPending } from "./boot/steps/home-privacy-notice.js";
+import { setupTerminalScrollback } from "./boot/steps/terminal-scrollback-setup.js";
 import { setupWorkBoard } from "./boot/steps/work-board-setup.js";
 import { setupAlerts } from "./boot/steps/alerts-setup.js";
 import { setupWorkflowStores } from "./boot/steps/workflow-stores.js";
@@ -309,6 +312,8 @@ export async function bootstrap(
   notifyHomeBoundaryRepairs(homePrivacy, ctx);
   notifyHomeConfigurationPreserved(configurationDiagnostics, ctx);
   notifyHomeTrustPending(homeTrust, ctx);
+  // With the layout as settings loaded it, before any window can save another.
+  setupTerminalScrollback(ctx);
 
   // Construct the audited approval gate before services bind effect permissions.
   const approvalGate = await createApprovalGate(

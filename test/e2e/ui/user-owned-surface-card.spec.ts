@@ -22,6 +22,27 @@ for (const surface of ["browser", "host-terminal"] as const) {
     }, { surface, sessionId, channel: CHANNELS.approval.request });
     const card = mainWindow.getByTestId("user-owned-surface-card");
     await expect(card).toBeVisible();
+    if (surface === "host-terminal") {
+      // The command is on the card before the details are opened, inside the card's box and above the choices.
+      await expect(card.getByTestId("user-owned-surface-review-details")).not.toHaveAttribute("open", "");
+      const command = card.getByTestId("user-owned-surface-command");
+      await expect(command).toBeVisible();
+      await expect(command).toHaveText("printf 'ready\\n'");
+      const geometry = await card.evaluate((element) => {
+        const box = (testId: string) => {
+          const found = element.querySelector(`[data-testid="${testId}"]`);
+          if (!found) throw new Error(`the card has no ${testId}`);
+          return found.getBoundingClientRect();
+        };
+        const cardBox = element.getBoundingClientRect();
+        const commandBox = box("user-owned-surface-command");
+        return { inside: commandBox.top >= cardBox.top && commandBox.bottom <= cardBox.bottom && commandBox.height > 0, aboveChoices: commandBox.bottom <= box("user-owned-surface-choice-form").top,
+          confirmInside: box("user-owned-surface-confirm").bottom <= cardBox.bottom };
+      });
+      expect(geometry).toEqual({ inside: true, aboveChoices: true, confirmInside: true });
+    } else {
+      await expect(card.getByTestId("user-owned-surface-command-block")).toHaveCount(0);
+    }
     await card.getByTestId("user-owned-surface-review-details").locator("summary").click();
     await expect(card.getByTestId("user-owned-surface-details-content")).toContainText(/browser and host terminal|브라우저와 호스트 터미널/);
     await expect(card.getByTestId("user-owned-surface-ask")).toBeChecked();

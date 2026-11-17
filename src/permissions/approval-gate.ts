@@ -115,6 +115,8 @@ export interface ApprovalRequest {
   // Display-only title derived from host-tracked child provenance.
   requestingAgentTitle?: string;
   id: string;
+  // Display-only, on a user-owned-surface card: the code of the pipeline decision that asked, so the card can show its own localized sentence for it instead of the host's English `reason`. Never an approval capability.
+  reasonCode?: string;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
   // Display-only projection of the host terminal's current-turn provenance; never an approval capability.
@@ -979,6 +981,7 @@ export class ApprovalGate {
       homeFolderRefused: _requestedHomeFolderRefused,
       userOwnedSurface: requestedUserOwnedSurface,
       userOwnedSurfaceReviewFallback: requestedSurfaceReviewFallback,
+      reasonCode: requestedReasonCode,
       executionPlan: requestedExecutionPlan,
       executionCwd: _requestedExecutionCwd,
       sandboxCapability: requestedSandboxCapability,
@@ -1203,6 +1206,10 @@ export class ApprovalGate {
       ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
       ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
+      // Only the surface card reads the code: a card that stopped being one here (forced, a child's, not a tool card), or a review fallback the ordinary
+      // card draws, shows the host's reason and is never sent a code that belongs to another card.
+      ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback !== true && requestedReasonCode !== undefined
+        ? { reasonCode: requestedReasonCode } : {}),
       ...(executionPlanAudit === undefined
         ? {}
         : { executionPlan: executionPlanAudit }),

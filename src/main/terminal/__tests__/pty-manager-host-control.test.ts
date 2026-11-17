@@ -124,6 +124,48 @@ async function hostShell(purpose: "workspace" | "side-panel" = "workspace") {
 }
 
 describe.runIf(process.platform !== "win32")("host terminal control periods", () => {
+  it("discloses the span as a block's plain text: \\n line ends, redrawn lines resolved, and no end-of-line padding before the prompt", async () => {
+    const shell = await hostShell();
+    shell.hooks.onEnter = () => queueMicrotask(() => {
+      // A real zsh: CRLF line ends, a progress line rewritten with CR, then PROMPT_SP's "%", padding and CRs before the finish marker.
+      shell.pty.emitData(`${shell.run("make build")}agent-marker\r\n`);
+      shell.pty.emitData("building 10%\rbuilding 100%\r\nagent-done\r\n");
+      shell.pty.emitData(`%${" ".repeat(66)}\r \r`);
+      shell.pty.emitData(`${shell.mark("D;0")}${shell.prompt()}`);
+    });
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, typing("make build", () => true));
+    expect(typed).toMatchObject({ ok: true });
+    if (!typed.ok) return;
+    await vi.waitFor(() => expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", TURN, typed.firstBlockId)?.state).toBe("done"));
+    const disclosed = hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", TURN, typed.firstBlockId);
+    if (!disclosed) throw new Error("the command disclosed no span");
+    expect(disclosed.output).toBe("agent-marker\nbuilding 100%\nagent-done\n");
+    expect(disclosed).toMatchObject({ exitCode: 0, truncated: false, outputChars: "agent-marker\nbuilding 100%\nagent-done\n".length });
+    // The same text the terminal's own block record holds for that command.
+    const { getWindowTerminalBlockTracker } = await import("../terminal-blocks.js");
+    expect(getWindowTerminalBlockTracker(shell.session, WINDOW)?.get(typed.firstBlockId)?.output).toBe(disclosed.output);
+  });
+
+  it("keeps output that has no final newline when the shell pads the row before its prompt", async () => {
+    const shell = await hostShell();
+    shell.hooks.onEnter = () => queueMicrotask(() => {
+      // `printf done`: zsh's end-of-line mark, spaces to the end of an 80-column row, CR, space, CR, split across chunks.
+      shell.pty.emitData(`${shell.run("printf done")}first\r\ndone%${" ".repeat(40)}`);
+      shell.pty.emitData(`${" ".repeat(34)}\r`);
+      shell.pty.emitData(" \r");
+      shell.pty.emitData(`${shell.mark("D;0")}${shell.prompt()}`);
+    });
+    const typed = await typeHostTerminalCommand(shell.session, WINDOW, typing("printf done", () => true));
+    expect(typed).toMatchObject({ ok: true });
+    if (!typed.ok) return;
+    await vi.waitFor(() => expect(hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", TURN, typed.firstBlockId)?.state).toBe("done"));
+    const disclosed = hostTerminalDisclosure(shell.session, WINDOW, "conversation-a", TURN, typed.firstBlockId);
+    if (!disclosed) throw new Error("the command disclosed no span");
+    expect(disclosed.output).toBe("first\ndone\n");
+    const { getWindowTerminalBlockTracker } = await import("../terminal-blocks.js");
+    expect(getWindowTerminalBlockTracker(shell.session, WINDOW)?.get(typed.firstBlockId)?.output).toBe("first\ndone\n");
+  });
+
   it("types one approved command and discloses only its own span to the requesting conversation", async () => {
     const shell = await hostShell();
     shell.hooks.onEnter = () => queueMicrotask(() => {

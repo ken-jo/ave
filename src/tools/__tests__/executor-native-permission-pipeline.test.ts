@@ -34,7 +34,7 @@ import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApprov
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { modelShellPath } from "../../shared/shell-native-path.js";
 import { ToolExecutor } from "../executor.js";
-import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, GrepFilesTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
 import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
@@ -484,6 +484,59 @@ describe("native invocation permission evidence", () => {
     expect(result.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
     expect(requests).toHaveLength(0);
+  });
+
+  it("keeps a host terminal tab's kept output admission-denied whatever would otherwise let the call through", async () => {
+    const store = join(root, "state", "terminal-state");
+    const path = join(store, "0123456789abcdef0123456789abcdef.scrollback");
+    await mkdir(store, { recursive: true });
+    await writeFile(path, "export TOKEN=inert-terminal-sentinel\r\n");
+    const searchTool = new GrepFilesTool();
+    registry.register(searchTool);
+    const executions = [vi.spyOn(readTool, "execute"), vi.spyOn(writeTool, "execute"), vi.spyOn(searchTool, "execute")];
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["read_file", { path }],
+      ["write_file", { path, content: "replaced" }],
+      // A search told to look in the store, and in the file.
+      [searchTool.name, { path: store, pattern: "inert-terminal-sentinel", limit: 50 }],
+      [searchTool.name, { path, pattern: "inert-terminal-sentinel", limit: 50 }],
+    ];
+    const refused = async (label: string, origin: "user-keyboard" | "agent-message" | "llm-tool-arg", headless = false): Promise<void> => {
+      for (const [name, input] of calls) {
+        const [result] = await executor(undefined, "allow-once").executeAll([{ id: randomUUID(), name, input }], {
+          sessionId, executionCwd: project,
+          permissionContext: { trustOrigin: origin, additionalDirectories: [root, store], headless },
+        });
+        expect(result.is_error, `${label}: ${name}`).toBe(true);
+        expect(String(result.content), `${label}: ${name}`).not.toContain("inert-terminal-sentinel");
+      }
+      for (const execution of executions) expect(execution, label).not.toHaveBeenCalled();
+      // Nobody is asked: there is no answer that opens it.
+      expect(requests, label).toHaveLength(0);
+      expect(await readFile(path, "utf8")).toContain("inert-terminal-sentinel");
+    };
+    manager.setMode("allow");
+    await refused("allow mode", "user-keyboard");
+    // A child agent's call, and one whose arguments a model chose, in the mode that asks nobody.
+    await refused("a child agent in allow mode", "agent-message");
+    await refused("a model-chosen argument, headless", "llm-tool-arg", true);
+    // A saved rule that allows each tool outright.
+    manager.setRules([{ pattern: "read_file", action: "allow" }, { pattern: "write_file", action: "allow" }, { pattern: searchTool.name, action: "allow" }]);
+    await refused("saved allow rules", "user-keyboard");
+    manager.setMode("default");
+    await refused("saved allow rules in the default mode", "user-keyboard");
+    // An approval remembered for exactly this read.
+    await recordApproval("read_file", canonicalStringify({ path }), "builtin", {
+      scope: "session", sessionId, verdictAtApproval: "high", nlJustification: null, trustOrigin: "user-keyboard",
+      workingDirectoryIdentity: captureApprovalWorkingDirectory(project).identity,
+    });
+    await refused("a remembered approval", "user-keyboard");
+    // The reviewer is never consulted for it either.
+    manager.setRules([]);
+    manager.setMode("auto");
+    const dispatch = reviewer();
+    await refused("auto mode", "user-keyboard");
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("forces direct protected writes once before allow mode, rules, review or memory", async () => {

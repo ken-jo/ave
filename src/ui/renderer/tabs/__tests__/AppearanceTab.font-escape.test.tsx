@@ -16,7 +16,7 @@ const { api, theme } = vi.hoisted(() => ({
     updateSettings: vi.fn().mockResolvedValue({}),
     onSettingsUpdated: vi.fn(() => () => {}),
   },
-  theme: { appearance: { terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 } }, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", setMode: vi.fn(), setScheme: vi.fn() },
+  theme: { appearance: { terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 }, terminal: { scrollback: 5000, cursorStyle: "block", optionAsMeta: false, copyOnSelect: false, shell: "" } }, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", setMode: vi.fn(), setScheme: vi.fn() },
 }));
 vi.mock("../../api-client.js", () => ({ getApi: () => api, isDarwin: () => false }));
 vi.mock("../../theme/index.js", async () => ({

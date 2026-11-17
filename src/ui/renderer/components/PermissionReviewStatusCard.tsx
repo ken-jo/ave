@@ -12,11 +12,12 @@ function statusLabel(entry: PermissionReviewEntry): string {
   if (entry.status === "reviewing") return t("permissionReviewStatusCard.reviewing");
   if (entry.status === "auto_approved") return t("permissionReviewStatusCard.autoApproved");
   if (entry.status === "failed") return t("permissionReviewStatusCard.failed");
+  // No level: no reviewer ran for this request (a host-terminal card asks the person directly), so there is no review to call complete.
+  if (entry.verdictLevel === undefined) return t("permissionReviewStatusCard.approvalRequiredPlain");
   const level =
     entry.verdictLevel === "high" ? t("permissionReviewStatusCard.riskHigh") :
     entry.verdictLevel === "medium" ? t("permissionReviewStatusCard.riskMedium") :
-    entry.verdictLevel === "low" ? t("permissionReviewStatusCard.riskLow") :
-    t("permissionReviewStatusCard.reviewComplete");
+    t("permissionReviewStatusCard.riskLow");
   return t("permissionReviewStatusCard.approvalRequired", { level });
 }
 

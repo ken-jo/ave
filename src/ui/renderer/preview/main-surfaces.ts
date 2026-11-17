@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InstanceViewKey } from "../../../shared/view-key.js";
 import { mintTabId } from "./workspace-tabs.js";
+import { requestTerminalFocus } from "./live-terminal-registry.js";
 import { terminalOrdinal } from "./terminal-ordinal.js";
 import { publishLiveWebTabs, webSurfaceLocation, withdrawLiveWebTabs } from "./web-surfaces.js";
 
@@ -124,6 +125,8 @@ export function useMainSurfaces(): MainSurfacesStore {
     const ordinal = kind === "terminal" ? terminalOrdinal(tabId) : kind === "folder" ? nextMainFolderOrdinal++ : nextMainBrowserOrdinal++;
     const surface: MainSurface = { tabId, kind, ordinal, url, cwd, projectRoot };
     commit([...surfacesRef.current, surface]);
+    // Every creation is the user's own open action (a launcher, a command, "open terminal here"); a restored layout adopts instead.
+    if (kind === "terminal") requestTerminalFocus(tabId);
     return surface;
   }, [commit]);
 

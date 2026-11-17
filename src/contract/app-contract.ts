@@ -720,6 +720,7 @@ export const CHANNELS = {
     spawn: "ave:terminal:spawn", // invoke renderer→main → { ok, tabId } | { ok:false, reason }
     input: "ave:terminal:input", // invoke  (keystrokes → pty stdin)
     resize: "ave:terminal:resize", // invoke  (cols/rows)
+    keep: "ave:terminal:keep", // invoke  (what a host tab's view shows, kept for a restart)
     kill: "ave:terminal:kill", // invoke  (tab close / teardown)
     data: "ave:terminal:data", // event   main→renderer (pty output chunk)
     exit: "ave:terminal:exit", // event   main→renderer (pty exited)

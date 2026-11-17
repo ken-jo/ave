@@ -103,6 +103,27 @@ export class XtermBlockAnchors implements TerminalBlockAnchors {
     return slot;
   }
 
+  /** The command whose block holds buffer line `line`: the last command that started at or above it. Null above the first command the view saw. */
+  blockAtLine(line: number): number | null {
+    let found: { blockId: number; line: number } | null = null;
+    for (const [blockId, marker] of this.markers) {
+      if (marker.isDisposed || marker.line > line) continue;
+      if (found === null || marker.line > found.line) found = { blockId, line: marker.line };
+    }
+    return found?.blockId ?? null;
+  }
+
+  /** The nearest command start strictly above (`before`) or strictly below (`after`) buffer line `line`, with the text of its row (prompt and command as drawn). */
+  commandNear(line: number, side: "before" | "after"): { blockId: number; line: number; text: string } | null {
+    let found: { blockId: number; line: number } | null = null;
+    for (const [blockId, marker] of this.markers) {
+      if (marker.isDisposed || (side === "before" ? marker.line >= line : marker.line <= line)) continue;
+      if (found === null || (side === "before" ? marker.line > found.line : marker.line < found.line)) found = { blockId, line: marker.line };
+    }
+    if (found === null) return null;
+    return { ...found, text: this.term.buffer.active.getLine(found.line)?.translateToString(true) ?? "" };
+  }
+
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };

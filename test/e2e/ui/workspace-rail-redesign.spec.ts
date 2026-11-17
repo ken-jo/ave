@@ -128,8 +128,8 @@ test.describe("workspace rail redesign", () => {
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
     // The panel portal belongs beside its pane transcript, not inside it.
     await expect(page.getByTestId("pane").getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
-    // Wait for the shell to settle before measuring: the rail toggle starts a padding transition on the main column, and the
-    // reserve's own width transition chases the tile it measures, so mid-transition the reserve can trail the shrinking root.
+    // Wait for the panel to settle before measuring: the reserve's own width transition chases the tile it measures, so mid-transition
+    // the reserve can trail the shrinking root.
     await expect.poll(() => motion.evaluate((element) =>
       document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running")
       && Math.round(element.getBoundingClientRect().width) === Math.round(Number.parseFloat((element as HTMLElement).style.width)))).toBe(true);

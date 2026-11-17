@@ -7,7 +7,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 useConfigurationOwner();
 
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -2842,6 +2842,26 @@ describe("SettingsService appearance", () => {
     expect(service.get("appearance")).toEqual(DEFAULT_APPEARANCE);
   });
 
+  it("saves terminal behaviour field by field and refuses an invalid field without saving any", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ appearance: { terminal: { scrollback: 20_000, cursorStyle: "bar" } } });
+    await service.patch({ appearance: { terminal: { shell: "/opt/homebrew/bin/fish", copyOnSelect: true } } });
+    const saved = { scrollback: 20_000, cursorStyle: "bar", optionAsMeta: false, copyOnSelect: true, shell: "/opt/homebrew/bin/fish" };
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").terminal).toEqual(saved);
+    for (const [patch, field] of [[{ scrollback: 50 }, "scrollback"], [{ cursorStyle: "beam" }, "cursorStyle"], [{ shell: "fish" }, "shell"], [{ optionAsMeta: 1 }, "optionAsMeta"]] as const) {
+      // A valid field sent with the invalid one is not saved either.
+      await expect(service.patch({ appearance: { mode: "light", terminal: { copyOnSelect: false, ...patch } } } as never)).rejects.toThrow(`Invalid terminal setting: ${field}`);
+    }
+    // Something that is not a set of fields at all is a broken request, refused whole: not an empty change that "saves".
+    for (const broken of [null, false, "bar", [], 7]) {
+      await expect(service.patch({ appearance: { mode: "light", terminal: broken } } as never)).rejects.toThrow("Invalid terminal settings: not a set of fields");
+    }
+    expect(service.get("appearance")).toMatchObject({ mode: DEFAULT_APPEARANCE.mode, terminal: saved });
+    // A font patch leaves the behaviour alone, and the other way round.
+    await service.patch({ appearance: { terminalFont: { size: 14 } } });
+    expect(service.get("appearance")).toMatchObject({ terminal: saved, terminalFont: { size: 14 } });
+  });
+
   it("replaces a released package selection once while preserving language and font", async () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ appearance: { schemaVersion: 2, bundleId: "package-theme", followSystem: true, language: "ko", font: { family: "Menlo", sizeScale: 1 } } }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -4169,6 +4189,44 @@ describe("SettingsService system — main window layout", () => {
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("system").mainLayout).toBeUndefined();
+  });
+
+  it("records the layout as the file held it at load, whatever is written after", async () => {
+    const path = join(userDataPath, "ave-settings.json");
+    // A fresh install: no file, so nothing is known of a layout on disk.
+    const fresh = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(fresh.loadedMainLayout()).toEqual({ kind: "unknown", reason: "no-file" });
+    await fresh.patch({ system: { mainLayout: layout } } as never);
+    expect(fresh.loadedMainLayout()).toEqual({ kind: "unknown", reason: "no-file" });
+    // Read: the layout the file holds, and still that one after a later write.
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.loadedMainLayout()).toEqual({ kind: "read", layout });
+    await reloaded.patch({ system: { mainLayout: { ...layout, focusedId: "main" } } } as never);
+    expect(reloaded.get("system").mainLayout?.focusedId).toBe("main");
+    expect(reloaded.loadedMainLayout()).toEqual({ kind: "read", layout });
+    // Read: settings without a layout hold none, with or without a system block.
+    for (const settings of [{ system: { closeBehavior: "quit" } }, {}]) {
+      writeFileSync(path, currentSettingsJson(settings), "utf-8");
+      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).loadedMainLayout()).toEqual({ kind: "read", layout: undefined });
+    }
+  });
+
+  it.each([
+    ["cannot be parsed", "{ \"system\": {", "unreadable"],
+    ["does not hold settings", "[]", "unreadable"],
+    ["holds a layout this build refuses", currentSettingsJson({ system: { mainLayout: { ...layout, version: 99 } } }), "layout-refused"],
+    ["holds a system block this build refuses", currentSettingsJson({ system: "quit" }), "layout-refused"],
+  ] as const)("does not vouch for a layout when the file %s", (_case, file, reason) => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), file, "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").mainLayout).toBeUndefined();
+    expect(service.loadedMainLayout()).toEqual({ kind: "unknown", reason });
+  });
+
+  it("does not vouch for a layout when the settings path cannot be read as a file", () => {
+    mkdirSync(join(userDataPath, "ave-settings.json"));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.loadedMainLayout()).toEqual({ kind: "unknown", reason: "unreadable" });
   });
 });
 

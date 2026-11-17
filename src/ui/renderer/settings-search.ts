@@ -17,7 +17,7 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"appearance","section":"appearance-language","title":"settings.appearance.language.title","labels":[]},
   {"tab":"appearance","section":"appearance-theme","title":"appearanceTab.schemeTitle","labels":["appearanceTab.mode","appearanceTab.scheme.dark","appearanceTab.scheme.light","appearanceTab.glassTintLabel","appearanceTab.glassTintKeywords"]},
   {"tab":"appearance","section":"appearance-font","title":"appearanceTab.fontSectionTitle","labels":["appearanceTab.fontFamilyLabel","appearanceTab.fontFamilyRadioGroupLabel","appearanceTab.fontSizeLabel","appearanceTab.fontSizeRadioGroupLabel"]},
-  {"tab":"appearance","section":"appearance-terminal","title":"appearanceTab.terminalTitle","labels":["appearanceTab.terminalFamily","appearanceTab.terminalSize","appearanceTab.terminalLineHeight"]},
+  {"tab":"appearance","section":"appearance-terminal","title":"appearanceTab.terminalTitle","labels":["appearanceTab.terminalFamily","appearanceTab.terminalSize","appearanceTab.terminalLineHeight","appearanceTab.terminalScrollback","appearanceTab.terminalCursor","appearanceTab.terminalCopyOnSelect","appearanceTab.terminalOptionAsMeta","appearanceTab.terminalShell"]},
   {"tab":"chat","section":"chat-optimization","title":"chatTab.conversationOptimizationTitle","labels":["chatTab.autoCompactLabel"]},
   {"tab":"chat","section":"chat-stream-smoothing","title":"chatTab.streamSmoothingTitle","labels":[]},
   {"tab":"chat","section":"chat-processing-display","title":"chatTab.processingDisplayTitle","labels":["chatTab.processingDisplayAriaLabel"]},

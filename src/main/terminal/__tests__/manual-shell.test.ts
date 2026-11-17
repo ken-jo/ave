@@ -80,6 +80,16 @@ describe("native manual interpreter", () => {
     expect(resolveManualShell("linux", {})).toEqual({ command: "/bin/bash", args: ["-l", "-i"] });
     expect(() => resolveManualShell("linux", { SHELL: "bash" })).toThrow("absolute");
   });
+  it("starts the shell the user set, and refuses a setting that is not a launchable absolute path instead of starting another shell", () => {
+    const isFile = (path: string): boolean => path === "/opt/homebrew/bin/fish" || path === "C:\\Tools\\nu.exe";
+    expect(resolveManualShell("darwin", { SHELL: "/bin/zsh" }, isFile, "/opt/homebrew/bin/fish")).toEqual({ command: "/opt/homebrew/bin/fish", args: ["-l", "-i"] });
+    expect(resolveManualShell("win32", { COMSPEC: "C:\\Windows\\System32\\cmd.exe" }, isFile, "C:\\Tools\\nu.exe")).toEqual({ command: "C:\\Tools\\nu.exe", args: [] });
+    // Empty is "no setting": the login shell.
+    expect(resolveManualShell("darwin", { SHELL: "/bin/zsh" }, isFile, "")).toEqual({ command: "/bin/zsh", args: ["-l", "-i"] });
+    expect(() => resolveManualShell("darwin", { SHELL: "/bin/zsh" }, isFile, "/opt/missing/fish")).toThrow("the shell set for terminals is not a file: /opt/missing/fish");
+    expect(() => resolveManualShell("linux", { SHELL: "/bin/bash" }, isFile, "fish")).toThrow("must be an absolute path: fish");
+    expect(() => resolveManualShell("win32", {}, isFile, "C:\\Tools\\nu.cmd")).toThrow("an absolute path to an .exe");
+  });
   it("uses native Windows argv and a pinned system interpreter when none was selected", () => {
     expect(resolveManualShell("win32", { COMSPEC: "C:\\Windows\\System32\\cmd.exe" })).toEqual({ command: "C:\\Windows\\System32\\cmd.exe", args: [] });
     expect(resolveManualShell("win32", { SystemRoot: "D:\\Windows" })).toEqual({ command: "D:\\Windows\\System32\\cmd.exe", args: [] });

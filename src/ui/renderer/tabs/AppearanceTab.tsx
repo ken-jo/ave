@@ -6,6 +6,7 @@ import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
 import { DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
 import { getApi } from "../api-client.js";
+import { TerminalBehaviorFields } from "./TerminalBehaviorFields.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
@@ -577,6 +578,7 @@ function TerminalFontSection({ font, failed, updateFont }: ReturnType<typeof use
       <FontMetricStepper label={t("appearanceTab.terminalLineHeight")} value={font.lineHeight} step={0.1} validate={isTerminalLineHeight}
         format={(value) => value.toFixed(1)} onChange={(lineHeight) => updateFont({ lineHeight })} />
     </div>
+    <TerminalBehaviorFields />
   </SettingsSection>;
 }
 

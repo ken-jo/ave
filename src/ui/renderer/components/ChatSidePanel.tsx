@@ -1,6 +1,7 @@
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
+import { disposeLiveTerminal } from "../preview/live-terminal-registry.js";
 import { subscribeWebSurfaceLocations, webSurfaceLocation, webSurfaceTitle } from "../preview/web-surfaces.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
@@ -1013,6 +1014,7 @@ export function ChatSidePanel({
       if (closing?.kind === "terminal") {
         forgetTerminalFileReview(id);
         void api.terminal?.kill(id);
+        disposeLiveTerminal(id);
       }
       closeTab(id);
     },
@@ -1348,6 +1350,8 @@ export function ChatSidePanel({
               visible={visible}
               showChanges={terminalChangesTabId === activeTab.id}
               onShowChanges={(show) => setTerminalChangesTabId(show ? activeTab.id : null)}
+              onCloseTab={() => closeWorkspaceTab(activeTab.id)}
+              onOpenLink={workspaceTabs.openBrowserTab}
               {...(onAttachText ? { onAttachText } : {})}
             />
           ) : activeTab.kind === "subagent" ? (

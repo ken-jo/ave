@@ -171,6 +171,20 @@ describe("PermissionManager.checkPathScope", () => {
       });
       expect(res.sensitiveHit?.pattern).toBe("**/.password-store/**");
     });
+
+    // The user's own terminal screen, kept for restoring a tab. Like a credential store it is refused at admission, before any mode, rule,
+    // remembered grant or reviewer is asked, for a read as for a write and inside an allowed directory as outside one.
+    it.each(["read", "write"] as const)("keeps admission denial for a %s of kept host terminal output", (effect) => {
+      for (const directories of [allowed, ["/Users/example/.ave"]]) {
+        const res = PermissionManager.checkPathScope({
+          canonicalTargets: [target("/Users/example/.ave/terminal-state/0123456789abcdef0123456789abcdef.scrollback")],
+          allowedDirectories: directories,
+          effect,
+          blockReadsOutsideWorkingDirectories: false,
+        });
+        expect(res.sensitiveHit?.pattern).toBe("**/.ave/terminal-state/**");
+      }
+    });
   });
 
   // The admission a wide read produces leaves no dialog and no grant behind it, so `readOutsideScope` is the only thing the audit row can be built from.
