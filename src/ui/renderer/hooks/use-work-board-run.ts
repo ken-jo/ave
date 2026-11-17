@@ -91,6 +91,7 @@ function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
 /** Terminal phases end the in-flight window; every phase is named so a new one cannot silently read as in flight or as finished.
  * `cancelled` is a run the user stopped (owner decision 2026-11-04): terminal, and never an error. */
 const END_UNCONFIRMED = "run-end-unconfirmed";
+const END_CONFIRMED = "run-end-confirmed";
 
 /** A reason the host sends as a refusal code is shown in the user's language; any other reason is shown as sent. */
 export function reasonText(reason: string | undefined): string | undefined {
@@ -442,9 +443,12 @@ export function useWorkBoardRun(
           }
           update(ev.itemId, (cur) => {
             const phase = runPhase;
-            // A stop's end saved later clears its note; it never replaces the text of a start refused meanwhile.
-            const endSaved = phase === "cancelled" && ev.message === undefined && ev.reasonCode === undefined;
-            if (endSaved && (cur.phase === "error" || cur.phase === "denied")) return { ...cur, endUnconfirmed: false };
+            if (phase === "cancelled") {
+              // A stop's end saved later clears its note and nothing else, so it never replaces the text of a start refused meanwhile.
+              if (ev.reasonCode === END_CONFIRMED) return { ...cur, endUnconfirmed: false };
+              // Nor does a cancelled event without a code replace error or denied text, or clear that note.
+              if (ev.reasonCode === undefined && (cur.phase === "error" || cur.phase === "denied" || cur.endUnconfirmed === true)) return cur;
+            }
             const turns =
               isActivePhase(phase) && typeof ev.turn === "number"
                 ? mergeTurns(cur.turns, [{ phase, turn: ev.turn, text: ev.text ?? "", at: ev.at }])

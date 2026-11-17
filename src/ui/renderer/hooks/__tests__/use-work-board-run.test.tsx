@@ -298,15 +298,35 @@ describe("useWorkBoardRun — refusal text", () => {
     await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "cancelled", endUnconfirmed: true }));
   });
 
-  it("clears a stopped run's note once its end is saved, and leaves another run's error text as it is", async () => {
+  it("clears a stopped run's note once the host says its end is saved, and leaves another run's error text as it is", async () => {
     const { api, emit } = harness();
     const { result } = renderHook(() => useWorkBoardRun(api, []));
     emit({ itemId: 7, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
     emit({ itemId: 8, phase: "error", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
     await waitFor(() => expect(result.current.runState[7]).toMatchObject({ phase: "cancelled", endUnconfirmed: true }));
-    emit({ itemId: 7, phase: "cancelled" });
+    emit({ itemId: 7, phase: "cancelled", reasonCode: "run-end-confirmed" });
     await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "cancelled", endUnconfirmed: false }));
     expect(result.current.runState[8]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-board-unread") });
+    for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.run-end-confirmed")).toEqual(expect.stringMatching(/\S/));
+  });
+
+  it("a cancelled event without a code never replaces error or denied text, and never clears a stopped run's note", async () => {
+    const { api, emit } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 7, phase: "error", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+    emit({ itemId: 8, phase: "denied", message: "rejected" });
+    emit({ itemId: 9, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+    await waitFor(() => expect(result.current.runState[9]).toMatchObject({ phase: "cancelled", endUnconfirmed: true }));
+    const denied = result.current.runState[8];
+    expect(denied).toMatchObject({ phase: "denied", reason: expect.stringMatching(/\S/) });
+    for (const itemId of [7, 8, 9]) {
+      emit({ itemId, phase: "cancelled" });
+      emit({ itemId, phase: "cancelled", message: "user-stopped" });
+    }
+    await act(async () => {});
+    expect(result.current.runState[7]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-board-unread") });
+    expect(result.current.runState[8]).toEqual(denied);
+    expect(result.current.runState[9]).toMatchObject({ phase: "cancelled", endUnconfirmed: true });
   });
 
   it("keeps the error text of a start refused after a stop whose end was not saved, when that end is saved later", async () => {
@@ -316,7 +336,7 @@ describe("useWorkBoardRun — refusal text", () => {
     emit({ itemId: 7, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
     act(() => result.current.runItem(7));
     await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "error", reason: t("reasonCodes.template-runs-pending-review") }));
-    emit({ itemId: 7, phase: "cancelled" });
+    emit({ itemId: 7, phase: "cancelled", reasonCode: "run-end-confirmed" });
     expect(result.current.runState[7]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-pending-review"), endUnconfirmed: false });
   });
 

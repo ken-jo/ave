@@ -353,7 +353,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       deps.audit?.({ itemId: state.itemId, runId: state.runId, event: "work-run:authority-refused", code: state.refused.code, ...(state.refused.tool ? { tool: state.refused.tool } : {}) });
     }
     const phase = runStatus === "completed" ? "done" : runStatus;
-    const told = message ?? (runStatus !== "cancelled" || !state.stopping ? undefined : state.rowGone ? "item-removed" : "user-stopped");
+    // Every cancelled end names its cause: the authority's code, or the stop or the row's removal.
+    const told = message ?? (runStatus !== "cancelled" || byAuthority ? undefined : state.rowGone ? "item-removed" : "user-stopped");
     emit({ itemId: state.itemId, phase, ...(told ? { message: told } : {}), ...reason });
     closeState(state);
     deps.itemChanged?.(state.itemId);
@@ -1119,8 +1120,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (left.rowGone || left.lost) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
       else await showOnRow(left.ref.itemId, left.status, undefined);
       if (left.lost) emit({ itemId: left.ref.itemId, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" });
-      // The stop was shown with a note that its end is not saved; this clears it.
-      if (left.status === "cancelled" && !left.lost) emit({ itemId: left.ref.itemId, phase: "cancelled" });
+      // The stop was shown with a note that its end is not saved; this code clears that note and nothing else.
+      if (left.status === "cancelled" && !left.lost) emit({ itemId: left.ref.itemId, phase: "cancelled", reasonCode: "run-end-confirmed" });
       deps.itemChanged?.(left.ref.itemId);
     }
     return failed ?? { ok: true };

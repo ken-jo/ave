@@ -22,6 +22,7 @@ export const en = {
   "reasonCodes.run-state-unavailable": "The template run could not be read or saved in the workflow run file. Try again.",
   "reasonCodes.template-run-not-shown": "The template run could not be shown on the work board. Try again.",
   "reasonCodes.run-end-unconfirmed": "This template run has ended, but its end is not saved in the workflow run file yet. It is saved the next time the board is read or a run starts.",
+  "reasonCodes.run-end-confirmed": "This template run's end is now saved in the workflow run file.",
   "reasonCodes.runs-not-adopted": "Template runs left by the last restart are not taken over yet, so this decision cannot be made. Try again.",
   "reasonCodes.workspace-unavailable": "Template run workspaces are not available, so this template cannot run.",
   "reasonCodes.home-boundary-unverified": "The privacy of the Ave home folder could not be checked, so no template run workspace is made in it.",

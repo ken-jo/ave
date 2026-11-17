@@ -937,7 +937,9 @@ it("a stopped run whose end is written again clears its note that the end is not
   expect(h.events.slice(shown).filter(event => event.phase === "cancelled" || event.phase === "error")).toEqual([
     expect.objectContaining({ itemId: stopped, phase: "cancelled" }),
   ]);
-  expect(h.events.slice(shown).find(event => event.itemId === stopped && event.phase === "cancelled")?.reasonCode).toBeUndefined();
+  expect(h.events.slice(shown).find(event => event.itemId === stopped && event.phase === "cancelled")).toEqual({ itemId: stopped, phase: "cancelled", reasonCode: "run-end-confirmed", at: expect.any(String) });
+  // Every cancelled event names its cause.
+  expect(h.events.filter(event => event.phase === "cancelled" && event.message === undefined && event.reasonCode === undefined)).toEqual([]);
 }));
 
 for (const [write, refusal, code] of [
