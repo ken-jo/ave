@@ -404,7 +404,7 @@ for (const settleFails of [false, true]) {
       vi.spyOn(h.board, "beginRun").mockImplementationOnce(async (...args) => { await begin(...args); throw new Error("the board sync failed"); });
       const other = await h.addItem(version);
       const write = settleFails ? vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" }) : null;
-      expect(await h.start(id, h.local(version))).toMatchObject({ status: "error", reason: "the board sync failed" });
+      expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
       const stored = await h.item(id);
       expect(stored.runId).toBeDefined();
       expect(stored.record?.settled?.status).toBe(settleFails ? undefined : "error");
@@ -444,6 +444,16 @@ for (const [refusal, code] of [["refused", "run-state-unavailable"], ["too-large
     });
   });
 }
+
+it("a start whose run cannot be shown on the board is refused by a code, never by raw text, and the run ends error", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  vi.spyOn(h.board, "setRunStatus").mockResolvedValueOnce({ status: "not_found", itemId: id });
+  expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "template-run-not-shown", reasonCode: "template-run-not-shown" });
+  expect((await h.item(id)).record?.settled?.status).toBe("error");
+  expect(h.children).toHaveLength(0);
+  for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.template-run-not-shown")).toEqual(expect.stringMatching(/\S/));
+}));
 
 it("a run ended without its graph whose end cannot be written keeps its workspace and row until a reader writes that end", () => {
   let missing = false;
@@ -595,7 +605,7 @@ it("a start that threw after storing its run, while the run file awaits review, 
       held.push(vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" }));
       throw new Error("disk error");
     });
-    expect(await h.start(id, h.local(version))).toMatchObject({ status: "error" });
+    expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
     expect(released).toEqual([]);
     for (const spy of held) spy.mockRestore();
     const runId = (await h.item(id)).runId ?? "";

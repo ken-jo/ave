@@ -805,8 +805,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return await abandonStart(ref, true, refused(writeFault(placed.reason)));
       }
       const shown = await store.setRunStatus(itemId, "executing");
-      if (shown.status !== "updated") throw new Error("the run could not be shown on the board");
+      if (shown.status !== "updated") {
+        log.warn("the run could not be shown on the board (id=%d): %s", itemId, shown.status);
+        return await abandonStart(ref, true, refused("template-run-not-shown"));
+      }
     } catch (error) {
+      log.warn("template run start failed (id=%d): %s", itemId, errorMessage(error));
       // A start that threw may still have stored the run and named it on the row; the run file says so. Only a run the file shows
       // settled, or does not hold, is not stored: one it cannot show (pending review, unreadable) counts as stored.
       if (!recorded) {
@@ -814,7 +818,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           .then(read => read.status === "found" ? read.run.settled === undefined : read.status !== "not-found", () => true);
       }
       const code = error instanceof WorkflowTemplateError ? error.code : undefined;
-      return abandonStart(ref, recorded, code ? refused(code) : { status: "error", reason: errorMessage(error) });
+      return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"));
     }
     const state = openState(itemId, runId, projectRoot, a.approvalSurface);
     emit({ itemId, phase: "executing" });
