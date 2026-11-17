@@ -3788,10 +3788,15 @@ with its own owner rule:
   and settles no run. One whose place no longer holds such an entry with
   that hash is refused (`work-board-row-changed`) and writes nothing. It
   passes the project check a row delete does: it is refused, as not found
-  and writing nothing, unless the entry's project, the project of the
-  source that started it and that of every board entry it could belong to
-  (each with its id, and each without a usable id) are authorized; one
-  that names a row while the board file shows nothing is refused. Before
+  and writing nothing, unless the entry's project, the project its own
+  start names and that of every board entry it could belong to (each with
+  its id, and each without a usable id) are authorized; one that names a
+  row while the board file shows nothing is refused. Its start is read off
+  the entry's own `runStartedBy`, never off the row id it holds: the root
+  of a Create and run (none for an unscoped one) or the approved scope of
+  its schedule attachment; an entry whose start names no project that can
+  be read is refused with `work-board-run-owner-unknown` and writes
+  nothing. Before
   it, the run file as it was is copied to
   `workflow-runs.json.invalid-runs-<sha256>.bak` beside it, once per
   content; a copy that cannot be made fails the discard. The discard then
@@ -3799,7 +3804,10 @@ with its own owner rule:
   could be a run below it. Every other run file write keeps each top-level
   key the store does not own and each entry that does not read, as JSON
   writes its parsed value, and makes the same copy first when the file's
-  bytes are not the text it was read as.
+  bytes are not the text it was read as. A run file that holds a key twice
+  in one object is not read at all (`workflow-runs-duplicate-key`): the
+  board shows that notice in place of its rows, no run starts or changes,
+  and nothing is written over the file until it is fixed by hand.
   A row that names a template run as planning, awaiting approval or
   executing while the run file (read, not awaiting review) holds no entry
   under that run id and no entry without a string run id, which could be its
@@ -3841,14 +3849,27 @@ with its own owner rule:
   while another entry holds the run's id (two rows whose ids were swapped
   by hand). One delete is proof on its own: a user's delete of a listed
   row, made only while the row is as the revision its card showed
-  (`work-item-changed` otherwise). The run that row named, read off the
-  row deleted and never looked up by its id, is cancelled at once as its
+  (`work-item-changed` otherwise). The run that row named is read off the
+  row deleted, never looked up by its id. When the run file holds it as a
+  run of that row that is not over, the delete first stores its delete
+  intent there (`deleteIntents`: that row id and that run id), before the
+  board write; an intent that cannot be stored refuses the delete and
+  writes nothing (`template-runs-pending-review`,
+  `template-runs-too-large`). The run is then cancelled at once as its
   row removed, whatever else the file holds (entries without a usable id,
   a twin that does not validate, an `unknownBelow` mark above it); one a
   restart left parked is taken over by that id first, as its adoption
   would, and ends the same way; an adoption that meets it while it is
   being cancelled leaves it to that cancel, and one an adoption took over
-  first is cancelled from there the same way. The run of any other entry is
+  first is cancelled from there the same way. A crash between the two
+  writes loses nothing: boot adoption, and every takeover, reads the
+  intents first, and a run an intent names whose row id the board file on
+  disk no longer lists ends `cancelled` as its row removed, never as an
+  orphan, lost or parked run; an intent whose row is still listed (its
+  board write never landed) waits. An intent goes only with the run file
+  write that settles its run, or once the file holds no such run that is
+  not over; a takeover that fails keeps it, and the next start, decision,
+  reader or boot tries again. The run of any other entry is
   untouched. Every gone id is at or below the floor,
   so the row was issued and then removed, never one not issued yet. A run
   whose row is gone, or holds it only in its run history, is cancelled as by
@@ -3889,8 +3910,9 @@ with its own owner rule:
   row that names a project is deleted only while that project is
   authorized, as a listed row is.
   A run whose row does not validate is never read as its row gone, and keeps
-  its record; once its row is deleted from its card and nothing else holds
-  the run's id, the row is gone and the run is cancelled.
+  its record; while that row holds the only id in the file of a run that
+  is not over, its card's delete is refused (`work-board-run-id-held`), so
+  the run waits until the file is fixed by hand.
   A board file that shows nothing proves nothing: the engine then settles,
   prunes and sweeps nothing and refuses template starts until a later start,
   decision, reader or boot reads it.
@@ -3901,49 +3923,97 @@ with its own owner rule:
   that stop's note that its end is not saved. A start whose row write may
   not have landed ends `error` once a readable board shows no row naming it.
   Invariant: the write guard. The board store owns `board.json` and the
-  check below; the run store owns `workflow-runs.json` and the row-id
-  floor; the engine owns run state and writes either file only through
-  them. Three properties rest on it: no row id is issued twice (the floor);
-  a run's row is gone only with the proof on disk above, save for a user's
-  delete of a listed row (the run id read off the row removed) and the
-  judged drop of `unknownBelow`; and no bytes are lost unseen. Every write
-  of either file holds all four of these:
-  (a) Where a run's row stands is read off the board file's raw text: a run
-  id is held there when it appears as a whole JSON string, as written or
-  under up to 16 levels of JSON string escaping; past 16 levels every id
-  is held. Words around an id do not hold it.
-  (b) Every rewrite goes through one function, `rewriteKeepingBytes`: bytes
+  check below; the run store owns `workflow-runs.json`, the row-id floor
+  and the delete intents; the engine owns run state and writes either file
+  only through them. Three properties rest on it: (I1) no row id is issued
+  twice (the floor); (I2) a run's row is gone only with the proof on disk
+  above, save for a user's delete of a listed row and the judged drop of
+  `unknownBelow`, so the id of a stored run that is not over never leaves
+  the board file without the delete intent of the row that named it; and
+  (I3) no bytes are lost unseen. Every write of either file holds all of
+  these:
+  (a) Evidence. Where a run's row stands, and what a write must keep, is
+  read off the board file's raw text: the text is cut at every quote no
+  backslash escapes, each piece is decoded as a JSON string, and each
+  decoded piece that still holds a quote or a backslash is read so again.
+  A run id (any nonempty string of up to 256 characters, dots, colons,
+  spaces and Hangul included) is held when one piece equals it whole, so
+  one under a key given twice, in a row kept as a string or spelled with
+  escapes is found; words around an id do not hold it, and no pattern of
+  id characters is assumed. Text still decoding past 16 levels holds
+  every id.
+  (b) Release. A board write must keep, by (a), the id of every run file
+  entry that is not a settled run: a run that is not over, or an entry
+  that does not read as a run and could be one. Release comes only from a
+  delete intent: the user's delete of the listed row that named the run,
+  read off the row deleted, with the intent for that row and that run
+  stored in the run file before the write (above), lets that write take
+  that one run's id out, and never over text still decoding past 16
+  levels, where nothing is released. Nothing a write removes grants
+  release on its own: the delete of an entry that does not validate, the
+  run history entries a start's cap drops and an edit by the user are
+  refused (`work-board-run-id-held`) and write nothing when they would take
+  out the last string holding such an id. A settled run is not kept: the
+  cap and the prune drop it.
+  (c) While the run file cannot be read (it awaits review, is past its read
+  limit, does not parse or holds a key twice), the board is written only
+  over bytes that are the text it was read as, and no write that removes
+  an entry or the user's text is made: a delete, the delete of an entry
+  that does not validate, a start whose cap drops run history entries and
+  every edit by the user (`update`) are refused with
+  `work-board-runs-unreadable`, since none of them can tell which runs the
+  text it removes held. The engine's own writes (run status, session,
+  plan, result) still go through over those bytes; one of them that clears
+  the last string holding a run's id is not caught while the file cannot be
+  read, an open gap.
+  (d) Every rewrite goes through one function, `rewriteKeepingBytes`: bytes
   on disk that are not the text the file was read as are copied first to
   `<file>.<tag>-<sha256>.bak`, once per content (`invalid-rows` for the
   board, `invalid-runs` for the run file); a copy that cannot be made fails
-  the write and leaves the file as it was. Its callers are the board
-  store's one commit (create, update, transition, run status, session and
-  result, plan approval and decision, run start, boot reconcile, clearing a
-  missing run, a delete, the delete of an entry that does not validate and
-  the drop of `unknownBelow`, so also the write that repairs `nextId` or
-  writes back a `version` other than 1), the boot copy of a legacy board,
-  which writes over no bytes at all, and the run store's one commit (row
-  ids and the floor, the legacy copy marks, run writes, the prune and the
-  discard of an entry that does not read).
-  (c) No board write takes out of the board file a run id the run file
-  holds, unless the entry the write removes on purpose held it (a deleted
-  row, a deleted entry that does not validate, run history entries a
-  start prunes); such a write is refused and writes nothing. While the run
-  file cannot be read, the board is written only over bytes that are the
-  text it was read as. A row is changed by no write it was not meant for,
-  save as JSON reads its bytes (a number past the safe-integer limit,
-  spacing) and by re-anchored due dates, both kept in the copy first: one
-  that reading would change otherwise is kept as an entry that does not
-  validate, as above, and the run file keeps what it does not own.
-  (d) One property test runs random sequences of every board store write
-  over damaged files and checks (a) to (c) after each; targeted tests
-  cover a row put under a first `items` key that a second one shadows, a
-  valid row whose numbers JSON reads as other values (the file is copied
-  aside first), a row moved under another top-level key as an escaped
-  string, and a run id
-  held under each of seven fields of a renumbered or renamed row; one table
-  test runs each run file write over a file with keys and entries the
-  store does not own.
+  the write and leaves the file as it was. A copy already there stands for
+  those bytes only once its own bytes hash to its name; one that does not,
+  or cannot be read, refuses the write (`work-board-backup-conflict`, the
+  log naming the copy) and the file stays as it was. A file that holds a
+  key twice in one object is never written over, since writing back what
+  a read kept would lose the other value: a board write over one is
+  refused (`work-board-duplicate-key`) and the board lists its rows as
+  they read with that notice; the run file is not read at all, as above.
+  Both stay byte for byte as they are until fixed by hand. Its callers are
+  the board store's one commit (create, update, transition, run status,
+  session and result, plan approval and decision, run start, boot
+  reconcile, clearing a missing run, a delete, the delete of an entry that
+  does not validate and the drop of `unknownBelow`, so also the write that
+  repairs `nextId` or writes back a `version` other than 1), the boot copy
+  of a legacy board, which writes over no bytes at all, and the run store's
+  one commit (row ids and the floor, the legacy copy marks, delete intents,
+  run writes, the prune and the discard of an entry that does not read).
+  (e) A row is changed by no write it was not meant for, save as JSON reads
+  its bytes (a number past the safe-integer limit, spacing) and by
+  re-anchored due dates, both kept in the copy first: one that reading
+  would change otherwise is kept as an entry that does not validate, as
+  above, and the run file keeps what it does not own.
+  (f) Every refusal of a guard has a stable code (`work-board-run-id-held`,
+  `work-board-runs-unreadable`, `work-board-duplicate-key`,
+  `workflow-runs-duplicate-key`, `work-board-backup-conflict`,
+  `work-board-legacy-copy-unfinished`, `work-board-unread`,
+  `work-board-write-failed`, `work-board-run-owner-unknown`) that reaches
+  the panel through IPC as that code, with en and ko text under
+  `reasonCodes.`; a create's refusal is never shown raw.
+  (g) One property test runs random sequences of every board and run store
+  write, hand edits (a run id written into another row, a key given
+  twice, entries that do not validate, text past 16 levels of escapes)
+  and reopenings on one home that evolves through them, with runs that
+  are not over and capped run histories, and checks after each step,
+  from its own model of the files rather than the guard's rule, that the
+  id of a stored run that is not over leaves the board file only by the
+  user's delete of its row with its intent stored, and that no bytes are
+  lost unseen; targeted tests cover a row put under a first `items` key
+  that a second one shadows (refused as a key given twice), a valid row
+  whose numbers JSON reads as other values (the file is copied aside
+  first), a row moved under another top-level key as an escaped string,
+  and a run id held under each of seven fields of a renumbered or renamed
+  row; one table test runs each run file write over a file with keys and
+  entries the store does not own.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
