@@ -46,6 +46,7 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     projectTemplateRuns: vi.fn(async (items: unknown[]) => items),
     runItem: vi.fn(async () => ({ status: "awaiting_approval" })),
     steerRun: vi.fn(() => ({ ok: true, messageId: "m-1" })),
+    adoptParkedTemplateRuns: vi.fn(async () => {}),
   };
   const log = vi.fn();
   const base = { title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" };

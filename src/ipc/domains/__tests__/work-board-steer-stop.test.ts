@@ -47,7 +47,7 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
         ? { status: "found", item: { id: 7, title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" } }
         : { status: "not_found", itemId: id },
     },
-    workBoardEngine: { steerRun, cancelRun, projectTemplateRuns: async (items: unknown[]) => items },
+    workBoardEngine: { steerRun, cancelRun, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
     settingsService: { get: (key: string) => (key === "privacy" ? privacy : undefined) },
     auditLogger: { log: vi.fn() },
     getMainWindow: () => window,
@@ -164,7 +164,7 @@ function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuati
         ? { status: "found", item: { id: 7, title: "t", status: "planned", status_resolved: "planned", priority: "medium", created_at: "x", updated_at: "x" } }
         : { status: "not_found", itemId: id },
     },
-    workBoardEngine: { decidePlan, projectTemplateRuns: async (items: unknown[]) => items },
+    workBoardEngine: { decidePlan, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
     settingsService: { get: (key: string) => (key === "privacy" ? (opts.privacy ?? { piiRedactEnabled: false }) : undefined) },
     auditLogger: { log },
     getMainWindow: () => window,
