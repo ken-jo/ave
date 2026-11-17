@@ -364,7 +364,7 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
-  it("puts an unrelated row that does not validate back unchanged on every board write, and counts it in the list", async () => {
+  it("puts an unrelated row that does not validate back unchanged on every board write, and lists it by its id", async () => {
     const { store, path, cleanup } = tempBoard();
     try {
       const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
@@ -376,7 +376,7 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       writeFileSync(path, text, "utf-8");
 
       const listed = await store.list();
-      expect(listed).toMatchObject({ status: "ok", unreadableRows: 1 });
+      expect(listed).toMatchObject({ status: "ok", unreadableRows: [{ id: 2 }] });
       if (listed.status !== "ok") throw new Error("unreachable");
       expect(listed.items.map((item) => item.id)).toEqual([1]);
       const created = await store.create({ title: "next" });
@@ -389,6 +389,18 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       expect(JSON.parse(after).items).toEqual([{ ...valid, title: "renamed", updated_at: expect.any(String) }, invalid]);
       // Written back byte for byte: no copy of the file is kept.
       expect(readdirSync(dirname(path)).filter((name) => name.includes(".invalid-rows-"))).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("lists each row that does not validate with its id, and one without a usable id without it", async () => {
+    const { store, path, cleanup } = tempBoard();
+    try {
+      const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 9, items: [valid, { id: 4 }, "text", { id: 0 }, { id: "5" }, null, { id: 8, title: 1 }] }), "utf-8");
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.unreadableRows).toEqual([{ id: 4 }, {}, {}, {}, {}, { id: 8 }]);
     } finally {
       await cleanup();
     }

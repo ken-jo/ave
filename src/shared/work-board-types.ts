@@ -163,9 +163,13 @@ export interface WorkItemListFilter {
 
 // Discriminated outcomes let callers branch without parsing exception messages.
 
+/** A row of the board file that does not validate, shown only as a read-only placeholder. */
+export type WorkItemUnreadableRow = { id?: number };
+
 export type WorkItemListResult =
-  // unreadableRows: how many rows of the board file do not validate; they are kept in the file and are not listed.
-  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: number }
+  // unreadableRows: one entry per row of the board file that does not validate, with its id when it has one; they are kept in the file
+  // and are not listed.
+  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[] }
   | { status: "invalid"; reason: string };
 
 export type WorkItemCreateResult =

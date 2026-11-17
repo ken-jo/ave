@@ -6281,7 +6281,10 @@ export const en = {
   // workBoard
   "workBoard.panelTitle": "Work Board",
   "workBoard.boardLoadFailed": "Could not load the work board.",
-  "workBoard.unreadableRows": "The work board file has {count} item(s) that cannot be read. They are kept in the file and not shown here. If saving would change how they are written, a copy of the file as it was is kept beside it first.",
+  "workBoard.unreadableRowsLabel": "Items in the work board file that cannot be read",
+  "workBoard.unreadableRowBadge": "Invalid",
+  "workBoard.unreadableRow": "Item #{id} in the work board file cannot be read. It stays in the file and cannot be opened or changed here.",
+  "workBoard.unreadableRowNoId": "An item without a readable number in the work board file cannot be read. It stays in the file and cannot be opened or changed here.",
   "workBoard.pendingReview": "Workflow run state needs review. Open Settings > {tabPermissions} > {homeTrustTitle}, review work-board/workflow-runs.json, then restart Ave.",
   "workBoard.panelDescription": "Track work through Planned, In progress, Review, and Completed.",
   "workBoard.addItemButton": "Add task",

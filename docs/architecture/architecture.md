@@ -3753,7 +3753,9 @@ with its own owner rule:
   other spacing). Before the first write that would change those bytes, the
   file as it was is copied to `board.json.invalid-rows-<sha256>.bak` beside
   it, once per content; a copy that cannot be made refuses the write. The
-  list counts such rows (`unreadableRows`) and the board says so. A run whose row does not
+  list gives each such row, with its id when it has one (`unreadableRows`),
+  and the board shows a read-only card marked invalid for each; nothing on
+  it opens, moves or deletes the row. A run whose row does not
   validate is never read as its row gone, and keeps its record.
   A board file that shows nothing proves nothing: the engine then settles,
   prunes and sweeps nothing and refuses template starts until a later start,

@@ -630,8 +630,11 @@ export class WorkBoardStore {
     if (filter.limit !== undefined) {
       rows = rows.slice(0, filter.limit);
     }
-    const unreadable = this.cache.unreadable.length;
-    return { status: "ok", items: rows, ...(unreadable > 0 ? { unreadableRows: unreadable } : {}) };
+    const unreadable = this.cache.unreadable.map((row) => {
+      const [id] = rawRowIds([row]);
+      return id === undefined ? {} : { id };
+    });
+    return { status: "ok", items: rows, ...(unreadable.length > 0 ? { unreadableRows: unreadable } : {}) };
   }
 
   // Fetch one item by id.

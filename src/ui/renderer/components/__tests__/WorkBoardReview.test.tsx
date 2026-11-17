@@ -85,13 +85,22 @@ describe("work board review", () => {
     fireEvent.click(screen.getByTestId("work-board-plan-approve"));
     await waitFor(() => expect(api.decideWorkPlan).toHaveBeenCalledWith(item.id, { runId: "run-2", planHash: "b".repeat(64), decision: "approve" }));
   });
-  it("says how many rows of the board file cannot be read beside the listed rows, and clears it when none are left", async () => {
+  it("shows one read-only card marked invalid per row of the board file that cannot be read, beside the listed rows, and clears them when none are left", async () => {
     const api = apiFor([result]);
-    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], unreadableRows: 2 });
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], unreadableRows: [{ id: 7 }, {}, { id: 7 }] });
     let changed = () => {};
     api.onWorkBoardItemChanged = handler => { changed = () => handler(itemChanged); return () => {}; };
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
-    expect(await screen.findByTestId("work-board-unreadable-rows")).toHaveTextContent(t("workBoard.unreadableRows", { count: 2 }));
+    const list = await screen.findByTestId("work-board-unreadable-rows");
+    expect(list).toHaveAccessibleName(t("workBoard.unreadableRowsLabel"));
+    const cards = within(list).getAllByTestId("work-board-unreadable-row");
+    expect(cards.map(card => card.textContent)).toEqual([
+      `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRow", { id: 7 })}`,
+      `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRowNoId")}`,
+      `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRow", { id: 7 })}`,
+    ]);
+    // Read-only: nothing on a placeholder opens, moves or deletes the row.
+    for (const card of cards) expect(within(card).queryAllByRole("button")).toEqual([]);
     expect(screen.getAllByTestId("work-board-card")).toHaveLength(1);
     changed();
     await waitFor(() => expect(screen.queryByTestId("work-board-unreadable-rows")).toBeNull());
