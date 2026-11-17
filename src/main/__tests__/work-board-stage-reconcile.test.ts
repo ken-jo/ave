@@ -219,3 +219,37 @@ it("a boot that finds the run file awaiting review settles, sweeps and takes ove
     await h.cleanup();
   }
 });
+
+it("a boot over a board file that is missing, damaged or replaced by an empty one changes no run record", async () => {
+  for (const board of ["missing", "corrupt", "emptied"] as const) {
+    const h = await stageRunHarness();
+    try {
+      const { runId, version } = await parkedRun(h);
+      const before = await h.runOf(runId);
+      if (board === "missing") rmSync(h.boardPath);
+      else writeFileSync(h.boardPath, board === "corrupt" ? "{ not json" : JSON.stringify({ version: 1, nextId: 1, items: [] }));
+      const engine = h.makeEngine();
+      const update = vi.spyOn(h.board.runs, "update");
+      const prune = vi.spyOn(h.board, "pruneSettledRuns");
+      const swept = h.sweeps.length;
+      await engine.adoptParkedTemplateRuns();
+      expect(await h.runOf(runId)).toEqual(before);
+      expect(update).not.toHaveBeenCalled();
+      if (board === "emptied") {
+        // A row id the board never issued proves nothing: the run is kept with its workspace.
+        expect(h.sweeps.slice(swept)).toEqual([[runId]]);
+      } else {
+        expect(prune).not.toHaveBeenCalled();
+        expect(h.sweeps).toHaveLength(swept);
+        const created = await h.board.create({ title: "Other", templateId: version.templateId });
+        if (created.status !== "created") throw new Error("item not created");
+        // Creating the item wrote the board file; it goes again, so the board still proves nothing and nothing starts.
+        rmSync(h.boardPath);
+        expect(await engine.runItem(created.itemId, { templateSource: h.local(version) })).toMatchObject({ status: "error", reasonCode: "template-runs-board-unread" });
+        expect(await h.runOf(runId)).toEqual(before);
+      }
+    } finally {
+      await h.cleanup();
+    }
+  }
+});

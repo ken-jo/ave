@@ -17,6 +17,7 @@ export const en = {
   "reasonCodes.template-runs-too-large": "The workflow run file is too large to store another run. Remove old template-run items, then try again.",
   "reasonCodes.invalid-template-run": "This item's template run cannot be read.",
   "reasonCodes.template-runs-pending-review": "Template runs are paused until you review the changed workflow run file.",
+  "reasonCodes.template-runs-board-unread": "Template runs are paused: the work board file is missing or cannot be read, so earlier runs cannot be matched to their items.",
   "be_mcpGovernance.reservedHostOwner": "Server ids cannot use the reserved host: prefix.",
 
   "notificationCenter.title": "Notifications",

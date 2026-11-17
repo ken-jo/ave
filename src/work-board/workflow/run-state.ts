@@ -12,6 +12,16 @@ type RunWrite = { ok: true; run: RunRecord }
   /** row-gone: no board row names the run any more. refused: `mutate` returned null. unavailable: the run cannot be read or stored. */
   | { ok: false; reason: "row-gone" | "refused" | "unavailable" };
 
+type RunAdoption = {
+  ok: true;
+  /** Every board row that names a template run, with that run: null when the run file holds no readable run of that row under that id. */
+  named: { item: WorkItemResolved; run: RunRecord | null }[];
+  /** Stored runs whose row the board on disk shows gone or naming another run. */
+  orphans: RunRecord[];
+  /** Stored runs no row names that the board on disk does not show gone: a row id it never issued, or a row that does not validate. */
+  kept: RunRecord[];
+} | { ok: false; code: "template-runs-pending-review" | "template-runs-board-unread" };
+
 /** The one reader and writer of run state the stage scheduler uses. */
 export interface WorkflowRunState {
   /** Stores the new run in the run file, then names it on the board row, under the board lock. */
@@ -24,17 +34,14 @@ export interface WorkflowRunState {
   update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | null, rowGone?: boolean): Promise<RunWrite>;
   /** One read of the run file: the run a row names, or null as for `get`. */
   view(): Promise<(row: { id: number; runId?: string }) => RunRecord | null>;
-  /** Every board row that names a template run, with that run. Empty while the run file awaits review. */
-  named(): Promise<{ item: WorkItemResolved; run: RunRecord | null }[]>;
-  /** Every readable stored run no board row names: its row is gone or names another run. Null while the run file awaits review or the
-   * board cannot be listed. */
-  unnamed(): Promise<RunRecord[] | null>;
+  /** What boot adopts, from one read of the run file and, when a stored run is named by no row, of the board file on disk. */
+  adoption(): Promise<RunAdoption>;
   /** Removes the settled runs no row lists any more. */
   pruneSettled(): Promise<void>;
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "list" | "runs" | "pruneSettledRuns">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "list" | "runs" | "pruneSettledRuns" | "runRowGoneOnDisk">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -60,19 +67,23 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       }
     },
     view,
-    named: async () => {
-      const listed = await store.list();
-      if (listed.status !== "ok") return [];
-      const runOf = await view();
-      return listed.items.filter(item => item.templateId !== undefined && item.runId !== undefined).map(item => ({ item, run: runOf(item) }));
-    },
-    unnamed: async () => {
+    adoption: async () => {
       const stored = await store.runs.list();
-      if (stored.status !== "found") return null;
+      if (stored.status !== "found") return { ok: false, code: "template-runs-pending-review" };
       const listed = await store.list();
-      if (listed.status !== "ok") return null;
-      const named = new Map(listed.items.filter(item => item.templateId !== undefined).map(item => [item.id, item.runId]));
-      return stored.runs.filter(run => named.get(run.itemId) !== run.runId);
+      if (listed.status !== "ok") return { ok: false, code: "template-runs-board-unread" };
+      const byId = new Map(stored.runs.map(run => [run.runId, run]));
+      const named = listed.items.filter(item => item.templateId !== undefined && item.runId !== undefined).map((item) => {
+        const run = byId.get(item.runId ?? "");
+        return { item, run: run?.itemId === item.id ? run : null };
+      });
+      const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
+      const rest = stored.runs.filter(run => !adopted.has(run.runId));
+      if (rest.length === 0) return { ok: true, named, orphans: [], kept: [] };
+      // The listed board may be one seeded empty after the file went missing or was damaged: only the file on disk tells a deleted row.
+      const gone = await store.runRowGoneOnDisk();
+      if (!gone) return { ok: false, code: "template-runs-board-unread" };
+      return { ok: true, named, orphans: rest.filter(gone), kept: rest.filter(run => !gone(run)) };
     },
     pruneSettled: () => store.pruneSettledRuns(),
   };

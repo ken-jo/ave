@@ -19,6 +19,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.template-runs-too-large": "워크플로 실행 파일이 너무 커서 실행을 더 저장할 수 없습니다. 오래된 템플릿 실행 항목을 삭제한 뒤 다시 시도하세요.",
   "reasonCodes.invalid-template-run": "이 항목의 템플릿 실행을 읽을 수 없습니다.",
   "reasonCodes.template-runs-pending-review": "변경된 워크플로 실행 파일을 검토할 때까지 템플릿 실행이 멈춰 있습니다.",
+  "reasonCodes.template-runs-board-unread": "작업 보드 파일이 없거나 읽을 수 없어 이전 실행을 항목과 맞출 수 없으므로 템플릿 실행이 멈춰 있습니다.",
   "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",

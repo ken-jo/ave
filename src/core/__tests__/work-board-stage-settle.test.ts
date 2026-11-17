@@ -187,8 +187,7 @@ it("a state change is reduced from the run as stored at the write: a workspace s
         runs: {
           begin: (...a) => runs().begin(...a),
           view: () => runs().view(),
-          named: () => runs().named(),
-          unnamed: () => runs().unnamed(),
+          adoption: () => runs().adoption(),
           pruneSettled: () => runs().pruneSettled(),
           // The read of one event returns only after another write has stored the second stage's workspace: what it read is stale.
           get: async (itemId, runId) => {

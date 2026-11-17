@@ -296,11 +296,14 @@ function readFileOrEmpty(filePath: string): Promise<BoardFile> {
 
 // The board as it is on disk, or undefined when the file is absent, pending review or does not parse; never quarantines. Read errors throw.
 async function readBoardOnDisk(filePath: string): Promise<BoardFile | undefined> {
+  const parsed = await parseBoardOnDisk(filePath);
+  return parsed === undefined ? undefined : hydrateBoard(parsed);
+}
+
+async function parseBoardOnDisk(filePath: string): Promise<unknown> {
   const input = await readAveHomeInput(filePath);
   if (input.status !== "trusted") return undefined;
-  let parsed: unknown;
-  try { parsed = JSON.parse(input.bytes.toString("utf-8")); } catch { return undefined; }
-  return hydrateBoard(parsed);
+  try { return JSON.parse(input.bytes.toString("utf-8")) as unknown; } catch { return undefined; }
 }
 
 function hydrateBoard(parsed: unknown): BoardFile {
@@ -456,6 +459,19 @@ export class WorkBoardStore {
       if (row.runId === run.runId) return run;
       return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? runSummary(run) : null;
     };
+  }
+
+  /** For the engine at boot: whether the board file on disk shows a run's row gone or naming another run. Undefined while the file is
+   * absent, awaits review or does not parse: such a board proves nothing. A row id it never issued, or a row that does not validate, is
+   * never gone. */
+  async runRowGoneOnDisk(): Promise<((run: { itemId: number; runId: string }) => boolean) | undefined> {
+    const parsed = await parseBoardOnDisk(this.filePath);
+    if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as BoardFile).items)) return undefined;
+    const raw: unknown[] = (parsed as BoardFile).items;
+    const board = hydrateBoard(parsed);
+    const rows = new Map(board.items.map((item) => [item.id, item.runId]));
+    const present = new Set(raw.flatMap((row) => typeof row === "object" && row !== null && typeof (row as WorkItem).id === "number" ? [(row as WorkItem).id] : []));
+    return (run) => run.itemId < board.nextId && (rows.has(run.itemId) ? rows.get(run.itemId) !== run.runId : !present.has(run.itemId));
   }
 
   // A failed row write may still have replaced the board (a failed directory sync after the rename). The record goes only once the
