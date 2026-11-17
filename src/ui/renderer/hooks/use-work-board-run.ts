@@ -442,6 +442,9 @@ export function useWorkBoardRun(
           }
           update(ev.itemId, (cur) => {
             const phase = runPhase;
+            // A stop's end saved later clears its note; it never replaces the text of a start refused meanwhile.
+            const endSaved = phase === "cancelled" && ev.message === undefined && ev.reasonCode === undefined;
+            if (endSaved && (cur.phase === "error" || cur.phase === "denied")) return { ...cur, endUnconfirmed: false };
             const turns =
               isActivePhase(phase) && typeof ev.turn === "number"
                 ? mergeTurns(cur.turns, [{ phase, turn: ev.turn, text: ev.text ?? "", at: ev.at }])

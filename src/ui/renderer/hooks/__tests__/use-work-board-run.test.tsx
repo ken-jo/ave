@@ -309,6 +309,17 @@ describe("useWorkBoardRun — refusal text", () => {
     expect(result.current.runState[8]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-board-unread") });
   });
 
+  it("keeps the error text of a start refused after a stop whose end was not saved, when that end is saved later", async () => {
+    const { api, emit } = harness();
+    vi.mocked(api.runWorkBoardItem).mockResolvedValueOnce({ status: "error", reason: "template-runs-pending-review", reasonCode: "template-runs-pending-review" });
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 7, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+    act(() => result.current.runItem(7));
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "error", reason: t("reasonCodes.template-runs-pending-review") }));
+    emit({ itemId: 7, phase: "cancelled" });
+    expect(result.current.runState[7]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-pending-review"), endUnconfirmed: false });
+  });
+
   it("has the text of every refusal code it maps in both catalogs", () => {
     for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "template-run-lost", "run-state-unavailable"]) {
       for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
