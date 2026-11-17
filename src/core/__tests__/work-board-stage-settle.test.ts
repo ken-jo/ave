@@ -456,7 +456,7 @@ it("a run ended without its graph whose end cannot be written keeps its workspac
     const write = vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" });
     const prune = vi.spyOn(h.board, "pruneSettledRuns");
     a.finish();
-    await run;
+    expect(await run).toEqual({ status: "error" });
     expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "error" });
     const item = await h.item(id);
     expect(item.record?.settled).toBeUndefined();
@@ -521,7 +521,7 @@ it("while a run end is unconfirmed, starts are refused and nothing is pruned or 
     const prune = vi.spyOn(h.board, "pruneSettledRuns");
     const swept = h.sweeps.length;
     a.finish();
-    await runFirst;
+    expect(await runFirst).toEqual({ status: "error", reason: "template-runs-pending-review", reasonCode: "template-runs-pending-review" });
     expect(h.events.at(-1)).toMatchObject({ itemId: first, phase: "error", reasonCode: "template-runs-pending-review" });
     expect((await h.item(first)).record?.settled).toBeUndefined();
 
@@ -653,7 +653,7 @@ for (const [board, spoil] of [["unreadable", (path: string) => writeFileSync(pat
     const prune = vi.spyOn(h.board, "pruneSettledRuns");
     spoil(h.boardPath);
     a.finish();
-    expect(await run).not.toMatchObject({ status: "cancelled" });
+    expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
     expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "error", reasonCode: "template-runs-board-unread" });
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
     expect(await h.runOf(runId)).toEqual(before);

@@ -263,6 +263,19 @@ describe("useWorkBoardRun — refusal text", () => {
     });
   }
 
+  it("keeps the refusal's text for a run whose end the run file did not confirm", async () => {
+    const { api, emit } = harness();
+    const code = "template-runs-pending-review";
+    let finish: (result: Awaited<ReturnType<AveApi["runWorkBoardItem"]>>) => void = () => undefined;
+    vi.mocked(api.runWorkBoardItem).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    act(() => result.current.runItem(7));
+    // The event and the result as the stage engine sends them while the run's end is not written.
+    emit({ itemId: 7, phase: "error", message: code, reasonCode: code });
+    await act(async () => { finish({ status: "error", reason: code, reasonCode: code }); });
+    expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "error", reason: t(`reasonCodes.${code}`) });
+  });
+
   it("has the text of every refusal code it maps in both catalogs", () => {
     for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "run-state-unavailable"]) {
       for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));

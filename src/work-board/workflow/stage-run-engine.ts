@@ -718,6 +718,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function resultOf(state: RunState): Promise<WorkItemRunResult> {
+    // An end the run file did not confirm is an error, by the run file's refusal when that is what ended the run; never a run that waits.
+    if (unconfirmed.has(state.runId)) {
+      return state.faulted !== null && RUN_FILE_REFUSALS.has(state.faulted) ? { status: "error", reason: state.faulted, reasonCode: state.faulted } : { status: "error" };
+    }
     const record = await records.get(state.itemId, state.runId);
     if (!record) return state.rowGone ? { status: "cancelled", reason: "item-removed" } : { status: "not_found" };
     const got = await store.get(state.itemId);
