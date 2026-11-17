@@ -1648,6 +1648,10 @@ export function WorkBoardPanel({
 
   // Set once the first list read settled, so a focus request can see which item it names and what that item's run waits on.
   const [listedOnce, setListedOnce] = useState(false);
+  const [pendingReview, setPendingReview] = useState(false);
+  // A failed read keeps the rows last listed for the same filter and shows the failure; it never stands in for an empty board.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const listedKeyRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (typeof api.listWorkBoard !== "function") {
@@ -1655,19 +1659,34 @@ export function WorkBoardPanel({
       return;
     }
     setLoading(true);
+    const filter = project?.projectRoot
+      ? {
+          projectRoot: project.projectRoot,
+          includeUnscoped: project.isDefault === true,
+        }
+      : undefined;
+    const key = JSON.stringify(filter ?? null);
+    const fail = () => {
+      if (listedKeyRef.current !== key) {
+        listedKeyRef.current = null;
+        setItems([]);
+        setPendingReview(false);
+      }
+      setLoadFailed(true);
+    };
     try {
-      const result = await api.listWorkBoard(project?.projectRoot
-        ? {
-            projectRoot: project.projectRoot,
-            includeUnscoped: project.isDefault === true,
-          }
-        : undefined);
+      const result = await api.listWorkBoard(filter);
       if (!mountedRef.current) return;
       if ("status" in result && result.status === "ok") {
+        listedKeyRef.current = key;
         setItems(result.items);
+        setPendingReview(result.items.some((item) => item.templateRunError === "template-runs-pending-review"));
+        setLoadFailed(false);
       } else {
-        setItems([]);
+        fail();
       }
+    } catch {
+      if (mountedRef.current) fail();
     } finally {
       if (mountedRef.current) {
         setLoading(false);
@@ -2066,6 +2085,8 @@ export function WorkBoardPanel({
           </Badge>
         </div>
       </div>
+      {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t("workBoard.boardLoadFailed")}</p>}
+      {pendingReview && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-pending-review">{t("workBoard.pendingReview", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>}
       <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {narrow && (
           <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">

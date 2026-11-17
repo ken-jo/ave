@@ -175,6 +175,7 @@ export interface AppServices {
   getSubAgentRunner?: () =>
     | import("../engine/subagent-runner.js").SubAgentRunner | undefined;
   /** Work board persistence (~/.ave/work-board/board.json); backs the work-board IPC domain. */
+  workflowTemplateStore?: import("../main/workflow-template-store.js").WorkflowTemplateStore;
   workBoardStore?: import("../main/work-board-store.js").WorkBoardStore;
   /** Plugin alerts pipeline; backs `hostApi.raiseAlert` and the alerts IPC domain. */
   alertsService?: import("../alerts/service.js").AlertsService;

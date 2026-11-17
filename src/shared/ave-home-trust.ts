@@ -67,7 +67,8 @@ let inputWriteBatchDepth = 0;
 const completedInputWrites = new Set<ActiveTrust>();
 let reviewSnapshot: { id: string; rows: readonly AveHomeTrustRow[] } | undefined;
 
-const MAX_INPUT_BYTES = 16 * 1024 * 1024;
+/** The largest covered input that is read. A larger file is refused, so a writer must not grow its own file past this. */
+export const AVE_HOME_INPUT_MAX_BYTES = 16 * 1024 * 1024;
 const MAX_TREE_FILES = 4096;
 const MAX_TREE_BYTES = 64 * 1024 * 1024;
 
@@ -87,6 +88,8 @@ const COVERED_FILES: readonly string[] = Object.freeze([
   "agent-plugin-trust/mcp/approvals.json",
   "skill-approvals.json",
   "routine/routines.json",
+  "work-board/templates.json",
+  "work-board/workflow-runs.json",
   "marketplaces/sources.json",
   "AGENTS.md",
   "agents.custom.md",
@@ -144,6 +147,9 @@ function gateFor(path: string): { trust: ActiveTrust; key: string; kind: "file" 
   return covered === undefined ? undefined : { trust: active, ...covered };
 }
 
+/** A covered file larger than the read limit; a loader may report it as pending review instead of failing. */
+export class AveHomeInputSizeLimitError extends Error {}
+
 class LinkedInputError extends Error {
   constructor(path: string) {
     super(`${path} is a link or not a regular file`);
@@ -181,7 +187,7 @@ function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: num
   try {
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || opened.ino !== pinned.ino || opened.dev !== pinned.dev) throw new Error(`${path} changed while it was opened`);
-    if (opened.size > MAX_INPUT_BYTES) throw new Error(`${path} exceeds the size limit`);
+    if (opened.size > AVE_HOME_INPUT_MAX_BYTES) throw new AveHomeInputSizeLimitError(`${path} exceeds the size limit`);
     const bytes = Buffer.alloc(opened.size);
     let filled = 0;
     while (filled < bytes.length) {

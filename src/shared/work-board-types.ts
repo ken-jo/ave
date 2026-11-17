@@ -28,6 +28,8 @@ export type WorkItemRunStatus =
 
 /** Persist ISO timestamps; unset optional fields are omitted rather than null. */
 export interface WorkItem {
+  /** The template this item was created from. Run state is never stored on the row: a template run is named by `runId` only. */
+  templateId?: string;
   id: number;
   title: string;
   detail?: string;
@@ -90,6 +92,7 @@ export interface WorkPlanDecideInput {
 /** Why a plan decision was refused. not_pending: no pending approval for that run; plan_mismatch: the plan changed; plan_stale: the
  * item changed after the plan was made, so a change request must re-plan it. */
 export type WorkPlanDecideRefusal =
+  | "invalid-template-run"
   | "not_found"
   | "not_pending"
   | "plan_mismatch"
@@ -111,6 +114,8 @@ export type WorkPlanDecideIpcResult =
   | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
+  /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review. Never persisted. */
+  templateRunError?: "invalid-template-run" | "template-runs-pending-review";
   /** Host-issued snapshot revision for conditional lifecycle mutations; never persisted. */
   mutationRevision?: string;
   status_resolved: WorkItemStatusResolved;
@@ -119,6 +124,7 @@ export interface WorkItemResolved extends WorkItem {
 }
 
 export interface WorkItemCreateInput {
+  templateId?: string;
   title: string;
   detail?: string;
   /** Omit → defaults to "medium". */
@@ -384,6 +390,7 @@ type WorkBoardControlRequestRefusal = "user-gesture-required" | "not-found";
 
 /** `redactedCount` reports outgoing PII redaction applied to the text before it reached the child, like a chat send's notice. */
 export type WorkBoardSteerIpcResult =
+  | { ok: false; error: "invalid-template-run" }
   | { ok: true; messageId: string; redactedCount?: number }
   | {
       ok: false;
@@ -396,6 +403,7 @@ export type WorkBoardSteerIpcResult =
     };
 
 export type WorkBoardCancelIpcResult =
+  | { ok: false; error: "invalid-template-run" }
   | WorkBoardCancelResult
   | { ok: false; reason: WorkBoardControlRequestRefusal };
 

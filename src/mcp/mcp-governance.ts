@@ -148,6 +148,7 @@ export class McpGovernance {
 
   /** Return the specific policy layer refusing a server configuration. */
   validateServer(config: McpServerConfig): ValidationResult {
+    if (config.id.startsWith("host:")) return { valid: false, reason: t("be_mcpGovernance.reservedHostOwner"), layer: 1 };
     if (config.transport !== "stdio" && config.transport !== "http") {
       return { valid: false, reason: t("be_mcpClient.unsupportedTransport", { transport: (config as { transport: string }).transport }), layer: 1 };
     }

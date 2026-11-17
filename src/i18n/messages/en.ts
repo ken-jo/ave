@@ -1,5 +1,10 @@
 /** English message catalog, grouped by namespace. */
 export const en = {
+  "reasonCodes.scope-changed": "The template scope changed. Attach the schedule again.",
+  "reasonCodes.project-mismatch": "The project differs from the approved project.",
+  "reasonCodes.scope-not-authorised": "The approved scope is no longer authorised.",
+  "reasonCodes.output-not-declared": "This output tool and owner are not declared by the template.",
+  "be_mcpGovernance.reservedHostOwner": "Server ids cannot use the reserved host: prefix.",
 
   "notificationCenter.title": "Notifications",
   "notificationCenter.label": "Notifications: {approvals} need review, {unread} unread notices",
@@ -6189,6 +6194,8 @@ export const en = {
 
   // workBoard
   "workBoard.panelTitle": "Work Board",
+  "workBoard.boardLoadFailed": "Could not load the work board.",
+  "workBoard.pendingReview": "Workflow run state needs review. Open Settings > {tabPermissions} > {homeTrustTitle}, review work-board/workflow-runs.json, then restart Ave.",
   "workBoard.panelDescription": "Track work through Planned, In progress, Review, and Completed.",
   "workBoard.addItemButton": "Add task",
   "workBoard.refreshButton": "Refresh",

@@ -1,30 +1,24 @@
 import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
 import { deferred } from "../../__tests__/support/deferred.js";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import * as tracing from "../../engine/telemetry/tracing.js";
 /** Boot integration checks service shape and construction order with heavy dependencies mocked.
  * It does not verify the behavior of closures wired to those mocks. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-// Fixture paths live under the configured test temp root; vi.mock factories read them through this hoisted value.
-const fixture = await vi.hoisted(async () => {
+// Use a hoisted recorder so mock factories can record construction order.
+const h = await vi.hoisted(async () => {
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const root = mkdtempSync(join(tmpdir(), "ave-boot-test-"));
-  return { root, path: (...parts: string[]) => join(root, ...parts) };
-});
-
-// Use a hoisted recorder so mock factories can record construction order.
-const h = vi.hoisted(() => {
+  const root = mkdtempSync(join(tmpdir(), "ave-boot-"));
   const order: string[] = [];
   const captured: Record<string, unknown> = { shutdownHooks: [] as string[] };
   const rec = (label: string) => {
     order.push(label);
   };
   const disposer = () => () => {};
-  return { order, captured, rec, disposer };
+  return { order, captured, rec, disposer, root };
 });
 
 // Use a real event emitter so listener-ceiling assertions observe actual runtime warnings.
@@ -38,7 +32,7 @@ vi.mock("electron", async () => {
   h.captured["appEvents"] = appEvents;
   return {
     app: {
-      getPath: vi.fn(() => fixture.root),
+      getPath: vi.fn(() => h.root),
       isPackaged: false,
       on: vi.fn((event: string, listener: (...a: unknown[]) => void) =>
         appEvents.on(event, listener),
@@ -218,9 +212,9 @@ vi.mock("../steps/plugin-runtime.js", () => ({
         pluginCallLlmRef: { fn: undefined },
       },
       pluginPaths: {
-        registryPath: fixture.path("plugins", "registry.json"),
-        pluginsRoot: fixture.path("plugins"),
-        cacheRoot: fixture.path("plugins", ".cache"),
+        registryPath: `${h.root}/plugins/registry.json`,
+        pluginsRoot: `${h.root}/plugins`,
+        cacheRoot: `${h.root}/plugins/.cache`,
       },
       loopbackManager: {
         prepareGeneration: vi.fn(),
@@ -429,7 +423,7 @@ vi.mock("../../main/persona-prompt-store.js", () => ({ PersonaPromptStore: class
 }));
 vi.mock("../../main/storage/feature-namespace.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../main/storage/feature-namespace.js")>(),
-  openFeatureNamespace: vi.fn(() => ({ dir: fixture.path("work-board"),
+  openFeatureNamespace: vi.fn(() => ({ dir: `${h.root}/work-board`,
   })),
 }));
 vi.mock("../../main/seed-ave-home-docs.js", () => ({
@@ -515,9 +509,9 @@ vi.mock("../../plugins/plugin-storage-layout.js", async (importOriginal) => ({
 }));
 vi.mock("../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
-    pluginsRoot: fixture.path("plugins"),
-    registryPath: fixture.path("registry.json"),
-    cacheRoot: fixture.path("cache"),
+    pluginsRoot: `${h.root}/plugins`,
+    registryPath: `${h.root}/registry.json`,
+    cacheRoot: `${h.root}/cache`,
   })),
 }));
 
@@ -559,7 +553,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
       return root;
     },
     initializeAsrtSandbox: vi.fn(async () => {}),
-    useAppOwnedSandboxTempRoot: vi.fn(() => fixture.path("sandbox-tmp")),
+    useAppOwnedSandboxTempRoot: vi.fn(() => `${h.root}/sandbox-tmp`),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
     isAsrtMacRuntimeProbeError: vi.fn(() => false),
@@ -595,7 +589,7 @@ vi.mock("../../audit/audit-logger.js", () => ({
     flush = vi.fn(async () => {});
     close = vi.fn(async () => {});
     rotateAndPrune = vi.fn(async () => {});
-    getAuditDir = vi.fn(() => fixture.path("audit"));
+    getAuditDir = vi.fn(() => `${h.root}/audit`);
     getPermissionAuditSecret = vi.fn(() => "s".repeat(64));
     getPermissionAuditSealStore = vi.fn(() => ({
       read: vi.fn(() => null),
@@ -621,11 +615,12 @@ import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 
 // Both boots need a scratch AVE_HOME because marketplace setup removes retired caches.
 const savedAveHome = process.env["AVE_HOME"];
-process.env["AVE_HOME"] = fixture.path("ave-home");
+process.env["AVE_HOME"] = `${h.root}/ave-home`;
 afterAll(async () => {
+  const { rm } = await import("node:fs/promises");
+  await rm(h.root, { recursive: true, force: true });
   if (savedAveHome === undefined) delete process.env["AVE_HOME"];
   else process.env["AVE_HOME"] = savedAveHome;
-  await cleanupTmpDir(fixture.root);
 });
 
 /** Observe process warnings before boot and keep the real implementation so leak checks cannot silence their evidence. */
@@ -659,7 +654,7 @@ function bootWithWindow(
   window: Parameters<typeof bootstrap>[1],
   mode: Parameters<typeof bootstrap>[3],
 ) {
-  return bootstrap(fixture.path("project"), window, () => window, mode, createBootHostFixture());
+  return bootstrap(`${h.root}/project`, window, () => window, mode, createBootHostFixture());
 }
 
 describe("bootstrap desktop identity registration", () => {
@@ -670,7 +665,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(promise);
     const order = h.order.length;
     const window = fakeWindow();
-    const boot = bootstrap(fixture.path("project"), window, () => window, "interactive", createBootHostFixture(), controller.signal);
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture(), controller.signal);
     const stopped = expect(boot).rejects.toMatchObject({ name: "AbortError" });
     try {
       controller.abort();
@@ -690,7 +685,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(held);
     const initializeNotificationPresenter = vi.fn(() => supported);
     const window = fakeWindow();
-    const boot = bootstrap(fixture.path("project"), window, () => window, "interactive", createBootHostFixture({
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture({
       desktop: createDesktopHostFixture({ initializeNotificationPresenter }),
     }));
     try {
@@ -729,7 +724,7 @@ describe("bootstrap() integration lock", () => {
     const getIds = h.captured["routineInstalledPluginIds"] as () => Promise<readonly string[]>;
     expect(await getIds()).toEqual(["updating-plugin", "disabled-plugin"]);
     const { readPluginRegistry } = await import("../../plugins/registry.js");
-    expect(readPluginRegistry).toHaveBeenLastCalledWith(fixture.path("plugins", "registry.json"));
+    expect(readPluginRegistry).toHaveBeenLastCalledWith(`${h.root}/plugins/registry.json`);
     vi.mocked(readPluginRegistry).mockResolvedValueOnce({ version: 1, plugins: [] });
     expect(await getIds()).toEqual([]);
   });
@@ -867,6 +862,7 @@ describe("bootstrap() integration lock", () => {
         "workBoardEngine",
         "workBoardReport",
         "workBoardStore",
+        "workflowTemplateStore",
       ]
     `);
   });

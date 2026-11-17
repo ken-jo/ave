@@ -54,6 +54,7 @@ import { updatePermissionsFile } from "../../permissions/permissions-store.js";
 import { storedFileRulesLocation, updateProjectRulesFile } from "../../permissions/rules/project-rule-files.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import type { WindowsDaclFacts } from "../windows-path-facts.js";
+import type { WorkflowRunRecord } from "../workflow-template-types.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const paths = useTempPaths("ave-home-trust-", ".ave");
@@ -836,4 +837,150 @@ describe.runIf(process.platform !== "win32")("POSIX home protection", () => {
       chmodSync(open, 0o700);
     }
   });
+});
+
+it.each(["templates.json", "workflow-runs.json"])("covers work-board %s authority and refuses foreign edits and overwrite", name => {
+  const dir = home(); expect(boot(dir).pending).toBe(false);
+  const path = join(dir, "work-board", name);
+  const original = JSON.stringify(name === "templates.json" ? { version: 1, templates: [] } : { version: 1, runs: [] });
+  writeUtf8FileAtomicSync(path, original);
+  expect(manifest(dir).entries[manifestKey(`work-board/${name}`)]).toEqual({ current: sha256Hex(original) });
+  expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
+  writeFileSync(path, `${original} `);
+  expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
+  expect(() => writeUtf8FileAtomicSync(path, original)).toThrow();
+});
+
+it("refuses a foreign edit through the covered template store without rewriting it", async () => {
+  const { WorkflowTemplateStore } = await import("../../main/workflow-template-store.js");
+  const dir = home(); expect(boot(dir).pending).toBe(false);
+  const path = join(dir, "work-board", "templates.json"); const store = new WorkflowTemplateStore(path);
+  const record = await store.draft(null, { name: "Read", scope: { kind: "all" }, stages: [{ id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }], edges: [] });
+  const draft = record.draft; if (!draft) throw new Error("Missing draft");
+  const version = await store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" });
+  const edited = `${readFileSync(path, "utf8")} `; writeFileSync(path, edited);
+  await expect(store.resolveVersion({ templateId: record.template.id, version: 1, graphHash: version.graphHash })).rejects.toMatchObject({ code: "invalid-template-file" });
+  await expect(store.archive(record.template.id)).rejects.toMatchObject({ code: "invalid-template-file" });
+  expect(readFileSync(path, "utf8")).toBe(edited);
+});
+
+describe("workflow run file", () => {
+  const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+  const run = { runId: "run", itemId: 1, pin, runStartedBy: { kind: "local-create-and-run" as const, pin }, startedAt: "2026-01-01T00:00:00.000Z",
+    stageRuns: [{ stageId: "a", attempt: 1, status: "awaiting_gate" as const, gate: { type: "human" as const, status: "pending" as const, revision: 0 } }] };
+  async function runStore(dir: string) {
+    const { WorkflowRunStore } = await import("../../main/workflow-run-store.js");
+    const path = join(dir, "work-board", "workflow-runs.json");
+    return { path, store: new WorkflowRunStore(path) };
+  }
+
+  it("is covered from its first host write and holds a foreign edit for review", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path, store } = await runStore(dir);
+    expect(manifest(dir).entries[manifestKey("work-board/workflow-runs.json")]).toBeUndefined();
+    expect(await store.put(run)).toMatchObject({ status: "stored" });
+    expect(manifest(dir).entries[manifestKey("work-board/workflow-runs.json")]).toEqual({ current: sha256Hex(readFileSync(path)) });
+    expect(await store.get("run")).toEqual({ status: "found", run });
+    const raw = JSON.parse(readFileSync(path, "utf8")); raw.runs[0].stageRuns[0].gate.status = "approved";
+    const edited = JSON.stringify(raw); writeFileSync(path, edited);
+    expect(await store.get("run")).toEqual({ status: "pending-review" });
+    expect((await store.view()).pendingReview).toBe(true);
+    const mutate = vi.fn((value: WorkflowRunRecord) => value);
+    expect(await store.update("run", mutate)).toEqual({ status: "pending-review" });
+    expect(await store.put({ ...run, runId: "other", itemId: 2 })).toEqual({ status: "pending-review" });
+    expect(mutate).not.toHaveBeenCalled();
+    expect(readFileSync(path, "utf8")).toBe(edited);
+    expect(getAveHomeTrustReview()?.rows.map(row => row.key)).toContain(manifestKey("work-board/workflow-runs.json"));
+  });
+
+  it("leaves the board file outside coverage, so an edit to it is read and written over", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { WorkBoardStore } = await import("../../main/work-board-store.js");
+    const path = join(dir, "work-board", "board.json");
+    const created = await new WorkBoardStore(path).create({ title: "Before" });
+    if (created.status !== "created") throw new Error("Missing item");
+    const raw = JSON.parse(readFileSync(path, "utf8")); raw.items[0].title = "Edited";
+    writeFileSync(path, JSON.stringify(raw));
+    const store = new WorkBoardStore(path);
+    expect(await store.list()).toMatchObject({ status: "ok", items: [{ title: "Edited" }] });
+    expect(await store.update(created.itemId, { detail: "Kept" })).toMatchObject({ status: "updated" });
+    expect(JSON.parse(readFileSync(path, "utf8")).items[0]).toMatchObject({ title: "Edited", detail: "Kept" });
+    expect(manifest(dir).entries[manifestKey("work-board/board.json")]).toBeUndefined();
+    expect(getAveHomeTrustReview()?.rows.map(row => row.key) ?? []).not.toContain(manifestKey("work-board/board.json"));
+  });
+
+  it("reports a file over the size limit as pending review instead of throwing", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path, store } = await runStore(dir);
+    expect(await store.put(run)).toMatchObject({ status: "stored" });
+    const oversized = JSON.stringify({ version: 1, runs: [run], padding: " ".repeat(16 * 1024 * 1024) });
+    writeFileSync(path, oversized);
+    expect(await store.get("run")).toEqual({ status: "pending-review" });
+    expect(await store.update("run", value => value)).toEqual({ status: "pending-review" });
+    expect(readFileSync(path).length).toBe(oversized.length);
+  });
+
+  it.each([
+    ["a foreign edit", (trusted: string) => trusted.replace('"awaiting_gate"', '"passed"')],
+    ["growth past the size limit", (trusted: string) => JSON.stringify({ ...JSON.parse(trusted), padding: " ".repeat(16 * 1024 * 1024) })],
+  ])("keeps the board listed and marks only started template rows after %s", async (_name, change) => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path } = await runStore(dir);
+    const { WorkBoardStore } = await import("../../main/work-board-store.js");
+    const board = new WorkBoardStore(join(dir, "work-board", "board.json"));
+    const create = async (templateId?: string): Promise<number> => {
+      const made = await board.create({ title: "Work", ...(templateId ? { templateId } : {}) });
+      if (made.status !== "created") throw new Error("Missing item");
+      return made.itemId;
+    };
+    const begin = { ...pin, source: run.runStartedBy, stageRuns: run.stageRuns };
+    const ordinary = await create(); const unstarted = await create(pin.templateId); const started = await create(pin.templateId);
+    expect(await board.beginRun(ordinary, "run-ordinary", run.startedAt)).toMatchObject({ status: "updated" });
+    expect(await board.beginRun(started, "run", run.startedAt, begin)).toMatchObject({ status: "updated" });
+    const marks = async () => {
+      const listed = await board.list();
+      if (listed.status !== "ok") throw new Error("Missing list");
+      const got = await Promise.all([started, unstarted, ordinary].map(id => board.get(id)));
+      expect(got.map(found => found.status === "found" ? [found.item.id, found.item.templateRunError] : null)).toEqual(listed.items.map(item => [item.id, item.templateRunError]));
+      return listed.items.map(item => [item.id, item.templateRunError]);
+    };
+    expect(await marks()).toEqual([[started, undefined], [unstarted, undefined], [ordinary, undefined]]);
+
+    const trusted = readFileSync(path, "utf8"); const changed = change(trusted);
+    expect(changed).not.toBe(trusted); writeFileSync(path, changed);
+    expect(await marks()).toEqual([[started, "template-runs-pending-review"], [unstarted, undefined], [ordinary, undefined]]);
+    expect(await board.beginRun(unstarted, "other", run.startedAt, begin)).toMatchObject({ status: "invalid", reason: "template-runs-pending-review" });
+    expect(await board.updateRun(started, "run", value => value)).toEqual({ status: "pending-review" });
+    expect(await board.update(ordinary, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    expect(readFileSync(path, "utf8")).toBe(changed);
+
+    writeFileSync(path, trusted);
+    expect(await marks()).toEqual([[started, undefined], [unstarted, undefined], [ordinary, undefined]]);
+  });
+
+  it("stays under the size limit when rows with large settled runs are deleted one after another", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path } = await runStore(dir);
+    const { WorkBoardStore } = await import("../../main/work-board-store.js");
+    const board = new WorkBoardStore(join(dir, "work-board", "board.json"));
+    const stageRuns = Array.from({ length: 12 }, (_, index) => ({ stageId: `stage-${index}`, attempt: 1, status: "passed" as const, output: "x".repeat(48_000) }));
+    const cycle = async (runId: string): Promise<number> => {
+      const made = await board.create({ title: "Work", templateId: pin.templateId });
+      if (made.status !== "created") throw new Error("Missing item");
+      expect(await board.beginRun(made.itemId, runId, run.startedAt, { ...pin, source: run.runStartedBy, stageRuns: [] })).toMatchObject({ status: "updated" });
+      expect(await board.updateRun(made.itemId, runId, value => ({ ...value, stageRuns, settled: { status: "completed" as const, at: run.startedAt } }))).toMatchObject({ status: "stored" });
+      expect(await board.setRunResult(made.itemId, { runStatus: "completed" })).toMatchObject({ status: "updated" });
+      return made.itemId;
+    };
+    const standing = await cycle("standing");
+    let largest = 0;
+    // Without cleanup the file passes 16 MiB after about 30 runs of this size and every later start is refused.
+    for (let round = 0; round < 34; round++) {
+      expect(await board.remove(await cycle(`run-${round}`))).toMatchObject({ status: "deleted" });
+      largest = Math.max(largest, readFileSync(path).length);
+    }
+    expect(largest).toBeLessThan(2 * 1024 * 1024);
+    expect(JSON.parse(readFileSync(path, "utf8")).runs.map((entry: { runId: string }) => entry.runId)).toEqual(["standing"]);
+    expect(await board.getRun(standing)).toMatchObject({ status: "found", run: { runId: "standing" } });
+  }, 240_000);
 });

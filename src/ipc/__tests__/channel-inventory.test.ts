@@ -1,3 +1,4 @@
+import { WORK_BOARD } from "../../shared/ipc-channels.js";
 /**
  * #1409 IPC wire lock — Commit C0 safety snapshot.
  *
@@ -150,6 +151,7 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "routinesStore",
   "routinesScheduler",
   "sessionTasksStore",
+  "workflowTemplateStore",
   "workBoardStore",
   "workBoardEngine",
   "workBoardReport",
@@ -257,6 +259,18 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     // The late-mount pull is the registered half, and stays in the snapshot.
     expect(CHANNELS.bootstrap.statusGet).toBe("ave:bootstrap:status:get");
     expect(channels).toContain(CHANNELS.bootstrap.statusGet);
+  });
+
+  it("keeps template confirmation private and gesture-bound with an outbound changed signal", () => {
+    for (const channel of ["templateList", "templateGet", "templateDraft", "templateConfirm", "templateArchive", "templateAttachSchedule", "templateDetachSchedule"] as const) {
+      expect(channels.filter(c => c === WORK_BOARD[channel])).toEqual([WORK_BOARD[channel]]);
+      expect(isPublicChannel(WORK_BOARD[channel])).toBe(false);
+    }
+    expect(CHANNEL_GESTURE[WORK_BOARD.templateConfirm]).toBe("required");
+    expect(CHANNEL_GESTURE[WORK_BOARD.templateAttachSchedule]).toBe("required");
+    expect(CHANNEL_GESTURE[WORK_BOARD.templateDetachSchedule]).toBe("required");
+    expect(channels).not.toContain(WORK_BOARD.templatesChanged);
+    expect(isPublicChannel(WORK_BOARD.templatesChanged)).toBe(false);
   });
 
   it("locks the sorted unique channel list", () => {
@@ -622,6 +636,13 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:work-board:run-briefing",
         "ave:work-board:run-transcript",
         "ave:work-board:steer-run",
+        "ave:work-board:template-archive",
+        "ave:work-board:template-attach-schedule",
+        "ave:work-board:template-confirm",
+        "ave:work-board:template-detach-schedule",
+        "ave:work-board:template-draft",
+        "ave:work-board:template-get",
+        "ave:work-board:template-list",
         "ave:work-board:transition",
         "ave:work-board:update",
         "ave:workspace:drop-prepare",
