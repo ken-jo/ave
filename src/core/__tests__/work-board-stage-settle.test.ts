@@ -423,7 +423,7 @@ for (const [refusal, code] of [["refused", "run-state-unavailable"], ["too-large
   });
 }
 
-it("a run ended without its graph whose end cannot be written keeps its workspace and row, and a reader takes it over again", () => {
+it("a run ended without its graph whose end cannot be written keeps its workspace and row until a reader writes that end", () => {
   let missing = false;
   const released: string[] = [];
   return withHarness(async (h) => {
@@ -448,9 +448,13 @@ it("a run ended without its graph whose end cannot be written keeps its workspac
     missing = false;
     expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
     await h.engine.projectTemplateRuns([item]);
-    for (let i = 0; i < 400 && !h.engine.cancelRun(id).ok; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-    // Taken over and stopped: its end is written this time.
-    expect((await h.until(id, current => current.record?.settled !== undefined)).record?.settled?.status).toBe("cancelled");
+    // The end it could not write is written this time, as it was: never taken over again.
+    const ended = await h.until(id, current => current.runStatus === "error");
+    expect(ended.record?.settled?.status).toBe("error");
+    expect(ended.record?.stageRuns.map(stage => stage.status)).toEqual(["cancelled"]);
+    expect(released).toEqual([item.runId]);
+    expect(prune).not.toHaveBeenCalled();
+    expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
   }, h => ({
     workflow: {
       templates: {
@@ -463,6 +467,64 @@ it("a run ended without its graph whose end cannot be written keeps its workspac
     },
     workspace: { release: async (ref) => { released.push(ref.runId); } },
   }));
+});
+
+it("while a run end is unconfirmed, starts are refused and nothing is pruned or swept beside a start that has opened its workspace", () => {
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const first = await h.addItem(version);
+    const second = await h.addItem(version);
+    const third = await h.addItem(version);
+    const runFirst = h.start(first, h.local(version));
+    const [a] = await h.untilLive(1);
+    const firstRun = (await h.until(first, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+
+    // The second start has opened its workspace and is held before its record is stored.
+    let reached: () => void = () => undefined;
+    const atBegin = new Promise<void>(resolve => { reached = resolve; });
+    let resume: () => void = () => undefined;
+    const held = new Promise<void>(resolve => { resume = resolve; });
+    const begin = h.board.beginRun.bind(h.board);
+    const beginRun = vi.spyOn(h.board, "beginRun").mockImplementation(async (...args) => {
+      if (args[0] === second) { reached(); await held; }
+      return begin(...args);
+    });
+    const runSecond = h.start(second, h.local(version));
+    await atBegin;
+    expect(h.workspaceCalls.filter(call => call.startsWith("open:"))).toHaveLength(2);
+
+    // The first run's end cannot be written.
+    const updateRun = h.board.updateRun.bind(h.board);
+    const failing = vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, runId, mutate) =>
+      runId === firstRun ? { status: "pending-review" } : updateRun(itemId, runId, mutate));
+    const prune = vi.spyOn(h.board, "pruneSettledRuns");
+    const swept = h.sweeps.length;
+    a.finish();
+    await runFirst;
+    expect(h.events.at(-1)).toMatchObject({ itemId: first, phase: "error", reasonCode: "template-runs-pending-review" });
+    expect((await h.item(first)).record?.settled).toBeUndefined();
+
+    expect(await h.start(third, h.local(version))).toMatchObject({ status: "error", reasonCode: "template-runs-pending-review" });
+    expect(beginRun.mock.calls.filter(call => call[0] === third)).toHaveLength(0);
+
+    // A reader writes the end; nothing else is pruned or swept, and the held start's workspace is never touched.
+    failing.mockRestore();
+    await h.engine.projectTemplateRuns([await h.item(first)]);
+    for (let i = 0; i < 400 && released.length === 0 && h.sweeps.length === swept; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(prune).not.toHaveBeenCalled();
+    expect(h.sweeps).toHaveLength(swept);
+    expect(released).toEqual([firstRun]);
+    expect((await h.until(first, item => item.runStatus === "error")).record?.settled?.status).toBe("error");
+
+    resume();
+    await h.untilLive(1);
+    const secondRun = (await h.item(second)).runId ?? "";
+    expect(h.sweeps).toHaveLength(swept);
+    expect(released).not.toContain(secondRun);
+    expect(h.engine.cancelRun(second)).toEqual({ ok: true });
+    expect(await runSecond).toMatchObject({ status: "cancelled" });
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
 
 for (const [write, refusal, code] of [

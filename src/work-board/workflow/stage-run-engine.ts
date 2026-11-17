@@ -174,6 +174,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const records = deps.runs;
   const runs = new Map<number, RunState>();
   let adoption: Promise<Adopted> | null = null;
+  /** Run ends the run file did not confirm, by run id: until each is written, nothing starts, is decided, pruned or swept. */
+  const unconfirmed = new Map<string, { ref: RunRef; status: Settled; rowGone: boolean }>();
+  let confirming: Promise<Adopted> | null = null;
   const unattendedAllowed = deps.unattendedAllowed
     ?? ((version: TemplateVersion): UnattendedQualification => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" });
 
@@ -320,7 +323,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** After the run file says the run is over: show it on the row, tell the listeners, and let the item go. */
   async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string, settled = true): Promise<void> {
     // A row that is gone or names another run is never written; the settled record goes with the prune.
-    if (!settled) adoption = null;
+    if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus, rowGone: state.rowGone });
     else if (state.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
     else await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
@@ -359,7 +362,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }).catch((error: unknown) => { log.warn("stage run could not be ended in the run file (id=%d): %s", state.itemId, errorMessage(error)); return { run: null, reason: "unavailable" as const }; });
     if (!idle) return;
     // A write refused because the run is already over confirms it. Otherwise the record still owns its workspace, nothing is shown on
-    // the row or pruned, and the next adoption takes the run over.
+    // the row or pruned, and the next start, decision or reader writes the end again first.
     const settled = written.run !== null || written.reason === "refused";
     if (settled) await workspace.release(state.ref, "all").catch(() => undefined);
     await finish(state, written.run, runStatus, null, state.stopping ? undefined : state.faulted ?? cause, settled);
@@ -807,13 +810,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** A start that failed after its workspace was opened: the workspace goes, and a run that was already stored ends `error`. A stored run
-   * that could not be ended keeps its workspace and is left to the next adoption. */
+   * that could not be ended keeps its workspace, and the next start, decision or reader writes its end again first. */
   async function abandonStart(ref: RunRef, recorded: boolean, result: WorkItemRunResult): Promise<WorkItemRunResult> {
     if (recorded) {
       const at = new Date().toISOString();
       const ended = await records.update(ref.itemId, ref.runId, current => ({ ...current, settled: { status: "error", at } })).then(write => write.ok, () => false);
       if (!ended) {
-        adoption = null;
+        unconfirmed.set(ref.runId, { ref, status: "error", rowGone: false });
         return result;
       }
       await showOnRow(ref.itemId, "error", undefined);
@@ -981,11 +984,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const at = new Date().toISOString();
     for (const run of found.orphans) {
       if (run.settled !== undefined) continue;
-      const ended = await records.update(run.itemId, run.runId, current => current.settled !== undefined ? null : {
-        ...current,
-        stageRuns: current.stageRuns.map((stage): WorkItemStageRun => stage.status === "waiting" || stage.status === "running" || stage.status === "awaiting_gate" ? { ...stage, status: "cancelled", endedAt: stage.endedAt ?? at } : stage),
-        settled: { status: "cancelled", at },
-      }, true);
+      const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "cancelled", at), true);
       // Not confirmed over: nothing is pruned or swept, and the record keeps its workspace until an adoption ends it.
       if (!ended.ok) {
         log.warn("an orphaned template run could not be cancelled (id=%d): %s", run.itemId, ended.reason);
@@ -997,16 +996,55 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { ok: true };
   }
 
+  /** The run as it ends now: every open stage cancelled. Null when it is already over. */
+  function endedAs(current: RunRecord, status: Settled, at: string): RunRecord | null {
+    if (current.settled !== undefined) return null;
+    const stageRuns = current.stageRuns.map((stage): WorkItemStageRun =>
+      stage.status === "waiting" || stage.status === "running" || stage.status === "awaiting_gate" ? { ...stage, status: "cancelled", endedAt: stage.endedAt ?? at } : stage);
+    return { ...current, stageRuns, settled: { status, at } };
+  }
+
+  /** Writes again each run end the run file did not confirm, then does what the end left undone. Only those runs: nothing else is pruned or
+   * swept, since a start may hold a workspace its record does not name yet. */
+  async function confirmSettles(): Promise<Adopted> {
+    for (const [runId, left] of unconfirmed) {
+      const at = new Date().toISOString();
+      const write = (rowGone: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.status, at), rowGone)
+        .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return { ok: false as const, reason: "unavailable" as const }; });
+      let ended = await write(left.rowGone);
+      // The row went meanwhile: the end is written by run id alone, and a run the file no longer holds has nothing left to end.
+      if (!ended.ok && ended.reason === "row-gone") {
+        left.rowGone = true;
+        ended = await write(true);
+      }
+      if (!ended.ok && ended.reason !== "refused" && !(left.rowGone && ended.reason === "unavailable")) return { ok: false, code: writeFault(ended.reason) };
+      unconfirmed.delete(runId);
+      await workspace.release(left.ref, "all").catch(() => undefined);
+      if (left.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
+      else await showOnRow(left.ref.itemId, left.status, undefined);
+      deps.itemChanged?.(left.ref.itemId);
+    }
+    return { ok: true };
+  }
+
   /** Once per process. An attempt that failed or was refused is tried again by the next start, decision, reader or boot, which is refused
-   * until one succeeds; nothing retries on its own. */
-  const adopted = (): Promise<Adopted> => adoption ??= adoptRuns().then(
-    (done) => { if (!done.ok) adoption = null; return done; },
-    (error: unknown): Adopted => {
-      adoption = null;
-      log.warn("template run adoption failed: %s", errorMessage(error));
-      return { ok: false, code: error instanceof WorkflowTemplateError ? error.code : "run-state-unavailable" };
-    },
-  );
+   * until one succeeds; nothing retries on its own. A run end the run file did not confirm is written first, and refuses the same way. */
+  const adopted = async (): Promise<Adopted> => {
+    if (unconfirmed.size > 0) {
+      confirming ??= confirmSettles().finally(() => { confirming = null; });
+      const confirmed = await confirming;
+      if (!confirmed.ok) return confirmed;
+    }
+    adoption ??= adoptRuns().then(
+      (done) => { if (!done.ok) adoption = null; return done; },
+      (error: unknown): Adopted => {
+        adoption = null;
+        log.warn("template run adoption failed: %s", errorMessage(error));
+        return { ok: false, code: error instanceof WorkflowTemplateError ? error.code : "run-state-unavailable" };
+      },
+    );
+    return adoption;
+  };
 
   /** What a board reader is told about each row's template run, from the run file and the host's own state. Whatever a row itself says
    * under that name is dropped first. */

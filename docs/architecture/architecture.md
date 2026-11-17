@@ -3717,6 +3717,9 @@ with its own owner rule:
   lists. A board file that is missing, does not parse or awaits review proves
   nothing: the engine then settles, prunes and sweeps nothing and refuses
   template starts until a later start, decision, reader or boot reads it.
+  A run end the run file does not confirm blocks the same way: starts and
+  decisions are refused and nothing is pruned or swept until a later start,
+  decision or reader writes that end.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
