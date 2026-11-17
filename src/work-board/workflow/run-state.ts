@@ -1,4 +1,5 @@
 import type { RunRowStanding, WorkBoardStore } from "../../main/work-board-store.js";
+import type { DeleteIntent } from "../../main/workflow-run-store.js";
 import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
@@ -25,6 +26,8 @@ type RunAdoption = {
   lost: RunRecord[];
   /** Stored runs no adopted row names whose row on disk does not validate, or names the run though the board as read did not. */
   kept: RunRecord[];
+  /** Stored runs whose row a user's delete took off the board (see `deleted`): none of the above. */
+  removed: RunRecord[];
 } | { ok: false; code: "template-runs-pending-review" | "template-runs-board-unread" };
 
 /** The one reader and writer of run state the stage scheduler uses. */
@@ -46,6 +49,9 @@ export interface WorkflowRunState {
   view(): Promise<(row: { id: number; runId?: string }) => RunRecord | null>;
   /** What boot adopts, from one read of the run file and, when a stored run is named by no row, of the board file on disk. */
   adoption(): Promise<RunAdoption>;
+  /** The unsettled runs whose row a user's delete took off the board, by the delete intents the run file holds; the refusal code while
+   * the run file awaits review or the board file on disk shows nothing. */
+  deleted(): Promise<DeleteIntent[] | "template-runs-pending-review" | "template-runs-board-unread">;
   /** Removes the settled runs no row lists any more. */
   pruneSettled(): Promise<void>;
   /** Where each run's row stands on the board file on disk. Undefined while that file shows nothing. */
@@ -53,7 +59,7 @@ export interface WorkflowRunState {
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runRowsOnDisk">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runRowsOnDisk" | "deletedRuns">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -106,13 +112,18 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       });
       const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
       const rest = stored.runs.filter(run => !adopted.has(run.runId));
-      if (rest.length === 0) return { ok: true, named, orphans: [], lost: [], kept: [] };
+      if (rest.length === 0) return { ok: true, named, orphans: [], lost: [], kept: [], removed: [] };
       // The listed board may be one started empty after the file went missing or was damaged: only the file on disk shows a row gone.
       const standing = await store.runRowsOnDisk();
       if (!standing) return { ok: false, code: "template-runs-board-unread" };
-      const of = (...rows: RunRowStanding[]) => rest.filter(run => rows.includes(standing(run)));
-      return { ok: true, named, orphans: of("gone", "moved"), lost: of("unnamed", "lost"), kept: of("unreadable", "named") };
+      // Read after the board: a delete that took a row off it stored its intent first.
+      const deleted = await store.deletedRuns();
+      if (!Array.isArray(deleted)) return { ok: false, code: deleted };
+      const removed = rest.filter(run => deleted.some(intent => intent.itemId === run.itemId && intent.runId === run.runId));
+      const of = (...rows: RunRowStanding[]) => rest.filter(run => !removed.includes(run) && rows.includes(standing(run)));
+      return { ok: true, named, orphans: of("gone", "moved"), lost: of("unnamed", "lost"), kept: of("unreadable", "named"), removed };
     },
+    deleted: () => store.deletedRuns(),
     pruneSettled: () => store.pruneSettledRuns(),
     rows: () => store.runRowsOnDisk(),
   };

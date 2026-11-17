@@ -177,9 +177,7 @@ it("prunes on a later write what an earlier cleanup could not remove", async () 
   const gone = await templateItem(store);
   const other = await templateItem(store);
   await settled(store, gone, "gone-1");
-  const read = homeTrust.readAveHomeInput;
-  vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
-    path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
+  vi.spyOn(store.runs, "prune").mockRejectedValueOnce(Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" }));
   const before = await readFile(runsPath, "utf8");
   expect(await store.remove(gone)).toMatchObject({ status: "deleted" });
   expect(await readFile(runsPath, "utf8")).toBe(before);
@@ -437,7 +435,8 @@ it("leaves a run file pending review as it is on an engine prune", async () => {
   const read = homeTrust.readAveHomeInput;
   vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
     path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
-  expect(await store.remove(gone)).toMatchObject({ status: "deleted" });
+  // A delete stores its intent first, so it waits for the review too.
+  expect(await store.remove(gone)).toEqual({ status: "invalid", itemId: gone, reason: "template-runs-pending-review" });
   await expect(store.pruneSettledRuns()).resolves.toBeUndefined();
   vi.restoreAllMocks();
   expect(await readFile(runsPath, "utf8")).toBe(before);

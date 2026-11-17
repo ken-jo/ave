@@ -13,9 +13,11 @@ import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, W
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
 // `legacyBoardCopy`: the copy of a legacy board, as stored; it is only read by the copy and the board writes that wait on it, and written
-// back as it is. `raw`, the file's top-level object as read: a write writes its other keys back as they were, in their place; `unchanged`,
-// the text a write writes for the file as read.
-interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown; raw?: Record<string, unknown>; unchanged?: string }
+// back as it is. `deleteIntents`: see markDeleted. `raw`, the file's top-level object as read: a write writes its other keys back as they
+// were, in their place; `unchanged`, the text a write writes for the file as read.
+interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown; deleteIntents?: unknown[]; raw?: Record<string, unknown>; unchanged?: string }
+/** A user's delete of row `itemId`, which named the unsettled run `runId` of that row. */
+export interface DeleteIntent { itemId: number; runId: string }
 /** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
  * row it names when that reads as a row id. */
 interface WorkflowRunUnreadable { position: number; hash: string; itemId?: number }
@@ -71,6 +73,23 @@ function unreadableEntries(file: RunsFile): WorkflowRunUnreadable[] {
   });
 }
 
+const isIntent = (entry: unknown): entry is DeleteIntent =>
+  isRecord(entry) && Object.keys(entry).length === 2 && isRowId(entry.itemId) && typeof entry.runId === "string";
+
+// Whether the intent's run is still to end: the file holds it readable, unsettled and of that row.
+function openIntent(file: RunsFile, intent: DeleteIntent): boolean {
+  const { result } = lookup(file, intent.runId);
+  return result.status === "found" && result.run.settled === undefined && result.run.itemId === intent.itemId;
+}
+
+// An intent goes with the write that ends its run, or once the file holds no such run; one whose run entry does not read, or that does
+// not read as an intent, stays as it is.
+function keepOpenIntents(file: RunsFile): void {
+  if (file.deleteIntents === undefined) return;
+  const kept = file.deleteIntents.filter(entry => !isIntent(entry) || lookup(file, entry.runId).result.status === "invalid" || openIntent(file, entry));
+  file.deleteIntents = kept.length > 0 ? kept : undefined;
+}
+
 function fileText({ raw, unchanged: _, ...known }: RunsFile): string {
   return `${JSON.stringify({ ...raw, ...known }, null, 2)}\n`;
 }
@@ -115,10 +134,12 @@ export class WorkflowRunStore {
     let raw: unknown;
     try { raw = JSON.parse(text); } catch { throw new WorkflowTemplateError("invalid-template-run"); }
     if (repeatsKey(text)) throw new WorkBoardWriteRefusal("workflow-runs-duplicate-key", this.filePath);
-    requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor)), "invalid-template-run");
+    requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor))
+      && (raw.deleteIntents === undefined || Array.isArray(raw.deleteIntents)), "invalid-template-run");
     const runs: unknown[] = raw.runs;
     const copy = raw.legacyBoardCopy === undefined ? {} : { legacyBoardCopy: raw.legacyBoardCopy };
-    const file: RunsFile = { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy, raw };
+    const intents = raw.deleteIntents === undefined ? {} : { deleteIntents: raw.deleteIntents as unknown[] };
+    const file: RunsFile = { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy, ...intents, raw };
     file.unchanged = fileText(file);
     return { file, bytes: input.bytes };
   }
@@ -220,6 +241,29 @@ export class WorkflowRunStore {
     return (await this.view()).get(runId);
   }
 
+  /** Store, before the board write that deletes row `intent.itemId`, that the user deletes it: the engine ends its run as its row removed,
+   * after a crash too, and the intent goes with the write that ends the run. `none`, with nothing written, when the file holds no
+   * readable unsettled run of that row under that id; `pending-review` while the file awaits review or is past its read limit;
+   * `too-large` when the file would be. A file that cannot be read throws. */
+  async markDeleted(intent: DeleteIntent): Promise<"marked" | "none" | "pending-review" | "too-large"> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file === undefined) return "pending-review";
+      if (!openIntent(file, intent)) return "none";
+      const intents = file.deleteIntents ?? [];
+      if (intents.some(entry => isIntent(entry) && entry.itemId === intent.itemId && entry.runId === intent.runId)) return "marked";
+      file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
+      return (await this.commit(file)) ? "marked" : "too-large";
+    });
+  }
+
+  /** The delete intents whose run is still to end. Undefined while the file awaits review or is past its read limit; a file that cannot
+   * be read throws. */
+  async deleteIntents(): Promise<DeleteIntent[] | undefined> {
+    const file = await this.read();
+    return file && (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry));
+  }
+
   /** Every string run id an entry of the file holds, readable or not; undefined while the file awaits review, is past its read limit or
    * cannot be read. */
   async runIds(): Promise<ReadonlySet<string> | undefined> {
@@ -300,6 +344,7 @@ export class WorkflowRunStore {
   // Bytes it would not give back, and the file before a discard, are copied beside it first.
   private async commit(file: RunsFile, discard = false): Promise<boolean> {
     file.rowIdFloor = floorOver(file.runs, file.rowIdFloor);
+    keepOpenIntents(file);
     const text = fileText(file);
     if (Buffer.byteLength(text, "utf8") > AVE_HOME_INPUT_MAX_BYTES) return false;
     await rewriteKeepingBytes(this.filePath, text, { tag: "invalid-runs", ...(discard ? {} : { unchanged: file.unchanged }) });

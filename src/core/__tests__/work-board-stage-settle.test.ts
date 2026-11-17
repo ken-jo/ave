@@ -198,6 +198,7 @@ it("a state change is reduced from the run as stored at the write: a workspace s
           view: () => runs().view(),
           read: (...a) => runs().read(...a),
           adoption: () => runs().adoption(),
+          deleted: () => runs().deleted(),
           pruneSettled: () => runs().pruneSettled(),
           rows: () => runs().rows(),
           settleUnstarted: (...a) => runs().settleUnstarted(...a),
@@ -1251,6 +1252,103 @@ it("a user's delete of the listed row of a run a restart left with a stage runni
   // No child of this process ran it: none is interrupted.
   expect(h.interrupts).toEqual([]);
 }));
+
+const intentsOf = (h: Harness): unknown => (JSON.parse(readFileSync(runsFile(h), "utf8")) as { deleteIntents?: unknown }).deleteIntents ?? [];
+const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 5));
+
+async function parkedRun(h: Harness): Promise<{ id: number; runId: string }> {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  (await h.untilLive(1))[0].finish();
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  return { id, runId: (await h.item(id)).runId ?? "" };
+}
+
+it("an adoption between a delete's board write and its takeover leaves the deleted row's parked run to its delete intent: it ends cancelled as its row removed, never as an orphan", () => withHarness(async (h) => {
+  const { id, runId } = await parkedRun(h);
+  h.makeEngine();
+  const row = await h.item(id);
+  // The takeover's read of the run waits until the adoption is done.
+  let open = (): void => undefined;
+  const shut = new Promise<void>((resolve) => { open = resolve; });
+  const view = h.board.runs.view.bind(h.board.runs);
+  const reads = vi.spyOn(h.board.runs, "view").mockImplementation(async () => {
+    if (reads.mock.calls.length === 1) await shut;
+    return view();
+  });
+  const before = h.events.length;
+  expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
+  for (let i = 0; i < 400 && reads.mock.calls.length === 0; i += 1) await tick();
+  await h.engine.adoptParkedTemplateRuns();
+  expect(h.sweeps.at(-1)).toContain(runId);
+  open();
+  const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
+  for (let i = 0; i < 400 && !ended(); i += 1) await tick();
+  expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
+  expect(intentsOf(h)).toEqual([]);
+  expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+}));
+
+it("a delete whose process dies before any engine takes the deleted row's parked run over leaves the run to the next boot, which ends it cancelled as its row removed", () => withHarness(async (h) => {
+  const { id, runId } = await parkedRun(h);
+  const row = await h.item(id);
+  // The board write lands; no engine of that process hears of the delete.
+  const dying = new WorkBoardStore(h.boardPath);
+  expect(await dying.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
+  expect(intentsOf(h)).toEqual([{ itemId: id, runId }]);
+  expect((await h.runOf(runId))?.settled).toBeUndefined();
+
+  const next = h.makeEngine();
+  const before = h.events.length;
+  await next.adoptParkedTemplateRuns();
+  const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
+  for (let i = 0; i < 400 && !ended(); i += 1) await tick();
+  expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
+  expect(intentsOf(h)).toEqual([]);
+  expect(next.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+}));
+
+it("a deleted row's run whose takeover write fails keeps its delete intent, and a later reader's takeover ends it cancelled as its row removed", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  h.makeEngine();
+  const row = await h.item(live.id);
+  const write = h.board.runs.update.bind(h.board.runs);
+  const update = vi.spyOn(h.board.runs, "update").mockImplementation(async (...args) => update.mock.calls.length === 1 ? { status: "too-large" } : write(...args));
+  const before = h.events.length;
+  expect(await h.board.remove(live.id, row.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: live.runId });
+  for (let i = 0; i < 400 && update.mock.calls.length === 0; i += 1) await tick();
+  for (let i = 0; i < 4; i += 1) await tick();
+  const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
+  expect(ended()).toBeUndefined();
+  expect(intentsOf(h)).toEqual([{ itemId: live.id, runId: live.runId }]);
+  expect((await h.runOf(live.runId))?.settled).toBeUndefined();
+
+  await h.engine.projectTemplateRuns([]);
+  for (let i = 0; i < 400 && !ended(); i += 1) await tick();
+  expect(ended()).toEqual({ itemId: live.id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
+  expect(intentsOf(h)).toEqual([]);
+  expect(h.interrupts).toEqual([]);
+}));
+
+for (const [how, input, code] of runFileRefusal) {
+  it(`a delete of a live run's row while the run file ${how} stores no delete intent and deletes nothing: ${code}`, () => withHarness(async (h) => {
+    const live = await liveRun(h);
+    const onDisk = readFileSync(h.boardPath, "utf8");
+    const read = homeTrust.readAveHomeInput;
+    vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(target => target === runsFile(h) ? input() : read(target));
+    const refusal = await h.board.remove(live.id).then(
+      result => result.status === "invalid" ? result.reason : result.status,
+      (error: { code?: string }) => error.code === "EIO" ? "run-state-unavailable" : error.code,
+    );
+    expect(refusal).toBe(code);
+    expect(readFileSync(h.boardPath, "utf8")).toBe(onDisk);
+    vi.restoreAllMocks();
+    expect(intentsOf(h)).toEqual([]);
+    expect(h.engine.cancelRun(live.id)).toEqual({ ok: true });
+    expect(await live.run).toMatchObject({ status: "cancelled", reason: "user-stopped" });
+  }));
+}
 
 it("a user's delete of a live run's listed row below the board's unknownBelow mark ends the run cancelled as its row removed, never as lost", () => withHarness(async (h) => {
   const live = await liveRun(h);

@@ -31,7 +31,7 @@ import { projectRootEquals, projectRootKey } from "../shared/project-identity.js
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { workBoardMoveRefusal } from "../shared/work-board-lifecycle.js";
 import { ChangeSignal } from "../lib/change-signal.js";
-import { WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView } from "./workflow-run-store.js";
+import { type DeleteIntent, WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView } from "./workflow-run-store.js";
 import { stripBoardRunFields } from "../work-board/template-run-fields.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
@@ -642,6 +642,17 @@ export class WorkBoardStore {
    * awaits review, does not parse or lists no items: such a board shows nothing. */
   async runRowsOnDisk(): Promise<RowStandings | undefined> {
     return (await readBoardOnDisk(this.filePath))?.standing;
+  }
+
+  /** For the engine: the unsettled runs whose row a user's delete took off the board, by the run file's delete intents, while the board
+   * file on disk lists no row with that id; an intent whose delete never landed waits. */
+  async deletedRuns(): Promise<DeleteIntent[] | "template-runs-pending-review" | "template-runs-board-unread"> {
+    const intents = await this.runs.deleteIntents();
+    if (!intents) return "template-runs-pending-review";
+    const onDisk = await readBoardOnDisk(this.filePath);
+    if (!onDisk) return "template-runs-board-unread";
+    const listed = new Set(onDisk.board.items.map((row) => row.id));
+    return intents.filter((intent) => !listed.has(intent.itemId));
   }
 
   // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is, and one
@@ -1400,7 +1411,8 @@ export class WorkBoardStore {
   }
 
   /** Delete the listed row `id`; given `expectedRevision`, only while the row is still as that revision says. The run the deleted row named
-   * is returned and told to the engine as its row deleted by the user. */
+   * is returned and told to the engine as its row deleted by the user. An unsettled run of that row is first marked so in the run file
+   * (see WorkflowRunStore.markDeleted); a mark that cannot be stored refuses the delete. */
   async remove(id: number, expectedRevision?: string): Promise<WorkItemDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -1411,6 +1423,11 @@ export class WorkBoardStore {
         return item ? { status: "invalid" as const, itemId: id, reason: "work-item-changed" } : { status: "not_found" as const, itemId: id };
       }
       const { runId } = item;
+      const marked = runId === undefined ? "none" : await this.runs.markDeleted({ itemId: id, runId });
+      if (marked === "pending-review" || marked === "too-large") {
+        this.cache = cacheOf(board);
+        return { status: "invalid" as const, itemId: id, reason: marked === "pending-review" ? "template-runs-pending-review" : "template-runs-too-large" };
+      }
       board.items = board.items.filter((i) => i !== item);
       await this.commit(board, { ...(runId === undefined ? {} : { deleted: { itemId: id, runId } }), released: [item] });
       if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));

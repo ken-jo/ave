@@ -190,6 +190,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   let confirming: Promise<Adopted> | null = null;
   /** The boot takeover succeeded: runs it left are decided while another run's end is unconfirmed. */
   let takenOver = false;
+  /** The run file may hold a delete intent whose run is not taken over yet: true at boot, after each delete and after a takeover failed. */
+  let intentsPending = true;
+  let consuming: Promise<Adopted> | null = null;
   const unattendedAllowed = deps.unattendedAllowed
     ?? ((version: TemplateVersion): UnattendedQualification => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" });
 
@@ -311,10 +314,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (runs.size > 0) void checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error)));
   });
   // The user deleted the row that named this run: its row is gone, whatever else the board file holds. A run a restart left parked is
-  // taken over by that id, as its adoption would, and cancelled so.
+  // taken over by its delete intent, as its adoption would, and cancelled so.
   store.rowDeleted.subscribe(({ itemId, runId }) => {
     if (removedHeld(itemId, runId) || unconfirmed.has(runId)) return;
-    void takeOverDeleted(itemId, runId).catch((error: unknown) => log.warn("a parked run whose row was deleted was not ended (id=%d): %s", itemId, errorMessage(error)));
+    intentsPending = true;
+    void consumeIntents();
   });
   /** Whether a state holds the item; when it is that run, its row is removed. */
   function removedHeld(itemId: number, runId: string): boolean {
@@ -323,19 +327,52 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (state.runId === runId) rowRemoved(state);
     return true;
   }
-  async function takeOverDeleted(itemId: number, runId: string): Promise<void> {
-    const record = await records.get(itemId, runId);
+  /** Takes a parked run whose row the user deleted over by its id and cancels it so. Null once it is, or needs nothing (held, over or
+   * gone); otherwise why it could not be read or written. */
+  async function takeOverDeleted(itemId: number, runId: string): Promise<RunWriteFailure | null> {
+    const read = await records.read(itemId, runId);
     // An adoption may have taken the run over meanwhile.
-    if (removedHeld(itemId, runId) || !record || record.settled !== undefined) return;
-    const parked = await reconcileRunRecord(record, new Date().toISOString(), root => access(root).then(() => true, () => false));
-    let taken = record;
+    if (removedHeld(itemId, runId) || read.status === "not-found" || (read.status === "found" && read.run.settled !== undefined)) return null;
+    if (read.status !== "found") return read.status === "pending-review" ? "pending-review" : "invalid";
+    const parked = await reconcileRunRecord(read.run, new Date().toISOString(), root => access(root).then(() => true, () => false));
+    let taken = read.run;
     if (parked) {
       const stored = await records.update(itemId, runId, current => current.settled === undefined ? parked : null, true);
-      if (!stored.ok) throw new Error(stored.reason);
+      if (!stored.ok) return stored.reason;
       taken = stored.run;
     }
     const state = await stateFor(taken, null);
     if (state?.runId === runId) rowRemoved(state);
+    return null;
+  }
+
+  /** Takes over every run the run file's delete intents name whose row is off the board, until none is left to take over. A failure keeps
+   * them pending: the next start, decision, reader or boot tries again. */
+  function consumeIntents(): Promise<Adopted> {
+    consuming ??= (async (): Promise<Adopted> => {
+      let done: Adopted = { ok: true };
+      while (intentsPending && done.ok) {
+        intentsPending = false;
+        done = await takeOverIntents().catch((error: unknown): Adopted => ({ ok: false, code: error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal ? error.code : "run-state-unavailable" }));
+        if (!done.ok) {
+          intentsPending = true;
+          log.warn("parked runs whose row was deleted were not ended: %s", done.code);
+        }
+      }
+      return done;
+    })().finally(() => { consuming = null; });
+    return consuming;
+  }
+  async function takeOverIntents(): Promise<Adopted> {
+    const due = await records.deleted();
+    if (!Array.isArray(due)) return { ok: false, code: due };
+    let failed: Adopted | null = null;
+    for (const { itemId, runId } of due) {
+      if (removedHeld(itemId, runId) || unconfirmed.has(runId)) continue;
+      const fault = await takeOverDeleted(itemId, runId);
+      if (fault) failed ??= { ok: false, code: writeFault(fault) };
+    }
+    return failed ?? { ok: true };
   }
 
   /** One write of the run. Null when nothing was stored. */
@@ -915,8 +952,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** A user action on an unsettled run: refused before any write unless `precheck` passes and the pin still resolves. */
   async function decide<R extends string>(itemId: number, runId: string, surface: WebContents | null, event: RunEvent, precheck: Precheck<R>):
   Promise<R | PinRefusal | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_found" | "not_pending" | null> {
-    // An end the run file did not confirm holds back only its own run's decisions, once the boot takeover has succeeded.
-    if (!(await adopted()).ok && (unconfirmed.size === 0 || !takenOver)) return "runs_not_adopted";
+    // An end the run file did not confirm, or a deleted row's run not taken over yet, holds back only its own run's decisions, once the
+    // boot takeover has succeeded.
+    if (!(await adopted()).ok && (!takenOver || (unconfirmed.size === 0 && !intentsPending))) return "runs_not_adopted";
     const got = await store.get(itemId);
     if (got.status !== "found") return "not_found";
     if (got.item.runId !== runId) return "run_mismatch";
@@ -1035,7 +1073,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function adoptRuns(): Promise<Adopted> {
     const found = await records.adoption();
     if (!found.ok) return found;
-    const active = found.kept.filter(run => run.settled === undefined).map(run => run.runId);
+    // A run whose row a user deleted is taken over by its intent (consumeIntents), never ended here.
+    const active = [...found.kept.filter(run => run.settled === undefined), ...found.removed].map(run => run.runId);
     // A row write that fails leaves the adoption to the next attempt; a row that is gone by then is an orphan for that attempt.
     const shownOnRow = (itemId: number, patch: Parameters<typeof store.setRunResult>[1]): Promise<boolean> =>
       store.setRunResult(itemId, patch).then(result => result.status === "updated", () => false);
@@ -1166,7 +1205,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** Once per process. An attempt that failed or was refused is tried again by the next start, decision, reader or boot, which is refused
-   * until one succeeds; nothing retries on its own. A run end the run file did not confirm is written first, and refuses the same way. */
+   * until one succeeds; nothing retries on its own. A run end the run file did not confirm is written first, and refuses the same way; a
+   * deleted row's run is taken over after it, and refuses so too. */
   const adopted = async (): Promise<Adopted> => {
     if (unconfirmed.size > 0) {
       confirming ??= confirmSettles().finally(() => { confirming = null; });
@@ -1185,7 +1225,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return { ok: false, code: error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal ? error.code : "run-state-unavailable" };
       },
     );
-    return adoption;
+    const done = await adoption;
+    return done.ok && intentsPending ? consumeIntents() : done;
   };
 
   /** What a board reader is told about each row's template run, from the run file and the host's own state. Whatever a row itself says
@@ -1193,7 +1234,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function projectRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]> {
     // Until the takeover is done and every run end is confirmed, a reader asks for both, whichever rows it reads: a run whose row is gone
     // or no longer names it is shown on no row and is ended this way too.
-    if (unconfirmed.size > 0 || !takenOver) void adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error)));
+    if (unconfirmed.size > 0 || !takenOver || intentsPending) void adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error)));
     const named = items.some(item => item.templateId !== undefined && item.runId !== undefined);
     const runOf = named ? await records.view().catch(() => null) : null;
     return items.map((item) => {
