@@ -3783,9 +3783,16 @@ with its own owner rule:
   it, once per content; a copy that cannot be made fails the write, and the
   board file is left as it was. The
   list gives each such row, with its id when it has one (`unreadableRows`),
-  and the board shows a read-only card marked invalid for each; nothing on
-  it opens, moves or deletes the row. A run whose row does not
-  validate is never read as its row gone, and keeps its record.
+  and the board shows a card marked invalid for each; nothing on it opens
+  or moves the row. A card with an id deletes, at once and with no confirm,
+  every entry of the file with that id that does not validate (valid twins
+  included; a listed row with that id stays), after the file as it was is
+  copied aside as above. The board has no undo. A row that names a project
+  is deleted only while that project is authorized, as a listed row is. An
+  entry without a usable id has no delete: it is fixed in the file by hand.
+  A run whose row does not validate is never read as its row gone, and keeps
+  its record; once its row is deleted from its card and nothing else holds
+  the run's id, the row is gone and the run is cancelled.
   A board file that shows nothing proves nothing: the engine then settles,
   prunes and sweeps nothing and refuses template starts until a later start,
   decision, reader or boot reads it.

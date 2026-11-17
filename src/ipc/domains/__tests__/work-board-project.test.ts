@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -237,5 +237,27 @@ describe("conditional board mutations", () => {
     for (const revision of [undefined, "unknown", 3]) {
       await expect(registeredHandler(WORK_BOARD.complete)({}, created.itemId, revision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
     }
+  });
+});
+
+describe("invalid row delete", () => {
+  it("deletes a row that does not validate by its id only when its invalid card asks, and only while the project it names is authorized", async () => {
+    const path = join(root, "board.json");
+    const valid = { id: 1, title: "kept", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+    const here = { id: 2, title: 5, projectRoot: workspace };
+    const denied = { id: 3, title: 5, projectRoot: join(root, "denied-project") };
+    const unscoped = { id: 4, title: 5 };
+    const unnamed = { id: 5, title: 5, projectRoot: 7 };
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 6, items: [valid, here, denied, unscoped, unnamed] }));
+    registerWorkBoardHandlers({ workBoardStore: new WorkBoardStore(path), auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    await expect(remove({}, 2)).resolves.toEqual({ status: "not_found", itemId: 2 });
+    for (const [id, target] of [[2, { invalidRow: false }], [2, { invalidRow: true, more: 1 }], [2, "invalidRow"], ["2", { invalidRow: true }], [1.5, { invalidRow: true }], [0, { invalidRow: true }]]) {
+      await expect(remove({}, id, target)).resolves.toEqual({ ok: false, error: "invalid-input" });
+    }
+    for (const id of [1, 3, 5]) await expect(remove({}, id, { invalidRow: true })).resolves.toEqual({ status: "not_found", itemId: id });
+    await expect(remove({}, 2, { invalidRow: true })).resolves.toEqual({ status: "deleted", itemId: 2 });
+    await expect(remove({}, 4, { invalidRow: true })).resolves.toEqual({ status: "deleted", itemId: 4 });
+    expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([valid, denied, unnamed]);
   });
 });

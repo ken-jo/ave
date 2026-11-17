@@ -1007,8 +1007,8 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkItemReopenResult
       | { ok: false; error: string }
     >,
-  removeWorkBoardItem: async (id: number) =>
-    ipcRenderer.invoke(WORK_BOARD.remove, id) as Promise<
+  removeWorkBoardItem: async (id: number, target?: { invalidRow: true }) =>
+    ipcRenderer.invoke(WORK_BOARD.remove, id, target) as Promise<
       | import("../shared/work-board-types.js").WorkItemDeleteResult
       | { ok: false; error: string }
     >,

@@ -87,6 +87,18 @@ function isAuthorizedStoredWorkItem(item: WorkItemResolved): boolean {
   return resolved.authorized && resolved.project !== null;
 }
 
+// A row that does not validate is checked as a stored item is, by its project; one whose project is not text names none that can be checked.
+function isAuthorizedInvalidRow(row: unknown): boolean {
+  const { projectRoot, projectName } = row as { projectRoot?: unknown; projectName?: unknown };
+  if (projectRoot === undefined || projectRoot === "") return true;
+  if (typeof projectRoot !== "string") return false;
+  const resolved = resolveAuthorizedWorkspaceProject(projectRoot, typeof projectName === "string" ? projectName : undefined);
+  return resolved.authorized && resolved.project !== null;
+}
+
+const isInvalidRowTarget = (target: unknown): boolean =>
+  typeof target === "object" && target !== null && !Array.isArray(target) && Object.keys(target).length === 1 && (target as { invalidRow?: unknown }).invalidRow === true;
+
 const PLAN_DECISIONS: readonly WorkPlanDecision[] = ["approve", "reject", "request_changes"];
 const PLAN_HASH_PATTERN = /^[0-9a-f]{64}$/;
 const RUN_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -276,12 +288,19 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  handle(WORK_BOARD.remove, async (e, id: number) => {
+  handle(WORK_BOARD.remove, async (e, id: number, target?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.remove, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
+    // An invalid card's delete: by the row's id in the board file, never through a listed item.
+    if (target !== undefined) {
+      if (!isInvalidRowTarget(target) || typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) return { ok: false, error: "invalid-input" };
+      const result = await workBoardStore.removeUnreadable(id, isAuthorizedInvalidRow);
+      if (result.status === "deleted") broadcastItemChanged(result.itemId, "removed");
+      return result;
+    }
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return existing;
     const result = await workBoardStore.remove(id);

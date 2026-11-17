@@ -1601,8 +1601,9 @@ function ReportResultBlock({
   );
 }
 
-/** One read-only card per row of the board file that does not validate: it says which row, and nothing on it opens or changes the row. */
-function UnreadableRowCards({ rows }: { rows: readonly WorkItemUnreadableRow[] }) {
+/** One card per row of the board file that does not validate: it says which row. Nothing on it opens or changes the row; one with an id
+ * deletes it at once, with no confirm. */
+function UnreadableRowCards({ rows, onDelete }: { rows: readonly WorkItemUnreadableRow[]; onDelete: (id: number) => void }) {
   const seen = new Map<string, number>();
   const keyed = rows.map((row) => {
     const base = row.id === undefined ? "none" : String(row.id);
@@ -1616,6 +1617,15 @@ function UnreadableRowCards({ rows }: { rows: readonly WorkItemUnreadableRow[] }
         <li key={key} className="rounded-lg border border-destructive/(--opacity-half) bg-destructive/(--opacity-faint) p-3 text-sm" data-testid="work-board-unreadable-row">
           <Badge variant="outline" className="mb-1.5 border-destructive text-destructive">{t("workBoard.unreadableRowBadge")}</Badge>
           <p>{row.id === undefined ? t("workBoard.unreadableRowNoId") : t("workBoard.unreadableRow", { id: row.id })}</p>
+          {row.id !== undefined && (
+            <Button
+              size="sm" variant="outline" className="mt-2" data-testid="work-board-unreadable-row-delete"
+              aria-label={t("workBoard.unreadableRowDeleteLabel", { id: row.id })}
+              onClick={() => { if (row.id !== undefined) onDelete(row.id); }}
+            >
+              {t("workBoard.deleteButton")}
+            </Button>
+          )}
         </li>
       ))}
     </ul>
@@ -1720,6 +1730,21 @@ export function WorkBoardPanel({
       }
     }
   }, [api, project]);
+
+  const [unreadableDeleteFailed, setUnreadableDeleteFailed] = useState(false);
+  const deleteUnreadableRow = useCallback(async (id: number) => {
+    setUnreadableDeleteFailed(false);
+    let deleted = false;
+    try {
+      const result = await api.removeWorkBoardItem(id, { invalidRow: true });
+      deleted = "status" in result && result.status === "deleted";
+    } catch (error) {
+      console.error("[ave] work-board invalid row delete failed", { itemId: id, message: errorMessage(error) });
+    }
+    if (!mountedRef.current) return;
+    setUnreadableDeleteFailed(!deleted);
+    await refresh();
+  }, [api, refresh]);
 
   useEffect(() => {
     void refresh();
@@ -2113,7 +2138,8 @@ export function WorkBoardPanel({
       </div>
       {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t("workBoard.boardLoadFailed")}</p>}
       {pendingReview && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-pending-review">{t("workBoard.pendingReview", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>}
-      {unreadableRows.length > 0 && <UnreadableRowCards rows={unreadableRows} />}
+      {unreadableDeleteFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-unreadable-row-error">{t("workBoard.errorMutationRefused")}</p>}
+      {unreadableRows.length > 0 && <UnreadableRowCards rows={unreadableRows} onDelete={(id) => { void deleteUnreadableRow(id); }} />}
       <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {narrow && (
           <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">

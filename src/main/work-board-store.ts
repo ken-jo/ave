@@ -541,14 +541,15 @@ export class WorkBoardStore {
 
   // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is, and one
   // that cannot be moved is marked so no write goes over it. It and a file that is absent or awaits review start empty. Invalid rows are
-  // set aside and nextId is repaired above every row id in the file.
-  private async readBoard(): Promise<BoardRead> {
+  // set aside and nextId is repaired above every row id in the file. `keepBytes`: the write drops entries that do not validate, so the file's
+  // bytes are kept as they are.
+  private async readBoard(keepBytes = false): Promise<BoardRead> {
     const input = await readAveHomeInput(this.filePath);
     if (input.status !== "trusted") return { ...emptyBoard(), unread: true };
     const parsed = parseBoard(input.bytes);
     if (readableBoard(parsed)) {
       const board: BoardRead = hydrateBoard(parsed);
-      if (board.unreadable.length > 0 && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`))) board.prior = input.bytes;
+      if (keepBytes || (board.unreadable.length > 0 && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`)))) board.prior = input.bytes;
       return board;
     }
     return (await quarantineCorruptJson(this.filePath)) ? { ...emptyBoard(), unread: true } : { ...emptyBoard(), unread: true, unmoved: true };
@@ -1234,6 +1235,32 @@ export class WorkBoardStore {
         kind: "deleted",
         itemId: id,
         title: item.title,
+        ts: new Date(this.now()).toISOString(),
+      });
+      return { status: "deleted" as const, itemId: id };
+    });
+  }
+
+  /** Delete, as an invalid card asks, every entry of the board file that does not validate and has `id` (valid twins included); a listed
+   * row with that id stays. Every such entry must pass `allowed`, or none is deleted. The file as it was is copied beside it first; there
+   * is no undo. */
+  async removeUnreadable(id: number, allowed: (row: unknown) => boolean): Promise<WorkItemDeleteResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await this.readBoard(true);
+      const rows = board.unreadable.filter((row) => rowIdOf(row) === id);
+      if (rows.length === 0 || !rows.every(allowed)) {
+        this.cache = board;
+        return { status: "not_found" as const, itemId: id };
+      }
+      board.unreadable = board.unreadable.filter((row) => !rows.includes(row));
+      await this.commit(board);
+      await this.pruneAfterWrite(this.retention(boardStanding(board)));
+      const title = (rows[0] as { title?: unknown }).title;
+      await appendActivity(this.activity, {
+        kind: "deleted",
+        itemId: id,
+        ...(typeof title === "string" ? { title } : {}),
         ts: new Date(this.now()).toISOString(),
       });
       return { status: "deleted" as const, itemId: id };

@@ -422,6 +422,31 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
+  it("deletes from an invalid card every entry with that id that does not validate, twins included, keeps a listed row with it, and copies the file aside first", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      const valid = (id: number, title: string) => ({ id, title, status: "planned", priority: "medium", created_at: "x", updated_at: "x" });
+      const rows = [valid(1, "one"), valid(2, "a"), valid(2, "b"), valid(3, "three"), { id: 3, title: 5 }, { id: 4, title: "damaged", status: "nope" }, null];
+      // Written as a board write writes it, so no read of it keeps a copy on its own.
+      const text = `${JSON.stringify({ version: 1, nextId: 5, items: [rows[0], rows[3], ...rows.filter((_, i) => i !== 0 && i !== 3)] }, null, 2)}\n`;
+      writeFileSync(path, text, "utf-8");
+      expect(await store.removeUnreadable(1, () => true)).toEqual({ status: "not_found", itemId: 1 });
+      expect(await store.removeUnreadable(4, () => false)).toEqual({ status: "not_found", itemId: 4 });
+      expect(readFileSync(path, "utf-8")).toBe(text);
+      expect(await store.removeUnreadable(2, () => true)).toEqual({ status: "deleted", itemId: 2 });
+      expect(JSON.parse(readFileSync(path, "utf-8")).items).toEqual([rows[0], rows[3], rows[4], rows[5], null]);
+      expect(await store.removeUnreadable(3, () => true)).toEqual({ status: "deleted", itemId: 3 });
+      expect(JSON.parse(readFileSync(path, "utf-8")).items).toEqual([rows[0], rows[3], rows[5], null]);
+      const copies = readdirSync(dir).filter((f) => f.includes(".invalid-rows-")).map((f) => readFileSync(join(dir, f), "utf-8"));
+      expect(copies).toHaveLength(2);
+      expect(copies).toContain(text);
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.unreadableRows).toEqual([{ id: 4 }, {}]);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("lists each row that does not validate with its id, and one without a usable id without it", async () => {
     const { store, path, cleanup } = tempBoard();
     try {

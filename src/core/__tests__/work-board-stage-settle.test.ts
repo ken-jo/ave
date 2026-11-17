@@ -978,6 +978,15 @@ it.each(["string id", "missing id", "fraction id", "non-object", "null entry", "
   }),
 );
 
+it("deleting a live run's row that does not validate from its invalid card reads the row gone: the child is interrupted and the run cancelled", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  h.editRow(live.id, row => ({ ...row, priority: 42 }));
+  expect(await h.board.removeUnreadable(live.id, () => true)).toEqual({ status: "deleted", itemId: live.id });
+  expect(await live.run).toMatchObject({ status: "cancelled", reason: "item-removed" });
+  expect(h.interrupts).toEqual([live.child.sessionId]);
+  expect(await h.runOf(live.runId)).toBeNull();
+}));
+
 it("no single damaged entry drawn by a seeded generator in place of a live run's row reads as its row gone: the run waits through every one and completes", () => withHarness(async (h) => {
   let state = 0x2026_1117;
   const pick = (count: number) => {

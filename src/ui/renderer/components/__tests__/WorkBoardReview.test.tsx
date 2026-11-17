@@ -85,7 +85,7 @@ describe("work board review", () => {
     fireEvent.click(screen.getByTestId("work-board-plan-approve"));
     await waitFor(() => expect(api.decideWorkPlan).toHaveBeenCalledWith(item.id, { runId: "run-2", planHash: "b".repeat(64), decision: "approve" }));
   });
-  it("shows one read-only card marked invalid per row of the board file that cannot be read, beside the listed rows, and clears them when none are left", async () => {
+  it("shows one card marked invalid per row of the board file that cannot be read, beside the listed rows, and clears them when none are left", async () => {
     const api = apiFor([result]);
     vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], unreadableRows: [{ id: 7 }, {}, { id: 7 }] });
     let changed = () => {};
@@ -95,15 +95,39 @@ describe("work board review", () => {
     expect(list).toHaveAccessibleName(t("workBoard.unreadableRowsLabel"));
     const cards = within(list).getAllByTestId("work-board-unreadable-row");
     expect(cards.map(card => card.textContent)).toEqual([
-      `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRow", { id: 7 })}`,
+      `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRow", { id: 7 })}${t("workBoard.deleteButton")}`,
       `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRowNoId")}`,
-      `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRow", { id: 7 })}`,
+      `${t("workBoard.unreadableRowBadge")}${t("workBoard.unreadableRow", { id: 7 })}${t("workBoard.deleteButton")}`,
     ]);
-    // Read-only: nothing on a placeholder opens, moves or deletes the row.
-    for (const card of cards) expect(within(card).queryAllByRole("button")).toEqual([]);
+    // Nothing on a card opens or moves the row; only a card with an id can delete it.
+    expect(cards.map(card => within(card).queryAllByRole("button").map(button => button.getAttribute("aria-label")))).toEqual([
+      [t("workBoard.unreadableRowDeleteLabel", { id: 7 })], [], [t("workBoard.unreadableRowDeleteLabel", { id: 7 })],
+    ]);
     expect(screen.getAllByTestId("work-board-card")).toHaveLength(1);
     changed();
     await waitFor(() => expect(screen.queryByTestId("work-board-unreadable-rows")).toBeNull());
+  });
+  it("deletes an invalid row from its card at once, with no confirm, by its id in the board file, then reads the board again", async () => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], unreadableRows: [{ id: 7 }] });
+    const remove = vi.fn(async () => ({ status: "deleted" as const, itemId: 7 }));
+    api.removeWorkBoardItem = remove;
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    fireEvent.click(await screen.findByTestId("work-board-unreadable-row-delete"));
+    await waitFor(() => expect(screen.queryByTestId("work-board-unreadable-rows")).toBeNull());
+    expect(remove).toHaveBeenCalledWith(7, { invalidRow: true });
+    expect(api.listWorkBoard).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByTestId("work-board-unreadable-row-error")).toBeNull();
+  });
+  it("says a refused invalid row delete failed and keeps the card", async () => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValue({ status: "ok", items: [result], unreadableRows: [{ id: 7 }] });
+    api.removeWorkBoardItem = vi.fn(async () => ({ status: "not_found" as const, itemId: 7 }));
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    fireEvent.click(await screen.findByTestId("work-board-unreadable-row-delete"));
+    expect(await screen.findByTestId("work-board-unreadable-row-error")).toHaveTextContent(t("workBoard.errorMutationRefused"));
+    expect(screen.getByTestId("work-board-unreadable-row")).toBeTruthy();
   });
   it("shows a load error instead of an empty board when the first read fails", async () => {
     const api = apiFor([result]);
