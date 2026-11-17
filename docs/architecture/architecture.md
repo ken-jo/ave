@@ -3715,7 +3715,10 @@ with its own owner rule:
   `runRowsOnDisk()` tells where each run's row stands on the board file on
   disk: it names the run, holds it only in its run history, is there without
   either, does not validate, or is gone. A board file that is missing, does
-  not parse or awaits review shows nothing.
+  not parse, is not an object with an items list (`null`, a list) or awaits
+  review shows nothing. A board write moves a file that does not parse or has
+  no items list aside to `board.json.corrupt-<ms>-<hex>.bak` before it starts
+  from an empty board, so such a file is never written over.
   Row ids come from one counter that `board.json` does not own: the run file
   stores `rowIdFloor`, the highest row id ever issued or seen, and never
   lowers it. Only a create issues an id. It takes the next id above both the

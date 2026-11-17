@@ -317,6 +317,21 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
+  for (const [how, text] of [["null", "null"], ["without an items list", '{"version":1,"nextId":9,"items":{}}'], ["a list", "[]"]] as const) {
+    it(`moves a board file that is ${how} aside as corrupt JSON before a create, never writing over it`, async () => {
+      const { store, dir, path, cleanup } = tempBoard();
+      try {
+        writeFileSync(path, text, "utf-8");
+        expect(await store.create({ title: "after" })).toMatchObject({ status: "created", itemId: 1 });
+        const backups = readdirSync(dir).filter((f) => /\.corrupt-\d+-[0-9a-f]{8}\.bak$/.test(f));
+        expect(backups.map((f) => readFileSync(join(dir, f), "utf-8"))).toEqual([text]);
+        expect(JSON.parse(readFileSync(path, "utf-8")).items.map((item: { id: number }) => item.id)).toEqual([1]);
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+
   it("lists only the valid records, keeps the tampered ones in the file and repairs nextId", async () => {
     const { store, path, cleanup } = tempBoard();
     try {

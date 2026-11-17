@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
   openFeatureNamespace,
+  quarantineCorruptJson,
   readJsonFileOrEmpty,
   writeFileAtomicAtPath,
 } from "./storage/feature-namespace.js";
@@ -334,15 +335,14 @@ function readableBoard(parsed: unknown): parsed is BoardFile {
 
 async function parseBoardOnDisk(filePath: string): Promise<unknown> {
   const input = await readAveHomeInput(filePath);
-  if (input.status !== "trusted") return undefined;
-  try { return JSON.parse(input.bytes.toString("utf-8")) as unknown; } catch { return undefined; }
+  return input.status === "trusted" ? parseBoard(input.bytes) : undefined;
 }
 
-function hydrateBoard(parsed: unknown): BoardFile {
-  const file = parsed as BoardFile;
-  if (!Array.isArray(file.items)) {
-    return emptyBoard();
-  }
+function parseBoard(bytes: Buffer): unknown {
+  try { return JSON.parse(bytes.toString("utf-8")) as unknown; } catch { return undefined; }
+}
+
+function hydrateBoard(file: BoardFile): BoardFile {
   // Run state lives in the run file. A row carrying run fields was edited by hand: they are dropped here, so nothing reads or shows them.
   const valid = file.items.filter(isValidRecord).map(stripBoardRunFields).map((item) => {
     if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
@@ -494,9 +494,16 @@ export class WorkBoardStore {
     return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
-  // Back up corrupt JSON and start empty; set invalid rows aside as they are and repair nextId above every row id in the file.
+  // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is, never
+  // written over as it is; it and a file that is absent or awaits review start empty. Invalid rows are set aside and nextId is repaired
+  // above every row id in the file.
   private async readBoard(): Promise<BoardFile> {
-    return readJsonFileOrEmpty(this.filePath, emptyBoard, hydrateBoard);
+    const input = await readAveHomeInput(this.filePath);
+    if (input.status !== "trusted") return emptyBoard();
+    const parsed = parseBoard(input.bytes);
+    if (readableBoard(parsed)) return hydrateBoard(parsed);
+    await quarantineCorruptJson(this.filePath);
+    return emptyBoard();
   }
 
   // A failed row write may still have replaced the board (a failed directory sync after the rename). While the board on disk shows the
