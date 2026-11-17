@@ -93,7 +93,7 @@ function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
 const END_UNCONFIRMED = "run-end-unconfirmed";
 
 /** A reason the host sends as a refusal code is shown in the user's language; any other reason is shown as sent. */
-function runReasonText(reason: string | undefined): string | undefined {
+export function reasonText(reason: string | undefined): string | undefined {
   if (reason === undefined) return undefined;
   const key = `reasonCodes.${reason}`;
   const text = t(key);
@@ -453,7 +453,7 @@ export function useWorkBoardRun(
               ...cur,
               phase,
               turns,
-              reason: phase === "error" || phase === "denied" ? runReasonText(ev.message) : undefined,
+              reason: phase === "error" || phase === "denied" ? reasonText(ev.message) : undefined,
               endUnconfirmed: phase === "cancelled" && ev.reasonCode === END_UNCONFIRMED,
               runSessionId: ev.runSessionId ?? cur.runSessionId,
               sessionIds: withSession(cur.sessionIds, ev.runSessionId),
@@ -489,7 +489,7 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunFailed === "function") {
       unsubs.push(
         api.onWorkBoardRunFailed(({ itemId, reason }) => {
-          patch(itemId, { busy: false, stopping: false, phase: "error", reason: runReasonText(reason) });
+          patch(itemId, { busy: false, stopping: false, phase: "error", reason: reasonText(reason) });
         }),
       );
     }
@@ -543,7 +543,7 @@ export function useWorkBoardRun(
       void api.runWorkBoardItem(id).then((result) => {
         if (!mountedRef.current) return;
         if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: runReasonText(result.error) });
+          patch(id, { busy: false, phase: "error", reason: reasonText(result.error) });
           return;
         }
         if (result && "status" in result) {
@@ -555,7 +555,7 @@ export function useWorkBoardRun(
               ...cur,
               busy: false,
               phase,
-              reason: runReasonText(result.reason) ?? kept,
+              reason: reasonText(result.reason) ?? kept,
               endUnconfirmed: phase === "cancelled" && result.reasonCode === END_UNCONFIRMED,
               runSessionId: result.runSessionId ?? cur.runSessionId,
             };

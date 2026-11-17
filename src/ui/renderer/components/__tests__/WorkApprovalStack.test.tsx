@@ -6,6 +6,7 @@ import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
+import { t } from "../../../../i18n/runtime.js";
 import type { AveApi } from "../../types.js";
 import type {
   RoutineAttentionApprovalView,
@@ -149,6 +150,18 @@ describe("Work Board — 확인 필요 stack", () => {
     render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     fireEvent.click(await screen.findByTestId("work-approval-proposal-add-plan"));
     expect((await screen.findByTestId("work-approval-action-error")).textContent).toContain("item limit reached");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("says in words that the item could not be added while no row id can be issued", async () => {
+    const { api, run } = stubApi([proposal()], {
+      acceptWorkProposal: vi.fn(async () => ({ status: "invalid" as const, reason: "work-item-ids-unavailable" })),
+    } as Partial<AveApi>);
+    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
+    fireEvent.click(await screen.findByTestId("work-approval-proposal-add"));
+    const error = await screen.findByTestId("work-approval-action-error");
+    expect(error.textContent).toContain(t("reasonCodes.work-item-ids-unavailable"));
+    expect(error.textContent).not.toContain("work-item-ids-unavailable");
     expect(run).not.toHaveBeenCalled();
   });
 

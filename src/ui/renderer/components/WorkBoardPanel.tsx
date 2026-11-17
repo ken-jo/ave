@@ -63,6 +63,7 @@ import {
   isTerminalPhase,
   latestTurn,
   liveTextOf,
+  reasonText,
   runStartedAt,
   useNowTick,
   useWorkBoardRun,
@@ -760,7 +761,7 @@ function defaultDueIso(): string {
   return localDateKey(d);
 }
 
-function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialogProps) {
+export function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialogProps) {
   const [title, setTitle] = useState("");
   const [detail, setDetail] = useState("");
   const [dueDate, setDueDate] = useState(defaultDueIso());
@@ -797,7 +798,7 @@ function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialog
         onClose();
       } else {
         const reason = "reason" in result ? result.reason : "error" in result ? result.error : undefined;
-        setError(reason ?? t("workBoard.errorAddFailed"));
+        setError(reasonText(reason) ?? t("workBoard.errorAddFailed"));
       }
     } catch (err) {
       setError(errorMessage(err) || t("workBoard.errorAddFailed"));
@@ -1842,8 +1843,8 @@ export function WorkBoardPanel({
       const result = await api.acceptWorkProposal(proposalId, projectRoot);
       if (mountedRef.current) await refresh();
       if ("status" in result && result.status === "accepted") return { ok: true, itemId: result.itemId };
-      // The store's invalid reason is its own sentence (an item limit, a project refusal); a missing proposal has a code of its own.
-      if ("status" in result && result.status === "invalid") return { ok: false, error: "proposal-refused", message: result.reason };
+      // The store's invalid reason is its own sentence (an item limit, a project refusal) or a refusal code with text; a missing proposal has a code of its own.
+      if ("status" in result && result.status === "invalid") return { ok: false, error: "proposal-refused", message: reasonText(result.reason) ?? result.reason };
       if ("status" in result) return { ok: false, error: "proposal-not-found" };
       return { ok: false, error: result.error };
     },

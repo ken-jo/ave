@@ -107,7 +107,8 @@ export async function seedSampleWorkBoard(deps: SampleSeedDeps): Promise<SampleS
   let count = 0;
   for (const sample of sampleItems(now())) {
     const created = await store.create(sample.input);
-    if (created.status !== "created") continue;
+    // A refused create leaves the decision to a later boot.
+    if (created.status !== "created") return { seeded: false, reason: created.reason };
     count += 1;
     if (sample.run) {
       await store.setRunResult(created.itemId, {
