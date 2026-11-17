@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
-import { randomBytes } from "node:crypto";
 import { constants, promises as fs, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import type { MainLayoutSnapshot } from "../../shared/main-layout.js";
 import { TERMINAL_REPLAY_MAX_BYTES } from "../../shared/terminal-session.js";
 import { admitWindowsReparse, readWindowsDacls, type WindowsDaclFacts } from "../../shared/windows-path-facts.js";
-import { openFeatureNamespace, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
+import { openFeatureNamespace, replaceNamespaceFile, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 
 /**
  * What a host terminal tab showed, kept across a restart of the app. It is the user's own shell output — whatever they printed, secrets included — so it
@@ -175,23 +174,10 @@ export function terminalScrollbackStore(
     }
     if (Buffer.byteLength(output, "utf-8") > TERMINAL_REPLAY_MAX_BYTES) throw new Error("terminal output to keep is larger than a terminal's replay");
     await privateDirectory(namespace, true);
-    const name = nameFor(profile, tabId);
     // Staged under a name nobody can have prepared, created exclusively and without following a link, then moved over the tab's file: the
-    // move replaces whatever is there (a link included) with this file and its own-user-only mode.
-    const staged = `${name}.${randomBytes(16).toString("hex")}.tmp`;
-    try {
-      const handle = await namespace.createFile(staged);
-      try {
-        await handle.writeFile(output);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await fs.rename(join(namespace.dir, staged), join(namespace.dir, name));
-    } catch (error) {
-      await fs.rm(join(namespace.dir, staged), { force: true });
-      throw error;
-    }
+    // move replaces whatever is there (a link included) with this file and its own-user-only mode. The staging name, `<name>.<32 hex>.tmp`,
+    // keeps the tab's file name in front, so a sweep knows whose an unfinished one is.
+    await replaceNamespaceFile(namespace, nameFor(profile, tabId), output);
   };
   return {
     save: (tabId, output) => {
