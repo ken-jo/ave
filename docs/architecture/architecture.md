@@ -3734,13 +3734,25 @@ with its own owner rule:
   floor too: it is made only while `board.json` is absent and the floor is
   0, or a copy was started and never finished with no id issued since (one
   issued since could be a row the copy does not hold). One run file write
-  marks the copy started (`legacyBoardCopy`) and raises the floor over every
-  id it holds before it is written, and the copy is marked done only after:
-  a copy whose write fails is made again whole at the next boot, a boot that
-  finds `board.json` with the copy started marks it done, and a copy made,
-  with or without ids, is never made again; none of its ids is issued
-  again. While the floor cannot be read or stored (the run file
-  awaits review, is past its read limit, does not parse or cannot be read),
+  marks the copy started (`legacyBoardCopy`, with the sha256 of the bytes it
+  writes) and raises the floor over every id it holds before it is written,
+  and only `board.json` read back holding those bytes marks it done; a
+  create never does. While a copy is started and not done with no id issued
+  above it, a create first makes it whole, and is refused with
+  `work-board-copy-pending`, issuing no id, while it cannot be written or
+  marked done; every other board write first marks done a board on disk
+  holding its bytes and is refused while that mark cannot be stored, so
+  nothing is written over the copy before it is done. A board that is not
+  its bytes is the host's: it is never written over and never marks the
+  copy done. With no board and no single valid legacy board left to copy,
+  a create goes on too; an id issued then is above the copy's, so it is
+  never made. A copy whose write fails is made again whole by the next
+  create or boot, a boot that finds its bytes marks it done, a boot that
+  leaves it started seeds no sample rows, and a copy made, with or without
+  ids, is never made again; none of its ids is issued again. A mark that
+  does not read (one without the hash among them) counts as a copy done.
+  While the floor cannot be read or stored (the run file awaits review, is
+  past its read limit, does not parse or cannot be read),
   every create is refused, never thrown, with `work-item-ids-unavailable`;
   reads stay as described above.
   Once the next id would pass the safe-integer limit (2^53 - 1), which only

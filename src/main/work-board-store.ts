@@ -1,7 +1,7 @@
 // Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
 // than persisting or duplicating that projection in consumers.
 import { createHash } from "node:crypto";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
@@ -33,6 +33,8 @@ import { ChangeSignal } from "../lib/change-signal.js";
 import { WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView } from "./workflow-run-store.js";
 import { stripBoardRunFields } from "../work-board/template-run-fields.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
+import { isMissingPathError } from "../lib/atomic-file.js";
+import { copyLegacyPluginBoard } from "../boot/steps/work-board-migration.js";
 import { isTemplateId, requireTemplate } from "../work-board/template-graph.js";
 import type { TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 
@@ -530,6 +532,8 @@ export class WorkBoardStore {
   readonly rowDeleted = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] delete listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
+  // No legacy board copy is left started and not done; it never is again.
+  private legacyCopySettled = false;
   private readonly filePath: string;
   // Activity-log storage rooted in the same directory as `board.json`.
   private readonly activity: WorkBoardStorage;
@@ -554,6 +558,7 @@ export class WorkBoardStore {
   // written only by a create, which first marks the ids it cannot show.
   private async commit(board: BoardRead, deleted?: { itemId: number; runId: string }): Promise<void> {
     if (board.unread) throw new Error("a board that shows none of its rows is written only by a create");
+    if (await this.legacyCopyHolds(false)) throw new Error("the legacy board copy on disk is not marked done, so nothing is written over it");
     if (board.prior) await keepPriorBytes(this.filePath, board.prior);
     const file = cacheOf(board);
     await writeFileAtomic(this.filePath, file);
@@ -623,6 +628,34 @@ export class WorkBoardStore {
   async settleUnstartedRun(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, () => this.settleUnstarted(id, runId));
+  }
+
+  // A legacy board copy left started and not done (a failed write at boot) holds every board write: a create (`whole`) first makes it
+  // whole, and a board on disk holding its bytes is marked done before anything is written over it. True while either fails: nothing
+  // is written then. A board that is not its bytes is the host's, and with no board and nothing left to copy writes go on.
+  private async legacyCopyHolds(whole: boolean): Promise<boolean> {
+    if (this.legacyCopySettled) return false;
+    let pending = await this.runs.pendingLegacyBoardCopy().catch(() => undefined);
+    if (pending && whole) {
+      const made = await copyLegacyPluginBoard(this.filePath, this.runs).catch((error: Error) => {
+        log.warn("[work-board-store] the legacy board copy was not made: %s", error.message);
+        return undefined;
+      });
+      if (made !== false) {
+        await this.readBoard().then((board) => { this.cache = cacheOf(board); this.boardChanged.emit(); }, () => undefined);
+      }
+      if (made === undefined) return true;
+      pending = await this.runs.pendingLegacyBoardCopy().catch(() => undefined);
+    }
+    if (pending === null) this.legacyCopySettled = true;
+    if (!pending) return false;
+    let onDisk: Buffer;
+    try { onDisk = await readFile(this.filePath); }
+    catch (error) { return !isMissingPathError(error); }
+    if (createHash("sha256").update(onDisk).digest("hex") !== pending.board) return false;
+    const done = await this.runs.finishLegacyBoardCopy(pending.board).catch(() => false);
+    if (done) this.legacyCopySettled = true;
+    return !done;
   }
 
   // Cleanup after a board write never fails that write: whatever it leaves behind goes with the next prune. The engine's
@@ -778,6 +811,8 @@ export class WorkBoardStore {
     const projectName = normalizeOptionalString(input.projectName, MAX_PROJECT_NAME_LENGTH);
 
     return withInProcessFileQueue(this.filePath, async () => {
+      // A legacy board copy left started is made whole first: no row goes on a board the copy is still to be written to or marked done on.
+      if (await this.legacyCopyHolds(true)) return { status: "invalid" as const, reason: "work-board-copy-pending" };
       const board = await this.readBoard();
       // A damaged board file that could not be moved aside is left byte for byte as it is.
       if (board.unmoved) return { status: "invalid" as const, reason: "work-board-file-not-set-aside" };

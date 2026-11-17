@@ -48,6 +48,13 @@ it("says in words that a damaged board file was left as it is, and stays open", 
   expect(onClose).not.toHaveBeenCalled();
 });
 
+it("says in words that no item is added before the legacy board copy is finished, and stays open", async () => {
+  const { error, onCreated, onClose } = await submit("work-board-copy-pending");
+  expect(error).toBe(t("reasonCodes.work-board-copy-pending"));
+  expect(onCreated).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
 it("shows any other refusal as the store sent it", async () => {
   expect((await submit("title exceeds 200 chars")).error).toBe("title exceeds 200 chars");
 });

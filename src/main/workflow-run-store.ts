@@ -12,7 +12,8 @@ import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, W
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
-// `legacyBoardCopy`: the boot copy of a legacy board, as stored; it is only read by the copy, and written back as it is.
+// `legacyBoardCopy`: the copy of a legacy board, as stored; it is only read by the copy and the board writes that wait on it, and written
+// back as it is.
 interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown }
 /** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
  * row it names when that reads as a row id. */
@@ -80,9 +81,14 @@ const isRowId = (value: unknown): value is number => Number.isSafeInteger(value)
 const floorOver = (runs: readonly unknown[], floor: number): number =>
   runs.reduce<number>((highest, entry) => isRecord(entry) && isRowId(entry.itemId) ? Math.max(highest, entry.itemId) : highest, floor);
 
-// The `through` of a legacy board copy started and not done; undefined for one done, one whose mark does not read, and none.
-function startedCopy(copy: unknown): number | undefined {
-  return isRecord(copy) && copy.done === undefined && isRowId(copy.through) && Object.keys(copy).length === 1 ? copy.through : undefined;
+/** A legacy board copy started and not done: every id it holds and the sha256 of the board bytes it writes. */
+interface StartedLegacyBoardCopy { through: number; board: string }
+
+// Undefined for a copy done, one whose mark does not read (one without the hash among them) and none.
+function startedCopy(copy: unknown): StartedLegacyBoardCopy | undefined {
+  return isRecord(copy) && isRowId(copy.through) && typeof copy.board === "string" && /^[0-9a-f]{64}$/.test(copy.board) && Object.keys(copy).length === 2
+    ? { through: copy.through, board: copy.board }
+    : undefined;
 }
 
 // Which item a run belongs to and what authorised it never change after the first write.
@@ -133,32 +139,45 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async () => (await this.read())?.rowIdFloor);
   }
 
-  /** Start the boot copy of a legacy board: one write marks it started and raises the floor over `through`, every id the copy holds,
-   * before the board is written. False, with nothing written, once the copy is done (or its mark does not read), once row ids were
-   * issued on this home with no copy started or since one was, and while the file awaits review or is past its read limit or room: an id
-   * issued since could be a row the copy does not hold. A copy started and never finished with no id issued since starts again. A file
-   * that cannot be read throws. */
-  async startLegacyBoardCopy(through: number): Promise<boolean> {
+  /** Start the copy of a legacy board: one write marks it started, with `board` (the sha256 of the bytes it writes), and raises the floor
+   * over `through`, every id the copy holds, before the board is written. False, with nothing written, once the copy is done (or its mark
+   * does not read), once row ids were issued on this home with no copy started or since one was, and while the file awaits review or is
+   * past its read limit or room: an id issued since could be a row the copy does not hold. A copy started and never finished with no id
+   * issued since starts again. A file that cannot be read throws. */
+  async startLegacyBoardCopy(through: number, board: string): Promise<boolean> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined || !isRowId(through)) return false;
       const started = startedCopy(file.legacyBoardCopy);
-      if (started === undefined ? file.legacyBoardCopy !== undefined || file.rowIdFloor !== 0 : file.rowIdFloor > started) return false;
-      file.legacyBoardCopy = { through: Math.max(started ?? 0, through) };
+      if (started === undefined ? file.legacyBoardCopy !== undefined || file.rowIdFloor !== 0 : file.rowIdFloor > started.through) return false;
+      file.legacyBoardCopy = { through: Math.max(started?.through ?? 0, through), board };
       file.rowIdFloor = Math.max(file.rowIdFloor, through);
       return this.commit(file);
     });
   }
 
-  /** Mark a started legacy board copy done, once the board is written: it is never copied again. Nothing is written when none was
-   * started. A file that cannot be read throws. */
-  async finishLegacyBoardCopy(): Promise<void> {
+  /** The legacy board copy started and not done that can still be made or marked done; null for none, one done, one whose mark does not
+   * read and one with an id issued above it (it is never made again). Undefined while the file awaits review or is past its read limit;
+   * a file that cannot be read throws. */
+  async pendingLegacyBoardCopy(): Promise<StartedLegacyBoardCopy | null | undefined> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file === undefined) return undefined;
+      const started = startedCopy(file.legacyBoardCopy);
+      return started !== undefined && file.rowIdFloor <= started.through ? started : null;
+    });
+  }
+
+  /** Mark a started legacy board copy done once the board file is read back holding its bytes (`board`, their sha256): it is never copied
+   * again. False, with nothing written, for none started, a board that is not its bytes, and a mark that cannot be stored now. A file that
+   * cannot be read throws. */
+  async finishLegacyBoardCopy(board: string): Promise<boolean> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       const started = file && startedCopy(file.legacyBoardCopy);
-      if (file === undefined || started === undefined) return;
-      file.legacyBoardCopy = { through: started, done: true };
-      await this.commit(file);
+      if (file === undefined || started === undefined || started.board !== board) return false;
+      file.legacyBoardCopy = { ...started, done: true };
+      return this.commit(file);
     });
   }
 
