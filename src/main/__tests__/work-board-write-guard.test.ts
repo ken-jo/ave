@@ -1,13 +1,13 @@
 /** The board write invariant as a property. Over seeded board files that hold stored run ids everywhere a hand edit can put them, every
  * store write path either leaves the file as it was or writes it so that (c) no stored run's id leaves the file unless the entry the write
  * removes on purpose held it, and (b) bytes the store would not write back were copied beside it first. */
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { WorkBoardStore } from "../work-board-store.js";
 import { WorkflowRunStore } from "../workflow-run-store.js";
-import { repeatsKey } from "../storage/rewrite-keeping-bytes.js";
+import { repeatsKey, rewriteKeepingBytes } from "../storage/rewrite-keeping-bytes.js";
 import { sha256Hex as sha } from "../../lib/hex-digest-equal.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { TemplateRunStart, WorkflowRunRecord } from "../../shared/workflow-template-types.js";
@@ -314,6 +314,45 @@ describe("a file that holds a key twice", () => {
       writeFileSync(runsPath, runsText);
       expect(await store.list()).toMatchObject({ status: "ok" });
       expect(readFileSync(path, "utf8")).toContain("run-a");
+    } finally { await cleanupTmpDir(dir); }
+  });
+});
+
+describe("the copy kept of bytes a write goes over", () => {
+  const before = Buffer.from('{"keep": 1}\r\n');
+  it.each([["board.json", "invalid-rows"], ["workflow-runs.json", "invalid-runs"]] as const)("%s is not written over while a copy already there does not hold its bytes or cannot be read, and is once it does", async (name, tag) => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-kept-copy-"));
+    try {
+      const path = join(dir, name);
+      const copy = `${path}.${tag}-${sha(before)}.bak`;
+      const write = () => rewriteKeepingBytes(path, '{"keep":2}\n', { tag, unchanged: '{"keep":1}\n' });
+      writeFileSync(path, before);
+      writeFileSync(copy, "other bytes");
+      await expect(write()).rejects.toMatchObject({ code: "work-board-backup-conflict", path: copy });
+      expect([readFileSync(path), readFileSync(copy, "utf8")]).toEqual([before, "other bytes"]);
+      rmSync(copy);
+      mkdirSync(copy);
+      await expect(write()).rejects.toMatchObject({ code: "work-board-backup-conflict", path: copy });
+      expect(readFileSync(path)).toEqual(before);
+      rmSync(copy, { recursive: true });
+      writeFileSync(copy, before);
+      await write();
+      expect([readFileSync(path, "utf8"), readFileSync(copy)]).toEqual(['{"keep":2}\n', before]);
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it("a board edit over bytes whose copy there does not hold them is refused with that code, and the board stays as it was", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-kept-copy-"));
+    try {
+      const path = join(dir, "board.json");
+      const text = JSON.stringify({ version: 1, nextId: 3, items: [row(2)] });
+      writeFileSync(path, text);
+      writeFileSync(join(dir, "workflow-runs.json"), `${JSON.stringify({ version: 1, rowIdFloor: 2, runs: [] }, null, 2)}\n`);
+      writeFileSync(`${path}.invalid-rows-${sha(Buffer.from(text))}.bak`, "other bytes");
+      const store = new WorkBoardStore(path, () => Date.parse(AT));
+      await store.load();
+      await expect(store.update(2, { detail: "x" })).rejects.toMatchObject({ code: "work-board-backup-conflict" });
+      expect(readFileSync(path, "utf8")).toBe(text);
     } finally { await cleanupTmpDir(dir); }
   });
 });
