@@ -30,10 +30,6 @@ import { localDayStart, utcDateKey } from "../shared/local-date.js";
 export interface BoardFile {
   version: number;
   nextId: number;
-  /** The first id this file issued, when it was seeded again above the ids of a board it replaced; lower ids were never issued by it. */
-  firstId?: number;
-  /** Ids this file skipped because a stored run names a row by them; it never issued them. */
-  skippedIds?: number[];
   items: WorkItem[];
 }
 

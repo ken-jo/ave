@@ -339,10 +339,10 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       expect(listed.items).toHaveLength(1);
       expect(listed.items[0].id).toBe(5);
 
-      // nextId must be repaired to exceed the surviving max id (5) → new id 6.
+      // nextId must be repaired to exceed every row id in the file, valid or not (7) → new id 8.
       const created = await store.create({ title: "next" });
       if (created.status !== "created") throw new Error("unreachable");
-      expect(created.itemId).toBe(6);
+      expect(created.itemId).toBe(8);
     } finally {
       await cleanup();
     }

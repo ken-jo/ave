@@ -1,5 +1,5 @@
 /** A template run end to end over a real board and template store: which stages spawn, from which version, under which authority. */
-import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
@@ -92,7 +92,7 @@ it("refuses to start when the Create and run tuple differs from the stored versi
   expect(otherVersion).toMatchObject({ status: "error", reasonCode: "version-missing" });
   const item = await h.item(id);
   expect(item.runId).toBeUndefined();
-  expect(existsSync(join(h.dir, "workflow-runs.json"))).toBe(false);
+  expect(JSON.parse(readFileSync(join(h.dir, "workflow-runs.json"), "utf8")).runs).toEqual([]);
   expect(h.children).toHaveLength(0);
   // The refused starts left the item free to run.
   const run = h.start(id, h.local(version));

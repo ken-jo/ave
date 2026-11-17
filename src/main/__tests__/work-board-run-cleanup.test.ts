@@ -67,15 +67,24 @@ it("keeps the unsettled run of a deleted row until its record says it is over", 
   expect(await runIds()).toEqual(["other-1"]);
 });
 
-it("shows a run's row gone on disk when the readable board issued its id and lists it no more, never for an id it did not issue", async () => {
+it("shows where a run's row stands on the readable board on disk, and nothing while that file shows nothing", async () => {
   const store = new WorkBoardStore(boardPath);
   const deleted = await templateItem(store);
   const listed = await templateItem(store);
+  await begin(store, listed, "run-listed");
+  await begin(store, listed, "run-newer");
   expect(await store.remove(deleted)).toMatchObject({ status: "deleted" });
-  const gone = await store.runRowGoneOnDisk();
-  expect(gone?.({ itemId: deleted, runId: "run-deleted" })).toBe(true);
-  expect(gone?.({ itemId: listed, runId: "run-listed" })).toBe(false);
-  expect(gone?.({ itemId: listed + 1, runId: "run-unissued" })).toBe(false);
+  const standing = await store.runRowsOnDisk();
+  expect(standing?.({ itemId: deleted, runId: "run-deleted" })).toBe("gone");
+  expect(standing?.({ itemId: listed, runId: "run-newer" })).toBe("named");
+  expect(standing?.({ itemId: listed, runId: "run-listed" })).toBe("moved");
+  expect(standing?.({ itemId: listed, runId: "run-other" })).toBe("unnamed");
+  const file = JSON.parse(await readFile(boardPath, "utf8"));
+  file.items.push({ id: deleted, title: "", status: "planned" });
+  await writeFile(boardPath, JSON.stringify(file));
+  expect((await store.runRowsOnDisk())?.({ itemId: deleted, runId: "run-deleted" })).toBe("unreadable");
+  await writeFile(boardPath, "{");
+  expect(await store.runRowsOnDisk()).toBeUndefined();
 });
 
 it("prunes on a later write what an earlier cleanup could not remove", async () => {
@@ -142,7 +151,7 @@ it("keeps the runs a row lists in its history and drops the ones it no longer li
   expect(await runIds()).toEqual(listed);
 });
 
-it("keeps every run when the board file was emptied, since no row id was issued by it", async () => {
+it("keeps every run while the board file cannot be read", async () => {
   const store = new WorkBoardStore(boardPath);
   await settled(store, await templateItem(store), "run-1");
   await settled(store, await templateItem(store), "run-2");

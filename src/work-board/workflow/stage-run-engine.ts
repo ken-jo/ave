@@ -124,7 +124,7 @@ interface RunState {
   stopping: boolean;
   /** No board row names the run any more. */
   rowGone: boolean;
-  /** Its row went with a board file that was lost: the run is written by its id alone, and ends error. */
+  /** Its row is there without naming or holding the run: the run is written by its id alone, and ends error. */
   lost: boolean;
   /** Why the run ends `error` without its graph being asked. */
   faulted: string | null;
@@ -288,12 +288,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     post(state, { type: "stop_requested" });
   }
 
-  /** After any board write: a run whose row the board on disk shows deleted, by whichever path, is cancelled. A board that proves nothing
-   * (missing, unreadable, seeded again) cancels nothing. */
+  /** After any board write: a run whose row the board on disk shows gone or naming a newer run, by whichever path, is cancelled; one whose
+   * row no longer names or holds it ends error. A board file that shows nothing changes nothing. */
   async function checkRows(): Promise<void> {
-    const gone = await records.rowGone();
-    if (!gone) return;
-    for (const state of [...runs.values()]) if (!state.rowGone && gone(state)) rowRemoved(state);
+    const standing = await records.rows();
+    if (!standing) return;
+    for (const state of [...runs.values()]) {
+      if (state.rowGone || state.lost) continue;
+      const row = standing(state);
+      if (row === "gone" || row === "moved") rowRemoved(state);
+      else if (row === "unnamed") {
+        state.lost = true;
+        fault(state, "template-run-lost");
+      }
+    }
   }
   store.boardChanged.subscribe(() => {
     if (runs.size > 0) void checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error)));
@@ -982,9 +990,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** Boot. The run file is the truth: a row whose run is over is shown as the record says (the process may have died between the two
-   * writes); an unsettled run is parked and taken over. A run whose row the board file on disk shows gone or naming another run is
-   * cancelled by its id alone; one the board cannot account for is kept as it is. Refused while the run file awaits review or the board
-   * file cannot vouch for a stored run: nothing is settled, swept or taken over. */
+   * writes); an unsettled run is parked and taken over. A run whose row the board file on disk shows gone or naming a newer run is
+   * cancelled by its id alone, and one whose row is there without naming or holding it ends error; one whose row does not validate is
+   * kept as it is. Refused while the run file awaits review or the board file on disk shows nothing: nothing is settled, swept or taken
+   * over. */
   async function adoptRuns(): Promise<Adopted> {
     const found = await records.adoption();
     if (!found.ok) return found;
@@ -1036,12 +1045,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return { ok: false, code: writeFault(ended.reason) };
       }
     }
-    // A run whose row was lost with the board file ends error, as it does live; its record stays.
+    // A run whose row no longer names or holds it ends error, as it does live.
     for (const run of found.lost) {
       if (run.settled !== undefined) continue;
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "error", at), true);
       if (!ended.ok) {
-        log.warn("a template run lost with the board could not be ended (id=%d): %s", run.itemId, ended.reason);
+        log.warn("a template run its row no longer names could not be ended (id=%d): %s", run.itemId, ended.reason);
         return { ok: false, code: writeFault(ended.reason) };
       }
     }
@@ -1079,12 +1088,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         left.unstarted = false;
       }
       const at = new Date().toISOString();
-      // A run whose row was lost with the board ends error, whatever end it was given.
+      // A run whose row no longer names or holds it ends error, whatever end it was given.
       const write = (byId: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.lost ? "error" : left.status, at), byId)
         .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return null; });
       let ended = await write(left.rowGone || left.lost === true);
-      // The row went meanwhile, or the board on disk shows it lost with the board it replaced: the end is written by run id alone, and a
-      // run the file no longer holds has nothing left to end.
+      // The row went meanwhile, or no longer names or holds the run: the end is written by run id alone, and a run the file no longer
+      // holds has nothing left to end.
       if (ended && !ended.ok && (ended.reason === "row-gone" || ended.reason === "row-lost")) {
         if (ended.reason === "row-gone") left.rowGone = true;
         else left.lost = true;

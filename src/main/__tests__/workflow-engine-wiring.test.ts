@@ -1,5 +1,5 @@
 /** The stage scheduler on the parts boot chooses (`workflowEngineExtensions`): run state is the board store's run file. */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
@@ -44,7 +44,7 @@ it("with the production parts alone a start is refused workspace-unavailable and
     const version = await h.confirm([auto("a")]);
     const id = await h.addItem(version);
     expect(await h.start(id, h.local(version))).toMatchObject({ status: "error", reasonCode: "workspace-unavailable" });
-    expect(existsSync(join(h.dir, "workflow-runs.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(h.dir, "workflow-runs.json"), "utf8")).runs).toEqual([]);
     expect((await h.item(id)).runId).toBeUndefined();
     expect(h.children).toHaveLength(0);
   } finally {

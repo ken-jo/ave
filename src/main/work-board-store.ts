@@ -289,15 +289,41 @@ function emptyBoard(): BoardFile {
   return { version: BOARD_VERSION, nextId: 1, items: [] };
 }
 
-// Boards seeded again while the run file could not be listed. Their floor does not cover the rows stored runs name, so they are read,
-// never written.
-const unlistedSeeds = new WeakSet<BoardFile>();
+/** Where a stored run's row stands on a readable board. named: the row names the run. moved: it names another run and holds this one in its
+ * history. unnamed: it neither names nor holds the run. gone: the board lists no row with its id. unreadable: a row with its id is there
+ * but does not validate. Every stored run's itemId is at or below the run file's row-id floor, which no new row is issued under, so a row
+ * a readable board does not list is gone for good. */
+export type RunRowStanding = "named" | "moved" | "unnamed" | "gone" | "unreadable";
+type RowStandings = (run: { itemId: number; runId: string }) => RunRowStanding;
 
-// The board as it is on disk, or undefined when the file is absent, pending review, does not parse or lists no items; never
-// quarantines. Read errors throw.
-async function readBoardOnDisk(filePath: string): Promise<BoardFile | undefined> {
+function standingOf(items: readonly WorkItem[], unreadable: ReadonlySet<number>): RowStandings {
+  const rows = new Map(items.map((item) => [item.id, item]));
+  return (run) => {
+    const row = rows.get(run.itemId);
+    if (!row) return unreadable.has(run.itemId) ? "unreadable" : "gone";
+    if (row.runId === run.runId) return "named";
+    return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? "moved" : "unnamed";
+  };
+}
+
+const boardStanding = (board: BoardFile): RowStandings => standingOf(board.items, new Set());
+
+// The id of each row object in a board file's items, valid or not.
+function rawRowIds(items: readonly unknown[]): number[] {
+  return items.flatMap((row) => {
+    const id = typeof row === "object" && row !== null ? (row as { id?: unknown }).id : undefined;
+    return typeof id === "number" && Number.isSafeInteger(id) && id >= 1 ? [id] : [];
+  });
+}
+
+// The board as it is on disk with where runs' rows stand on it, or undefined when the file is absent, pending review, does not parse
+// or lists no items; never quarantines. Read errors throw.
+async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; standing: RowStandings } | undefined> {
   const parsed = await parseBoardOnDisk(filePath);
-  return readableBoard(parsed) ? hydrateBoard(parsed) : undefined;
+  if (!readableBoard(parsed)) return undefined;
+  const board = hydrateBoard(parsed);
+  const listed = new Set(board.items.map((item) => item.id));
+  return { board, standing: standingOf(board.items, new Set(rawRowIds(parsed.items).filter((id) => !listed.has(id)))) };
 }
 
 function readableBoard(parsed: unknown): parsed is BoardFile {
@@ -333,56 +359,13 @@ function hydrateBoard(parsed: unknown): BoardFile {
       "[work-board-store] re-anchored due dates stamped as midnight in another zone",
     );
   }
-  const maxId = items.reduce((m, it) => Math.max(m, it.id), 0);
+  // Above every row id in the file, valid or not.
+  const maxId = rawRowIds(file.items).reduce((m, id) => Math.max(m, id), 0);
   const nextId =
-    typeof file.nextId === "number" && Number.isInteger(file.nextId) && file.nextId > maxId
+    typeof file.nextId === "number" && Number.isSafeInteger(file.nextId) && file.nextId > maxId
       ? file.nextId
       : maxId + 1;
-  const firstId = typeof file.firstId === "number" && Number.isInteger(file.firstId) && file.firstId > 1 && file.firstId <= nextId ? file.firstId : undefined;
-  const listed = new Set(items.map((item) => item.id));
-  const skippedIds = Array.isArray(file.skippedIds)
-    ? file.skippedIds.filter((id) => Number.isInteger(id) && id >= (firstId ?? 1) && id < nextId && !listed.has(id))
-    : [];
-  return {
-    version: BOARD_VERSION,
-    nextId,
-    ...(firstId === undefined ? {} : { firstId }),
-    ...(skippedIds.length === 0 ? {} : { skippedIds }),
-    items,
-  };
-}
-
-function requireWritable(board: BoardFile): void {
-  requireTemplate(!unlistedSeeds.has(board), "invalid-template-run");
-}
-
-/** Whether this board file issued that row id. */
-function issued(board: BoardFile, id: number): boolean {
-  return id >= (board.firstId ?? 1) && id < board.nextId && !(board.skippedIds ?? []).includes(id);
-}
-
-/** Whether a parsed board file shows a run's row gone; undefined when it is not a readable board. */
-function rowGoneOn(parsed: unknown): ((run: { itemId: number; runId: string }) => boolean) | undefined {
-  if (!readableBoard(parsed)) return undefined;
-  const raw: unknown[] = parsed.items;
-  const board = hydrateBoard(parsed);
-  const rows = new Map(board.items.map((item) => [item.id, item]));
-  const present = new Set(raw.flatMap((row) => typeof row === "object" && row !== null && typeof (row as WorkItem).id === "number" ? [(row as WorkItem).id] : []));
-  return (run) => {
-    const row = rows.get(run.itemId);
-    if (row) return row.runId !== run.runId && Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId);
-    // A readable board issued this id and no longer lists it: the row was created, then deleted.
-    return issued(board, run.itemId) && !present.has(run.itemId);
-  };
-}
-
-/** Whether a parsed board file shows a run's row lost with a board it replaced: the file lists no such row and records that it never
- * issues that id (below its first id, or skipped). Undefined when it is not a readable board. */
-function rowLostOn(parsed: unknown): ((run: { itemId: number }) => boolean) | undefined {
-  if (!readableBoard(parsed)) return undefined;
-  const board = hydrateBoard(parsed);
-  const present = new Set(parsed.items.flatMap((row) => typeof row === "object" && row !== null && typeof (row as WorkItem).id === "number" ? [(row as WorkItem).id] : []));
-  return (run) => !present.has(run.itemId) && (run.itemId < (board.firstId ?? 1) || (board.skippedIds ?? []).includes(run.itemId));
+  return { version: BOARD_VERSION, nextId, items };
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
@@ -485,68 +468,43 @@ export class WorkBoardStore {
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it.
   private async commit(board: BoardFile): Promise<void> {
-    requireWritable(board);
     await writeFileAtomic(this.filePath, board);
     this.cache = board;
     this.boardChanged.emit();
   }
 
   // Only the run record says a run is over (`settled`); a record without it stays whole, whatever its row shows. A settled run stays
-  // whole while its row names it as the current run, shrinks to its summary while it is only in the row's run history, and goes once
-  // the board no longer lists it. A row id this board never issued (an emptied or replaced board file) proves nothing, so that run stays.
-  private retention(board: BoardFile): WorkflowRunRetention {
-    const rows = new Map(board.items.map((item) => [item.id, item]));
+  // whole while its row names it or does not validate, shrinks to its summary while it is only in the row's run history, and goes once
+  // its row is gone or no longer holds it.
+  private retention(standing: RowStandings): WorkflowRunRetention {
     return (run) => {
       if (run.settled === undefined) return run;
-      const row = rows.get(run.itemId);
-      if (!row) return issued(board, run.itemId) ? null : run;
-      if (row.runId === run.runId) return run;
-      return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? runSummary(run) : null;
+      const row = standing(run);
+      if (row === "named" || row === "unreadable") return run;
+      return row === "moved" ? runSummary(run) : null;
     };
   }
 
-  /** For the engine, at boot and live: whether the board file on disk shows a run's row gone, or naming another run after it named this
-   * one (the run is in the row's history). Undefined while the file is absent, awaits review or does not parse: such a board proves nothing.
-   * A row id it never issued, a row that does not validate, and a row that never named the run (a board seeded again after it was lost)
-   * are never gone. */
-  async runRowGoneOnDisk(): Promise<((run: { itemId: number; runId: string }) => boolean) | undefined> {
-    return rowGoneOn(await parseBoardOnDisk(this.filePath));
+  /** For the engine, at boot and live: where each stored run's row stands on the board file on disk. Undefined while the file is absent,
+   * awaits review, does not parse or lists no items: such a board shows nothing. */
+  async runRowsOnDisk(): Promise<RowStandings | undefined> {
+    return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
-  /** For the engine: whether the board file on disk shows a run's row lost with a board it replaced, which it never issues again.
-   * Undefined while the file proves nothing. */
-  async runRowLostOnDisk(): Promise<((run: { itemId: number }) => boolean) | undefined> {
-    return rowLostOn(await parseBoardOnDisk(this.filePath));
-  }
-
-  // Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID. A board seeded again (missing,
-  // pending review, quarantined or without items) issues ids above the last board read and every row a stored run names, so a new row
-  // never takes the id of a run's lost row; it records where it started, since ids below that were never issued by it. While the run
-  // file cannot be listed, the seeded board is shown empty and every write to it is refused.
+  // Back up corrupt JSON and start empty; filter invalid rows and repair nextId above every row id in the file.
   private async readBoard(): Promise<BoardFile> {
-    let seeded = false;
-    const seed = (): BoardFile => { seeded = true; return emptyBoard(); };
-    const board = await readJsonFileOrEmpty(this.filePath, seed, (parsed) =>
-      typeof parsed === "object" && parsed !== null && Array.isArray((parsed as BoardFile).items) ? hydrateBoard(parsed) : seed());
-    if (!seeded) return board;
-    const stored = await this.runs.list().catch(() => null);
-    if (stored?.status !== "found") {
-      log.warn("[work-board-store] the board was seeded again while the run file could not be listed: board writes are refused until it can be");
-      unlistedSeeds.add(board);
-      return board;
-    }
-    const firstId = Math.max(this.cache.nextId, ...stored.runs.map((run) => run.itemId + 1));
-    return firstId > 1 ? { ...board, nextId: firstId, firstId } : board;
+    return readJsonFileOrEmpty(this.filePath, emptyBoard, hydrateBoard);
   }
 
   // A failed row write may still have replaced the board (a failed directory sync after the rename). While the board on disk shows the
-  // row naming the run (`named`), or cannot be read, the record stays as it is. Any other readable board, without the row or with a row
-  // naming another run, shows the start never landed: the run ends error and no row shows it.
+  // row naming the run (`named`), shows nothing, or holds a row with that id that does not validate, the record stays as it is. Any other
+  // readable board shows the start never landed: the run ends error and no row shows it.
   private async settleUnstarted(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" }> {
     const onDisk = await readBoardOnDisk(this.filePath);
-    if (!onDisk) return { status: "board-unread" };
-    if (onDisk.items.find((item) => item.id === id)?.runId === runId) {
-      this.cache = onDisk;
+    const row = onDisk?.standing({ itemId: id, runId });
+    if (!onDisk || row === "unreadable") return { status: "board-unread" };
+    if (row === "named") {
+      this.cache = onDisk.board;
       this.boardChanged.emit();
       return { status: "named" };
     }
@@ -555,7 +513,7 @@ export class WorkBoardStore {
       requireTemplate(run.itemId === id, "invalid-template-run");
       return run.settled === undefined ? { ...run, settled: { status: "error", at } } : null;
     });
-    if (settledRun.status === "stored") await this.pruneAfterWrite(this.retention(onDisk));
+    if (settledRun.status === "stored") await this.pruneAfterWrite(this.retention(onDisk.standing));
     return settledRun;
   }
 
@@ -572,18 +530,23 @@ export class WorkBoardStore {
     catch (error) { log.warn("[work-board-store] run records were not pruned: %s", (error as Error).message); }
   }
 
-  /** For the engine: remove every settled run no row lists and shrink the ones only a run history lists. Call it after settling a run
-   * whose row is gone or names a newer run. A run file that cannot be read rejects; one pending review or past the read limit is left as it is. */
+  /** For the engine: remove every settled run no row lists and shrink the ones only a run history lists, judged by the board file on
+   * disk; one that shows nothing prunes nothing. Call it after settling a run whose row is gone or names a newer run. A run file that
+   * cannot be read rejects; one pending review or past the read limit is left as it is. */
   async pruneSettledRuns(): Promise<void> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      await this.runs.prune(this.retention(await this.readBoard()));
+      const onDisk = await readBoardOnDisk(this.filePath);
+      if (onDisk) await this.runs.prune(this.retention(onDisk.standing));
     });
   }
 
   async load(): Promise<void> {
     this.cache = await this.readBoard();
     this.loaded = true;
+    // The run file's row-id floor starts from the first board read: every id it shows. One that cannot take it now gets it with the next new row.
+    try { await this.runs.raiseRowIdFloor(this.cache.nextId - 1); }
+    catch (error) { log.warn("[work-board-store] the row-id floor was not raised: %s", (error as Error).message); }
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -645,22 +608,17 @@ export class WorkBoardStore {
     return result.status === "found" && result.run.itemId !== id ? { status: "invalid" } : result;
   }
 
-  /** Change the template run a row names, under the board lock so the row cannot move to another run meanwhile. `mutate` never
-   * runs when the row names a different run, the stored run belongs to another row, or the board file is missing or unreadable.
-   * `not-found` only when the board on disk shows the row gone, `row-lost` when it shows the row lost with a board it replaced; a board
-   * that shows neither is `board-unread`. */
+  /** Change the template run a row names, under the board lock so the row cannot move to another run meanwhile. `mutate` runs only
+   * while the board file on disk shows the row naming the run, and the stored run belongs to that row. `not-found` when that board shows
+   * the row gone or naming a newer run, `row-lost` when the row is there without naming or holding the run, `board-unread` while the
+   * board file shows nothing or the row does not validate. A missing or unreadable board is never read as empty, and is left as it is. */
   async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      // Only a readable board can show the row gone. A missing or unreadable one is never read as empty, and is left as it is.
-      const parsed = await parseBoardOnDisk(this.filePath);
-      const gone = rowGoneOn(parsed);
-      if (!gone) return { status: "board-unread" };
-      // A row that does not name the run is gone only as boot reads it; any other such board proves nothing.
-      if (hydrateBoard(parsed).items.find((i) => i.id === id)?.runId !== runId) {
-        if (gone({ itemId: id, runId })) return { status: "not-found" };
-        return rowLostOn(parsed)?.({ itemId: id }) ? { status: "row-lost" } : { status: "board-unread" };
-      }
+      const row = (await readBoardOnDisk(this.filePath))?.standing({ itemId: id, runId });
+      if (row === "gone" || row === "moved") return { status: "not-found" };
+      if (row === "unnamed") return { status: "row-lost" };
+      if (row !== "named") return { status: "board-unread" };
       return this.runs.update(runId, (run) => {
         requireTemplate(run.itemId === id, "invalid-template-run");
         return mutate(run);
@@ -695,17 +653,19 @@ export class WorkBoardStore {
 
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
-      // A board restored with a lower nextId never issues the id of a row a stored run names; it records the ids it skips, which it
-      // never issued. A run file that cannot be listed skips nothing.
-      const stored = await this.runs.list().catch(() => null);
-      const runRows = new Set(stored?.status === "found" ? stored.runs.map((run) => run.itemId) : []);
-      for (; runRows.has(board.nextId); board.nextId += 1) board.skippedIds = [...(board.skippedIds ?? []), board.nextId];
+      // The id comes from the run file's row-id floor, above every id this board shows, and the floor is advanced before the row is
+      // written: no id is issued twice, whatever board file is read. While the floor cannot be read or stored, no row is added.
+      const id = await this.runs.issueRowId(board.nextId - 1).catch((error: unknown) => {
+        log.warn("[work-board-store] no row id was issued: %s", (error as Error).message);
+        return undefined;
+      });
+      if (id === undefined) return { status: "invalid" as const, reason: "work-item-ids-unavailable" };
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
       const item: WorkItem = {
         ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
-        id: board.nextId,
+        id,
         title,
         ...(input.detail !== undefined ? { detail: input.detail } : {}),
         status,
@@ -717,7 +677,7 @@ export class WorkBoardStore {
         updated_at: iso,
         ...(status === "completed" ? { completed_at: iso } : {}),
       };
-      board.nextId += 1;
+      board.nextId = id + 1;
       board.items.push(item);
       await this.commit(board);
       await appendActivity(this.activity, {
@@ -919,8 +879,6 @@ export class WorkBoardStore {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
-      // Refused before the run is stored, as the row write would be.
-      requireWritable(board);
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -938,7 +896,7 @@ export class WorkBoardStore {
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
       }
       // Judged against the board as it is on disk until the row write below lands.
-      const retain = this.retention(board);
+      const retain = this.retention(boardStanding(board));
       if (pin) {
         const stored = await this.runs.put(structuredClone({
           runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },
@@ -973,7 +931,7 @@ export class WorkBoardStore {
         throw error;
       }
       // The run this row named until now is in its history only from this write on.
-      if (pin) await this.pruneAfterWrite(this.retention(board));
+      if (pin) await this.pruneAfterWrite(this.retention(boardStanding(board)));
       await appendActivity(this.activity, {
         kind: "run-planned",
         itemId: id,
@@ -1200,7 +1158,7 @@ export class WorkBoardStore {
       }
       board.items = board.items.filter((i) => i.id !== id);
       await this.commit(board);
-      if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(board));
+      if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

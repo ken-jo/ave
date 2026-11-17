@@ -23,7 +23,7 @@ it("stores a run by runId and returns copies", async () => {
   const store = new WorkflowRunStore(file);
   expect(await store.get("run-1")).toEqual({ status: "not-found" });
   expect(await store.put(run())).toEqual({ status: "stored", run: run() });
-  expect(await stored()).toEqual({ version: 1, runs: [run()] });
+  expect(await stored()).toEqual({ version: 1, rowIdFloor: 1, runs: [run()] });
   const read = await store.get("run-1");
   if (read.status !== "found") throw new Error("Missing run");
   for (const entry of read.run.stageRuns) entry.attempt = 3;
@@ -108,12 +108,30 @@ it("refuses every entry that shares a runId", async () => {
   expect(await store.put(run())).toEqual({ status: "invalid" });
 });
 
-it.each(["not json", JSON.stringify({ version: 2, runs: [] }), JSON.stringify({ version: 1, runs: {} })])("fails clearly on an unreadable run file %j", async bytes => {
+it.each(["not json", JSON.stringify({ version: 2, runs: [] }), JSON.stringify({ version: 1, runs: {} }),
+  ...[-1, "1", 1.5, null].map(rowIdFloor => JSON.stringify({ version: 1, rowIdFloor, runs: [] }))])("fails clearly on an unreadable run file %j", async bytes => {
   await writeFile(file, bytes);
   const store = new WorkflowRunStore(file);
   await expect(store.get("run-1")).rejects.toMatchObject({ code: "invalid-template-run" });
   await expect(store.put(run())).rejects.toMatchObject({ code: "invalid-template-run" });
+  await expect(store.issueRowId(0)).rejects.toMatchObject({ code: "invalid-template-run" });
+  await store.raiseRowIdFloor(5).catch(() => undefined);
   expect(await readFile(file, "utf8")).toBe(bytes);
+});
+
+it("issues each row id above the floor and above every id seen, stores it, and never lowers the floor", async () => {
+  const store = new WorkflowRunStore(file);
+  expect(await store.issueRowId(0)).toBe(1);
+  expect(await store.issueRowId(7)).toBe(8);
+  expect(await store.issueRowId(2)).toBe(9);
+  await store.raiseRowIdFloor(4);
+  expect(await stored()).toEqual({ version: 1, rowIdFloor: 9, runs: [] });
+  await store.raiseRowIdFloor(12);
+  expect(await store.issueRowId(0)).toBe(13);
+  await store.put(run({ itemId: 20 }));
+  expect(await stored()).toMatchObject({ rowIdFloor: 20 });
+  await store.prune(() => null);
+  expect(await stored()).toEqual({ version: 1, rowIdFloor: 20, runs: [] });
 });
 
 it("reports a size-limit refusal as pending review and lets other read errors throw", async () => {
