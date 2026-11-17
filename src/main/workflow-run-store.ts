@@ -10,7 +10,8 @@ import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, W
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
-interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[] }
+// `legacyBoardCopy`: the boot copy of a legacy board, as stored; it is only read by the copy, and written back as it is.
+interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown }
 /** One read of the run file, for a caller that looks up several runs. */
 export interface WorkflowRunView { readonly pendingReview: boolean; get(runId: string): WorkflowRunReadResult }
 /** What a write does with another readable run: null removes it, a record replaces it (same item, pin and start authority). */
@@ -52,6 +53,11 @@ const isRowId = (value: unknown): value is number => Number.isSafeInteger(value)
 const floorOver = (runs: readonly unknown[], floor: number): number =>
   runs.reduce<number>((highest, entry) => isRecord(entry) && isRowId(entry.itemId) ? Math.max(highest, entry.itemId) : highest, floor);
 
+// The `through` of a legacy board copy started and not done; undefined for one done, one whose mark does not read, and none.
+function startedCopy(copy: unknown): number | undefined {
+  return isRecord(copy) && copy.done === undefined && isRowId(copy.through) && Object.keys(copy).length === 1 ? copy.through : undefined;
+}
+
 // Which item a run belongs to and what authorised it never change after the first write.
 function bindingOf(run: WorkflowRunRecord): string {
   return canonicalWorkflowJson({ runId: run.runId, itemId: run.itemId, pin: run.pin, runStartedBy: run.runStartedBy });
@@ -72,7 +78,8 @@ export class WorkflowRunStore {
     try { raw = JSON.parse(input.bytes.toString("utf8")); } catch { throw new WorkflowTemplateError("invalid-template-run"); }
     requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor)), "invalid-template-run");
     const runs: unknown[] = raw.runs;
-    return { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs };
+    const copy = raw.legacyBoardCopy === undefined ? {} : { legacyBoardCopy: raw.legacyBoardCopy };
+    return { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy };
   }
 
   /** The id for a new board row: above the floor and above `seen` (every id the board file shows), stored as the new floor before the row
@@ -92,6 +99,35 @@ export class WorkflowRunStore {
   /** The floor as stored. Undefined while the file awaits review or is past its read limit; a file that cannot be read throws. */
   async rowIdFloor(): Promise<number | undefined> {
     return withInProcessFileQueue(this.filePath, async () => (await this.read())?.rowIdFloor);
+  }
+
+  /** Start the boot copy of a legacy board: one write marks it started and raises the floor over `through`, every id the copy holds,
+   * before the board is written. False, with nothing written, once the copy is done (or its mark does not read), once row ids were
+   * issued on this home with no copy started or since one was, and while the file awaits review or is past its read limit or room: an id
+   * issued since could be a row the copy does not hold. A copy started and never finished with no id issued since starts again. A file
+   * that cannot be read throws. */
+  async startLegacyBoardCopy(through: number): Promise<boolean> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file === undefined || !isRowId(through)) return false;
+      const started = startedCopy(file.legacyBoardCopy);
+      if (started === undefined ? file.legacyBoardCopy !== undefined || file.rowIdFloor !== 0 : file.rowIdFloor > started) return false;
+      file.legacyBoardCopy = { through: Math.max(started ?? 0, through) };
+      file.rowIdFloor = Math.max(file.rowIdFloor, through);
+      return this.commit(file);
+    });
+  }
+
+  /** Mark a started legacy board copy done, once the board is written: it is never copied again. Nothing is written when none was
+   * started. A file that cannot be read throws. */
+  async finishLegacyBoardCopy(): Promise<void> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      const started = file && startedCopy(file.legacyBoardCopy);
+      if (file === undefined || started === undefined) return;
+      file.legacyBoardCopy = { through: started, done: true };
+      await this.commit(file);
+    });
   }
 
   /** Raise the floor to `seen` when it is lower. A file that awaits review is left as it is. */

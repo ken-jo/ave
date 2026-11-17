@@ -1,5 +1,5 @@
-/** Copy exactly one valid legacy board only when the host board is absent and no row id was ever issued; use feature-namespace atomic
- * writes. */
+/** Copy exactly one valid legacy board only when the host board is absent and no row id was ever issued, once: the run file marks the copy
+ * started before the board is written and done only after; use feature-namespace atomic writes. */
 import { readFile, readdir } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join } from "node:path";
@@ -64,14 +64,21 @@ export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
   const ns = openFeatureNamespace("work-board");
   const destPath = join(ns.dir, BOARD_FILE);
   const pluginsRoot = join(aveHome(), "plugins");
+  const runs = new WorkflowRunStore(join(ns.dir, "workflow-runs.json"));
 
   try {
     // Read directly rather than testing existence to avoid a stat/read race.
+    let destPresent = true;
     try {
       await readFile(destPath, "utf-8");
-      return false;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      destPresent = false;
+    }
+    if (destPresent) {
+      // A copy started and written whose done mark did not land is marked now, so a board deleted later is not copied again.
+      await runs.finishLegacyBoardCopy();
+      return false;
     }
 
     const legacyBoards = await findLegacyPluginBoards(pluginsRoot);
@@ -111,21 +118,18 @@ export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
       return false;
     }
 
-    // The copy's ids go through the run file's row-id floor: only a home that never issued an id takes the copy, and the floor is
-    // raised over every id it holds before it is written, so a copy that holds any id is made once and none of its ids is issued again.
-    const runs = new WorkflowRunStore(join(ns.dir, "workflow-runs.json"));
-    if ((await runs.rowIdFloor()) !== 0) {
-      log.warn("boot: work-board migration skipped — row ids were already issued on this home, or the workflow run file awaits review");
-      return false;
-    }
+    // The copy's ids go through the run file's row-id floor: only a home that never issued an id, or whose copy was started and never
+    // finished with no id issued since, takes the copy. One write marks it started and raises the floor over every id it holds before
+    // it is written, and it is marked done only after: a copy whose write fails is made again whole at the next boot, and one made, with
+    // or without ids, is never made again; none of its ids is issued again.
     const copy = stripLegacyBoardTemplateRunFields(parsed);
-    const highest = highestRowId(copy);
-    await runs.raiseRowIdFloor(highest);
-    if (((await runs.rowIdFloor()) ?? -1) < highest) {
-      log.warn("boot: work-board migration skipped — the row-id floor could not be raised over the legacy board's ids");
+    if (!(await runs.startLegacyBoardCopy(highestRowId(copy)))) {
+      log.warn("boot: work-board migration skipped — row ids were already issued on this home, the copy was already made, or the workflow run file awaits review");
       return false;
     }
     await ns.writeJson(BOARD_FILE, copy);
+    // One that does not land now is made at the next boot, which finds the board written.
+    await runs.finishLegacyBoardCopy().catch((err: Error) => log.warn("boot: work-board migration copied the board but did not mark it done: %s", err.message));
     log.info(
       "boot: migrated legacy plugin board → work-board namespace (%s → %s)",
       legacyPath,

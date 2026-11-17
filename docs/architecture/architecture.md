@@ -3732,9 +3732,14 @@ with its own owner rule:
   raises it to the board's `nextId - 1`, which is at or above every row id
   in the file. The boot copy of a legacy plugin board goes through the
   floor too: it is made only while `board.json` is absent and the floor is
-  0, and the floor is raised over every id the copy holds before it is
-  written, so a copy that holds any id is made once and none of its ids is
-  issued again. While the floor cannot be read or stored (the run file
+  0, or a copy was started and never finished with no id issued since (one
+  issued since could be a row the copy does not hold). One run file write
+  marks the copy started (`legacyBoardCopy`) and raises the floor over every
+  id it holds before it is written, and the copy is marked done only after:
+  a copy whose write fails is made again whole at the next boot, a boot that
+  finds `board.json` with the copy started marks it done, and a copy made,
+  with or without ids, is never made again; none of its ids is issued
+  again. While the floor cannot be read or stored (the run file
   awaits review, is past its read limit, does not parse or cannot be read),
   every create is refused, never thrown, with `work-item-ids-unavailable`;
   reads stay as described above.
