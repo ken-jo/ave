@@ -8,7 +8,7 @@ import { WorkflowTemplateError } from "../template-graph.js";
  * and nothing on a board row is ever read as one of these fields. */
 export type RunRecord = WorkflowRunRecord;
 
-/** row-gone: a readable board has no row naming the run. board-unread: the board file is missing or unreadable. refused: `mutate` returned null. pending-review and too-large: the run file awaits review,
+/** row-gone: the board on disk shows the run's row gone, as boot reads it. board-unread: the board file is missing or unreadable, or does not show the row gone. refused: `mutate` returned null. pending-review and too-large: the run file awaits review,
  * or the write would take it past its read limit. invalid: the stored run cannot be read. unavailable: the run is not in the run file. */
 export type RunWriteFailure = "row-gone" | "board-unread" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable";
 type RunWrite = { ok: true; run: RunRecord } | { ok: false; reason: RunWriteFailure };
@@ -41,6 +41,8 @@ export interface WorkflowRunState {
   adoption(): Promise<RunAdoption>;
   /** Removes the settled runs no row lists any more. */
   pruneSettled(): Promise<void>;
+  /** Whether the board file on disk shows a run's row gone, as boot reads it. Undefined when that board proves nothing. */
+  rowGone(): Promise<((run: { itemId: number; runId: string }) => boolean) | undefined>;
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
@@ -94,6 +96,7 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       return { ok: true, named, orphans: rest.filter(gone), kept: rest.filter(run => !gone(run)) };
     },
     pruneSettled: () => store.pruneSettledRuns(),
+    rowGone: () => store.runRowGoneOnDisk(),
   };
 }
 

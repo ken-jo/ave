@@ -285,13 +285,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     post(state, { type: "stop_requested" });
   }
 
-  /** After any board write: a run whose row was deleted, by whichever path, is cancelled. */
+  /** After any board write: a run whose row the board on disk shows deleted, by whichever path, is cancelled. A board that proves nothing
+   * (missing, unreadable, seeded again) cancels nothing. */
   async function checkRows(): Promise<void> {
-    for (const state of [...runs.values()]) {
-      if (state.rowGone) continue;
-      const got = await store.get(state.itemId);
-      if (got.status !== "found" || got.item.runId !== state.runId) rowRemoved(state);
-    }
+    const gone = await records.rowGone();
+    if (!gone) return;
+    for (const state of [...runs.values()]) if (!state.rowGone && gone(state)) rowRemoved(state);
   }
   store.boardChanged.subscribe(() => {
     if (runs.size > 0) void checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error)));

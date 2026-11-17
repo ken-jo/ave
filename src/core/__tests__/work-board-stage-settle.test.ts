@@ -193,6 +193,7 @@ it("a state change is reduced from the run as stored at the write: a workspace s
           read: (...a) => runs().read(...a),
           adoption: () => runs().adoption(),
           pruneSettled: () => runs().pruneSettled(),
+          rowGone: () => runs().rowGone(),
           // The read of one event returns only after another write has stored the second stage's workspace: what it read is stale.
           get: async (itemId, runId) => {
             const run = await runs().get(itemId, runId);
@@ -728,6 +729,49 @@ for (const [board, spoil] of [["unreadable", (path: string) => writeFileSync(pat
     a.finish();
     expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
     expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "error", reasonCode: "template-runs-board-unread" });
+    expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
+    expect(await h.runOf(runId)).toEqual(before);
+    expect(prune).not.toHaveBeenCalled();
+  }));
+
+  it(`a live run whose board file is ${board} and then seeded again by another board write is never read as its row deleted`, () => withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+    const before = await h.runOf(runId);
+    const prune = vi.spyOn(h.board, "pruneSettledRuns");
+    spoil(h.boardPath);
+    await h.addItem(version);
+    expect(await h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
+    a.finish();
+    expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+    expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
+    expect(await h.runOf(runId)).toEqual(before);
+    expect(prune).not.toHaveBeenCalled();
+  }));
+
+  it(`an unconfirmed end of a run whose board file is ${board}, after another board write seeds it again, is not confirmed by a reader as its row deleted`, () => withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+    const shownBefore = await row(h, id);
+    const before = await h.runOf(runId);
+    const prune = vi.spyOn(h.board, "pruneSettledRuns");
+    spoil(h.boardPath);
+    a.finish();
+    expect(await run).toMatchObject({ status: "error", reasonCode: "template-runs-board-unread" });
+    const added = await h.addItem(version);
+    await h.engine.projectTemplateRuns([shownBefore]);
+    // A start waits for the same confirmation the reader asked for; one that went ahead would open a child.
+    let started: unknown;
+    void h.start(added, h.local(version)).then((result) => { started = result; });
+    for (let i = 0; i < 400 && started === undefined && h.live().length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(h.live()).toHaveLength(0);
+    expect(started).toMatchObject({ status: "error", reasonCode: "template-runs-board-unread" });
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
     expect(await h.runOf(runId)).toEqual(before);
     expect(prune).not.toHaveBeenCalled();

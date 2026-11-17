@@ -113,8 +113,9 @@ it("updates run state under the board lock and never invokes a stale mutation", 
   const id = await templateItem(store);
   await store.beginRun(id, "run-1", "2026-01-01", start());
   const stale = vi.fn((value: WorkflowRunRecord) => value);
-  expect(await store.updateRun(id, "other-run", stale)).toEqual({ status: "not-found" });
-  expect(await store.updateRun(99, "run-1", stale)).toEqual({ status: "not-found" });
+  // A row that never named the run, or an id the board never issued, does not show the run's row gone.
+  expect(await store.updateRun(id, "other-run", stale)).toEqual({ status: "board-unread" });
+  expect(await store.updateRun(99, "run-1", stale)).toEqual({ status: "board-unread" });
   expect(stale).not.toHaveBeenCalled();
   const bump = (value: WorkflowRunRecord): WorkflowRunRecord => ({ ...value, stageRuns: value.stageRuns.map(entry => ({ ...entry, attempt: entry.attempt + 1 })) });
   await Promise.all([store.updateRun(id, "run-1", bump), store.updateRun(id, "run-1", bump)]);
