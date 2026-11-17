@@ -1,10 +1,10 @@
 /** The board write invariant as a property. Over seeded board files that hold stored run ids everywhere a hand edit can put them, every
- * store write path either leaves the file as it was or writes it so that (c) no stored run's id leaves the file unless the entry the write
- * removes on purpose held it, and (b) bytes the store would not write back were copied beside it first. */
+ * store write path either leaves the file as it was or writes it so that (c) no id of a stored run that is not settled leaves the file,
+ * and (b) bytes the store would not write back were copied beside it first. */
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WorkBoardStore } from "../work-board-store.js";
 import { WorkflowRunStore } from "../workflow-run-store.js";
 import { repeatsKey, rewriteKeepingBytes } from "../storage/rewrite-keeping-bytes.js";
@@ -154,7 +154,7 @@ const OPS: Record<string, Op> = {
   discardUnreadableRun: async (store, seen) => { const card = first(seen.runCards); if (card) await store.discardUnreadableRun(card, () => true); return []; },
 };
 
-it("no store write takes a stored run's id out of board.json unless the entry it removes held it, and every write over bytes it would not give back keeps them first", async () => {
+it("no store write takes out of board.json the id of a stored run that is not settled, and every write over bytes it would not give back keeps them first", async () => {
   const tally = { writes: 0, refused: 0, kept: 0 };
   const wrote = new Set<string>();
   for (let seed = 1; seed <= 24; seed += 1) {
@@ -178,18 +178,16 @@ it("no store write takes a stored run's id out of board.json unless the entry it
         };
         const before = readFileSync(path);
         const entries = (JSON.parse(before.toString("utf-8")) as { items: unknown[] }).items;
-        let released: unknown[] = [];
-        try { released = await op(store, seen, entries); }
+        try { await op(store, seen, entries); }
         catch { tally.refused += 1; }
         const after = readFileSync(path);
         if (after.equals(before)) continue;
         tally.writes += 1;
         wrote.add(name);
         const context = `seed ${seed}, ${name}`;
-        for (const runId of RUN_IDS) {
-          if (holds(before.toString("utf-8"), runId) && !holds(after.toString("utf-8"), runId)) {
-            expect(released.some((entry) => holds(JSON.stringify(entry), runId)), `${context}: ${runId} left the file`).toBe(true);
-          }
+        // Odd seeds store entries that do not read as runs, so each could be a run that is not over; even seeds store settled runs.
+        for (const runId of seed % 2 === 1 ? RUN_IDS : []) {
+          expect(!holds(before.toString("utf-8"), runId) || holds(after.toString("utf-8"), runId), `${context}: ${runId} left the file`).toBe(true);
         }
         if (!canonical) {
           const copy = readdirSync(dir).find((name) => name === `board.json.invalid-rows-${sha(before)}.bak`);
@@ -208,21 +206,21 @@ it("no store write takes a stored run's id out of board.json unless the entry it
   expect(tally.kept).toBeGreaterThan(10);
 }, 180_000);
 
-describe("the evidence scan", () => {
-  async function home(board: string, runs: unknown[]): Promise<{ dir: string; path: string; store: WorkBoardStore }> {
-    const dir = mkdtempSync(join(tmpdir(), "ave-evidence-"));
-    writeFileSync(join(dir, "board.json"), board);
-    writeFileSync(join(dir, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 50, runs }));
-    const store = new WorkBoardStore(join(dir, "board.json"), () => Date.parse(AT));
-    await store.load();
-    return { dir, path: join(dir, "board.json"), store };
-  }
-  const nested = (value: unknown, levels: number): unknown => {
-    let packed = value;
-    for (let n = 0; n < levels; n += 1) packed = JSON.stringify(packed);
-    return packed;
-  };
+async function home(board: string, runs: unknown[]): Promise<{ dir: string; path: string; store: WorkBoardStore }> {
+  const dir = mkdtempSync(join(tmpdir(), "ave-evidence-"));
+  writeFileSync(join(dir, "board.json"), board);
+  writeFileSync(join(dir, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 50, runs }));
+  const store = new WorkBoardStore(join(dir, "board.json"), () => Date.parse(AT));
+  await store.load();
+  return { dir, path: join(dir, "board.json"), store };
+}
+const nested = (value: unknown, levels: number): unknown => {
+  let packed = value;
+  for (let n = 0; n < levels; n += 1) packed = JSON.stringify(packed);
+  return packed;
+};
 
+describe("the evidence scan", () => {
   it.each(["run.with-dot", "run:other", "run space", "실행", "say \"hi\"", "back\\slash", "D:\\", "x".repeat(256)])("holds the stored run id %j wherever a string holds it whole", async (runId) => {
     // Between quotes in decoded text that is not JSON too, for an id that holds neither a quote nor a backslash.
     const loose = /["\\]/.test(runId) ? [] : [{ archive: `x" "${runId}" y` }];
@@ -254,6 +252,44 @@ describe("the evidence scan", () => {
       const before = readFileSync(path, "utf8");
       await expect(store.update(2, { detail: "done" })).rejects.toMatchObject({ code: "work-board-run-id-held" });
       expect(readFileSync(path, "utf8")).toBe(before);
+    } finally { await cleanupTmpDir(dir); }
+  });
+});
+
+describe("what lets a write take a live run's id out of board.json", () => {
+  const card = async (store: WorkBoardStore) => {
+    const shown = await store.list();
+    const found = shown.status === "ok" ? shown.unreadableRows?.[0] : undefined;
+    if (!found) throw new Error("no invalid card");
+    return found;
+  };
+  const history = [{ runId: "settled-s", startedAt: AT, status: "completed", outputPreview: "run-a" }, ...Array.from({ length: 19 }, (_, n) => ({ runId: `old-${n}`, startedAt: AT, status: "completed" }))];
+  const settled = { ...live("settled-s", 2), settled: { status: "completed", at: AT } };
+
+  it.each<[string, unknown[], (store: WorkBoardStore) => Promise<unknown>]>([
+    ["a delete of a row holding it", [row(2, { detail: "run-a" })], store => store.remove(2)],
+    ["an invalid card's delete of a row holding it", [row(2), { id: 3, title: 0, note: "run-a" }], async store => store.removeUnreadable(await card(store), () => true)],
+    ["an invalid card's delete of the row whose escapes go past 16 levels", [row(2), { id: 3, title: 0, note: nested("other", 18) }], async store => store.removeUnreadable(await card(store), () => true)],
+    ["a run start whose history cap drops a settled run's entry holding it", [row(2, { runId: "old-18", runStatus: "completed", runHistory: history })], store => store.beginRun(2, "next-run", AT)],
+  ])("refuses %s: nothing a write removes releases an id", async (_, items, write) => {
+    const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items }, null, 2)}\n`, [live("run-a"), settled]);
+    try {
+      const before = readFileSync(path, "utf8");
+      await expect(write(store)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it("lets only the user's delete of the row naming the run take its id out, and only with its delete intent stored", async () => {
+    const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items: [row(40, { templateId: PIN.templateId, runId: "run-a", runStatus: "executing" })] }, null, 2)}\n`, [live("run-a")]);
+    try {
+      const before = readFileSync(path, "utf8");
+      const marked = vi.spyOn(store.runs, "markDeleted").mockResolvedValueOnce("none");
+      await expect(store.remove(40)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+      expect(readFileSync(path, "utf8")).toBe(before);
+      marked.mockRestore();
+      expect(await store.remove(40)).toEqual({ status: "deleted", itemId: 40, runId: "run-a" });
+      expect(readFileSync(path, "utf8")).not.toContain("run-a");
     } finally { await cleanupTmpDir(dir); }
   });
 });

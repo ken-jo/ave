@@ -212,15 +212,15 @@ it("never removes or rewrites an entry it cannot read", async () => {
   const file = JSON.parse(await readFile(runsPath, "utf8"));
   file.runs[0].stageRuns[0].attempt = 4;
   file.runs.push({ ...file.runs[1], startedAt: "2026-02-02T00:00:00.000Z" });
-  const quarantined = [file.runs[0], file.runs[1], file.runs[3]];
   await writeFile(runsPath, JSON.stringify(file));
 
   const restarted = new WorkBoardStore(boardPath);
-  expect(await restarted.remove(gone)).toMatchObject({ status: "deleted" });
-  expect(await entries()).toEqual(quarantined);
+  // The row holds the only ids in board.json of the entries that do not read, any of which could be a run that is not over.
+  await expect(restarted.remove(gone)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+  expect(await entries()).toEqual(file.runs);
   await begin(restarted, other, "other-1");
-  expect((await entries()).slice(0, 3)).toEqual(quarantined);
-  expect(await runIds()).toEqual(["gone-broken", "gone-twice", "gone-twice", "other-1"]);
+  expect((await entries()).slice(0, 4)).toEqual(file.runs);
+  expect(await runIds()).toEqual(["gone-broken", "gone-twice", "gone-1", "gone-twice", "other-1"]);
 });
 
 it("keeps the runs a row lists in its history and drops the ones it no longer lists", async () => {

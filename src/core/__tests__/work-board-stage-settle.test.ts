@@ -1072,13 +1072,16 @@ it.each((["renumber", "rename"] as const).flatMap(mode => HELD_UNDER.map(([field
   }),
 );
 
-it("deleting a live run's row that does not validate from its invalid card reads the row gone: the child is interrupted and the run cancelled", () => withHarness(async (h) => {
+it("deleting from its invalid card a live run's row that does not validate is refused while it holds the run's id: nothing is written and the run completes untouched", () => withHarness(async (h) => {
   const live = await liveRun(h);
   h.editRow(live.id, row => ({ ...row, priority: 42 }));
-  expect(await h.board.removeUnreadable(await invalidCard(h, row => (row as { id?: unknown }).id === live.id), () => true)).toEqual({ status: "deleted", itemId: live.id });
-  expect(await live.run).toMatchObject({ status: "cancelled", reason: "item-removed" });
-  expect(h.interrupts).toEqual([live.child.sessionId]);
-  expect(await h.runOf(live.runId)).toBeNull();
+  const onDisk = readFileSync(h.boardPath, "utf8");
+  await expect(h.board.removeUnreadable(await invalidCard(h, row => (row as { id?: unknown }).id === live.id), () => true)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+  expect(readFileSync(h.boardPath, "utf8")).toBe(onDisk);
+  expect(h.interrupts).toEqual([]);
+  expect(await h.runOf(live.runId)).toEqual(live.record);
+  h.editRow(live.id, row => ({ ...row, priority: "medium" }));
+  await completesUntouched(h, live);
 }));
 
 it("deleting from its invalid card a valid twin added by hand beside a live run's row deletes only that twin: the run's row is listed again and the run completes", () => withHarness(async (h) => {

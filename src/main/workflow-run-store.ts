@@ -264,11 +264,19 @@ export class WorkflowRunStore {
     return file && (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry));
   }
 
-  /** Every string run id an entry of the file holds, readable or not; undefined while the file awaits review, is past its read limit or
-   * cannot be read. */
-  async runIds(): Promise<ReadonlySet<string> | undefined> {
+  /** What a board write must keep: `held`, the run id of every entry that is not a settled run (an unsettled run, or an entry that does
+   * not read as one and could be), and the delete intents of unsettled runs, which alone let a delete take a held id out. Undefined while
+   * the file awaits review, is past its read limit or cannot be read. */
+  async heldRuns(): Promise<{ held: ReadonlySet<string>; intents: readonly DeleteIntent[] } | undefined> {
     const file = await this.read().catch(() => undefined);
-    return file && new Set(file.runs.flatMap(entry => isRecord(entry) && typeof entry.runId === "string" ? [entry.runId] : []));
+    if (file === undefined) return undefined;
+    const held = new Set<string>();
+    for (const entry of file.runs) {
+      if (!isRecord(entry) || typeof entry.runId !== "string") continue;
+      const { result } = lookup(file, entry.runId);
+      if (result.status !== "found" || result.run.settled === undefined) held.add(entry.runId);
+    }
+    return { held, intents: (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry)) };
   }
 
   /** Every readable run, whether or not a row names it: what the engine adopts back at boot. Unreadable and repeated entries are left
