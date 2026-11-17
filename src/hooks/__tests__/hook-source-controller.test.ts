@@ -10,27 +10,33 @@ import { loadHookConfig } from "../hook-config-trust.js";
 import { readLockfile } from "../hook-discovery.js";
 import { loadHookRuntimePolicy, type HookRuntimePolicy } from "../hook-source-policy.js";
 import { acceptHookTrust } from "../hook-trust-commands.js";
+import { readWindowsDacls, windowsPolicyDescriptor, windowsPolicyTrustFailure } from "../../shared/windows-path-facts.js";
 import { hookDirLayout, writeExecutableHook } from "./test-helpers.js";
 
-// Ordinary fixture files are owned by the test principal, which the Windows policy reader rejects first. Tests of what an
-// administrator-owned policy may contain read the real native snapshot with administrator ownership substituted, so the
-// production trust check still runs on that evidence.
-const adminOwned = vi.hoisted(() => ({ enabled: false }));
+// Whether a real temp file is trusted depends on who runs the tests (an elevated runner owns it as an administrator), so
+// cases that need a fixed owner and DACL substitute them in the real native snapshot; the production trust check still
+// runs on that evidence. Each side is null for the real facts, or the owner and the one full-control SID to report.
+type InjectedSecurity = { owner: string; writer: string } | null;
+const injected = vi.hoisted(() => ({ file: null as InjectedSecurity, parent: null as InjectedSecurity }));
 vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/windows-path-facts.js")>();
-  const admin = (dacl: import("../../shared/windows-path-facts.js").WindowsDacl | null | undefined) => dacl
-    && { ...dacl, owner: "S-1-5-32-544", aces: [{ type: 0, flags: 0, mask: 0x1f01ff, sid: "S-1-5-32-544" }] };
+  const inject = (dacl: import("../../shared/windows-path-facts.js").WindowsDacl | null | undefined, security: InjectedSecurity) =>
+    dacl && security ? { ...dacl, owner: security.owner, aces: [{ type: 0, flags: 0, mask: 0x1f01ff, sid: security.writer }] } : dacl;
   return { ...actual, readWindowsDacls: (...args: Parameters<typeof actual.readWindowsDacls>) => {
     const rows = actual.readWindowsDacls(...args);
-    return adminOwned.enabled ? rows.map((row) => ({ ...row, dacl: admin(row.dacl) ?? null, parent: admin(row.parent) })) : rows;
+    return rows.map((row) => ({ ...row, dacl: inject(row.dacl, injected.file) ?? null, parent: inject(row.parent, injected.parent) }));
   } };
 });
+const ADMINISTRATORS = "S-1-5-32-544";
+const ORDINARY_USER = "S-1-5-21-1000000000-1000000000-1000000000-1001";
+const administratorOnly = { owner: ADMINISTRATORS, writer: ADMINISTRATORS };
+const injectAdministratorFacts = () => { injected.file = administratorOnly; injected.parent = administratorOnly; };
 
 let root: string;
 // Windows reads the admin policy through a native helper; an uncomposed host reads it as unreadable and closes user hooks.
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "hook-sources-")); });
-afterEach(async () => { adminOwned.enabled = false; await cleanupTmpDir(root); });
+afterEach(async () => { injected.file = null; injected.parent = null; await cleanupTmpDir(root); });
 const openPolicy = (): HookRuntimePolicy => ({ allowManagedHooksOnly: false, allowedHttpHookUrls: [], httpHookAllowedEnvVars: [], managedHooks: [] });
 
 describe("source-bound hook review", () => {
@@ -165,7 +171,7 @@ describe("source-bound hook review", () => {
 
 describe("administrator hook authority", () => {
   it("binds a managed relative script to the administrator configuration directory", async () => {
-    adminOwned.enabled = true;
+    injectAdministratorFacts();
     const adminDir = join(root, "admin");
     mkdirSync(adminDir);
     writeFileSync(join(adminDir, "policy.sh"), "#!/bin/sh\nexit 0\n");
@@ -186,7 +192,7 @@ describe("administrator hook authority", () => {
   });
 
   it("refuses an administrator definition with an unreadable file operand", async () => {
-    adminOwned.enabled = true;
+    injectAdministratorFacts();
     const adminDir = join(root, "admin");
     mkdirSync(adminDir);
     const adminPath = join(adminDir, "policy.json");
@@ -215,7 +221,7 @@ describe("administrator hook authority", () => {
   });
 
   it("loads managed definitions and network exceptions only from the administrator source", async () => {
-    adminOwned.enabled = true;
+    injectAdministratorFacts();
     const admin = join(root, "policy.json");
     // The managed command is a hashed file anchor, so it must exist on every host.
     const anchor = join(root, "managed.sh");
@@ -240,7 +246,7 @@ describe("administrator hook authority", () => {
   });
 
   it("fails closed on a malformed administrator policy or unknown hook definition", async () => {
-    adminOwned.enabled = true;
+    injectAdministratorFacts();
     const admin = join(root, "policy.json");
     writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] }));
     expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] });
@@ -254,9 +260,31 @@ describe("administrator hook authority", () => {
   it.runIf(process.platform === "win32")("refuses an administrator policy whose owner or DACL is an ordinary principal's", async () => {
     const admin = join(root, "policy.json");
     writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] }));
-    expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: true, allowedHttpHookUrls: [] });
-    adminOwned.enabled = true;
+    const closed = { allowManagedHooksOnly: true, allowedHttpHookUrls: [] };
+    const cases: [InjectedSecurity, InjectedSecurity][] = [
+      [{ owner: ORDINARY_USER, writer: ADMINISTRATORS }, administratorOnly],
+      [{ owner: ADMINISTRATORS, writer: ORDINARY_USER }, administratorOnly],
+      [administratorOnly, { owner: ORDINARY_USER, writer: ADMINISTRATORS }],
+      [administratorOnly, { owner: ADMINISTRATORS, writer: ORDINARY_USER }],
+    ];
+    for (const [file, parent] of cases) {
+      injected.file = file;
+      injected.parent = parent;
+      expect(await loadHookRuntimePolicy(admin)).toMatchObject(closed);
+    }
+    injectAdministratorFacts();
     expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] });
+  });
+
+  it.runIf(process.platform === "win32")("trusts a real policy file exactly when its native owner and DACL pass the administrator check", async () => {
+    const admin = join(root, "policy.json");
+    writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] }));
+    const [row] = readWindowsDacls([admin], { parent: true });
+    if (!row?.dacl || !row.parent) throw new Error("Policy snapshot missing");
+    const failure = windowsPolicyTrustFailure(windowsPolicyDescriptor(row.dacl), windowsPolicyDescriptor(row.parent));
+    expect(await loadHookRuntimePolicy(admin)).toMatchObject(failure === null
+      ? { allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] }
+      : { allowManagedHooksOnly: true, allowedHttpHookUrls: [] });
   });
 
   it("fails closed on an unreadable administrator policy and opens only on confirmed absence", async () => {
