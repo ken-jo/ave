@@ -714,6 +714,33 @@ it("a board seeded again while the run file cannot be listed still issues ids ab
   expect(await h.addItem(version)).toBeGreaterThan(id);
 }));
 
+it("writing unconfirmed run ends again keeps going past one that still fails: the next one is confirmed", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const first = await h.addItem(version);
+  const second = await h.addItem(version);
+  const runFirst = h.start(first, h.local(version));
+  const [a] = await h.untilLive(1);
+  const runSecond = h.start(second, h.local(version));
+  const [, b] = await h.untilLive(2);
+  const firstId = (await h.until(first, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const secondId = (await h.until(second, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const updateRun = h.board.updateRun.bind(h.board);
+  const failing = new Set([firstId, secondId]);
+  vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
+    failing.has(target) ? { status: "pending-review" } : updateRun(itemId, target, mutate));
+  // The first run's end is the first one left unconfirmed, so it is the first written again.
+  a.finish();
+  await runFirst;
+  b.finish();
+  await runSecond;
+  failing.delete(secondId);
+  const rows = [await row(h, first), await row(h, second)];
+  await h.engine.projectTemplateRuns(rows);
+  for (let i = 0; i < 400 && (await h.runOf(secondId))?.settled === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  expect((await h.runOf(secondId))?.settled?.status).toBe("error");
+  expect((await h.runOf(firstId))?.settled).toBeUndefined();
+}));
+
 for (const [write, refusal, code] of [
   ["stage end", "too-large", "template-runs-too-large"],
   ["workspace", "too-large", "template-runs-too-large"],
