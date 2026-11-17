@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { wireHookSystem } from "../../boot/steps/hook-system-wiring.js";
 import { listRuntimeHookTrustState, reviewRuntimeHookTrust } from "../hook-source-controller.js";
 import { loadHookConfig } from "../hook-config-trust.js";
@@ -12,6 +13,8 @@ import { acceptHookTrust } from "../hook-trust-commands.js";
 import { hookDirLayout, writeExecutableHook } from "./test-helpers.js";
 
 let root: string;
+// Windows reads the admin policy through a native helper; an uncomposed host reads it as unreadable and closes user hooks.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "hook-sources-")); });
 afterEach(async () => { await cleanupTmpDir(root); });
 const openPolicy = (): HookRuntimePolicy => ({ allowManagedHooksOnly: false, allowedHttpHookUrls: [], httpHookAllowedEnvVars: [], managedHooks: [] });
