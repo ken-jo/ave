@@ -1,8 +1,12 @@
 // A stage gate, a join decision, a stage retry and the start of a template run are work approvals: a sender-validated board-window main
 // frame with a consumed keyboard gesture. The renderer names hashes and ids; it never mints the run source.
 import { beforeEach, expect, it, vi } from "vitest";
-import { resolve } from "node:path";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { configureHostResources } from "../../../main/host-resources.js";
+import * as namespace from "../../../main/storage/feature-namespace.js";
+import { autoStageOf, stageOf } from "../../../work-board/workflow/__tests__/stage-fixtures.js";
+import { stageRunHarness } from "../../../work-board/workflow/__tests__/stage-run-harness.js";
 import { WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
@@ -174,4 +178,65 @@ it("steers a template run by the exact stage shape and never lets any other argu
     await expect(handler(WORK_BOARD.steerRun)(event, 9, "go", GESTURE, forged)).resolves.toEqual({ ok: true, messageId: "m-1" });
     expect(engine.steerRun).toHaveBeenLastCalledWith(9, "go");
   }
+});
+
+type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+const conflict = { integrate: () => ({ ok: false as const, conflict: { conflictHash: "c".repeat(64), reason: "merge-conflict" as const, files: [] } }) };
+async function awaiting(h: Harness, finish: Parameters<Harness["children"][number]["finish"]>[0] = {}, stages = [stageOf("a")]) {
+  const version = await h.confirm(stages);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  (await h.untilLive(1))[0].finish(finish);
+  await run;
+  return { id, item: await h.item(id) };
+}
+
+// The engine's own writes behind a stage decision and a template run's start go through the same copy as every board write.
+it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => Promise<[string, unknown[]]>]>([
+  ["a stage gate's decision", "workflow-runs.json", {}, async h => {
+    const { id, item } = await awaiting(h);
+    const stage = await h.stageRun(id, "a");
+    return [WORK_BOARD.decideStage, [id, { runId: item.runId, stageId: "a", attempt: stage.attempt, resultHash: stage.resultHash, decision: "approve" }, GESTURE]];
+  }],
+  ["a failed stage's retry", "workflow-runs.json", {}, async h => {
+    const { id, item } = await awaiting(h, { ok: false, summary: "failed", error: "failed" });
+    return [WORK_BOARD.retryStage, [id, { runId: item.runId, stageId: "a" }, GESTURE]];
+  }],
+  ["a join decision", "workflow-runs.json", conflict, async h => {
+    const { id, item } = await awaiting(h, {}, [autoStageOf("a")]);
+    const [join] = item.stageJoins;
+    return [WORK_BOARD.decideJoin, [id, { runId: item.runId, joinId: join.joinId, conflictHash: join.conflict?.conflictHash, decision: "retry_merge" }, GESTURE]];
+  }],
+  ["a template run's start", "workflow-runs.json", {}, async h => {
+    const version = await h.confirm([stageOf("a")]);
+    return [WORK_BOARD.run, [await h.addItem(version), { template: h.pinOf(version) }, GESTURE]];
+  }],
+])("answers %s with work-board-backup-failed, never a raw failure, and leaves both files as they were", async (_, file, opts, prepare) => {
+  const h = await stageRunHarness(opts);
+  try {
+    const owner = { isDestroyed: () => false, send: vi.fn(), mainFrame: { url: "file:///index.html" } };
+    const window = { isDestroyed: () => false, webContents: owner };
+    registerWorkBoardHandlers({ workBoardStore: h.board, workBoardEngine: h.engine, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const [channel, args] = await prepare(h);
+    const files = [h.boardPath, join(h.dir, "workflow-runs.json")];
+    for (const written of files) writeFileSync(written, JSON.stringify(JSON.parse(readFileSync(written, "utf8"))));
+    const before = files.map(written => readFileSync(written));
+    const kept = () => readdirSync(h.dir).filter(name => name.endsWith(".bak"));
+    const keptBefore = kept();
+    const write = namespace.writeFileAtomicAtPath;
+    const copies: string[] = [];
+    vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (!target.endsWith(".bak")) return write(target, body);
+      copies.push(target);
+      throw Object.assign(new Error("EACCES: permission denied, open 'C:\\private'"), { code: "EACCES" });
+    });
+    try {
+      const answer = JSON.stringify(await handler(channel)({ sender: owner, senderFrame: owner.mainFrame }, ...args));
+      expect(answer).toContain("\"work-board-backup-failed\"");
+      expect(answer).not.toMatch(/EACCES|private/);
+      expect([...new Set(copies.map(copy => copy.slice(h.dir.length + 1).split(".").slice(0, 2).join(".")))]).toEqual([file]);
+      expect(files.map(written => readFileSync(written))).toEqual(before);
+      expect(kept()).toEqual(keptBefore);
+    } finally { vi.restoreAllMocks(); }
+  } finally { for (const child of h.children) child.finish(); await h.cleanup(); }
 });
