@@ -293,10 +293,15 @@ function emptyBoard(): BoardFile {
 // never written.
 const unlistedSeeds = new WeakSet<BoardFile>();
 
-// The board as it is on disk, or undefined when the file is absent, pending review or does not parse; never quarantines. Read errors throw.
+// The board as it is on disk, or undefined when the file is absent, pending review, does not parse or lists no items; never
+// quarantines. Read errors throw.
 async function readBoardOnDisk(filePath: string): Promise<BoardFile | undefined> {
   const parsed = await parseBoardOnDisk(filePath);
-  return parsed === undefined ? undefined : hydrateBoard(parsed);
+  return readableBoard(parsed) ? hydrateBoard(parsed) : undefined;
+}
+
+function readableBoard(parsed: unknown): parsed is BoardFile {
+  return typeof parsed === "object" && parsed !== null && Array.isArray((parsed as BoardFile).items);
 }
 
 async function parseBoardOnDisk(filePath: string): Promise<unknown> {
@@ -358,8 +363,8 @@ function issued(board: BoardFile, id: number): boolean {
 
 /** Whether a parsed board file shows a run's row gone; undefined when it is not a readable board. */
 function rowGoneOn(parsed: unknown): ((run: { itemId: number; runId: string }) => boolean) | undefined {
-  if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as BoardFile).items)) return undefined;
-  const raw: unknown[] = (parsed as BoardFile).items;
+  if (!readableBoard(parsed)) return undefined;
+  const raw: unknown[] = parsed.items;
   const board = hydrateBoard(parsed);
   const rows = new Map(board.items.map((item) => [item.id, item]));
   const present = new Set(raw.flatMap((row) => typeof row === "object" && row !== null && typeof (row as WorkItem).id === "number" ? [(row as WorkItem).id] : []));
@@ -519,20 +524,30 @@ export class WorkBoardStore {
     return firstId > 1 ? { ...board, nextId: firstId, firstId } : board;
   }
 
-  // A failed row write may still have replaced the board (a failed directory sync after the rename). The record goes only once the
-  // board on disk shows the row naming another run; while the row names it, or the board cannot be read, the record stays as it is.
-  private async settleUnstartedRun(id: number, runId: string): Promise<void> {
+  // A failed row write may still have replaced the board (a failed directory sync after the rename). While the board on disk shows the
+  // row naming the run (`named`), or cannot be read, the record stays as it is. Any other readable board, without the row or with a row
+  // naming another run, shows the start never landed: the run ends error and no row shows it.
+  private async settleUnstarted(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" }> {
     const onDisk = await readBoardOnDisk(this.filePath);
-    const row = onDisk?.items.find((item) => item.id === id);
-    if (!onDisk || !row) return;
-    if (row.runId === runId) {
+    if (!onDisk) return { status: "board-unread" };
+    if (onDisk.items.find((item) => item.id === id)?.runId === runId) {
       this.cache = onDisk;
       this.boardChanged.emit();
-      return;
+      return { status: "named" };
     }
     const at = new Date(this.now()).toISOString();
-    const settledRun = await this.runs.update(runId, (run) => run.settled === undefined ? { ...run, settled: { status: "error", at } } : null);
+    const settledRun = await this.runs.update(runId, (run) => {
+      requireTemplate(run.itemId === id, "invalid-template-run");
+      return run.settled === undefined ? { ...run, settled: { status: "error", at } } : null;
+    });
     if (settledRun.status === "stored") await this.pruneAfterWrite(this.retention(onDisk));
+    return settledRun;
+  }
+
+  /** For the engine: end a run whose start failed before its row write was known to land, by the rule above. Never for a run that started. */
+  async settleUnstartedRun(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" }> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, () => this.settleUnstarted(id, runId));
   }
 
   // Cleanup after a board write never fails that write: whatever it leaves behind goes with the next prune. The engine's
@@ -935,7 +950,7 @@ export class WorkBoardStore {
       board.items[idx] = updated;
       try { await this.commit(board); }
       catch (error) {
-        if (pin) await this.settleUnstartedRun(id, runId).catch((cleanup: Error) => log.warn("[work-board-store] a failed run start was not settled: %s", cleanup.message));
+        if (pin) await this.settleUnstarted(id, runId).catch((cleanup: Error) => log.warn("[work-board-store] a failed run start was not settled: %s", cleanup.message));
         throw error;
       }
       // The run this row named until now is in its history only from this write on.

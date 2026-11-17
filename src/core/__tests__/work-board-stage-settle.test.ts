@@ -197,6 +197,7 @@ it("a state change is reduced from the run as stored at the write: a workspace s
           adoption: () => runs().adoption(),
           pruneSettled: () => runs().pruneSettled(),
           rowGone: () => runs().rowGone(),
+          settleUnstarted: (...a) => runs().settleUnstarted(...a),
           // The read of one event returns only after another write has stored the second stage's workspace: what it read is stale.
           get: async (itemId, runId) => {
             const run = await runs().get(itemId, runId);
@@ -632,6 +633,33 @@ it("a start whose checks throw before anything is stored is refused by a code, n
   expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
   expect(h.live()).toHaveLength(0);
 }));
+
+it("a start whose row write never landed, and whose end could not be written, ends once a readable board shows no row naming it; starts resume", async () => {
+  const released: string[] = [];
+  await withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    // The row write fails before the board file is replaced, and so do the two writes that would end the stored run.
+    vi.spyOn(h.board as unknown as { commit: (board: unknown) => Promise<void> }, "commit").mockRejectedValueOnce(new Error("the board write failed"));
+    vi.spyOn(h.board.runs, "update").mockRejectedValueOnce(new Error("disk error")).mockRejectedValueOnce(new Error("disk error"));
+    expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
+    const listed = await h.board.runs.list();
+    const stored = listed.status === "found" ? listed.runs.find(run => run.itemId === id) : undefined;
+    expect(stored?.settled).toBeUndefined();
+    expect(released).toEqual([]);
+    // The next start writes that end first: the board on disk is readable and its row never named the run. No row shows that end.
+    const shownOnRow = vi.spyOn(h.board, "setRunResult");
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    // Ended, then pruned with the write: the row never listed it.
+    expect(stored?.runId).toBeDefined();
+    expect(await h.runOf(stored?.runId ?? "")).toBeNull();
+    expect(released).toEqual([stored?.runId]);
+    expect(shownOnRow).not.toHaveBeenCalled();
+    a.finish();
+    expect(await run).toMatchObject({ status: "awaiting_approval" });
+  }, () => ({ workspace: { release: async (run) => { released.push(run.runId); } } }));
+});
 
 it("a start whose run write throws before anything is stored releases its workspace at once", () => {
   const released: string[] = [];

@@ -179,7 +179,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   let adoption: Promise<Adopted> | null = null;
   /** Run ends the run file did not confirm, by run id: until each is written, nothing starts, nothing is pruned or swept, and that run
    * is never decided. */
-  const unconfirmed = new Map<string, { ref: RunRef; status: Settled; rowGone: boolean }>();
+  const unconfirmed = new Map<string, { ref: RunRef; status: Settled; rowGone: boolean; unstarted?: boolean }>();
   let confirming: Promise<Adopted> | null = null;
   /** The boot takeover succeeded: runs it left are decided while another run's end is unconfirmed. */
   let takenOver = false;
@@ -818,6 +818,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       // A start that threw may still have stored the run and named it on the row; the run file says so. Only a run the file shows
       // settled, or does not hold, is not stored: one it cannot show (pending review, unreadable) counts as stored.
       let unreadable = false;
+      const unstarted = !recorded;
       if (!recorded) {
         recorded = await records.read(itemId, runId).then((read) => {
           unreadable = read.status === "invalid";
@@ -825,7 +826,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         }, () => true);
       }
       const code = error instanceof WorkflowTemplateError ? error.code : unreadable ? "invalid-template-run" : undefined;
-      return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"));
+      return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"), unstarted);
     }
     const state = openState(itemId, runId, projectRoot, a.approvalSurface);
     emit({ itemId, phase: "executing" });
@@ -835,16 +836,26 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** A start that failed after its workspace was opened: the workspace goes, and a run that was already stored ends `error`. A stored run
-   * that could not be ended keeps its workspace, and the next start, decision or reader writes its end again first. */
-  async function abandonStart(ref: RunRef, recorded: boolean, result: WorkItemRunResult): Promise<WorkItemRunResult> {
+   * that could not be ended keeps its workspace, and the next start, decision or reader writes its end again first. `unstarted`: the row
+   * write that names the run may not have landed, and only the board on disk tells. */
+  async function abandonStart(ref: RunRef, recorded: boolean, result: WorkItemRunResult, unstarted = false): Promise<WorkItemRunResult> {
     if (recorded) {
-      const at = new Date().toISOString();
-      const ended = await records.update(ref.itemId, ref.runId, current => ({ ...current, settled: { status: "error", at } })).then(write => write.ok, () => false);
+      let ended = false;
+      let named = !unstarted;
+      if (unstarted) {
+        const how = await records.settleUnstarted(ref.itemId, ref.runId).catch(() => null);
+        ended = how === "settled";
+        named = how === "named";
+      }
+      if (named) {
+        const at = new Date().toISOString();
+        ended = await records.update(ref.itemId, ref.runId, current => ({ ...current, settled: { status: "error", at } })).then(write => write.ok, () => false);
+      }
       if (!ended) {
-        unconfirmed.set(ref.runId, { ref, status: "error", rowGone: false });
+        unconfirmed.set(ref.runId, { ref, status: "error", rowGone: false, ...(named ? {} : { unstarted: true }) });
         return result;
       }
-      await showOnRow(ref.itemId, "error", undefined);
+      if (named) await showOnRow(ref.itemId, "error", undefined);
     }
     await workspace.release(ref, "all").catch(() => undefined);
     return result;
@@ -1038,6 +1049,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function confirmSettles(): Promise<Adopted> {
     let failed: Adopted | null = null;
     for (const [runId, left] of unconfirmed) {
+      // A start whose row write may not have landed: a readable board without the row naming the run ends it, and no row shows it.
+      if (left.unstarted) {
+        const how = await records.settleUnstarted(left.ref.itemId, runId)
+          .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return null; });
+        if (how === "settled") {
+          unconfirmed.delete(runId);
+          await workspace.release(left.ref, "all").catch(() => undefined);
+          continue;
+        }
+        if (how !== "named") {
+          failed ??= { ok: false, code: how === null ? "run-state-unavailable" : writeFault(how) };
+          continue;
+        }
+        left.unstarted = false;
+      }
       const at = new Date().toISOString();
       const write = (rowGone: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.status, at), rowGone)
         .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return null; });

@@ -35,6 +35,9 @@ export interface WorkflowRunState {
   /** One atomic read-modify-write. While the row exists it runs under the board lock and only for the run the row names; `rowGone` writes
    * by run id alone, for a run whose row was deleted. */
   update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | null, rowGone?: boolean): Promise<RunWrite>;
+  /** Ends a run whose start failed before its row write was known to land: `settled` once the run is over (or the file no longer holds
+   * it), `named` when the board on disk shows the row naming it after all, so it ends as any stored run does. */
+  settleUnstarted(itemId: number, runId: string): Promise<"settled" | "named" | RunWriteFailure>;
   /** One read of the run file: the run a row names, or null as for `get`. */
   view(): Promise<(row: { id: number; runId?: string }) => RunRecord | null>;
   /** What boot adopts, from one read of the run file and, when a stored run is named by no row, of the board file on disk. */
@@ -46,7 +49,7 @@ export interface WorkflowRunState {
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "list" | "runs" | "pruneSettledRuns" | "runRowGoneOnDisk">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runRowGoneOnDisk">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -73,6 +76,16 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       } catch (error) {
         // The store refuses a record it does not understand by throwing; nothing was written.
         if (error instanceof WorkflowTemplateError) return { ok: false, reason: "invalid" };
+        throw error;
+      }
+    },
+    settleUnstarted: async (itemId, runId) => {
+      try {
+        const result = await store.settleUnstartedRun(itemId, runId);
+        if (result.status === "stored" || result.status === "refused" || result.status === "not-found") return "settled";
+        return result.status;
+      } catch (error) {
+        if (error instanceof WorkflowTemplateError) return "invalid";
         throw error;
       }
     },
