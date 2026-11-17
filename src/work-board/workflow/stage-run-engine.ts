@@ -849,7 +849,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** A user action on an unsettled run: refused before any write unless `precheck` passes and the pin still resolves. */
   async function decide<R extends string>(itemId: number, runId: string, surface: WebContents | null, event: RunEvent, precheck: Precheck<R>):
-  Promise<R | PinRefusal | "run_mismatch" | "run-end-unconfirmed" | "not_found" | "not_pending" | null> {
+  Promise<R | PinRefusal | "run_mismatch" | "run_end_unconfirmed" | "not_found" | "not_pending" | null> {
     // An end the run file did not confirm holds back only its own run's decisions, once the boot takeover has succeeded.
     if (!(await adopted()).ok && (unconfirmed.size === 0 || !takenOver)) return "run_mismatch";
     const got = await store.get(itemId);
@@ -858,7 +858,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const record = await records.get(itemId, runId);
     if (!record) return "run_mismatch";
     // Its record still reads unsettled: taking it over here would undo the end it was given.
-    if (unconfirmed.has(runId)) return "run-end-unconfirmed";
+    if (unconfirmed.has(runId)) return "run_end_unconfirmed";
     const state = await stateFor(record, surface);
     if (!state) return "not_pending";
     return enqueue(state, () => handle(state, event, precheck));

@@ -583,7 +583,7 @@ it("an unconfirmed run end refuses only that run's decisions: a decision on anot
 
   // That run is never decided, and never taken over by a decision.
   const refused = await h.engine.decideStageGate(id, { runId, stageId: "a", attempt: 1, resultHash: "", decision: "approve" });
-  expect(refused).toEqual({ ok: false, reason: "run-end-unconfirmed" });
+  expect(refused).toEqual({ ok: false, reason: "run_end_unconfirmed" });
   expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
   expect(h.children).toHaveLength(2);
 
@@ -591,7 +591,8 @@ it("an unconfirmed run end refuses only that run's decisions: a decision on anot
   expect(await runOther).toEqual({ status: "awaiting_approval" });
   expect((await h.until(other, item => item.runStatus === "completed")).record?.settled?.status).toBe("completed");
   expect((await h.runOf(runId))?.settled).toBeUndefined();
-  for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.run-end-unconfirmed")).toEqual(expect.stringMatching(/\S/));
+  // A decision refusal with text names it by its run reason code.
+  for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${"run_end_unconfirmed".replaceAll("_", "-")}`)).toEqual(expect.stringMatching(/\S/));
 }));
 
 it("a takeover a reader asks for that fails is logged, never left as an unhandled rejection", () => {

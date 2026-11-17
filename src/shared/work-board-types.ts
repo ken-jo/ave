@@ -408,7 +408,8 @@ export interface StageGateDecideInput {
   decision: WorkPlanDecision;
   note?: string;
 }
-type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run-end-unconfirmed" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
+/** Decision refusals are snake_case. One with text shows reasonCodes.<the refusal with "-" for "_">, as run reason codes do. */
+type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
   | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
 export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
 export type StageGateDecideIpcResult =
@@ -417,8 +418,8 @@ export type StageGateDecideIpcResult =
 
 /** The user's decision on a join that could not be collected, bound to the conflict they saw. */
 export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; decision: "retry_merge" | "reject" }
-/** run-end-unconfirmed: the run's end is not yet written to the run file; it is shown by its reasonCodes text. */
-type StageRunRefusal = "not_found" | "run_mismatch" | "run-end-unconfirmed" | "not_pending" | "version_missing" | "graph_mismatch";
+/** run_end_unconfirmed: the run's end is not yet written to the run file; it is shown by its reasonCodes text. */
+type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "not_pending" | "version_missing" | "graph_mismatch";
 export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" };
 export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" };
 /** Retry of a failed stage, or continuing a run that has only ready stages after a restart. not_idle: a child of the run is still live. */
