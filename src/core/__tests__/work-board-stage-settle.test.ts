@@ -809,6 +809,7 @@ const runFileRefusal: [string, () => Promise<homeTrust.AveHomeInput>, string][] 
   ["awaits review", runFileUnreadable[1][1], "template-runs-pending-review"],
   ["is past its read limit", runFileUnreadable[2][1], "template-runs-pending-review"],
   ["does not parse", runFileUnreadable[3][1], "invalid-template-run"],
+  ["holds a key twice", async () => ({ status: "trusted", bytes: Buffer.from('{"version":1,"rowIdFloor":0,"runs":[],"runs":[]}') }), "workflow-runs-duplicate-key"],
 ];
 for (const [how, input, code] of runFileRefusal) {
   it(`a start whose run file ${how} when the run is stored returns the refusal ${code}, never not found`, () => withHarness(async (h) => {
@@ -1021,7 +1022,7 @@ it("a live run whose row was put by hand in a first items key a second one shado
   const text = `{"version":${file.version},"nextId":${file.nextId},"items":${JSON.stringify(mine)},"items":${JSON.stringify(file.items.filter(row => row.id !== live.id))}}`;
   writeFileSync(h.boardPath, text);
   expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("unreadable");
-  await expect(h.board.create({ title: "Unrelated" })).resolves.toEqual({ status: "invalid", reason: "work-board-run-id-held" });
+  await expect(h.board.create({ title: "Unrelated" })).resolves.toEqual({ status: "invalid", reason: "work-board-duplicate-key" });
   expect(readFileSync(h.boardPath, "utf8")).toBe(text);
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(h.interrupts).toEqual([]);

@@ -256,6 +256,16 @@ describe("write refusals", () => {
     expect(readFileSync(path, "utf8")).toBe(before);
   });
 
+  it("returns a run file that holds a key twice as its code, to a list and an add, with that file left as it was", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    const text = '{"version":1,"rowIdFloor":0,"runs":[],"runs":[]}';
+    writeFileSync(join(root, "workflow-runs.json"), text);
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    await expect(registeredHandler(WORK_BOARD.list)({}, {})).resolves.toEqual({ ok: false, error: "workflow-runs-duplicate-key" });
+    await expect(registeredHandler(WORK_BOARD.add)({}, { title: "Notes", projectRoot: workspace })).resolves.toEqual({ status: "invalid", reason: "workflow-runs-duplicate-key" });
+    expect(readFileSync(join(root, "workflow-runs.json"), "utf8")).toBe(text);
+  });
+
   it("never returns a create's raw failure", async () => {
     const store = new WorkBoardStore(join(root, "board.json"));
     vi.spyOn(store, "create").mockRejectedValue(new Error("disk full at C:\\private"));

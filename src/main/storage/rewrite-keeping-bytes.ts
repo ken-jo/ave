@@ -4,13 +4,27 @@ import { access } from "node:fs/promises";
 import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import { writeFileAtomicAtPath } from "./feature-namespace.js";
+import { parseStrictJsonText } from "../../shared/strict-json.js";
 import type { WorkBoardRefusalCode } from "../../shared/work-board-types.js";
 
 const log = createLogger("rewrite-keeping-bytes");
 
-/** A work-board file write a guard refused: nothing was written. `path`: the file the refusal is about, when it is not the one written. */
+/** A work-board file write or read a guard refused: nothing was written. `path`: the file the refusal is about. */
 export class WorkBoardWriteRefusal extends Error {
   constructor(readonly code: WorkBoardRefusalCode, readonly path?: string) { super(code); this.name = "WorkBoardWriteRefusal"; }
+}
+
+const NO_KEYS: ReadonlySet<string> = new Set();
+const strictFail = (reason: string): never => { throw new Error(reason); };
+
+/** True for JSON text with an object that holds a key twice: a read keeps only its last value, so writing back what was read would
+ * lose the others. JSON the strict read cannot finish (nesting too deep for it) counts as holding one; text that is not JSON does not. */
+export function repeatsKey(text: string): boolean {
+  try { JSON.parse(text); } catch { return false; }
+  try {
+    parseStrictJsonText(text, { maxDepth: Number.POSITIVE_INFINITY, forbiddenKeys: NO_KEYS, nullPrototypeObjects: true, rejectNonFiniteNumbers: false, fail: strictFail });
+    return false;
+  } catch { return true; }
 }
 
 /** Write `body` over `filePath`. The bytes there, unless they are exactly `unchanged` (what writing the file back as its writer read it

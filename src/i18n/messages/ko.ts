@@ -46,6 +46,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.work-board-legacy-copy-unfinished": "저장하지 않았습니다. 이전 작업 보드 확장에서 옮겨 온 보드가 아직 완료로 표시되지 않았습니다. 작업 보드 파일을 열고 있을 수 있는 프로그램을 닫은 뒤 다시 시도하세요.",
   "reasonCodes.work-board-unread": "저장하지 않았습니다. 작업 보드 파일이 없거나 읽을 수 없어 항목을 하나도 보여 주지 않습니다. 이 파일에는 새 항목만 씁니다.",
   "reasonCodes.work-board-write-failed": "항목을 추가할 수 없습니다. 작업 보드 파일을 쓸 수 없었습니다. 다시 시도하고, 계속 실패하면 파일을 열고 있을 수 있는 프로그램을 닫으세요.",
+  "reasonCodes.work-board-duplicate-key": "작업 보드에 아무것도 저장하지 않았습니다. 보드 파일 board.json의 한 항목에 같은 키가 두 번 들어 있어 어느 값이 맞는지 알 수 없고, 다시 쓰면 다른 값을 잃게 됩니다. 보드는 파일이 읽히는 대로 보여 줍니다. 각 항목에 키가 한 번씩만 나오도록 board.json을 직접 고치세요. 그 전에는 이 파일에 아무것도 쓰지 않습니다.",
+  "reasonCodes.workflow-runs-duplicate-key": "작업 보드가 템플릿 실행을 읽을 수 없습니다. 워크플로 실행 파일 workflow-runs.json의 한 항목에 같은 키가 두 번 들어 있어 어느 값이 맞는지 알 수 없습니다. 파일은 그대로 두었고 아무것도 쓰지 않습니다. 각 항목에 키가 한 번씩만 나오도록 workflow-runs.json을 직접 고친 뒤 보드를 다시 여세요.",
   "reasonCodes.outward-effect-tool": "이 도구는 실행 바깥에 영향을 주므로 예약 실행이 스스로 사용할 수 없습니다. 대신 요청 출력으로 요청하세요.",
   "reasonCodes.tool-effect-unknown": "지금은 이 도구가 무엇을 하는지 확인할 수 없어 예약 실행에서 사용할 수 없습니다. 직접 실행할 때는 그대로 사용할 수 있습니다.",
   "reasonCodes.user-gesture-required": "템플릿 실행은 직접 클릭하거나 키를 눌러야 시작됩니다. 실행을 다시 누르세요.",

@@ -250,8 +250,8 @@ it.each(RUN_FILE_WRITES)("%s writes the run file's other keys and every entry th
   const archive = [{ runId: "run-9", itemId: 9 }];
   const unreadable = [{ runId: "broken", itemId: 4, extra: 1 }, { itemId: "two" }, "stray"];
   const copy = { through: 5, board: "a".repeat(64) };
-  // Compact, a key written twice and a floor below a stored run's row: none of it is what a write writes.
-  const text = `{"archive":${JSON.stringify(archive)},"version":1,"rowIdFloor":0,"runs":${JSON.stringify([run(), ...unreadable])},"note":"x","note":"moved by hand","legacyBoardCopy":${JSON.stringify(copy)}}`;
+  // Compact and a floor below a stored run's row: neither is what a write writes.
+  const text = `{"archive":${JSON.stringify(archive)},"version":1,"rowIdFloor":0,"runs":${JSON.stringify([run(), ...unreadable])},"note":"moved by hand","legacyBoardCopy":${JSON.stringify(copy)}}`;
   await writeFile(file, text);
   const store = new WorkflowRunStore(file);
   await write(store);
@@ -265,6 +265,14 @@ it.each(RUN_FILE_WRITES)("%s writes the run file's other keys and every entry th
   expect(copies()).toHaveLength(1);
   await store.raiseRowIdFloor(60);
   expect(copies()).toHaveLength(1);
+});
+
+it.each(RUN_FILE_WRITES)("%s writes nothing over a run file that holds a key twice, and refuses with its code", async (_, write) => {
+  const text = `{"version":1,"rowIdFloor":0,"runs":${JSON.stringify([run(), "stray"])},"note":"x","note":"moved by hand","legacyBoardCopy":{"through":5,"board":"${"a".repeat(64)}"}}`;
+  await writeFile(file, text);
+  await expect(write(new WorkflowRunStore(file))).rejects.toMatchObject({ code: "workflow-runs-duplicate-key", path: file });
+  expect(await readFile(file, "utf8")).toBe(text);
+  expect(readdirSync(dir).filter(entry => entry.endsWith(".bak"))).toEqual([]);
 });
 
 it("calls a run missing only when the file read holds no entry under its id and none without a string runId, and never while it awaits review", async () => {

@@ -10,7 +10,7 @@ import {
   readJsonFileOrEmpty,
   writeFileAtomicAtPath,
 } from "./storage/feature-namespace.js";
-import { rewriteKeepingBytes, WorkBoardWriteRefusal } from "./storage/rewrite-keeping-bytes.js";
+import { repeatsKey, rewriteKeepingBytes, WorkBoardWriteRefusal } from "./storage/rewrite-keeping-bytes.js";
 import { createDirStorage, type WorkBoardStorage } from "../work-board/storage.js";
 import {
   BOARD_VERSION,
@@ -576,6 +576,8 @@ export class WorkBoardStore {
   private loaded = false;
   // No legacy board copy is left started and not done; it never is again.
   private legacyCopySettled = false;
+  // The board file as last read holds a key twice: every write of it is refused until it is fixed by hand.
+  private repeatedKey = false;
   private readonly filePath: string;
   // Activity-log storage rooted in the same directory as `board.json`.
   private readonly activity: WorkBoardStorage;
@@ -598,8 +600,9 @@ export class WorkBoardStore {
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it. A board read as unread is
   // written only by a create, which first marks the ids it cannot show. Bytes on disk that are not the text the board was read as
-  // (`unchanged`) are copied aside first; with no such text, any bytes there are. The write is refused when it would take out of the
-  // board file a run id the run file holds, unless an entry it removes on purpose (`released`) held it (see assertKeepsRunIds).
+  // (`unchanged`) are copied aside first; with no such text, any bytes there are. The write is refused over bytes that hold a key twice,
+  // and when it would take out of the board file a run id the run file holds, unless an entry it removes on purpose (`released`) held
+  // it (see assertKeepsRunIds).
   private async commit(board: BoardRead, change: { deleted?: { itemId: number; runId: string }; released?: readonly unknown[] } = {}): Promise<void> {
     if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
     if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
@@ -609,8 +612,15 @@ export class WorkBoardStore {
     await rewriteKeepingBytes(this.filePath, text, {
       tag: "invalid-rows",
       unchanged: board.unchanged,
-      check: (prior) => assertKeepsRunIds(prior, text, runIds, board.unchanged, change.released ?? []),
+      check: (prior) => {
+        if (prior !== undefined && repeatsKey(prior.toString("utf8"))) {
+          this.repeatedKey = true;
+          throw new WorkBoardWriteRefusal("work-board-duplicate-key", this.filePath);
+        }
+        assertKeepsRunIds(prior, text, runIds, board.unchanged, change.released ?? []);
+      },
     });
+    this.repeatedKey = false;
     this.cache = file;
     if (change.deleted) this.rowDeleted.emit(change.deleted);
     this.boardChanged.emit();
@@ -642,6 +652,7 @@ export class WorkBoardStore {
     if (input.status !== "trusted") return { ...emptyBoard(), unread: true };
     const parsed = parseBoard(input.bytes);
     if (readableBoard(parsed)) {
+      this.repeatedKey = repeatsKey(input.bytes.toString("utf8"));
       const board = hydrateBoard(parsed);
       return { ...board, unchanged: boardText(board) };
     }
@@ -792,6 +803,7 @@ export class WorkBoardStore {
       items: rows,
       ...(unreadable.length > 0 ? { unreadableRows: unreadable } : {}),
       ...(unreadableRuns.length > 0 ? { unreadableRuns } : {}),
+      ...(this.repeatedKey ? { writesRefused: "work-board-duplicate-key" as const } : {}),
     };
   }
 
@@ -866,8 +878,9 @@ export class WorkBoardStore {
       // written: no id is issued twice, whatever board file is read. While the floor cannot be read or stored, no row is added.
       const id = await this.runs.issueRowId(board.nextId - 1).catch((error: unknown) => {
         log.warn("[work-board-store] no row id was issued: %s", (error as Error).message);
-        return undefined;
+        return error instanceof WorkBoardWriteRefusal ? error : undefined;
       });
+      if (id instanceof WorkBoardWriteRefusal) return { status: "invalid" as const, reason: id.code };
       if (id === undefined) return { status: "invalid" as const, reason: "work-item-ids-unavailable" };
       if (id === "exhausted") return { status: "invalid" as const, reason: "work-item-ids-exhausted" };
       if (board.unread) {

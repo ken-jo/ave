@@ -209,6 +209,25 @@ describe("work board review", () => {
     expect(await screen.findByTestId("work-board-load-error")).toHaveTextContent(t("workBoard.boardLoadFailed"));
     expect(screen.queryByTestId("work-board-card")).toBeNull();
   });
+  it("says why the board cannot be read when its run file holds a key twice", async () => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ ok: false, error: "workflow-runs-duplicate-key" });
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    expect(await screen.findByTestId("work-board-load-error")).toHaveTextContent(t("reasonCodes.workflow-runs-duplicate-key"));
+    expect(t("reasonCodes.workflow-runs-duplicate-key")).toContain("workflow-runs.json");
+  });
+  it("lists the rows of a board file that holds a key twice and says no write goes over it until it is fixed", async () => {
+    const api = apiFor([result]);
+    let changed = () => {};
+    api.onWorkBoardItemChanged = handler => { changed = () => handler(itemChanged); return () => {}; };
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], writesRefused: "work-board-duplicate-key" });
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    expect(await screen.findByTestId("work-board-writes-refused")).toHaveTextContent(t("reasonCodes.work-board-duplicate-key"));
+    expect(t("reasonCodes.work-board-duplicate-key")).toContain("board.json");
+    expect(screen.getByTestId("work-board-card")).toBeTruthy();
+    changed();
+    await waitFor(() => expect(screen.queryByTestId("work-board-writes-refused")).toBeNull());
+  });
   it("keeps the listed rows and shows a load error when a refresh fails", async () => {
     const api = apiFor([result]);
     let changed = () => {};

@@ -649,8 +649,7 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
         canonical({ version: 2, nextId: 3, items }),
         canonical({ version: 1, nextId: "seven", items }),
         canonical({ version: 1, nextId: 1, items }),
-        // A key twice, and other spacing.
-        `{"version":1,"nextId":3,"items":${JSON.stringify([row(2)])},"items":${JSON.stringify(items)}}\n`,
+        // Other spacing. A key twice is never written over (work-board-write-guard.test.ts).
         JSON.stringify({ version: 1, nextId: 3, items }),
       ];
       for (const text of cases) {

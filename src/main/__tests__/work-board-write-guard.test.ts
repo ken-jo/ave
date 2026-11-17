@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { WorkBoardStore } from "../work-board-store.js";
+import { WorkflowRunStore } from "../workflow-run-store.js";
+import { repeatsKey } from "../storage/rewrite-keeping-bytes.js";
 import { sha256Hex as sha } from "../../lib/hex-digest-equal.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import type { TemplateRunStart } from "../../shared/workflow-template-types.js";
+import type { TemplateRunStart, WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 
 const RUN_IDS = ["run-a", "run-b", "run-c", "run-d", "run-e", "run-f"];
 const AT = "2026-01-01T00:00:00.000Z";
@@ -94,6 +96,7 @@ function boardCase(seed: number): { text: string; canonical: boolean } {
 }
 
 const PIN = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
+const live = (runId: string, itemId = 40): WorkflowRunRecord => ({ runId, itemId, pin: PIN, runStartedBy: { kind: "local-create-and-run", pin: PIN }, startedAt: AT, stageRuns: [] });
 function start(): TemplateRunStart {
   return { ...PIN, source: { kind: "local-create-and-run", pin: PIN }, stageRuns: [{ stageId: "plan", attempt: 1, status: "waiting" }] };
 }
@@ -206,8 +209,6 @@ it("no store write takes a stored run's id out of board.json unless the entry it
 }, 180_000);
 
 describe("the evidence scan", () => {
-  const PIN = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
-  const live = (runId: string, itemId = 40) => ({ runId, itemId, pin: PIN, runStartedBy: { kind: "local-create-and-run", pin: PIN }, startedAt: AT, stageRuns: [] });
   async function home(board: string, runs: unknown[]): Promise<{ dir: string; path: string; store: WorkBoardStore }> {
     const dir = mkdtempSync(join(tmpdir(), "ave-evidence-"));
     writeFileSync(join(dir, "board.json"), board);
@@ -253,6 +254,66 @@ describe("the evidence scan", () => {
       const before = readFileSync(path, "utf8");
       await expect(store.update(2, { detail: "done" })).rejects.toMatchObject({ code: "work-board-run-id-held" });
       expect(readFileSync(path, "utf8")).toBe(before);
+    } finally { await cleanupTmpDir(dir); }
+  });
+});
+
+describe("a file that holds a key twice", () => {
+  const backups = (dir: string, file: string) => readdirSync(dir).filter(name => name.startsWith(`${file}.`) && name.endsWith(".bak"));
+  function home(board: string, runs: string): { dir: string; path: string; runsPath: string; store: WorkBoardStore } {
+    const dir = mkdtempSync(join(tmpdir(), "ave-repeated-key-"));
+    writeFileSync(join(dir, "board.json"), board);
+    writeFileSync(join(dir, "workflow-runs.json"), runs);
+    return { dir, path: join(dir, "board.json"), runsPath: join(dir, "workflow-runs.json"), store: new WorkBoardStore(join(dir, "board.json"), () => Date.parse(AT)) };
+  }
+  const runsText = JSON.stringify({ version: 1, rowIdFloor: 50, runs: [] });
+
+  it("is told apart from JSON whose keys are each there once, at any depth, and never from text inside a string", () => {
+    expect(repeatsKey('{"a":{"b":1,"b":2}}')).toBe(true);
+    expect(repeatsKey('[{"k":[1,{"x":0,"x":0}]}]')).toBe(true);
+    expect(repeatsKey(`${"[".repeat(100_000)}${"]".repeat(100_000)}`)).toBe(true);
+    expect(repeatsKey('{"a":1,"b":{"a":1},"c":"{\\"d\\":1,\\"d\\":2}"}')).toBe(false);
+    expect(repeatsKey("{")).toBe(false);
+  });
+
+  it.each([
+    ["a row's key", `{"version":1,"nextId":51,"items":[{"id":2,"title":"a","title":"b","status":"planned","priority":"medium","created_at":"${AT}","updated_at":"${AT}"}]}`],
+    ["the items key", `{"version":1,"nextId":51,"items":[${JSON.stringify(row(1, { runId: "run-a", templateId: "template-1" }))}],"items":[${JSON.stringify(row(2))}]}`],
+    ["a key nested in an unknown entry", `{"version":1,"nextId":51,"archive":[{"note":{"k":1,"k":2}}],"items":[${JSON.stringify(row(2))}]}`],
+  ])("board.json holding %s twice is listed with the refusal, no write goes over it, and once fixed by hand it is written again", async (_, text) => {
+    const { dir, path, store } = home(text, JSON.stringify({ version: 1, rowIdFloor: 50, runs: [live("run-a", 1)] }));
+    try {
+      await store.load();
+      expect(await store.list()).toMatchObject({ status: "ok", items: [{ id: 2 }], writesRefused: "work-board-duplicate-key" });
+      expect(await store.create({ title: "New" })).toEqual({ status: "invalid", reason: "work-board-duplicate-key" });
+      await expect(store.update(2, { detail: "x" })).rejects.toMatchObject({ code: "work-board-duplicate-key" });
+      await expect(store.remove(2)).rejects.toMatchObject({ code: "work-board-duplicate-key" });
+      expect(readFileSync(path, "utf8")).toBe(text);
+      expect(backups(dir, "board.json")).toEqual([]);
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 51, items: [row(1, { runId: "run-a", templateId: "template-1" }), row(2)] }));
+      expect(await store.create({ title: "New" })).toMatchObject({ status: "created" });
+      expect(await store.list()).not.toHaveProperty("writesRefused");
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it("workflow-runs.json holding a key twice is not read or written over: the board says why, and once fixed by hand it is read again", async () => {
+    const text = `{"version":1,"rowIdFloor":50,"runs":[${JSON.stringify(live("run-a", 2))}],"runs":[]}`;
+    const { dir, path, runsPath, store } = home(`${JSON.stringify({ version: 1, nextId: 51, items: [row(2, { runId: "run-a", templateId: "template-1" })] }, null, 2)}\n`, text);
+    try {
+      const runs = new WorkflowRunStore(runsPath);
+      const refusal = { code: "workflow-runs-duplicate-key", path: runsPath };
+      for (const read of [() => runs.raiseRowIdFloor(60), () => runs.issueRowId(60), () => runs.list(), () => runs.get("run-a"), () => runs.prune(() => null),
+        () => runs.put(live("run-b", 3)), () => runs.discardUnreadable({ position: 0, hash: "a".repeat(64) }, () => true)]) {
+        await expect(read()).rejects.toMatchObject(refusal);
+      }
+      await store.load();
+      await expect(store.list()).rejects.toMatchObject(refusal);
+      expect(await store.create({ title: "New" })).toEqual({ status: "invalid", reason: "workflow-runs-duplicate-key" });
+      expect(readFileSync(runsPath, "utf8")).toBe(text);
+      expect(backups(dir, "workflow-runs.json")).toEqual([]);
+      writeFileSync(runsPath, runsText);
+      expect(await store.list()).toMatchObject({ status: "ok" });
+      expect(readFileSync(path, "utf8")).toContain("run-a");
     } finally { await cleanupTmpDir(dir); }
   });
 });

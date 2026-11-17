@@ -1729,8 +1729,11 @@ export function WorkBoardPanel({
   const [pendingReview, setPendingReview] = useState(false);
   const [unreadableRows, setUnreadableRows] = useState<readonly WorkItemUnreadableRow[]>([]);
   const [unreadableRuns, setUnreadableRuns] = useState<readonly WorkItemUnreadableRun[]>([]);
-  // A failed read keeps the rows last listed for the same filter and shows the failure; it never stands in for an empty board.
-  const [loadFailed, setLoadFailed] = useState(false);
+  // A failed read keeps the rows last listed for the same filter and shows the failure (its message key); it never stands in for an
+  // empty board.
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+  // The board file holds a key twice: its rows are listed as they read, and no write goes over it until it is fixed by hand.
+  const [writesRefused, setWritesRefused] = useState<string | null>(null);
   const listedKeyRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -1746,15 +1749,16 @@ export function WorkBoardPanel({
         }
       : undefined;
     const key = JSON.stringify(filter ?? null);
-    const fail = () => {
+    const fail = (reason?: unknown) => {
       if (listedKeyRef.current !== key) {
         listedKeyRef.current = null;
         setItems([]);
         setPendingReview(false);
         setUnreadableRows([]);
         setUnreadableRuns([]);
+        setWritesRefused(null);
       }
-      setLoadFailed(true);
+      setLoadFailed(reason === "workflow-runs-duplicate-key" ? `reasonCodes.${reason}` : "workBoard.boardLoadFailed");
     };
     try {
       const result = await api.listWorkBoard(filter);
@@ -1765,9 +1769,10 @@ export function WorkBoardPanel({
         setPendingReview(result.items.some((item) => item.templateRunError === "template-runs-pending-review"));
         setUnreadableRows(result.unreadableRows ?? []);
         setUnreadableRuns(result.unreadableRuns ?? []);
-        setLoadFailed(false);
+        setWritesRefused(result.writesRefused === undefined ? null : `reasonCodes.${result.writesRefused}`);
+        setLoadFailed(null);
       } else {
-        fail();
+        fail("error" in result ? result.error : undefined);
       }
     } catch {
       if (mountedRef.current) fail();
@@ -2203,7 +2208,8 @@ export function WorkBoardPanel({
           </Badge>
         </div>
       </div>
-      {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t("workBoard.boardLoadFailed")}</p>}
+      {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t(loadFailed)}</p>}
+      {writesRefused && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-writes-refused">{t(writesRefused)}</p>}
       {pendingReview && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-pending-review">{t("workBoard.pendingReview", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>}
       {entryError && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-unreadable-row-error">{t(entryError)}</p>}
       {unreadableRows.length > 0 && <UnreadableRowCards rows={unreadableRows} onDelete={(row) => { void removeEntry({ invalidRow: { position: row.position, hash: row.hash } }, "workBoard.unreadableRowChanged", row.id); }} />}

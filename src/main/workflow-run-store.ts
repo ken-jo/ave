@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
-import { rewriteKeepingBytes } from "./storage/rewrite-keeping-bytes.js";
+import { repeatsKey, rewriteKeepingBytes, WorkBoardWriteRefusal } from "./storage/rewrite-keeping-bytes.js";
 import { AVE_HOME_INPUT_MAX_BYTES, AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isRecord } from "../shared/is-record.js";
@@ -98,7 +98,8 @@ function bindingOf(run: WorkflowRunRecord): string {
 export class WorkflowRunStore {
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "workflow-runs.json")) {}
 
-  /** The file, or undefined while it awaits home content review. Any other read failure throws. */
+  /** The file, or undefined while it awaits home content review. Any other read failure throws; a file that holds a key twice throws
+   * `workflow-runs-duplicate-key`, so nothing reads it or writes over it until it is fixed by hand. */
   private async read(): Promise<RunsFile | undefined> {
     return (await this.load())?.file;
   }
@@ -110,8 +111,10 @@ export class WorkflowRunStore {
     catch (error) { if (error instanceof AveHomeInputSizeLimitError) return undefined; throw error; }
     if (input.status === "absent") return { file: { version: 1, rowIdFloor: 0, runs: [] } };
     if (input.status === "untrusted") return undefined;
+    const text = input.bytes.toString("utf8");
     let raw: unknown;
-    try { raw = JSON.parse(input.bytes.toString("utf8")); } catch { throw new WorkflowTemplateError("invalid-template-run"); }
+    try { raw = JSON.parse(text); } catch { throw new WorkflowTemplateError("invalid-template-run"); }
+    if (repeatsKey(text)) throw new WorkBoardWriteRefusal("workflow-runs-duplicate-key", this.filePath);
     requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor)), "invalid-template-run");
     const runs: unknown[] = raw.runs;
     const copy = raw.legacyBoardCopy === undefined ? {} : { legacyBoardCopy: raw.legacyBoardCopy };

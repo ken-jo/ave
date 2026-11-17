@@ -180,13 +180,16 @@ export type WorkItemDeleteTarget =
   | { invalidRow: { position: number; hash: string } }
   | { runRecord: { position: number; hash: string } };
 
+/** Why a guard refused a work-board file write; nothing was written. Each has its text under `reasonCodes.`. The duplicate-key codes
+ * stand for a file that holds a key twice in one object: no write goes over it until it is fixed by hand, and a run file such as that
+ * is not read either. */
+export type WorkBoardRefusalCode =
+  | "work-board-run-id-held" | "work-board-runs-unreadable" | "work-board-legacy-copy-unfinished" | "work-board-unread" | "work-board-write-failed"
+  | "work-board-duplicate-key" | "workflow-runs-duplicate-key";
+
 /** A delete of an entry of the board or run file; `itemId` when a board entry has a usable id. `work-board-row-changed`: the entry at
  * that place is no longer the one named, and nothing was deleted; `template-runs-too-large`: the run file left would be past its read
  * limit, and nothing was discarded. */
-/** Why a guard refused a work-board file write; nothing was written. Each has its text under `reasonCodes.`. */
-export type WorkBoardRefusalCode =
-  | "work-board-run-id-held" | "work-board-runs-unreadable" | "work-board-legacy-copy-unfinished" | "work-board-unread" | "work-board-write-failed";
-
 export type WorkBoardEntryDeleteResult =
   | { status: "deleted"; itemId?: number }
   | { status: "not_found" }
@@ -194,8 +197,9 @@ export type WorkBoardEntryDeleteResult =
 
 export type WorkItemListResult =
   // unreadableRows: one entry per row of the board file that does not validate, with its id when it has one; they are kept in the file
-  // and are not listed. unreadableRuns: one per entry of the run file that does not read as a run.
-  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[]; unreadableRuns?: WorkItemUnreadableRun[] }
+  // and are not listed. unreadableRuns: one per entry of the run file that does not read as a run. writesRefused: the board file as
+  // last read holds a key twice, so every write of it is refused until it is fixed by hand; the rows are listed as they read.
+  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[]; unreadableRuns?: WorkItemUnreadableRun[]; writesRefused?: "work-board-duplicate-key" }
   | { status: "invalid"; reason: string };
 
 export type WorkItemCreateResult =
