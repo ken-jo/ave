@@ -309,11 +309,30 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   store.boardChanged.subscribe(() => {
     if (runs.size > 0) void checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error)));
   });
-  // The user deleted the row that named this run: its row is gone, whatever else the board file holds.
+  // The user deleted the row that named this run: its row is gone, whatever else the board file holds. A run a restart left parked is
+  // taken over by that id, as its adoption would, and cancelled so.
   store.rowDeleted.subscribe(({ itemId, runId }) => {
     const state = runs.get(itemId);
-    if (state?.runId === runId) rowRemoved(state);
+    if (state !== undefined) {
+      if (state.runId === runId) rowRemoved(state);
+      return;
+    }
+    if (unconfirmed.has(runId)) return;
+    void takeOverDeleted(itemId, runId).catch((error: unknown) => log.warn("a parked run whose row was deleted was not ended (id=%d): %s", itemId, errorMessage(error)));
   });
+  async function takeOverDeleted(itemId: number, runId: string): Promise<void> {
+    const record = await records.get(itemId, runId);
+    if (!record || record.settled !== undefined || runs.has(itemId)) return;
+    const parked = await reconcileRunRecord(record, new Date().toISOString(), root => access(root).then(() => true, () => false));
+    let taken = record;
+    if (parked) {
+      const stored = await records.update(itemId, runId, current => current.settled === undefined ? parked : null, true);
+      if (!stored.ok) throw new Error(stored.reason);
+      taken = stored.run;
+    }
+    const state = await stateFor(taken, null);
+    if (state?.runId === runId) rowRemoved(state);
+  }
 
   /** One write of the run. Null when nothing was stored. */
   async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
@@ -1052,8 +1071,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       deps.itemChanged?.(item.id);
     }
     const at = new Date().toISOString();
+    // A run taken over since (its row was deleted) ends as that takeover ends it.
+    const held = (run: RunRecord): boolean => {
+      if (runs.get(run.itemId)?.runId !== run.runId) return false;
+      active.push(run.runId);
+      return true;
+    };
     for (const run of found.orphans) {
-      if (run.settled !== undefined) continue;
+      if (run.settled !== undefined || held(run)) continue;
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "cancelled", at), true);
       // Not confirmed over: nothing is pruned or swept, and the record keeps its workspace until an adoption ends it.
       if (!ended.ok) {
@@ -1063,7 +1088,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     // A run whose row no longer names or holds it ends error, as it does live.
     for (const run of found.lost) {
-      if (run.settled !== undefined) continue;
+      if (run.settled !== undefined || held(run)) continue;
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "error", at), true);
       if (!ended.ok) {
         log.warn("a template run its row no longer names could not be ended (id=%d): %s", run.itemId, ended.reason);
