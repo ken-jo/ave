@@ -319,10 +319,11 @@ describe("what lets a write take a live run's id out of board.json", () => {
     }
   });
 
-  // A write that removes an entry while no run can be read: it cannot tell which runs the entry holds.
+  // A write that removes an entry or the user's text while no run can be read: it cannot tell which runs that held.
   describe.each(RUN_FILE_UNREADABLE)("while the run file %s", (_, input, code) => {
     it.each<[string, unknown[], (store: WorkBoardStore) => Promise<() => Promise<unknown>>]>([
       ["a delete of a row", [row(2, { detail: "run-a" })], async store => () => store.remove(2)],
+      ["an edit of the user's text", [row(2, { detail: "run-a" })], async store => () => store.update(2, { detail: "done" })],
       ["an invalid card's delete", [row(2), { id: 3, title: 0, note: "run-a" }], async store => { const shown = await card(store); return () => store.removeUnreadable(shown, () => true); }],
       ["a run start whose history cap drops an entry", [row(2, { runId: "old-18", runStatus: "completed", runHistory: history })], async store => () => store.beginRun(2, "next-run", AT)],
     ])("refuses %s over the board as it was last written", async (_, items, prepare) => {

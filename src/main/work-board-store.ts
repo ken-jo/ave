@@ -466,7 +466,7 @@ function hydrateBoard(file: BoardFile): BoardFile {
  * settled (`runs.held`; see {@link heldIn}). Only the user's delete of the row naming such a run takes its id out (`change.deleted`),
  * only with its delete intent stored (`runs.intents`), and never over bytes still decoding past 16 levels; nothing the write removes
  * releases an id. While the run file cannot be read (`runs` undefined), only bytes exactly as the board was read (`unchanged`) are
- * written over, and never by a write that removes an entry (`change.drops`). */
+ * written over, and never by a write that removes an entry or the user's text (`change.drops`). */
 function assertKeepsRunIds(prior: Buffer | undefined, next: string, runs: Awaited<ReturnType<WorkflowRunStore["heldRuns"]>>, unchanged: string | undefined, change: BoardChange): void {
   if (prior === undefined) return;
   if (runs === undefined) {
@@ -482,7 +482,8 @@ function assertKeepsRunIds(prior: Buffer | undefined, next: string, runs: Awaite
   }
 }
 
-// What a board write does beyond rewriting fields: `deleted`, the user's delete of the row naming a run; `drops`, it removes an entry.
+// What a board write does beyond what the engine writes: `deleted`, the user's delete of the row naming a run; `drops`, it removes an entry
+// or rewrites the user's text, so any id could leave with it.
 interface BoardChange { deleted?: DeleteIntent; drops?: true }
 
 // The board file's text, as every board write writes it.
@@ -617,8 +618,8 @@ export class WorkBoardStore {
   // written only by a create, which first marks the ids it cannot show. Bytes on disk that are not the text the board was read as
   // (`unchanged`) are copied aside first; with no such text, any bytes there are. The write is refused over bytes that hold a key twice,
   // and when it would take out of the board file the id of a run that is not settled, unless it is the user's delete of that run's row
-  // (`deleted`) with its intent stored; one that removes an entry (`drops`) is refused while the run file cannot be read (see
-  // assertKeepsRunIds).
+  // (`deleted`) with its intent stored; one that removes an entry or the user's text (`drops`) is refused while the run file cannot be
+  // read (see assertKeepsRunIds).
   private async commit(board: BoardRead, change: BoardChange = {}): Promise<void> {
     if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
     if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
@@ -1006,7 +1007,7 @@ export class WorkBoardStore {
       const nowMs = this.now();
       updated.updated_at = new Date(nowMs).toISOString();
       board.items[idx] = updated;
-      await this.commit(board);
+      await this.commit(board, { drops: true });
       await appendActivity(this.activity, {
         kind: "updated",
         itemId: updated.id,

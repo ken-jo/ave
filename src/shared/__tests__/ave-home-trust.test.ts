@@ -951,11 +951,14 @@ describe("workflow run file", () => {
     expect(await marks()).toEqual([[started, "template-runs-pending-review"], [unstarted, undefined], [ordinary, undefined]]);
     expect(await board.beginRun(unstarted, "other", run.startedAt, begin)).toMatchObject({ status: "invalid", reason: "template-runs-pending-review" });
     expect(await board.updateRun(started, "run", value => value)).toEqual({ status: "pending-review" });
-    expect(await board.update(ordinary, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    // The user's text waits while the run file cannot be read: its edit could take out the last id of a run that is not over.
+    await expect(board.update(ordinary, { title: "Renamed" })).rejects.toMatchObject({ code: "work-board-runs-unreadable" });
+    expect(await board.setRunStatus(ordinary, "executing")).toMatchObject({ status: "updated" });
     expect(readFileSync(path, "utf8")).toBe(changed);
 
     writeFileSync(path, trusted);
     expect(await marks()).toEqual([[started, undefined], [unstarted, undefined], [ordinary, undefined]]);
+    expect(await board.update(ordinary, { title: "Renamed" })).toMatchObject({ status: "updated" });
   });
 
   it("stays under the size limit when rows with large settled runs are deleted one after another", async () => {
