@@ -280,16 +280,34 @@ it("drops the mark once the user discards the last entry of the run file that do
   expect(await store.list()).not.toHaveProperty("unreadableRuns");
 });
 
+it("drops only the mark it judged: one raised while the runs were read stays until a prune judges it", async () => {
+  await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 6, unknownBelow: 5, items: [5].map(row) }));
+  await writeFile(runsPath, JSON.stringify({ version: 1, rowIdFloor: 5, runs: [] }));
+  const store = new WorkBoardStore(boardPath);
+  const judge = store.runs.openRunBelow.bind(store.runs);
+  vi.spyOn(store.runs, "openRunBelow").mockImplementationOnce(async id => {
+    const open = await judge(id);
+    await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 9, unknownBelow: 8, items: [5, 8].map(row) }));
+    return open;
+  });
+  await store.pruneSettledRuns();
+  expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(8);
+  await store.pruneSettledRuns();
+  expect(JSON.parse(await readFile(boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+});
+
 it("a create on a home with neither file marks no id unknown: none was issued before", async () => {
   expect(await add(new WorkBoardStore(boardPath))).toBe(1);
   expect(JSON.parse(await readFile(boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
 });
 
-it.each([["a string", "x"], ["zero", 0], ["a fraction", 2.5], ["past the safe-integer limit", 2 ** 53], ["negative", -3], ["null", null]])("a board whose unknownBelow is %s reads it as the largest safe integer: no row it does not list is gone, below or above its next id", async (_, unknownBelow) => {
-  await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 6, unknownBelow, items: [1, 2, 4, 5].map(row) }));
+it.each([["a string", "x"], ["zero", 0], ["a fraction", 2.5], ["past the safe-integer limit", 2 ** 53], ["negative", -3], ["null", null]])("a board whose unknownBelow is %s reads it as the largest safe integer: no row it does not list is gone, below or above its next id, and the file is kept as it was before the mark is rewritten", async (_, unknownBelow) => {
+  const text = JSON.stringify({ version: 1, nextId: 6, unknownBelow, items: [1, 2, 4, 5].map(row) });
+  await writeFile(boardPath, text);
   const store = new WorkBoardStore(boardPath);
   const standing = await store.runRowsOnDisk();
   expect([3, 6, 100, Number.MAX_SAFE_INTEGER - 1].map(itemId => standing?.({ itemId, runId: "run-1" }))).toEqual(["lost", "lost", "lost", "lost"]);
   expect(await add(store)).toBe(6);
   expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(Number.MAX_SAFE_INTEGER);
+  expect(await readFile(`${boardPath}.invalid-rows-${createHash("sha256").update(text).digest("hex")}.bak`, "utf8")).toBe(text);
 });

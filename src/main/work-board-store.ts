@@ -372,7 +372,7 @@ function parseBoard(bytes: Buffer): unknown {
 }
 
 // `dropped`: a listed row lost a field on the way (run fields edited in by hand, a plan approval that does not read), found by comparing
-// each row before and after; the re-anchoring of due dates below is not counted.
+// each row before and after, or an `unknownBelow` that is not a row id is rewritten; the re-anchoring of due dates below is not counted.
 function hydrateBoard(file: BoardFile): { board: BoardFile; dropped: boolean } {
   // Valid rows that share an id are not listed, so no run is read off a twin: each is kept as a row that does not validate. A valid row
   // whose id only a row that does not validate has too is still listed.
@@ -414,7 +414,7 @@ function hydrateBoard(file: BoardFile): { board: BoardFile; dropped: boolean } {
     unreadable: file.items.filter((row) => !listed(row)),
     ...(extra.length > 0 ? { extra: Object.fromEntries(extra) } : {}),
   };
-  return { board, dropped };
+  return { board, dropped: dropped || unknownBelow !== file.unknownBelow };
 }
 
 /** A copy of the board file as it was, beside it, once per content: a row that does not validate is written back as JSON writes its
@@ -683,7 +683,8 @@ export class WorkBoardStore {
   private async dropUnknownBelow(below: number): Promise<void> {
     if (await this.runs.openRunBelow(below)) return;
     const board = await this.readBoard();
-    if (board.unread || board.unknownBelow === undefined) return;
+    // Only the mark judged above is dropped: one changed since (a later create's) may stand over a run that is not over.
+    if (board.unread || board.unknownBelow !== below) return;
     delete board.unknownBelow;
     await this.commit(board);
   }

@@ -3773,7 +3773,8 @@ with its own owner rule:
   no entry that does not read as a run): the engine's prune of settled runs,
   at boot and after a run whose row is gone or lost ends, then drops it, and
   from then on a lost run's record is pruned as a gone row's run is, so lost
-  records do not pile up over repeated damage. A mark that cannot be dropped
+  records do not pile up over repeated damage. Only the mark judged so is
+  dropped: one changed since (a later create's) stays. A mark that cannot be dropped
   then (the board write fails) stays until the next prune.
   An entry of the run file that does not read as a run (not a run, not
   valid, or sharing its run id with another entry) is listed with its place
@@ -3818,6 +3819,11 @@ with its own owner rule:
   usable id (a string, a fraction, a missing, `null`, zero or negative id, a
   number past the safe-integer limit, or an entry that is not an object)
   could be any row, so while one is there no absent row reads gone or lost.
+  Once the mark is dropped, an id below where it stood that the board does
+  not list reads gone without the proof that the board was readable: the
+  mark drops only when no run that is not over can be on such a row, so
+  this ends no run and only lets settled records be pruned; a row put back
+  by hand after that names a run with no record, as above.
   A row renumbered by hand that still names its run holds the run's id, so
   the run is not gone either; and a row under the run's id that neither
   names nor holds it reads unreadable, not as no longer holding the run,
@@ -3851,8 +3857,9 @@ with its own owner rule:
   it, once per content; a copy that cannot be made fails the write, and the
   board file is left as it was. The same copy is made before the first
   write that drops a field of a valid row: run fields edited into a row by
-  hand, or a plan approval that does not read (the re-anchoring of due
-  dates is not counted). The
+  hand, or a plan approval that does not read, and before the first write
+  that rewrites an `unknownBelow` that is not a row id (the re-anchoring of
+  due dates is not counted). The
   list gives each such entry with its place among them, the sha-256 of its
   JSON and its id when it has one (`unreadableRows`), and the board shows a
   card marked invalid for each, one without a usable id included; nothing

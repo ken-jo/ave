@@ -238,6 +238,18 @@ it("calls a run missing only when the file read holds no entry under its id and 
   expect((await store.view()).missing?.("gone")).toBeUndefined();
 });
 
+it("holds an open run below an id while an entry does not read as a run, and none once every run below it is over", async () => {
+  const store = new WorkflowRunStore(file);
+  for (const entry of [null, { itemId: 2 }, { ...run(), stageRuns: "x" }]) {
+    await writeFile(file, JSON.stringify({ version: 1, rowIdFloor: 5, runs: [entry] }));
+    expect(await store.openRunBelow(5)).toBe(true);
+  }
+  await writeFile(file, JSON.stringify({ version: 1, rowIdFloor: 5, runs: [run({ itemId: 4 }), run({ runId: "run-2", itemId: 5 })] }));
+  expect(await store.openRunBelow(5)).toBe(true);
+  await writeFile(file, JSON.stringify({ version: 1, rowIdFloor: 5, runs: [run({ itemId: 4, settled: { status: "completed", at: "2026-01-02T00:00:00.000Z" } }), run({ runId: "run-2", itemId: 5 })] }));
+  expect(await store.openRunBelow(5)).toBe(false);
+});
+
 it("lists every readable run, leaves out unreadable and repeated entries, and lists nothing while the file awaits review", async () => {
   const store = new WorkflowRunStore(file);
   expect(await store.list()).toEqual({ status: "found", runs: [] });

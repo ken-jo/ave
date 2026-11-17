@@ -131,6 +131,10 @@ it("never reads a run's row gone or lost while an entry of the file could still 
   expect(await standing([...file.items, { id: 50, note: { nested: ["run-deleted"] } }], deleted, "run-deleted")).toBe("unreadable");
   expect(await standing([...file.items, { id: 50, note: "see run-deleted" }], deleted, "run-deleted")).toBe("gone");
   expect(await standing(file.items.map(row => row.id === listed ? { ...row, detail: "run-deleted" } : row), deleted, "run-deleted")).toBe("unreadable");
+  // Held only under a field the read drops from a valid row (run fields, a plan approval that does not read): the file still holds it.
+  for (const held of [{ stageRuns: [{ runId: "run-deleted" }] }, { pin: { runId: "run-deleted" } }, { runStartedBy: "run-deleted" }, { id: 50, planApproval: { runId: "run-deleted" } }]) {
+    expect(await standing(file.items.map(row => row.id === listed ? { ...row, ...held } : row), deleted, "run-deleted")).toBe("unreadable");
+  }
   // Two rows whose ids were swapped by hand: each run's id holds a row that neither names nor holds it, and the other row names it.
   const swap = file.items.map(row => row.id === listed ? { ...row, id: swapped } : row.id === swapped ? { ...row, id: listed } : row);
   expect(await standing(swap, listed, "run-listed")).toBe("unreadable");
@@ -155,6 +159,12 @@ it("keeps a settled run's record while an entry of the file names the run under 
   await store.pruneSettledRuns();
   expect(await runIds()).toEqual(["gone-1"]);
   await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== gone), archive: file.items.filter(row => row.id === gone) }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["gone-1"]);
+  // Renumbered by hand with a plan approval that does not read, which alone holds the run's id: the read drops it, the file does not.
+  const renumbered = file.items.map(({ runId: _runId, runHistory: _history, ...row }: { id: number; runId?: string; runHistory?: unknown }) =>
+    row.id === gone ? { ...row, id: 50, planApproval: { runId: "gone-1" } } : row);
+  await writeFile(boardPath, JSON.stringify({ ...file, items: renumbered }));
   await store.pruneSettledRuns();
   expect(await runIds()).toEqual(["gone-1"]);
   await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== gone) }));
