@@ -461,17 +461,22 @@ export class WorkBoardStore {
     };
   }
 
-  /** For the engine at boot: whether the board file on disk shows a run's row gone or naming another run. Undefined while the file is
-   * absent, awaits review or does not parse: such a board proves nothing. A row id it never issued, or a row that does not validate, is
+  /** For the engine at boot: whether the board file on disk shows a run's row gone, or naming another run after it named this one (the
+   * run is in the row's history). Undefined while the file is absent, awaits review or does not parse: such a board proves nothing. A row
+   * id it never issued, a row that does not validate, and a row that never named the run (a board seeded again after it was lost) are
    * never gone. */
   async runRowGoneOnDisk(): Promise<((run: { itemId: number; runId: string }) => boolean) | undefined> {
     const parsed = await parseBoardOnDisk(this.filePath);
     if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as BoardFile).items)) return undefined;
     const raw: unknown[] = (parsed as BoardFile).items;
     const board = hydrateBoard(parsed);
-    const rows = new Map(board.items.map((item) => [item.id, item.runId]));
+    const rows = new Map(board.items.map((item) => [item.id, item]));
     const present = new Set(raw.flatMap((row) => typeof row === "object" && row !== null && typeof (row as WorkItem).id === "number" ? [(row as WorkItem).id] : []));
-    return (run) => run.itemId < board.nextId && (rows.has(run.itemId) ? rows.get(run.itemId) !== run.runId : !present.has(run.itemId));
+    return (run) => {
+      const row = rows.get(run.itemId);
+      if (row) return row.runId !== run.runId && Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId);
+      return run.itemId < board.nextId && !present.has(run.itemId);
+    };
   }
 
   // A failed row write may still have replaced the board (a failed directory sync after the rename). The record goes only once the
