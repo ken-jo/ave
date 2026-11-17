@@ -276,6 +276,20 @@ describe("useWorkBoardRun — refusal text", () => {
     expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "error", reason: t(`reasonCodes.${code}`) });
   });
 
+  for (const status of ["error", "denied"] as const) {
+    it(`keeps its event's text when a run's ${status} result names no reason`, async () => {
+      const { api, emit } = harness();
+      const code = "template-runs-board-unread";
+      let finish: (result: Awaited<ReturnType<AveApi["runWorkBoardItem"]>>) => void = () => undefined;
+      vi.mocked(api.runWorkBoardItem).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+      const { result } = renderHook(() => useWorkBoardRun(api, []));
+      act(() => result.current.runItem(7));
+      emit({ itemId: 7, phase: status, message: code, reasonCode: code });
+      await act(async () => { finish({ status }); });
+      expect(result.current.runState[7]).toMatchObject({ busy: false, phase: status, reason: t(`reasonCodes.${code}`) });
+    });
+  }
+
   it("has the text of every refusal code it maps in both catalogs", () => {
     for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "run-state-unavailable"]) {
       for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));

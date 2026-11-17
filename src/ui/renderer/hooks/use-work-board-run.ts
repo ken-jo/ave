@@ -539,13 +539,18 @@ export function useWorkBoardRun(
           return;
         }
         if (result && "status" in result) {
-          update(id, (cur) => ({
-            ...cur,
-            busy: false,
-            phase: phaseForRunResult(result.status),
-            reason: runReasonText(result.reason),
-            runSessionId: result.runSessionId ?? cur.runSessionId,
-          }));
+          update(id, (cur) => {
+            const phase = phaseForRunResult(result.status);
+            // A result that names no reason keeps the text its event already showed for the same end.
+            const kept = result.reason === undefined && phase === cur.phase && (phase === "error" || phase === "denied") ? cur.reason : undefined;
+            return {
+              ...cur,
+              busy: false,
+              phase,
+              reason: runReasonText(result.reason) ?? kept,
+              runSessionId: result.runSessionId ?? cur.runSessionId,
+            };
+          });
         }
       }).catch((err: unknown) => {
         if (!mountedRef.current) return;
