@@ -84,6 +84,13 @@ describe("work board review", () => {
     fireEvent.click(screen.getByTestId("work-board-plan-approve"));
     await waitFor(() => expect(api.decideWorkPlan).toHaveBeenCalledWith(item.id, { runId: "run-2", planHash: "b".repeat(64), decision: "approve" }));
   });
+  it("shows a load error instead of an empty board when the first read fails", async () => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ ok: false, error: "invalid-template-run" });
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    expect(await screen.findByTestId("work-board-load-error")).toHaveTextContent(t("workBoard.boardLoadFailed"));
+    expect(screen.queryByTestId("work-board-card")).toBeNull();
+  });
   it("keeps the listed rows and shows a load error when a refresh fails", async () => {
     const api = apiFor([result]);
     let changed = () => {};

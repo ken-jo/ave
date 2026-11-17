@@ -6196,7 +6196,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // workBoard
   "workBoard.panelTitle": "업무 보드",
-  "workBoard.boardLoadFailed": "작업 보드를 불러오지 못했습니다. 표시된 항목이 최신이 아닐 수 있습니다.",
+  "workBoard.boardLoadFailed": "작업 보드를 불러오지 못했습니다.",
   "workBoard.pendingReview": "워크플로 실행 상태는 검토가 필요합니다. 설정 > {tabPermissions} > {homeTrustTitle}에서 work-board/workflow-runs.json을 검토한 뒤 Ave를 다시 시작하세요.",
   "workBoard.panelDescription": "예정·진행 중·검토·완료 단계로 업무를 추적합니다.",
   "workBoard.addItemButton": "작업 추가",
