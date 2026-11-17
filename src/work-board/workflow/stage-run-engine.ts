@@ -313,10 +313,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   store.boardChanged.subscribe(() => {
     if (runs.size > 0) void checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error)));
   });
-  // The user deleted the row that named this run: its row is gone, whatever else the board file holds. A run a restart left parked is
-  // taken over by its delete intent, as its adoption would, and cancelled so.
-  store.rowDeleted.subscribe(({ itemId, runId }) => {
-    if (removedHeld(itemId, runId) || unconfirmed.has(runId)) return;
+  // The user deleted a row that named a run: the delete intents are read again, and a run ends only as the store's one rule finds its
+  // row gone (deleteIntentsOnDisk), live or left parked by a restart.
+  store.rowDeleted.subscribe(() => {
     intentsPending = true;
     void consumeIntents();
   });

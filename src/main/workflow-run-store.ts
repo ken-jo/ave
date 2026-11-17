@@ -257,6 +257,20 @@ export class WorkflowRunStore {
     });
   }
 
+  /** Take back the intent of a delete whose board write did not land. Nothing is written while the file awaits review or holds no such
+   * intent; a file that cannot be read throws. */
+  async withdrawIntent(intent: DeleteIntent): Promise<void> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      const intents = file?.deleteIntents;
+      if (file === undefined || intents === undefined) return;
+      const kept = intents.filter(entry => !(isIntent(entry) && entry.itemId === intent.itemId && entry.runId === intent.runId));
+      if (kept.length === intents.length) return;
+      file.deleteIntents = kept.length > 0 ? kept : undefined;
+      await this.commit(file);
+    });
+  }
+
   /** The delete intents whose run is still to end. Undefined while the file awaits review or is past its read limit; a file that cannot
    * be read throws. */
   async deleteIntents(): Promise<DeleteIntent[] | undefined> {

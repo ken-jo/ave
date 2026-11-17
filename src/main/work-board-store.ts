@@ -318,16 +318,20 @@ type BoardRead = BoardFile & { unread?: true; unmoved?: true; unchanged?: string
 export type RunRowStanding = "named" | "moved" | "unnamed" | "gone" | "lost" | "unreadable";
 type RowStandings = (run: { itemId: number; runId: string }) => RunRowStanding;
 
-// `text`: the board file's text as it is on disk, or as the write that left `board` wrote it.
-function boardStanding(board: BoardFile, text: string = boardText(board)): RowStandings {
-  const rows = new Map(board.items.map((item) => [item.id, item]));
-  const invalidIds = new Set(rawRowIds(board.unreadable));
-  const idless = [...board.items, ...board.unreadable].some((row) => rowIdOf(row) === undefined);
+// heldIn over `text`, read only once an id is asked for.
+function heldLater(text: string): (runId: string) => boolean {
   let held: ((runId: string) => boolean) | undefined;
-  const holds = (runId: string): boolean => {
+  return (runId) => {
     held ??= heldIn(text);
     return held(runId);
   };
+}
+
+// `holds`: heldIn over the board file's text as it is on disk, or as the write that left `board` wrote it.
+function boardStanding(board: BoardFile, holds: (runId: string) => boolean = heldLater(boardText(board))): RowStandings {
+  const rows = new Map(board.items.map((item) => [item.id, item]));
+  const invalidIds = new Set(rawRowIds(board.unreadable));
+  const idless = [...board.items, ...board.unreadable].some((row) => rowIdOf(row) === undefined);
   return (run) => {
     const row = rows.get(run.itemId);
     if (row?.runId === run.runId) return "named";
@@ -414,13 +418,25 @@ function rawRowIds(items: readonly unknown[]): number[] {
 
 // The board as it is on disk with where runs' rows stand on it, or undefined when the file is absent, pending review, does not parse
 // or lists no items; never quarantines. Read errors throw.
-async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; standing: RowStandings } | undefined> {
+async function readBoardOnDisk(filePath: string): Promise<BoardOnDisk | undefined> {
   const input = await readAveHomeInput(filePath);
   if (input.status !== "trusted") return undefined;
   const parsed = parseBoard(input.bytes);
   if (!readableBoard(parsed)) return undefined;
   const board = hydrateBoard(parsed);
-  return { board, standing: boardStanding(board, input.bytes.toString("utf8")) };
+  const holds = heldLater(input.bytes.toString("utf8"));
+  return { board, holds, standing: boardStanding(board, holds) };
+}
+
+// `holds`: heldIn over the file's bytes.
+interface BoardOnDisk { board: BoardFile; holds: (runId: string) => boolean; standing: RowStandings }
+
+/** The one rule by which a run ends from its row's delete: every such end is read through {@link WorkBoardStore.deleteIntentsOnDisk},
+ * which alone applies it. `intent` is open (the run file holds its run unsettled, of that row), and the board file on disk, read after
+ * it, lists no row with that id and holds the run's id as no string value (text past the escape cap holds every id). Anything else
+ * waits: the delete may not have landed, or the file still holds what could be the run's row. */
+function deleteLanded(onDisk: BoardOnDisk, intent: DeleteIntent): boolean {
+  return !onDisk.board.items.some((row) => row.id === intent.itemId) && !onDisk.holds(intent.runId);
 }
 
 function readableBoard(parsed: unknown): parsed is BoardFile {
@@ -595,8 +611,8 @@ export class WorkBoardStore {
   readonly proposalsChanged = new ChangeSignal((err) => log.warn("[work-board-proposals] change listener threw: %s", (err as Error).message));
   // Fires after every board.json write (items, runs and plan approvals), whichever path made it (IPC, engine, model tools, reconcile).
   readonly boardChanged = new ChangeSignal((err) => log.warn("[work-board] change listener threw: %s", (err as Error).message));
-  // Fires as a listed row the user deleted is written gone, before boardChanged, with the run that row named: proof that run's row is gone,
-  // read off the row deleted, never looked up by its id.
+  // Fires as a listed row the user deleted is written gone, before boardChanged, with the run that row named, and after a failed write of
+  // such a delete that leaves its intent stored. Only a cue to read the delete intents again: no run ends by it (see deleteLanded).
   readonly rowDeleted = new ChangeSignal<{ itemId: number; runId: string }>((err) => log.warn("[work-board] delete listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
@@ -671,15 +687,21 @@ export class WorkBoardStore {
     return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
-  /** For the engine: the unsettled runs whose row a user's delete took off the board, by the run file's delete intents, while the board
-   * file on disk lists no row with that id; an intent whose delete never landed waits. */
-  async deletedRuns(): Promise<DeleteIntent[] | "template-runs-pending-review" | "template-runs-board-unread"> {
+  /** For the engine: the run file's open delete intents split by {@link deleteLanded}: `due`, each run to end as its row removed;
+   * `waiting`, the rest. The refusal code while the run file awaits review or the board file on disk shows nothing. */
+  async deleteIntentsOnDisk(): Promise<{ due: DeleteIntent[]; waiting: DeleteIntent[] } | "template-runs-pending-review" | "template-runs-board-unread"> {
     const intents = await this.runs.deleteIntents();
     if (!intents) return "template-runs-pending-review";
     const onDisk = await readBoardOnDisk(this.filePath);
     if (!onDisk) return "template-runs-board-unread";
-    const listed = new Set(onDisk.board.items.map((row) => row.id));
-    return intents.filter((intent) => !listed.has(intent.itemId));
+    const due = intents.filter((intent) => deleteLanded(onDisk, intent));
+    return { due, waiting: intents.filter((intent) => !due.includes(intent)) };
+  }
+
+  /** The `due` runs of {@link deleteIntentsOnDisk}. */
+  async deletedRuns(): Promise<DeleteIntent[] | "template-runs-pending-review" | "template-runs-board-unread"> {
+    const split = await this.deleteIntentsOnDisk();
+    return typeof split === "string" ? split : split.due;
   }
 
   // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is, and one
@@ -1451,7 +1473,12 @@ export class WorkBoardStore {
         return { status: "invalid" as const, itemId: id, reason: marked === "pending-review" ? "template-runs-pending-review" : "template-runs-too-large" };
       }
       board.items = board.items.filter((i) => i !== item);
-      await this.commit(board, runId === undefined ? { drops: true } : { drops: true, deleted: { itemId: id, runId } });
+      try {
+        await this.commit(board, runId === undefined ? { drops: true } : { drops: true, deleted: { itemId: id, runId } });
+      } catch (error) {
+        if (runId !== undefined && marked === "marked") await this.settleFailedDelete({ itemId: id, runId });
+        throw error;
+      }
       if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
       await appendActivity(this.activity, {
         kind: "deleted",
@@ -1461,6 +1488,18 @@ export class WorkBoardStore {
       });
       return { status: "deleted" as const, itemId: id, ...(runId === undefined ? {} : { runId }) };
     });
+  }
+
+  // A delete whose board write failed. While the board file on disk still lists the row naming the run, the write did not land and the
+  // intent is taken back. Otherwise (it landed, or the file shows nothing) the intent stays, inert until deleteLanded finds the row gone,
+  // and the engine is told to read the intents again.
+  private async settleFailedDelete(intent: DeleteIntent): Promise<void> {
+    const onDisk = await readBoardOnDisk(this.filePath).catch(() => undefined);
+    if (!onDisk?.board.items.some((row) => row.id === intent.itemId && row.runId === intent.runId)) {
+      this.rowDeleted.emit(intent);
+      return;
+    }
+    await this.runs.withdrawIntent(intent).catch((error: Error) => log.warn("[work-board-store] a delete intent was not taken back: %s", error.message));
   }
 
   /** Delete, as an invalid card asks, the one entry of the board file that does not validate at `target.position` among them, while its

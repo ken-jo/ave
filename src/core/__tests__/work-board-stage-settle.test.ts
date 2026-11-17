@@ -1334,24 +1334,24 @@ it("a deleted row's run whose takeover write fails keeps its delete intent, and 
   expect(h.interrupts).toEqual([]);
 }));
 
-it("a delete whose board write fails after its delete intent is stored deletes nothing and ends no run: the live run completes untouched, and its intent goes with that end", () => withHarness(async (h) => {
+it("a delete whose board write fails after its delete intent is stored deletes nothing, takes its intent back and ends no run: the live run completes untouched", () => withHarness(async (h) => {
   const live = await liveRun(h);
   const row = await h.item(live.id);
   vi.spyOn(h.board as unknown as { commit: (board: unknown) => Promise<void> }, "commit").mockRejectedValueOnce(new Error("the board write failed"));
   await expect(h.board.remove(live.id, row.mutationRevision)).rejects.toThrow("the board write failed");
-  expect(intentsOf(h)).toEqual([{ itemId: live.id, runId: live.runId }]);
+  expect(intentsOf(h)).toEqual([]);
   expect((await h.item(live.id)).runId).toBe(live.runId);
   expect(await h.board.deletedRuns()).toEqual([]);
   await completesUntouched(h, live);
   expect(intentsOf(h)).toEqual([]);
 }));
 
-it("a delete whose board write fails after its delete intent is stored leaves the parked run to its listed row at the next boot, and the delete tried again ends it cancelled as its row removed", () => withHarness(async (h) => {
+it("a delete whose board write fails after its delete intent is stored takes its intent back and leaves the parked run to its listed row at the next boot, and the delete tried again ends it cancelled as its row removed", () => withHarness(async (h) => {
   const { id, runId } = await parkedRun(h);
   const row = await h.item(id);
   vi.spyOn(h.board as unknown as { commit: (board: unknown) => Promise<void> }, "commit").mockRejectedValueOnce(new Error("the board write failed"));
   await expect(h.board.remove(id, row.mutationRevision)).rejects.toThrow("the board write failed");
-  expect(intentsOf(h)).toEqual([{ itemId: id, runId }]);
+  expect(intentsOf(h)).toEqual([]);
 
   const next = h.makeEngine();
   const before = h.events.length;
@@ -1360,12 +1360,35 @@ it("a delete whose board write fails after its delete intent is stored leaves th
   const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
   expect(ended()).toBeUndefined();
   expect((await h.runOf(runId))?.settled).toBeUndefined();
-  expect(intentsOf(h)).toEqual([{ itemId: id, runId }]);
+  expect(intentsOf(h)).toEqual([]);
 
   expect(await h.board.remove(id, (await h.item(id)).mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
   for (let i = 0; i < 400 && !ended(); i += 1) await tick();
   expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
   expect(intentsOf(h)).toEqual([]);
+}));
+
+it.each(["live", "parked at boot"] as const)("a user's delete of a %s run's row whose run id another value of the board file still holds ends no run, and its intent stays", (mode) => withHarness(async (h) => {
+  const { id, runId } = mode === "live" ? await liveRun(h).then(live => ({ id: live.id, runId: live.runId })) : await parkedRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, archive: { value: runId } }));
+  const before = h.events.length;
+  const revision = (await h.item(id)).mutationRevision;
+  if (mode === "live") expect(await h.board.remove(id, revision)).toEqual({ status: "deleted", itemId: id, runId });
+  else {
+    expect(await new WorkBoardStore(h.boardPath).remove(id, revision)).toEqual({ status: "deleted", itemId: id, runId });
+    await h.makeEngine().adoptParkedTemplateRuns();
+  }
+  // A board write, a reader and an adoption read the intent again.
+  expect(await h.board.create({ title: "another row" })).toMatchObject({ status: "created" });
+  await h.engine.projectTemplateRuns([]);
+  await h.engine.adoptParkedTemplateRuns();
+  for (let i = 0; i < 20; i += 1) await tick();
+  expect(h.events.slice(before).filter(event => event.phase === "cancelled" || event.phase === "error")).toEqual([]);
+  expect(h.interrupts).toEqual([]);
+  expect((await h.runOf(runId))?.settled).toBeUndefined();
+  expect(await h.board.deletedRuns()).toEqual([]);
+  expect(intentsOf(h)).toEqual([{ itemId: id, runId }]);
 }));
 
 for (const [how, input, code] of runFileRefusal) {

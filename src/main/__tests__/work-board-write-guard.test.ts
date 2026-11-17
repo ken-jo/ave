@@ -13,6 +13,7 @@ import { WorkflowRunStore } from "../workflow-run-store.js";
 import { WorkBoardWriteRefusal, repeatsKey, rewriteKeepingBytes } from "../storage/rewrite-keeping-bytes.js";
 import { sha256Hex as sha } from "../../lib/hex-digest-equal.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
+import * as namespace from "../storage/feature-namespace.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { TemplateRunStart, WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 
@@ -341,7 +342,8 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
       for (const runId of userDeleted.keys()) if (!storedAfter.has(runId)) userDeleted.delete(runId);
       if (dup.runs === undefined) {
         const deleted = await store.deletedRuns();
-        const expected = [...userDeleted].map(([runId, itemId]) => `${itemId}|${runId}`).sort();
+        // Only once the board file holds the id nowhere: until then the delete waits.
+        const expected = [...userDeleted].filter(([runId]) => !holds(after, runId)).map(([runId, itemId]) => `${itemId}|${runId}`).sort();
         expect(Array.isArray(deleted) ? deleted.map(({ itemId, runId }) => `${itemId}|${runId}`).sort() : deleted, `${context}: deleted runs`).toEqual(expected);
         if (expected.length > 0) tally("deleted-runs");
       }
@@ -511,6 +513,61 @@ describe("what lets a write take a live run's id out of board.json", () => {
         await cleanupTmpDir(dir);
       }
     });
+  });
+});
+
+describe("a delete intent", () => {
+  const naming = row(40, { templateId: PIN.templateId, runId: "run-a", runStatus: "executing" });
+  const intents = (dir: string): unknown => (JSON.parse(readFileSync(join(dir, "workflow-runs.json"), "utf8")) as { deleteIntents?: unknown }).deleteIntents ?? [];
+
+  it("is taken back when the guard refuses its delete: after a reload the run is there unsettled and no intent is", async () => {
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [{ ...naming, detail: OVERFLOW }] }), [live("run-a")]);
+    try {
+      const before = readFileSync(path, "utf8");
+      await expect(store.remove(40)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+      expect(readFileSync(path, "utf8")).toBe(before);
+      const reopened = new WorkBoardStore(path);
+      await reopened.load();
+      expect(await reopened.runs.deleteIntents()).toEqual([]);
+      expect(await reopened.runs.get("run-a")).toEqual({ status: "found", run: live("run-a") });
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it.each([["before", false], ["after", true]] as const)("of a delete whose board write fails %s it replaces the file is taken back only while the file still lists the row", async (_, lands) => {
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [naming] }), [live("run-a")]);
+    const write = namespace.writeFileAtomicAtPath;
+    vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (target !== path) return write(target, body);
+      if (lands) await write(target, body);
+      throw new Error("board write failed");
+    });
+    const told: unknown[] = [];
+    store.rowDeleted.subscribe(change => told.push(change));
+    try {
+      await expect(store.remove(40)).rejects.toThrow("board write failed");
+      expect(readFileSync(path, "utf8").includes("run-a")).toBe(!lands);
+      expect(intents(dir)).toEqual(lands ? [{ itemId: 40, runId: "run-a" }] : []);
+      expect(told).toEqual(lands ? [{ itemId: 40, runId: "run-a" }] : []);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each<[string, (items: unknown[]) => Record<string, unknown>]>([
+    ["its row that does not validate", items => ({ items: [{ ...naming, title: 0 }, ...items] })],
+    ["its row and a twin", items => ({ items: [naming, { ...naming }, ...items] })],
+    ["its run id under another key", items => ({ archive: { value: "run-a" }, items })],
+    ["its row kept as a string", items => ({ items: [JSON.stringify(naming), ...items] })],
+  ])("stored before a crash is not due while the board file holds %s; once it holds none, it is", async (_, held) => {
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [naming] }), [live("run-a")]);
+    try {
+      expect(await store.runs.markDeleted({ itemId: 40, runId: "run-a" })).toBe("marked");
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 51, ...held([row(41)]) }));
+      expect(await store.deletedRuns()).toEqual([]);
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 51, items: [row(41), { id: 40, title: 5 }, null] }));
+      expect(await store.deletedRuns()).toEqual([{ itemId: 40, runId: "run-a" }]);
+    } finally { await cleanupTmpDir(dir); }
   });
 });
 
