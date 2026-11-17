@@ -1146,7 +1146,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** What a board reader is told about each row's template run, from the run file and the host's own state. Whatever a row itself says
    * under that name is dropped first. */
   async function projectRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]> {
-    const takeOver = (): void => { void adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error))); };
+    // Until the takeover is done and every run end is confirmed, a reader asks for both, whichever rows it reads: a run whose row is gone
+    // or no longer names it is shown on no row and is ended this way too.
+    if (unconfirmed.size > 0 || !takenOver) void adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error)));
     const named = items.some(item => item.templateId !== undefined && item.runId !== undefined);
     const runOf = named ? await records.view().catch(() => null) : null;
     return items.map((item) => {
@@ -1156,17 +1158,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (!run) return clean;
       const state = runs.get(item.id);
       const owned = state?.runId === run.runId;
-      // Over in the run file: that is how it ended, whatever a row not yet restored after a crash says.
-      if (run.settled !== undefined) {
-        // A row a crash left showing another status is restored by the takeover.
-        if (!owned && item.runStatus !== run.settled.status) takeOver();
-        return owned ? clean : { ...clean, runStatus: run.settled.status };
-      }
-      // Unsettled and not yet taken over after a restart: it is resuming, never an error, and the reader asks for the takeover.
-      if (!owned) {
-        takeOver();
-        return { ...clean, runStatus: "executing", templateRunState: "resuming" };
-      }
+      // Over in the run file: that is how it ended, whatever a row not yet restored after a crash says; the takeover restores the row.
+      if (run.settled !== undefined) return owned ? clean : { ...clean, runStatus: run.settled.status };
+      // Unsettled and not yet taken over after a restart: it is resuming, never an error.
+      if (!owned) return { ...clean, runStatus: "executing", templateRunState: "resuming" };
       return { ...clean, runStatus: "executing", templateRunState: isAwaitingStageReview(run) ? "awaiting_review" : "running" };
     });
   }

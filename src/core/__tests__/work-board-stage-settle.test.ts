@@ -834,6 +834,26 @@ it("a live run whose row was edited so it does not validate keeps that row throu
   expect(rowOnDisk()).toEqual(edited);
 }));
 
+it("a reader whose rows name no run writes the unconfirmed end of a run whose row no longer names it, once the board can be read", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  const [a] = await h.untilLive(1);
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const readable = readFileSync(h.boardPath, "utf8");
+  writeFileSync(h.boardPath, "{ not json");
+  a.finish();
+  expect(await run).toMatchObject({ status: "error", reasonCode: "template-runs-board-unread" });
+  expect((await h.runOf(runId))?.settled).toBeUndefined();
+  // Readable again, with the row there but no longer naming or holding the run.
+  writeFileSync(h.boardPath, readable);
+  h.editRow(id, ({ runId: _, runHistory: __, ...row }) => row);
+  await h.engine.projectTemplateRuns([]);
+  for (let i = 0; i < 400 && !h.events.some(event => event.message === "template-run-lost"); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" }));
+  expect((await h.runOf(runId))?.settled?.status).toBe("error");
+}));
+
 it("writing unconfirmed run ends again keeps going past one that still fails: the next one is confirmed", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const first = await h.addItem(version);
