@@ -312,17 +312,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   // The user deleted the row that named this run: its row is gone, whatever else the board file holds. A run a restart left parked is
   // taken over by that id, as its adoption would, and cancelled so.
   store.rowDeleted.subscribe(({ itemId, runId }) => {
-    const state = runs.get(itemId);
-    if (state !== undefined) {
-      if (state.runId === runId) rowRemoved(state);
-      return;
-    }
-    if (unconfirmed.has(runId)) return;
+    if (removedHeld(itemId, runId) || unconfirmed.has(runId)) return;
     void takeOverDeleted(itemId, runId).catch((error: unknown) => log.warn("a parked run whose row was deleted was not ended (id=%d): %s", itemId, errorMessage(error)));
   });
+  /** Whether a state holds the item; when it is that run, its row is removed. */
+  function removedHeld(itemId: number, runId: string): boolean {
+    const state = runs.get(itemId);
+    if (state === undefined) return false;
+    if (state.runId === runId) rowRemoved(state);
+    return true;
+  }
   async function takeOverDeleted(itemId: number, runId: string): Promise<void> {
     const record = await records.get(itemId, runId);
-    if (!record || record.settled !== undefined || runs.has(itemId)) return;
+    // An adoption may have taken the run over meanwhile.
+    if (removedHeld(itemId, runId) || !record || record.settled !== undefined) return;
     const parked = await reconcileRunRecord(record, new Date().toISOString(), root => access(root).then(() => true, () => false));
     let taken = record;
     if (parked) {

@@ -1188,6 +1188,69 @@ it("an adoption while a deleted row's parked run is being cancelled leaves that 
   expect(h.sweeps.at(-1)).toContain(runId);
 }));
 
+it("a deleted row's parked run that an adoption takes over while the delete reads its record still ends cancelled as its row removed", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  (await h.untilLive(1))[0].finish();
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  const runId = (await h.item(id)).runId ?? "";
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: unknown[] };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...file.items, null] }));
+
+  h.makeEngine();
+  const row = await h.item(id);
+  // The adoption lists the board with the row still there and waits; the delete's read of the run waits until the adoption is done.
+  const gate = () => { let open = (): void => undefined; const shut = new Promise<void>((resolve) => { open = resolve; }); return { open, shut }; };
+  const listGate = gate();
+  const list = h.board.list.bind(h.board);
+  let listed = false;
+  vi.spyOn(h.board, "list").mockImplementation(async (...args) => {
+    const got = await list(...args);
+    listed = true;
+    await listGate.shut;
+    return got;
+  });
+  const adopting = h.engine.adoptParkedTemplateRuns();
+  for (let i = 0; i < 400 && !listed; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  const viewGate = gate();
+  const view = h.board.runs.view.bind(h.board.runs);
+  const reads = vi.spyOn(h.board.runs, "view").mockImplementation(async () => {
+    if (reads.mock.calls.length === 1) await viewGate.shut;
+    return view();
+  });
+  const before = h.events.length;
+  expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
+  listGate.open();
+  await adopting;
+  expect(h.events.slice(before)).toContainEqual(expect.objectContaining({ itemId: id, phase: "executing", message: "resumed" }));
+  viewGate.open();
+  const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
+  for (let i = 0; i < 400 && !ended(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
+  expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+}));
+
+it("a user's delete of the listed row of a run a restart left with a stage running fails that stage as interrupted and ends the run cancelled as its row removed", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: unknown[] };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...file.items, null] }));
+
+  h.makeEngine();
+  const update = vi.spyOn(h.board.runs, "update");
+  const before = h.events.length;
+  const row = await h.item(live.id);
+  expect(await h.board.remove(live.id, row.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: live.runId });
+  const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
+  for (let i = 0; i < 400 && !ended(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(ended()).toEqual({ itemId: live.id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
+  const record = (await update.mock.results.at(-1)?.value)?.run as RunRecord | undefined;
+  expect(record?.settled?.status).toBe("cancelled");
+  expect(record?.stageRuns).toEqual([expect.objectContaining({ status: "failed", failure: "interrupted" })]);
+  // No child of this process ran it: none is interrupted.
+  expect(h.interrupts).toEqual([]);
+}));
+
 it("a user's delete of a live run's listed row below the board's unknownBelow mark ends the run cancelled as its row removed, never as lost", () => withHarness(async (h) => {
   const live = await liveRun(h);
   const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as Record<string, unknown>;
