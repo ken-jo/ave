@@ -1,9 +1,11 @@
-/** The board write invariant as a property over random op sequences, each on one home every op changes: store writes, the engine's
- * settle and boot, and hand edits of either file. Read with the test's own model, never the store's rule: a stored run that is not
- * settled never has its id taken out of board.json by a store write, except by the user's delete of the row its record names with that
- * delete's intent stored, one run at a time, and never over text past the escape cap; its row reads as standing wherever its id is; bytes
- * a write goes over that the store did not write are copied beside the file first; a file holding a key twice is never written. The
- * engine's own fields (plan, output, session id) hold no run id here; their tests below cover them. */
+/** The board write invariant as a property over random op sequences, each on one home every op changes: store writes (a delete whose
+ * board write fails before or after it replaces the file among them), the engine's settle, boot, own fields and its end of each run whose
+ * delete is due, and hand edits of either file. Read with the test's own model, never the store's rule: a stored run that is not settled
+ * never has its id taken out of board.json by a store write, except by the user's delete of the row its record names with that delete's
+ * intent on disk before the file is replaced, one run at a time, and never over text past the escape cap; a delete whose write does not
+ * land takes its intent back; a run ends from its intent only once the board lists no row with that id and holds the id as no string
+ * value; its row reads as standing wherever its id is; bytes a write goes over that the store did not write are copied beside the file
+ * first; a file holding a key twice is never written. */
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,24 +22,37 @@ import { ko } from "../../i18n/messages/ko.js";
 import type { TemplateRunStart, WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
-const LIVE = ["run-a", "run.dot 1", "run:b", "실행-c"];
+const LIVE = ["run-a", "run.dot 1", "run:b", "실행-c", "run\"q", "run\\b", "run-😀"];
 // Short text that still decodes past 16 levels: each level turns one `\` into the backslash of the next.
 const OVERFLOW = `\\${"u005c".repeat(20)}`;
 const BLOB = JSON.stringify(OVERFLOW).slice(1, -1);
 
-const literal = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-// The test's own reading of "holds": the id as a whole string, its quotes escaped or not, in the text or in the text with its \uXXXX
-// escapes decoded, as deep as they go. Text holding the overflow blob holds every id.
-function holds(text: string, runId: string): boolean {
-  if (text.includes(BLOB)) return true;
-  const word = new RegExp(`\\\\*"${literal(runId)}\\\\*"`);
-  for (let level = text; ; ) {
-    if (word.test(level)) return true;
-    const next = level.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
-    if (next === level) return false;
-    level = next;
-  }
+const jsonOf = (text: string): { value: unknown } | undefined => { try { return { value: JSON.parse(text) as unknown }; } catch { return undefined; } };
+// The test's own reading of "holds": the file read as JSON, the id as a whole string value anywhere (never a key), or in a string value
+// that is JSON itself, read the same way. Text holding the overflow blob holds every id. `plain`: every string value holding a quote or a
+// backslash is JSON or a run id the sequence named, so no reading of the text finds other string values in it.
+function stringsOf(text: string, named: ReadonlySet<string> = new Set()): { values: Set<string>; plain: boolean } {
+  const values = new Set<string>();
+  let plain = true;
+  const walk = (value: unknown, depth: number): void => {
+    if (typeof value === "string") {
+      values.add(value);
+      const inner = depth < 64 ? jsonOf(value) : undefined;
+      if (inner) walk(inner.value, depth + 1);
+      else if (/["\\]/.test(value) && !named.has(value)) plain = false;
+    } else if (typeof value === "object" && value !== null) for (const entry of Object.values(value)) walk(entry, depth);
+  };
+  walk(JSON.parse(text), 0);
+  return { values, plain };
 }
+function heldBy(text: string): (runId: string) => boolean {
+  if (text.includes(BLOB)) return () => true;
+  const { values } = stringsOf(text);
+  return (runId) => values.has(runId);
+}
+const holds = (text: string, runId: string): boolean => heldBy(text)(runId);
+const odd = (runId: string): string | undefined =>
+  runId.includes("\"") ? "quote" : runId.includes("\\") ? "backslash" : /[\ud800-\udfff]/.test(runId) ? "surrogate" : undefined;
 
 function prng(seed: number): (count: number) => number {
   let state = seed >>> 0;
@@ -61,8 +76,8 @@ const own = (id: number, runId: string, runHistory: object[] = [{ runId, started
 
 /** A home: a template row naming each live run (row 4's run first in a history the second start there pushes past the cap), a settled run
  * named and one in a history, a settled run whose row is gone, a row whose run has no record, rows naming another row's run (one whose
- * own row is gone), user text and capped histories holding stored ids, entries that do not read as runs whose ids only text holds; both
- * files as no store writes them. */
+ * own row is gone), a run whose row is gone held only by another row's session id, user text and capped histories holding stored ids,
+ * entries that do not read as runs whose ids only text holds; both files as no store writes them. */
 function seedHome(dir: string, pick: (count: number) => number): void {
   const anyLive = () => LIVE[pick(LIVE.length)];
   const named = anyLive();
@@ -71,22 +86,23 @@ function seedHome(dir: string, pick: (count: number) => number): void {
     row(5, { templateId: PIN.templateId, runId: "settled-s", runStatus: "completed", runHistory: [{ runId: "settled-h", startedAt: AT, status: "completed" }, { runId: "settled-s", startedAt: AT, status: "completed" }] }),
     own(6, "missing-1"),
     row(7, { detail: anyLive() }),
-    row(8, { runId: "plain-8", runStatus: "completed", runHistory: [{ ...old(1, 40)[0], outputPreview: "unread-1" }, ...old(19)] }),
+    row(8, { runId: "plain-8", runStatus: "completed", runSessionId: "run-e", runHistory: [{ ...old(1, 40)[0], outputPreview: "unread-1" }, ...old(19)] }),
     row(9, { runId: "plain-9", runStatus: "completed", runHistory: [{ ...old(1, 50)[0], outputPreview: pick(2) === 0 ? anyLive() : "unread-2" }, ...old(18)] }),
     row(10, { title: "unread-4", detail: "unread-2" }),
     { id: 11, title: 0, note: "unread-3" },
     row(12, { runId: named, runStatus: "completed", runHistory: [{ runId: named, startedAt: AT, status: "completed" }] }),
     row(14, { runId: "run-orphan", runStatus: "completed", runHistory: [{ runId: "run-orphan", startedAt: AT, status: "completed" }] }),
+    own(15, LIVE[4]), own(16, LIVE[5]), own(17, LIVE[6]),
   ];
   const extra = { ...(pick(2) === 0 ? { note: anyLive() } : {}), ...(pick(2) === 0 ? { archive: [row(100, { runId: "unread-3" })] } : {}) };
-  writeFileSync(join(dir, "board.json"), JSON.stringify({ version: 1, nextId: 16, ...extra, items }));
-  writeFileSync(join(dir, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 15, runs: [
-    ...LIVE.map((runId, n) => live(runId, n + 1)), live("run-orphan", 13), ended("settled-s", 5), ended("settled-h", 5), ended("settled-x", 13),
+  writeFileSync(join(dir, "board.json"), JSON.stringify({ version: 1, nextId: 18, ...extra, items }));
+  writeFileSync(join(dir, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 17, runs: [
+    ...LIVE.map((runId, n) => live(runId, n < 4 ? n + 1 : n + 11)), live("run-orphan", 13), live("run-e", 13), ended("settled-s", 5), ended("settled-h", 5), ended("settled-x", 13),
     { runId: "unread-1", itemId: 8 }, { runId: "unread-2", itemId: 10 }, { runId: "unread-3", itemId: 11 }, { runId: "unread-4", itemId: 10 },
   ] }));
 }
 
-interface Raw { id: number; title: string; templateId?: string; runId?: string; runStatus?: string; detail?: string }
+interface Raw { id: number; title: string; templateId?: string; runId?: string; runStatus?: string; detail?: string; output?: string; runSessionId?: string }
 const isRow = (entry: unknown): entry is Raw =>
   typeof entry === "object" && entry !== null && !Array.isArray(entry) && typeof (entry as Raw).id === "number" && typeof (entry as Raw).title === "string";
 const parsed = (bytes: Buffer): Record<string, unknown> => JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
@@ -99,12 +115,50 @@ function liveIn(runs: Buffer): Map<string, Stored> {
   }
   return stored;
 }
-const intentsIn = (runs: Buffer): string[] =>
-  ((parsed(runs).deleteIntents ?? []) as { itemId: number; runId: string }[]).map(({ itemId, runId }) => `${itemId}|${runId}`);
+interface Intent { itemId: number; runId: string }
+const key = ({ itemId, runId }: Intent): string => `${itemId}|${runId}`;
+const intentsIn = (runs: Buffer): string[] => ((parsed(runs).deleteIntents ?? []) as Intent[]).map(key);
+// The intents still open, by the test's own reading: an entry of exactly a row id and a run id whose run the run file holds once,
+// readable and not settled, as of that row.
+function openIntents(runs: Buffer): Intent[] {
+  const file = parsed(runs);
+  const records = (file.runs as unknown[]).filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry));
+  return ((file.deleteIntents ?? []) as unknown[]).flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry) || Object.keys(entry).length !== 2) return [];
+    const { itemId, runId } = entry as Record<string, unknown>;
+    const run = records.filter(record => record.runId === runId);
+    const open = typeof runId === "string" && Number.isSafeInteger(itemId) && (itemId as number) >= 1 && run.length === 1 && "pin" in run[0] && !("settled" in run[0]) && run[0].itemId === itemId;
+    return open ? [{ itemId: itemId as number, runId: runId as string }] : [];
+  });
+}
+// What may end from its intent: an open intent whose run id the board file holds as no string value; `due`, those whose row it lists
+// nowhere too. `plain`: the store reads the same string values in the file.
+function intentModel(board: Buffer, runs: Buffer, named: ReadonlySet<string>): { allowed: string[]; due: Intent[]; plain: boolean } {
+  const text = board.toString("utf8");
+  const blob = text.includes(BLOB);
+  const { values, plain } = stringsOf(text, named);
+  const rowIds = new Set((parsed(board).items as unknown[]).filter(isRow).map(r => r.id));
+  const allowed = openIntents(runs).filter(intent => !blob && !values.has(intent.runId));
+  return { allowed: allowed.map(key), due: allowed.filter(intent => !rowIds.has(intent.itemId)), plain: plain || blob };
+}
+class Injected extends Error {
+  readonly when: "before" | "after";
+  constructor(when: "before" | "after") {
+    super(`the board write failed ${when} it replaced the file`);
+    this.when = when;
+  }
+}
 
-/** What an op did, for the oracle: the row it edited or deleted (with the run that row named), or the run it settled, discarded or started. */
-interface Effect { kind: "none" | "edit" | "remove" | "settle" | "discard" | "begin"; id?: number; runId?: string; result?: { status: string; runId?: string } }
-interface Step { store: WorkBoardStore; path: string; pick: (count: number) => number; n: number; rows: Raw[]; items: unknown[]; runs: unknown[]; live: Map<string, Stored>; attempts: Set<string>; eff: Effect }
+/** What an op did, for the oracle: the row it edited or deleted (with the run that row named, and when its write was made to fail), or the
+ * runs it settled, discarded, started or ended as their delete was due. */
+interface Effect {
+  kind: "none" | "edit" | "remove" | "settle" | "discard" | "begin" | "consume"; id?: number; runId?: string; result?: { status: string; runId?: string };
+  when?: "before" | "after"; fired?: "before" | "after"; ended?: string[];
+}
+interface Step {
+  store: WorkBoardStore; path: string; pick: (count: number) => number; n: number; rows: Raw[]; items: unknown[]; runs: unknown[]; live: Map<string, Stored>;
+  attempts: Set<string>; named: Set<string>; due: Intent[]; inject: { when?: "before" | "after" }; eff: Effect;
+}
 const token = (s: Step): string => one(s.pick, [...s.live.keys(), "settled-s"]) ?? "settled-s";
 // The row a text edit goes to: one whose own text holds a stored id, one naming a live run, or any.
 function editTarget(s: Step): Raw | undefined {
@@ -142,7 +196,8 @@ const STORE_OPS: Record<string, (s: Step) => Promise<unknown>> = {
     const template = s.rows.filter(r => r.templateId === PIN.templateId);
     const target = (s.pick(2) === 0 ? template.find(r => r.id === 4) : undefined) ?? one(s.pick, template);
     if (!target) return;
-    const runId = one(s.pick, [`run-${s.n}`, `run.${s.n} x`, `실행:${s.n}`]) ?? `run-${s.n}`;
+    const runId = one(s.pick, [`run-${s.n}`, `run.${s.n} x`, `실행:${s.n}`, `run"${s.n}`, `run\\${s.n}`, `😀-${s.n}`]) ?? `run-${s.n}`;
+    s.named.add(runId);
     s.eff = { kind: "begin", runId };
     return s.store.beginRun(target.id, runId, AT, start());
   },
@@ -162,6 +217,29 @@ const STORE_OPS: Record<string, (s: Step) => Promise<unknown>> = {
     if (target.runId !== undefined) s.attempts.add(`${target.id}|${target.runId}`);
     s.eff.result = await s.store.remove(target.id);
   },
+  // A delete of a row naming its own live run, whose board write fails before or after it replaces the file.
+  failRemove: async s => {
+    const target = one(s.pick, s.rows.filter(r => r.runId !== undefined && s.live.get(r.runId)?.readable === true && s.live.get(r.runId)?.itemId === r.id));
+    if (target?.runId === undefined) return;
+    const when = s.pick(2) === 0 ? "before" : "after";
+    s.eff = { kind: "remove", id: target.id, runId: target.runId, when };
+    s.attempts.add(`${target.id}|${target.runId}`);
+    s.inject.when = when;
+    try { s.eff.result = await s.store.remove(target.id); }
+    catch (error) {
+      if (!(error instanceof Injected)) throw error;
+      s.eff.fired = error.when;
+    } finally { s.inject.when = undefined; }
+  },
+  // The engine ends each run the model finds due, as its row removed.
+  consume: async s => {
+    if (s.due.length === 0) return;
+    s.eff = { kind: "consume", ended: [] };
+    for (const { runId } of s.due) {
+      const result = await s.store.runs.update(runId, run => ({ ...run, settled: { status: "cancelled", at: AT } }));
+      if (result.status === "stored") s.eff.ended?.push(runId);
+    }
+  },
   removeUnreadable: async s => {
     const invalid = s.items.filter(entry => !isRow(entry));
     const position = invalid.length === 0 ? undefined : s.pick(invalid.length);
@@ -176,9 +254,16 @@ const STORE_OPS: Record<string, (s: Step) => Promise<unknown>> = {
   },
   prune: s => s.store.pruneSettledRuns(),
   reconcile: s => s.store.reconcileInterruptedRuns(),
+  // The engine's own fields, to a row holding one already or any plain row.
   runResult: async s => {
-    const target = one(s.pick, s.rows.filter(r => r.templateId === undefined));
-    return target && s.store.setRunResult(target.id, { runStatus: "completed", plan: null, output: s.pick(2) === 0 ? "done" : null });
+    const plain = s.rows.filter(r => r.templateId === undefined);
+    const target = one(s.pick, s.pick(2) === 0 ? plain.filter(r => r.output !== undefined) : []) ?? one(s.pick, plain);
+    return target && s.store.setRunResult(target.id, { runStatus: "completed", plan: null, output: one(s.pick, [token(s), "done", null]) ?? null });
+  },
+  session: async s => {
+    const plain = s.rows.filter(r => r.templateId === undefined);
+    const target = one(s.pick, s.pick(2) === 0 ? plain.filter(r => r.runSessionId !== undefined) : []) ?? one(s.pick, plain);
+    return target && s.store.setRunSessionId(target.id, s.pick(2) === 0 ? token(s) : `session-${s.n}`);
   },
   plan: async s => {
     const target = one(s.pick, s.rows.filter(r => r.templateId === undefined && r.runStatus === "planning"));
@@ -202,16 +287,17 @@ const STORE_OPS: Record<string, (s: Step) => Promise<unknown>> = {
 const WEIGHTS: [string, number][] = [
   ["create", 1], ["rename", 2], ["detail", 4], ["transition", 1], ["completeReopen", 1], ["beginPlain", 2], ["beginTemplate", 3], ["settle", 2],
   ["remove", 4], ["removeUnreadable", 2], ["discardRun", 1], ["prune", 1], ["reconcile", 1], ["runResult", 1], ["plan", 1], ["clearMissing", 1],
-  ["reopen", 2], ["token", 2], ["invalid", 1], ["blob", 2], ["dup", 3],
+  ["reopen", 2], ["token", 2], ["invalid", 1], ["blob", 2], ["dup", 3], ["failRemove", 2], ["consume", 2], ["session", 2], ["plant", 1],
 ];
 const DRAW = WEIGHTS.flatMap(([name, weight]) => Array<string>(weight).fill(name));
 const SEEDS = 32;
 const STEPS = 40;
 
-// A hand edit, written compact as no store write writes a file: an id under a new top-level key (its first character escaped or not), an
-// invalid entry holding one, the overflow blob out, or in under a new key or in the detail of a row naming a live run, or a key given
-// twice in either file, fixed by hand a few steps later.
-function handEdit(name: string, step: number, pick: (count: number) => number, files: { board: string; runs: string }, dup: { board?: number; runs?: number }): string | undefined {
+// A hand edit, written compact as no store write writes a file: an id under a new top-level key (spelled as is, its first character
+// escaped, or every character past ASCII escaped), an invalid entry holding one, the overflow blob out, or in under a new key or in the
+// detail of a row naming a live run, a key given twice in either file, fixed by hand a few steps later, or the delete intent of a live
+// run, as a crash after it was stored leaves it.
+function handEdit(name: string, step: number, pick: (count: number) => number, files: { board: string; runs: string }, dup: { board?: number; runs?: number }, attempts: Set<string>): string | undefined {
   if (name === "dup") {
     const file = pick(3) === 0 ? "board" : "runs";
     if (dup[file] !== undefined) return undefined;
@@ -219,6 +305,17 @@ function handEdit(name: string, step: number, pick: (count: number) => number, f
     writeFileSync(files[file], `${pick(2) === 0 ? '{"version":1,' : file === "board" ? '{"items":[],' : '{"runs":[],'}${text.slice(1)}`);
     dup[file] = step + 2 + pick(4);
     return file;
+  }
+  if (name === "plant") {
+    if (dup.runs !== undefined) return undefined;
+    const runs = parsed(readFileSync(files.runs));
+    const chosen = one(pick, [...liveIn(readFileSync(files.runs))].filter(([, run]) => run.readable));
+    const intents = (runs.deleteIntents ?? []) as Intent[];
+    if (!chosen || intents.some(intent => key(intent) === `${chosen[1].itemId}|${chosen[0]}`)) return undefined;
+    runs.deleteIntents = [...intents, { itemId: chosen[1].itemId, runId: chosen[0] }];
+    writeFileSync(files.runs, JSON.stringify(runs));
+    attempts.add(`${chosen[1].itemId}|${chosen[0]}`);
+    return "runs";
   }
   if (dup.board !== undefined) return undefined;
   const board = parsed(readFileSync(files.board));
@@ -235,7 +332,9 @@ function handEdit(name: string, step: number, pick: (count: number) => number, f
     for (const carrier of carrying) delete carrier.detail;
   } else if (naming && pick(3) > 0) naming.detail = OVERFLOW;
   else board.deep = OVERFLOW;
-  const spelled = pick(2) === 0 ? value : `\\u${value.charCodeAt(0).toString(16).padStart(4, "0")}${value.slice(1)}`;
+  const quoted = JSON.stringify(value).slice(1, -1);
+  const coded = (char: string) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  const spelled = one(pick, [quoted, `${coded(value)}${quoted.slice(1)}`, quoted.replace(/[^\x20-\x7e]/g, coded)]) ?? quoted;
   writeFileSync(files.board, JSON.stringify(board).replace(`"${mark}"`, () => `"${spelled}"`));
   return "board";
 }
@@ -244,28 +343,56 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
   const pick = prng(seed);
   const dir = mkdtempSync(join(tmpdir(), "ave-wb-sequence-"));
   const files = { board: join(dir, "board.json"), runs: join(dir, "workflow-runs.json") };
+  // Each board write as it is made: a stored run's id the model holds and the write takes out has its intent on disk already. A delete's
+  // write may be made to fail before or after it replaces the file.
+  const inject: { when?: "before" | "after" } = {};
+  const unordered: string[] = [];
+  const write = namespace.writeFileAtomicAtPath;
+  vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+    if (target === files.board) {
+      const prior = heldBy(readFileSync(target, "utf8"));
+      const next = heldBy(typeof body === "string" ? body : Buffer.from(body).toString("utf8"));
+      const runs = readFileSync(files.runs);
+      const intents = intentsIn(runs);
+      for (const [runId, { itemId }] of liveIn(runs)) {
+        if (!prior(runId) || next(runId)) continue;
+        if (intents.includes(`${itemId}|${runId}`)) tally("ordered");
+        else unordered.push(runId);
+      }
+      const { when } = inject;
+      inject.when = undefined;
+      if (when === "after") await write(target, body);
+      if (when !== undefined) throw new Injected(when);
+    }
+    return write(target, body);
+  });
   try {
     seedHome(dir, pick);
     let store = new WorkBoardStore(files.board, () => Date.parse(AT));
     await store.load();
     const attempts = new Set<string>();
-    const userDeleted = new Map<string, number>();
+    const named = new Set<string>(LIVE);
     const hand = { board: true, runs: true };
     const dup: { board?: number; runs?: number } = {};
     const trace: string[] = [];
+    // Set once the run file reads again after a write was refused while it could not: the next board write lands with no restart.
+    let refusedUnreadable = false;
+    let recovering = false;
     for (let step = 0; step < STEPS; step += 1) {
       const due = (["board", "runs"] as const).find(file => (dup[file] ?? Number.POSITIVE_INFINITY) <= step);
-      const name = due ? `fix-${due}` : DRAW[pick(DRAW.length)];
+      // While the run file cannot be read, the engine writes its own fields half the time.
+      const name = due ? `fix-${due}` : (dup.runs !== undefined && pick(2) === 0 ? one(pick, ["runResult", "session"]) : undefined) ?? DRAW[pick(DRAW.length)];
       trace.push(name);
       const context = `seed ${seed}, step ${step}: ${trace.slice(-8).join(" > ")}`;
       if (due) {
         writeFileSync(files[due], JSON.stringify(parsed(readFileSync(files[due]))));
         dup[due] = undefined;
         hand[due] = true;
+        if (due === "runs") [recovering, refusedUnreadable] = [refusedUnreadable, false];
         continue;
       }
       if (!(name in STORE_OPS)) {
-        const edited = handEdit(name, step, pick, files, dup);
+        const edited = handEdit(name, step, pick, files, dup, attempts);
         if (edited) hand[edited as "board" | "runs"] = true;
         continue;
       }
@@ -273,7 +400,11 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
       const rB = readFileSync(files.runs);
       const stored = liveIn(rB);
       const items = parsed(bB).items as unknown[];
-      const s: Step = { store, path: files.board, pick, n: step, rows: items.filter(isRow), items, runs: parsed(rB).runs as unknown[], live: stored, attempts, eff: { kind: "none" } };
+      const ahead = intentModel(bB, rB, named);
+      const s: Step = {
+        store, path: files.board, pick, n: step, rows: items.filter(isRow), items, runs: parsed(rB).runs as unknown[], live: stored, attempts, named,
+        due: dup.runs === undefined && ahead.plain ? ahead.due : [], inject, eff: { kind: "none" },
+      };
       let refusal: string | undefined;
       try { await STORE_OPS[name](s); }
       catch (error) {
@@ -288,8 +419,11 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
       const storedAfter = liveIn(rA);
       const before = bB.toString("utf8");
       const after = bA.toString("utf8");
+      const heldBefore = heldBy(before);
+      const heldAfter = heldBy(after);
       if (!bA.equals(bB) || !rA.equals(rB)) tally(`wrote:${name}`);
       if (before.includes(BLOB)) tally("blob-step");
+      expect(unordered.splice(0), `${context}: ids taken out of board.json before their delete intents were stored`).toEqual([]);
       const removed = eff.kind === "remove" ? s.rows.find(r => r.id === eff.id) : undefined;
       if (refusal === "work-board-run-id-held") {
         if (name.startsWith("begin")) tally("cap-held");
@@ -299,28 +433,71 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
       }
       const edited = eff.kind === "edit" ? s.rows.find(r => r.id === eff.id) : undefined;
       if (refusal === "work-board-runs-unreadable" && edited && [...stored.keys()].some(runId => holds(JSON.stringify(edited), runId))) tally("edit-held-unreadable");
+      if (name === "runResult" || name === "session") {
+        if (refusal === "work-board-runs-unreadable") tally("engine-refused-unreadable");
+        if (refusal === "work-board-run-id-held") tally("engine-held");
+      }
+      // While the run file cannot be read, any string value could be a run's id: no write takes one out of board.json.
+      if (dup.runs !== undefined && !bA.equals(bB)) {
+        const kept = heldBy(after);
+        const lost = [...stringsOf(before).values].filter(value => value.length > 0 && value.length <= 256 && !kept(value));
+        expect(lost, `${context}: string values taken out of board.json while the run file could not be read`).toEqual([]);
+        tally("unreadable-write");
+      }
+      if (refusal === "work-board-runs-unreadable") refusedUnreadable = true;
+      if (name === "reopen") recovering = false;
+      else if (recovering && refusal === undefined && !bA.equals(bB)) {
+        tally("recovered");
+        recovering = false;
+      }
 
-      // A run that is not settled leaves the run file only as the engine settles it or its entry is discarded, and comes in only as it starts.
+      // A run that is not settled leaves the run file only as the engine settles it, ends it as its delete is due, or its entry is
+      // discarded, and comes in only as it starts.
       for (const runId of stored.keys()) {
         if (storedAfter.has(runId)) continue;
-        const ends = eff.runId === runId && ((eff.kind === "settle" && eff.result?.status === "stored") || (eff.kind === "discard" && eff.result?.status === "deleted"));
+        const ends = eff.ended?.includes(runId) === true || (eff.runId === runId
+          && ((eff.kind === "settle" && eff.result?.status === "stored") || (eff.kind === "discard" && eff.result?.status === "deleted")));
         expect(ends, `${context}: ${runId} left the run file`).toBe(true);
       }
       for (const runId of storedAfter.keys()) expect(stored.has(runId) || (eff.kind === "begin" && eff.runId === runId), `${context}: ${runId} came into the run file`).toBe(true);
 
       // No stored run that is not settled has its id taken out of board.json, but by the user's delete of the row its record names,
-      // with that delete's intent stored, over text holding no blob; never two in one write.
+      // with that delete's intent stored, over text holding no blob; never two in one write. A delete whose write failed counts as one
+      // once that write replaced the file.
       const intents = intentsIn(rA);
-      const left = [...stored.keys()].filter(runId => holds(before, runId) && !holds(after, runId));
+      const left = [...stored.keys()].filter(runId => heldBefore(runId) && !heldAfter(runId));
       for (const runId of left) {
         const record = stored.get(runId);
-        const released = eff.kind === "remove" && eff.result?.status === "deleted" && eff.result.runId === runId && eff.runId === runId
+        const deleted = (eff.result?.status === "deleted" && eff.result.runId === runId) || eff.fired === "after";
+        const released = eff.kind === "remove" && deleted && eff.runId === runId
           && record?.readable === true && record.itemId === eff.id && !before.includes(BLOB) && intents.includes(`${eff.id}|${runId}`);
         expect(released, `${context}: ${runId} left board.json`).toBe(true);
         tally("released");
+        const kind = odd(runId);
+        if (kind) tally(`released:${kind}`);
       }
       expect(left.length, `${context}: more than one run left board.json`).toBeLessThanOrEqual(1);
       for (const intent of intents) expect(attempts.has(intent), `${context}: intent ${intent} no delete stored`).toBe(true);
+
+      // A delete whose write fails before it replaces the file leaves the board as it was and takes its intent back; one that fails after
+      // keeps its intent, and the store shows the row gone.
+      if (eff.fired !== undefined) {
+        const intent = `${eff.id}|${eff.runId}`;
+        if (eff.fired === "before") {
+          expect(bA.equals(bB) && !intents.includes(intent), `${context}: a delete that did not land kept its intent or changed the board`).toBe(true);
+          tally("withdrawn");
+        } else {
+          const shown = await store.get(eff.id ?? 0);
+          const listed = (parsed(bA).items as unknown[]).filter(isRow).some(r => r.id === eff.id);
+          expect([listed, intents.includes(intent), shown.status], `${context}: a delete that landed and failed`).toEqual([false, true, "not_found"]);
+          tally("landed-failed");
+        }
+      }
+      // A run the engine ends as its delete is due takes its intent with it.
+      for (const runId of eff.ended ?? []) {
+        expect(intents.some(intent => intent.endsWith(`|${runId}`)), `${context}: ${runId} ended, its intent stayed`).toBe(false);
+        tally("consumed");
+      }
 
       // A file holding a key twice is never written over or copied; bytes the store did not write are copied before a write goes over them.
       for (const [file, prior, next, tag] of [["board", bB, bA, "invalid-rows"], ["runs", rB, rA, "invalid-runs"]] as const) {
@@ -337,39 +514,44 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
         hand[file] = false;
       }
 
-      // The engine's view: the runs whose row the user deleted, by their intents, and each run's row standing wherever its id is.
-      if (eff.kind === "remove" && eff.result?.status === "deleted" && eff.runId !== undefined && stored.get(eff.runId)?.itemId === eff.id && stored.get(eff.runId)?.readable) {
-        userDeleted.set(eff.runId, eff.id ?? 0);
-      }
-      for (const runId of userDeleted.keys()) if (!storedAfter.has(runId)) userDeleted.delete(runId);
+      // The engine's view: the runs to end, never one whose id the board file holds, and exactly the model's while the store reads the
+      // file's string values as the model does; each run's row standing wherever its id is, and not standing once its delete is due.
+      const model = intentModel(bA, rA, named);
       if (dup.runs === undefined) {
         const deleted = await store.deletedRuns();
-        // Only once the board file holds the id nowhere: until then the delete waits.
-        const expected = [...userDeleted].filter(([runId]) => !holds(after, runId)).map(([runId, itemId]) => `${itemId}|${runId}`).sort();
-        expect(Array.isArray(deleted) ? deleted.map(({ itemId, runId }) => `${itemId}|${runId}`).sort() : deleted, `${context}: deleted runs`).toEqual(expected);
-        if (expected.length > 0) tally("deleted-runs");
+        expect(Array.isArray(deleted), `${context}: deleted runs ${String(deleted)}`).toBe(true);
+        const got = (deleted as Intent[]).map(key).sort();
+        expect(got.filter(intent => !model.allowed.includes(intent)), `${context}: a run to end whose id board.json holds`).toEqual([]);
+        if (model.plain) expect(got, `${context}: deleted runs`).toEqual(model.due.map(key).sort());
+        for (const { runId } of deleted as Intent[]) {
+          tally("deleted-runs");
+          const kind = odd(runId);
+          if (kind) tally(`due:${kind}`);
+        }
       }
       const standing = await store.runRowsOnDisk();
       for (const [runId, { itemId }] of storedAfter) {
         const where = standing?.({ itemId, runId });
-        if (holds(after, runId)) expect(["named", "moved", "unreadable"], `${context}: ${runId} held, reads ${where}`).toContain(where);
-        if (userDeleted.has(runId)) expect(["named", "moved"], `${context}: ${runId} deleted, reads ${where}`).not.toContain(where);
+        if (heldAfter(runId)) expect(["named", "moved", "unreadable"], `${context}: ${runId} held, reads ${where}`).toContain(where);
+        if (model.due.some(intent => intent.runId === runId)) expect(["named", "moved"], `${context}: ${runId} deleted, reads ${where}`).not.toContain(where);
         tally("standing");
       }
     }
   } finally {
+    vi.restoreAllMocks();
     await cleanupTmpDir(dir);
   }
 }
 
-it("no op sequence has a store write take out of board.json the id of a stored run that is not settled without its row's delete and intent, or write over bytes it did not write or a key given twice", async () => {
+it("no op sequence has a store write take out of board.json the id of a stored run that is not settled without its row's delete and intent stored first, end a run whose id the file holds, or write over bytes it did not write or a key given twice", async () => {
   const counts: Record<string, number> = {};
   for (let seed = 1; seed <= SEEDS; seed += 1) await sequence(seed, key => { counts[key] = (counts[key] ?? 0) + 1; });
   // Every store op wrote, and the draw reached every state the oracle judges.
   expect(Object.keys(STORE_OPS).filter(name => !counts[`wrote:${name}`])).toEqual([]);
   const reached = ["released", "refused:work-board-run-id-held", "refused:work-board-runs-unreadable", "refused:work-board-duplicate-key", "refused:workflow-runs-duplicate-key",
     "edit-held-unreadable", "cap-held", "invalid-delete-held", "capped-delete-held", "cross-row-delete-held", "blob-step", "kept:board", "kept:runs",
-    "dup-board-step", "dup-runs-step", "deleted-runs", "standing"];
+    "dup-board-step", "dup-runs-step", "deleted-runs", "standing", "ordered", "withdrawn", "landed-failed", "consumed", "engine-refused-unreadable",
+    "engine-held", "recovered", "unreadable-write", ...["quote", "backslash", "surrogate"].flatMap(kind => [`released:${kind}`, `due:${kind}`])];
   expect(reached.filter(key => !counts[key]), JSON.stringify(counts)).toEqual([]);
 }, 240_000);
 
