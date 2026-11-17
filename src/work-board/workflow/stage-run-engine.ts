@@ -760,6 +760,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const shown = await store.setRunStatus(itemId, "executing");
       if (shown.status !== "updated") throw new Error("the run could not be shown on the board");
     } catch (error) {
+      // A start that threw may still have stored the run and named it on the row; the run file says so. Unknown counts as stored.
+      if (!recorded) recorded = await records.get(itemId, runId).then(run => run !== null && run.settled === undefined, () => true);
       const code = error instanceof WorkflowTemplateError ? error.code : undefined;
       return abandonStart(ref, recorded, code ? refused(code) : { status: "error", reason: errorMessage(error) });
     }
@@ -770,11 +772,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return resultOf(state);
   }
 
-  /** A start that failed after its workspace was opened: the workspace goes, and a run that was already stored ends `error`. */
+  /** A start that failed after its workspace was opened: the workspace goes, and a run that was already stored ends `error`. A stored run
+   * that could not be ended keeps its workspace and is left to the next adoption. */
   async function abandonStart(ref: RunRef, recorded: boolean, result: WorkItemRunResult): Promise<WorkItemRunResult> {
     if (recorded) {
       const at = new Date().toISOString();
-      await records.update(ref.itemId, ref.runId, current => ({ ...current, settled: { status: "error", at } })).catch(() => undefined);
+      const ended = await records.update(ref.itemId, ref.runId, current => ({ ...current, settled: { status: "error", at } })).then(write => write.ok, () => false);
+      if (!ended) {
+        adoption = null;
+        return result;
+      }
       await showOnRow(ref.itemId, "error", undefined);
     }
     await workspace.release(ref, "all").catch(() => undefined);

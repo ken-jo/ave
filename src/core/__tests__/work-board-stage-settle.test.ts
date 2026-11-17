@@ -390,3 +390,22 @@ it("a revision of a stage whose earlier output came from file content starts tai
   expect(child.input.instructions).toContain("file-derived data");
   expect(child.input.hostInputTaint).toBe("file-content");
 }));
+
+it("a start whose row write threw after the run was stored ends that run error; one that cannot be ended keeps its workspace", async () => {
+  for (const settleFails of [false, true]) {
+    const released: string[] = [];
+    await withHarness(async (h) => {
+      const version = await h.confirm([stageOf("a")]);
+      const id = await h.addItem(version);
+      const begin = h.board.beginRun.bind(h.board);
+      vi.spyOn(h.board, "beginRun").mockImplementationOnce(async (...args) => { await begin(...args); throw new Error("the board sync failed"); });
+      if (settleFails) vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" });
+      expect(await h.start(id, h.local(version))).toMatchObject({ status: "error", reason: "the board sync failed" });
+      const stored = await h.item(id);
+      expect(stored.runId).toBeDefined();
+      expect(stored.record?.settled?.status).toBe(settleFails ? undefined : "error");
+      expect(released).toEqual(settleFails ? [] : [stored.runId]);
+      expect(h.children).toHaveLength(0);
+    }, () => ({ workspace: { release: async (run) => { released.push(run.runId); } } }));
+  }
+});
