@@ -1,6 +1,6 @@
 /** How a template run ends, and what survives a crash or a deleted row: the run file is written first and is the truth; the board row is
  * shown from it. */
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { en } from "../../i18n/messages/en.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
@@ -762,6 +762,26 @@ it("a board seeded again while the run file cannot be listed refuses every write
   expect(created.itemId).toBeGreaterThan(id);
   expect(await boot.remove(created.itemId)).toMatchObject({ status: "deleted" });
   expect(await boot.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
+  expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  await run;
+}));
+
+it("a board restored with a lower nextId never issues the id of a row a stored run names, and never shows that row gone", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  await h.addItem(version);
+  const older = readFileSync(h.boardPath, "utf8");
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  await h.untilLive(1);
+  const runId = (await h.item(id)).runId ?? "";
+  writeFileSync(h.boardPath, older);
+  const added = await h.addItem(version);
+  expect(added).toBeGreaterThan(id);
+  const goneNow = () => h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }));
+  expect(await goneNow()).toBe(false);
+  expect(await h.board.remove(added)).toMatchObject({ status: "deleted" });
+  expect(await goneNow()).toBe(false);
+  expect(await new WorkBoardStore(h.boardPath).runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
   expect(h.engine.cancelRun(id)).toEqual({ ok: true });
   await run;
 }));

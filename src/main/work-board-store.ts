@@ -334,10 +334,15 @@ function hydrateBoard(parsed: unknown): BoardFile {
       ? file.nextId
       : maxId + 1;
   const firstId = typeof file.firstId === "number" && Number.isInteger(file.firstId) && file.firstId > 1 && file.firstId <= nextId ? file.firstId : undefined;
+  const listed = new Set(items.map((item) => item.id));
+  const skippedIds = Array.isArray(file.skippedIds)
+    ? file.skippedIds.filter((id) => Number.isInteger(id) && id >= (firstId ?? 1) && id < nextId && !listed.has(id))
+    : [];
   return {
     version: BOARD_VERSION,
     nextId,
     ...(firstId === undefined ? {} : { firstId }),
+    ...(skippedIds.length === 0 ? {} : { skippedIds }),
     items,
   };
 }
@@ -348,7 +353,7 @@ function requireWritable(board: BoardFile): void {
 
 /** Whether this board file issued that row id. */
 function issued(board: BoardFile, id: number): boolean {
-  return id >= (board.firstId ?? 1) && id < board.nextId;
+  return id >= (board.firstId ?? 1) && id < board.nextId && !(board.skippedIds ?? []).includes(id);
 }
 
 /** Whether a parsed board file shows a run's row gone; undefined when it is not a readable board. */
@@ -656,6 +661,11 @@ export class WorkBoardStore {
 
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
+      // A board restored with a lower nextId never issues the id of a row a stored run names; it records the ids it skips, which it
+      // never issued. A run file that cannot be listed skips nothing.
+      const stored = await this.runs.list().catch(() => null);
+      const runRows = new Set(stored?.status === "found" ? stored.runs.map((run) => run.itemId) : []);
+      for (; runRows.has(board.nextId); board.nextId += 1) board.skippedIds = [...(board.skippedIds ?? []), board.nextId];
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
