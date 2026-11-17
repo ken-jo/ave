@@ -6,6 +6,11 @@ import { isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { WorkflowTemplateError } from "../../work-board/template-graph.js";
+import { RUN_FILE_REFUSALS } from "../../work-board/workflow/stage-run-engine.js";
+import { WORKSPACE_REFUSALS } from "../../work-board/workflow/stage-workspace.js";
+import type { RunAuthorityVerdict } from "../../work-board/workflow/run-authority.js";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
 async function withHarness(run: (h: Harness) => Promise<void>, opts: Parameters<typeof stageRunHarness>[0] = {}): Promise<void> {
@@ -481,4 +486,28 @@ it("a stale gate decision is refused for its binding before a pin that no longer
   expect(await h.engine.decideStageGate(id, decision)).toEqual({ ok: false, reason: "version_missing" });
   pinned.mockRestore();
   expect(await h.stageRun(id, "a")).toMatchObject({ status: "awaiting_gate", attempt: gate.attempt });
+}));
+
+it("has the text of every code a template start can be refused with in both catalogs", () => {
+  // Every refusal of the run source check, by its type: a new code fails the typecheck until it is listed here.
+  const verdicts: Record<Extract<RunAuthorityVerdict, { ok: false }>["code"], true> = {
+    "source-not-authorised": true, "pin-mismatch": true, "not-current-version": true, "template-archived": true, "version-missing": true,
+    "graph-mismatch": true, "attachment-missing": true, "attachment-detached": true, "scope-changed": true, "scope-not-authorised": true,
+    "project-mismatch": true, "unattended-not-read-only": true, "outward-effect-tool": true, "tool-effect-unknown": true,
+  };
+  const codes = [
+    ...Object.keys(verdicts), ...WORKSPACE_REFUSALS, ...RUN_FILE_REFUSALS,
+    "outputs-unavailable", "template-run-not-shown", "template-run-unavailable", "work-item-completed",
+  ];
+  for (const code of codes) {
+    for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`), code).toEqual(expect.stringMatching(/\S/));
+  }
+});
+
+it("a start whose row is gone when the run is recorded is not found, never refused with a code", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  vi.spyOn(h.board, "beginRun").mockResolvedValueOnce({ status: "not_found", itemId: id });
+  expect(await h.start(id, h.local(version))).toEqual({ status: "not_found" });
+  expect(h.live()).toHaveLength(0);
 }));

@@ -3,8 +3,11 @@ import type { JoinConflict } from "./shipped-shapes.js";
 
 export interface RunRef { itemId: number; runId: string; runKey: string }
 interface StageWorkspace { root: string; kind: "git" | "folder"; baseCommit?: string }
-type WorkspaceRefusal = "workspace_unavailable" | "home-boundary-unverified" | "git-unavailable" | "inputs-need-project"
-  | "seed-too-large" | "seed-unreadable" | "identity-missing";
+/** Every code a workspace provider refuses with; each has its text in the catalogs. */
+export const WORKSPACE_REFUSALS = [
+  "workspace-unavailable", "home-boundary-unverified", "git-unavailable", "inputs-need-project", "seed-too-large", "seed-unreadable", "identity-missing",
+] as const;
+type WorkspaceRefusal = typeof WORKSPACE_REFUSALS[number];
 
 /** Where a run's stages work. Every stage child gets its own folder under the run root; there is no shared-folder mode. */
 export interface StageWorkspaceProvider {
@@ -22,9 +25,9 @@ export interface StageWorkspaceProvider {
 
 /** The default until a real provider is wired: no template run can start. */
 export const unavailableWorkspaceProvider: StageWorkspaceProvider = {
-  open: async () => ({ ok: false, code: "workspace_unavailable" }),
-  prepare: async () => ({ ok: false, code: "workspace_unavailable" }),
-  seal: async () => ({ ok: false, code: "workspace_unavailable" }),
+  open: async () => ({ ok: false, code: "workspace-unavailable" }),
+  prepare: async () => ({ ok: false, code: "workspace-unavailable" }),
+  seal: async () => ({ ok: false, code: "workspace-unavailable" }),
   integrate: async () => { throw new Error("stage workspaces are not available"); },
   release: async () => {},
   sweep: async () => {},

@@ -38,12 +38,12 @@ it("with the production parts and a workspace provider, an authorised template r
   }
 });
 
-it("with the production parts alone a start is refused workspace_unavailable and nothing is written", async () => {
+it("with the production parts alone a start is refused workspace-unavailable and nothing is written", async () => {
   const h = await stageRunHarness({ wiring: store => workflowEngineExtensions(store) });
   try {
     const version = await h.confirm([auto("a")]);
     const id = await h.addItem(version);
-    expect(await h.start(id, h.local(version))).toMatchObject({ status: "error", reasonCode: "workspace_unavailable" });
+    expect(await h.start(id, h.local(version))).toMatchObject({ status: "error", reasonCode: "workspace-unavailable" });
     expect(existsSync(join(h.dir, "workflow-runs.json"))).toBe(false);
     expect((await h.item(id)).runId).toBeUndefined();
     expect(h.children).toHaveLength(0);

@@ -11,7 +11,7 @@ type WorkflowEngineExtensions = Pick<
 >;
 
 /** The one place the stage scheduler's replaceable parts are chosen. Each later part swaps its own line here and nowhere else. Run state
- * is the board store's covered run file. With the default workspace provider a start is refused `workspace_unavailable`, and with no lane
+ * is the board store's covered run file. With the default workspace provider a start is refused `workspace-unavailable`, and with no lane
  * only an all-read-only version may run unattended. */
 export function workflowEngineExtensions(store: WorkBoardStore): WorkflowEngineExtensions {
   return {

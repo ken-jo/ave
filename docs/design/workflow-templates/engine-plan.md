@@ -149,7 +149,7 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 | `src/work-board/workflow/stage-machine.ts` | new | Pure reducer: `(RunSnapshot, RunEvent) → { stageRuns, joins, runStatus, effects }`. |
 | `src/work-board/workflow/stage-prompt.ts` | new | `buildStagePrompt`, bounds, taint union. |
 | `src/work-board/workflow/stage-gates.ts` | new | Pass-condition registry; `stage_ok`, `check_exit_zero`. |
-| `src/work-board/workflow/stage-workspace.ts` | new | `StageWorkspaceProvider` interface and `unavailableWorkspaceProvider`, whose `open` refuses `workspace_unavailable`. No template run can start until WT-4's provider is wired; tests use a fake. There is no shared-folder mode. |
+| `src/work-board/workflow/stage-workspace.ts` | new | `StageWorkspaceProvider` interface and `unavailableWorkspaceProvider`, whose `open` refuses `workspace-unavailable`. No template run can start until WT-4's provider is wired; tests use a fake. There is no shared-folder mode. |
 | `src/work-board/workflow/stage-run-engine.ts` | new | Event queue, effect runner, `spawnStageChild`, stop, steer. |
 | `src/work-board/workflow/run-authority.ts` | new | `authoriseRunSource`: the single run-authority function, with the D1 and OD-1 members (§2.4). |
 | `src/work-board/workflow/workflow-errors.ts` | new | `WorkflowInvariantError` with a `code`. |
@@ -290,7 +290,7 @@ interface StageWorkspaceProvider {
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;       // stage folders only; the run branch and output folder stay
   sweep(activeRunIds: readonly string[]): Promise<void>;                          // boot
 }
-type WorkspaceRefusal = "workspace_unavailable" | "home-boundary-unverified" | "git-unavailable" | "inputs-need-project"
+type WorkspaceRefusal = "workspace-unavailable" | "home-boundary-unverified" | "git-unavailable" | "inputs-need-project"
   | "seed-too-large" | "seed-unreadable" | "identity-missing";
 ```
 

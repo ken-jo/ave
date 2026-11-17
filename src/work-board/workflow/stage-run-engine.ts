@@ -154,7 +154,7 @@ function writeFault(reason: RunWriteFailure): string {
   return reason === "invalid" ? "invalid-template-run" : "run-state-unavailable";
 }
 /** Run-file refusals the renderer shows in the user's language. */
-const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set([
+export const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set([
   "template-runs-too-large", "template-runs-pending-review", "invalid-template-run", "run-state-unavailable", "template-runs-board-unread", "template-run-lost",
 ]);
 
@@ -806,7 +806,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const stageRuns = version.stages.map((stage): WorkItemStageRun => ({ stageId: stage.id, attempt: 1, status: "waiting" }));
       // The run file gets the pin, the source and the stage runs first; the board row then names the run by its id and nothing else.
       const begun = await records.begin(itemId, runId, startedAt, { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash, source, stageRuns });
-      if (begun.status !== "updated") return await abandonStart(ref, false, refused(begun.status === "invalid" ? begun.reason : begun.status));
+      if (begun.status !== "updated") return await abandonStart(ref, false, begun.status === "invalid" ? refused(begun.reason) : { status: "not_found" });
       recorded = true;
       const placed = await records.update(itemId, runId, current => ({ ...current, runWorkspace: opened.workspace }));
       if (!placed.ok) {
