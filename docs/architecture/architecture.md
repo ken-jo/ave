@@ -3866,7 +3866,10 @@ with its own owner rule:
   intents first, and a run an intent names whose row id the board file on
   disk no longer lists ends `cancelled` as its row removed, never as an
   orphan, lost or parked run; an intent whose row is still listed (its
-  board write never landed) waits. An intent goes only with the run file
+  board write never landed) waits. Such an intent is not told from a
+  landed one once its row stops being listed by hand (made invalid, or
+  given a twin): its run then ends the same way while the row is still in
+  the file, an open gap. An intent goes only with the run file
   write that settles its run, or once the file holds no such run that is
   not over; a takeover that fails keeps it, and the next start, decision,
   reader or boot tries again. The run of any other entry is
@@ -3951,7 +3954,8 @@ with its own owner rule:
   that one run's id out, and never over text still decoding past 16
   levels, where nothing is released. Nothing a write removes grants
   release on its own: the delete of an entry that does not validate, the
-  run history entries a start's cap drops and an edit by the user are
+  run history entries a start's cap drops and an edit of a row's fields
+  (`update`) are
   refused (`work-board-run-id-held`) and write nothing when they would take
   out the last string holding such an id. A settled run is not kept: the
   cap and the prune drop it.
@@ -3960,7 +3964,8 @@ with its own owner rule:
   over bytes that are the text it was read as, and no write that removes
   an entry or the user's text is made: a delete, the delete of an entry
   that does not validate, a start whose cap drops run history entries and
-  every edit by the user (`update`) are refused with
+  every edit of a row's title, detail, priority or due date (`update`;
+  a move is not one) are refused with
   `work-board-runs-unreadable`, since none of them can tell which runs the
   text it removes held. The engine's own writes (run status, session,
   plan, result) still go through over those bytes; one of them that clears
@@ -3999,10 +4004,13 @@ with its own owner rule:
   `work-board-write-failed`, `work-board-run-owner-unknown`) that reaches
   the panel through IPC as that code, with en and ko text under
   `reasonCodes.`; a create's refusal is never shown raw.
-  (g) One property test runs random sequences of every board and run store
-  write, hand edits (a run id written into another row, a key given
-  twice, entries that do not validate, text past 16 levels of escapes)
-  and reopenings on one home that evolves through them, with runs that
+  (g) One property test runs random sequences of board and run store
+  writes (create, edits, moves, template and plain run starts, run
+  results, plan approval and decision, a delete, the delete of an entry
+  that does not validate, the discard of a run record, run settles, the
+  prune, boot reconcile, clearing a missing run), hand edits (a run id
+  written into another row, a key given twice, entries that do not
+  validate, text past 16 levels of escapes) and reopenings on one home that evolves through them, with runs that
   are not over and capped run histories, and checks after each step,
   from its own model of the files rather than the guard's rule, that the
   id of a stored run that is not over leaves the board file only by the
