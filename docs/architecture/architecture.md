@@ -628,7 +628,8 @@ Three host-only stores sit behind these surfaces:
   switched to another file and back between them is not seen; nor is a hard
   link that stays in an unprotected folder. The same check binds the other
   host reads whose bytes reach the model to the path they judged: a previewed
-  file or document the agent then observes, and the agent's `read_document`.
+  file or document the agent then observes, and the agent's `read_document`
+  and `view_image`, which reads the real path it judged.
   For an agent tool, the rules judged when it runs are the admission and
   directory ones; the other secret-file rules are decided before the call, by
   the permission tree.
