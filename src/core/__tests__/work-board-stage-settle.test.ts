@@ -800,6 +800,75 @@ for (const [how, input] of runFileUnreadable) {
   }));
 }
 
+const runFileRefusal: [string, () => Promise<homeTrust.AveHomeInput>, string][] = [
+  ["cannot be read", runFileUnreadable[0][1], "run-state-unavailable"],
+  ["awaits review", runFileUnreadable[1][1], "template-runs-pending-review"],
+  ["is past its read limit", runFileUnreadable[2][1], "template-runs-pending-review"],
+  ["does not parse", runFileUnreadable[3][1], "invalid-template-run"],
+];
+for (const [how, input, code] of runFileRefusal) {
+  it(`a start whose run file ${how} when the run is stored returns the refusal ${code}, never not found`, () => withHarness(async (h) => {
+    const version = await h.confirm([autoStageOf("a")]);
+    const first = await h.addItem(version);
+    const id = await h.addItem(version);
+    // Taken over by a first run, so the second start reaches the run write.
+    const done = h.start(first, h.local(version));
+    const [a] = await h.untilLive(1);
+    a.finish();
+    expect(await done).toMatchObject({ status: "completed" });
+    const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
+    const read = homeTrust.readAveHomeInput;
+    vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(target => target === runsPath ? input() : read(target));
+    expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: code, reasonCode: code });
+    expect(h.live()).toHaveLength(0);
+  }));
+}
+
+it("a live run whose row is there and names it is never read as its row gone or lost, whatever the board's nextId says", () => withHarness(async (h) => {
+  const version = await h.confirm([autoStageOf("a")]);
+  const id = await h.addItem(version);
+  const other = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  const [a] = await h.untilLive(1);
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  // nextId set back by hand below the run's row: the row is still there, and still names the run.
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { nextId: number };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, nextId: 1 }));
+  expect(await h.addItem(version)).toBe(other + 1);
+  expect(await h.board.remove(other)).toMatchObject({ status: "deleted" });
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: id, runId }))).toBe("named");
+  a.finish();
+  expect(await run).toMatchObject({ status: "completed" });
+  expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed" || event.message === "template-run-lost")).toBe(false);
+  expect((await h.runOf(runId))?.settled?.status).toBe("completed");
+}));
+
+it("a start whose row write may not have landed, while the board file cannot be read, keeps its run and workspace until a readable board shows the row without it", () => {
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const before = readFileSync(h.boardPath, "utf8");
+    const begin = h.board.beginRun.bind(h.board);
+    vi.spyOn(h.board, "beginRun").mockImplementationOnce(async (...args) => {
+      await begin(...args);
+      writeFileSync(h.boardPath, "{ not json");
+      throw new Error("the board sync failed");
+    });
+    expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
+    const listed = await h.board.runs.list();
+    const runId = (listed.status === "found" ? listed.runs.find(run => run.itemId === id)?.runId : undefined) ?? "";
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+    expect(released).toEqual([]);
+    // Readable again, with the row there but not naming the run: the start never landed, and the run ends error with no row showing it.
+    writeFileSync(h.boardPath, before);
+    await h.engine.projectTemplateRuns([]);
+    for (let i = 0; i < 400 && released.length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(released).toEqual([runId]);
+    expect(await h.runOf(runId)).toBeNull();
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
+});
+
 it("a board restored to an older copy without a live run's row adds rows above that row, and the run ends cancelled as its row gone", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   await h.addItem(version);
