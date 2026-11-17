@@ -23,6 +23,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.run-state-unavailable": "워크플로 실행 파일에서 템플릿 실행을 읽거나 저장할 수 없습니다. 다시 시도하세요.",
   "reasonCodes.template-run-not-shown": "템플릿 실행을 작업 보드에 표시할 수 없습니다. 다시 시도하세요.",
   "reasonCodes.run-end-unconfirmed": "이 템플릿 실행은 끝났지만 종료가 아직 워크플로 실행 파일에 저장되지 않았습니다. 다시 시도하세요.",
+  "reasonCodes.runs-not-adopted": "마지막 재시작 전에 남은 템플릿 실행을 아직 이어받지 못해 이 결정을 처리할 수 없습니다. 다시 시도하세요.",
   "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",

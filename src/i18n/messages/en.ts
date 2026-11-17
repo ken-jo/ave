@@ -21,6 +21,7 @@ export const en = {
   "reasonCodes.run-state-unavailable": "The template run could not be read or saved in the workflow run file. Try again.",
   "reasonCodes.template-run-not-shown": "The template run could not be shown on the work board. Try again.",
   "reasonCodes.run-end-unconfirmed": "This template run has ended, but its end is not saved in the workflow run file yet. Try again.",
+  "reasonCodes.runs-not-adopted": "Template runs left by the last restart are not taken over yet, so this decision cannot be made. Try again.",
   "be_mcpGovernance.reservedHostOwner": "Server ids cannot use the reserved host: prefix.",
 
   "notificationCenter.title": "Notifications",

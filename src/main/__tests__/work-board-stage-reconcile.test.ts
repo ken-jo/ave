@@ -3,6 +3,8 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import { isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
@@ -253,6 +255,19 @@ for (const board of ["missing", "corrupt"] as const) {
     }
   });
 }
+
+it("a decision while the runs a restart left are not taken over is refused by its own reason, which has text", async () => {
+  const h = await stageRunHarness();
+  try {
+    const boot = await bootOverBoard(h, () => rmSync(h.boardPath));
+    const decided = await boot.engine.decideStageGate(boot.id, { runId: boot.runId, stageId: "a", attempt: 1, resultHash: boot.gate.resultHash ?? "", decision: "approve" });
+    expect(decided).toEqual({ ok: false, reason: "runs_not_adopted" });
+    for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.runs-not-adopted")).toEqual(expect.stringMatching(/\S/));
+    expect(await h.runOf(boot.runId)).toEqual(boot.before);
+  } finally {
+    await h.cleanup();
+  }
+});
 
 it("a boot over a board file replaced by an empty one keeps the run and its workspace: a row id the board never issued proves nothing", async () => {
   const h = await stageRunHarness();
