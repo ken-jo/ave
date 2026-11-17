@@ -622,6 +622,14 @@ it("a takeover a reader asks for that fails is logged, never left as an unhandle
   }, () => ({ workflow: { itemChanged: () => { if (failing) throw new Error("listener failed"); } } }));
 });
 
+it("a start whose checks throw before anything is stored is refused by a code, never by the error's text", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  vi.spyOn(h.templates, "get").mockRejectedValueOnce(new Error("disk error at a private path"));
+  expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
+  expect(h.live()).toHaveLength(0);
+}));
+
 it("a start that threw after storing its run, while the run file awaits review, keeps its workspace until a reader writes the end", () => {
   const released: string[] = [];
   return withHarness(async (h) => {

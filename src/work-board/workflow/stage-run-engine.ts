@@ -782,7 +782,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       stepsOf(version);
     } catch (error) {
       const fault = pinFault(error);
-      return fault ? refused(fault) : { status: "error", reason: errorMessage(error) };
+      if (fault) return refused(fault);
+      log.warn("template run start check failed (id=%d): %s", itemId, errorMessage(error));
+      return refused("run-state-unavailable");
     }
     if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) return refused("outputs-unavailable");
 
