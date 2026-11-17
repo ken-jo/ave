@@ -817,11 +817,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       log.warn("template run start failed (id=%d): %s", itemId, errorMessage(error));
       // A start that threw may still have stored the run and named it on the row; the run file says so. Only a run the file shows
       // settled, or does not hold, is not stored: one it cannot show (pending review, unreadable) counts as stored.
+      let unreadable = false;
       if (!recorded) {
-        recorded = await records.read(itemId, runId)
-          .then(read => read.status === "found" ? read.run.settled === undefined : read.status !== "not-found", () => true);
+        recorded = await records.read(itemId, runId).then((read) => {
+          unreadable = read.status === "invalid";
+          return read.status === "found" ? read.run.settled === undefined : read.status !== "not-found";
+        }, () => true);
       }
-      const code = error instanceof WorkflowTemplateError ? error.code : undefined;
+      const code = error instanceof WorkflowTemplateError ? error.code : unreadable ? "invalid-template-run" : undefined;
       return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"));
     }
     const state = openState(itemId, runId, projectRoot, a.approvalSurface);

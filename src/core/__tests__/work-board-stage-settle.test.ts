@@ -668,6 +668,28 @@ it("a start that threw after storing its run, while the run file awaits review, 
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
 
+it("a start that threw while the run file holds its run id for another row counts it stored and is refused as an unreadable run", () => {
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const begin = h.board.beginRun.bind(h.board);
+    vi.spyOn(h.board, "beginRun").mockImplementationOnce(async (...args) => {
+      await begin(...args);
+      const stored = await h.board.runs.view();
+      vi.spyOn(h.board.runs, "view").mockResolvedValue({ pendingReview: false, get: (runId) => {
+        const read = stored.get(runId);
+        return read.status === "found" ? { status: "found", run: { ...read.run, itemId: read.run.itemId + 1 } } : read;
+      } });
+      vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" });
+      throw new Error("disk error");
+    });
+    expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "invalid-template-run", reasonCode: "invalid-template-run" });
+    expect(released).toEqual([]);
+    for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.invalid-template-run")).toEqual(expect.stringMatching(/\S/));
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
+});
+
 it("an unconfirmed run end whose row is then deleted is confirmed only by a by-id write that succeeds, never by one that threw", () => {
   const released: string[] = [];
   return withHarness(async (h) => {
