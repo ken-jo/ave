@@ -291,6 +291,11 @@ function emptyBoard(): BoardFile {
   return { version: BOARD_VERSION, nextId: 1, items: [], unreadable: [] };
 }
 
+// What the cache keeps of a board: its fields only, never what a read marked (`unread`, `unmoved`) or the file bytes it kept (`prior`).
+function cacheOf({ version, nextId, unknownBelow, items, unreadable }: BoardFile): BoardFile {
+  return { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items, unreadable };
+}
+
 /** A board as a write read it. `unread`: the file was absent, awaited review, did not parse or had no items list, so the board started
  * empty and shows none of the rows the file may have held. `unmoved`: it did not parse or had no items list and could not be moved
  * aside, so nothing may be written over it. `prior`: the file's bytes, when writing back its rows that do not validate would not give
@@ -513,9 +518,9 @@ export class WorkBoardStore {
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it. A board read as unread is
   // written only by a create, which first marks the ids it cannot show.
   private async commit(board: BoardRead): Promise<void> {
-    const { unread, prior, ...file } = board;
-    if (unread) throw new Error("a board that shows none of its rows is written only by a create");
-    if (prior) await keepPriorBytes(this.filePath, prior);
+    if (board.unread) throw new Error("a board that shows none of its rows is written only by a create");
+    if (board.prior) await keepPriorBytes(this.filePath, board.prior);
+    const file = cacheOf(board);
     await writeFileAtomic(this.filePath, file);
     this.cache = file;
     this.boardChanged.emit();
@@ -563,7 +568,7 @@ export class WorkBoardStore {
     const row = onDisk?.standing({ itemId: id, runId });
     if (!onDisk || row === "unreadable") return { status: "board-unread" };
     if (row === "named") {
-      this.cache = onDisk.board;
+      this.cache = cacheOf(onDisk.board);
       this.boardChanged.emit();
       return { status: "named" };
     }
@@ -613,8 +618,7 @@ export class WorkBoardStore {
   }
 
   async load(): Promise<void> {
-    const { unread: _, unmoved: __, prior: ___, ...board } = await this.readBoard();
-    this.cache = board;
+    this.cache = cacheOf(await this.readBoard());
     this.loaded = true;
     // The run file's row-id floor starts from the first board read: every id it shows. One that cannot take it now gets it with the next new row.
     try { await this.runs.raiseRowIdFloor(this.cache.nextId - 1); }
@@ -814,7 +818,7 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       const updated: WorkItem = { ...board.items[idx] };
@@ -861,21 +865,21 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const current = board.items[idx];
       if (expectedRevision !== undefined && expectedRevision !== mutationRevision(current)) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "invalid" as const, itemId: id, reason: "work-item-changed" };
       }
       // Reopening a settled result has the derived Review destination.
       const target = current.status === "completed" && current.runStatus === "completed" && current.output?.trim() && to === "in_progress" ? "review" : to;
       const refusal = workBoardMoveRefusal(current, target);
       if (refusal) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "invalid" as const, itemId: id, reason: refusal };
       }
       const from = current.status;
@@ -930,7 +934,7 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       const nowMs = this.now();
@@ -965,18 +969,18 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       const prior = board.items[idx];
       if (prior.templateId !== undefined && !pin) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
       }
       if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
       if (pin?.source.kind === "local-create-and-run") requireTemplate(projectRootKey(pin.source.projectRoot) === projectRootKey(prior.projectRoot), "project-mismatch");
       if (prior.status === "completed") {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
       }
       // Judged against the board as it is on disk until the row write below lands.
@@ -987,7 +991,7 @@ export class WorkBoardStore {
           runStartedBy: pin.source, startedAt, stageRuns: pin.stageRuns,
         }), retain);
         if (stored.status !== "stored") {
-          this.cache = board;
+          this.cache = cacheOf(board);
           return { status: "invalid" as const, itemId: id, reason: stored.status === "pending-review" ? "template-runs-pending-review" : stored.status === "too-large" ? "template-runs-too-large" : "invalid-template-run" };
         }
       }
@@ -1064,7 +1068,7 @@ export class WorkBoardStore {
         }
       }
       if (count > 0) await this.commit(board);
-      else this.cache = board;
+      else this.cache = cacheOf(board);
       if (count > 0) log.info("[work-board-store] reconciled %d interrupted run(s) → error", count);
       return count;
     });
@@ -1078,7 +1082,7 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       const nowMs = this.now();
@@ -1105,7 +1109,7 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       const nowMs = this.now();
@@ -1140,12 +1144,12 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       const current = board.items[idx];
       if (current.runId !== input.runId || current.runStatus !== "planning") {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return null;
       }
       const nowMs = this.now();
@@ -1182,7 +1186,7 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       // The board is mutated below, so the cache takes it only after the write lands; a refusal caches the board as read.
       const refuse = (reason: Extract<PlanDecisionResult, { status: "refused" }>["reason"]): PlanDecisionResult => {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "refused" as const, reason };
       };
       const idx = board.items.findIndex((i) => i.id === id);
@@ -1237,7 +1241,7 @@ export class WorkBoardStore {
       const board = await this.readBoard();
       const item = board.items.find((i) => i.id === id);
       if (!item) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       board.items = board.items.filter((i) => i.id !== id);
@@ -1262,7 +1266,7 @@ export class WorkBoardStore {
       const board = await this.readBoard(true);
       const rows = board.unreadable.filter((row) => rowIdOf(row) === id);
       if (rows.length === 0 || !rows.every(allowed)) {
-        this.cache = board;
+        this.cache = cacheOf(board);
         return { status: "not_found" as const, itemId: id };
       }
       board.unreadable = board.unreadable.filter((row) => !rows.includes(row));

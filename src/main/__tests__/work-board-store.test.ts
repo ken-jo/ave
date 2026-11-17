@@ -334,6 +334,30 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     });
   }
 
+  it("keeps only the board's fields in its cache after a read that changed nothing: never what the read marked or the file bytes it kept", async () => {
+    const { store, path, cleanup } = tempBoard();
+    const cached = () => Object.keys((store as unknown as { cache: object }).cache).sort();
+    const fields = ["items", "nextId", "unreadable", "version"];
+    try {
+      // Absent: the read marks the board unread.
+      expect(await store.remove(1)).toEqual({ status: "not_found", itemId: 1 });
+      expect(cached()).toEqual(fields);
+      // A row that does not validate, spaced by hand: the read keeps the file's bytes.
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 3, items: [{ id: 2, title: 5 }] }), "utf-8");
+      expect(await store.remove(1)).toEqual({ status: "not_found", itemId: 1 });
+      expect(await store.removeUnreadable(9, () => true)).toEqual({ status: "not_found", itemId: 9 });
+      expect(cached()).toEqual(fields);
+      // Damaged and held open: the read marks it as not moved aside.
+      writeFileSync(path, "{ damaged", "utf-8");
+      vi.spyOn(fsPromises, "rename").mockRejectedValue(Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }));
+      expect(await store.remove(1)).toEqual({ status: "not_found", itemId: 1 });
+      expect(cached()).toEqual(fields);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanup();
+    }
+  });
+
   it("refuses a create over a damaged board file it could not move aside, issues no id and leaves that file byte for byte as it was", async () => {
     const { store, dir, path, cleanup } = tempBoard();
     try {
