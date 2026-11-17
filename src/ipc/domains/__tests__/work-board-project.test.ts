@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -241,23 +242,46 @@ describe("conditional board mutations", () => {
 });
 
 describe("invalid row delete", () => {
-  it("deletes a row that does not validate by its id only when its invalid card asks, and only while the project it names is authorized", async () => {
+  it("deletes an entry that does not validate only as its invalid card names it, by its place and content, and only while the project it names is authorized", async () => {
     const path = join(root, "board.json");
     const valid = { id: 1, title: "kept", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
     const here = { id: 2, title: 5, projectRoot: workspace };
     const denied = { id: 3, title: 5, projectRoot: join(root, "denied-project") };
     const unscoped = { id: 4, title: 5 };
     const unnamed = { id: 5, title: 5, projectRoot: 7 };
-    writeFileSync(path, JSON.stringify({ version: 1, nextId: 6, items: [valid, here, denied, unscoped, unnamed] }));
-    registerWorkBoardHandlers({ workBoardStore: new WorkBoardStore(path), auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    const idless = [null, 7, "text", []];
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 6, items: [valid, here, denied, unscoped, unnamed, ...idless] }));
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send: broadcast } };
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
     const remove = registeredHandler(WORK_BOARD.remove);
+    const card = async (entry: unknown) => {
+      const listed = await store.list();
+      const hash = createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+      const found = listed.status === "ok" ? listed.unreadableRows?.find((row) => row.hash === hash) : undefined;
+      if (!found) throw new Error("no card");
+      return { invalidRow: { position: found.position, hash: found.hash } };
+    };
     await expect(remove({}, 2)).resolves.toEqual({ status: "not_found", itemId: 2 });
-    for (const [id, target] of [[2, { invalidRow: false }], [2, { invalidRow: true, more: 1 }], [2, "invalidRow"], ["2", { invalidRow: true }], [1.5, { invalidRow: true }], [0, { invalidRow: true }]]) {
+    const named = await card(here);
+    for (const [id, target] of [
+      [2, named], [null, undefined], [null, { invalidRow: true }], [null, { ...named, more: 1 }], [null, { invalidRow: { ...named.invalidRow, more: 1 } }],
+      [null, { invalidRow: { position: "0", hash: named.invalidRow.hash } }], [null, { invalidRow: { position: -1, hash: named.invalidRow.hash } }],
+      [null, { invalidRow: { position: 0.5, hash: named.invalidRow.hash } }], [null, { invalidRow: { position: 0, hash: "A".repeat(64) } }], [null, "invalidRow"],
+    ]) {
       await expect(remove({}, id, target)).resolves.toEqual({ ok: false, error: "invalid-input" });
     }
-    for (const id of [1, 3, 5]) await expect(remove({}, id, { invalidRow: true })).resolves.toEqual({ status: "not_found", itemId: id });
-    await expect(remove({}, 2, { invalidRow: true })).resolves.toEqual({ status: "deleted", itemId: 2 });
-    await expect(remove({}, 4, { invalidRow: true })).resolves.toEqual({ status: "deleted", itemId: 4 });
+    await expect(remove({}, null, { invalidRow: { position: named.invalidRow.position, hash: "0".repeat(64) } })).resolves.toEqual({ status: "invalid", reason: "work-board-row-changed" });
+    for (const entry of [denied, unnamed]) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "not_found" });
+    expect(broadcast).not.toHaveBeenCalled();
+    await expect(remove({}, null, named)).resolves.toEqual({ status: "deleted", itemId: 2 });
+    await expect(remove({}, null, await card(unscoped))).resolves.toEqual({ status: "deleted", itemId: 4 });
+    for (const entry of idless) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "deleted" });
     expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([valid, denied, unnamed]);
+    expect(broadcast.mock.calls.map(([, payload]) => payload)).toEqual([
+      { itemId: 2, change: "removed", changedAt: expect.any(String) }, { itemId: 4, change: "removed", changedAt: expect.any(String) },
+      ...idless.map(() => ({ change: "removed", changedAt: expect.any(String) })),
+    ]);
   });
 });

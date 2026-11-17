@@ -20,6 +20,7 @@ import type {
   WorkPlanDecideInput,
   WorkPlanDecideIpcResult,
   WorkPlanDecision,
+  WorkItemDeleteTarget,
 } from "../../shared/work-board-types.js";
 import { MAX_PLAN_NOTE_LENGTH } from "../../shared/work-board-types.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
@@ -89,6 +90,7 @@ function isAuthorizedStoredWorkItem(item: WorkItemResolved): boolean {
 
 // A row that does not validate is checked as a stored item is, by its project; one whose project is not text names none that can be checked.
 function isAuthorizedInvalidRow(row: unknown): boolean {
+  if (typeof row !== "object" || row === null) return true;
   const { projectRoot, projectName } = row as { projectRoot?: unknown; projectName?: unknown };
   if (projectRoot === undefined || projectRoot === "") return true;
   if (typeof projectRoot !== "string") return false;
@@ -96,8 +98,14 @@ function isAuthorizedInvalidRow(row: unknown): boolean {
   return resolved.authorized && resolved.project !== null;
 }
 
-const isInvalidRowTarget = (target: unknown): boolean =>
-  typeof target === "object" && target !== null && !Array.isArray(target) && Object.keys(target).length === 1 && (target as { invalidRow?: unknown }).invalidRow === true;
+const hasExactly = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+
+const isInvalidRowTarget = (target: unknown): target is WorkItemDeleteTarget => {
+  if (!hasExactly(target, ["invalidRow"]) || !hasExactly(target.invalidRow, ["position", "hash"])) return false;
+  const { position, hash } = target.invalidRow;
+  return typeof position === "number" && Number.isSafeInteger(position) && position >= 0 && typeof hash === "string" && PLAN_HASH_PATTERN.test(hash);
+};
 
 const PLAN_DECISIONS: readonly WorkPlanDecision[] = ["approve", "reject", "request_changes"];
 const PLAN_HASH_PATTERN = /^[0-9a-f]{64}$/;
@@ -170,11 +178,11 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   };
 
   const broadcastItemChanged = (
-    itemId: number,
+    itemId: number | undefined,
     change: WorkItemChangedEventPayload["change"],
   ): void => {
     const payload: WorkItemChangedEventPayload = {
-      itemId,
+      ...(itemId === undefined ? {} : { itemId }),
       change,
       changedAt: new Date().toISOString(),
     };
@@ -288,16 +296,16 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  handle(WORK_BOARD.remove, async (e, id: number, target?: unknown) => {
+  handle(WORK_BOARD.remove, async (e, id: number | null, target?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.remove, e);
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
-    // An invalid card's delete: by the row's id in the board file, never through a listed item.
-    if (target !== undefined) {
-      if (!isInvalidRowTarget(target) || typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) return { ok: false, error: "invalid-input" };
-      const result = await workBoardStore.removeUnreadable(id, isAuthorizedInvalidRow);
+    // An invalid card's delete: by the entry's place and content in the board file, never by an id or through a listed item.
+    if (target !== undefined || id === null) {
+      if (id !== null || !isInvalidRowTarget(target)) return { ok: false, error: "invalid-input" };
+      const result = await workBoardStore.removeUnreadable(target.invalidRow, isAuthorizedInvalidRow);
       if (result.status === "deleted") broadcastItemChanged(result.itemId, "removed");
       return result;
     }

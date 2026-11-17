@@ -1,5 +1,6 @@
 /** How a template run ends, and what survives a crash or a deleted row: the run file is written first and is the truth; the board row is
  * shown from it. */
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -963,6 +964,16 @@ async function waitsThroughDamage(h: Harness, live: Awaited<ReturnType<typeof li
   expect(await h.board.runRowsOnDisk().then(next => next?.({ itemId: live.id, runId: live.runId }))).toBe("named");
 }
 
+/** The invalid card of the one entry of the board file on disk that does not validate and matches `pick`. */
+async function invalidCard(h: Harness, pick: (row: unknown) => boolean): Promise<{ position: number; hash: string }> {
+  await h.board.load();
+  const listed = await h.board.list();
+  const entries = (JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: unknown[] }).items;
+  const cards = (listed.status === "ok" ? listed.unreadableRows ?? [] : []).filter(card => entries.some(entry => pick(entry) && createHash("sha256").update(JSON.stringify(entry)).digest("hex") === card.hash));
+  if (cards.length !== 1) throw new Error(`${cards.length} invalid cards match`);
+  return cards[0];
+}
+
 async function completesUntouched(h: Harness, live: Awaited<ReturnType<typeof liveRun>>): Promise<void> {
   live.child.finish();
   expect(await live.run).toMatchObject({ status: "completed" });
@@ -1005,10 +1016,24 @@ it("a live run whose row was moved by hand from the items list under another top
 it("deleting a live run's row that does not validate from its invalid card reads the row gone: the child is interrupted and the run cancelled", () => withHarness(async (h) => {
   const live = await liveRun(h);
   h.editRow(live.id, row => ({ ...row, priority: 42 }));
-  expect(await h.board.removeUnreadable(live.id, () => true)).toEqual({ status: "deleted", itemId: live.id });
+  expect(await h.board.removeUnreadable(await invalidCard(h, row => (row as { id?: unknown }).id === live.id), () => true)).toEqual({ status: "deleted", itemId: live.id });
   expect(await live.run).toMatchObject({ status: "cancelled", reason: "item-removed" });
   expect(h.interrupts).toEqual([live.child.sessionId]);
   expect(await h.runOf(live.runId)).toBeNull();
+}));
+
+it("deleting from its invalid card a valid twin added by hand beside a live run's row deletes only that twin: the run's row is listed again and the run completes", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] };
+  const mine = file.items.find(row => row.id === live.id) ?? {};
+  const twin = { id: live.id, title: "unrelated twin", status: "planned", priority: "medium", created_at: mine.created_at, updated_at: mine.updated_at };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...file.items, twin] }));
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("unreadable");
+  expect(await h.board.removeUnreadable(await invalidCard(h, row => (row as { title?: unknown }).title === twin.title), () => true)).toEqual({ status: "deleted", itemId: live.id });
+  const items = (JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] }).items;
+  expect(items.filter(row => row.id === live.id)).toEqual([mine]);
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("named");
+  await completesUntouched(h, live);
 }));
 
 it("no single damaged entry drawn by a seeded generator in place of a live run's row reads as its row gone: the run waits through every one and completes", () => withHarness(async (h) => {

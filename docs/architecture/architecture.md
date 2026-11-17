@@ -3804,14 +3804,17 @@ with its own owner rule:
   write that drops a field of a valid row: run fields edited into a row by
   hand, or a plan approval that does not read (the re-anchoring of due
   dates is not counted). The
-  list gives each such row, with its id when it has one (`unreadableRows`),
-  and the board shows a card marked invalid for each; nothing on it opens
-  or moves the row. A card with an id deletes, at once and with no confirm,
-  every entry of the file with that id that does not validate (valid twins
-  included; a listed row with that id stays), after the file as it was is
-  copied aside as above. The board has no undo. A row that names a project
-  is deleted only while that project is authorized, as a listed row is. An
-  entry without a usable id has no delete: it is fixed in the file by hand.
+  list gives each such entry with its place among them, the sha-256 of its
+  JSON and its id when it has one (`unreadableRows`), and the board shows a
+  card marked invalid for each, one without a usable id included; nothing
+  on it opens or moves the row. Its delete removes, at once and with no
+  confirm, that one entry, named by its place and hash: every other entry
+  stays, a twin by id or content included, and a valid twin left alone
+  with its id is listed. A delete whose place no longer holds an entry with
+  that hash is refused (`work-board-row-changed`) and writes nothing. The
+  file as it was is copied aside first, as above. The board has no undo. A
+  row that names a project is deleted only while that project is
+  authorized, as a listed row is.
   A run whose row does not validate is never read as its row gone, and keeps
   its record; once its row is deleted from its card and nothing else holds
   the run's id, the row is gone and the run is cancelled.

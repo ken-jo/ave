@@ -74,6 +74,7 @@ import {
   type WorkItemCompleteResult,
   type WorkItemReopenResult,
   type WorkItemDeleteResult,
+  type WorkBoardEntryDeleteResult,
   type WorkProposal,
   type WorkProposalAcceptResult,
   type WorkProposalDismissResult,
@@ -427,9 +428,12 @@ async function keepPriorBytes(filePath: string, prior: Buffer): Promise<void> {
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
   // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the feature-namespace SOT helper. The injectable `filePath` (tests pass a temp path)
   // is preserved — the helper enforces the permission boundary on whatever parent directory the path resolves to.
-  const { version, nextId, unknownBelow, items, unreadable, extra } = data;
-  const board = { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), ...extra, items: [...items, ...unreadable] };
-  await writeFileAtomicAtPath(filePath, `${JSON.stringify(board, null, 2)}\n`);
+  await writeFileAtomicAtPath(filePath, `${JSON.stringify(fileOf(data), null, 2)}\n`);
+}
+
+// The board as its file holds it: its top-level keys, then the valid rows, then the rows that do not validate.
+function fileOf({ version, nextId, unknownBelow, items, unreadable, extra }: BoardFile): BoardFile {
+  return { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), ...extra, items: [...items, ...unreadable] } as unknown as BoardFile;
 }
 
 // Deep clone a WorkItem so callers cannot mutate shared cache refs.
@@ -674,9 +678,9 @@ export class WorkBoardStore {
     if (filter.limit !== undefined) {
       rows = rows.slice(0, filter.limit);
     }
-    const unreadable = this.cache.unreadable.map((row) => {
-      const [id] = rawRowIds([row]);
-      return id === undefined ? {} : { id };
+    const unreadable = this.cache.unreadable.map((row, position) => {
+      const id = rowIdOf(row);
+      return { ...(id === undefined ? {} : { id }), position, hash: sha256(JSON.stringify(row)) };
     });
     return { status: "ok", items: rows, ...(unreadable.length > 0 ? { unreadableRows: unreadable } : {}) };
   }
@@ -1268,22 +1272,30 @@ export class WorkBoardStore {
     });
   }
 
-  /** Delete, as an invalid card asks, every entry of the board file that does not validate and has `id` (valid twins included); a listed
-   * row with that id stays. Every such entry must pass `allowed`, or none is deleted. The file as it was is copied beside it first; there
-   * is no undo. */
-  async removeUnreadable(id: number, allowed: (row: unknown) => boolean): Promise<WorkItemDeleteResult> {
+  /** Delete, as an invalid card asks, the one entry of the board file that does not validate at `target.position` among them, while its
+   * JSON still hashes to `target.hash`; every other entry, a twin by id or content included, stays. It must pass `allowed`. The file as
+   * it was is copied beside it first; there is no undo. */
+  async removeUnreadable(target: { position: number; hash: string }, allowed: (row: unknown) => boolean): Promise<WorkBoardEntryDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard(true);
-      const rows = board.unreadable.filter((row) => rowIdOf(row) === id);
-      if (rows.length === 0 || !rows.every(allowed)) {
+      const { position, hash } = target;
+      const row: unknown = board.unreadable[position];
+      if (!Number.isSafeInteger(position) || position < 0 || position >= board.unreadable.length || sha256(JSON.stringify(row)) !== hash) {
         this.cache = cacheOf(board);
-        return { status: "not_found" as const, itemId: id };
+        return { status: "invalid" as const, reason: "work-board-row-changed" as const };
       }
-      board.unreadable = board.unreadable.filter((row) => !rows.includes(row));
-      await this.commit(board);
-      await this.pruneAfterWrite(this.retention(boardStanding(board)));
-      const title = (rows[0] as { title?: unknown }).title;
+      if (!allowed(row)) {
+        this.cache = cacheOf(board);
+        return { status: "not_found" as const };
+      }
+      // Read again as the file it leaves: a twin left alone with its id is listed.
+      const { board: next } = hydrateBoard(fileOf({ ...board, unreadable: board.unreadable.filter((_, index) => index !== position) }));
+      await this.commit({ ...next, prior: board.prior });
+      await this.pruneAfterWrite(this.retention(boardStanding(next)));
+      const id = rowIdOf(row);
+      if (id === undefined) return { status: "deleted" as const };
+      const title = (row as { title?: unknown }).title;
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

@@ -163,8 +163,19 @@ export interface WorkItemListFilter {
 
 // Discriminated outcomes let callers branch without parsing exception messages.
 
-/** A row of the board file that does not validate, shown only as a read-only placeholder. */
-export type WorkItemUnreadableRow = { id?: number };
+/** A row of the board file that does not validate, shown only as a placeholder with a delete. `position`: its place among those rows;
+ * `hash`: the sha-256 of its JSON. Both name it to that delete, which removes nothing else. */
+export type WorkItemUnreadableRow = { id?: number; position: number; hash: string };
+
+/** What a board delete names when it is not a listed row by its id: an entry of the board file that does not validate. */
+export type WorkItemDeleteTarget = { invalidRow: { position: number; hash: string } };
+
+/** A delete of an entry of the board file; `itemId` when the entry has a usable id. `work-board-row-changed`: the entry at that place
+ * is no longer the one named, and nothing was deleted. */
+export type WorkBoardEntryDeleteResult =
+  | { status: "deleted"; itemId?: number }
+  | { status: "not_found" }
+  | { status: "invalid"; reason: "work-board-row-changed" };
 
 export type WorkItemListResult =
   // unreadableRows: one entry per row of the board file that does not validate, with its id when it has one; they are kept in the file
@@ -245,7 +256,8 @@ export type WorkBoardBriefingResult =
   | { status: "error"; kind: WorkBoardBriefingKind; reason: string };
 
 export interface WorkItemChangedEventPayload {
-  itemId: number;
+  /** Absent for an entry of the board file without a usable id. */
+  itemId?: number;
   change:
     | "created"
     | "updated"

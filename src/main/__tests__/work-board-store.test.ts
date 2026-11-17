@@ -345,7 +345,7 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       // A row that does not validate, spaced by hand: the read keeps the file's bytes.
       writeFileSync(path, JSON.stringify({ version: 1, nextId: 3, items: [{ id: 2, title: 5 }] }), "utf-8");
       expect(await store.remove(1)).toEqual({ status: "not_found", itemId: 1 });
-      expect(await store.removeUnreadable(9, () => true)).toEqual({ status: "not_found", itemId: 9 });
+      expect(await store.removeUnreadable({ position: 0, hash: "0".repeat(64) }, () => true)).toEqual({ status: "invalid", reason: "work-board-row-changed" });
       expect(cached()).toEqual(fields);
       // Damaged and held open: the read marks it as not moved aside.
       writeFileSync(path, "{ damaged", "utf-8");
@@ -446,26 +446,50 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
-  it("deletes from an invalid card every entry with that id that does not validate, twins included, keeps a listed row with it, and copies the file aside first", async () => {
+  it("deletes from an invalid card only its own entry, named by its place among the entries that do not validate and its content: a twin stays, every entry without an id has a card too, and a delete whose entry changed is refused", async () => {
     const { store, dir, path, cleanup } = tempBoard();
     try {
       const valid = (id: number, title: string) => ({ id, title, status: "planned", priority: "medium", created_at: "x", updated_at: "x" });
-      const rows = [valid(1, "one"), valid(2, "a"), valid(2, "b"), valid(3, "three"), { id: 3, title: 5 }, { id: 4, title: "damaged", status: "nope" }, null];
+      const rows = [valid(1, "one"), valid(2, "a"), valid(2, "b"), valid(3, "three"), { id: 3, title: 5 }, { id: 4, title: "damaged", status: "nope" }, null, "text", 7, []];
       // Written as a board write writes it, so no read of it keeps a copy on its own.
-      const text = `${JSON.stringify({ version: 1, nextId: 5, items: [rows[0], rows[3], ...rows.filter((_, i) => i !== 0 && i !== 3)] }, null, 2)}\n`;
+      const text = `${JSON.stringify({ version: 1, nextId: 5, items: [rows[0], rows[3], ...rows.filter((_, i) => i !== 0 && i !== 3)] }, null, 2)}
+`;
       writeFileSync(path, text, "utf-8");
-      expect(await store.removeUnreadable(1, () => true)).toEqual({ status: "not_found", itemId: 1 });
-      expect(await store.removeUnreadable(4, () => false)).toEqual({ status: "not_found", itemId: 4 });
+      const hashOf = (entry: unknown) => createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+      const cards = async () => {
+        const listed = await store.list();
+        if (listed.status !== "ok") throw new Error("unreachable");
+        return listed.unreadableRows ?? [];
+      };
+      const items = () => JSON.parse(readFileSync(path, "utf-8")).items;
+      const shown = await cards();
+      expect(shown).toEqual([
+        { id: 2, position: 0, hash: hashOf(rows[1]) }, { id: 2, position: 1, hash: hashOf(rows[2]) }, { id: 3, position: 2, hash: hashOf(rows[4]) },
+        { id: 4, position: 3, hash: hashOf(rows[5]) }, ...[null, "text", 7, []].map((entry, i) => ({ position: 4 + i, hash: hashOf(entry) })),
+      ]);
+      // Refused, and nothing written: a place past the last entry, another entry's content at that place, a project not authorized.
+      for (const target of [{ position: 8, hash: shown[0].hash }, { position: 0, hash: shown[1].hash }, { position: 1.5, hash: shown[1].hash }]) {
+        expect(await store.removeUnreadable(target, () => true)).toEqual({ status: "invalid", reason: "work-board-row-changed" });
+      }
+      expect(await store.removeUnreadable(shown[3], () => false)).toEqual({ status: "not_found" });
       expect(readFileSync(path, "utf-8")).toBe(text);
-      expect(await store.removeUnreadable(2, () => true)).toEqual({ status: "deleted", itemId: 2 });
-      expect(JSON.parse(readFileSync(path, "utf-8")).items).toEqual([rows[0], rows[3], rows[4], rows[5], null]);
-      expect(await store.removeUnreadable(3, () => true)).toEqual({ status: "deleted", itemId: 3 });
-      expect(JSON.parse(readFileSync(path, "utf-8")).items).toEqual([rows[0], rows[3], rows[5], null]);
-      const copies = readdirSync(dir).filter((f) => f.includes(".invalid-rows-")).map((f) => readFileSync(join(dir, f), "utf-8"));
-      expect(copies).toHaveLength(2);
-      expect(copies).toContain(text);
+      // One of two valid twins: the other stays, and is listed once it is alone with its id.
+      expect(await store.removeUnreadable(shown[0], () => true)).toEqual({ status: "deleted", itemId: 2 });
+      expect(items()).toEqual([rows[0], rows[3], rows[2], rows[4], rows[5], null, "text", 7, []]);
       const listed = await store.list();
-      expect(listed.status === "ok" && listed.unreadableRows).toEqual([{ id: 4 }, {}]);
+      expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([3, 2, 1]);
+      // A card shown before that delete names the entry by a place that now holds another: refused.
+      expect(await store.removeUnreadable(shown[1], () => true)).toEqual({ status: "invalid", reason: "work-board-row-changed" });
+      for (const entry of [[], 7, "text", null]) {
+        const card = (await cards()).find((row) => row.hash === hashOf(entry));
+        if (!card) throw new Error("no card");
+        expect(await store.removeUnreadable(card, () => true)).toEqual({ status: "deleted" });
+      }
+      expect(items()).toEqual([rows[0], rows[3], rows[2], rows[4], rows[5]]);
+      expect((await cards()).map(({ id, position }) => ({ id, position }))).toEqual([{ id: 3, position: 0 }, { id: 4, position: 1 }]);
+      const copies = readdirSync(dir).filter((f) => f.includes(".invalid-rows-")).map((f) => readFileSync(join(dir, f), "utf-8"));
+      expect(copies).toHaveLength(5);
+      expect(copies).toContain(text);
     } finally {
       await cleanup();
     }
@@ -508,7 +532,9 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
       writeFileSync(path, JSON.stringify({ version: 1, nextId: 9, items: [valid, { id: 4 }, "text", { id: 0 }, { id: "5" }, null, { id: 8, title: 1 }] }), "utf-8");
       const listed = await store.list();
-      expect(listed.status === "ok" && listed.unreadableRows).toEqual([{ id: 4 }, {}, {}, {}, {}, { id: 8 }]);
+      expect(listed.status === "ok" && listed.unreadableRows?.map(({ id, position }) => ({ id, position }))).toEqual(
+        [4, undefined, undefined, undefined, undefined, 8].map((id, position) => ({ id, position })),
+      );
     } finally {
       await cleanup();
     }
@@ -522,7 +548,7 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       writeFileSync(path, JSON.stringify({ version: 1, nextId: 4, items: rows }), "utf-8");
       const listed = await store.list();
       expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([3, 1]);
-      expect(listed.status === "ok" && listed.unreadableRows).toEqual([{ id: 2 }, { id: 2 }, { id: 3 }]);
+      expect(listed.status === "ok" && listed.unreadableRows?.map(({ id }) => id)).toEqual([2, 2, 3]);
       const standing = await store.runRowsOnDisk();
       expect([2, 3].map((itemId) => standing?.({ itemId, runId: "run-1" }))).toEqual(["unreadable", "unnamed"]);
       expect(await store.create({ title: "next" })).toMatchObject({ status: "created", itemId: 4 });

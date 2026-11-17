@@ -1007,9 +1007,10 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkItemReopenResult
       | { ok: false; error: string }
     >,
-  removeWorkBoardItem: async (id: number, target?: { invalidRow: true }) =>
+  removeWorkBoardItem: async (id: number | null, target?: import("../shared/work-board-types.js").WorkItemDeleteTarget) =>
     ipcRenderer.invoke(WORK_BOARD.remove, id, target) as Promise<
       | import("../shared/work-board-types.js").WorkItemDeleteResult
+      | import("../shared/work-board-types.js").WorkBoardEntryDeleteResult
       | { ok: false; error: string }
     >,
   // Board view live refresh: emitted by the work-board IPC domain after any successful mutation
