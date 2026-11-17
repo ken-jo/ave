@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
 import type { AveApi } from "../../types.js";
-import type { WorkItemResolved } from "../../../../shared/work-board-types.js";
+import type { WorkItemChangedEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import { t } from "../../../../i18n/index.js";
 
 const result: WorkItemResolved = { id: 2, title: "Export journal", status: "in_progress", status_resolved: "overdue", mutationRevision: "a".repeat(64), priority: "high", runStatus: "completed", output: "Export finished with 3 files", runId: "run-2", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-02T00:00:00Z" };
+const itemChanged: WorkItemChangedEventPayload = { itemId: 2, change: "updated", changedAt: "2026-01-01T00:00:00.000Z" };
 function apiFor(items: WorkItemResolved[]) {
   const noop = () => () => {};
   return {
@@ -29,7 +30,7 @@ describe("work board review", () => {
     const pending: WorkItemResolved = { ...result, id: 3, title: "Template run", templateId: "template-1", runStatus: "executing", templateRunError: "template-runs-pending-review" };
     vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [pending, result] });
     let changed = () => {};
-    api.onWorkBoardItemChanged = handler => { changed = handler; return () => {}; };
+    api.onWorkBoardItemChanged = handler => { changed = () => handler(itemChanged); return () => {}; };
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
     const notice = await screen.findByTestId("work-board-pending-review");
     expect(notice).toHaveTextContent(t("settingsContent.tabPermissions"));
@@ -94,7 +95,7 @@ describe("work board review", () => {
   it("keeps the listed rows and shows a load error when a refresh fails", async () => {
     const api = apiFor([result]);
     let changed = () => {};
-    api.onWorkBoardItemChanged = handler => { changed = handler; return () => {}; };
+    api.onWorkBoardItemChanged = handler => { changed = () => handler(itemChanged); return () => {}; };
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
     expect(await screen.findByTestId("work-board-card")).toBeTruthy();
     vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ ok: false, error: "invalid-template-run" });

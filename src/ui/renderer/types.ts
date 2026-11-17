@@ -1,4 +1,4 @@
-import type { WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
+import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
@@ -422,6 +422,8 @@ export type AvePreloadApi = {
   getWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
   draftWorkflowTemplate: (id: string | null, input: WorkflowTemplateDraftInput) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
   confirmWorkflowTemplate: (id: string, input: WorkflowTemplateConfirmInput) => Promise<WorkflowTemplateIpcResult<TemplateVersion>>;
+  attachWorkflowTemplateSchedule: (input: ScheduleAttachmentInput) => Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>;
+  detachWorkflowTemplateSchedule: (id: string) => Promise<WorkflowTemplateIpcResult<boolean>>;
   archiveWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<null>>;
   onWorkflowTemplatesChanged: (handler: () => void) => () => void;
   relaunchApp: () => Promise<import("../../shared/app-relaunch.js").AppRelaunchResult>;

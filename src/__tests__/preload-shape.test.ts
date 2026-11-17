@@ -89,7 +89,7 @@ describe("preload contextBridge world shape lock", () => {
     const api = exposed.get("aveApi") as AveApi;
     await api.listWorkflowTemplates(); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateList);
     await api.getWorkflowTemplate("t"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateGet, "t");
-    const input = { expectedGraphHash: "a".repeat(64) };
+    const input = { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" };
     mockUserActivation.isActive = true; await api.confirmWorkflowTemplate("t", input);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: true });
     mockUserActivation.isActive = false; await api.confirmWorkflowTemplate("t", input);
