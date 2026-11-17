@@ -1,10 +1,11 @@
 /** How a template run ends, and what survives a crash or a deleted row: the run file is written first and is the truth; the board row is
  * shown from it. */
 import { existsSync, rmSync, writeFileSync } from "node:fs";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { en } from "../../i18n/messages/en.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { ko } from "../../i18n/messages/ko.js";
+import * as homeTrust from "../../shared/ave-home-trust.js";
 import { workBoardStage } from "../../shared/work-board-lifecycle.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
 import { WorkflowTemplateError } from "../../work-board/template-graph.js";
@@ -12,6 +13,7 @@ import { boardRunState, type RunRecord, type WorkflowRunState } from "../../work
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
+afterEach(() => { vi.restoreAllMocks(); });
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
 type Options = NonNullable<Parameters<typeof stageRunHarness>[0]>;
 async function withHarness(run: (h: Harness) => Promise<void>, opts: (h: () => Harness) => Options = () => ({})): Promise<void> {
@@ -841,7 +843,18 @@ for (const [write, refusal, code] of [
   });
 }
 
-for (const [board, spoil] of [["unreadable", (path: string) => writeFileSync(path, "{ not json")], ["missing", (path: string) => rmSync(path)]] as const) {
+for (const [board, spoil] of [
+  ["unreadable", (path: string) => writeFileSync(path, "{ not json")],
+  ["missing", (path: string) => rmSync(path)],
+  ["without an items list", (path: string) => writeFileSync(path, JSON.stringify({ version: 1, nextId: 9, items: {} }))],
+  // The file awaits review from here on: every read of it is refused, and the board as shown is seeded again.
+  ["awaiting review", (path: string) => {
+    const read = homeTrust.readAveHomeInput;
+    vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async target => target === path ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(target));
+  }],
+] as const) {
+  // A board seeded again is on disk and readable, unless the file it replaced still awaits review.
+  const seededShows = board === "awaiting review" ? undefined : false;
   it(`a live run whose board file is ${board} is never read as its row deleted: nothing is cancelled and its record stays as it was`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
@@ -869,7 +882,7 @@ for (const [board, spoil] of [["unreadable", (path: string) => writeFileSync(pat
     const prune = vi.spyOn(h.board, "pruneSettledRuns");
     spoil(h.boardPath);
     await h.addItem(version);
-    expect(await h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
+    expect(await h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(seededShows);
     a.finish();
     expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
@@ -886,8 +899,8 @@ for (const [board, spoil] of [["unreadable", (path: string) => writeFileSync(pat
     spoil(h.boardPath);
     const added = await h.addItem(version);
     expect(added).toBeGreaterThan(id);
-    expect(await h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
-    expect(await new WorkBoardStore(h.boardPath).runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
+    expect(await h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(seededShows);
+    expect(await new WorkBoardStore(h.boardPath).runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(seededShows);
     expect(h.engine.cancelRun(id)).toEqual({ ok: true });
     await run;
   }));
