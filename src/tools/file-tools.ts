@@ -14,6 +14,7 @@ import {
   rename,
   stat,
   unlink,
+  type FileHandle,
 } from "node:fs/promises";
 import {
   dirname,
@@ -27,7 +28,7 @@ import { z } from "zod";
 
 import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
 import {
@@ -429,12 +430,37 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     if (!fileStat.value.isFile()) {
       return toolError(`read_file requires a regular file: ${target}`);
     }
-    if (await isBinaryFile(target)) {
-      return toolError(`read_file refused binary file: ${target}`);
+    // The text reaches the model. It is read through one handle on the real path judged here, opened without following a
+    // link in its last name where the platform can, and counts only if that path still names the file read once the read
+    // is done (`judgedPathNamesOpenedFile`): a folder that led elsewhere only during the open is caught that way.
+    let judged: string;
+    let handle: FileHandle;
+    try {
+      judged = await realpath(target);
+      const judgedBlocked = this.ensureAllowed(judged, ctx, "read");
+      if (judgedBlocked) return judgedBlocked;
+      handle = await open(judged, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    } catch (error) {
+      return toolError(`read_file could not open ${target}: ${errorMessage(error)}`);
     }
-
-    const window = await readTextFileWindow(target, input.offset, input.limit);
-    const whole = await hashAndCountLines(target);
+    let window: Awaited<ReturnType<typeof readTextFileWindow>>;
+    let whole: Awaited<ReturnType<typeof hashAndCountLines>>;
+    try {
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile()) {
+        return toolError(`read_file requires a regular file: ${target}`);
+      }
+      if (await isBinaryFile(handle)) {
+        return toolError(`read_file refused binary file: ${target}`);
+      }
+      window = await readTextFileWindow(handle, input.offset, input.limit);
+      whole = await hashAndCountLines(handle);
+      if (!judgedPathNamesOpenedFile(judged, opened)) {
+        return toolError(`read_file: ${target} changed while it was read; read it again`);
+      }
+    } finally {
+      await handle.close();
+    }
     const shown = fitReadWindow(target, input.offset, window.lines, whole.lineCount);
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined) {

@@ -1,7 +1,9 @@
 // Text previews and native agent reads share line windows; each caller retains its existing read policy.
 import { createReadStream, realpathSync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { finished } from "node:stream/promises";
+import { StringDecoder } from "node:string_decoder";
 
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
@@ -16,6 +18,31 @@ import {
 // Text preview and read_file share this size cap; it is defined in shared/ so the renderer reads the same number.
 export { MAX_TEXT_FILE_BYTES } from "../shared/text-file-limits.js";
 const BINARY_SAMPLE_BYTES = 8_192;
+const HANDLE_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * An open handle's bytes from its start, up to and including offset `end`. They are read by position, because a stream
+ * over a handle closes it when the stream ends, and the caller keeps the handle open past this read.
+ */
+export async function* handleChunks(handle: FileHandle, end = Number.POSITIVE_INFINITY): AsyncGenerator<Buffer> {
+  for (let position = 0; position <= end;) {
+    const buffer = Buffer.allocUnsafe(Math.min(HANDLE_CHUNK_BYTES, end - position + 1));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+    if (bytesRead === 0) return;
+    position += bytesRead;
+    yield buffer.subarray(0, bytesRead);
+  }
+}
+
+async function* handleText(handle: FileHandle): AsyncGenerator<string> {
+  const decoder = new StringDecoder("utf8");
+  for await (const chunk of handleChunks(handle)) {
+    const text = decoder.write(chunk);
+    if (text.length > 0) yield text;
+  }
+  const rest = decoder.end();
+  if (rest.length > 0) yield rest;
+}
 
 // Reject glob patterns before filesystem access; they are tool arguments, not concrete file paths.
 export function isGlobPattern(value: string): boolean {
@@ -59,9 +86,14 @@ export function assertReadableFilePath(
   return { ok: true, resolved };
 }
 
-export async function isBinaryFile(path: string): Promise<boolean> {
-  const stream = createReadStream(path, { start: 0, end: BINARY_SAMPLE_BYTES - 1 });
+/** A path is opened for the sample; an open handle is read from its start and left open for the caller. */
+export async function isBinaryFile(source: string | FileHandle): Promise<boolean> {
   const chunks: Buffer[] = [];
+  if (typeof source !== "string") {
+    for await (const chunk of handleChunks(source, BINARY_SAMPLE_BYTES - 1)) chunks.push(chunk);
+    return Buffer.concat(chunks).includes(0);
+  }
+  const stream = createReadStream(source, { start: 0, end: BINARY_SAMPLE_BYTES - 1 });
   try {
     for await (const chunk of stream) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -74,12 +106,14 @@ export async function isBinaryFile(path: string): Promise<boolean> {
 }
 
 // Window content preserves source separators except the last; lines omit separators and truncated reports a remaining tail.
+// An open handle is read from its start and left open for the caller.
 export async function readTextFileWindow(
-  path: string,
+  source: string | FileHandle,
   offset: number,
   limit: number,
 ): Promise<{ lines: string[]; content: string; truncated: boolean }> {
-  const input = createReadStream(path, { encoding: "utf8" });
+  const stream = typeof source === "string" ? createReadStream(source, { encoding: "utf8" }) : undefined;
+  const input: AsyncIterable<string> = stream ?? handleText(source as FileHandle);
   const lines: string[] = [];
   const contentParts: string[] = [];
   let lineParts: string[] = [];
@@ -144,8 +178,10 @@ export async function readTextFileWindow(
       else if (lineOpen) finishLine("");
     }
   } finally {
-    input.destroy();
-    await finished(input, { cleanup: true }).catch(() => undefined);
+    if (stream) {
+      stream.destroy();
+      await finished(stream, { cleanup: true }).catch(() => undefined);
+    }
   }
   return { lines, content: contentParts.join(""), truncated };
 }

@@ -626,13 +626,25 @@ Three host-only stores sit behind these surfaces:
   where the open follows a link in the last name (Windows). It is two lookups,
   because Node cannot name an open handle's path on macOS or Windows, so a path
   switched to another file and back between them is not seen; nor is a hard
-  link that stays in an unprotected folder. The same check binds the other
-  host reads whose bytes reach the model to the path they judged: a previewed
-  file or document the agent then observes, and the agent's `read_document`
-  and `view_image`, which reads the real path it judged.
-  For an agent tool, the rules judged when it runs are the admission and
-  directory ones; the other secret-file rules are decided before the call, by
-  the permission tree.
+  link that stays in an unprotected folder. The same check binds these other
+  host reads to the path they judged: a previewed file or document the agent
+  then observes, and the agent's `read_file`, `read_document` and
+  `view_image`, which read the real path they judged (`read_file` makes every
+  pass over the text through one handle). Reads that need no such binding: a
+  windowed preview, which only the person sees; the edit tools, which return
+  no file text and accept only bytes whose hash matches a bound `read_file`
+  or the tool's own last write; the current side of a turn-change excerpt,
+  compared with the hash its change recorded; a document the agent observes
+  after its own change, compared with that change's hash; a plain file
+  mention, which sends only the path for the agent's own `read_file`. Not
+  bound: the earlier side of a turn-change excerpt, captured by path just
+  before the agent's write and checked afterwards only against the hash it
+  was stored with; `grep_files`, whose matched lines come from ripgrep
+  reading by name in its own process; and the names `list_files` and
+  `glob_files` find by walking folders, since Node cannot open a name
+  relative to an open folder. For an agent tool, the rules judged when it
+  runs are the admission and directory ones; the other secret-file rules are
+  decided before the call, by the permission tree.
 - **Clipboard images.** A pasted image is written to a per-profile private
   directory together with a receipt of the file's identity. Release and the
   start sweep delete only a file a receipt names and whose identity still
