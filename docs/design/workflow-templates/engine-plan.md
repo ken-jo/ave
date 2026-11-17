@@ -251,7 +251,7 @@ interface StageGateDecideInput { runId: string; stageId: string; attempt: number
   resultHash: string;                               // binds the decision to the stage output
   outputHash?: string;                              // required when the stage run carries requested outputs; binds their approval (§10)
   decision: WorkPlanDecision; note?: string }
-type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
+type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
   | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
 interface RunScopeHooks { sessionLinked(runKey: string, sessionId: string): void; sessionEnded(sessionId: string): void; runEnded(runKey: string): void }
 const runKeyOf = (itemId: number, runId: string) => `work-board:${itemId}#${runId}`;
