@@ -3746,8 +3746,11 @@ with its own owner rule:
   its bytes is the host's: it is never written over and never marks the
   copy done. With no board and no single valid legacy board left to copy,
   a create goes on too; an id issued then is above the copy's, so it is
-  never made. A copy whose write fails is made again whole by the next
-  create or boot, a boot that finds its bytes marks it done, a boot that
+  never made. A legacy board is only ever read: none is deleted or written
+  over. When there is not exactly one that reads as a board, nothing is
+  copied, and boot shows one system notice, once per home, that the legacy
+  board was not moved and where it is. A copy whose write fails is made
+  again whole by the next create or boot, a boot that finds its bytes marks it done, a boot that
   leaves it started seeds no sample rows, and a copy made, with or without
   ids, is never made again; none of its ids is issued again. A mark that
   does not read (one without the hash among them) counts as a copy done.
@@ -3783,12 +3786,20 @@ with its own owner rule:
   run record card for each. Its discard removes, at once and with no
   confirm, that one entry, named by its place and hash; it starts, cancels
   and settles no run. One whose place no longer holds such an entry with
-  that hash is refused (`work-board-row-changed`) and writes nothing. Before
+  that hash is refused (`work-board-row-changed`) and writes nothing. It
+  passes the project check a row delete does: it is refused, as not found
+  and writing nothing, unless the entry's project, the project of the
+  source that started it and that of every board entry it could belong to
+  (each with its id, and each without a usable id) are authorized; one
+  that names a row while the board file shows nothing is refused. Before
   it, the run file as it was is copied to
   `workflow-runs.json.invalid-runs-<sha256>.bak` beside it, once per
   content; a copy that cannot be made fails the discard. The discard then
   runs the prune above, so the mark drops once nothing else in the run file
-  could be a run below it.
+  could be a run below it. Every other run file write keeps each top-level
+  key the store does not own and each entry that does not read, as JSON
+  writes its parsed value, and makes the same copy first when the file's
+  bytes are not the text it was read as.
   A row that names a template run as planning, awaiting approval or
   executing while the run file (read, not awaiting review) holds no entry
   under that run id and no entry without a string run id, which could be its
@@ -3833,8 +3844,11 @@ with its own owner rule:
   (`work-item-changed` otherwise). The run that row named, read off the
   row deleted and never looked up by its id, is cancelled at once as its
   row removed, whatever else the file holds (entries without a usable id,
-  a twin that does not validate, an `unknownBelow` mark above it); the run
-  of any other entry is untouched. Every gone id is at or below the floor,
+  a twin that does not validate, an `unknownBelow` mark above it); one a
+  restart left parked is taken over by that id first, as its adoption
+  would, and ends the same way, and an adoption that meets it while it is
+  being cancelled leaves it to that cancel. The run of any other entry is
+  untouched. Every gone id is at or below the floor,
   so the row was issued and then removed, never one not issued yet. A run
   whose row is gone, or holds it only in its run history, is cancelled as by
   Stop and settled with `runs.update`; its
@@ -3855,11 +3869,13 @@ with its own owner rule:
   other spacing). Before the first write that would change those bytes, the
   file as it was is copied to `board.json.invalid-rows-<sha256>.bak` beside
   it, once per content; a copy that cannot be made fails the write, and the
-  board file is left as it was. The same copy is made before the first
-  write that drops a field of a valid row: run fields edited into a row by
-  hand, or a plan approval that does not read, and before the first write
-  that rewrites an `unknownBelow` that is not a row id (the re-anchoring of
-  due dates is not counted). The
+  board file is left as it was. A row that reading would change (run fields
+  edited into it by hand, or a plan approval that does not read) is not
+  listed and is kept so too, as a row that does not validate; twins are
+  counted among listed rows only. The same copy is made before any write
+  over bytes that are not the text the file was read as (an `unknownBelow`
+  that is not a row id, a repaired `nextId`, a `version` other than 1,
+  re-anchored due dates, other spacing). The
   list gives each such entry with its place among them, the sha-256 of its
   JSON and its id when it has one (`unreadableRows`), and the board shows a
   card marked invalid for each, one without a usable id included; nothing
@@ -3883,6 +3899,46 @@ with its own owner rule:
   that way, the board is told with `run-end-confirmed`, which clears only
   that stop's note that its end is not saved. A start whose row write may
   not have landed ends `error` once a readable board shows no row naming it.
+  Invariant: the write guard. The board store owns `board.json` and the
+  check below; the run store owns `workflow-runs.json` and the row-id
+  floor; the engine owns run state and writes either file only through
+  them. Three properties rest on it: no row id is issued twice (the floor);
+  a run's row is gone only with the proof on disk above, save for a user's
+  delete of a listed row (the run id read off the row removed) and the
+  judged drop of `unknownBelow`; and no bytes are lost unseen. Every write
+  of either file holds all four of these:
+  (a) Where a run's row stands is read off the board file's raw text: a run
+  id is held there when it appears as a whole JSON string, as written or
+  under up to 16 levels of JSON string escaping; past 16 levels every id
+  is held. Words around an id do not hold it.
+  (b) Every rewrite goes through one function, `rewriteKeepingBytes`: bytes
+  on disk that are not the text the file was read as are copied first to
+  `<file>.<tag>-<sha256>.bak`, once per content (`invalid-rows` for the
+  board, `invalid-runs` for the run file); a copy that cannot be made fails
+  the write and leaves the file as it was. Its callers are the board
+  store's one commit (create, update, transition, run status, session and
+  result, plan approval and decision, run start, boot reconcile, clearing a
+  missing run, a delete, the delete of an entry that does not validate and
+  the drop of `unknownBelow`, so also the write that repairs `nextId` or
+  writes back a `version` other than 1), the boot copy of a legacy board,
+  which writes over no bytes at all, and the run store's one commit (row
+  ids and the floor, the legacy copy marks, run writes, the prune and the
+  discard of an entry that does not read).
+  (c) No board write takes out of the board file a run id the run file
+  holds, unless the entry the write removes on purpose held it (a deleted
+  row, a deleted entry that does not validate, run history entries a
+  start prunes); such a write is refused and writes nothing. While the run
+  file cannot be read, the board is written only over bytes that are the
+  text it was read as. A row is changed by no write it was not meant for:
+  one that reading would change is kept as an entry that does not
+  validate, as above, and the run file keeps what it does not own.
+  (d) One property test runs random sequences of every board store write
+  over damaged files and checks (a) to (c) after each; targeted tests
+  cover a row put under a first `items` key that a second one shadows, a
+  row moved under another top-level key as an escaped string, and a run id
+  held under each of seven fields of a renumbered or renamed row; one table
+  test runs each run file write over a file with keys and entries the
+  store does not own.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
