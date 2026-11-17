@@ -366,7 +366,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
-   * `precheck` refuses a user decision before anything is written; the pin is checked before it runs. */
+   * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
+   * write. */
   async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
     if (runs.get(state.itemId) !== state) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
@@ -379,6 +380,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       return "not_found";
     }
     if (read.settled !== undefined) return "run_mismatch";
+    // A stale decision is refused for its binding (run, stage, attempt, pending, result, output) before any pin refusal.
+    const stale = precheck?.(read) ?? null;
+    if (stale !== null) return stale;
     let version: TemplateVersion;
     try {
       version = await resolvePinned(read.pin);

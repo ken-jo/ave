@@ -1,10 +1,11 @@
 /** A template run end to end over a real board and template store: which stages spawn, from which version, under which authority. */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import { WorkflowTemplateError } from "../../work-board/template-graph.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
 async function withHarness(run: (h: Harness) => Promise<void>, opts: Parameters<typeof stageRunHarness>[0] = {}): Promise<void> {
@@ -456,4 +457,28 @@ it("run fields hand-written into the board file are ignored: the pin, the source
   expect(record?.stageRuns.map(stage => [stage.status, stage.output])).toEqual([["passed", "real a"], ["passed", "real b"]]);
   expect(record?.runWorkspace?.runRoot).toContain(join(h.dir, "runs"));
   expect(h.children).toHaveLength(2);
+}));
+
+it("a stale gate decision is refused for its binding before a pin that no longer resolves", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  (await h.untilLive(1))[0].finish();
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  const item = await h.item(id);
+  const gate = await h.stageRun(id, "a");
+  const runId = item.runId ?? "";
+  const pinned = vi.spyOn(h.templates, "resolveVersion").mockRejectedValue(new WorkflowTemplateError("unknown-version"));
+  const decision = { runId, stageId: "a", attempt: gate.attempt, resultHash: gate.resultHash ?? "", decision: "approve" as const };
+  expect(await h.engine.decideStageGate(id, { ...decision, attempt: gate.attempt + 1 })).toEqual({ ok: false, reason: "attempt_mismatch" });
+  expect(await h.engine.decideStageGate(id, { ...decision, resultHash: "e".repeat(64) })).toEqual({ ok: false, reason: "result_mismatch" });
+  // The stored gate binds requested outputs: a decision without their hash is stale too.
+  const outputs = [{ id: "report", decl: { kind: "upload" as const, toolName: "deliver", owner: "plugin" as const, ownerId: "media" }, args: "{}", summary: "report" }];
+  expect(await h.board.runs.update(runId, current => ({ ...current, stageRuns: current.stageRuns.map(stage => ({ ...stage, requestedOutputs: outputs })) }))).toMatchObject({ status: "stored" });
+  expect(await h.engine.decideStageGate(id, decision)).toEqual({ ok: false, reason: "output_mismatch" });
+  // A decision whose binding holds meets the pin refusal, and nothing changed.
+  await h.board.runs.update(runId, current => ({ ...current, stageRuns: current.stageRuns.map(({ requestedOutputs: _dropped, ...stage }) => stage) }));
+  expect(await h.engine.decideStageGate(id, decision)).toEqual({ ok: false, reason: "version_missing" });
+  pinned.mockRestore();
+  expect(await h.stageRun(id, "a")).toMatchObject({ status: "awaiting_gate", attempt: gate.attempt });
 }));
