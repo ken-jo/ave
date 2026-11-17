@@ -100,10 +100,24 @@ function isAuthorizedInvalidRow(row: unknown): boolean {
   return resolved.authorized && resolved.project !== null;
 }
 
-// A run record that does not read is checked by the project it says it was started in and by every board row it could belong to.
-function isAuthorizedRunRecord(entry: unknown, rows: readonly unknown[]): boolean {
-  const startedBy = typeof entry === "object" && entry !== null ? (entry as { runStartedBy?: unknown }).runStartedBy : undefined;
-  return isAuthorizedInvalidRow(entry) && isAuthorizedInvalidRow(startedBy) && rows.every(isAuthorizedInvalidRow);
+// The project an unreadable run record's own start names, never the row id it holds: the card's root for Create and run (none:
+// unscoped), the approved scope of its schedule attachment. Undefined when that cannot be read.
+async function runRecordOwner(entry: unknown, attachments: IpcDeps["workflowTemplateStore"]): Promise<{ projectRoot?: string } | undefined> {
+  const source = typeof entry === "object" && entry !== null ? (entry as { runStartedBy?: unknown }).runStartedBy : undefined;
+  if (typeof source !== "object" || source === null) return undefined;
+  const { kind, projectRoot, attachmentId } = source as { kind?: unknown; projectRoot?: unknown; attachmentId?: unknown };
+  if (kind === "local-create-and-run") return projectRoot === undefined ? {} : typeof projectRoot === "string" && projectRoot !== "" ? { projectRoot } : undefined;
+  if (kind !== "schedule-attachment" || typeof attachmentId !== "string" || !attachments) return undefined;
+  const scope = (await attachments.getAttachment(attachmentId).catch(() => null))?.approvedScope;
+  return scope?.kind === "all" ? {} : scope?.kind === "project" ? { projectRoot: scope.projectRoot } : undefined;
+}
+
+// A run record that does not read is checked by the project its own start names and by every board row that names its run or could be
+// the row it names.
+async function runRecordVerdict(entry: unknown, rows: readonly unknown[], attachments: IpcDeps["workflowTemplateStore"]): Promise<boolean | "work-board-run-owner-unknown"> {
+  const owner = await runRecordOwner(entry, attachments);
+  if (owner === undefined) return "work-board-run-owner-unknown";
+  return isAuthorizedInvalidRow(owner) && isAuthorizedInvalidRow(entry) && rows.every(isAuthorizedInvalidRow);
 }
 
 const hasExactly =(value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
@@ -327,7 +341,8 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       const row = entryTarget(target, "invalidRow");
       const runRecord = entryTarget(target, "runRecord");
       const result = row ? await workBoardStore.removeUnreadable(row, isAuthorizedInvalidRow)
-        : runRecord ? await workBoardStore.discardUnreadableRun(runRecord, isAuthorizedRunRecord) : undefined;
+        : runRecord ? await workBoardStore.discardUnreadableRun(runRecord, (entry, rows) => runRecordVerdict(entry, rows, deps.workflowTemplateStore))
+        : undefined;
       if (result === undefined) return { ok: false, error: "invalid-input" };
       if (result.status === "deleted") broadcastItemChanged(result.itemId, "removed");
       return result;

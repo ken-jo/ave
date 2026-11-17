@@ -49,6 +49,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.work-board-duplicate-key": "작업 보드에 아무것도 저장하지 않았습니다. 보드 파일 board.json의 한 항목에 같은 키가 두 번 들어 있어 어느 값이 맞는지 알 수 없고, 다시 쓰면 다른 값을 잃게 됩니다. 보드는 파일이 읽히는 대로 보여 줍니다. 각 항목에 키가 한 번씩만 나오도록 board.json을 직접 고치세요. 그 전에는 이 파일에 아무것도 쓰지 않습니다.",
   "reasonCodes.workflow-runs-duplicate-key": "작업 보드가 템플릿 실행을 읽을 수 없습니다. 워크플로 실행 파일 workflow-runs.json의 한 항목에 같은 키가 두 번 들어 있어 어느 값이 맞는지 알 수 없습니다. 파일은 그대로 두었고 아무것도 쓰지 않습니다. 각 항목에 키가 한 번씩만 나오도록 workflow-runs.json을 직접 고친 뒤 보드를 다시 여세요.",
   "reasonCodes.work-board-backup-conflict": "저장하지 않았습니다. Ave는 다시 써 주지 않을 바이트가 있는 작업 보드 파일을 덮어쓰기 전에 그 사본을 옆에 남기는데, 그 사본 이름의 .bak 파일이 이미 있지만 같은 바이트가 아니거나 읽을 수 없습니다. 그 .bak 파일(로그에 이름이 있습니다)을 작업 보드 폴더 밖으로 옮긴 뒤 다시 시도하세요.",
+  "reasonCodes.work-board-run-owner-unknown": "삭제하지 않았습니다. 워크플로 실행 파일의 이 손상된 항목에는 실행이 어느 프로젝트에서 시작되었는지가 Ave가 읽을 수 있는 형태로 남아 있지 않아, 삭제해도 되는 항목인지 알 수 없습니다. 지워야 한다면 workflow-runs.json에서 직접 지우세요.",
   "reasonCodes.outward-effect-tool": "이 도구는 실행 바깥에 영향을 주므로 예약 실행이 스스로 사용할 수 없습니다. 대신 요청 출력으로 요청하세요.",
   "reasonCodes.tool-effect-unknown": "지금은 이 도구가 무엇을 하는지 확인할 수 없어 예약 실행에서 사용할 수 없습니다. 직접 실행할 때는 그대로 사용할 수 있습니다.",
   "reasonCodes.user-gesture-required": "템플릿 실행은 직접 클릭하거나 키를 눌러야 시작됩니다. 실행을 다시 누르세요.",
