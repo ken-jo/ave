@@ -337,25 +337,47 @@ function boardStanding(board: BoardFile, text: string = boardText(board)): RowSt
   };
 }
 
-const QUOTED_ID = /"([A-Za-z0-9_-]+)(?=")/g;
-const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|([\s\S]))/g;
+// A lone backslash at the end decodes to nothing, so every decode of text holding a backslash is shorter.
+const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|([\s\S])|$)/g;
 const SIMPLE_ESCAPES: Readonly<Record<string, string>> = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
 const ESCAPE_LEVELS = 16;
+const RUN_ID_MAX = 256;
 
-/** Whether `text` holds a run id: as a whole JSON string in it as it is, or as any further level of JSON string escapes decodes it, so a
- * run id the parse does not show (under a key given twice, in a row kept as a string, spelled with escapes) is found. Text around an id
- * in a string does not hold it. Text still decoding past 16 levels holds every id. */
+const unescaped = (text: string): string => text.includes("\\")
+  ? text.replace(JSON_ESCAPE, (_, hex: string | undefined, char: string | undefined) =>
+    hex !== undefined ? String.fromCharCode(Number.parseInt(hex, 16)) : char === undefined ? "" : SIMPLE_ESCAPES[char] ?? char)
+  : text;
+
+/** Whether `text` holds a run id, compared whole: the text is cut at every quote no backslash escapes, each piece is decoded as a JSON
+ * string, and each decoded piece that holds a quote or a backslash is read the same way again, so a run id the parse does not show (under
+ * a key given twice, in a row kept as a string, spelled with escapes) is found, whatever characters it has. Text around an id does not
+ * hold it. Text still decoding past 16 levels holds every id. */
 function heldIn(text: string): (runId: string) => boolean {
   const ids = new Set<string>();
-  let level = text;
-  for (let depth = 0; depth <= ESCAPE_LEVELS; depth += 1) {
-    for (const [, id] of level.matchAll(QUOTED_ID)) ids.add(id);
-    const next = level.replace(JSON_ESCAPE, (_, hex: string | undefined, char: string) =>
-      hex !== undefined ? String.fromCharCode(Number.parseInt(hex, 16)) : SIMPLE_ESCAPES[char] ?? char);
-    if (next === level) return (runId) => ids.has(runId);
+  let level = [text];
+  for (let depth = 0; level.length > 0; depth += 1) {
+    if (depth > ESCAPE_LEVELS) return () => true;
+    const next: string[] = [];
+    for (const value of level) {
+      if (value.length > 0 && value.length <= RUN_ID_MAX) ids.add(value);
+      if (!value.includes("\"") && !value.includes("\\")) continue;
+      let start = 0;
+      let at = 0;
+      while (at < value.length) {
+        const char = value.charCodeAt(at);
+        if (char === 0x5c) at += 2;
+        else if (char !== 0x22) at += 1;
+        else {
+          next.push(unescaped(value.slice(start, at)));
+          at += 1;
+          start = at;
+        }
+      }
+      next.push(unescaped(value.slice(start)));
+    }
     level = next;
   }
-  return () => true;
+  return (runId) => ids.has(runId);
 }
 
 function rowIdOf(row: unknown): number | undefined {

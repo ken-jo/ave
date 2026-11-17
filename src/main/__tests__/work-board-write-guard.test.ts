@@ -4,7 +4,7 @@
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { WorkBoardStore } from "../work-board-store.js";
 import { sha256Hex as sha } from "../../lib/hex-digest-equal.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -204,3 +204,55 @@ it("no store write takes a stored run's id out of board.json unless the entry it
   expect(tally.refused).toBeGreaterThan(5);
   expect(tally.kept).toBeGreaterThan(10);
 }, 180_000);
+
+describe("the evidence scan", () => {
+  const PIN = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
+  const live = (runId: string, itemId = 40) => ({ runId, itemId, pin: PIN, runStartedBy: { kind: "local-create-and-run", pin: PIN }, startedAt: AT, stageRuns: [] });
+  async function home(board: string, runs: unknown[]): Promise<{ dir: string; path: string; store: WorkBoardStore }> {
+    const dir = mkdtempSync(join(tmpdir(), "ave-evidence-"));
+    writeFileSync(join(dir, "board.json"), board);
+    writeFileSync(join(dir, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 50, runs }));
+    const store = new WorkBoardStore(join(dir, "board.json"), () => Date.parse(AT));
+    await store.load();
+    return { dir, path: join(dir, "board.json"), store };
+  }
+  const nested = (value: unknown, levels: number): unknown => {
+    let packed = value;
+    for (let n = 0; n < levels; n += 1) packed = JSON.stringify(packed);
+    return packed;
+  };
+
+  it.each(["run.with-dot", "run:other", "run space", "실행", "say \"hi\"", "back\\slash", "D:\\", "x".repeat(256)])("holds the stored run id %j wherever a string holds it whole", async (runId) => {
+    // Between quotes in decoded text that is not JSON too, for an id that holds neither a quote nor a backslash.
+    const loose = /["\\]/.test(runId) ? [] : [{ archive: `x" "${runId}" y` }];
+    for (const where of [{ archive: [row(9, { runId })] }, { archive: nested({ runId }, 3) }, ...loose]) {
+      const { dir, store } = await home(JSON.stringify({ version: 1, nextId: 51, ...where, items: [row(2)] }), [live(runId)]);
+      try { expect((await store.runRowsOnDisk())?.(live(runId))).toBe("unreadable"); } finally { await cleanupTmpDir(dir); }
+    }
+  });
+
+  it("holds an id spelled with escapes and not one only inside other text", async () => {
+    const text = `{"version":1,"nextId":51,"a":"\u0072un-a","b":"see run-b notes","items":[]}`;
+    const { dir, store } = await home(text, [live("run-a"), live("run-b")]);
+    try {
+      const standing = await store.runRowsOnDisk();
+      expect([standing?.(live("run-a")), standing?.(live("run-b"))]).toEqual(["unreadable", "gone"]);
+    } finally { await cleanupTmpDir(dir); }
+  });
+
+  it("holds every id only past 16 levels of escapes, never for a backslash at a string's end", async () => {
+    for (const [value, held] of [[nested("other", 18), "unreadable"], [nested("other", 6), "gone"], ["C:\\", "gone"], ["\\\\\\\\\\\\\\\\", "gone"]] as const) {
+      const { dir, store } = await home(JSON.stringify({ version: 1, nextId: 51, note: value, items: [] }), [live("run-a")]);
+      try { expect((await store.runRowsOnDisk())?.(live("run-a"))).toBe(held); } finally { await cleanupTmpDir(dir); }
+    }
+  });
+
+  it("refuses an edit that takes out the last string holding a live run's id, whatever characters the id has", async () => {
+    const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items: [row(2, { detail: "run.with-dot" })] }, null, 2)}\n`, [live("run.with-dot")]);
+    try {
+      const before = readFileSync(path, "utf8");
+      await expect(store.update(2, { detail: "done" })).rejects.toMatchObject({ code: "work-board-run-id-held" });
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally { await cleanupTmpDir(dir); }
+  });
+});
