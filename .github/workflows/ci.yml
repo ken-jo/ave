@@ -1066,6 +1066,12 @@ jobs:
           src/lib/__tests__/shell-resolver.test.ts
           src/lib/__tests__/shell-resolver.win32-trust.test.ts
           src/boot/steps/__tests__/model-catalog-refresh.test.ts
+          src/boot/steps/__tests__/hook-system-wiring.test.ts
+          src/__tests__/boot-hooks-wiring.test.ts
+          src/hooks/__tests__/hook-config-trust.test.ts
+          src/hooks/__tests__/hook-matcher-safety.test.ts
+          src/hooks/__tests__/hook-source-controller.test.ts
+          src/hooks/__tests__/hook-trust-commands.test.ts
 
       - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
