@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -222,6 +222,37 @@ it("discards nothing while the run file awaits review, is past its read limit or
   expect(await store.discardUnreadable(target)).toBe("changed");
   expect(await readFile(file, "utf8")).toBe(text);
   expect((await store.view()).unreadable).toEqual([target]);
+});
+
+const RUN_FILE_WRITES: [string, (store: WorkflowRunStore) => Promise<unknown>][] = [
+  ["put", store => store.put(run({ runId: "run-2", itemId: 2 }))],
+  ["update", store => store.update("run-1", value => ({ ...value, stageRuns: [] }))],
+  ["prune", store => store.prune(value => value.runId === "run-1" ? null : value)],
+  ["issueRowId", store => store.issueRowId(0)],
+  ["raiseRowIdFloor", store => store.raiseRowIdFloor(50)],
+  ["startLegacyBoardCopy", store => store.startLegacyBoardCopy(3, "a".repeat(64))],
+  ["finishLegacyBoardCopy", store => store.finishLegacyBoardCopy("a".repeat(64))],
+  ["discardUnreadable", store => store.discardUnreadable({ position: 3, hash: sha(JSON.stringify("stray")) })],
+];
+it.each(RUN_FILE_WRITES)("%s writes the run file's other keys and every entry that does not read as a run back as they were, and keeps bytes it would not give back first", async (name, write) => {
+  const archive = [{ runId: "run-9", itemId: 9 }];
+  const unreadable = [{ runId: "broken", itemId: 4, extra: 1 }, { itemId: "two" }, "stray"];
+  const copy = { through: 5, board: "a".repeat(64) };
+  // Compact, a key written twice and a floor below a stored run's row: none of it is what a write writes.
+  const text = `{"archive":${JSON.stringify(archive)},"version":1,"rowIdFloor":0,"runs":${JSON.stringify([run(), ...unreadable])},"note":"x","note":"moved by hand","legacyBoardCopy":${JSON.stringify(copy)}}`;
+  await writeFile(file, text);
+  const store = new WorkflowRunStore(file);
+  await write(store);
+  const after = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown> & { runs: unknown[] };
+  expect(Object.keys(after)[0]).toBe("archive");
+  expect(after).toMatchObject({ archive, note: "moved by hand" });
+  for (const entry of name === "discardUnreadable" ? unreadable.slice(0, 2) : unreadable) expect(after.runs).toContainEqual(entry);
+  expect(await readFile(`${file}.invalid-runs-${sha(text)}.bak`, "utf8")).toBe(text);
+  // Written as a write writes it, the file is not copied again.
+  const copies = () => readdirSync(dir).filter(entry => entry.endsWith(".bak"));
+  expect(copies()).toHaveLength(1);
+  await store.raiseRowIdFloor(60);
+  expect(copies()).toHaveLength(1);
 });
 
 it("calls a run missing only when the file read holds no entry under its id and none without a string runId, and never while it awaits review", async () => {

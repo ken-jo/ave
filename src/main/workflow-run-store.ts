@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { access } from "node:fs/promises";
 import { join } from "node:path";
-import { openFeatureNamespace, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
+import { openFeatureNamespace } from "./storage/feature-namespace.js";
+import { rewriteKeepingBytes } from "./storage/rewrite-keeping-bytes.js";
 import { AVE_HOME_INPUT_MAX_BYTES, AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isRecord } from "../shared/is-record.js";
@@ -13,8 +13,9 @@ import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, W
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
 // `legacyBoardCopy`: the copy of a legacy board, as stored; it is only read by the copy and the board writes that wait on it, and written
-// back as it is.
-interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown }
+// back as it is. `raw`, the file's top-level object as read: a write writes its other keys back as they were, in their place; `unchanged`,
+// the text a write writes for the file as read.
+interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown; raw?: Record<string, unknown>; unchanged?: string }
 /** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
  * row it names when that reads as a row id. */
 interface WorkflowRunUnreadable { position: number; hash: string; itemId?: number }
@@ -70,11 +71,8 @@ function unreadableEntries(file: RunsFile): WorkflowRunUnreadable[] {
   });
 }
 
-// The run file as it was before a discard, once per content; a copy that cannot be written fails the discard.
-async function keepDiscardedBytes(filePath: string, bytes: Buffer): Promise<void> {
-  const copy = `${filePath}.invalid-runs-${createHash("sha256").update(bytes).digest("hex")}.bak`;
-  if (await access(copy).then(() => true, () => false)) return;
-  await writeFileAtomicAtPath(copy, bytes);
+function fileText({ raw, unchanged: _, ...known }: RunsFile): string {
+  return `${JSON.stringify({ ...raw, ...known }, null, 2)}\n`;
 }
 
 const isRowId = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -117,7 +115,9 @@ export class WorkflowRunStore {
     requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor)), "invalid-template-run");
     const runs: unknown[] = raw.runs;
     const copy = raw.legacyBoardCopy === undefined ? {} : { legacyBoardCopy: raw.legacyBoardCopy };
-    return { file: { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy }, bytes: input.bytes };
+    const file: RunsFile = { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy, raw };
+    file.unchanged = fileText(file);
+    return { file, bytes: input.bytes };
   }
 
   /** The id for a new board row: above the floor and above `seen` (every id the board file shows), stored as the new floor before the row
@@ -207,9 +207,8 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async () => {
       const read = await this.load();
       if (!read?.bytes || !unreadableEntries(read.file).some(entry => entry.position === target.position && entry.hash === target.hash)) return "changed";
-      await keepDiscardedBytes(this.filePath, read.bytes);
       read.file.runs.splice(target.position, 1);
-      return (await this.commit(read.file)) ? "discarded" : "too-large";
+      return (await this.commit(read.file, true)) ? "discarded" : "too-large";
     });
   }
 
@@ -294,11 +293,12 @@ export class WorkflowRunStore {
   }
 
   // A file past the read limit could not be read again, so nothing could shrink it afterwards: such a write is refused and the file stays as it is.
-  private async commit(file: RunsFile): Promise<boolean> {
+  // Bytes it would not give back, and the file before a discard, are copied beside it first.
+  private async commit(file: RunsFile, discard = false): Promise<boolean> {
     file.rowIdFloor = floorOver(file.runs, file.rowIdFloor);
-    const text = `${JSON.stringify(file, null, 2)}\n`;
+    const text = fileText(file);
     if (Buffer.byteLength(text, "utf8") > AVE_HOME_INPUT_MAX_BYTES) return false;
-    await writeFileAtomicAtPath(this.filePath, text);
+    await rewriteKeepingBytes(this.filePath, text, { tag: "invalid-runs", ...(discard ? {} : { unchanged: file.unchanged }) });
     return true;
   }
 }
