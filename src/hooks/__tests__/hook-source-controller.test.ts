@@ -12,8 +12,9 @@ import { loadHookRuntimePolicy, type HookRuntimePolicy } from "../hook-source-po
 import { acceptHookTrust } from "../hook-trust-commands.js";
 import { hookDirLayout, writeExecutableHook } from "./test-helpers.js";
 
-// Ordinary fixture files are owned by the test principal. Tests that need administrator authority read the real native snapshot with
-// administrator ownership substituted, so the production trust check still runs on that evidence.
+// Ordinary fixture files are owned by the test principal, which the Windows policy reader rejects first. Tests of what an
+// administrator-owned policy may contain read the real native snapshot with administrator ownership substituted, so the
+// production trust check still runs on that evidence.
 const adminOwned = vi.hoisted(() => ({ enabled: false }));
 vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/windows-path-facts.js")>();
@@ -185,13 +186,18 @@ describe("administrator hook authority", () => {
   });
 
   it("refuses an administrator definition with an unreadable file operand", async () => {
+    adminOwned.enabled = true;
     const adminDir = join(root, "admin");
     mkdirSync(adminDir);
     const adminPath = join(adminDir, "policy.json");
+    const withOperand = (operand: string) => JSON.stringify({ version: 1, hooks: { PreToolUse: [{ hooks: [{
+      type: "command", command: [process.execPath, operand],
+    }] }] } });
+    writeFileSync(join(adminDir, "readable.cjs"), "");
+    writeFileSync(adminPath, withOperand("./readable.cjs"));
+    expect(await loadHookRuntimePolicy(adminPath)).toMatchObject({ allowManagedHooksOnly: false, managedHooks: [{ hookSource: "managed" }] });
     symlinkSync("loop.cjs", join(adminDir, "loop.cjs"));
-    writeFileSync(adminPath, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{
-      type: "command", command: [process.execPath, "./loop.cjs"],
-    }] }] } }));
+    writeFileSync(adminPath, withOperand("./loop.cjs"));
     expect(await loadHookRuntimePolicy(adminPath)).toMatchObject({ allowManagedHooksOnly: true, managedHooks: [] });
   });
 
@@ -233,13 +239,27 @@ describe("administrator hook authority", () => {
     expect(manager.hooksOfType("pre")).toHaveLength(1);
   });
 
-  it("fails closed on malformed or unreadable administrator policy", async () => {
+  it("fails closed on a malformed administrator policy or unknown hook definition", async () => {
+    adminOwned.enabled = true;
     const admin = join(root, "policy.json");
+    writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] }));
+    expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] });
     writeFileSync(admin, "invalid");
     expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: true, managedHooks: [], allowedHttpHookUrls: [] });
     writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: false,
       hooks: { PreToolUse: [{ hooks: [{ type: "unrecognized", secret: "not-for-diagnostics" }] }] } }));
     expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: true, managedHooks: [], allowedHttpHookUrls: [] });
+  });
+
+  it.runIf(process.platform === "win32")("refuses an administrator policy owned by an ordinary principal", async () => {
+    const admin = join(root, "policy.json");
+    writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] }));
+    expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: true, allowedHttpHookUrls: [] });
+    adminOwned.enabled = true;
+    expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] });
+  });
+
+  it("fails closed on an unreadable administrator policy and opens only on confirmed absence", async () => {
     mkdirSync(join(root, "directory-policy"));
     expect(await loadHookRuntimePolicy(join(root, "directory-policy"))).toMatchObject({ allowManagedHooksOnly: true, managedHooks: [] });
     expect(await loadHookRuntimePolicy(join(root, "absent-policy"))).toMatchObject({ allowManagedHooksOnly: false, managedHooks: [] });
