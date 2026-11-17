@@ -505,8 +505,7 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
         row(2, { planApproval: { decision: 7 } }),
         row(2, { runHistory: [{ runId: "run-0", stageRuns: [] }] }),
       ]) {
-        writeFileSync(path, `${JSON.stringify({ version: 1, nextId: 3, items: [row(1), second] }, null, 2)}
-`, "utf-8");
+        writeFileSync(path, `${JSON.stringify({ version: 1, nextId: 3, items: [row(1), second] }, null, 2)}\n`, "utf-8");
         const listed = await store.list();
         expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([1]);
         expect(listed.status === "ok" && listed.unreadableRows?.map(({ id }) => id)).toEqual([2]);
