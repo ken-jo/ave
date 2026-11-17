@@ -1702,15 +1702,29 @@ async function resetToFreshPrompt(
   const expired = (): TypeTerminalCommandResult => ({ ok: false, reason: "no-fresh-prompt", message: "the terminal's shell did not draw a fresh prompt with a full quiet window within three seconds" });
   let drawn = false;
   let sent = 0;
+  // The prompts drawn before the latest Ctrl-C; one more is the fresh prompt.
+  let since = blocks.promptEndCount();
+  // A shell that drew the fresh prompt, or left its line editor for the prompt hooks, took the latest Ctrl-C: the prompt follows when the hooks
+  // finish. Another Ctrl-C then would interrupt those hooks instead (bash can then draw prompts its editor does not own).
+  const answered = (): boolean => sent > 0 && (blocks.promptEndCount() > since || blocks.promptState() === "between-prompts");
   while (!drawn) {
-    const unsafe = await safeToWrite();
-    if (unsafe) return unsafe;
+    if (!answered()) {
+      const unsafe = await safeToWrite();
+      if (unsafe) return unsafe;
+    }
     const left = deadline - Date.now();
     if (left <= 0) return expired();
-    const fresh = waitForFreshPrompt(blocks, blocks.promptEndCount(), Math.min(RESET_REPEAT_MS, left), () => interrupted() !== null);
-    target.write("\u0003");
-    sent++;
-    drawn = await fresh;
+    // Read again after the operating-system check, immediately before a resend would be written.
+    if (answered()) {
+      drawn = blocks.promptEndCount() > since || await waitForFreshPrompt(blocks, since, left, () => interrupted() !== null);
+      if (!drawn && interrupted() === null && target.isLive()) return expired();
+    } else {
+      since = blocks.promptEndCount();
+      const fresh = waitForFreshPrompt(blocks, since, Math.min(RESET_REPEAT_MS, left), () => interrupted() !== null);
+      target.write("\u0003");
+      sent++;
+      drawn = await fresh;
+    }
     const changed = interrupted();
     if (changed) return changed;
     if (!target.isLive()) return { ok: false, reason: "no-terminal", message: target.missing };
