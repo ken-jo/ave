@@ -3711,8 +3711,12 @@ with its own owner rule:
   while the file awaits review; at boot the engine adopts back each record
   without `settled`, and the board's boot reconcile leaves every row that names
   a template run to it. `updateRun` changes only the run a row names; a run
-  whose row is gone or names a newer run is settled with `runs.update`, then
-  `pruneSettledRuns()` removes the settled runs no row lists.
+  whose row the board file on disk shows gone or naming a newer run
+  (`runRowGoneOnDisk()`, only for a row id the board issued) is settled with
+  `runs.update`, then `pruneSettledRuns()` removes the settled runs no row
+  lists. A board file that is missing, does not parse or awaits review proves
+  nothing: the engine then settles, prunes and sweeps nothing and refuses
+  template starts until a later start, decision, reader or boot reads it.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
