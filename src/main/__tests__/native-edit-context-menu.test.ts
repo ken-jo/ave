@@ -24,6 +24,7 @@ const {
   popupMock,
   menuTemplates,
   mainWindowForContentsMock,
+  uiOriginMock,
   windows,
   independentGuestMock,
   guestWindowIdMock,
@@ -34,6 +35,7 @@ const {
   popupMock: vi.fn(),
   menuTemplates: [] as unknown[],
   mainWindowForContentsMock: vi.fn(),
+  uiOriginMock: vi.fn(),
   windows: [] as unknown[],
   independentGuestMock: vi.fn(),
   guestWindowIdMock: vi.fn(),
@@ -50,6 +52,7 @@ vi.mock("electron", () => ({
 }));
 
 vi.mock("../app-state.js", () => ({ getMainWindows: () => windows, mainWindowForContents: mainWindowForContentsMock }));
+vi.mock("../main-window-host.js", () => ({ mainWindowUiOrigin: uiOriginMock }));
 vi.mock("../browser/browser-tab-registry.js", () => ({ browserTabRegistry: {
   isIndependentGuest: independentGuestMock, guestWindowId: guestWindowIdMock,
   allowsNativeContextMenu: allowsNativeContextMenuMock,
@@ -98,6 +101,7 @@ describe("installNativeEditContextMenu", () => {
     });
     fromWebContentsMock.mockReturnValue(null);
     mainWindowForContentsMock.mockReturnValue(null);
+    uiOriginMock.mockReturnValue({ x: 0, y: 0 });
     independentGuestMock.mockReturnValue(false);
     guestWindowIdMock.mockReturnValue(7);
     allowsNativeContextMenuMock.mockReturnValue(true);
@@ -171,13 +175,15 @@ describe("installNativeEditContextMenu", () => {
     expect(popupMock).not.toHaveBeenCalled();
   });
 
-  it("keeps main UI menu coordinates unchanged", () => {
+  it("adds the main UI origin to native event coordinates without scaling", () => {
     const owner = { id: 7 };
     mainWindowForContentsMock.mockReturnValue(owner);
-    const { handler } = install();
+    uiOriginMock.mockReturnValue({ x: 4, y: 4 });
+    const { contents, handler } = install();
     handler({ preventDefault: vi.fn() }, params({ isEditable: true, x: 41, y: 59 }));
-    expect(popupMock).toHaveBeenCalledExactlyOnceWith({ window: owner, x: 41, y: 59 });
+    expect(popupMock).toHaveBeenCalledExactlyOnceWith({ window: owner, x: 45, y: 63 });
     expect(fromWebContentsMock).not.toHaveBeenCalled();
+    expect(contents.getZoomFactor).not.toHaveBeenCalled();
   });
 
   it("adds attached native container and page origins without applying UI zoom", () => {

@@ -138,11 +138,11 @@ test.describe("workspace rail redesign", () => {
     const root = await page.getByTestId(TEST_IDS.chatViewRoot).boundingBox();
     const reserve = await motion.boundingBox();
     const panel = await page.getByTestId(TEST_IDS.chatSidePanel).boundingBox();
-    const inset = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-inset")));
-    expect(inset).toBeGreaterThan(0);
-    // Include card insets in the reserve; narrow tiles leave only that inset space outside the card.
+    const cardGap = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-gap")));
+    expect(cardGap).toBeGreaterThan(0);
+    // Work-card padding uses the inter-card gap on both sides of its reserve.
     expect(reserve?.width ?? Infinity).toBeLessThanOrEqual((root?.width ?? 0) + 1);
-    expect(Math.abs((panel?.width ?? 0) - Math.min(SIDE_PANEL_MIN_WIDTH, (reserve?.width ?? 0) - 2 * inset))).toBeLessThanOrEqual(1);
+    expect(Math.abs((panel?.width ?? 0) - Math.min(SIDE_PANEL_MIN_WIDTH, (reserve?.width ?? 0) - 2 * cardGap))).toBeLessThanOrEqual(1);
     expect(composer?.width ?? 0).toBeGreaterThan((root?.width ?? 0) - (panel?.width ?? 0));
     await test.info().attach("narrow-panel-360.png", { body: await page.screenshot({ path: test.info().outputPath("narrow-panel-360.png") }), contentType: "image/png" });
 

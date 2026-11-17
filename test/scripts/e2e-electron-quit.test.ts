@@ -17,7 +17,7 @@ async function application(exitCode: number | null = null, closed = exitCode !==
   const nativeApp = Object.assign(new EventEmitter(), { quit: vi.fn() });
   const quit = nativeApp.quit;
   const evaluate = vi.fn(async (operation: (module: { app: typeof nativeApp }) => void) => operation({ app: nativeApp }));
-  const close = vi.fn(async () => {});
+  const close = vi.fn(async () => { nativeApp.quit(); });
   const process = vi.fn(() => child);
   const app = { process, evaluate, close } as unknown as ElectronApplication;
   launcher.mockResolvedValueOnce(app);
@@ -28,32 +28,45 @@ async function application(exitCode: number | null = null, closed = exitCode !==
 
 describe("native test application quit", () => {
   afterEach(() => vi.restoreAllMocks());
-  it("keeps the connection through cleanup and waits for native exit after releasing it", async () => {
+  it("requests graceful close once and waits for native cleanup and process closure", async () => {
     const runtime = await application();
-    const quitting = quitElectron(runtime.app);
+    let settled = false;
+    const quitting = quitElectron(runtime.app).then(() => { settled = true; });
     await Promise.resolve();
     expect(runtime.quit).toHaveBeenCalledOnce();
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.evaluate).not.toHaveBeenCalled();
     expect(runtime.child.kill).not.toHaveBeenCalled();
     runtime.nativeApp.emit("will-quit");
-    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
     runtime.child.emit("close", 0, null);
     await quitting;
     expect(runtime.close).toHaveBeenCalledOnce();
   });
 
-  it("releases the debugger when native cleanup is done but exit still needs disconnection", async () => {
+  it("starts close before will-quit so its quit request can still receive a response", async () => {
     const runtime = await application();
+    let quittingStarted = false;
+    let closeAfterWillQuit: boolean | undefined;
+    runtime.nativeApp.once("will-quit", () => { quittingStarted = true; });
     runtime.quit.mockImplementation(() => runtime.nativeApp.emit("will-quit"));
     runtime.close.mockImplementation(async () => {
+      closeAfterWillQuit = quittingStarted;
+      runtime.quit();
       runtime.child.exitCode = 0;
       runtime.child.emit("exit", 0, null);
       runtime.child.emit("close", 0, null);
     });
     await quitElectron(runtime.app);
+    expect(closeAfterWillQuit).toBe(false);
     expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.quit).toHaveBeenCalledOnce();
+    expect(runtime.evaluate).not.toHaveBeenCalled();
     expect(runtime.child.kill).not.toHaveBeenCalled();
   });
 
@@ -65,43 +78,43 @@ describe("native test application quit", () => {
       runtime.child.emit("close", 0, null);
     });
     await quitElectron(runtime.app);
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
   });
 
   it("still requires native exit when the quit response transport closes", async () => {
     const runtime = await application();
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    runtime.evaluate.mockRejectedValueOnce(new Error("Connection closed"));
+    runtime.close.mockRejectedValueOnce(new Error("Connection closed"));
     const quitting = quitElectron(runtime.app);
     await Promise.resolve();
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
     runtime.child.emit("close", 0, null);
     await quitting;
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
   });
 
   it("does not hold native exit behind a pending quit response", async () => {
     const runtime = await application();
-    runtime.evaluate.mockImplementationOnce(() => new Promise<void>(() => {}));
+    runtime.close.mockImplementationOnce(() => new Promise<void>(() => {}));
     const quitting = quitElectron(runtime.app);
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
     runtime.child.emit("close", 0, null);
     await quitting;
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
   });
 
   it("reports a child-process error without waiting for the quit response", async () => {
     const runtime = await application();
-    runtime.evaluate.mockImplementationOnce(() => new Promise<void>(() => {}));
+    runtime.close.mockImplementationOnce(() => new Promise<void>(() => {}));
     const quitting = quitElectron(runtime.app);
     const failure = new Error("Process wait failed");
     const rejected = expect(quitting).rejects.toThrow(failure.message);
     runtime.child.emit("error", failure);
     await rejected;
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
   });
 
   it("does not reopen automation teardown after the native process has exited", async () => {
@@ -133,7 +146,10 @@ describe("native test application quit", () => {
 
   it("completes from native closure when an in-flight context request cannot answer", async () => {
     const runtime = await application();
-    runtime.close.mockImplementation(() => new Promise<void>(() => {}));
+    runtime.close.mockImplementation(() => {
+      runtime.quit();
+      return new Promise<void>(() => {});
+    });
     let settled = false;
     const quitting = quitElectron(runtime.app).then(() => { settled = true; });
     runtime.nativeApp.emit("will-quit");
@@ -168,7 +184,7 @@ describe("native test application quit", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
     expect(runtime.quit).toHaveBeenCalledOnce();
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
     expect(runtime.child.kill).not.toHaveBeenCalled();
     const failure = new Error("Native quit remains blocked");
     const rejected = expect(quitting).rejects.toThrow(failure.message);
@@ -185,7 +201,7 @@ describe("native test application quit", () => {
       runtime.child.emit("close", 2, null);
     });
     await expect(quitElectron(runtime.app)).rejects.toThrow("Native application quit failed: exit=2, signal=null");
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
     expect(runtime.child.kill).not.toHaveBeenCalled();
   });
 });
@@ -212,7 +228,7 @@ describe("native fixture startup ownership", () => {
     runtime.child.emit("exit", 0, null);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(startupSettled).toBe(false);
-    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
     expect(closed).toBe(false);
     runtime.child.emit("close", 0, null);
     await rejected;

@@ -12,7 +12,11 @@ const OUT = process.env.AVE_SHOT_DIR ?? join(process.cwd(), 'test-results', 'set
 async function expectSettingsBottomClearance(
   mainWindow: import('@playwright/test').Page,
 ) {
-  const measure = () => mainWindow.locator('.ave-settings-scroll').evaluate((scroller) => {
+  // Read one DOM snapshot: transferring and releasing an element handle can stall in an inactive native window.
+  const measure = () => mainWindow.evaluate(() => {
+    const scrollers = document.querySelectorAll<HTMLElement>('.ave-settings-scroll');
+    const scroller = scrollers[0];
+    if (scrollers.length !== 1 || !scroller) throw new Error('Expected one settings scroll pane');
     scroller.scrollTop = scroller.scrollHeight;
 
     const activePanel = scroller.querySelector<HTMLElement>(

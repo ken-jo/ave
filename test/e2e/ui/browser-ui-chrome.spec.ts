@@ -136,11 +136,12 @@ if (process.platform === "darwin") {
         const chip = page.getByTestId("composer-api-key-chip");
         if (!await chip.isVisible()) await fixture.composer.press("Enter");
         await expect(chip).toBeVisible();
+        await expect(page.getByTestId("chat-side-panel-motion")).toHaveAttribute("data-panel-mode", width === 900 ? "overlay" : "docked");
         await chip.click();
         const popover = page.getByTestId("composer-api-key-popover");
         await expect(popover).toHaveRole("dialog");
-        // The missing-key strip expands the composer reservation beneath the floating page.
-        await captureOverlay(fixture, popover, testInfo, `runtime-issue-popover-${width}`, { overlap: false });
+        // The upward-opening popover overlaps a floating page while a docked page stays beside it.
+        await captureOverlay(fixture, popover, testInfo, `runtime-issue-popover-${width}`, { overlap: width === 900 });
         const bounds = await popover.boundingBox();
         assert(bounds);
         await scrollExposedPage(fixture, [bounds]);

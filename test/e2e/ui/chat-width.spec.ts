@@ -8,7 +8,9 @@ function readingCapWindowWidth(column: Element): number {
   const parent = column.parentElement!;
   const style = getComputedStyle(parent);
   const available = parent.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-  return Math.ceil(innerWidth - available + parseFloat(getComputedStyle(column).maxWidth) + 1);
+  const shell = document.querySelector('[data-testid="app-shell"]');
+  if (!shell) throw new Error("App shell geometry unavailable");
+  return Math.ceil(shell.getBoundingClientRect().width - available + parseFloat(getComputedStyle(column).maxWidth) + 1);
 }
 
 test.describe('chat column width constraints', () => {

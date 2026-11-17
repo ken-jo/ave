@@ -148,7 +148,7 @@ describe("browser tool CDP surface", () => {
     const capture = readFileSync(join(REPO, "src/main/browser/browser-capture.ts"), "utf8");
     const workspace = readFileSync(join(REPO, "src/main/browser/browser-workspace-capture.ts"), "utf8");
     const actions = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
-    expect(scroll).toContain('const CAPTURE_SCROLL = "function(x,y)');
+    expect(scroll).toContain('const CAPTURE_SCROLL = `function(x, y)');
     expect(scroll).toContain('cdp.send("Runtime.callFunctionOn", captureScrollParameters(position))');
     expect(scroll).not.toContain("requestAnimationFrame");
     for (const [source, restore] of [[capture, 'captureScrollParameters(scrollRestore)'], [workspace, 'captureScrollParameters(position)'], [actions, 'captureScrollParameters(position)']] as const) {

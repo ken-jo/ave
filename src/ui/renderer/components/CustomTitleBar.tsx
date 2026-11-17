@@ -1,4 +1,5 @@
-/** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side. */
+/** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side.
+ * The inset scopes window dragging; this component does not select native resize cursors. */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -27,8 +28,8 @@ export interface CustomTitleBarProps {
    * Band content — the app toolbar cluster (collapse toggle,
    * Dev badge, search / star / export). Rendered in the band's left + middle,
    * LEFT of the native window controls. Interactive controls inside must wrap
-   * themselves `WebkitAppRegion: "no-drag"`; the band itself is a drag region
-   * in the gaps between them.
+   * themselves `WebkitAppRegion: "no-drag"`; the inset band interior drags
+   * in the gaps between them, leaving the window edges to native resizing.
    */
   children?: ReactNode;
   /** Use the larger of sidebar and native-control leading reserves, never stack both paddings. */
@@ -97,21 +98,34 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     );
   }
 
+  // Keep the top and side edges outside the drag rectangle. Native hit testing
+  // must reach the resize border before treating a point as a window move.
+  // The parent stays neutral: an inherited no-drag on later siblings would erase this region.
+  const dragRegion = (
+    <div
+      aria-hidden="true"
+      data-testid="titlebar-drag-region"
+      className="pointer-events-none absolute inset-x-(--chrome-gap-tight) top-(--chrome-gap-tight) bottom-0"
+      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+    />
+  );
+
   if (isDarwin) {
     // Keep chrome dimensions in pixels to align native controls across font scales; move band height and traffic-light
     // geometry together.
     return (
       <div
         data-testid="custom-titlebar-darwin"
-        className="ave-glass-clear flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="ave-glass-clear relative flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_LEAD_PAD_DARWIN, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
           // @ts-expect-error — Electron-specific CSS extension
-          WebkitAppRegion: "drag",
+          WebkitAppRegion: "initial",
         }}
         onDoubleClick={handleDoubleClick}
       >
+        {dragRegion}
         {children}
       </div>
     );
@@ -146,8 +160,8 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   // macOS lights overlay theirs; content starts past them (`BAND_LEAD_PAD_LINUX`) or at the caller's clearance.
   // Windows: the − □ × cluster is pinned to the trailing corner with `ml-auto` — robust whether or not `children` are present.
   // There is no spacer before it: `children` (MainToolbar) is `flex-1` with its OWN inner spacer right-aligning its trailing
-  // cluster; a second flex-1 spacer here would split the free space 50/50 and strand the toggle mid-band. MainToolbar's empty
-  // area inherits the band's drag region, so dragging is preserved on both.
+  // cluster; a second flex-1 spacer here would split the free space 50/50 and strand the toggle mid-band. The inset drag
+  // rectangle covers empty toolbar space while controls explicitly exclude their own boxes.
   // `ave-glass-clear` lets Windows Mica show through the band as macOS vibrancy does; it is inert without `data-glass`.
   const leading = platformBridge.windowControls === "leading";
   const controls = (
@@ -166,15 +180,16 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     <div
       data-testid="custom-titlebar"
       data-window-controls={leading ? "leading" : "trailing"}
-      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
+      className="ave-glass-clear relative flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
       style={{
         paddingLeft: `${Math.max(leading ? BAND_LEAD_PAD_LINUX : BAND_EDGE_PAD, leadClearance)}px`,
         paddingRight: leading ? `${BAND_EDGE_PAD}px` : undefined,
         // @ts-expect-error — Electron-specific CSS extension
-        WebkitAppRegion: "drag",
+        WebkitAppRegion: "initial",
       }}
       onDoubleClick={handleDoubleClick}
     >
+      {dragRegion}
       {leading ? controls : null}
       {children}
       {leading ? null : controls}

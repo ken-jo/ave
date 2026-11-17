@@ -7,19 +7,21 @@ import { MOCK_DEFAULT_SESSION_ID } from "./mock-ave-api.js";
 import { t } from "../../src/i18n/runtime.js";
 import type { BrowserWorkspaceApi, BrowserWorkspaceState } from "../../src/shared/browser-workspace.js";
 import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
+import { DOCK_ENTER_WIDTH } from "../../src/shared/shell-geometry.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 
 describe("chat columns", () => {
   it("ends a narrow overlay above the composer and approval without lifting the transcript", async () => {
+    const narrowWidth = DOCK_ENTER_WIDTH - 1;
     const original = HTMLElement.prototype.getBoundingClientRect;
     const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      if (this.dataset.testid === TEST_IDS.chatViewRoot) return new DOMRect(0, 41, 783, 722);
+      if (this.dataset.testid === TEST_IDS.chatViewRoot) return new DOMRect(0, 41, narrowWidth, 722);
       if (this.hasAttribute("data-composer-placement")) return new DOMRect(87, 644, 672, 73);
       if (this.hasAttribute("data-approval-request-id")) return new DOMRect(87, 500, 672, 250);
       return original.call(this);
     });
     try {
-      const view = await renderApp({ hasApiKey: true, shellWidth: 783, canvasWidth: 783 });
+      const view = await renderApp({ hasApiKey: true, shellWidth: narrowWidth, canvasWidth: narrowWidth });
       fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement);
       const panel = await waitFor(() => {
         const element = view.container.querySelector<HTMLElement>('[data-testid="chat-side-panel-motion"]') as HTMLElement;

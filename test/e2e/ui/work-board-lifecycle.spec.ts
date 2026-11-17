@@ -55,7 +55,8 @@ for (const width of [1243, 900]) {
     await page.mouse.up();
     await expect(page.getByTestId("work-board-move-dialog")).toBeVisible();
     await expect(page.getByRole("combobox")).toHaveValue("in_progress");
-    await page.getByTestId("work-board-move-confirm").click();
+    // Hold the confirming press through the pointer sensor's post-drag click guard.
+    await page.getByTestId("work-board-move-confirm").click({ delay: 75 });
     await expect(page.getByRole("dialog")).toHaveCount(0);
     if (narrow) await page.getByTestId("work-board-tab-in-progress").click();
     await expect(page.getByTestId("work-board-column-in-progress")).toContainText("Outline export checklist");

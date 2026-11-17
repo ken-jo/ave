@@ -2,6 +2,8 @@ import { writeFileSync } from "node:fs";
 import { test, expect } from "../ui/fixtures.js";
 import { setWindowSize } from "../ui/seeded-electron.js";
 import { withPageWindow } from "../ui/renderer-events.js";
+import { readWindowGeometry } from "../ui/window-geometry.js";
+import { MAIN_WINDOW_RESIZE_INSET } from "../../../src/shared/shell-geometry.js";
 
 test.use({ seedViewFixturePlugin: false });
 
@@ -11,8 +13,11 @@ test("content resize settles in the renderer and diagnoses native clamping", asy
   await setWindowSize(app, 900, 720, mainWindow);
   const content = await withPageWindow(app, mainWindow, (window) => window.getContentSize());
   const client = await mainWindow.evaluate(() => [document.documentElement.clientWidth, document.documentElement.clientHeight]);
-  expect(client).toEqual(content);
-  expect(client).toEqual([900, 720]);
+  const geometry = await readWindowGeometry(app, mainWindow);
+  const inset = process.platform === "darwin" ? MAIN_WINDOW_RESIZE_INSET : 0;
+  expect(content).toEqual([900, 720]);
+  expect(geometry.ui).toEqual({ x: inset, y: inset, width: 900 - inset * 2, height: 720 - inset * 2 });
+  expect(client).toEqual([geometry.ui.width, geometry.ui.height]);
   const position = await withPageWindow(app, mainWindow, (window) => window.getPosition());
   expect(position).toEqual([workArea.x, workArea.y]);
   await expect(setWindowSize(app, 390, 240, mainWindow)).rejects.toThrow(/Requested content 390x240 is below window minimum/);
@@ -43,11 +48,13 @@ test("content resize settles in the renderer and diagnoses native clamping", asy
   } else {
     expect(oversized.every((size, index) => Math.abs(size - requested[index]) <= 1)).toBe(true);
     const oversizedClient = await mainWindow.evaluate(() => [innerWidth, innerHeight]);
-    expect(oversizedClient).toEqual(oversized);
+    const native = await readWindowGeometry(app, mainWindow);
+    expect(oversizedClient).toEqual([native.ui.width, native.ui.height]);
   }
   const oversizedDocument = await mainWindow.evaluate(() => [document.documentElement.clientWidth, document.documentElement.clientHeight]);
-  expect(oversizedDocument).toEqual(oversized);
-  writeFileSync(testInfo.outputPath("clamp-diagnostics.json"), JSON.stringify({ workArea, requested, content: oversized, document: oversizedDocument, error: resizeError ? String(resizeError) : null }, null, 2));
+  const oversizedGeometry = await readWindowGeometry(app, mainWindow);
+  expect(oversizedDocument).toEqual([oversizedGeometry.ui.width, oversizedGeometry.ui.height]);
+  writeFileSync(testInfo.outputPath("clamp-diagnostics.json"), JSON.stringify({ workArea, requested, content: oversized, document: oversizedDocument, geometry: oversizedGeometry, error: resizeError ? String(resizeError) : null }, null, 2));
   await mainWindow.screenshot({ path: testInfo.outputPath("native-clamp.png") });
   await setWindowSize(app, 900, 720, mainWindow);
   await expect(setWindowSize(app, 0, 720, mainWindow)).rejects.toThrow(/Invalid window content size/);
@@ -70,12 +77,19 @@ test("native size limits do not imply work-area clamping", async ({ app, mainWin
 
 test("renderer mismatch is distinct from native mismatch", async ({ app, mainWindow }, testInfo) => {
   await setWindowSize(app, 900, 720, mainWindow);
+  const initial = await readWindowGeometry(app, mainWindow);
+  // An exactly divisible UI size isolates zoom mismatch from fractional viewport rounding.
+  const requested = { width: 900 + initial.content.width - initial.ui.width, height: 720 + initial.content.height - initial.ui.height };
+  await setWindowSize(app, requested.width, requested.height, mainWindow);
   try {
     await withPageWindow(app, mainWindow, (window) => window.webContents.setZoomFactor(1.25));
     expect(await withPageWindow(app, mainWindow, (window) => window.webContents.getZoomFactor())).toBe(1.25);
-    await expect.poll(() => mainWindow.evaluate(() => [innerWidth, innerHeight])).toEqual([720, 576]);
+    const geometry = await readWindowGeometry(app, mainWindow);
+    expect([geometry.ui.width, geometry.ui.height]).toEqual([900, 720]);
+    await expect.poll(() => mainWindow.evaluate(() => [innerWidth, innerHeight]))
+      .toEqual([geometry.ui.width / geometry.zoom, geometry.ui.height / geometry.zoom]);
     const zoomedViewport = await mainWindow.evaluate(() => [innerWidth, innerHeight]);
-    const failure: unknown = await setWindowSize(app, 900, 720, mainWindow).catch((error: unknown) => error);
+    const failure: unknown = await setWindowSize(app, requested.width, requested.height, mainWindow).catch((error: unknown) => error);
     writeFileSync(testInfo.outputPath("renderer-mismatch-diagnostics.json"), JSON.stringify({
       zoomFactor: await withPageWindow(app, mainWindow, (window) => window.webContents.getZoomFactor()),
       zoomedViewport, content: await withPageWindow(app, mainWindow, (window) => window.getContentSize()),
@@ -85,7 +99,7 @@ test("renderer mismatch is distinct from native mismatch", async ({ app, mainWin
     expect((failure as Error).message).toContain("renderer mismatch");
     expect((failure as Error).message).not.toContain("native mismatch");
     expect((failure as Error).message).not.toContain("clamped by work area");
-    expect((failure as Error).message).toContain("actual content 900x720");
+    expect((failure as Error).message).toContain(`actual content ${requested.width}x${requested.height}`);
     expect((failure as Error).cause).toBeDefined();
   } finally {
     await withPageWindow(app, mainWindow, (window) => window.webContents.setZoomFactor(1));

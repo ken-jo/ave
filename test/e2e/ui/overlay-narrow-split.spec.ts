@@ -8,6 +8,9 @@ import { makeTestT } from "./i18n.js";
 import type { AlertCard } from "../../../src/shared/alerts-types.js";
 import { setWindowSize, buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 import { sendRendererEvent, withPageWindow } from "./renderer-events.js";
+import { readWindowGeometry } from "./window-geometry.js";
+
+const MAX_COMPACT_TILE_HEIGHT = 340;
 
 test("a narrowed split keeps alert and approval actions reachable", async ({}, testInfo) => {
   const t = makeTestT("en");
@@ -22,14 +25,15 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     const captureCase = async (name: string, conditions: unknown) => {
       const documentSize = await page.evaluate(() => [document.documentElement.clientWidth, document.documentElement.clientHeight]);
       const windowSize = await withPageWindow(app, page, (window) => window.getContentSize());
-      expect(documentSize).toEqual(windowSize);
+      const native = await readWindowGeometry(app, page);
+      expect(documentSize).toEqual([native.ui.width, native.ui.height]);
       const tile = page.getByTestId("pane").filter({ has: page.getByTestId(name === "alert-short-tile" ? "routine-card" : "approval-lane-card") });
       const tileSize = await tile.evaluate((pane) => ({ width: pane.clientWidth, height: pane.clientHeight }));
       expect(tileSize.height).toBeLessThan(windowSize[1] / 2);
       expect(tileSize.width).toBeLessThan(DOCK_ENTER_WIDTH);
-      if (name === "approval-short-tile") expect(tileSize.height).toBeLessThanOrEqual(340);
+      if (name === "approval-short-tile") expect(tileSize.height).toBeLessThanOrEqual(MAX_COMPACT_TILE_HEIGHT);
       const measurements = testInfo.outputPath(name + ".json");
-      writeFileSync(measurements, JSON.stringify({ documentSize, windowSize, tileSize, conditions }, null, 2));
+      writeFileSync(measurements, JSON.stringify({ documentSize, windowSize, native, tileSize, conditions }, null, 2));
       await testInfo.attach(name + ".json", { path: measurements, contentType: "application/json" });
       await page.screenshot({ path: testInfo.outputPath(name + ".png") });
     };
@@ -242,7 +246,10 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     await page.screenshot({ path: testInfo.outputPath("approval-narrow-split-wheel.png") });
 
     // A taller stacked tile fits the approval row without scrolling between the user and its decisions.
-    await setWindowSize(app, 1200, 744, page);
+    const tileHeight = await page.getByTestId("pane").filter({ has: approval }).evaluate(pane => pane.clientHeight);
+    const { content } = await readWindowGeometry(app, page);
+    // Two stacked tiles divide native-height growth equally; keep the final tile inside the compact bound.
+    await setWindowSize(app, 1200, content.height + 2 * (MAX_COMPACT_TILE_HEIGHT - tileHeight), page);
     await review.hover();
     await page.mouse.wheel(0, -600);
     await expect.poll(async () => (await approvalLayout())?.reviewScrollTop).toBe(0);

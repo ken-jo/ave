@@ -1,4 +1,4 @@
-import type { MainWindow } from "./main-window-host.js";
+import { refreshMainWindowUiLayout, type MainWindow } from "./main-window-host.js";
 
 import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, nextZoomLevel, normalizeZoomLevel, type ZoomCommand } from "../shared/app-zoom.js";
 import { getMainWindows, getServices } from "./app-state.js";
@@ -41,13 +41,17 @@ export function applyAppZoomLevel(level: number | undefined): void {
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
         // MCP app and plugin frames follow shell zoom; browser guests retain their own per-site factor.
         win.webContents.setZoomLevel(normalizeZoomLevel(level));
+        refreshMainWindowUiLayout(win);
       }
     }
   });
 }
 
 export function bindAppWindowZoom(win: MainWindow): void {
-  const restoreLevel = () => preserveBrowserGuestZoom(() => win.webContents.setZoomLevel(normalizeZoomLevel(getServices()?.settingsService.get("appearance").zoomLevel)));
+  const restoreLevel = () => preserveBrowserGuestZoom(() => {
+    win.webContents.setZoomLevel(normalizeZoomLevel(getServices()?.settingsService.get("appearance").zoomLevel));
+    refreshMainWindowUiLayout(win);
+  });
   win.webContents.on("did-navigate", restoreLevel);
   win.webContents.on("did-finish-load", restoreLevel);
   void win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => log.warn("Could not disable visual zoom"));
