@@ -35,6 +35,8 @@ export const en = {
   "reasonCodes.work-item-completed": "This item is completed. Reopen it to run it again.",
   "reasonCodes.outward-effect-tool": "This tool acts outside the run, so a scheduled run cannot use it by itself. Ask for it as a requested output instead.",
   "reasonCodes.tool-effect-unknown": "Ave cannot tell what this tool does right now, so a scheduled run cannot use it. It still works when you run the workflow yourself.",
+  "reasonCodes.user-gesture-required": "A template run starts only from your click or key press. Press Run again.",
+  "reasonCodes.invalid-input": "The template run request could not be read. Open the item again, then press Run.",
   "be_mcpGovernance.reservedHostOwner": "Server ids cannot use the reserved host: prefix.",
 
   "notificationCenter.title": "Notifications",

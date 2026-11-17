@@ -498,6 +498,8 @@ it("has the text of every code a template start can be refused with in both cata
   const codes = [
     ...Object.keys(verdicts), ...WORKSPACE_REFUSALS, ...RUN_FILE_REFUSALS,
     "outputs-unavailable", "template-run-not-shown", "template-run-unavailable", "work-item-completed",
+    // The run handler's own refusals of a template start.
+    "user-gesture-required", "invalid-input",
   ];
   for (const code of codes) {
     for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`), code).toEqual(expect.stringMatching(/\S/));

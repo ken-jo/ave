@@ -37,6 +37,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.work-item-completed": "이 항목은 완료되었습니다. 다시 실행하려면 항목을 다시 여세요.",
   "reasonCodes.outward-effect-tool": "이 도구는 실행 바깥에 영향을 주므로 예약 실행이 스스로 사용할 수 없습니다. 대신 요청 출력으로 요청하세요.",
   "reasonCodes.tool-effect-unknown": "지금은 이 도구가 무엇을 하는지 확인할 수 없어 예약 실행에서 사용할 수 없습니다. 직접 실행할 때는 그대로 사용할 수 있습니다.",
+  "reasonCodes.user-gesture-required": "템플릿 실행은 직접 클릭하거나 키를 눌러야 시작됩니다. 실행을 다시 누르세요.",
+  "reasonCodes.invalid-input": "템플릿 실행 요청을 읽을 수 없습니다. 항목을 다시 연 뒤 실행을 누르세요.",
   "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",
