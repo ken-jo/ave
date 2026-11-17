@@ -1010,13 +1010,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     for (const [runId, left] of unconfirmed) {
       const at = new Date().toISOString();
       const write = (rowGone: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.status, at), rowGone)
-        .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return { ok: false as const, reason: "unavailable" as const }; });
+        .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return null; });
       let ended = await write(left.rowGone);
       // The row went meanwhile: the end is written by run id alone, and a run the file no longer holds has nothing left to end.
-      if (!ended.ok && ended.reason === "row-gone") {
+      if (ended && !ended.ok && ended.reason === "row-gone") {
         left.rowGone = true;
         ended = await write(true);
       }
+      // A write that threw proves nothing.
+      if (!ended) return { ok: false, code: "run-state-unavailable" };
       if (!ended.ok && ended.reason !== "refused" && !(left.rowGone && ended.reason === "unavailable")) return { ok: false, code: writeFault(ended.reason) };
       unconfirmed.delete(runId);
       await workspace.release(left.ref, "all").catch(() => undefined);

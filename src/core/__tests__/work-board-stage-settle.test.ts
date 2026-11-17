@@ -527,6 +527,41 @@ it("while a run end is unconfirmed, starts are refused and nothing is pruned or 
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
 
+it("an unconfirmed run end whose row is then deleted is confirmed only by a by-id write that succeeds, never by one that threw", () => {
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const other = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+    const updateRun = h.board.updateRun.bind(h.board);
+    const failing = vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
+      target === runId ? { status: "pending-review" } : updateRun(itemId, target, mutate));
+    a.finish();
+    await run;
+    expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+    failing.mockRestore();
+
+    vi.spyOn(h.board.runs, "update").mockRejectedValueOnce(new Error("disk error"));
+    let refused: unknown;
+    void h.start(other, h.local(version)).then((result) => { refused = result; });
+    for (let i = 0; i < 400 && refused === undefined && h.live().length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(released).toEqual([]);
+    expect(h.live()).toHaveLength(0);
+    expect(refused).toMatchObject({ status: "error", reasonCode: "run-state-unavailable" });
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+
+    const started = h.start(other, h.local(version));
+    await h.untilLive(1);
+    expect(released).toEqual([runId]);
+    expect(await h.runOf(runId)).toBeNull();
+    expect(h.engine.cancelRun(other)).toEqual({ ok: true });
+    await started;
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
+});
+
 for (const [write, refusal, code] of [
   ["stage end", "too-large", "template-runs-too-large"],
   ["workspace", "too-large", "template-runs-too-large"],
