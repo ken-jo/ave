@@ -3768,8 +3768,9 @@ with its own owner rule:
   `unknownBelow`, so the board was readable before the write that dropped
   the row; the file lists no row with that id; every entry of the file is an
   object with a usable id (a safe integer of 1 or more); no entry with that
-  id fails to validate; and no entry, valid or not, holds the run's id as a
-  string anywhere in it. Short of any of these the row reads unreadable: the
+  id fails to validate; and nothing in the file, in an entry valid or not or
+  under any other top-level key, holds the run's id as a string. Short of any
+  of these the row reads unreadable: the
   run waits, nothing cancels it and its record is kept. An entry without a
   usable id (a string, a fraction, a missing, `null`, zero or negative id, a
   number past the safe-integer limit, or an entry that is not an object)
@@ -3787,6 +3788,12 @@ with its own owner rule:
   (`template-run-lost`), written by its run id, at boot and live alike, and
   its record is pruned. Valid rows that share an id are all read as rows
   that do not validate, so no run is read off a twin.
+  Every top-level key of the board file other than `version`, `nextId`,
+  `unknownBelow` and `items` is written back by every board write, as JSON
+  writes its parsed value, before the items list; a row moved by hand under
+  such a key still holds its run's id there, so its run waits. Before the
+  first write that would change the file's bytes this way, the file is copied
+  aside as below.
   A row that does not validate is kept in the file by every board write,
   after the valid rows, as JSON writes its parsed value,
   which can differ from its bytes (a number past the safe-integer limit,

@@ -571,6 +571,47 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       await cleanup();
     }
   });
+
+  it("writes back every top-level key of the file it does not know as parsed, through every write, and copies the file aside once before a write changes its bytes", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    const copies = () => readdirSync(dir).filter((name) => name.includes(".invalid-rows-"));
+    const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x", note: { kept: [1, "two"] } };
+    // Keys named as what the store keeps of a board in memory, and one JSON parses as a plain key.
+    const unknown = '"archive":[{"id":99,"title":"archived","runId":"run-9"}],"unreadable":["kept"],"prior":{"nested":[1,"two",null]},"extra":true,"__proto__":{"polluted":1}';
+    const keysOf = (text: string) => {
+      const { version: _v, nextId: _n, items: _i, ...rest } = JSON.parse(text) as Record<string, unknown>;
+      return rest;
+    };
+    try {
+      // Written as a board write writes it: version, nextId, then the keys it does not know, then items.
+      const text = `${JSON.stringify(JSON.parse(`{"version":1,"nextId":2,${unknown},"items":${JSON.stringify([valid])}}`), null, 2)}\n`;
+      writeFileSync(path, text, "utf-8");
+      const kept = keysOf(text);
+      expect(Object.keys(kept)).toEqual(["archive", "unreadable", "prior", "extra", "__proto__"]);
+      expect(await store.create({ title: "next" })).toMatchObject({ status: "created", itemId: 2 });
+      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+      expect(await store.transition(2, "in_progress")).toMatchObject({ status: "transitioned" });
+      expect(await store.remove(2)).toMatchObject({ status: "deleted" });
+      const after = readFileSync(path, "utf-8");
+      expect(keysOf(after)).toEqual(kept);
+      expect(Object.keys(keysOf(after))).toEqual(Object.keys(kept));
+      expect(JSON.parse(after).items).toEqual([{ ...valid, title: "renamed", updated_at: expect.any(String) }]);
+      expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([1]);
+      expect(copies()).toEqual([]);
+
+      // Keys after items, and a number past the safe-integer limit in one: the next write changes the bytes, so the file is kept first.
+      const moved = `{"version":1,"nextId":3,"items":${JSON.stringify([valid])},"archive":{"size":12345678901234567890}}\n`;
+      writeFileSync(path, moved, "utf-8");
+      expect(await store.update(1, { title: "again" })).toMatchObject({ status: "updated" });
+      expect(copies()).toEqual([`board.json.invalid-rows-${createHash("sha256").update(moved).digest("hex")}.bak`]);
+      expect(readFileSync(join(dir, copies()[0]), "utf-8")).toBe(moved);
+      expect(keysOf(readFileSync(path, "utf-8"))).toEqual({ archive: JSON.parse(moved).archive });
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("WorkBoardStore — due dates stamped in another zone", () => {

@@ -980,6 +980,28 @@ it.each(["string id", "missing id", "fraction id", "non-object", "null entry", "
   }),
 );
 
+it("a live run whose row was moved by hand from the items list under another top-level key waits through another row's add, which writes that key back as it was; it completes once the row is put back", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] };
+  const archive = file.items.filter(row => row.id === live.id);
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== live.id), archive }));
+  const rows = vi.spyOn(h.board, "runRowsOnDisk");
+  const checks = rows.mock.calls.length;
+  await h.addItem(live.version);
+  expect(rows.mock.calls.length).toBeGreaterThan(checks);
+  const standing = await rows.mock.results[checks].value;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(standing?.({ itemId: live.id, runId: live.runId })).toBe("unreadable");
+  expect(h.interrupts).toEqual([]);
+  expect(h.live()).toEqual([live.child]);
+  expect(await h.runOf(live.runId)).toEqual(live.record);
+  const written = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[]; archive?: unknown };
+  expect(written.archive).toEqual(archive);
+  writeFileSync(h.boardPath, JSON.stringify({ ...written, archive: undefined, items: [...archive, ...written.items] }));
+  expect(await h.board.runRowsOnDisk().then(next => next?.({ itemId: live.id, runId: live.runId }))).toBe("named");
+  await completesUntouched(h, live);
+}));
+
 it("deleting a live run's row that does not validate from its invalid card reads the row gone: the child is interrupted and the run cancelled", () => withHarness(async (h) => {
   const live = await liveRun(h);
   h.editRow(live.id, row => ({ ...row, priority: 42 }));

@@ -292,9 +292,11 @@ function emptyBoard(): BoardFile {
 }
 
 // What the cache keeps of a board: its fields only, never what a read marked (`unread`, `unmoved`) or the file bytes it kept (`prior`).
-function cacheOf({ version, nextId, unknownBelow, items, unreadable }: BoardFile): BoardFile {
-  return { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items, unreadable };
+function cacheOf({ version, nextId, unknownBelow, items, unreadable, extra }: BoardFile): BoardFile {
+  return { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items, unreadable, ...(extra !== undefined ? { extra } : {}) };
 }
+
+const BOARD_KEYS = new Set(["version", "nextId", "unknownBelow", "items"]);
 
 /** A board as a write read it. `unread`: the file was absent, awaited review, did not parse or had no items list, so the board started
  * empty and shows none of the rows the file may have held. `unmoved`: it did not parse or had no items list and could not be moved
@@ -312,14 +314,14 @@ type BoardRead = BoardFile & { unread?: true; unmoved?: true; prior?: Buffer };
 export type RunRowStanding = "named" | "moved" | "unnamed" | "gone" | "lost" | "unreadable";
 type RowStandings = (run: { itemId: number; runId: string }) => RunRowStanding;
 
-// `entries`: every entry of the board file the standing is read from, as it is there.
-function boardStanding(board: BoardFile, entries: readonly unknown[] = [...board.items, ...board.unreadable]): RowStandings {
+// `entries`: every entry of the board file's items, as it is there. `file`: the whole file, scanned for a run's id.
+function boardStanding(board: BoardFile, entries: readonly unknown[] = [...board.items, ...board.unreadable], file: unknown = [entries, board.extra]): RowStandings {
   const rows = new Map(board.items.map((item) => [item.id, item]));
   const invalidIds = new Set(rawRowIds(board.unreadable));
   const idless = entries.some((row) => rowIdOf(row) === undefined);
   let text: string | undefined;
   const heldAnywhere = (runId: string) => {
-    if (text === undefined) text = JSON.stringify(entries);
+    if (text === undefined) text = JSON.stringify(file);
     return text.includes(JSON.stringify(runId));
   };
   return (run) => {
@@ -350,7 +352,7 @@ async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; st
   const parsed = await parseBoardOnDisk(filePath);
   if (!readableBoard(parsed)) return undefined;
   const { board } = hydrateBoard(parsed);
-  return { board, standing: boardStanding(board, parsed.items) };
+  return { board, standing: boardStanding(board, parsed.items, parsed) };
 }
 
 function readableBoard(parsed: unknown): parsed is BoardFile {
@@ -403,9 +405,11 @@ function hydrateBoard(file: BoardFile): { board: BoardFile; dropped: boolean } {
   // One that is not a row id reads as the largest safe integer: no row the board does not list is read as gone, whatever its id.
   const unknownBelow = file.unknownBelow === undefined ? undefined
     : Number.isSafeInteger(file.unknownBelow) && file.unknownBelow >= 1 ? file.unknownBelow : Number.MAX_SAFE_INTEGER;
+  const extra = Object.entries(file).filter(([key]) => !BOARD_KEYS.has(key));
   const board = {
     version: BOARD_VERSION, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items,
     unreadable: file.items.filter((row) => !listed(row)),
+    ...(extra.length > 0 ? { extra: Object.fromEntries(extra) } : {}),
   };
   return { board, dropped };
 }
@@ -423,8 +427,8 @@ async function keepPriorBytes(filePath: string, prior: Buffer): Promise<void> {
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
   // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the feature-namespace SOT helper. The injectable `filePath` (tests pass a temp path)
   // is preserved — the helper enforces the permission boundary on whatever parent directory the path resolves to.
-  const { version, nextId, unknownBelow, items, unreadable } = data;
-  const board = { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items: [...items, ...unreadable] };
+  const { version, nextId, unknownBelow, items, unreadable, extra } = data;
+  const board = { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), ...extra, items: [...items, ...unreadable] };
   await writeFileAtomicAtPath(filePath, `${JSON.stringify(board, null, 2)}\n`);
 }
 
@@ -560,7 +564,8 @@ export class WorkBoardStore {
     if (readableBoard(parsed)) {
       const { board: hydrated, dropped } = hydrateBoard(parsed);
       const board: BoardRead = hydrated;
-      if (keepBytes || dropped || (board.unreadable.length > 0 && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`)))) board.prior = input.bytes;
+      const keptAsParsed = board.unreadable.length > 0 || board.extra !== undefined;
+      if (keepBytes || dropped || (keptAsParsed && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`)))) board.prior = input.bytes;
       return board;
     }
     return (await quarantineCorruptJson(this.filePath)) ? { ...emptyBoard(), unread: true } : { ...emptyBoard(), unread: true, unmoved: true };

@@ -38,6 +38,9 @@ export interface BoardFile {
   /** The rows of the file that do not validate, as parsed. Every write puts them back after the valid rows, as JSON writes their parsed
    * value; before the first write that would change their bytes, the file as it was is copied beside it. */
   unreadable: unknown[];
+  /** Every top-level key of the file other than version, nextId, unknownBelow and items, as parsed. Every write puts them back, after
+   * unknownBelow; before the first write that would change their bytes, the file as it was is copied beside it. */
+  extra?: Record<string, unknown>;
 }
 
 export const BOARD_VERSION = 1;

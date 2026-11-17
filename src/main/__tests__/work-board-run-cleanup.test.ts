@@ -117,6 +117,14 @@ it("never reads a run's row gone or lost while an entry of the file could still 
   expect(await standing(swap, listed, "run-listed")).toBe("unreadable");
   expect(await standing(swap, swapped, "run-swapped")).toBe("unreadable");
   expect(await standing(file.items, listed, "run-other")).toBe("unnamed");
+  // Moved out of the items list under another top-level key of the file: still there, never gone.
+  const moved = (key: string, value: unknown) => ({ ...file, items: file.items.filter(row => row.id !== listed), [key]: value });
+  for (const [key, value] of [["archive", file.items.filter(row => row.id === listed)], ["old", { rows: { kept: file.items.find(row => row.id === listed) } }]] as const) {
+    await writeFile(boardPath, JSON.stringify(moved(key, value)));
+    expect((await store.runRowsOnDisk())?.({ itemId: listed, runId: "run-listed" })).toBe("unreadable");
+  }
+  await writeFile(boardPath, JSON.stringify(moved("archive", [])));
+  expect((await store.runRowsOnDisk())?.({ itemId: listed, runId: "run-listed" })).toBe("gone");
 });
 
 it("keeps a settled run's record while an entry of the file names the run under another id, and prunes it once none does", async () => {
@@ -125,6 +133,9 @@ it("keeps a settled run's record while an entry of the file names the run under 
   await settled(store, gone, "gone-1");
   const file = JSON.parse(await readFile(boardPath, "utf8")) as { items: { id: number }[] };
   await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.map(row => row.id === gone ? { ...row, id: 50 } : row) }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["gone-1"]);
+  await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== gone), archive: file.items.filter(row => row.id === gone) }));
   await store.pruneSettledRuns();
   expect(await runIds()).toEqual(["gone-1"]);
   await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== gone) }));
