@@ -313,8 +313,8 @@ it("an orphaned run whose cancel write fails is neither pruned nor swept, and th
   }
 });
 
-it("a boot whose reconcile or row repair write fails takes nothing over: starts stay refused and nothing is swept until a later attempt succeeds", async () => {
-  for (const failing of ["reconcile", "row"] as const) {
+for (const failing of ["reconcile", "row"] as const) {
+  it(`a boot whose reconcile or row repair write fails takes nothing over: starts stay refused and nothing is swept until a later attempt succeeds (${failing})`, async () => {
     const h = await stageRunHarness();
     try {
       const { id, runId, version } = await parkedRun(h);
@@ -324,7 +324,7 @@ it("a boot whose reconcile or row repair write fails takes nothing over: starts 
       const engine = h.makeEngine();
       const write = failing === "reconcile"
         ? vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" })
-        : vi.spyOn(h.board, "setRunResult").mockRejectedValue(new Error("disk full"));
+        : vi.spyOn(h.board, "setRunResult").mockResolvedValue({ status: "invalid", itemId: id, reason: "refused" });
       const swept = h.sweeps.length;
       await engine.adoptParkedTemplateRuns();
       const begin = vi.spyOn(h.board, "beginRun");
@@ -344,11 +344,11 @@ it("a boot whose reconcile or row repair write fails takes nothing over: starts 
     } finally {
       await h.cleanup();
     }
-  }
-});
+  });
+}
 
-it("a settled run whose row a crash left executing is restored by the next start or reader once a deferred boot adoption can run", async () => {
-  for (const event of ["start", "reader"] as const) {
+for (const event of ["start", "reader"] as const) {
+  it(`a settled run whose row a crash left executing is restored by the next start or reader once a deferred boot adoption can run (${event})`, async () => {
     const h = await stageRunHarness();
     try {
       const version = await h.confirm([stageOf("a")]);
@@ -377,8 +377,8 @@ it("a settled run whose row a crash left executing is restored by the next start
     } finally {
       await h.cleanup();
     }
-  }
-});
+  });
+}
 
 it("a deferred adoption is retried only by an event, never by time", async () => {
   const h = await stageRunHarness();

@@ -390,8 +390,8 @@ it("a revision of a stage whose earlier output came from file content starts tai
   expect(child.input.hostInputTaint).toBe("file-content");
 }));
 
-it("a start whose row write threw after the run was stored ends that run error; one that cannot be ended keeps its workspace", async () => {
-  for (const settleFails of [false, true]) {
+for (const settleFails of [false, true]) {
+  it(`a start whose row write threw after the run was stored ends that run error; one that cannot be ended keeps its workspace (${settleFails})`, async () => {
     const released: string[] = [];
     await withHarness(async (h) => {
       const version = await h.confirm([stageOf("a")]);
@@ -406,8 +406,8 @@ it("a start whose row write threw after the run was stored ends that run error; 
       expect(released).toEqual(settleFails ? [] : [stored.runId]);
       expect(h.children).toHaveLength(0);
     }, () => ({ workspace: { release: async (run) => { released.push(run.runId); } } }));
-  }
-});
+  });
+}
 
 it("a run ended without its graph whose end cannot be written keeps its workspace and row, and a reader takes it over again", () => {
   let missing = false;
@@ -451,8 +451,8 @@ it("a run ended without its graph whose end cannot be written keeps its workspac
   }));
 });
 
-it("a stage write the run file refuses as too large ends the run with the size refusal on its event and its result", async () => {
-  for (const write of ["stage end", "workspace"] as const) {
+for (const write of ["stage end", "workspace"] as const) {
+  it(`a stage write the run file refuses as too large ends the run with the size refusal on its event and its result (${write})`, async () => {
     await withHarness(async (h) => {
       const version = await h.confirm([stageOf("a")]);
       const id = await h.addItem(version);
@@ -479,5 +479,5 @@ it("a stage write the run file refuses as too large ends the run with the size r
       expect(h.events.find(event => event.phase === "error")).toMatchObject({ itemId: id, message: "template-runs-too-large", reasonCode: "template-runs-too-large" });
       expect((await h.item(id)).record?.settled?.status).toBe("error");
     });
-  }
-});
+  });
+}
