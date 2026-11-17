@@ -8,9 +8,10 @@ import { WorkflowTemplateError } from "../template-graph.js";
  * and nothing on a board row is ever read as one of these fields. */
 export type RunRecord = WorkflowRunRecord;
 
-type RunWrite = { ok: true; run: RunRecord }
-  /** row-gone: no board row names the run any more. refused: `mutate` returned null. unavailable: the run cannot be read or stored. */
-  | { ok: false; reason: "row-gone" | "refused" | "unavailable" };
+/** row-gone: no board row names the run any more. refused: `mutate` returned null. pending-review and too-large: the run file awaits review,
+ * or the write would take it past its read limit. invalid: the stored run cannot be read. unavailable: the run is not in the run file. */
+export type RunWriteFailure = "row-gone" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable";
+type RunWrite = { ok: true; run: RunRecord } | { ok: false; reason: RunWriteFailure };
 
 type RunAdoption = {
   ok: true;
@@ -59,10 +60,11 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
           ? await store.runs.update(runId, run => run.itemId === itemId ? mutate(run) : null)
           : await store.updateRun(itemId, runId, mutate);
         if (result.status === "stored") return { ok: true, run: result.run };
-        return { ok: false, reason: result.status === "refused" ? "refused" : result.status === "not-found" && !rowGone ? "row-gone" : "unavailable" };
+        if (result.status === "not-found") return { ok: false, reason: rowGone ? "unavailable" : "row-gone" };
+        return { ok: false, reason: result.status };
       } catch (error) {
         // The store refuses a record it does not understand by throwing; nothing was written.
-        if (error instanceof WorkflowTemplateError) return { ok: false, reason: "unavailable" };
+        if (error instanceof WorkflowTemplateError) return { ok: false, reason: "invalid" };
         throw error;
       }
     },

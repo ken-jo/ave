@@ -253,3 +253,32 @@ it("a boot over a board file that is missing, damaged or replaced by an empty on
     }
   }
 });
+
+it("an orphaned run whose cancel write fails is neither pruned nor swept, and the next start cancels it", async () => {
+  const h = await stageRunHarness();
+  try {
+    const { id, runId, version } = await parkedRun(h);
+    const other = await h.addItem(version);
+    deleteRowOffline(h, id);
+    const before = await h.runOf(runId);
+    const engine = h.makeEngine();
+    const update = vi.spyOn(h.board.runs, "update").mockResolvedValueOnce({ status: "pending-review" });
+    const prune = vi.spyOn(h.board, "pruneSettledRuns");
+    const swept = h.sweeps.length;
+    await engine.adoptParkedTemplateRuns();
+    expect(await h.runOf(runId)).toEqual(before);
+    expect(prune).not.toHaveBeenCalled();
+    expect(h.sweeps).toHaveLength(swept);
+
+    update.mockRestore();
+    const started = engine.runItem(other, { templateSource: h.local(version) });
+    await h.untilLive(1);
+    expect(await h.runOf(runId)).toBeNull();
+    expect(prune).toHaveBeenCalled();
+    expect(h.sweeps.slice(swept)).toEqual([[]]);
+    expect(engine.cancelRun(other)).toEqual({ ok: true });
+    await started;
+  } finally {
+    await h.cleanup();
+  }
+});

@@ -31,7 +31,7 @@ import type { PassConditionRegistry } from "./stage-gates.js";
 import { assertPinnedVersion, stepsOf } from "./stage-graph.js";
 import { MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent } from "./stage-machine.js";
 import { buildStagePrompt, type StageInput } from "./stage-prompt.js";
-import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type WorkflowRunState } from "./run-state.js";
+import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
 import type { RunRef, StageWorkspaceProvider } from "./stage-workspace.js";
 import { WorkflowInvariantError } from "./workflow-errors.js";
 
@@ -141,6 +141,13 @@ type Precheck<R extends string> = (record: RunRecord) => R | null;
 type Settled = NonNullable<RunRecord["settled"]>["status"];
 type PinRefusal = "version_missing" | "graph_mismatch";
 type Adopted = { ok: true } | { ok: false; code: string };
+
+/** The public refusal code of a failed run-file write. */
+function writeFault(reason: RunWriteFailure): string {
+  if (reason === "too-large") return "template-runs-too-large";
+  if (reason === "pending-review") return "template-runs-pending-review";
+  return reason === "invalid" ? "invalid-template-run" : "run-state-unavailable";
+}
 
 function rootKey(root: string): string {
   const normal = root.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -279,7 +286,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   });
 
   /** One write of the run. Null when nothing was stored. */
-  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | null): Promise<{ run: RunRecord } | { run: null; reason: "row-gone" | "refused" | "unavailable" }> {
+  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
     const result = await records.update(state.itemId, state.runId, mutate, state.rowGone);
     if (result.ok) return { run: result.run };
     if (result.reason === "row-gone") rowRemoved(state);
@@ -308,9 +315,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** After the run file says the run is over: show it on the row, tell the listeners, and let the item go. */
-  async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string): Promise<void> {
+  async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string, settled = true): Promise<void> {
     // A row that is gone or names another run is never written; the settled record goes with the prune.
-    if (state.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
+    if (!settled) adoption = null;
+    else if (state.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
     else await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
     const reason = byAuthority && state.refused
@@ -343,10 +351,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return idle && (run.status === "waiting" || run.status === "running" || run.status === "awaiting_gate") ? { ...run, status: "cancelled" } : run;
       });
       return { ...current, stageRuns, ...(idle ? { settled: { status: runStatus, at: now } } : {}) };
-    }).catch((error: unknown) => { log.warn("stage run could not be ended in the run file (id=%d): %s", state.itemId, errorMessage(error)); return { run: null }; });
+    }).catch((error: unknown) => { log.warn("stage run could not be ended in the run file (id=%d): %s", state.itemId, errorMessage(error)); return { run: null, reason: "unavailable" as const }; });
     if (!idle) return;
-    await workspace.release(state.ref, "all").catch(() => undefined);
-    await finish(state, written.run, runStatus, null, state.stopping ? undefined : state.faulted ?? cause);
+    // A write refused because the run is already over confirms it. Otherwise the record still owns its workspace, nothing is shown on
+    // the row or pruned, and the next adoption takes the run over.
+    const settled = written.run !== null || written.reason === "refused";
+    if (settled) await workspace.release(state.ref, "all").catch(() => undefined);
+    await finish(state, written.run, runStatus, null, state.stopping ? undefined : state.faulted ?? cause, settled);
   }
 
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
@@ -939,11 +950,16 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const at = new Date().toISOString();
     for (const run of found.orphans) {
       if (run.settled !== undefined) continue;
-      await records.update(run.itemId, run.runId, current => current.settled !== undefined ? null : {
+      const ended = await records.update(run.itemId, run.runId, current => current.settled !== undefined ? null : {
         ...current,
         stageRuns: current.stageRuns.map((stage): WorkItemStageRun => stage.status === "waiting" || stage.status === "running" || stage.status === "awaiting_gate" ? { ...stage, status: "cancelled", endedAt: stage.endedAt ?? at } : stage),
         settled: { status: "cancelled", at },
       }, true);
+      // Not confirmed over: nothing is pruned or swept, and the record keeps its workspace until an adoption ends it.
+      if (!ended.ok) {
+        log.warn("an orphaned template run could not be cancelled (id=%d): %s", run.itemId, ended.reason);
+        return { ok: false, code: writeFault(ended.reason) };
+      }
     }
     await records.pruneSettled();
     await workspace.sweep(active).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));

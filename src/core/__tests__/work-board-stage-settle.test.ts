@@ -408,3 +408,45 @@ it("a start whose row write threw after the run was stored ends that run error; 
     }, () => ({ workspace: { release: async (run) => { released.push(run.runId); } } }));
   }
 });
+
+it("a run ended without its graph whose end cannot be written keeps its workspace and row, and a reader takes it over again", () => {
+  let missing = false;
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    await h.until(id, item => item.stageRuns[0].childSessionId !== undefined);
+    missing = true;
+    const write = vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" });
+    const prune = vi.spyOn(h.board, "pruneSettledRuns");
+    a.finish();
+    await run;
+    expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "error" });
+    const item = await h.item(id);
+    expect(item.record?.settled).toBeUndefined();
+    expect(item.runStatus).toBe("executing");
+    expect(released).toEqual([]);
+    expect(prune).not.toHaveBeenCalled();
+
+    write.mockRestore();
+    missing = false;
+    expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+    await h.engine.projectTemplateRuns([item]);
+    for (let i = 0; i < 400 && !h.engine.cancelRun(id).ok; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    // Taken over and stopped: its end is written this time.
+    expect((await h.until(id, current => current.record?.settled !== undefined)).record?.settled?.status).toBe("cancelled");
+  }, h => ({
+    workflow: {
+      templates: {
+        get: id => h().templates.get(id),
+        resolveVersion: (pin) => {
+          if (missing) throw new WorkflowTemplateError("unknown-version");
+          return h().templates.resolveVersion(pin);
+        },
+      },
+    },
+    workspace: { release: async (ref) => { released.push(ref.runId); } },
+  }));
+});
