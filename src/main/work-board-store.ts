@@ -353,10 +353,16 @@ const unescaped = (text: string): string => text.includes("\\")
  * a key given twice, in a row kept as a string, spelled with escapes) is found, whatever characters it has. Text around an id does not
  * hold it. Text still decoding past 16 levels holds every id. */
 function heldIn(text: string): (runId: string) => boolean {
+  const ids = heldStrings(text);
+  return (runId) => ids === undefined || ids.has(runId);
+}
+
+// The strings heldIn compares a run id with; undefined for text still decoding past 16 levels.
+function heldStrings(text: string): ReadonlySet<string> | undefined {
   const ids = new Set<string>();
   let level = [text];
   for (let depth = 0; level.length > 0; depth += 1) {
-    if (depth > ESCAPE_LEVELS) return () => true;
+    if (depth > ESCAPE_LEVELS) return undefined;
     const next: string[] = [];
     for (const value of level) {
       if (value.length > 0 && value.length <= RUN_ID_MAX) ids.add(value);
@@ -377,7 +383,7 @@ function heldIn(text: string): (runId: string) => boolean {
     }
     level = next;
   }
-  return (runId) => ids.has(runId);
+  return ids;
 }
 
 /** Whether an unreadable run record may be discarded; `work-board-run-owner-unknown` when its own start names no project that can be read. */
@@ -457,20 +463,20 @@ function hydrateBoard(file: BoardFile): BoardFile {
 }
 
 /** Throws when writing `next` over the board file's bytes `prior` would take out of it the id of a run the run file holds that is not
- * settled (`runs.held`; see {@link heldIn}). Only the user's delete of the row naming such a run takes its id out (`deleted`), and only
- * with its delete intent stored (`runs.intents`); nothing the write removes releases an id. While the run file cannot be read (`runs`
- * undefined), only bytes exactly as the board was read (`unchanged`) are written over. */
+ * settled (`runs.held`; see {@link heldIn}). Only the user's delete of the row naming such a run takes its id out (`deleted`), only
+ * with its delete intent stored (`runs.intents`), and never over bytes still decoding past 16 levels; nothing the write removes releases
+ * an id. While the run file cannot be read (`runs` undefined), only bytes exactly as the board was read (`unchanged`) are written over. */
 function assertKeepsRunIds(prior: Buffer | undefined, next: string, runs: Awaited<ReturnType<WorkflowRunStore["heldRuns"]>>, unchanged: string | undefined, deleted?: DeleteIntent): void {
   if (prior === undefined) return;
   if (runs === undefined) {
     if (unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8"))) throw new WorkBoardWriteRefusal("work-board-runs-unreadable");
     return;
   }
-  const before = heldIn(prior.toString("utf8"));
+  const before = heldStrings(prior.toString("utf8"));
   const after = heldIn(next);
-  const freed = deleted && runs.intents.some((intent) => intent.itemId === deleted.itemId && intent.runId === deleted.runId) ? deleted.runId : undefined;
+  const freed = before !== undefined && deleted && runs.intents.some((intent) => intent.itemId === deleted.itemId && intent.runId === deleted.runId) ? deleted.runId : undefined;
   for (const runId of runs.held) {
-    if (runId !== freed && before(runId) && !after(runId)) throw new WorkBoardWriteRefusal("work-board-run-id-held");
+    if (runId !== freed && (before === undefined || before.has(runId)) && !after(runId)) throw new WorkBoardWriteRefusal("work-board-run-id-held");
   }
 }
 

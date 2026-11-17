@@ -219,6 +219,8 @@ const nested = (value: unknown, levels: number): unknown => {
   for (let n = 0; n < levels; n += 1) packed = JSON.stringify(packed);
   return packed;
 };
+// Short text that still decodes past 16 levels: each level turns one `\` into the backslash of the next.
+const OVERFLOW = `\\${"u005c".repeat(20)}`;
 
 describe("the evidence scan", () => {
   it.each(["run.with-dot", "run:other", "run space", "실행", "say \"hi\"", "back\\slash", "D:\\", "x".repeat(256)])("holds the stored run id %j wherever a string holds it whole", async (runId) => {
@@ -291,6 +293,21 @@ describe("what lets a write take a live run's id out of board.json", () => {
       expect(await store.remove(40)).toEqual({ status: "deleted", itemId: 40, runId: "run-a" });
       expect(readFileSync(path, "utf8")).not.toContain("run-a");
     } finally { await cleanupTmpDir(dir); }
+  });
+
+  it("frees no run by its delete intent over a board whose escapes go past 16 levels: every run counts as held there", async () => {
+    const naming = row(40, { templateId: PIN.templateId, runId: "run-a", runStatus: "executing" });
+    for (const [items, deleted] of [[[{ ...naming, detail: OVERFLOW }], false], [[naming, row(41, { detail: OVERFLOW })], true]] as const) {
+      const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items }, null, 2)}\n`, [live("run-a")]);
+      try {
+        const before = readFileSync(path, "utf8");
+        if (deleted) expect(await store.remove(40)).toEqual({ status: "deleted", itemId: 40, runId: "run-a" });
+        else {
+          await expect(store.remove(40)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+          expect(readFileSync(path, "utf8")).toBe(before);
+        }
+      } finally { await cleanupTmpDir(dir); }
+    }
   });
 });
 
