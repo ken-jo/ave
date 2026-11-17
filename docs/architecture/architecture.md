@@ -3724,9 +3724,17 @@ with its own owner rule:
   above the last board read and every row id a stored run names, and stores
   that first id as `firstId` in `board.json`; ids below it were never issued
   by that file, so they never show a row gone and never let a run be pruned.
+  While the run file cannot be listed, such a seeded board is shown empty and
+  every write to it is refused. A board restored with a lower `nextId` skips
+  any id a stored run names when it creates a row, and lists the skipped ids
+  as `skippedIds`; it never issued them either. A run whose absent row has an
+  id below `firstId`, or among `skippedIds`, lost that row with the board file
+  that was replaced: it ends `error` (`template-run-lost`), written by its run
+  id, at boot and live alike, and is never read as a deleted row.
   A run end the run file does not confirm blocks the same way: starts and
   decisions are refused and nothing is pruned or swept until a later start,
-  decision or reader writes that end.
+  decision or reader writes that end. A start whose row write may not have
+  landed ends `error` once a readable board shows no row naming it.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
