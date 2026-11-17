@@ -263,10 +263,11 @@ it("a create on a home with neither file marks no id unknown: none was issued be
   expect(JSON.parse(await readFile(boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
 });
 
-it.each([["a string", "x"], ["zero", 0], ["a fraction", 2.5], ["past the safe-integer limit", 2 ** 53]])("a board whose unknownBelow is %s reads it as its next id", async (_, unknownBelow) => {
+it.each([["a string", "x"], ["zero", 0], ["a fraction", 2.5], ["past the safe-integer limit", 2 ** 53], ["negative", -3], ["null", null]])("a board whose unknownBelow is %s reads it as the largest safe integer: no row it does not list is gone, below or above its next id", async (_, unknownBelow) => {
   await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 6, unknownBelow, items: [1, 2, 4, 5].map(row) }));
   const store = new WorkBoardStore(boardPath);
-  expect((await store.runRowsOnDisk())?.({ itemId: 3, runId: "run-1" })).toBe("lost");
+  const standing = await store.runRowsOnDisk();
+  expect([3, 6, 100, Number.MAX_SAFE_INTEGER - 1].map(itemId => standing?.({ itemId, runId: "run-1" }))).toEqual(["lost", "lost", "lost", "lost"]);
   expect(await add(store)).toBe(6);
-  expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(6);
+  expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(Number.MAX_SAFE_INTEGER);
 });

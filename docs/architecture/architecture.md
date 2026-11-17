@@ -3745,7 +3745,8 @@ with its own owner rule:
   A create that writes over a board file that showed none of its rows
   (missing, not parsing, without an items list) stores the id it issued as
   `unknownBelow` in the board; a value that
-  is not a row id reads as the board's `nextId`. A row id below it that the
+  is not a row id reads as the largest safe integer, so no row id the board
+  does not list is read as gone, whatever it is. A row id below it that the
   board does not list is lost: the row may have been in the file written
   over. A later create over a board that again shows nothing stores its own,
   higher id. A run on a lost row ends `error` (`template-run-lost`), written

@@ -391,9 +391,9 @@ function hydrateBoard(file: BoardFile): BoardFile {
     typeof file.nextId === "number" && Number.isSafeInteger(file.nextId) && file.nextId > maxId
       ? file.nextId
       : maxId + 1;
-  // One that is not a row id reads as the board's next id: no row below it that the board does not list is read as gone.
+  // One that is not a row id reads as the largest safe integer: no row the board does not list is read as gone, whatever its id.
   const unknownBelow = file.unknownBelow === undefined ? undefined
-    : Number.isSafeInteger(file.unknownBelow) && file.unknownBelow >= 1 ? file.unknownBelow : nextId;
+    : Number.isSafeInteger(file.unknownBelow) && file.unknownBelow >= 1 ? file.unknownBelow : Number.MAX_SAFE_INTEGER;
   return {
     version: BOARD_VERSION, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items,
     unreadable: file.items.filter((row) => !listed(row)),
