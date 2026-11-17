@@ -3693,8 +3693,9 @@ with its own owner rule:
   changed; an entry that does not parse is left in place and marks only its own
   row. A run record carries `settled` once the run is over, and
   only a settled record is ever removed: when no row lists it as its current
-  run or in its run history, checked when a row is deleted and on every later
-  template-run start. A record whose row write failed is read back against
+  run or in its run history, checked when a row is deleted, on every later
+  template-run start, and when a run whose row is gone or no longer holds it
+  ends. A record whose row write failed is read back against
   the board: it is settled as an error and pruned when its row names another
   run, and stays as it is when the row names it or the board cannot be read. A
   row keeps the full record only for its current run: once the row names a
@@ -3710,31 +3711,43 @@ with its own owner rule:
   readable run record, whether or not a row names it, or `pending-review`
   while the file awaits review; at boot the engine adopts back each record
   without `settled`, and the board's boot reconcile leaves every row that names
-  a template run to it. `updateRun` changes only the run a row names; a run
-  whose row the board file on disk shows gone (for a row id the board issued)
-  or naming a newer run after it named this one (`runRowGoneOnDisk()`) is settled with
-  `runs.update`, then `pruneSettledRuns()` removes the settled runs no row
-  lists. A board file that is missing, does not parse or awaits review proves
-  nothing: the engine then settles, prunes and sweeps nothing and refuses
-  template starts until a later start, decision, reader or boot reads it.
-  A live run takes the same proof: after any board write, and when
-  `updateRun` finds a row that does not name the run, only a board on disk
-  that shows the row gone cancels it; any other board is `board-unread`.
-  A board seeded again after it went missing or was quarantined issues ids
-  above the last board read and every row id a stored run names, and stores
-  that first id as `firstId` in `board.json`; ids below it were never issued
-  by that file, so they never show a row gone and never let a run be pruned.
-  While the run file cannot be listed, such a seeded board is shown empty and
-  every write to it is refused. A board restored with a lower `nextId` skips
-  any id a stored run names when it creates a row, and lists the skipped ids
-  as `skippedIds`; it never issued them either. A run whose absent row has an
-  id below `firstId`, or among `skippedIds`, lost that row with the board file
-  that was replaced: it ends `error` (`template-run-lost`), written by its run
-  id, at boot and live alike, and is never read as a deleted row.
+  a template run to it. `updateRun` changes only the run a row names, and
+  `runRowsOnDisk()` tells where each run's row stands on the board file on
+  disk: it names the run, holds it only in its run history, is there without
+  either, does not validate, or is gone. A board file that is missing, does
+  not parse or awaits review shows nothing.
+  Row ids come from one counter that `board.json` does not own: the run file
+  stores `rowIdFloor`, the highest row id ever issued or seen, and never
+  lowers it. Only a create issues an id. It takes the next id above both the
+  floor and the board's `nextId - 1`, and stores that id as the floor before
+  the row is written, so no id is issued twice, whether `board.json` is
+  deleted, restored from an older copy or edited to a lower `nextId`. The
+  floor as read is never below an `itemId` a stored run names; a run file
+  without the field reads it as 0, raised that way, and the first board load
+  raises it to the board's `nextId - 1`, which is above every row id in the
+  file. While the floor cannot be read or stored (the run file awaits review,
+  is past its read limit, does not parse or cannot be read), every create is
+  refused with `work-item-ids-unavailable`; reads stay as described above.
+  A row is gone when a readable board file has no row with its id. Every
+  such id is at or below the floor, so the row was issued and then removed,
+  never one not issued yet. A run whose row is gone, or holds it only in its
+  run history, is cancelled as by Stop and settled with `runs.update`; its
+  record is then pruned, or shrunk to its summary while a run history lists
+  it. A run whose row is there without naming or holding it ends `error`
+  (`template-run-lost`), written by its run id, at boot and live alike, and
+  its record is pruned. A row that does not validate is kept in the file as
+  it was read, after the valid rows, by every board write; the list counts
+  such rows (`unreadableRows`) and the board says so. A run whose row does not
+  validate is never read as its row gone, and keeps its record.
+  A board file that shows nothing proves nothing: the engine then settles,
+  prunes and sweeps nothing and refuses template starts until a later start,
+  decision, reader or boot reads it.
   A run end the run file does not confirm blocks the same way: starts and
   decisions are refused and nothing is pruned or swept until a later start,
-  decision or reader writes that end. A start whose row write may not have
-  landed ends `error` once a readable board shows no row naming it.
+  decision, reader or boot writes that end. Once a stop's end is written
+  that way, the board is told with `run-end-confirmed`, which clears only
+  that stop's note that its end is not saved. A start whose row write may
+  not have landed ends `error` once a readable board shows no row naming it.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
