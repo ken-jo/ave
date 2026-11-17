@@ -380,4 +380,42 @@ describe("unreadable run record discard", () => {
     expect(JSON.parse(readFileSync(runsPath, "utf8")).runs).toEqual([null]);
     expect(broadcast.mock.calls.map(([, payload]) => payload)).toEqual([{ change: "removed", changedAt: expect.any(String) }]);
   });
+
+  it("discards an unreadable run record only while the project it was started in and every board row it could belong to are authorized", async () => {
+    const path = join(root, "board.json");
+    const runsPath = join(root, "workflow-runs.json");
+    const denied = join(root, "denied-project");
+    const row = (id: number, projectRoot: string) => ({ id, title: "Work", status: "planned", priority: "medium", projectRoot, created_at: "x", updated_at: "x" });
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 4, items: [row(1, workspace), row(2, denied), { id: 3, title: 5, projectRoot: denied }] }));
+    const own = { runId: "run-own", itemId: 1 };
+    const ownToo = { runId: "run-own-too", itemId: 1 };
+    const free = { runId: "run-free", itemId: 9 };
+    const foreign = [
+      { runId: "run-listed", itemId: 2 }, { runId: "run-invalid", itemId: 3 },
+      { runId: "run-started", itemId: 9, runStartedBy: { kind: "local-create-and-run", projectRoot: denied } },
+    ];
+    const text = JSON.stringify({ version: 1, rowIdFloor: 9, runs: [own, ownToo, free, ...foreign] });
+    writeFileSync(runsPath, text);
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send: broadcast } };
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    const card = async (entry: unknown) => {
+      const listed = await store.list();
+      const hash = createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+      const found = listed.status === "ok" ? listed.unreadableRuns?.find((run) => run.hash === hash) : undefined;
+      if (!found) throw new Error("no card");
+      return { runRecord: { position: found.position, hash: found.hash } };
+    };
+    for (const entry of foreign) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "not_found" });
+    expect(readFileSync(runsPath, "utf8")).toBe(text);
+    expect(broadcast).not.toHaveBeenCalled();
+    for (const entry of [own, free]) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "deleted" });
+    // One naming a row is refused while the board file cannot be read.
+    const ownTooCard = await card(ownToo);
+    writeFileSync(path, "{");
+    await expect(remove({}, null, ownTooCard)).resolves.toEqual({ status: "not_found" });
+    expect(JSON.parse(readFileSync(runsPath, "utf8")).runs).toEqual([ownToo, ...foreign]);
+  });
 });

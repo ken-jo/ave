@@ -200,13 +200,14 @@ export class WorkflowRunStore {
     };
   }
 
-  /** Remove the entry at `position` that does not read as a run, only while its hash is `hash`; the file as it was is kept beside it
-   * first. `changed` when no such entry is there or the file awaits review or is past its read limit; `too-large` when the file left
-   * would be past it. A file that cannot be read throws. */
-  async discardUnreadable(target: { position: number; hash: string }): Promise<"discarded" | "changed" | "too-large"> {
+  /** Remove the entry at `position` that does not read as a run, only while its hash is `hash` and it passes `allowed`; the file as it
+   * was is kept beside it first. `changed` when no such entry is there or the file awaits review or is past its read limit; `refused`
+   * when it does not pass; `too-large` when the file left would be past it. A file that cannot be read throws. */
+  async discardUnreadable(target: { position: number; hash: string }, allowed: (entry: unknown) => boolean | Promise<boolean>): Promise<"discarded" | "changed" | "refused" | "too-large"> {
     return withInProcessFileQueue(this.filePath, async () => {
       const read = await this.load();
       if (!read?.bytes || !unreadableEntries(read.file).some(entry => entry.position === target.position && entry.hash === target.hash)) return "changed";
+      if (!(await allowed(read.file.runs[target.position]))) return "refused";
       read.file.runs.splice(target.position, 1);
       return (await this.commit(read.file, true)) ? "discarded" : "too-large";
     });

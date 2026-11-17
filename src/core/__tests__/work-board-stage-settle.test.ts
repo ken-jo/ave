@@ -1149,7 +1149,7 @@ it("discarding unreadable run records, ones naming the live run's row included, 
   const listed = await h.board.list();
   const cards = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
   expect(cards.map(card => card.itemId)).toEqual([live.id, live.id]);
-  for (const card of [...cards].reverse()) expect(await h.board.discardUnreadableRun(card)).toEqual({ status: "deleted" });
+  for (const card of [...cards].reverse()) expect(await h.board.discardUnreadableRun(card, () => true)).toEqual({ status: "deleted" });
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
@@ -1632,7 +1632,7 @@ it("a broken entry under another run id leaves a row whose run has no record sho
   const hash = createHash("sha256").update(JSON.stringify(idless)).digest("hex");
   const entry = listed.status === "ok" ? listed.unreadableRuns?.find(candidate => candidate.hash === hash) : undefined;
   if (!entry) throw new Error("no unreadable run card");
-  expect(await h.board.discardUnreadableRun({ position: entry.position, hash })).toEqual({ status: "deleted" });
+  expect(await h.board.discardUnreadableRun({ position: entry.position, hash }, () => true)).toEqual({ status: "deleted" });
   const freed = await shown(h, id);
   expect(freed).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
   expect(await h.engine.clearMissingRun(id, { revision: freed.mutationRevision ?? "", runId })).toMatchObject({ status: "updated", itemId: id });

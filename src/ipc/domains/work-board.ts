@@ -97,7 +97,13 @@ function isAuthorizedInvalidRow(row: unknown): boolean {
   return resolved.authorized && resolved.project !== null;
 }
 
-const hasExactly = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
+// A run record that does not read is checked by the project it says it was started in and by every board row it could belong to.
+function isAuthorizedRunRecord(entry: unknown, rows: readonly unknown[]): boolean {
+  const startedBy = typeof entry === "object" && entry !== null ? (entry as { runStartedBy?: unknown }).runStartedBy : undefined;
+  return isAuthorizedInvalidRow(entry) && isAuthorizedInvalidRow(startedBy) && rows.every(isAuthorizedInvalidRow);
+}
+
+const hasExactly =(value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
 // `{ [key]: { position, hash } }` exactly, with a safe non-negative position and a sha-256 hash; anything else names no entry.
@@ -311,7 +317,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       const row = entryTarget(target, "invalidRow");
       const runRecord = entryTarget(target, "runRecord");
       const result = row ? await workBoardStore.removeUnreadable(row, isAuthorizedInvalidRow)
-        : runRecord ? await workBoardStore.discardUnreadableRun(runRecord) : undefined;
+        : runRecord ? await workBoardStore.discardUnreadableRun(runRecord, isAuthorizedRunRecord) : undefined;
       if (result === undefined) return { ok: false, error: "invalid-input" };
       if (result.status === "deleted") broadcastItemChanged(result.itemId, "removed");
       return result;

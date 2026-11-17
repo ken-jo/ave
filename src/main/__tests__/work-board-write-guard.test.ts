@@ -138,7 +138,7 @@ const OPS: Record<string, Op> = {
     return entries.filter((entry) => sha(JSON.stringify(entry)) === card.hash);
   },
   pruneSettledRuns: async (store) => { await store.pruneSettledRuns(); return []; },
-  discardUnreadableRun: async (store, seen) => { const card = first(seen.runCards); if (card) await store.discardUnreadableRun(card); return []; },
+  discardUnreadableRun: async (store, seen) => { const card = first(seen.runCards); if (card) await store.discardUnreadableRun(card, () => true); return []; },
 };
 
 it("no store write takes a stored run's id out of board.json unless the entry it removes held it, and every write over bytes it would not give back keeps them first", async () => {

@@ -191,35 +191,47 @@ it("shows every entry that does not read as a run by its place and content, and 
     { position: 5, hash: sha(JSON.stringify(entries[5])) },
   ]);
   for (const target of [{ position: 2, hash: sha("null") }, { position: 0, hash: sha(JSON.stringify(run())) }, { position: 6, hash: sha("null") }]) {
-    expect(await store.discardUnreadable(target)).toBe("changed");
+    expect(await store.discardUnreadable(target, () => true)).toBe("changed");
   }
   expect(await readFile(file, "utf8")).toBe(text);
   const write = vi.spyOn(namespace, "writeFileAtomicAtPath");
   write.mockRejectedValueOnce(Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" }));
-  await expect(store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) })).rejects.toThrow("EBUSY");
+  await expect(store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) }, () => true)).rejects.toThrow("EBUSY");
   expect(await readFile(file, "utf8")).toBe(text);
   write.mockRestore();
-  expect(await store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) })).toBe("discarded");
+  expect(await store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) }, () => true)).toBe("discarded");
   expect(await readFile(`${file}.invalid-runs-${sha(text)}.bak`, "utf8")).toBe(text);
   expect((await stored()).runs).toEqual([run(), null, ...entries.slice(3)]);
   // The places follow the file as it is now; a repeated runId left once reads as its run.
-  expect(await store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) })).toBe("changed");
-  expect(await store.discardUnreadable({ position: 3, hash: sha(JSON.stringify(entries[4])) })).toBe("discarded");
+  expect(await store.discardUnreadable({ position: 2, hash: sha(JSON.stringify(broken)) }, () => true)).toBe("changed");
+  expect(await store.discardUnreadable({ position: 3, hash: sha(JSON.stringify(entries[4])) }, () => true)).toBe("discarded");
   expect(await store.get("twice")).toEqual({ status: "found", run: run({ runId: "twice" }) });
   expect((await store.view()).unreadable).toEqual([{ position: 1, hash: sha("null") }, { position: 3, hash: sha(JSON.stringify(entries[5])) }]);
+});
+
+it("discards no entry the check refuses, given the entry as read, and copies nothing then", async () => {
+  const store = new WorkflowRunStore(file);
+  const entry = { runId: "broken", itemId: 4 };
+  const text = JSON.stringify({ version: 1, runs: [entry] });
+  await writeFile(file, text);
+  const allowed = vi.fn(() => false);
+  expect(await store.discardUnreadable({ position: 0, hash: sha(JSON.stringify(entry)) }, allowed)).toBe("refused");
+  expect(allowed).toHaveBeenCalledWith(entry);
+  expect(await readFile(file, "utf8")).toBe(text);
+  expect(readdirSync(dir).filter(name => name.endsWith(".bak"))).toEqual([]);
 });
 
 it("discards nothing while the run file awaits review, is past its read limit or is not there", async () => {
   const store = new WorkflowRunStore(file);
   const target = { position: 0, hash: sha("null") };
-  expect(await store.discardUnreadable(target)).toBe("changed");
+  expect(await store.discardUnreadable(target, () => true)).toBe("changed");
   expect(existsSync(file)).toBe(false);
   const text = JSON.stringify({ version: 1, runs: [null] });
   await writeFile(file, text);
   const read = vi.spyOn(homeTrust, "readAveHomeInput").mockResolvedValueOnce({ status: "untrusted", bytes: Buffer.from(text), reason: "changed" });
-  expect(await store.discardUnreadable(target)).toBe("changed");
+  expect(await store.discardUnreadable(target, () => true)).toBe("changed");
   read.mockRejectedValueOnce(new homeTrust.AveHomeInputSizeLimitError("too large"));
-  expect(await store.discardUnreadable(target)).toBe("changed");
+  expect(await store.discardUnreadable(target, () => true)).toBe("changed");
   expect(await readFile(file, "utf8")).toBe(text);
   expect((await store.view()).unreadable).toEqual([target]);
 });
@@ -232,7 +244,7 @@ const RUN_FILE_WRITES: [string, (store: WorkflowRunStore) => Promise<unknown>][]
   ["raiseRowIdFloor", store => store.raiseRowIdFloor(50)],
   ["startLegacyBoardCopy", store => store.startLegacyBoardCopy(3, "a".repeat(64))],
   ["finishLegacyBoardCopy", store => store.finishLegacyBoardCopy("a".repeat(64))],
-  ["discardUnreadable", store => store.discardUnreadable({ position: 3, hash: sha(JSON.stringify("stray")) })],
+  ["discardUnreadable", store => store.discardUnreadable({ position: 3, hash: sha(JSON.stringify("stray")) }, () => true)],
 ];
 it.each(RUN_FILE_WRITES)("%s writes the run file's other keys and every entry that does not read as a run back as they were, and keeps bytes it would not give back first", async (name, write) => {
   const archive = [{ runId: "run-9", itemId: 9 }];

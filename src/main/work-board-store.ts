@@ -1420,11 +1420,20 @@ export class WorkBoardStore {
   }
 
   /** Discard, as an unreadable run record card asks, the one entry of the run file that does not read as a run at `target.position`,
-   * while its JSON still hashes to `target.hash`. The run file as it was is copied beside it first; there is no undo. Then the board's
-   * unknownBelow mark drops once nothing in the run file could be an unsettled run below it. */
-  async discardUnreadableRun(target: { position: number; hash: string }): Promise<WorkBoardEntryDeleteResult> {
+   * while its JSON still hashes to `target.hash`. It must pass `allowed`, given every entry of the board file on disk that could be the
+   * row it names: those with that id and those without a usable id; one naming a row is refused while the board file cannot be read.
+   * The run file as it was is copied beside it first; there is no undo. Then the board's unknownBelow mark drops once nothing in the run
+   * file could be an unsettled run below it. */
+  async discardUnreadableRun(target: { position: number; hash: string }, allowed: (entry: unknown, rows: readonly unknown[]) => boolean): Promise<WorkBoardEntryDeleteResult> {
     await this.ensureLoaded();
-    const outcome = await this.runs.discardUnreadable(target);
+    const outcome = await this.runs.discardUnreadable(target, async (entry) => {
+      const itemId = typeof entry === "object" && entry !== null ? (entry as { itemId?: unknown }).itemId : undefined;
+      if (!Number.isSafeInteger(itemId)) return allowed(entry, []);
+      const onDisk = await readBoardOnDisk(this.filePath);
+      if (!onDisk) return false;
+      return allowed(entry, [...onDisk.board.items, ...onDisk.board.unreadable].filter((row) => [undefined, itemId].includes(rowIdOf(row))));
+    });
+    if (outcome === "refused") return { status: "not_found" };
     if (outcome === "changed") return { status: "invalid", reason: "work-board-row-changed" };
     if (outcome === "too-large") return { status: "invalid", reason: "template-runs-too-large" };
     await this.pruneSettledRuns().catch((error: Error) => log.warn("[work-board-store] runs were not pruned after a discard: %s", error.message));

@@ -270,10 +270,10 @@ it("drops the mark once the user discards the last entry of the run file that do
   const listed = await store.list();
   const cards = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
   expect(cards).toEqual([{ itemId: 3, position: 0, hash: sha(JSON.stringify(entries[0])) }, { position: 1, hash: sha("null") }]);
-  expect(await store.discardUnreadableRun(cards[1])).toEqual({ status: "deleted" });
+  expect(await store.discardUnreadableRun(cards[1], () => true)).toEqual({ status: "deleted" });
   expect(await mark()).toBe(5);
-  expect(await store.discardUnreadableRun(cards[1])).toEqual({ status: "invalid", reason: "work-board-row-changed" });
-  expect(await store.discardUnreadableRun(cards[0])).toEqual({ status: "deleted" });
+  expect(await store.discardUnreadableRun(cards[1], () => true)).toEqual({ status: "invalid", reason: "work-board-row-changed" });
+  expect(await store.discardUnreadableRun(cards[0], () => true)).toEqual({ status: "deleted" });
   expect(JSON.parse(await readFile(boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
   expect((await runFile()).runs).toEqual([]);
   expect(await readFile(`${runsPath}.invalid-runs-${sha(text)}.bak`, "utf8")).toBe(text);
