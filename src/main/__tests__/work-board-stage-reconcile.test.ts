@@ -282,3 +282,37 @@ it("an orphaned run whose cancel write fails is neither pruned nor swept, and th
     await h.cleanup();
   }
 });
+
+it("a boot whose reconcile or row repair write fails takes nothing over: starts stay refused and nothing is swept until a later attempt succeeds", async () => {
+  for (const failing of ["reconcile", "row"] as const) {
+    const h = await stageRunHarness();
+    try {
+      const { id, runId, version } = await parkedRun(h);
+      if (failing === "reconcile") await h.board.runs.update(runId, run => ({ ...run, stageRuns: run.stageRuns.map(stage => stage.stageId === "a" ? { ...stage, status: "running" } : stage) }));
+      else h.editRow(id, row => ({ ...row, runStatus: "error" }));
+      const other = await h.addItem(version);
+      const engine = h.makeEngine();
+      const write = failing === "reconcile"
+        ? vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" })
+        : vi.spyOn(h.board, "setRunResult").mockRejectedValue(new Error("disk full"));
+      const swept = h.sweeps.length;
+      await engine.adoptParkedTemplateRuns();
+      const begin = vi.spyOn(h.board, "beginRun");
+      expect(await engine.runItem(other, { templateSource: h.local(version) }))
+        .toMatchObject({ status: "error", reasonCode: failing === "reconcile" ? "template-runs-pending-review" : "run-state-unavailable" });
+      expect(begin).not.toHaveBeenCalled();
+      expect(h.sweeps).toHaveLength(swept);
+      expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+
+      write.mockRestore();
+      const started = engine.runItem(other, { templateSource: h.local(version) });
+      await h.untilLive(1);
+      expect(h.sweeps.slice(swept)).toEqual([[runId]]);
+      expect(engine.cancelRun(id)).toEqual({ ok: true });
+      expect(engine.cancelRun(other)).toEqual({ ok: true });
+      await started;
+    } finally {
+      await h.cleanup();
+    }
+  }
+});

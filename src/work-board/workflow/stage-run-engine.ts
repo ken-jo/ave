@@ -920,13 +920,22 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const found = await records.adoption();
     if (!found.ok) return found;
     const active = found.kept.filter(run => run.settled === undefined).map(run => run.runId);
+    // A row write that fails leaves the adoption to the next attempt; a row that is gone by then is an orphan for that attempt.
+    const shownOnRow = (itemId: number, patch: Parameters<typeof store.setRunResult>[1]): Promise<boolean> =>
+      store.setRunResult(itemId, patch).then(result => result.status === "updated", () => false);
     for (const { item, run } of found.named) {
-      // Unreadable, awaiting review or another row's: the row already says so, and nothing is adopted.
+      // The run file was read and holds no readable run of this row under that id: the row already says so, and nothing is adopted.
       if (!run) continue;
+      // Taken over by an earlier attempt: a retry announces nothing again.
+      if (runs.get(item.id)?.runId === run.runId) {
+        active.push(run.runId);
+        continue;
+      }
       if (run.settled !== undefined) {
         if (item.runStatus !== run.settled.status) {
           const version = run.settled.status === "completed" ? await resolvePinned(run.pin).catch(() => null) : null;
-          await showOnRow(item.id, run.settled.status, finalOutput(run, version));
+          const output = finalOutput(run, version);
+          if (!(await shownOnRow(item.id, { runStatus: run.settled.status, ...(run.settled.status === "completed" && output !== undefined ? { output } : {}) }))) return { ok: false, code: "run-state-unavailable" };
           emit({ itemId: item.id, phase: run.settled.status === "completed" ? "done" : run.settled.status, message: "restored" });
           deps.itemChanged?.(item.id);
         }
@@ -937,11 +946,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       let record = run;
       if (parked) {
         const stored = await records.update(item.id, run.runId, current => current.settled === undefined ? parked : null);
-        if (!stored.ok) continue;
+        // Not taken over: nothing is swept, and nothing starts or is decided until an attempt succeeds.
+        if (!stored.ok) return { ok: false, code: writeFault(stored.reason) };
         record = stored.run;
       }
       // This run is not lost: it waits for the user. The row and its history entry say so again.
-      if (item.runStatus !== "executing") await store.setRunResult(item.id, { runStatus: "executing" });
+      if (item.runStatus !== "executing" && !(await shownOnRow(item.id, { runStatus: "executing" }))) return { ok: false, code: "run-state-unavailable" };
       active.push(record.runId);
       await stateFor(record, null);
       emit({ itemId: item.id, phase: "executing", message: "resumed" });
