@@ -1129,8 +1129,15 @@ function workItemMutationMessage(reason: unknown): string {
     case "moveReviewDerived": return t("workBoard.moveReviewDerived");
     case "moveResultDecision": return t("workBoard.moveResultDecision");
     case "template-run-not-found": return t("reasonCodes.template-run-not-found");
-    default: return t("workBoard.errorMutationRefused");
+    default: return refusalText(reason) ?? t("workBoard.errorMutationRefused");
   }
+}
+
+// The text of a refusal code the host sends, or undefined for a reason that has none.
+function refusalText(reason: unknown): string | undefined {
+  if (typeof reason !== "string") return undefined;
+  const text = reasonText(reason);
+  return text === reason ? undefined : text;
 }
 
 function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChanged, onRun }: DetailDialogProps) {
@@ -1782,6 +1789,7 @@ export function WorkBoardPanel({
       const result = await api.removeWorkBoardItem(null, target);
       if ("status" in result && result.status === "deleted") error = null;
       else if ("reason" in result && result.reason === "work-board-row-changed") error = changed;
+      else if ("reason" in result && refusalText(result.reason) !== undefined) error = `reasonCodes.${result.reason}`;
     } catch (failure) {
       console.error("[ave] work-board invalid entry delete failed", { itemId, message: errorMessage(failure) });
     }

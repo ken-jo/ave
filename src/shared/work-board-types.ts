@@ -183,10 +183,14 @@ export type WorkItemDeleteTarget =
 /** A delete of an entry of the board or run file; `itemId` when a board entry has a usable id. `work-board-row-changed`: the entry at
  * that place is no longer the one named, and nothing was deleted; `template-runs-too-large`: the run file left would be past its read
  * limit, and nothing was discarded. */
+/** Why a guard refused a work-board file write; nothing was written. Each has its text under `reasonCodes.`. */
+export type WorkBoardRefusalCode =
+  | "work-board-run-id-held" | "work-board-runs-unreadable" | "work-board-legacy-copy-unfinished" | "work-board-unread" | "work-board-write-failed";
+
 export type WorkBoardEntryDeleteResult =
   | { status: "deleted"; itemId?: number }
   | { status: "not_found" }
-  | { status: "invalid"; reason: "work-board-row-changed" | "template-runs-too-large" };
+  | { status: "invalid"; reason: "work-board-row-changed" | "template-runs-too-large" | WorkBoardRefusalCode };
 
 export type WorkItemListResult =
   // unreadableRows: one entry per row of the board file that does not validate, with its id when it has one; they are kept in the file

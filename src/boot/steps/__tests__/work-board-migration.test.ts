@@ -198,7 +198,7 @@ describe("work-board migration", () => {
     expect(JSON.parse(copied.toString("utf8"))).toEqual(LEGACY_5_1);
     const listed = await store.list();
     expect(listed.status === "ok" && listed.items.map(item => item.id)).toEqual([5, 1]);
-    await expect(store.update(1, { title: "edited" })).rejects.toThrow(/not marked done/);
+    await expect(store.update(1, { title: "edited" })).rejects.toMatchObject({ code: "work-board-legacy-copy-unfinished" });
     expect(readFileSync(destPath)).toEqual(copied);
     expect(copyMark()).toEqual({ through: 5, board: copyHash(LEGACY_5_1) });
     failingMark.mockRestore();
@@ -242,7 +242,7 @@ describe("work-board migration", () => {
     const copied = readFileSync(destPath);
     const store = new WorkBoardStore(destPath);
     // While the mark cannot be stored, nothing is written over the copy.
-    await expect(write(store)).rejects.toThrow(/not marked done/);
+    await expect(write(store)).rejects.toMatchObject({ code: "work-board-legacy-copy-unfinished" });
     expect(readFileSync(destPath)).toEqual(copied);
     failing.mockRestore();
     await write(store);

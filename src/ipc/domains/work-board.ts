@@ -27,6 +27,8 @@ import { parseFileMentionReferences } from "../../shared/file-mention-reference.
 import { sanitizeOutgoingInput } from "../handlers/chat.js";
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../../engine/parent-directive.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { createLogger } from "../../lib/logger.js";
+import { WorkBoardWriteRefusal } from "../../main/storage/rewrite-keeping-bytes.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
 import { createDirStorage } from "../../work-board/storage.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
@@ -42,6 +44,7 @@ import type {
 } from "../../main/work-board-store.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 
+const log = createLogger("work-board-ipc");
 const NO_STORE = { ok: false, error: "no-store" as const };
 const NO_ENGINE = { ok: false, error: "no-engine" as const };
 const NO_REPORTER = { ok: false, error: "no-reporter" as const };
@@ -168,12 +171,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
       try { return await listener(event, ...args); }
       catch (error) {
-        if (!(error instanceof WorkflowTemplateError) || error.code !== "invalid-template-run") throw error;
-        if (channel === WORK_BOARD.decidePlan) return { ok: false, reason: error.code };
+        // A refusal reaches the renderer as its code; any other failure is thrown on.
+        const code = error instanceof WorkBoardWriteRefusal ? error.code
+          : error instanceof WorkflowTemplateError && error.code === "invalid-template-run" ? error.code : undefined;
+        if (code === undefined) throw error;
+        if (channel === WORK_BOARD.decidePlan) return { ok: false, reason: code };
         if (channel === WORK_BOARD.list || channel === WORK_BOARD.get || channel === WORK_BOARD.steerRun || channel === WORK_BOARD.cancelRun) {
-          return { ok: false, error: error.code };
+          return { ok: false, error: code };
         }
-        return { status: channel === WORK_BOARD.run ? "error" : "invalid", itemId: args[0], reason: error.code };
+        return { status: channel === WORK_BOARD.run ? "error" : "invalid", itemId: args[0], reason: code };
       }
     });
   };
@@ -238,7 +244,11 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!workBoardStore) return NO_STORE;
     const normalized = normalizeCreateInputProject(input);
     if (!normalized.ok) return normalized.result;
-    const result = await workBoardStore.create(normalized.input);
+    // A create never shows the renderer a raw failure.
+    const result = await workBoardStore.create(normalized.input).catch((error: unknown) => {
+      log.warn("[work-board] an item was not created: %s", errorMessage(error));
+      return { status: "invalid" as const, reason: "work-board-write-failed" };
+    });
     if (result.status === "created") broadcastItemChanged(result.itemId, "created");
     return result;
   });

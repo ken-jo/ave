@@ -10,7 +10,7 @@ import {
   readJsonFileOrEmpty,
   writeFileAtomicAtPath,
 } from "./storage/feature-namespace.js";
-import { rewriteKeepingBytes } from "./storage/rewrite-keeping-bytes.js";
+import { rewriteKeepingBytes, WorkBoardWriteRefusal } from "./storage/rewrite-keeping-bytes.js";
 import { createDirStorage, type WorkBoardStorage } from "../work-board/storage.js";
 import {
   BOARD_VERSION,
@@ -437,14 +437,14 @@ function hydrateBoard(file: BoardFile): BoardFile {
 function assertKeepsRunIds(prior: Buffer | undefined, next: string, runIds: ReadonlySet<string> | undefined, unchanged: string | undefined, released: readonly unknown[]): void {
   if (prior === undefined) return;
   if (runIds === undefined) {
-    if (unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8"))) throw new Error("the run file cannot be read, so a board file not as it was read is not written over");
+    if (unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8"))) throw new WorkBoardWriteRefusal("work-board-runs-unreadable");
     return;
   }
   const before = heldIn(prior.toString("utf8"));
   const after = heldIn(next);
   const freed = released.map((entry) => heldIn(JSON.stringify(entry)));
   for (const runId of runIds) {
-    if (before(runId) && !after(runId) && !freed.some((held) => held(runId))) throw new Error("the write would take a stored run's id out of the board file");
+    if (before(runId) && !after(runId) && !freed.some((held) => held(runId))) throw new WorkBoardWriteRefusal("work-board-run-id-held");
   }
 }
 
@@ -579,8 +579,8 @@ export class WorkBoardStore {
   // (`unchanged`) are copied aside first; with no such text, any bytes there are. The write is refused when it would take out of the
   // board file a run id the run file holds, unless an entry it removes on purpose (`released`) held it (see assertKeepsRunIds).
   private async commit(board: BoardRead, change: { deleted?: { itemId: number; runId: string }; released?: readonly unknown[] } = {}): Promise<void> {
-    if (board.unread) throw new Error("a board that shows none of its rows is written only by a create");
-    if (await this.legacyCopyHolds(false)) throw new Error("the legacy board copy on disk is not marked done, so nothing is written over it");
+    if (board.unread) throw new WorkBoardWriteRefusal("work-board-unread");
+    if (await this.legacyCopyHolds(false)) throw new WorkBoardWriteRefusal("work-board-legacy-copy-unfinished");
     const file = cacheOf(board);
     const text = boardText(file);
     const runIds = await this.runs.runIds();
@@ -872,7 +872,11 @@ export class WorkBoardStore {
       };
       board.nextId = id + 1;
       board.items.push(item);
-      await this.commit(board);
+      try { await this.commit(board); }
+      catch (error) {
+        if (error instanceof WorkBoardWriteRefusal) return { status: "invalid" as const, reason: error.code };
+        throw error;
+      }
       await appendActivity(this.activity, {
         kind: "created",
         itemId: item.id,

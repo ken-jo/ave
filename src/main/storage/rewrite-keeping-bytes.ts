@@ -4,8 +4,14 @@ import { access } from "node:fs/promises";
 import { readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { createLogger } from "../../lib/logger.js";
 import { writeFileAtomicAtPath } from "./feature-namespace.js";
+import type { WorkBoardRefusalCode } from "../../shared/work-board-types.js";
 
 const log = createLogger("rewrite-keeping-bytes");
+
+/** A work-board file write a guard refused: nothing was written. `path`: the file the refusal is about, when it is not the one written. */
+export class WorkBoardWriteRefusal extends Error {
+  constructor(readonly code: WorkBoardRefusalCode, readonly path?: string) { super(code); this.name = "WorkBoardWriteRefusal"; }
+}
 
 /** Write `body` over `filePath`. The bytes there, unless they are exactly `unchanged` (what writing the file back as its writer read it
  * gives), are first copied beside it to `<file>.<tag>-<sha256>.bak`, once per content. `check` sees those bytes before anything is

@@ -241,6 +241,29 @@ describe("conditional board mutations", () => {
   });
 });
 
+describe("write refusals", () => {
+  it("returns a guard's refusal as its code, with the board file left as it was", async () => {
+    const path = join(root, "board.json");
+    const store = new WorkBoardStore(path);
+    const created = await store.create({ title: "Notes", detail: "live-r", projectRoot: workspace });
+    if (created.status !== "created") throw new Error("Create failed");
+    const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
+    const live = { runId: "live-r", itemId: 9, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z", stageRuns: [] };
+    writeFileSync(join(root, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 9, runs: [live] }));
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    const before = readFileSync(path, "utf8");
+    await expect(registeredHandler(WORK_BOARD.update)({}, created.itemId, { detail: "edited" })).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-board-run-id-held" });
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  it("never returns a create's raw failure", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    vi.spyOn(store, "create").mockRejectedValue(new Error("disk full at C:\\private"));
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    await expect(registeredHandler(WORK_BOARD.add)({}, { title: "Notes", projectRoot: workspace })).resolves.toEqual({ status: "invalid", reason: "work-board-write-failed" });
+  });
+});
+
 describe("listed row delete", () => {
   it("deletes a listed row only by its id with the revision its card showed, and returns the run that row named", async () => {
     const store = new WorkBoardStore(join(root, "board.json"));

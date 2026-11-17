@@ -156,7 +156,7 @@ describe("work board review", () => {
     expect(screen.queryByTestId("work-board-unreadable-row-error")).toBeNull();
   });
   it.each([
-    [{ status: "invalid" as const, reason: "template-runs-too-large" as const }, "workBoard.errorMutationRefused"],
+    [{ status: "invalid" as const, reason: "template-runs-too-large" as const }, "reasonCodes.template-runs-too-large"],
     [{ status: "invalid" as const, reason: "work-board-row-changed" as const }, "workBoard.unreadableRunChanged"],
   ] as const)("says why a refused unreadable run record discard (%o) did nothing and keeps the card", async (refusal, message) => {
     const api = apiFor([result]);

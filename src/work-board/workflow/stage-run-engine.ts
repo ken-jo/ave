@@ -8,6 +8,7 @@ import { hasUnsafeDirectiveControlChars } from "../../engine/parent-directive.js
 import { exactToolScope, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
 import { createLogger } from "../../lib/logger.js";
 import type { LoadedAgentProfile } from "../../main/agent-profile-store.js";
+import { WorkBoardWriteRefusal } from "../../main/storage/rewrite-keeping-bytes.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { WorkflowTemplateStore } from "../../main/workflow-template-store.js";
 import { requiredTier } from "../../permissions/permission-manager.js";
@@ -875,7 +876,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           return read.status === "found" ? read.run.settled === undefined : read.status !== "not-found";
         }, () => true);
       }
-      const code = error instanceof WorkflowTemplateError ? error.code : unreadable ? "invalid-template-run" : undefined;
+      const code = error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal ? error.code : unreadable ? "invalid-template-run" : undefined;
       return abandonStart(ref, recorded, refused(code ?? "run-state-unavailable"), unstarted);
     }
     const state = openState(itemId, runId, projectRoot, a.approvalSurface);
@@ -1181,7 +1182,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       (error: unknown): Adopted => {
         adoption = null;
         log.warn("template run adoption failed: %s", errorMessage(error));
-        return { ok: false, code: error instanceof WorkflowTemplateError ? error.code : "run-state-unavailable" };
+        return { ok: false, code: error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal ? error.code : "run-state-unavailable" };
       },
     );
     return adoption;
