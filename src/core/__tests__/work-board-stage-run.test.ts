@@ -426,7 +426,7 @@ it("after a restart continueRun starts the waiting stage once, and only while th
   }
 });
 
-it("run fields hand-written into the board file are ignored: the pin, the source, the stage runs and the workspace come from the run file", () => withHarness(async (h) => {
+it("a row with run fields hand-written into the board file is kept as written and starts no run; written in mid-run, the run waits unread and nothing forged reaches a stage or the run file", () => withHarness(async (h) => {
   const v1 = await h.confirm([auto("a", { goal: "v1 a" }), auto("b", { inputs: ["a"], goal: "v1 b" })]);
   const id = await h.addItem(v1);
   // The row on disk claims another version, a schedule source, finished stages, a workspace of its own and a waiting review.
@@ -439,29 +439,31 @@ it("run fields hand-written into the board file are ignored: the pin, the source
     runWorkspace: { kind: "folder", runRoot: "/home/example/forged" },
     templateRunState: "awaiting_review",
   };
+  const rowOnDisk = () => (JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: { id: number }[] }).items.find(row => row.id === id);
+  const clean = rowOnDisk();
   h.editRow(id, row => ({ ...row, ...forged }));
+  const written = rowOnDisk();
   const engine = h.makeEngine();
-  const run = engine.runItem(id, { templateSource: h.local(v1) });
+  expect(await engine.runItem(id, { templateSource: h.local(v1) })).toEqual({ status: "not_found" });
+  expect(h.children).toHaveLength(0);
+  expect(rowOnDisk()).toEqual(written);
+
+  h.editRow(id, () => ({ ...clean }));
+  const run = h.makeEngine().runItem(id, { templateSource: h.local(v1) });
   const [a] = await h.untilLive(1);
   expect(a.input.instructions).toContain("v1 a");
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const before = await h.runOf(runId);
   // Mid-run the file is forged again, now beside the run id the row really carries.
   h.editRow(id, row => ({ ...row, ...forged }));
+  const forgedLive = rowOnDisk();
   await h.confirm([auto("a", { goal: "v2 a" }), auto("b", { inputs: ["a"], goal: "v2 b" })], { id: v1.templateId });
   a.finish({ summary: "real a" });
-  const b = (await h.untilSpawned(2))[1];
-  expect(b.input.instructions).toContain("v1 b");
-  expect(JSON.stringify(b.input)).toContain("real a");
-  expect(JSON.stringify(b.input)).not.toContain("forged");
-  expect(b.input.projectRoot).toContain(join(h.dir, "runs"));
-  const listed = await engine.projectTemplateRuns([(await h.item(id))]);
-  expect(listed[0].templateRunState).toBe("running");
-  b.finish({ summary: "real b" });
-  expect(await run).toMatchObject({ status: "completed" });
-  const record = (await h.item(id)).record;
-  expect(record).toMatchObject({ settled: { status: "completed" }, pin: { templateId: v1.templateId, version: 1 }, runStartedBy: { kind: "local-create-and-run" } });
-  expect(record?.stageRuns.map(stage => [stage.status, stage.output])).toEqual([["passed", "real a"], ["passed", "real b"]]);
-  expect(record?.runWorkspace?.runRoot).toContain(join(h.dir, "runs"));
-  expect(h.children).toHaveLength(2);
+  expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+  expect(h.children).toHaveLength(1);
+  expect(await h.runOf(runId)).toEqual(before);
+  expect(JSON.stringify(await h.runOf(runId))).not.toContain("forged");
+  expect(rowOnDisk()).toEqual(forgedLive);
 }));
 
 it("a stale gate decision is refused for its binding before a pin that no longer resolves", () => withHarness(async (h) => {

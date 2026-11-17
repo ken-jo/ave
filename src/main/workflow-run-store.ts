@@ -217,6 +217,13 @@ export class WorkflowRunStore {
     return (await this.view()).get(runId);
   }
 
+  /** Every string run id an entry of the file holds, readable or not; undefined while the file awaits review, is past its read limit or
+   * cannot be read. */
+  async runIds(): Promise<ReadonlySet<string> | undefined> {
+    const file = await this.read().catch(() => undefined);
+    return file && new Set(file.runs.flatMap(entry => isRecord(entry) && typeof entry.runId === "string" ? [entry.runId] : []));
+  }
+
   /** Every readable run, whether or not a row names it: what the engine adopts back at boot. Unreadable and repeated entries are left
    * out, as get() refuses them; nothing is listed while the file awaits review. */
   async list(): Promise<WorkflowRunListResult> {

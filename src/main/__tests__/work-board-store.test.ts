@@ -495,32 +495,25 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
-  it("copies the board file aside before a write drops a field of a valid row: run fields edited in by hand or a plan approval that does not read", async () => {
+  it("keeps a row with run fields edited in by hand or a plan approval that does not read as it was written, unlisted, and copies nothing over a file written as a board write writes it", async () => {
     const { store, dir, path, cleanup } = tempBoard();
-    const copies = () => readdirSync(dir).filter((f) => f.includes(".invalid-rows-")).map((f) => readFileSync(join(dir, f), "utf-8"));
+    const copies = () => readdirSync(dir).filter((f) => f.includes(".invalid-rows-"));
     const row = (id: number, extra: object = {}) => ({ id, title: `row ${id}`, status: "planned", priority: "medium", created_at: "x", updated_at: "x", ...extra });
-    const write = (second: object) => {
-      // Written as a board write writes it: only a dropped field can make a copy.
-      const text = `${JSON.stringify({ version: 1, nextId: 3, items: [row(1), second] }, null, 2)}\n`;
-      writeFileSync(path, text, "utf-8");
-      return text;
-    };
     try {
-      write(row(2));
-      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
-      expect(copies()).toEqual([]);
-      const cases: [object, object][] = [
-        [row(2, { stageRuns: [{ stageId: "a", attempt: 1, status: "running" }] }), row(2)],
-        [row(2, { planApproval: { decision: 7 } }), row(2)],
-        [row(2, { runHistory: [{ runId: "run-0", stageRuns: [] }] }), row(2, { runHistory: [{ runId: "run-0" }] })],
-      ];
-      for (const [second, written] of cases) {
-        const text = write(second);
+      for (const second of [
+        row(2, { stageRuns: [{ stageId: "a", attempt: 1, status: "running" }] }),
+        row(2, { planApproval: { decision: 7 } }),
+        row(2, { runHistory: [{ runId: "run-0", stageRuns: [] }] }),
+      ]) {
+        writeFileSync(path, `${JSON.stringify({ version: 1, nextId: 3, items: [row(1), second] }, null, 2)}
+`, "utf-8");
+        const listed = await store.list();
+        expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([1]);
+        expect(listed.status === "ok" && listed.unreadableRows?.map(({ id }) => id)).toEqual([2]);
         expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
-        expect(copies()).toContain(text);
-        expect(JSON.parse(readFileSync(path, "utf-8")).items[1]).toEqual(written);
+        expect(JSON.parse(readFileSync(path, "utf-8")).items[1]).toEqual(second);
       }
-      expect(copies()).toHaveLength(cases.length);
+      expect(copies()).toEqual([]);
     } finally {
       await cleanup();
     }
@@ -850,7 +843,7 @@ describe("WorkBoardStore — plan approval", () => {
     }
   });
 
-  it("drops only an unreadable decision and keeps the item", async () => {
+  it("keeps an item whose decision does not read as it was written, unlisted", async () => {
     const { store, path, cleanup } = tempBoard(fixedClock);
     try {
       const { id } = await planned(store);
@@ -858,10 +851,12 @@ describe("WorkBoardStore — plan approval", () => {
       board.items[0].planApproval.status = "allow-always";
       writeFileSync(path, JSON.stringify(board));
       const reloaded = new WorkBoardStore(path, fixedClock);
-      const got = await reloaded.get(id);
-      if (got.status !== "found") throw new Error("item dropped");
-      expect(got.item.planApproval).toBeUndefined();
-      expect(await reloaded.reconcileInterruptedRuns()).toBe(1);
+      expect((await reloaded.get(id)).status).toBe("not_found");
+      const listed = await reloaded.list();
+      expect(listed.status === "ok" && listed.unreadableRows?.map((row) => row.id)).toEqual([id]);
+      expect(await reloaded.reconcileInterruptedRuns()).toBe(0);
+      expect((await reloaded.create({ title: "next" })).status).toBe("created");
+      expect(JSON.parse(readFileSync(path, "utf-8")).items.find((row: { id: number }) => row.id === id)).toEqual(board.items[0]);
     } finally {
       await cleanup();
     }

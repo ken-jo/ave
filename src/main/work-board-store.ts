@@ -312,29 +312,50 @@ type BoardRead = BoardFile & { unread?: true; unmoved?: true; unchanged?: string
  * history. unnamed: it neither names nor holds the run. lost: the board lists no row with its id, and the id is below the board's
  * `unknownBelow`: the board was written over one that showed none of its rows, so the row may have been there. gone: the board lists no
  * row with its id, at or above `unknownBelow`. unreadable: whatever could still be the run's row: a row with its id that does not
- * validate, or, where the run would otherwise read unnamed, lost or gone, any entry of the file holding the run's id as a string anywhere
- * in it, or (with its row absent) any entry without a usable id. Every stored run's itemId is at or below the run file's row-id floor, which no new row is
- * issued under, so a gone row is gone for good. */
+ * validate, or, where the run would otherwise read unnamed, lost or gone, a board file whose text holds the run's id anywhere (see
+ * {@link heldIn}), or (with its row absent) any entry without a usable id. Every stored run's itemId is at or below the run file's row-id
+ * floor, which no new row is issued under, so a gone row is gone for good. */
 export type RunRowStanding = "named" | "moved" | "unnamed" | "gone" | "lost" | "unreadable";
 type RowStandings = (run: { itemId: number; runId: string }) => RunRowStanding;
 
-// `entries`: every entry of the board file's items, as it is there. `file`: the whole file, scanned for a run's id.
-function boardStanding(board: BoardFile, entries: readonly unknown[] = [...board.items, ...board.unreadable], file: unknown = [entries, board.extra]): RowStandings {
+// `text`: the board file's text as it is on disk, or as the write that left `board` wrote it.
+function boardStanding(board: BoardFile, text: string = boardText(board)): RowStandings {
   const rows = new Map(board.items.map((item) => [item.id, item]));
   const invalidIds = new Set(rawRowIds(board.unreadable));
-  const idless = entries.some((row) => rowIdOf(row) === undefined);
-  let text: string | undefined;
-  const heldAnywhere = (runId: string) => {
-    if (text === undefined) text = JSON.stringify(file);
-    return text.includes(JSON.stringify(runId));
+  const idless = [...board.items, ...board.unreadable].some((row) => rowIdOf(row) === undefined);
+  let held: ((runId: string) => boolean) | undefined;
+  const holds = (runId: string): boolean => {
+    held ??= heldIn(text);
+    return held(runId);
   };
   return (run) => {
     const row = rows.get(run.itemId);
     if (row?.runId === run.runId) return "named";
     if (row && Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId)) return "moved";
-    if ((!row && (invalidIds.has(run.itemId) || idless)) || heldAnywhere(run.runId)) return "unreadable";
+    if ((!row && (invalidIds.has(run.itemId) || idless)) || holds(run.runId)) return "unreadable";
     return row ? "unnamed" : run.itemId < (board.unknownBelow ?? 0) ? "lost" : "gone";
   };
+}
+
+const QUOTED_ID = /"([A-Za-z0-9_-]+)(?=")/g;
+const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|([\s\S]))/g;
+const SIMPLE_ESCAPES: Readonly<Record<string, string>> = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+const ESCAPE_LEVELS = 16;
+
+/** Whether `text` holds a run id: as a whole JSON string in it as it is, or as any further level of JSON string escapes decodes it, so a
+ * run id the parse does not show (under a key given twice, in a row kept as a string, spelled with escapes) is found. Text around an id
+ * in a string does not hold it. Text still decoding past 16 levels holds every id. */
+function heldIn(text: string): (runId: string) => boolean {
+  const ids = new Set<string>();
+  let level = text;
+  for (let depth = 0; depth <= ESCAPE_LEVELS; depth += 1) {
+    for (const [, id] of level.matchAll(QUOTED_ID)) ids.add(id);
+    const next = level.replace(JSON_ESCAPE, (_, hex: string | undefined, char: string) =>
+      hex !== undefined ? String.fromCharCode(Number.parseInt(hex, 16)) : SIMPLE_ESCAPES[char] ?? char);
+    if (next === level) return (runId) => ids.has(runId);
+    level = next;
+  }
+  return () => true;
 }
 
 function rowIdOf(row: unknown): number | undefined {
@@ -353,44 +374,39 @@ function rawRowIds(items: readonly unknown[]): number[] {
 // The board as it is on disk with where runs' rows stand on it, or undefined when the file is absent, pending review, does not parse
 // or lists no items; never quarantines. Read errors throw.
 async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; standing: RowStandings } | undefined> {
-  const parsed = await parseBoardOnDisk(filePath);
+  const input = await readAveHomeInput(filePath);
+  if (input.status !== "trusted") return undefined;
+  const parsed = parseBoard(input.bytes);
   if (!readableBoard(parsed)) return undefined;
   const board = hydrateBoard(parsed);
-  return { board, standing: boardStanding(board, parsed.items, parsed) };
+  return { board, standing: boardStanding(board, input.bytes.toString("utf8")) };
 }
 
 function readableBoard(parsed: unknown): parsed is BoardFile {
   return typeof parsed === "object" && parsed !== null && Array.isArray((parsed as BoardFile).items);
 }
 
-async function parseBoardOnDisk(filePath: string): Promise<unknown> {
-  const input = await readAveHomeInput(filePath);
-  return input.status === "trusted" ? parseBoard(input.bytes) : undefined;
-}
-
 function parseBoard(bytes: Buffer): unknown {
   try { return JSON.parse(bytes.toString("utf-8")) as unknown; } catch { return undefined; }
 }
 
+// A row the board can list as it is: it validates, carries no run field (run state lives in the run file; one written into a row was
+// edited in by hand) and no plan approval that does not read. Any other row is kept as it is, as a row that does not validate: the read
+// never drops a field, so no write takes a run id out of the file with it.
+function listable(row: unknown): row is WorkItem {
+  return isValidRecord(row) && JSON.stringify(stripBoardRunFields(row)) === JSON.stringify(row)
+    && (row.planApproval === undefined || isValidPlanApproval(row.planApproval));
+}
+
 function hydrateBoard(file: BoardFile): BoardFile {
-  // Valid rows that share an id are not listed, so no run is read off a twin: each is kept as a row that does not validate. A valid row
-  // whose id only a row that does not validate has too is still listed.
+  // Listable rows that share an id are not listed, so no run is read off a twin: each is kept as a row that does not validate. A listable
+  // row whose id only a row that does not validate has too is still listed.
   const rowsById = new Map<number, number>();
-  for (const row of file.items) if (isValidRecord(row)) rowsById.set(row.id, (rowsById.get(row.id) ?? 0) + 1);
-  const listed = (row: unknown): row is WorkItem => isValidRecord(row) && rowsById.get(row.id) === 1;
-  // Run state lives in the run file. A row carrying run fields was edited by hand: they are dropped here, so nothing reads or shows them.
-  const listedRows = file.items.filter(listed);
-  const valid = listedRows.map(stripBoardRunFields).map((item) => {
-    if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
-    // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
-    log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
-    const repaired = { ...item };
-    delete repaired.planApproval;
-    return repaired;
-  });
+  for (const row of file.items) if (listable(row)) rowsById.set(row.id, (rowsById.get(row.id) ?? 0) + 1);
+  const listed = (row: unknown): row is WorkItem => listable(row) && rowsById.get(row.id) === 1;
   // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
   // on every load and converges; nothing marks it done.
-  const { items, changed } = normalizeBoardDueDates(valid);
+  const { items, changed } = normalizeBoardDueDates(file.items.filter(listed));
   if (changed > 0) {
     log.info(
       { event: "work-board-due-at-localized", changed, total: items.length },
@@ -413,6 +429,23 @@ function hydrateBoard(file: BoardFile): BoardFile {
     ...(extra.length > 0 ? { extra: Object.fromEntries(extra) } : {}),
   };
   return board;
+}
+
+/** Throws when writing `next` over the board file's bytes `prior` would take out of it a run id the run file holds (`runIds`), unless an
+ * entry the write removes on purpose (`released`: the row a user deletes, an evicted history entry of a settled run) held it. While the run
+ * file cannot be read (`runIds` undefined), only bytes exactly as the board was read (`unchanged`) are written over. */
+function assertKeepsRunIds(prior: Buffer | undefined, next: string, runIds: ReadonlySet<string> | undefined, unchanged: string | undefined, released: readonly unknown[]): void {
+  if (prior === undefined) return;
+  if (runIds === undefined) {
+    if (unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8"))) throw new Error("the run file cannot be read, so a board file not as it was read is not written over");
+    return;
+  }
+  const before = heldIn(prior.toString("utf8"));
+  const after = heldIn(next);
+  const freed = released.map((entry) => heldIn(JSON.stringify(entry)));
+  for (const runId of runIds) {
+    if (before(runId) && !after(runId) && !freed.some((held) => held(runId))) throw new Error("the write would take a stored run's id out of the board file");
+  }
 }
 
 // The board file's text, as every board write writes it.
@@ -543,14 +576,21 @@ export class WorkBoardStore {
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it. A board read as unread is
   // written only by a create, which first marks the ids it cannot show. Bytes on disk that are not the text the board was read as
-  // (`unchanged`) are copied aside first; with no such text, any bytes there are.
-  private async commit(board: BoardRead, deleted?: { itemId: number; runId: string }): Promise<void> {
+  // (`unchanged`) are copied aside first; with no such text, any bytes there are. The write is refused when it would take out of the
+  // board file a run id the run file holds, unless an entry it removes on purpose (`released`) held it (see assertKeepsRunIds).
+  private async commit(board: BoardRead, change: { deleted?: { itemId: number; runId: string }; released?: readonly unknown[] } = {}): Promise<void> {
     if (board.unread) throw new Error("a board that shows none of its rows is written only by a create");
     if (await this.legacyCopyHolds(false)) throw new Error("the legacy board copy on disk is not marked done, so nothing is written over it");
     const file = cacheOf(board);
-    await rewriteKeepingBytes(this.filePath, boardText(file), { tag: "invalid-rows", unchanged: board.unchanged });
+    const text = boardText(file);
+    const runIds = await this.runs.runIds();
+    await rewriteKeepingBytes(this.filePath, text, {
+      tag: "invalid-rows",
+      unchanged: board.unchanged,
+      check: (prior) => assertKeepsRunIds(prior, text, runIds, board.unchanged, change.released ?? []),
+    });
     this.cache = file;
-    if (deleted) this.rowDeleted.emit(deleted);
+    if (change.deleted) this.rowDeleted.emit(change.deleted);
     this.boardChanged.emit();
   }
 
@@ -1067,6 +1107,12 @@ export class WorkBoardStore {
       ];
       const capped =
         history.length > RUN_HISTORY_CAP ? history.slice(history.length - RUN_HISTORY_CAP) : history;
+      // An entry the cap drops takes its run id out of the row: only that of a settled run.
+      const released: unknown[] = [];
+      for (const entry of history.slice(0, history.length - capped.length)) {
+        const read = await this.runs.get(entry.runId).catch(() => undefined);
+        if (read?.status === "found" && read.run.settled !== undefined) released.push(entry);
+      }
       const updated: WorkItem = {
         ...prior,
         runStatus: "planning",
@@ -1079,7 +1125,7 @@ export class WorkBoardStore {
       delete updated.runSessionId;
       delete updated.planApproval;
       board.items[idx] = updated;
-      try { await this.commit(board); }
+      try { await this.commit(board, { released }); }
       catch (error) {
         if (pin) await this.settleUnstarted(id, runId).catch((cleanup: Error) => log.warn("[work-board-store] a failed run start was not settled: %s", cleanup.message));
         throw error;
@@ -1327,7 +1373,7 @@ export class WorkBoardStore {
       }
       const { runId } = item;
       board.items = board.items.filter((i) => i !== item);
-      await this.commit(board, runId === undefined ? undefined : { itemId: id, runId });
+      await this.commit(board, { ...(runId === undefined ? {} : { deleted: { itemId: id, runId } }), released: [item] });
       if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
       await appendActivity(this.activity, {
         kind: "deleted",
@@ -1358,7 +1404,7 @@ export class WorkBoardStore {
       }
       // Read again as the file it leaves: a twin left alone with its id is listed. Read so, it has no `unchanged` text: the file is copied.
       const next = hydrateBoard(fileOf({ ...board, unreadable: board.unreadable.filter((_, index) => index !== position) }));
-      await this.commit(next);
+      await this.commit(next, { released: [row] });
       await this.pruneAfterWrite(this.retention(boardStanding(next)));
       const id = rowIdOf(row);
       if (id === undefined) return { status: "deleted" as const };

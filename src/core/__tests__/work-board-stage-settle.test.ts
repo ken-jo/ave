@@ -1014,6 +1014,62 @@ it("a live run whose row was moved by hand from the items list under another top
   await completesUntouched(h, live);
 }));
 
+it("a live run whose row was put by hand in a first items key a second one shadows reads unreadable, and no write takes the run's id out of the file: the run waits and completes once the row is put back", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { version: number; nextId: number; items: Record<string, unknown>[] };
+  const mine = file.items.filter(row => row.id === live.id);
+  const text = `{"version":${file.version},"nextId":${file.nextId},"items":${JSON.stringify(mine)},"items":${JSON.stringify(file.items.filter(row => row.id !== live.id))}}`;
+  writeFileSync(h.boardPath, text);
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("unreadable");
+  await expect(h.board.create({ title: "Unrelated" })).rejects.toThrow("the write would take a stored run's id out of the board file");
+  expect(readFileSync(h.boardPath, "utf8")).toBe(text);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.interrupts).toEqual([]);
+  expect(h.live()).toEqual([live.child]);
+  expect(await h.runOf(live.runId)).toEqual(live.record);
+  writeFileSync(h.boardPath, JSON.stringify(file));
+  await completesUntouched(h, live);
+}));
+
+it("a live run whose row was moved by hand under another top-level key as an escaped string waits through another row's add, which writes that key back as it was; it completes once the row is put back", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] };
+  const archive = JSON.stringify(file.items.filter(row => row.id === live.id));
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== live.id), archive }));
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("unreadable");
+  await h.addItem(live.version);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.interrupts).toEqual([]);
+  expect(h.live()).toEqual([live.child]);
+  expect(await h.runOf(live.runId)).toEqual(live.record);
+  const written = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[]; archive?: unknown };
+  expect(written.archive).toBe(archive);
+  writeFileSync(h.boardPath, JSON.stringify({ ...written, archive: undefined, items: [...JSON.parse(archive) as unknown[], ...written.items] }));
+  await completesUntouched(h, live);
+}));
+
+/** A run's id put by hand only under a field a board write does not write, on a row renumbered or naming another run. */
+const HELD_UNDER: [string, (row: Record<string, unknown>, runId: string) => Record<string, unknown>][] = [
+  ["pin", (row, runId) => ({ ...row, pin: { note: runId } })],
+  ["stageRuns", (row, runId) => ({ ...row, stageRuns: [{ runId }] })],
+  ["gate", (row, runId) => ({ ...row, gate: { runId } })],
+  ["runStartedBy", (row, runId) => ({ ...row, runStartedBy: { runId } })],
+  ["templateRunError", (row, runId) => ({ ...row, templateRunError: runId })],
+  ["planApproval", (row, runId) => ({ ...row, planApproval: { runId } })],
+  ["runHistory stageRuns", (row, runId) => ({ ...row, runHistory: [{ runId: "run-zzz", startedAt: "2026-11-16T00:00:00.000Z", status: "completed", stageRuns: [runId] }] })],
+];
+it.each((["renumber", "rename"] as const).flatMap(mode => HELD_UNDER.map(([field, put]) => [mode, field, put] as const)))(
+  "a live run whose row was %s'd by hand and holds the run's id only under %s waits through another row's add and completes once the row is put back",
+  (mode, _field, put) => withHarness(async (h) => {
+    const live = await liveRun(h);
+    await waitsThroughDamage(h, live, (row, freeId) => {
+      const { runId: _runId, runHistory: _history, runStatus: _status, ...rest } = row;
+      return JSON.stringify(put(mode === "renumber" ? { ...rest, id: freeId } : { ...rest, runId: "run-other", runStatus: "completed" }, live.runId));
+    });
+    await completesUntouched(h, live);
+  }),
+);
+
 it("deleting a live run's row that does not validate from its invalid card reads the row gone: the child is interrupted and the run cancelled", () => withHarness(async (h) => {
   const live = await liveRun(h);
   h.editRow(live.id, row => ({ ...row, priority: 42 }));

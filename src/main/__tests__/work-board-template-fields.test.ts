@@ -32,7 +32,7 @@ function holdRunFileForReview(): void {
     path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
 }
 
-it("ignores run fields written by hand into a board row", async () => {
+it("keeps a board row with run fields written by hand as it was written, unlisted, and lets them authorise nothing", async () => {
   const forged = {
     runTemplateVersion: 1, runTemplateGraphHash: pin.graphHash, runStartedBy: source, pin,
     stageRuns: [{ ...stage, gate: { type: "human", status: "approved", revision: 0 } }],
@@ -49,29 +49,26 @@ it("ignores run fields written by hand into a board row", async () => {
     planApproval: { ...approval, templateGraphHash: pin.graphHash },
   }] }));
   const store = new WorkBoardStore(boardPath);
+  const written = (await readJson(boardPath)).items[0];
 
-  const found = await store.get(1);
-  if (found.status !== "found") throw new Error("Missing item");
-  const { mutationRevision, status_resolved, planStale, ...surfaced } = found.item;
-  // The run file holds no record of run-1: the row is shown so, never as executing.
-  const shown = { ...kept, runStatus: "error", templateRunError: "template-run-not-found" };
-  expect(surfaced).toEqual(shown);
+  // A row with run fields edited in is not one a board write writes: it is kept as written and not listed.
+  expect(await store.get(1)).toEqual({ status: "not_found", itemId: 1 });
   const listed = await store.list();
   if (listed.status !== "ok") throw new Error("Missing list");
-  for (const key of Object.keys(forged)) expect(listed.items[0]).not.toHaveProperty(key);
-  expect(listed.items[0]).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
+  expect(listed.items).toEqual([]);
+  expect(listed.unreadableRows?.map((entry) => entry.id)).toEqual([1]);
 
   // The run file holds no such run, so the forged gate and pin authorise nothing.
   expect(await store.getRun(1)).toEqual({ status: "not-found" });
   expect(await store.runs.get("run-1")).toEqual({ status: "not-found" });
   const mutate = vi.fn((value: WorkflowRunRecord) => value);
-  expect(await store.updateRun(1, "run-1", mutate)).toEqual({ status: "not-found" });
+  expect(await store.updateRun(1, "run-1", mutate)).toEqual({ status: "board-unread" });
   expect(mutate).not.toHaveBeenCalled();
-  expect(await store.beginRun(1, "run-2", "2026-01-01")).toMatchObject({ status: "invalid", reason: "template-run-unavailable" });
+  expect(await store.beginRun(1, "run-2", "2026-01-01")).toMatchObject({ status: "not_found" });
   expect(await storedRuns()).toEqual([]);
 
-  expect(await store.update(1, { title: "Updated" })).toMatchObject({ status: "updated" });
-  expect((await readJson(boardPath)).items).toEqual([{ ...kept, title: "Updated", updated_at: expect.any(String) }]);
+  expect(await store.create({ title: "Next" })).toMatchObject({ status: "created" });
+  expect((await readJson(boardPath)).items.find((entry: { id: number }) => entry.id === 1)).toEqual(written);
 });
 
 it("accepts legacy items and persists only templateId from creation", async () => {
