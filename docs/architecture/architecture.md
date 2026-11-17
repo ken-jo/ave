@@ -3717,6 +3717,13 @@ with its own owner rule:
   lists. A board file that is missing, does not parse or awaits review proves
   nothing: the engine then settles, prunes and sweeps nothing and refuses
   template starts until a later start, decision, reader or boot reads it.
+  A live run takes the same proof: after any board write, and when
+  `updateRun` finds a row that does not name the run, only a board on disk
+  that shows the row gone cancels it; any other board is `board-unread`.
+  A board seeded again after it went missing or was quarantined issues ids
+  above the last board read and every row id a stored run names, and stores
+  that first id as `firstId` in `board.json`; ids below it were never issued
+  by that file, so they never show a row gone and never let a run be pruned.
   A run end the run file does not confirm blocks the same way: starts and
   decisions are refused and nothing is pruned or swept until a later start,
   decision or reader writes that end.
