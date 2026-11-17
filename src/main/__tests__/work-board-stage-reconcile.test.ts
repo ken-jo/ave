@@ -266,18 +266,19 @@ it("a boot over a board file replaced by an empty one keeps the run and its work
   }
 });
 
-it("a board written again after it went missing reuses the run's row id, and the run is still not cancelled", async () => {
+it("a board written again after it went missing issues ids above the run's row, and the run is still not cancelled", async () => {
   const h = await stageRunHarness();
   try {
     const boot = await bootOverBoard(h, () => rmSync(h.boardPath));
-    // The board seeded empty issues the lost row's id again; that row never named the run.
+    // The board seeded again issues ids above the lost row's, which it never shows gone.
     const created = await h.board.create({ title: "Other", templateId: boot.version.templateId });
-    expect(created).toMatchObject({ status: "created", itemId: boot.id });
-    const started = boot.engine.runItem(boot.id, { templateSource: h.local(boot.version) });
+    expect(created).toMatchObject({ status: "created", itemId: boot.id + 1 });
+    if (created.status !== "created") throw new Error("item not created");
+    const started = boot.engine.runItem(created.itemId, { templateSource: h.local(boot.version) });
     await h.untilLive(1);
     expect(await h.runOf(boot.runId)).toEqual(boot.before);
     expect(h.sweeps.slice(boot.swept)).toEqual([[boot.runId]]);
-    expect(boot.engine.cancelRun(boot.id)).toEqual({ ok: true });
+    expect(boot.engine.cancelRun(created.itemId)).toEqual({ ok: true });
     await started;
   } finally {
     await h.cleanup();

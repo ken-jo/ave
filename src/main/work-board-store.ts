@@ -289,11 +289,6 @@ function emptyBoard(): BoardFile {
   return { version: BOARD_VERSION, nextId: 1, items: [] };
 }
 
-// Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID.
-function readFileOrEmpty(filePath: string): Promise<BoardFile> {
-  return readJsonFileOrEmpty(filePath, emptyBoard, hydrateBoard);
-}
-
 // The board as it is on disk, or undefined when the file is absent, pending review or does not parse; never quarantines. Read errors throw.
 async function readBoardOnDisk(filePath: string): Promise<BoardFile | undefined> {
   const parsed = await parseBoardOnDisk(filePath);
@@ -334,11 +329,18 @@ function hydrateBoard(parsed: unknown): BoardFile {
     typeof file.nextId === "number" && Number.isInteger(file.nextId) && file.nextId > maxId
       ? file.nextId
       : maxId + 1;
+  const firstId = typeof file.firstId === "number" && Number.isInteger(file.firstId) && file.firstId > 1 && file.firstId <= nextId ? file.firstId : undefined;
   return {
     version: BOARD_VERSION,
     nextId,
+    ...(firstId === undefined ? {} : { firstId }),
     items,
   };
+}
+
+/** Whether this board file issued that row id. */
+function issued(board: BoardFile, id: number): boolean {
+  return id >= (board.firstId ?? 1) && id < board.nextId;
 }
 
 /** Whether a parsed board file shows a run's row gone; undefined when it is not a readable board. */
@@ -352,7 +354,7 @@ function rowGoneOn(parsed: unknown): ((run: { itemId: number; runId: string }) =
     const row = rows.get(run.itemId);
     if (row) return row.runId !== run.runId && Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId);
     // A readable board issued this id and no longer lists it: the row was created, then deleted.
-    return run.itemId < board.nextId && !present.has(run.itemId);
+    return issued(board, run.itemId) && !present.has(run.itemId);
   };
 }
 
@@ -466,11 +468,10 @@ export class WorkBoardStore {
   // the board no longer lists it. A row id this board never issued (an emptied or replaced board file) proves nothing, so that run stays.
   private retention(board: BoardFile): WorkflowRunRetention {
     const rows = new Map(board.items.map((item) => [item.id, item]));
-    const issued = board.nextId;
     return (run) => {
       if (run.settled === undefined) return run;
       const row = rows.get(run.itemId);
-      if (!row) return run.itemId < issued ? null : run;
+      if (!row) return issued(board, run.itemId) ? null : run;
       if (row.runId === run.runId) return run;
       return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? runSummary(run) : null;
     };
@@ -482,6 +483,22 @@ export class WorkBoardStore {
    * are never gone. */
   async runRowGoneOnDisk(): Promise<((run: { itemId: number; runId: string }) => boolean) | undefined> {
     return rowGoneOn(await parseBoardOnDisk(this.filePath));
+  }
+
+  // Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID. A board seeded again (missing,
+  // pending review, quarantined or without items) issues ids above the last board read and every row a stored run names, so a new row
+  // never takes the id of a run's lost row; it records where it started, since ids below that were never issued by it.
+  private async readBoard(): Promise<BoardFile> {
+    let seeded = false;
+    const seed = (): BoardFile => { seeded = true; return emptyBoard(); };
+    const board = await readJsonFileOrEmpty(this.filePath, seed, (parsed) =>
+      typeof parsed === "object" && parsed !== null && Array.isArray((parsed as BoardFile).items) ? hydrateBoard(parsed) : seed());
+    if (!seeded) return board;
+    const stored = await this.runs.list().catch(() => null);
+    if (stored?.status !== "found") log.warn("[work-board-store] the board was seeded above the last board read only: the run file could not be listed");
+    const runRows = stored?.status === "found" ? stored.runs.map((run) => run.itemId) : [];
+    const firstId = Math.max(this.cache.nextId, ...runRows.map((id) => id + 1));
+    return firstId > 1 ? { ...board, nextId: firstId, firstId } : board;
   }
 
   // A failed row write may still have replaced the board (a failed directory sync after the rename). The record goes only once the
@@ -512,12 +529,12 @@ export class WorkBoardStore {
   async pruneSettledRuns(): Promise<void> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      await this.runs.prune(this.retention(await readFileOrEmpty(this.filePath)));
+      await this.runs.prune(this.retention(await this.readBoard()));
     });
   }
 
   async load(): Promise<void> {
-    this.cache = await readFileOrEmpty(this.filePath);
+    this.cache = await this.readBoard();
     this.loaded = true;
   }
 
@@ -625,7 +642,7 @@ export class WorkBoardStore {
     const projectName = normalizeOptionalString(input.projectName, MAX_PROJECT_NAME_LENGTH);
 
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
@@ -693,7 +710,7 @@ export class WorkBoardStore {
     }
 
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -740,7 +757,7 @@ export class WorkBoardStore {
     }
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -809,7 +826,7 @@ export class WorkBoardStore {
   ): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -844,7 +861,7 @@ export class WorkBoardStore {
   async beginRun(id: number, runId: string, startedAt: string, pin?: TemplateRunStart): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -919,7 +936,7 @@ export class WorkBoardStore {
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const iso = new Date(this.now()).toISOString();
       let count = 0;
       for (let i = 0; i < board.items.length; i++) {
@@ -957,7 +974,7 @@ export class WorkBoardStore {
   async setRunSessionId(id: number, runSessionId: string): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -984,7 +1001,7 @@ export class WorkBoardStore {
   async setRunResult(id: number, result: RunResultPatch): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -1019,7 +1036,7 @@ export class WorkBoardStore {
   ): Promise<WorkItemUpdateResult | null> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -1061,7 +1078,7 @@ export class WorkBoardStore {
   async decidePlan(id: number, input: PlanDecisionInput): Promise<PlanDecisionResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       // The board is mutated below, so the cache takes it only after the write lands; a refusal caches the board as read.
       const refuse = (reason: Extract<PlanDecisionResult, { status: "refused" }>["reason"]): PlanDecisionResult => {
         this.cache = board;
@@ -1116,7 +1133,7 @@ export class WorkBoardStore {
   async remove(id: number): Promise<WorkItemDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const item = board.items.find((i) => i.id === id);
       if (!item) {
         this.cache = board;

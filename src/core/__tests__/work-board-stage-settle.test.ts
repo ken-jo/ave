@@ -3,6 +3,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import { expect, it, vi } from "vitest";
 import { en } from "../../i18n/messages/en.js";
+import { WorkBoardStore } from "../../main/work-board-store.js";
 import { ko } from "../../i18n/messages/ko.js";
 import { workBoardStage } from "../../shared/work-board-lifecycle.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
@@ -681,6 +682,30 @@ it("an unconfirmed run end whose row is then deleted is confirmed only by a by-i
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
 
+it("a settled run whose row a board seeded again never issued is kept by a prune", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  const [a] = await h.untilLive(1);
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  a.finish();
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  await h.until(id, item => item.runStatus === "cancelled");
+  rmSync(h.boardPath);
+  await h.addItem(version);
+  await h.board.pruneSettledRuns();
+  expect((await h.runOf(runId))?.settled).toBeDefined();
+}));
+
+it("a board seeded again while the run file cannot be listed still issues ids above the last board read", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  rmSync(h.boardPath);
+  vi.spyOn(h.board.runs, "list").mockRejectedValueOnce(new Error("disk error"));
+  expect(await h.addItem(version)).toBeGreaterThan(id);
+}));
+
 for (const [write, refusal, code] of [
   ["stage end", "too-large", "template-runs-too-large"],
   ["workspace", "too-large", "template-runs-too-large"],
@@ -750,6 +775,21 @@ for (const [board, spoil] of [["unreadable", (path: string) => writeFileSync(pat
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
     expect(await h.runOf(runId)).toEqual(before);
     expect(prune).not.toHaveBeenCalled();
+  }));
+
+  it(`a board file that is ${board} is seeded again above a live run's row, which it never shows gone, then or after a restart`, () => withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    await h.untilLive(1);
+    const runId = (await h.item(id)).runId ?? "";
+    spoil(h.boardPath);
+    const added = await h.addItem(version);
+    expect(added).toBeGreaterThan(id);
+    expect(await h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
+    expect(await new WorkBoardStore(h.boardPath).runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    await run;
   }));
 
   it(`an unconfirmed end of a run whose board file is ${board}, after another board write seeds it again, is not confirmed by a reader as its row deleted`, () => withHarness(async (h) => {
