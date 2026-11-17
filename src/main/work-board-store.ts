@@ -491,12 +491,15 @@ function hydrateBoard(file: BoardFile): BoardFile {
 /** Throws when writing `next` over the board file's bytes `prior` would take out of it the id of a run the run file holds that is not
  * settled (`runs.held`; see {@link heldIn}). Only the user's delete of the row naming such a run takes its id out (`change.deleted`),
  * only with its delete intent stored (`runs.intents`), and never over bytes still decoding past 16 levels; nothing the write removes
- * releases an id. While the run file cannot be read (`runs` undefined), only bytes exactly as the board was read (`unchanged`) are
- * written over, and never by a write that removes an entry or the user's text (`change.drops`). */
+ * releases an id. While the run file cannot be read (`runs` undefined), any string value could be a run's id: only bytes exactly as the
+ * board was read (`unchanged`) are written over, by a write that takes no string value out of them, the engine's included, and never by
+ * one that removes an entry or the user's text (`change.drops`). The next write after the file reads again is judged as usual. */
 function assertKeepsRunIds(prior: Buffer | undefined, next: string, runs: Awaited<ReturnType<WorkflowRunStore["heldRuns"]>>, unchanged: string | undefined, change: BoardChange): void {
   if (prior === undefined) return;
   if (runs === undefined) {
-    if (change.drops || unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8"))) throw new WorkBoardWriteRefusal("work-board-runs-unreadable");
+    if (change.drops || unchanged === undefined || !prior.equals(Buffer.from(unchanged, "utf8")) || takesOutAString(prior.toString("utf8"), next)) {
+      throw new WorkBoardWriteRefusal("work-board-runs-unreadable");
+    }
     return;
   }
   const before = heldStrings(prior.toString("utf8"));
@@ -506,6 +509,15 @@ function assertKeepsRunIds(prior: Buffer | undefined, next: string, runs: Awaite
   for (const runId of runs.held) {
     if (runId !== freed && (before === undefined || before.has(runId)) && !after(runId)) throw new WorkBoardWriteRefusal("work-board-run-id-held");
   }
+}
+
+// Whether `next` lacks a string value `prior` holds. Text past the escape cap holds every value, so over it only text past the cap too
+// takes none out.
+function takesOutAString(prior: string, next: string): boolean {
+  const before = heldStrings(prior);
+  if (before === undefined) return heldStrings(next) !== undefined;
+  const after = heldIn(next);
+  return [...before].some((value) => !after(value));
 }
 
 // What a board write does beyond what the engine writes: `deleted`, the user's delete of the row naming a run; `drops`, it removes an entry

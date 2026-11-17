@@ -3,7 +3,7 @@
  * settled never has its id taken out of board.json by a store write, except by the user's delete of the row its record names with that
  * delete's intent stored, one run at a time, and never over text past the escape cap; its row reads as standing wherever its id is; bytes
  * a write goes over that the store did not write are copied beside the file first; a file holding a key twice is never written. The
- * engine's own fields (plan, output, session id) hold no run id here: their clear while the run file cannot be read is an open gap. */
+ * engine's own fields (plan, output, session id) hold no run id here; their tests below cover them. */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -15,6 +15,8 @@ import { sha256Hex as sha } from "../../lib/hex-digest-equal.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import * as namespace from "../storage/feature-namespace.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
 import type { TemplateRunStart, WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -513,6 +515,32 @@ describe("what lets a write take a live run's id out of board.json", () => {
         await cleanupTmpDir(dir);
       }
     });
+
+    it("refuses an engine write that takes out a string value, writes one that takes out none, and judges the next write as usual once the file reads", async () => {
+      const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items: [row(2)] }, null, 2)}\n`, [live("run-a")]);
+      try {
+        expect(await store.setRunResult(2, { runStatus: "completed", output: "run-a" })).toMatchObject({ status: "updated" });
+        const before = readFileSync(path, "utf8");
+        const read = homeTrust.readAveHomeInput;
+        const reading = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(target => target === join(dir, "workflow-runs.json") ? input() : read(target));
+        await expect(store.setRunResult(2, { runStatus: "completed", output: null })).rejects.toMatchObject({ code });
+        expect(readFileSync(path, "utf8")).toBe(before);
+        expect(await store.setRunSessionId(2, "session-b")).toMatchObject({ status: "updated" });
+        await expect(store.setRunSessionId(2, "session-c")).rejects.toMatchObject({ code });
+        expect(readFileSync(path, "utf8")).toContain("session-b");
+        reading.mockRestore();
+        expect(await store.setRunSessionId(2, "session-c")).toMatchObject({ status: "updated" });
+        await expect(store.setRunResult(2, { runStatus: "completed", output: null })).rejects.toMatchObject({ code: "work-board-run-id-held" });
+        expect(readFileSync(path, "utf8")).toContain("\"run-a\"");
+      } finally {
+        vi.restoreAllMocks();
+        await cleanupTmpDir(dir);
+      }
+    });
+  });
+
+  it("names workflow-runs.json in the notice a write refused while the run file cannot be read shows, in English and Korean", () => {
+    for (const catalog of [en, ko]) expect(catalog["reasonCodes.work-board-runs-unreadable"]).toContain("workflow-runs.json");
   });
 });
 
