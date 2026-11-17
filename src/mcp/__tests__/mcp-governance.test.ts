@@ -604,3 +604,8 @@ describe("McpGovernance server refusal codes", () => {
     }
   });
 });
+
+it.each(["host:git", "host:other"])("refuses a reserved host owner as a server id %s", id => {
+  const gov = governanceWithPolicy(policyForServers([stdioApproval(id, "node")]));
+  expect(gov.validateServer({ id, transport: "stdio", command: "node" })).toMatchObject({ valid: false, reason: t("be_mcpGovernance.reservedHostOwner") });
+});

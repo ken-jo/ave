@@ -2,6 +2,11 @@
 import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
+  "reasonCodes.scope-changed": "템플릿 범위가 변경되었습니다. 일정을 다시 연결하세요.",
+  "reasonCodes.project-mismatch": "승인한 프로젝트와 다른 프로젝트입니다.",
+  "reasonCodes.scope-not-authorised": "승인한 범위에 더 이상 접근할 권한이 없습니다.",
+  "reasonCodes.output-not-declared": "이 출력 도구와 소유자가 템플릿에 선언되지 않았습니다.",
+  "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",
   "notificationCenter.label": "알림: 확인 필요 {approvals}개, 읽지 않은 알림 {unread}개",
@@ -6191,6 +6196,8 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // workBoard
   "workBoard.panelTitle": "업무 보드",
+  "workBoard.boardLoadFailed": "작업 보드를 불러오지 못했습니다.",
+  "workBoard.pendingReview": "워크플로 실행 상태는 검토가 필요합니다. 설정 > {tabPermissions} > {homeTrustTitle}에서 work-board/workflow-runs.json을 검토한 뒤 Ave를 다시 시작하세요.",
   "workBoard.panelDescription": "예정·진행 중·검토·완료 단계로 업무를 추적합니다.",
   "workBoard.addItemButton": "작업 추가",
   "workBoard.refreshButton": "새로고침",

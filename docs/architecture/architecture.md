@@ -3654,7 +3654,8 @@ with its own owner rule:
   `permissions/` stores, `mcp/servers.json`, `governance/mcp-policy.json`,
   `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
   plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,
-  `routine/routines.json`, the marketplace sources, states and snapshots,
+  `routine/routines.json`, `work-board/templates.json` and
+  `work-board/workflow-runs.json`, the marketplace sources, states and snapshots,
   `packages/ledger.json` and `packages/mcp-installs.json`, `AGENTS.md`,
   `agents.custom.md`, `user-preferences.md`, `memories/MEMORY.md`, and each
   first-level entry of `skills/`, `agents/` and `commands/` (a file hashed as
@@ -3662,7 +3663,39 @@ with its own owner rule:
   `sha256("ave-tree-v1\n" + sorted "<path>\0<sha256>\n")`, so the two kinds never
   share a digest; names that differ only in case on Windows are refused). An
   empty file with no entry (what a file lock creates before the first write)
-  reads as absent. Marketplace MCP package files under `mcp/<name>/server/` are
+  reads as absent. `work-board/board.json` is not covered. A board row names a
+  workflow run only by `runId`; what the run was started by, its template
+  version pin, stage runs, joins, gate state and result and output hashes are
+  kept per `runId` in `work-board/workflow-runs.json`, which is covered from its
+  first host write, and every reader of run authority reads that file alone.
+  Run fields written into a board row are dropped on load, give no authority
+  and are not shown. While the run file is pending review, or is larger than the
+  read limit, every board row stays listed, each template row that names a run
+  is marked pending review on that read, and no template run is started or
+  changed; an entry that does not parse is left in place and marks only its own
+  row. A run record carries `settled` once the run is over, and
+  only a settled record is ever removed: when no row lists it as its current
+  run or in its run history, checked when a row is deleted and on every later
+  template-run start. A record whose row write failed is read back against
+  the board: it is settled as an error and pruned when its row names another
+  run, and stays as it is when the row names it or the board cannot be read. A
+  row keeps the full record only for its current run: once the row names a
+  newer run, a settled record its run history still lists keeps only how it
+  ended and each stage's status, times, result hash and output hash, in the
+  same covered file.
+  Archiving a template keeps its runs; a real template delete removes that
+  template's run records in the same change.
+  Entries that do not parse are never removed, and nothing is removed by age.
+  A write that would grow the run file past the read limit is refused, so the
+  file stays readable and deleting rows makes room again.
+  Run-engine API: `runs.list()` on the board store returns every
+  readable run record, whether or not a row names it, or `pending-review`
+  while the file awaits review; at boot the engine adopts back each record
+  without `settled`, and the board's boot reconcile leaves every row that names
+  a template run to it. `updateRun` changes only the run a row names; a run
+  whose row is gone or names a newer run is settled with `runs.update`, then
+  `pruneSettledRuns()` removes the settled runs no row lists.
+  Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
   in `mcp/<name>/` besides `server` and the host's `sandbox` refuses the launch.

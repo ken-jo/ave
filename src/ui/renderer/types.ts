@@ -1,3 +1,4 @@
+import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
@@ -417,6 +418,14 @@ export type AskUserQuestionResponse = {
 
 /** Everything preload assembles; the renderer sees it split between `window.aveApi` ({@link AveApi}) and `window.ave`. */
 export type AvePreloadApi = {
+  listWorkflowTemplates: () => Promise<WorkflowTemplateIpcResult<WorkflowTemplate[]>>;
+  getWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
+  draftWorkflowTemplate: (id: string | null, input: WorkflowTemplateDraftInput) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
+  confirmWorkflowTemplate: (id: string, input: WorkflowTemplateConfirmInput) => Promise<WorkflowTemplateIpcResult<TemplateVersion>>;
+  attachWorkflowTemplateSchedule: (input: ScheduleAttachmentInput) => Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>;
+  detachWorkflowTemplateSchedule: (id: string) => Promise<WorkflowTemplateIpcResult<boolean>>;
+  archiveWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<null>>;
+  onWorkflowTemplatesChanged: (handler: () => void) => () => void;
   relaunchApp: () => Promise<import("../../shared/app-relaunch.js").AppRelaunchResult>;
 
   permission: AvePermissionApi;

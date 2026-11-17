@@ -129,6 +129,7 @@ export class BootContext {
 
   // ── Workflow services + stores ─────────────────────────────────────────────
   declare routinesScheduler: RoutinesScheduler;
+  declare workflowTemplateStore: import("../main/workflow-template-store.js").WorkflowTemplateStore;
   declare workBoardStore: WorkBoardStore;
   declare workBoardStorage: WorkBoardStorage;
   declare startWorkBoardDueSoon: () => void;
@@ -257,6 +258,7 @@ const BOOT_CONTEXT_FIELDS = [
   "lateBinding",
   "pluginPaths",
   "routinesScheduler",
+  "workflowTemplateStore",
   "workBoardStore",
   "workBoardStorage",
   "startWorkBoardDueSoon",
