@@ -107,7 +107,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       catch (error) {
         if (!(error instanceof WorkflowTemplateError) || error.code !== "invalid-template-run") throw error;
         if (channel === WORK_BOARD.decidePlan) return { ok: false, reason: error.code };
-        if (channel === WORK_BOARD.steerRun || channel === WORK_BOARD.cancelRun) return { ok: false, error: error.code };
+        if (channel === WORK_BOARD.list || channel === WORK_BOARD.get || channel === WORK_BOARD.steerRun || channel === WORK_BOARD.cancelRun) {
+          return { ok: false, error: error.code };
+        }
         return { status: channel === WORK_BOARD.run ? "error" : "invalid", itemId: args[0], reason: error.code };
       }
     });

@@ -157,3 +157,11 @@ it("detaches after project authorization is withdrawn while preserving local dec
   expect(store.get).not.toHaveBeenCalled();
   expect(store.detachSchedule).toHaveBeenCalledWith("attachment", expect.objectContaining({ origin: "local-desktop" }));
 });
+
+it("returns the declared read error when a board read throws on a malformed run file", async () => {
+  const { WorkflowTemplateError } = await import("../../../work-board/template-graph.js");
+  const read = vi.fn(async () => { throw new WorkflowTemplateError("invalid-template-run"); });
+  const { event } = setup({ workBoardStore: { get: read, list: read } } as unknown as Partial<IpcDeps>);
+  expect(await handler(WORK_BOARD.list)(event)).toEqual({ ok: false, error: "invalid-template-run" });
+  expect(await handler(WORK_BOARD.get)(event, 2)).toEqual({ ok: false, error: "invalid-template-run" });
+});

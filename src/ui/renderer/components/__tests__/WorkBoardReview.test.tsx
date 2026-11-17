@@ -84,4 +84,23 @@ describe("work board review", () => {
     fireEvent.click(screen.getByTestId("work-board-plan-approve"));
     await waitFor(() => expect(api.decideWorkPlan).toHaveBeenCalledWith(item.id, { runId: "run-2", planHash: "b".repeat(64), decision: "approve" }));
   });
+  it("keeps the listed rows and shows a load error when a refresh fails", async () => {
+    const api = apiFor([result]);
+    let changed = () => {};
+    api.onWorkBoardItemChanged = handler => { changed = handler; return () => {}; };
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    expect(await screen.findByTestId("work-board-card")).toBeTruthy();
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ ok: false, error: "invalid-template-run" });
+    changed();
+    expect(await screen.findByTestId("work-board-load-error")).toHaveTextContent(t("workBoard.boardLoadFailed"));
+    expect(screen.getByTestId("work-board-card")).toBeTruthy();
+    vi.mocked(api.listWorkBoard).mockRejectedValueOnce(new Error("read failed"));
+    changed();
+    await waitFor(() => expect(api.listWorkBoard).toHaveBeenCalledTimes(3));
+    expect(screen.getByTestId("work-board-load-error")).toBeTruthy();
+    expect(screen.getByTestId("work-board-card")).toBeTruthy();
+    changed();
+    await waitFor(() => expect(screen.queryByTestId("work-board-load-error")).toBeNull());
+    expect(screen.getByTestId("work-board-card")).toBeTruthy();
+  });
 });

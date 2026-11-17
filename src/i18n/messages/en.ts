@@ -6194,6 +6194,7 @@ export const en = {
 
   // workBoard
   "workBoard.panelTitle": "Work Board",
+  "workBoard.boardLoadFailed": "Could not load the work board. The rows shown may be out of date.",
   "workBoard.pendingReview": "Workflow run state needs review. Open Settings > {tabPermissions} > {homeTrustTitle}, review work-board/workflow-runs.json, then restart Ave.",
   "workBoard.panelDescription": "Track work through Planned, In progress, Review, and Completed.",
   "workBoard.addItemButton": "Add task",
