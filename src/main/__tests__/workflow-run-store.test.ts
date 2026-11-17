@@ -134,6 +134,15 @@ it("issues each row id above the floor and above every id seen, stores it, and n
   expect(await stored()).toEqual({ version: 1, rowIdFloor: 20, runs: [] });
 });
 
+it("issues no id past the safe-integer limit, and says so: the floor stays at the limit", async () => {
+  const store = new WorkflowRunStore(file);
+  await store.raiseRowIdFloor(Number.MAX_SAFE_INTEGER - 1);
+  expect(await store.issueRowId(0)).toBe(Number.MAX_SAFE_INTEGER);
+  expect(await store.issueRowId(0)).toBe("exhausted");
+  expect(await store.issueRowId(Number.MAX_SAFE_INTEGER)).toBe("exhausted");
+  expect(await stored()).toEqual({ version: 1, rowIdFloor: Number.MAX_SAFE_INTEGER, runs: [] });
+});
+
 it("reports a size-limit refusal as pending review and lets other read errors throw", async () => {
   const store = new WorkflowRunStore(file);
   await store.put(run());

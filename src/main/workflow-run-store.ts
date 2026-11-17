@@ -76,13 +76,14 @@ export class WorkflowRunStore {
   }
 
   /** The id for a new board row: above the floor and above `seen` (every id the board file shows), stored as the new floor before the row
-   * is written. Undefined while the file awaits review, is past its read limit, or has no room; a file that cannot be read throws. */
-  async issueRowId(seen: number): Promise<number | undefined> {
+   * is written. `exhausted` once that id would pass the safe-integer limit; undefined while the file awaits review, is past its read
+   * limit, or has no room; a file that cannot be read throws. */
+  async issueRowId(seen: number): Promise<number | "exhausted" | undefined> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return undefined;
       const id = Math.max(file.rowIdFloor, seen) + 1;
-      if (!Number.isSafeInteger(id)) return undefined;
+      if (!Number.isSafeInteger(id)) return "exhausted";
       file.rowIdFloor = id;
       return (await this.commit(file)) ? id : undefined;
     });

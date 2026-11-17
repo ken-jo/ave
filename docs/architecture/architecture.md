@@ -3731,6 +3731,10 @@ with its own owner rule:
   file. While the floor cannot be read or stored (the run file awaits review,
   is past its read limit, does not parse or cannot be read), every create is
   refused with `work-item-ids-unavailable`; reads stay as described above.
+  Once the next id would pass the safe-integer limit (2^53 - 1), which only
+  a hand-edited row id or floor brings about, every create is refused with
+  `work-item-ids-exhausted`; the floor never lowers, so creates stay refused
+  until both files are set back by hand.
   A create that writes over a board file that showed none of its rows
   (missing, not parsing, without an items list) stores the id it issued as
   `unknownBelow` in the board, and every later write keeps it; a value that

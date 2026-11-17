@@ -707,6 +707,7 @@ export class WorkBoardStore {
         return undefined;
       });
       if (id === undefined) return { status: "invalid" as const, reason: "work-item-ids-unavailable" };
+      if (id === "exhausted") return { status: "invalid" as const, reason: "work-item-ids-exhausted" };
       if (board.unread) {
         // Written over a board that showed none of its rows: a row below this id that it does not list is lost, never gone.
         if (id > 1) board.unknownBelow = id;

@@ -26,6 +26,13 @@ it("says in words that no item was added while no row id can be issued, and stay
   expect(onClose).not.toHaveBeenCalled();
 });
 
+it("says in words that item numbers have run out, and stays open", async () => {
+  const { error, onCreated, onClose } = await submit("work-item-ids-exhausted");
+  expect(error).toBe(t("reasonCodes.work-item-ids-exhausted"));
+  expect(onCreated).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
 it("shows any other refusal as the store sent it", async () => {
   expect((await submit("title exceeds 200 chars")).error).toBe("title exceeds 200 chars");
 });

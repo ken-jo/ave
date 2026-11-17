@@ -63,11 +63,20 @@ for (const [how, input] of runFileUnreadable) {
   });
 }
 
-it("a run file a create cannot store the new floor in adds no row", async () => {
+it("a floor at the safe-integer limit refuses every create with its own code and adds no row", async () => {
   await writeFile(runsPath, `${JSON.stringify({ version: 1, rowIdFloor: Number.MAX_SAFE_INTEGER, runs: [] })}\n`);
   const store = new WorkBoardStore(boardPath);
-  expect(await store.create({ title: "Work" })).toEqual(refused);
+  expect(await store.create({ title: "Work" })).toEqual({ status: "invalid", reason: "work-item-ids-exhausted" });
   expect(existsSync(boardPath)).toBe(false);
+});
+
+it("a board row at the safe-integer limit refuses the next create with its own code, and removing it does not lower the floor", async () => {
+  await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 2, items: [row(1), row(Number.MAX_SAFE_INTEGER)] }));
+  const store = new WorkBoardStore(boardPath);
+  expect(await store.create({ title: "Work" })).toEqual({ status: "invalid", reason: "work-item-ids-exhausted" });
+  expect(await store.remove(Number.MAX_SAFE_INTEGER)).toMatchObject({ status: "deleted" });
+  expect(await new WorkBoardStore(boardPath).create({ title: "Work" })).toEqual({ status: "invalid", reason: "work-item-ids-exhausted" });
+  expect((await runFile()).rowIdFloor).toBe(Number.MAX_SAFE_INTEGER);
 });
 
 it("after five rows were added and the board deleted, a delete while the run list fails leaves the next row at 6", async () => {
