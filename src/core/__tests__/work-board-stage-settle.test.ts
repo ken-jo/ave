@@ -1,6 +1,6 @@
 /** How a template run ends, and what survives a crash or a deleted row: the run file is written first and is the truth; the board row is
  * shown from it. */
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { expect, it, vi } from "vitest";
 import { en } from "../../i18n/messages/en.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
@@ -741,12 +741,27 @@ it("a settled run whose row a board seeded again never issued is kept by a prune
   expect((await h.runOf(runId))?.settled).toBeDefined();
 }));
 
-it("a board seeded again while the run file cannot be listed still issues ids above the last board read", () => withHarness(async (h) => {
+it("a board seeded again while the run file cannot be listed refuses every write until it can be, then issues ids above every run's row", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  await h.untilLive(1);
+  const runId = (await h.item(id)).runId ?? "";
   rmSync(h.boardPath);
-  vi.spyOn(h.board.runs, "list").mockRejectedValueOnce(new Error("disk error"));
-  expect(await h.addItem(version)).toBeGreaterThan(id);
+  // The next process: its first read of the board has nothing to go on but the run file.
+  const boot = new WorkBoardStore(h.boardPath);
+  const list = vi.spyOn(boot.runs, "list").mockRejectedValue(new Error("disk error"));
+  expect(await boot.list()).toEqual({ status: "ok", items: [] });
+  await expect(boot.create({ title: "Work" })).rejects.toMatchObject({ code: "invalid-template-run" });
+  expect(existsSync(h.boardPath)).toBe(false);
+  list.mockRestore();
+  const created = await boot.create({ title: "Work" });
+  if (created.status !== "created") throw new Error("item not created");
+  expect(created.itemId).toBeGreaterThan(id);
+  expect(await boot.remove(created.itemId)).toMatchObject({ status: "deleted" });
+  expect(await boot.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(false);
+  expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  await run;
 }));
 
 it("writing unconfirmed run ends again keeps going past one that still fails: the next one is confirmed", () => withHarness(async (h) => {

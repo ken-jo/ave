@@ -289,6 +289,10 @@ function emptyBoard(): BoardFile {
   return { version: BOARD_VERSION, nextId: 1, items: [] };
 }
 
+// Boards seeded again while the run file could not be listed. Their floor does not cover the rows stored runs name, so they are read,
+// never written.
+const unlistedSeeds = new WeakSet<BoardFile>();
+
 // The board as it is on disk, or undefined when the file is absent, pending review or does not parse; never quarantines. Read errors throw.
 async function readBoardOnDisk(filePath: string): Promise<BoardFile | undefined> {
   const parsed = await parseBoardOnDisk(filePath);
@@ -336,6 +340,10 @@ function hydrateBoard(parsed: unknown): BoardFile {
     ...(firstId === undefined ? {} : { firstId }),
     items,
   };
+}
+
+function requireWritable(board: BoardFile): void {
+  requireTemplate(!unlistedSeeds.has(board), "invalid-template-run");
 }
 
 /** Whether this board file issued that row id. */
@@ -458,6 +466,7 @@ export class WorkBoardStore {
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it.
   private async commit(board: BoardFile): Promise<void> {
+    requireWritable(board);
     await writeFileAtomic(this.filePath, board);
     this.cache = board;
     this.boardChanged.emit();
@@ -487,7 +496,8 @@ export class WorkBoardStore {
 
   // Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID. A board seeded again (missing,
   // pending review, quarantined or without items) issues ids above the last board read and every row a stored run names, so a new row
-  // never takes the id of a run's lost row; it records where it started, since ids below that were never issued by it.
+  // never takes the id of a run's lost row; it records where it started, since ids below that were never issued by it. While the run
+  // file cannot be listed, the seeded board is shown empty and every write to it is refused.
   private async readBoard(): Promise<BoardFile> {
     let seeded = false;
     const seed = (): BoardFile => { seeded = true; return emptyBoard(); };
@@ -495,9 +505,12 @@ export class WorkBoardStore {
       typeof parsed === "object" && parsed !== null && Array.isArray((parsed as BoardFile).items) ? hydrateBoard(parsed) : seed());
     if (!seeded) return board;
     const stored = await this.runs.list().catch(() => null);
-    if (stored?.status !== "found") log.warn("[work-board-store] the board was seeded above the last board read only: the run file could not be listed");
-    const runRows = stored?.status === "found" ? stored.runs.map((run) => run.itemId) : [];
-    const firstId = Math.max(this.cache.nextId, ...runRows.map((id) => id + 1));
+    if (stored?.status !== "found") {
+      log.warn("[work-board-store] the board was seeded again while the run file could not be listed: board writes are refused until it can be");
+      unlistedSeeds.add(board);
+      return board;
+    }
+    const firstId = Math.max(this.cache.nextId, ...stored.runs.map((run) => run.itemId + 1));
     return firstId > 1 ? { ...board, nextId: firstId, firstId } : board;
   }
 
@@ -862,6 +875,8 @@ export class WorkBoardStore {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
+      // Refused before the run is stored, as the row write would be.
+      requireWritable(board);
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
