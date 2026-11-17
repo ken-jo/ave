@@ -592,6 +592,34 @@ it("an unconfirmed run end refuses only that run's decisions: a decision on anot
   for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.run-end-unconfirmed")).toEqual(expect.stringMatching(/\S/));
 }));
 
+it("a takeover a reader asks for that fails is logged, never left as an unhandled rejection", () => {
+  let failing = false;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+  return withHarness(async (h) => {
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const version = await h.confirm([auto("a")]);
+      const id = await h.addItem(version);
+      const run = h.start(id, h.local(version));
+      const [a] = await h.untilLive(1);
+      const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+      const write = vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" });
+      a.finish();
+      await run;
+      write.mockRestore();
+      failing = true;
+      await h.engine.projectTemplateRuns([await row(h, id)]);
+      for (let i = 0; i < 400 && (await h.runOf(runId))?.settled === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect((await h.runOf(runId))?.settled?.status).toBe("error");
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  }, () => ({ workflow: { itemChanged: () => { if (failing) throw new Error("listener failed"); } } }));
+});
+
 it("a start that threw after storing its run, while the run file awaits review, keeps its workspace until a reader writes the end", () => {
   const released: string[] = [];
   return withHarness(async (h) => {
