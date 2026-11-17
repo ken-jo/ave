@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { wireHookSystem } from "../../boot/steps/hook-system-wiring.js";
@@ -12,11 +12,24 @@ import { loadHookRuntimePolicy, type HookRuntimePolicy } from "../hook-source-po
 import { acceptHookTrust } from "../hook-trust-commands.js";
 import { hookDirLayout, writeExecutableHook } from "./test-helpers.js";
 
+// Ordinary fixture files are owned by the test principal. Tests that need administrator authority read the real native snapshot with
+// administrator ownership substituted, so the production trust check still runs on that evidence.
+const adminOwned = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../../shared/windows-path-facts.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/windows-path-facts.js")>();
+  const admin = (dacl: import("../../shared/windows-path-facts.js").WindowsDacl | null | undefined) => dacl
+    && { ...dacl, owner: "S-1-5-32-544", aces: [{ type: 0, flags: 0, mask: 0x1f01ff, sid: "S-1-5-32-544" }] };
+  return { ...actual, readWindowsDacls: (...args: Parameters<typeof actual.readWindowsDacls>) => {
+    const rows = actual.readWindowsDacls(...args);
+    return adminOwned.enabled ? rows.map((row) => ({ ...row, dacl: admin(row.dacl) ?? null, parent: admin(row.parent) })) : rows;
+  } };
+});
+
 let root: string;
 // Windows reads the admin policy through a native helper; an uncomposed host reads it as unreadable and closes user hooks.
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "hook-sources-")); });
-afterEach(async () => { await cleanupTmpDir(root); });
+afterEach(async () => { adminOwned.enabled = false; await cleanupTmpDir(root); });
 const openPolicy = (): HookRuntimePolicy => ({ allowManagedHooksOnly: false, allowedHttpHookUrls: [], httpHookAllowedEnvVars: [], managedHooks: [] });
 
 describe("source-bound hook review", () => {
@@ -151,6 +164,7 @@ describe("source-bound hook review", () => {
 
 describe("administrator hook authority", () => {
   it("binds a managed relative script to the administrator configuration directory", async () => {
+    adminOwned.enabled = true;
     const adminDir = join(root, "admin");
     mkdirSync(adminDir);
     writeFileSync(join(adminDir, "policy.sh"), "#!/bin/sh\nexit 0\n");
@@ -195,10 +209,14 @@ describe("administrator hook authority", () => {
   });
 
   it("loads managed definitions and network exceptions only from the administrator source", async () => {
+    adminOwned.enabled = true;
     const admin = join(root, "policy.json");
+    // The managed command is a hashed file anchor, so it must exist on every host.
+    const anchor = join(root, "managed.sh");
+    writeFileSync(anchor, "#!/bin/sh\nexit 0\n");
     writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: true,
       allowedHttpHookUrls: ["https://hooks.example.test"], httpHookAllowedEnvVars: ["HOOK_TOKEN", "bad-name"],
-      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["/usr/bin/true"] }] }] } }));
+      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: [anchor] }] }] } }));
     const policy = await loadHookRuntimePolicy(admin);
     expect(policy).toMatchObject({ allowManagedHooksOnly: true, allowedHttpHookUrls: ["https://hooks.example.test"], httpHookAllowedEnvVars: ["HOOK_TOKEN"] });
     expect(policy.managedHooks[0].hookSource).toBe("managed");
