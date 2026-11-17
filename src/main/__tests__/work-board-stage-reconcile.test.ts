@@ -316,3 +316,36 @@ it("a boot whose reconcile or row repair write fails takes nothing over: starts 
     }
   }
 });
+
+it("a settled run whose row a crash left executing is restored by the next start or reader once a deferred boot adoption can run", async () => {
+  for (const event of ["start", "reader"] as const) {
+    const h = await stageRunHarness();
+    try {
+      const version = await h.confirm([stageOf("a")]);
+      const id = await h.addItem(version);
+      const first = h.start(id, h.local(version));
+      (await h.untilLive(1))[0].finish();
+      await first;
+      expect(await h.decide(id, "a", "approve")).toMatchObject({ ok: true });
+      await h.until(id, item => item.runStatus === "completed");
+      h.editRow(id, row => ({ ...row, runStatus: "executing" }));
+      const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
+      const read = homeTrust.readAveHomeInput;
+      const held = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
+        path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
+      const engine = await restarted(h);
+      held.mockRestore();
+      if (event === "start") {
+        const again = engine.runItem(id, { templateSource: h.local(version) });
+        await h.untilLive(1);
+        expect(engine.cancelRun(id)).toEqual({ ok: true });
+        expect(await again).toMatchObject({ status: "cancelled" });
+      } else {
+        expect((await engine.projectTemplateRuns([await h.item(id)]))[0]).toMatchObject({ runStatus: "completed" });
+        await h.until(id, item => item.runStatus === "completed");
+      }
+    } finally {
+      await h.cleanup();
+    }
+  }
+});

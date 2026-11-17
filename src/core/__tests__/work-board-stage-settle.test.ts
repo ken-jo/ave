@@ -281,9 +281,9 @@ it("a run a restart left unsettled is shown as resuming, never as an error, and 
   expect(await shown(h, id)).toMatchObject({ runStatus: "executing", templateRunState: "resuming" });
   expect(workBoardStage(await shown(h, id))).toBe("in_progress");
 
-  // A start in that window is refused: the unsettled run is never replaced.
+  // A start in that window takes the run over first and is refused: the unsettled run is never replaced.
   expect(await next.runItem(id, { templateSource: h.local(version) })).toMatchObject({ status: "already_running" });
-  expect(await shown(h, id)).toMatchObject({ runStatus: "executing", templateRunState: "resuming" });
+  expect(await shown(h, id)).toMatchObject({ runStatus: "executing", templateRunState: "awaiting_review" });
   await next.adoptParkedTemplateRuns();
   const adopted = await row(h, id);
   expect(adopted).toMatchObject({ runId, runStatus: "executing" });

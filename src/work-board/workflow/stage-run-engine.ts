@@ -91,7 +91,7 @@ export interface StageRunEngineDeps {
 }
 
 export interface StageRunEngine {
-  start(itemId: number, item: WorkItem, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult>;
+  start(itemId: number, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult>;
   decideGate(itemId: number, i: StageGateDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageJoinDecideResult>;
   retryStage(itemId: number, i: { runId: string; stageId: string }, o: { approvalSurface: WebContents | null }): Promise<StageRetryResult>;
@@ -141,6 +141,7 @@ type Precheck<R extends string> = (record: RunRecord) => R | null;
 type Settled = NonNullable<RunRecord["settled"]>["status"];
 type PinRefusal = "version_missing" | "graph_mismatch";
 type Adopted = { ok: true } | { ok: false; code: string };
+const ROW_BUSY: ReadonlySet<string> = new Set(["planning", "awaiting_approval", "executing"]);
 
 /** The public refusal code of a failed run-file write. */
 function writeFault(reason: RunWriteFailure): string {
@@ -716,13 +717,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { status: "awaiting_approval" };
   }
 
-  async function start(itemId: number, item: WorkItem, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult> {
+  async function start(itemId: number, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult> {
     try {
       // A run a restart left unsettled is taken over first: a start never races its adoption, and never replaces such a run.
       const adoptedNow = await adopted();
       if (!adoptedNow.ok) return { status: "error", reason: adoptedNow.code, reasonCode: adoptedNow.code };
-      if (runs.has(itemId)) return { status: "already_running", reason: `Work item #${itemId} is already running a template run.` };
-      return await startRun(itemId, item, a);
+      const busy: WorkItemRunResult = { status: "already_running", reason: `Work item #${itemId} is already running a template run.` };
+      if (runs.has(itemId)) return busy;
+      // The row as adoption left it. Its run is busy while the run file says it is unsettled; a run the file cannot show is taken at the
+      // row's word.
+      const got = await store.get(itemId);
+      if (got.status !== "found") return { status: "not_found" };
+      const row = got.item;
+      const record = row.runId === undefined ? null : await records.get(itemId, row.runId);
+      if (record ? record.settled === undefined : ROW_BUSY.has(row.runStatus ?? "idle")) return busy;
+      return await startRun(itemId, row, a);
     } finally {
       // A refused start never opened a run; the caller's in-flight mark goes with it.
       if (!runs.has(itemId)) deps.releaseItem(itemId);
@@ -1000,7 +1009,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const state = runs.get(item.id);
       const owned = state?.runId === run.runId;
       // Over in the run file: that is how it ended, whatever a row not yet restored after a crash says.
-      if (run.settled !== undefined) return owned ? clean : { ...clean, runStatus: run.settled.status };
+      if (run.settled !== undefined) {
+        // A row a crash left showing another status is restored by the takeover.
+        if (!owned && item.runStatus !== run.settled.status) void adopted();
+        return owned ? clean : { ...clean, runStatus: run.settled.status };
+      }
       // Unsettled and not yet taken over after a restart: it is resuming, never an error, and the reader asks for the takeover.
       if (!owned) {
         void adopted();

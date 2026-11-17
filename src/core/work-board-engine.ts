@@ -527,7 +527,8 @@ export function createWorkBoardEngine(
     const item = got.item;
     if (item.status === "completed") return { status: "error", reason: "work-item-completed" };
 
-    if (inFlight.has(itemId) || ACTIVE_RUN_STATUSES.has(item.runStatus ?? "idle")) {
+    // A template run is busy as its run record says, read once boot adoption has run; its row's runStatus only shows it.
+    if (inFlight.has(itemId) || (opts.templateSource === undefined && ACTIVE_RUN_STATUSES.has(item.runStatus ?? "idle"))) {
       return {
         status: "already_running",
         reason: `Work item #${itemId} is already running (runStatus=${item.runStatus ?? "idle"}).`,
@@ -540,7 +541,7 @@ export function createWorkBoardEngine(
         inFlight.delete(itemId);
         return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
       }
-      return stageRuns.start(itemId, item, { source: opts.templateSource, approvalSurface: opts.approvalSurface ?? null });
+      return stageRuns.start(itemId, { source: opts.templateSource, approvalSurface: opts.approvalSurface ?? null });
     }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
   }
