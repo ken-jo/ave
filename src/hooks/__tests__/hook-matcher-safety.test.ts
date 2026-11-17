@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { compileHookMatcher, hookMatcherError } from "../hook-discovery.js";
 import * as hookDiscovery from "../hook-discovery.js";
 import { parseHookConfig } from "../hook-config.js";
@@ -14,10 +14,14 @@ import { hookJsonInput, lifecycleMatcherSubject } from "../hook-contract.js";
 import { wireHookSystem } from "../../boot/steps/hook-system-wiring.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { NotificationService } from "../../main/notification-service.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs");
 const PAYLOAD = { toolName: "read_file", source: "builtin" as const, category: "read" as const,
   input: {}, sessionId: "session-example", trustOrigin: "user-keyboard" as const };
+
+// Windows reads the admin policy through a native helper; an uncomposed host reads it as unreadable and closes user hooks.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 describe("hook matcher safety", () => {
   it.each([
