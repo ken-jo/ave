@@ -800,8 +800,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const shown = await store.setRunStatus(itemId, "executing");
       if (shown.status !== "updated") throw new Error("the run could not be shown on the board");
     } catch (error) {
-      // A start that threw may still have stored the run and named it on the row; the run file says so. Unknown counts as stored.
-      if (!recorded) recorded = await records.get(itemId, runId).then(run => run !== null && run.settled === undefined, () => true);
+      // A start that threw may still have stored the run and named it on the row; the run file says so. Only a run the file shows
+      // settled, or does not hold, is not stored: one it cannot show (pending review, unreadable) counts as stored.
+      if (!recorded) {
+        recorded = await records.read(itemId, runId)
+          .then(read => read.status === "found" ? read.run.settled === undefined : read.status !== "not-found", () => true);
+      }
       const code = error instanceof WorkflowTemplateError ? error.code : undefined;
       return abandonStart(ref, recorded, code ? refused(code) : { status: "error", reason: errorMessage(error) });
     }

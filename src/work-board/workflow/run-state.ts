@@ -1,7 +1,7 @@
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
-import type { StageJoin, TemplateRunStart, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
+import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
 import { WorkflowTemplateError } from "../template-graph.js";
 
 /** Everything a template run is decided from. It lives in the covered run file, keyed by `runId`; a board row names a run only by that id
@@ -30,6 +30,8 @@ export interface WorkflowRunState {
   /** The stored run of that row, read by run id whether or not the row still exists. Null when it is missing, unreadable, awaits review or
    * belongs to another row. */
   get(itemId: number, runId: string): Promise<RunRecord | null>;
+  /** As `get`, with how the read went: a run stored for another row reads `invalid`. */
+  read(itemId: number, runId: string): Promise<WorkflowRunReadResult>;
   /** One atomic read-modify-write. While the row exists it runs under the board lock and only for the run the row names; `rowGone` writes
    * by run id alone, for a run whose row was deleted. */
   update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | null, rowGone?: boolean): Promise<RunWrite>;
@@ -54,6 +56,10 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
   return {
     begin: (itemId, runId, startedAt, start) => store.beginRun(itemId, runId, startedAt, start),
     get: async (itemId, runId) => (await view())({ id: itemId, runId }),
+    read: async (itemId, runId) => {
+      const read = (await store.runs.view()).get(runId);
+      return read.status === "found" && read.run.itemId !== itemId ? { status: "invalid" } : read;
+    },
     update: async (itemId, runId, mutate, rowGone = false) => {
       try {
         const result = rowGone

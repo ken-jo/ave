@@ -188,6 +188,7 @@ it("a state change is reduced from the run as stored at the write: a workspace s
         runs: {
           begin: (...a) => runs().begin(...a),
           view: () => runs().view(),
+          read: (...a) => runs().read(...a),
           adoption: () => runs().adoption(),
           pruneSettled: () => runs().pruneSettled(),
           // The read of one event returns only after another write has stored the second stage's workspace: what it read is stale.
@@ -543,6 +544,31 @@ it("while a run end is unconfirmed, starts are refused and nothing is pruned or 
     expect(released).not.toContain(secondRun);
     expect(h.engine.cancelRun(second)).toEqual({ ok: true });
     expect(await runSecond).toMatchObject({ status: "cancelled" });
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
+});
+
+it("a start that threw after storing its run, while the run file awaits review, keeps its workspace until a reader writes the end", () => {
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const begin = h.board.beginRun.bind(h.board);
+    const held: { mockRestore: () => void }[] = [];
+    vi.spyOn(h.board, "beginRun").mockImplementationOnce(async (...args) => {
+      await begin(...args);
+      held.push(vi.spyOn(h.board.runs, "view").mockResolvedValue({ pendingReview: true, get: () => ({ status: "pending-review" }) }));
+      held.push(vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" }));
+      throw new Error("disk error");
+    });
+    expect(await h.start(id, h.local(version))).toMatchObject({ status: "error" });
+    expect(released).toEqual([]);
+    for (const spy of held) spy.mockRestore();
+    const runId = (await h.item(id)).runId ?? "";
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+
+    await h.engine.projectTemplateRuns([await row(h, id)]);
+    expect((await h.until(id, item => item.runStatus === "error")).record?.settled?.status).toBe("error");
+    expect(released).toEqual([runId]);
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
 
