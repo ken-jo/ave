@@ -903,6 +903,104 @@ it("a live run whose row was edited so it does not validate keeps that row throu
   expect(rowOnDisk()).toEqual(edited);
 }));
 
+/** How a hand edit can damage one entry of the board file: the live run's row, put back as raw JSON text. */
+const ROW_DAMAGES = ["string id", "fraction id", "missing id", "null id", "negative id", "nan-like id", "non-object", "null entry", "missing field", "renumbered"] as const;
+type RowDamage = (typeof ROW_DAMAGES)[number];
+function damagedRowText(kind: RowDamage, row: Record<string, unknown>, pick: (count: number) => number, freeId: number): string {
+  const { id, ...withoutId } = row;
+  const withId = (text: string) => JSON.stringify({ ...row, id: "__id__" }).replace('"__id__"', text);
+  switch (kind) {
+    case "string id": return JSON.stringify({ ...row, id: [String(id), `${String(id)} `, "one"][pick(3)] });
+    case "fraction id": return JSON.stringify({ ...row, id: Number(id) + [0.5, 0.25, 0.999][pick(3)] });
+    case "missing id": return JSON.stringify(withoutId);
+    case "null id": return withId("null");
+    case "negative id": return withId(String(-Number(id)));
+    case "nan-like id": return withId(["1e400", "-1e400", "-0", "0", "9007199254740993", '"NaN"'][pick(6)]);
+    case "non-object": return ['"row"', "42", "true", "[]", JSON.stringify([row])][pick(5)];
+    case "null entry": return "null";
+    case "missing field": {
+      const field = ["title", "status", "priority", "created_at", "updated_at"][pick(5)];
+      return JSON.stringify(Object.fromEntries(Object.entries(row).filter(([key]) => key !== field)));
+    }
+    case "renumbered": return withId(String(freeId));
+  }
+}
+
+/** A live run of a one-stage template, its child idle until the test finishes it. */
+async function liveRun(h: Harness) {
+  const version = await h.confirm([auto("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  const [child] = await h.untilLive(1);
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  return { version, id, run, child, runId, record: await h.runOf(runId) };
+}
+
+/** Damage the run's row on disk, add another row (a board write, after which the engine checks every live run's row) and wait for that
+ * check; the run must read unreadable through it and keep its child and record. Then put the row back as it was. */
+async function waitsThroughDamage(h: Harness, live: Awaited<ReturnType<typeof liveRun>>, damage: (row: Record<string, unknown>, freeId: number) => string): Promise<void> {
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { nextId: number; items: Record<string, unknown>[] };
+  const original = file.items.find(row => row.id === live.id);
+  if (!original) throw new Error("the run's row is not on disk");
+  const others = file.items.filter(row => row !== original);
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...others, "__row__"] }).replace('"__row__"', damage(original, file.nextId + 100)));
+  const rows = vi.spyOn(h.board, "runRowsOnDisk");
+  const checks = rows.mock.calls.length;
+  await h.addItem(live.version);
+  expect(rows.mock.calls.length).toBeGreaterThan(checks);
+  const standing = await rows.mock.results[checks].value;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(standing?.({ itemId: live.id, runId: live.runId })).toBe("unreadable");
+  expect(h.interrupts).toEqual([]);
+  expect(h.live()).toEqual([live.child]);
+  expect(await h.runOf(live.runId)).toEqual(live.record);
+  const damaged = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: unknown[] };
+  const intact = damaged.items.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry)
+    && Number.isSafeInteger((entry as { id?: unknown }).id) && (entry as { id: number }).id !== live.id && !JSON.stringify(entry).includes(live.runId));
+  writeFileSync(h.boardPath, JSON.stringify({ ...damaged, items: [original, ...intact] }));
+  expect(await h.board.runRowsOnDisk().then(next => next?.({ itemId: live.id, runId: live.runId }))).toBe("named");
+}
+
+async function completesUntouched(h: Harness, live: Awaited<ReturnType<typeof liveRun>>): Promise<void> {
+  live.child.finish();
+  expect(await live.run).toMatchObject({ status: "completed" });
+  expect(h.interrupts).toEqual([]);
+  expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed" || event.message === "template-run-lost")).toBe(false);
+  expect((await h.runOf(live.runId))?.settled?.status).toBe("completed");
+}
+
+it.each(["string id", "missing id", "fraction id", "non-object", "null entry", "renumbered"] as const)(
+  "a live run whose row was damaged by hand (%s) waits: it is never interrupted, cancelled or pruned, and completes once the row is put back",
+  (kind) => withHarness(async (h) => {
+    const live = await liveRun(h);
+    await waitsThroughDamage(h, live, (row, freeId) => damagedRowText(kind, row, () => 0, freeId));
+    await completesUntouched(h, live);
+  }),
+);
+
+it("no single damaged entry drawn by a seeded generator in place of a live run's row reads as its row gone: the run waits through every one and completes", () => withHarness(async (h) => {
+  let state = 0x2026_1117;
+  const pick = (count: number) => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return Math.floor((state / 2 ** 32) * count);
+  };
+  const live = await liveRun(h);
+  const seen = new Set<RowDamage>();
+  for (let round = 0; round < 4; round += 1) {
+    const kinds: RowDamage[] = [...ROW_DAMAGES];
+    for (let i = kinds.length - 1; i > 0; i -= 1) {
+      const j = pick(i + 1);
+      [kinds[i], kinds[j]] = [kinds[j], kinds[i]];
+    }
+    for (const kind of kinds) {
+      seen.add(kind);
+      await waitsThroughDamage(h, live, (row, freeId) => damagedRowText(kind, row, pick, freeId));
+    }
+  }
+  expect([...seen].sort()).toEqual([...ROW_DAMAGES].sort());
+  await completesUntouched(h, live);
+}), 60_000);
+
 it("a reader whose rows name no run writes the unconfirmed end of a run whose row no longer names it, once the board can be read", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);

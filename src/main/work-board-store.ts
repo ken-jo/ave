@@ -297,33 +297,44 @@ function emptyBoard(): BoardFile {
 type BoardRead = BoardFile & { unread?: true; prior?: Buffer };
 
 /** Where a stored run's row stands on a readable board. named: the row names the run. moved: it names another run and holds this one in its
- * history. unnamed: it neither names nor holds the run. unreadable: a row with its id is there but does not validate. lost: the board
- * lists no row with its id, and the id is below the board's `unknownBelow`: the board was written over one that showed none of its rows,
- * so the row may have been there. gone: the board lists no row with its id, at or above `unknownBelow`. Every stored run's itemId is at
- * or below the run file's row-id floor, which no new row is issued under, so a gone row is gone for good. */
+ * history. unnamed: it neither names nor holds the run. lost: the board lists no row with its id, and the id is below the board's
+ * `unknownBelow`: the board was written over one that showed none of its rows, so the row may have been there. gone: the board lists no
+ * row with its id, at or above `unknownBelow`. unreadable: whatever could still be the run's row: a row with its id that does not
+ * validate, or, where the run would otherwise read unnamed, lost or gone, any entry of the file holding the run's id as a string anywhere
+ * in it, or (with its row absent) any entry without a usable id. Every stored run's itemId is at or below the run file's row-id floor, which no new row is
+ * issued under, so a gone row is gone for good. */
 export type RunRowStanding = "named" | "moved" | "unnamed" | "gone" | "lost" | "unreadable";
 type RowStandings = (run: { itemId: number; runId: string }) => RunRowStanding;
 
-function standingOf(items: readonly WorkItem[], unreadable: ReadonlySet<number>, unknownBelow = 0): RowStandings {
-  const rows = new Map(items.map((item) => [item.id, item]));
+// `entries`: every entry of the board file the standing is read from, as it is there.
+function boardStanding(board: BoardFile, entries: readonly unknown[] = [...board.items, ...board.unreadable]): RowStandings {
+  const rows = new Map(board.items.map((item) => [item.id, item]));
+  const invalidIds = new Set(rawRowIds(board.unreadable));
+  const idless = entries.some((row) => rowIdOf(row) === undefined);
+  let text: string | undefined;
+  const heldAnywhere = (runId: string) => {
+    if (text === undefined) text = JSON.stringify(entries);
+    return text.includes(JSON.stringify(runId));
+  };
   return (run) => {
     const row = rows.get(run.itemId);
-    if (!row) return unreadable.has(run.itemId) ? "unreadable" : run.itemId < unknownBelow ? "lost" : "gone";
-    if (row.runId === run.runId) return "named";
-    return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? "moved" : "unnamed";
+    if (row?.runId === run.runId) return "named";
+    if (row && Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId)) return "moved";
+    if ((!row && (invalidIds.has(run.itemId) || idless)) || heldAnywhere(run.runId)) return "unreadable";
+    return row ? "unnamed" : run.itemId < (board.unknownBelow ?? 0) ? "lost" : "gone";
   };
 }
 
-function boardStanding(board: BoardFile): RowStandings {
-  const listed = new Set(board.items.map((item) => item.id));
-  return standingOf(board.items, new Set(rawRowIds(board.unreadable).filter((id) => !listed.has(id))), board.unknownBelow);
+function rowIdOf(row: unknown): number | undefined {
+  const id = typeof row === "object" && row !== null ? (row as { id?: unknown }).id : undefined;
+  return typeof id === "number" && Number.isSafeInteger(id) && id >= 1 ? id : undefined;
 }
 
 // The id of each row object in a board file's items, valid or not.
 function rawRowIds(items: readonly unknown[]): number[] {
   return items.flatMap((row) => {
-    const id = typeof row === "object" && row !== null ? (row as { id?: unknown }).id : undefined;
-    return typeof id === "number" && Number.isSafeInteger(id) && id >= 1 ? [id] : [];
+    const id = rowIdOf(row);
+    return id === undefined ? [] : [id];
   });
 }
 
@@ -333,7 +344,7 @@ async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; st
   const parsed = await parseBoardOnDisk(filePath);
   if (!readableBoard(parsed)) return undefined;
   const board = hydrateBoard(parsed);
-  return { board, standing: boardStanding(board) };
+  return { board, standing: boardStanding(board, parsed.items) };
 }
 
 function readableBoard(parsed: unknown): parsed is BoardFile {
@@ -954,7 +965,7 @@ export class WorkBoardStore {
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
       }
       // Judged against the board as it is on disk until the row write below lands.
-      const retain = this.retention(boardStanding(board));
+      const retain = this.retention((await readBoardOnDisk(this.filePath))?.standing ?? (() => "unreadable"));
       if (pin) {
         const stored = await this.runs.put(structuredClone({
           runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },

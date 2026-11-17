@@ -3750,10 +3750,25 @@ with its own owner rule:
   higher id. A run on a lost row ends `error` (`template-run-lost`), written
   by its run id, at boot and live alike, and keeps its record as a run whose
   row names it does, so a board put back by hand shows how it ended.
-  A row is gone when a readable board file has no row with its id at or
-  above `unknownBelow`. Every such id is at or below the floor, so the row
-  was issued and then removed, never one not issued yet. A run whose row is gone, or holds it only in its
-  run history, is cancelled as by Stop and settled with `runs.update`; its
+  Invariant: a run's row is gone only when the board file on disk proves it.
+  That takes all of these: the file is readable; the id is at or above
+  `unknownBelow`, so the board was readable before the write that dropped
+  the row; the file lists no row with that id; every entry of the file is an
+  object with a usable id (a safe integer of 1 or more); no entry with that
+  id fails to validate; and no entry, valid or not, holds the run's id as a
+  string anywhere in it. Short of any of these the row reads unreadable: the
+  run waits, nothing cancels it and its record is kept. An entry without a
+  usable id (a string, a fraction, a missing, `null`, zero or negative id, a
+  number past the safe-integer limit, or an entry that is not an object)
+  could be any row, so while one is there no absent row reads gone or lost.
+  A row renumbered by hand that still names its run holds the run's id, so
+  the run is not gone either; and a row under the run's id that neither
+  names nor holds it reads unreadable, not as no longer holding the run,
+  while another entry holds the run's id (two rows whose ids were swapped
+  by hand). Every gone id is at or below the floor,
+  so the row was issued and then removed, never one not issued yet. A run
+  whose row is gone, or holds it only in its run history, is cancelled as by
+  Stop and settled with `runs.update`; its
   record is then pruned, or shrunk to its summary while a run history lists
   it. A run whose row is there without naming or holding it ends `error`
   (`template-run-lost`), written by its run id, at boot and live alike, and

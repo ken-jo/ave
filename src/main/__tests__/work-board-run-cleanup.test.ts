@@ -87,6 +87,51 @@ it("shows where a run's row stands on the readable board on disk, and nothing wh
   expect(await store.runRowsOnDisk()).toBeUndefined();
 });
 
+it("never reads a run's row gone or lost while an entry of the file could still be that row: one that names the run anywhere, or one without a usable id", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const deleted = await templateItem(store);
+  const listed = await templateItem(store);
+  const swapped = await templateItem(store);
+  await begin(store, deleted, "run-deleted");
+  await begin(store, listed, "run-listed");
+  await begin(store, swapped, "run-swapped");
+  expect(await store.remove(deleted)).toMatchObject({ status: "deleted" });
+  const file = JSON.parse(await readFile(boardPath, "utf8")) as { items: { id: number }[] };
+  const standing = async (items: unknown[], itemId: number, runId: string, unknownBelow?: number) => {
+    await writeFile(boardPath, JSON.stringify({ ...file, ...(unknownBelow ? { unknownBelow } : {}), items }));
+    return (await store.runRowsOnDisk())?.({ itemId, runId });
+  };
+  expect(await standing(file.items, deleted, "run-deleted")).toBe("gone");
+  expect(await standing(file.items, deleted, "run-deleted", 100)).toBe("lost");
+  const unsafe = { id: 2 ** 53, title: "valid past the safe-integer limit", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+  for (const entry of [null, "text", 7, [], { id: "9" }, { id: 1.5 }, { id: -2 }, { id: 0 }, { title: "no id" }, unsafe]) {
+    expect(await standing([...file.items, entry], deleted, "run-deleted")).toBe("unreadable");
+    expect(await standing([...file.items, entry], deleted, "run-deleted", 100)).toBe("unreadable");
+  }
+  // Named under another id, valid or not, however deep: never gone. Only the id itself names it, not text around it.
+  expect(await standing([...file.items, { id: 50, note: { nested: ["run-deleted"] } }], deleted, "run-deleted")).toBe("unreadable");
+  expect(await standing([...file.items, { id: 50, note: "see run-deleted" }], deleted, "run-deleted")).toBe("gone");
+  expect(await standing(file.items.map(row => row.id === listed ? { ...row, detail: "run-deleted" } : row), deleted, "run-deleted")).toBe("unreadable");
+  // Two rows whose ids were swapped by hand: each run's id holds a row that neither names nor holds it, and the other row names it.
+  const swap = file.items.map(row => row.id === listed ? { ...row, id: swapped } : row.id === swapped ? { ...row, id: listed } : row);
+  expect(await standing(swap, listed, "run-listed")).toBe("unreadable");
+  expect(await standing(swap, swapped, "run-swapped")).toBe("unreadable");
+  expect(await standing(file.items, listed, "run-other")).toBe("unnamed");
+});
+
+it("keeps a settled run's record while an entry of the file names the run under another id, and prunes it once none does", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const gone = await templateItem(store);
+  await settled(store, gone, "gone-1");
+  const file = JSON.parse(await readFile(boardPath, "utf8")) as { items: { id: number }[] };
+  await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.map(row => row.id === gone ? { ...row, id: 50 } : row) }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["gone-1"]);
+  await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== gone) }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual([]);
+});
+
 it("prunes on a later write what an earlier cleanup could not remove", async () => {
   const store = new WorkBoardStore(boardPath);
   const gone = await templateItem(store);
