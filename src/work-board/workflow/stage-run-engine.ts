@@ -340,10 +340,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** After the run file says the run is over: show it on the row, tell the listeners, and let the item go. */
   async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string, settled = true): Promise<void> {
-    // A row that is gone or names another run is never written; the settled record goes with the prune.
+    // A row that is gone, or no longer names or holds the run, is never written; the settled record goes with the prune.
     if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus, rowGone: state.rowGone, ...(state.lost ? { lost: true } : {}) });
-    else if (state.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
-    else if (!state.lost) await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
+    else if (state.rowGone || state.lost) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
+    else await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
     const reason = byAuthority && state.refused
       ? { reasonCode: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) }
@@ -733,22 +733,28 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
   }
 
+  /** A run that ended error, by the run file's refusal when that is what ended it. */
+  function endedError(state: RunState): WorkItemRunResult {
+    return state.faulted !== null && RUN_FILE_REFUSALS.has(state.faulted) ? { status: "error", reason: state.faulted, reasonCode: state.faulted } : { status: "error" };
+  }
+
   async function resultOf(state: RunState): Promise<WorkItemRunResult> {
     // An end the run file did not confirm is an error, by the run file's refusal when that is what ended the run; never a run that waits.
     if (unconfirmed.has(state.runId)) {
       // A stop stays a stop; only its end is not saved yet.
       if (unconfirmed.get(state.runId)?.status === "cancelled") return { status: "cancelled", reason: "run-end-unconfirmed", reasonCode: "run-end-unconfirmed" };
-      return state.faulted !== null && RUN_FILE_REFUSALS.has(state.faulted) ? { status: "error", reason: state.faulted, reasonCode: state.faulted } : { status: "error" };
+      return endedError(state);
     }
     const record = await records.get(state.itemId, state.runId);
-    if (!record) return state.rowGone ? { status: "cancelled", reason: "item-removed" } : { status: "not_found" };
+    // A run whose row is gone, or no longer names or holds it, leaves no record once it is over.
+    if (!record) return state.rowGone ? { status: "cancelled", reason: "item-removed" } : state.lost ? endedError(state) : { status: "not_found" };
     const got = await store.get(state.itemId);
     const runStatus = record.settled?.status;
     const output = got.status === "found" && got.item.runId === state.runId ? got.item.output : undefined;
     const reason = state.refused ? { reasonCode: state.refused.code, reason: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) } : {};
     if (runStatus === "completed") return { status: "completed", ...(output !== undefined ? { output } : {}) };
-    if (runStatus === "error" && state.faulted !== null && RUN_FILE_REFUSALS.has(state.faulted)) return { status: "error", reason: state.faulted, reasonCode: state.faulted };
-    if (runStatus === "denied" || runStatus === "error") return { status: runStatus };
+    if (runStatus === "error") return endedError(state);
+    if (runStatus === "denied") return { status: runStatus };
     if (runStatus === "cancelled") return { status: "cancelled", ...(state.stopping ? { reason: state.rowGone ? "item-removed" : "user-stopped" } : reason) };
     // Unsettled with nothing live: the run waits for the user (a gate, a join, Retry or Stop).
     return { status: "awaiting_approval" };
@@ -1110,9 +1116,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }
       unconfirmed.delete(runId);
       await workspace.release(left.ref, "all").catch(() => undefined);
-      if (left.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
-      else if (left.lost) emit({ itemId: left.ref.itemId, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" });
+      if (left.rowGone || left.lost) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
       else await showOnRow(left.ref.itemId, left.status, undefined);
+      if (left.lost) emit({ itemId: left.ref.itemId, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" });
       // The stop was shown with a note that its end is not saved; this clears it.
       if (left.status === "cancelled" && !left.lost) emit({ itemId: left.ref.itemId, phase: "cancelled" });
       deps.itemChanged?.(left.ref.itemId);

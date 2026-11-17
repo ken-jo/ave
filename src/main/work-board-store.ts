@@ -534,7 +534,7 @@ export class WorkBoardStore {
   }
 
   /** For the engine: remove every settled run no row lists and shrink the ones only a run history lists, judged by the board file on
-   * disk; one that shows nothing prunes nothing. Call it after settling a run whose row is gone or names a newer run. A run file that
+   * disk; one that shows nothing prunes nothing. Call it after settling a run whose row is gone or no longer names it. A run file that
    * cannot be read rejects; one pending review or past the read limit is left as it is. */
   async pruneSettledRuns(): Promise<void> {
     await this.ensureLoaded();

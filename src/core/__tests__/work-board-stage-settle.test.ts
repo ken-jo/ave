@@ -851,7 +851,21 @@ it("a reader whose rows name no run writes the unconfirmed end of a run whose ro
   await h.engine.projectTemplateRuns([]);
   for (let i = 0; i < 400 && !h.events.some(event => event.message === "template-run-lost"); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
   expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" }));
-  expect((await h.runOf(runId))?.settled?.status).toBe("error");
+  expect(await h.runOf(runId)).toBeNull();
+}));
+
+it("runs whose rows stop naming them leave nothing behind in the run file: each settled record goes as its run ends", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  for (let i = 0; i < 3; i += 1) {
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    await h.untilLive(1);
+    await h.until(id, item => item.stageRuns[0].childSessionId !== undefined);
+    h.editRow(id, ({ runId: _, runHistory: __, ...row }) => row);
+    await h.addItem(version);
+    expect(await run).toMatchObject({ status: "error", reasonCode: "template-run-lost" });
+    expect(await h.board.runs.list()).toEqual({ status: "found", runs: [] });
+  }
 }));
 
 it("writing unconfirmed run ends again keeps going past one that still fails: the next one is confirmed", () => withHarness(async (h) => {
