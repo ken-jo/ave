@@ -398,13 +398,31 @@ for (const settleFails of [false, true]) {
       const id = await h.addItem(version);
       const begin = h.board.beginRun.bind(h.board);
       vi.spyOn(h.board, "beginRun").mockImplementationOnce(async (...args) => { await begin(...args); throw new Error("the board sync failed"); });
-      if (settleFails) vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" });
+      const other = await h.addItem(version);
+      const write = settleFails ? vi.spyOn(h.board, "updateRun").mockResolvedValue({ status: "pending-review" }) : null;
       expect(await h.start(id, h.local(version))).toMatchObject({ status: "error", reason: "the board sync failed" });
       const stored = await h.item(id);
       expect(stored.runId).toBeDefined();
       expect(stored.record?.settled?.status).toBe(settleFails ? undefined : "error");
       expect(released).toEqual(settleFails ? [] : [stored.runId]);
       expect(h.children).toHaveLength(0);
+      if (!write) return;
+      // Until its end is written, nothing starts and nothing is pruned or swept; the next start writes it first.
+      const prune = vi.spyOn(h.board, "pruneSettledRuns");
+      const swept = h.sweeps.length;
+      expect(await h.start(other, h.local(version))).toMatchObject({ status: "error", reasonCode: "template-runs-pending-review" });
+      expect(h.children).toHaveLength(0);
+      write.mockRestore();
+      let outcome: unknown;
+      const started = h.start(other, h.local(version)).then((result) => { outcome = result; });
+      for (let i = 0; i < 400 && outcome === undefined && h.live().length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+      expect(prune).not.toHaveBeenCalled();
+      expect(h.sweeps).toHaveLength(swept);
+      expect(released).toEqual([stored.runId]);
+      expect((await h.item(id))).toMatchObject({ runStatus: "error", record: { settled: { status: "error" } } });
+      expect(h.live()).toHaveLength(1);
+      expect(h.engine.cancelRun(other)).toEqual({ ok: true });
+      await started;
     }, () => ({ workspace: { release: async (run) => { released.push(run.runId); } } }));
   });
 }
