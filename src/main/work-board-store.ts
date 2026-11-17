@@ -299,7 +299,7 @@ function cacheOf({ version, nextId, unknownBelow, items, unreadable }: BoardFile
 /** A board as a write read it. `unread`: the file was absent, awaited review, did not parse or had no items list, so the board started
  * empty and shows none of the rows the file may have held. `unmoved`: it did not parse or had no items list and could not be moved
  * aside, so nothing may be written over it. `prior`: the file's bytes, when writing back its rows that do not validate would not give
- * them byte for byte. None of these is written. */
+ * them byte for byte, or a valid row lost a field on the way. None of these is written. */
 type BoardRead = BoardFile & { unread?: true; unmoved?: true; prior?: Buffer };
 
 /** Where a stored run's row stands on a readable board. named: the row names the run. moved: it names another run and holds this one in its
@@ -349,7 +349,7 @@ function rawRowIds(items: readonly unknown[]): number[] {
 async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; standing: RowStandings } | undefined> {
   const parsed = await parseBoardOnDisk(filePath);
   if (!readableBoard(parsed)) return undefined;
-  const board = hydrateBoard(parsed);
+  const { board } = hydrateBoard(parsed);
   return { board, standing: boardStanding(board, parsed.items) };
 }
 
@@ -366,14 +366,17 @@ function parseBoard(bytes: Buffer): unknown {
   try { return JSON.parse(bytes.toString("utf-8")) as unknown; } catch { return undefined; }
 }
 
-function hydrateBoard(file: BoardFile): BoardFile {
+// `dropped`: a listed row lost a field on the way (run fields edited in by hand, a plan approval that does not read), found by comparing
+// each row before and after; the re-anchoring of due dates below is not counted.
+function hydrateBoard(file: BoardFile): { board: BoardFile; dropped: boolean } {
   // Valid rows that share an id are not listed, so no run is read off a twin: each is kept as a row that does not validate. A valid row
   // whose id only a row that does not validate has too is still listed.
   const rowsById = new Map<number, number>();
   for (const row of file.items) if (isValidRecord(row)) rowsById.set(row.id, (rowsById.get(row.id) ?? 0) + 1);
   const listed = (row: unknown): row is WorkItem => isValidRecord(row) && rowsById.get(row.id) === 1;
   // Run state lives in the run file. A row carrying run fields was edited by hand: they are dropped here, so nothing reads or shows them.
-  const valid = file.items.filter(listed).map(stripBoardRunFields).map((item) => {
+  const listedRows = file.items.filter(listed);
+  const valid = listedRows.map(stripBoardRunFields).map((item) => {
     if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
     // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
     log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
@@ -381,6 +384,7 @@ function hydrateBoard(file: BoardFile): BoardFile {
     delete repaired.planApproval;
     return repaired;
   });
+  const dropped = valid.some((item, index) => JSON.stringify(item) !== JSON.stringify(listedRows[index]));
   // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
   // on every load and converges; nothing marks it done.
   const { items, changed } = normalizeBoardDueDates(valid);
@@ -399,20 +403,21 @@ function hydrateBoard(file: BoardFile): BoardFile {
   // One that is not a row id reads as the largest safe integer: no row the board does not list is read as gone, whatever its id.
   const unknownBelow = file.unknownBelow === undefined ? undefined
     : Number.isSafeInteger(file.unknownBelow) && file.unknownBelow >= 1 ? file.unknownBelow : Number.MAX_SAFE_INTEGER;
-  return {
+  const board = {
     version: BOARD_VERSION, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items,
     unreadable: file.items.filter((row) => !listed(row)),
   };
+  return { board, dropped };
 }
 
 /** A copy of the board file as it was, beside it, once per content: a row that does not validate is written back as JSON writes its
- * parsed value, which can differ from its bytes (a number past the safe-integer limit, other spacing). A copy that cannot be made
- * fails the write, and the board file is left as it was. */
+ * parsed value, which can differ from its bytes (a number past the safe-integer limit, other spacing), and a field a valid row lost is
+ * not written back. A copy that cannot be made fails the write, and the board file is left as it was. */
 async function keepPriorBytes(filePath: string, prior: Buffer): Promise<void> {
   const copy = `${filePath}.invalid-rows-${createHash("sha256").update(prior).digest("hex")}.bak`;
   if (await access(copy).then(() => true, () => false)) return;
   await writeFileAtomicAtPath(copy, prior);
-  log.warn("[work-board-store] the board file holds rows that do not validate; kept it as it was at %s", copy);
+  log.warn("[work-board-store] the board file holds what a write does not give back byte for byte; kept it as it was at %s", copy);
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
@@ -553,8 +558,9 @@ export class WorkBoardStore {
     if (input.status !== "trusted") return { ...emptyBoard(), unread: true };
     const parsed = parseBoard(input.bytes);
     if (readableBoard(parsed)) {
-      const board: BoardRead = hydrateBoard(parsed);
-      if (keepBytes || (board.unreadable.length > 0 && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`)))) board.prior = input.bytes;
+      const { board: hydrated, dropped } = hydrateBoard(parsed);
+      const board: BoardRead = hydrated;
+      if (keepBytes || dropped || (board.unreadable.length > 0 && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`)))) board.prior = input.bytes;
       return board;
     }
     return (await quarantineCorruptJson(this.filePath)) ? { ...emptyBoard(), unread: true } : { ...emptyBoard(), unread: true, unmoved: true };

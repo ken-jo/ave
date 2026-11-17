@@ -3788,7 +3788,10 @@ with its own owner rule:
   other spacing). Before the first write that would change those bytes, the
   file as it was is copied to `board.json.invalid-rows-<sha256>.bak` beside
   it, once per content; a copy that cannot be made fails the write, and the
-  board file is left as it was. The
+  board file is left as it was. The same copy is made before the first
+  write that drops a field of a valid row: run fields edited into a row by
+  hand, or a plan approval that does not read (the re-anchoring of due
+  dates is not counted). The
   list gives each such row, with its id when it has one (`unreadableRows`),
   and the board shows a card marked invalid for each; nothing on it opens
   or moves the row. A card with an id deletes, at once and with no confirm,

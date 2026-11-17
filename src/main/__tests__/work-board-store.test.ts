@@ -471,6 +471,37 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
+  it("copies the board file aside before a write drops a field of a valid row: run fields edited in by hand or a plan approval that does not read", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    const copies = () => readdirSync(dir).filter((f) => f.includes(".invalid-rows-")).map((f) => readFileSync(join(dir, f), "utf-8"));
+    const row = (id: number, extra: object = {}) => ({ id, title: `row ${id}`, status: "planned", priority: "medium", created_at: "x", updated_at: "x", ...extra });
+    const write = (second: object) => {
+      // Written as a board write writes it: only a dropped field can make a copy.
+      const text = `${JSON.stringify({ version: 1, nextId: 3, items: [row(1), second] }, null, 2)}\n`;
+      writeFileSync(path, text, "utf-8");
+      return text;
+    };
+    try {
+      write(row(2));
+      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+      expect(copies()).toEqual([]);
+      const cases: [object, object][] = [
+        [row(2, { stageRuns: [{ stageId: "a", attempt: 1, status: "running" }] }), row(2)],
+        [row(2, { planApproval: { decision: 7 } }), row(2)],
+        [row(2, { runHistory: [{ runId: "run-0", stageRuns: [] }] }), row(2, { runHistory: [{ runId: "run-0" }] })],
+      ];
+      for (const [second, written] of cases) {
+        const text = write(second);
+        expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+        expect(copies()).toContain(text);
+        expect(JSON.parse(readFileSync(path, "utf-8")).items[1]).toEqual(written);
+      }
+      expect(copies()).toHaveLength(cases.length);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("lists each row that does not validate with its id, and one without a usable id without it", async () => {
     const { store, path, cleanup } = tempBoard();
     try {
