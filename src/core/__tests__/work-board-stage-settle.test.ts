@@ -450,3 +450,34 @@ it("a run ended without its graph whose end cannot be written keeps its workspac
     workspace: { release: async (ref) => { released.push(ref.runId); } },
   }));
 });
+
+it("a stage write the run file refuses as too large ends the run with the size refusal on its event and its result", async () => {
+  for (const write of ["stage end", "workspace"] as const) {
+    await withHarness(async (h) => {
+      const version = await h.confirm([stageOf("a")]);
+      const id = await h.addItem(version);
+      const updateRun = h.board.updateRun.bind(h.board);
+      let armed = write === "workspace";
+      // The armed write is refused as the run file's store refuses it: the stage's end, or the first stage workspace. The end write that
+      // follows fits.
+      vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, runId, mutate) => {
+        const current = await h.runOf(runId);
+        const next = current && mutate(current);
+        const refuse = write === "workspace" ? !!next?.stageRuns.some(stage => stage.workspace) && !current?.stageRuns.some(stage => stage.workspace) : true;
+        if (!armed || !refuse) return updateRun(itemId, runId, mutate);
+        armed = false;
+        return { status: "too-large" };
+      });
+      const run = h.start(id, h.local(version));
+      if (write === "stage end") {
+        const [child] = await h.untilLive(1);
+        await h.until(id, item => item.stageRuns[0].childSessionId !== undefined);
+        armed = true;
+        child.finish();
+      }
+      expect(await run).toMatchObject({ status: "error", reasonCode: "template-runs-too-large" });
+      expect(h.events.find(event => event.phase === "error")).toMatchObject({ itemId: id, message: "template-runs-too-large", reasonCode: "template-runs-too-large" });
+      expect((await h.item(id)).record?.settled?.status).toBe("error");
+    });
+  }
+});

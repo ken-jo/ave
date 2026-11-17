@@ -149,6 +149,8 @@ function writeFault(reason: RunWriteFailure): string {
   if (reason === "pending-review") return "template-runs-pending-review";
   return reason === "invalid" ? "invalid-template-run" : "run-state-unavailable";
 }
+/** Run-file refusals the renderer shows in the user's language. */
+const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set(["template-runs-too-large", "template-runs-pending-review", "invalid-template-run"]);
 
 function rootKey(root: string): string {
   const normal = root.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -324,7 +326,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
     const reason = byAuthority && state.refused
       ? { reasonCode: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) }
-      : {};
+      : runStatus === "error" && message !== undefined && RUN_FILE_REFUSALS.has(message) ? { reasonCode: message } : {};
     if (byAuthority && state.refused) {
       deps.audit?.({ itemId: state.itemId, runId: state.runId, event: "work-run:authority-refused", code: state.refused.code, ...(state.refused.tool ? { tool: state.refused.tool } : {}) });
     }
@@ -347,7 +349,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (current.settled !== undefined) return null;
       const stageRuns = current.stageRuns.map((run): WorkItemStageRun => {
         if (event.type === "stage_ended" && run.stageId === event.stageId && run.attempt === event.attempt && run.status === "running") {
-          return { ...run, status: "cancelled", endedAt: now, ...(event.output !== undefined ? { output: event.output } : {}), ...(event.taint ? { taint: event.taint } : {}) };
+          // An output the run file had no room for is not tried again.
+          const output = event.output !== undefined && cause !== "template-runs-too-large" ? { output: event.output } : {};
+          return { ...run, status: "cancelled", endedAt: now, ...output, ...(event.taint ? { taint: event.taint } : {}) };
         }
         return idle && (run.status === "waiting" || run.status === "running" || run.status === "awaiting_gate") ? { ...run, status: "cancelled" } : run;
       });
@@ -407,9 +411,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (written.run === null) {
       if (refusal !== null) return refusal;
       if (written.reason === "row-gone") return "run_mismatch";
-      log.warn("stage run write failed (id=%d, event=%s)", state.itemId, event.type);
+      log.warn("stage run write failed (id=%d, event=%s): %s", state.itemId, event.type, written.reason);
       if (precheck) return "run_mismatch";
-      await unwind(state, event, "run-state-unavailable");
+      await unwind(state, event, writeFault(written.reason));
       return null;
     }
     const record = written.run;
@@ -583,7 +587,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         ...current,
         stageRuns: current.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === attempt ? { ...candidate, workspace: { ...prepared.workspace } } : candidate),
       }));
-      if (stored.run === null) throw new WorkflowInvariantError(stored.reason === "row-gone" ? "run-stopped" : "version-missing");
+      if (stored.run === null) throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
 
       // The spawn boundary. Preparing took time: the run's source is asked again, and a stop, a refusal or a fault that arrived meanwhile
       // ends the launch here. Nothing is awaited between these checks and the spawn.
@@ -662,8 +666,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (error instanceof WorkflowInvariantError && error.code === "run-not-authorised") {
         state.refused ??= { code: error.reasonCode ?? error.code, ...(error.reasonTool ? { tool: error.reasonTool } : {}) };
         next = { type: "spawn_refused", stageId, attempt };
-      } else if (error instanceof WorkflowInvariantError && (error.code === "version-missing" || error.code === "graph-mismatch")) {
-        faultCause = error.code;
+      } else if (error instanceof WorkflowInvariantError && (error.code === "version-missing" || error.code === "graph-mismatch" || error.code === "run-state-failed")) {
+        faultCause = error.reasonCode ?? error.code;
       } else if (error instanceof WorkflowInvariantError && error.code === "lane-blocked") {
         const code = error.reasonCode as LaneBlockCode;
         await writeRun(state, current => ({
@@ -711,6 +715,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const output = got.status === "found" && got.item.runId === state.runId ? got.item.output : undefined;
     const reason = state.refused ? { reasonCode: state.refused.code, reason: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) } : {};
     if (runStatus === "completed") return { status: "completed", ...(output !== undefined ? { output } : {}) };
+    if (runStatus === "error" && state.faulted !== null && RUN_FILE_REFUSALS.has(state.faulted)) return { status: "error", reason: state.faulted, reasonCode: state.faulted };
     if (runStatus === "denied" || runStatus === "error") return { status: runStatus };
     if (runStatus === "cancelled") return { status: "cancelled", ...(state.stopping ? { reason: state.rowGone ? "item-removed" : "user-stopped" } : reason) };
     // Unsettled with nothing live: the run waits for the user (a gate, a join, Retry or Stop).

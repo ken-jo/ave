@@ -248,8 +248,21 @@ describe("useWorkBoardRun — refusal text", () => {
     await waitFor(() => expect(result.current.runState[8]?.reason).toBe("disk full"));
   });
 
+  it("shows a run the run file refused mid-run by the size refusal's text, from its event and from its result", async () => {
+    const { api, emit } = harness();
+    let finish: (result: Awaited<ReturnType<AveApi["runWorkBoardItem"]>>) => void = () => undefined;
+    vi.mocked(api.runWorkBoardItem).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    act(() => result.current.runItem(7));
+    // The event and the result as the stage engine sends them when a stage's end write is refused as too large.
+    emit({ itemId: 7, phase: "error", message: "template-runs-too-large", reasonCode: "template-runs-too-large" });
+    expect(result.current.runState[7]?.reason).toBe(t("reasonCodes.template-runs-too-large"));
+    await act(async () => { finish({ status: "error", reason: "template-runs-too-large", reasonCode: "template-runs-too-large" }); });
+    expect(result.current.runState[7]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-too-large") });
+  });
+
   it("has the text of every refusal code it maps in both catalogs", () => {
-    for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review"]) {
+    for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread"]) {
       for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
     }
   });
