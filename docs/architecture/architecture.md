@@ -3846,8 +3846,9 @@ with its own owner rule:
   row removed, whatever else the file holds (entries without a usable id,
   a twin that does not validate, an `unknownBelow` mark above it); one a
   restart left parked is taken over by that id first, as its adoption
-  would, and ends the same way, and an adoption that meets it while it is
-  being cancelled leaves it to that cancel. The run of any other entry is
+  would, and ends the same way; an adoption that meets it while it is
+  being cancelled leaves it to that cancel, and one an adoption took over
+  first is cancelled from there the same way. The run of any other entry is
   untouched. Every gone id is at or below the floor,
   so the row was issued and then removed, never one not issued yet. A run
   whose row is gone, or holds it only in its run history, is cancelled as by
