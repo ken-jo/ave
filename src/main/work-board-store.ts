@@ -1,7 +1,7 @@
 // Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
 // than persisting or duplicating that projection in consumers.
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
@@ -10,6 +10,7 @@ import {
   readJsonFileOrEmpty,
   writeFileAtomicAtPath,
 } from "./storage/feature-namespace.js";
+import { rewriteKeepingBytes } from "./storage/rewrite-keeping-bytes.js";
 import { createDirStorage, type WorkBoardStorage } from "../work-board/storage.js";
 import {
   BOARD_VERSION,
@@ -294,7 +295,7 @@ function emptyBoard(): BoardFile {
   return { version: BOARD_VERSION, nextId: 1, items: [], unreadable: [] };
 }
 
-// What the cache keeps of a board: its fields only, never what a read marked (`unread`, `unmoved`) or the file bytes it kept (`prior`).
+// What the cache keeps of a board: its fields only, never what a read marked (`unread`, `unmoved`, `unchanged`).
 function cacheOf({ version, nextId, unknownBelow, items, unreadable, extra }: BoardFile): BoardFile {
   return { version, nextId, ...(unknownBelow !== undefined ? { unknownBelow } : {}), items, unreadable, ...(extra !== undefined ? { extra } : {}) };
 }
@@ -303,9 +304,9 @@ const BOARD_KEYS = new Set(["version", "nextId", "unknownBelow", "items"]);
 
 /** A board as a write read it. `unread`: the file was absent, awaited review, did not parse or had no items list, so the board started
  * empty and shows none of the rows the file may have held. `unmoved`: it did not parse or had no items list and could not be moved
- * aside, so nothing may be written over it. `prior`: the file's bytes, when writing back its rows that do not validate would not give
- * them byte for byte, or a valid row lost a field on the way. None of these is written. */
-type BoardRead = BoardFile & { unread?: true; unmoved?: true; prior?: Buffer };
+ * aside, so nothing may be written over it. `unchanged`: the text writing the board back as it was read gives; a write over bytes that
+ * are not that text first copies them aside. None of these is written. */
+type BoardRead = BoardFile & { unread?: true; unmoved?: true; unchanged?: string };
 
 /** Where a stored run's row stands on a readable board. named: the row names the run. moved: it names another run and holds this one in its
  * history. unnamed: it neither names nor holds the run. lost: the board lists no row with its id, and the id is below the board's
@@ -354,7 +355,7 @@ function rawRowIds(items: readonly unknown[]): number[] {
 async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; standing: RowStandings } | undefined> {
   const parsed = await parseBoardOnDisk(filePath);
   if (!readableBoard(parsed)) return undefined;
-  const { board } = hydrateBoard(parsed);
+  const board = hydrateBoard(parsed);
   return { board, standing: boardStanding(board, parsed.items, parsed) };
 }
 
@@ -371,9 +372,7 @@ function parseBoard(bytes: Buffer): unknown {
   try { return JSON.parse(bytes.toString("utf-8")) as unknown; } catch { return undefined; }
 }
 
-// `dropped`: a listed row lost a field on the way (run fields edited in by hand, a plan approval that does not read), found by comparing
-// each row before and after, or an `unknownBelow` that is not a row id is rewritten; the re-anchoring of due dates below is not counted.
-function hydrateBoard(file: BoardFile): { board: BoardFile; dropped: boolean } {
+function hydrateBoard(file: BoardFile): BoardFile {
   // Valid rows that share an id are not listed, so no run is read off a twin: each is kept as a row that does not validate. A valid row
   // whose id only a row that does not validate has too is still listed.
   const rowsById = new Map<number, number>();
@@ -389,7 +388,6 @@ function hydrateBoard(file: BoardFile): { board: BoardFile; dropped: boolean } {
     delete repaired.planApproval;
     return repaired;
   });
-  const dropped = valid.some((item, index) => JSON.stringify(item) !== JSON.stringify(listedRows[index]));
   // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
   // on every load and converges; nothing marks it done.
   const { items, changed } = normalizeBoardDueDates(valid);
@@ -414,23 +412,12 @@ function hydrateBoard(file: BoardFile): { board: BoardFile; dropped: boolean } {
     unreadable: file.items.filter((row) => !listed(row)),
     ...(extra.length > 0 ? { extra: Object.fromEntries(extra) } : {}),
   };
-  return { board, dropped: dropped || unknownBelow !== file.unknownBelow };
+  return board;
 }
 
-/** A copy of the board file as it was, beside it, once per content: a row that does not validate is written back as JSON writes its
- * parsed value, which can differ from its bytes (a number past the safe-integer limit, other spacing), and a field a valid row lost is
- * not written back. A copy that cannot be made fails the write, and the board file is left as it was. */
-async function keepPriorBytes(filePath: string, prior: Buffer): Promise<void> {
-  const copy = `${filePath}.invalid-rows-${createHash("sha256").update(prior).digest("hex")}.bak`;
-  if (await access(copy).then(() => true, () => false)) return;
-  await writeFileAtomicAtPath(copy, prior);
-  log.warn("[work-board-store] the board file holds what a write does not give back byte for byte; kept it as it was at %s", copy);
-}
-
-async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
-  // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the feature-namespace SOT helper. The injectable `filePath` (tests pass a temp path)
-  // is preserved — the helper enforces the permission boundary on whatever parent directory the path resolves to.
-  await writeFileAtomicAtPath(filePath, `${JSON.stringify(fileOf(data), null, 2)}\n`);
+// The board file's text, as every board write writes it.
+function boardText(board: BoardFile): string {
+  return `${JSON.stringify(fileOf(board), null, 2)}\n`;
 }
 
 // The board as its file holds it: its top-level keys, then the valid rows, then the rows that do not validate.
@@ -555,13 +542,13 @@ export class WorkBoardStore {
   }
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it. A board read as unread is
-  // written only by a create, which first marks the ids it cannot show.
+  // written only by a create, which first marks the ids it cannot show. Bytes on disk that are not the text the board was read as
+  // (`unchanged`) are copied aside first; with no such text, any bytes there are.
   private async commit(board: BoardRead, deleted?: { itemId: number; runId: string }): Promise<void> {
     if (board.unread) throw new Error("a board that shows none of its rows is written only by a create");
     if (await this.legacyCopyHolds(false)) throw new Error("the legacy board copy on disk is not marked done, so nothing is written over it");
-    if (board.prior) await keepPriorBytes(this.filePath, board.prior);
     const file = cacheOf(board);
-    await writeFileAtomic(this.filePath, file);
+    await rewriteKeepingBytes(this.filePath, boardText(file), { tag: "invalid-rows", unchanged: board.unchanged });
     this.cache = file;
     if (deleted) this.rowDeleted.emit(deleted);
     this.boardChanged.emit();
@@ -587,18 +574,14 @@ export class WorkBoardStore {
 
   // What a write starts from. A file that does not parse or is not a board with an items list is moved aside as damaged JSON is, and one
   // that cannot be moved is marked so no write goes over it. It and a file that is absent or awaits review start empty. Invalid rows are
-  // set aside and nextId is repaired above every row id in the file. `keepBytes`: the write drops entries that do not validate, so the file's
-  // bytes are kept as they are.
-  private async readBoard(keepBytes = false): Promise<BoardRead> {
+  // set aside and nextId is repaired above every row id in the file.
+  private async readBoard(): Promise<BoardRead> {
     const input = await readAveHomeInput(this.filePath);
     if (input.status !== "trusted") return { ...emptyBoard(), unread: true };
     const parsed = parseBoard(input.bytes);
     if (readableBoard(parsed)) {
-      const { board: hydrated, dropped } = hydrateBoard(parsed);
-      const board: BoardRead = hydrated;
-      const keptAsParsed = board.unreadable.length > 0 || board.extra !== undefined;
-      if (keepBytes || dropped || (keptAsParsed && !input.bytes.equals(Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`)))) board.prior = input.bytes;
-      return board;
+      const board = hydrateBoard(parsed);
+      return { ...board, unchanged: boardText(board) };
     }
     return (await quarantineCorruptJson(this.filePath)) ? { ...emptyBoard(), unread: true } : { ...emptyBoard(), unread: true, unmoved: true };
   }
@@ -1362,7 +1345,7 @@ export class WorkBoardStore {
   async removeUnreadable(target: { position: number; hash: string }, allowed: (row: unknown) => boolean): Promise<WorkBoardEntryDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await this.readBoard(true);
+      const board = await this.readBoard();
       const { position, hash } = target;
       const row: unknown = board.unreadable[position];
       if (!Number.isSafeInteger(position) || position < 0 || position >= board.unreadable.length || sha256(JSON.stringify(row)) !== hash) {
@@ -1373,9 +1356,9 @@ export class WorkBoardStore {
         this.cache = cacheOf(board);
         return { status: "not_found" as const };
       }
-      // Read again as the file it leaves: a twin left alone with its id is listed.
-      const { board: next } = hydrateBoard(fileOf({ ...board, unreadable: board.unreadable.filter((_, index) => index !== position) }));
-      await this.commit({ ...next, prior: board.prior });
+      // Read again as the file it leaves: a twin left alone with its id is listed. Read so, it has no `unchanged` text: the file is copied.
+      const next = hydrateBoard(fileOf({ ...board, unreadable: board.unreadable.filter((_, index) => index !== position) }));
+      await this.commit(next);
       await this.pruneAfterWrite(this.retention(boardStanding(next)));
       const id = rowIdOf(row);
       if (id === undefined) return { status: "deleted" as const };

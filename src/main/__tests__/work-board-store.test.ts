@@ -638,6 +638,44 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       await cleanup();
     }
   });
+
+  it("copies the board file aside, once per content, before any write over bytes it would not give back, and never one written as a write writes it", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    const copies = () => readdirSync(dir).filter((name) => name.includes(".invalid-rows-"));
+    const row = (id: number, extra: object = {}) => ({ id, title: `row ${id}`, status: "planned", priority: "medium", created_at: "x", updated_at: "x", ...extra });
+    const canonical = (file: object) => `${JSON.stringify(file, null, 2)}\n`;
+    const items = [row(1), row(2)];
+    try {
+      writeFileSync(path, canonical({ version: 1, nextId: 3, items }), "utf-8");
+      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+      expect(copies()).toEqual([]);
+      const cases = [
+        // A valid row's numbers JSON reads as other values.
+        canonical({ version: 1, nextId: 3, items: [row(1), row(2, { estimate: 0, ratio: 1 })] })
+          .replace('"estimate": 0', '"estimate": 123456789012345678901234567890').replace('"ratio": 1', '"ratio": 1e400'),
+        // What the read repairs: another version, a nextId that is not a number or not above every row id.
+        canonical({ version: 2, nextId: 3, items }),
+        canonical({ version: 1, nextId: "seven", items }),
+        canonical({ version: 1, nextId: 1, items }),
+        // A key twice, and other spacing.
+        `{"version":1,"nextId":3,"items":${JSON.stringify([row(2)])},"items":${JSON.stringify(items)}}\n`,
+        JSON.stringify({ version: 1, nextId: 3, items }),
+      ];
+      for (const text of cases) {
+        writeFileSync(path, text, "utf-8");
+        for (let i = 0; i < 2; i += 1) expect(await store.update(1, { title: `renamed ${i}` })).toMatchObject({ status: "updated" });
+        const copy = `board.json.invalid-rows-${createHash("sha256").update(text).digest("hex")}.bak`;
+        expect(copies()).toContain(copy);
+        expect(readFileSync(join(dir, copy))).toEqual(Buffer.from(text, "utf-8"));
+      }
+      expect(copies()).toHaveLength(cases.length);
+      writeFileSync(path, cases[0], "utf-8");
+      expect(await store.update(1, { title: "again" })).toMatchObject({ status: "updated" });
+      expect(copies()).toHaveLength(cases.length);
+    } finally {
+      await cleanup();
+    }
+  });
 });
 
 describe("WorkBoardStore — due dates stamped in another zone", () => {

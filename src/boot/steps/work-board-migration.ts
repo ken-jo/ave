@@ -5,7 +5,8 @@ import { readFile, readdir } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
-import { openFeatureNamespace, writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
+import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
+import { rewriteKeepingBytes } from "../../main/storage/rewrite-keeping-bytes.js";
 import { WorkflowRunStore } from "../../main/workflow-run-store.js";
 import { createLogger } from "../../lib/logger.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
@@ -139,7 +140,10 @@ export async function copyLegacyPluginBoard(destPath: string, runs: WorkflowRunS
     log.warn("boot: work-board migration skipped — row ids were already issued on this home, the copy was already made, or the workflow run file awaits review");
     return false;
   }
-  await writeFileAtomicAtPath(destPath, bytes);
+  // A board that appeared since it was read above is the host's: the copy is refused, and the board stays as it is.
+  await rewriteKeepingBytes(destPath, bytes, { tag: "invalid-rows", check: (prior) => {
+    if (prior !== undefined) throw new Error("a host board appeared before the legacy copy was written");
+  } });
   // One not marked now is marked by the next board write or boot, which finds the board holding its bytes.
   const marked = await readFile(destPath).then((written) => runs.finishLegacyBoardCopy(sha256(written))).catch((err: Error) => err.message);
   if (marked !== true) {

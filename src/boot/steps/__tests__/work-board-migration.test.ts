@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { migrateLegacyPluginBoardToWorkBoard } from "../work-board-migration.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
+import { WorkflowRunStore } from "../../../main/workflow-run-store.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const SAMPLE_BOARD = { version: 1, nextId: 3, items: [{ id: 1, title: "legacy task", status: "planned", priority: "medium", created_at: "x", updated_at: "x" }] };
@@ -90,6 +91,19 @@ describe("work-board migration", () => {
 
     expect(migrated).toBe(false);
     expect(JSON.parse(readFileSync(destPath, "utf-8"))).toEqual(hostBoard);
+  });
+
+  it("never writes over a host board that appears after the destination was read: the copy is refused and the board is left byte for byte", async () => {
+    writePluginBoard(home, "samplehub", JSON.stringify(SAMPLE_BOARD));
+    const hostText = `${JSON.stringify({ version: 1, nextId: 1, items: [] })}\n`;
+    const start = WorkflowRunStore.prototype.startLegacyBoardCopy;
+    vi.spyOn(WorkflowRunStore.prototype, "startLegacyBoardCopy").mockImplementation(async function (this: WorkflowRunStore, ...args) {
+      mkdirSync(join(home, "work-board"), { recursive: true });
+      writeFileSync(destPath, hostText, "utf-8");
+      return start.apply(this, args);
+    });
+    await migrateLegacyPluginBoardToWorkBoard();
+    expect(readFileSync(destPath, "utf-8")).toBe(hostText);
   });
 
   it("skips + warns when more than one legacy board exists (ambiguous source)", async () => {
