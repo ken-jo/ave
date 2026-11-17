@@ -305,6 +305,49 @@ describe("invalid row delete", () => {
   });
 });
 
+describe("missing run clear", () => {
+  it("refuses a run of a row whose run has no record, and clears only the row its card showed, naming that run, in an authorized project, telling every window it was updated", async () => {
+    const path = join(root, "board.json");
+    const stale = (id: number, projectRoot: string) => ({
+      id, title: "Work", status: "in_progress", priority: "medium", projectRoot, templateId: "template-1", runId: `run-${id}`, runStatus: "executing",
+      runHistory: [{ runId: `run-${id}`, startedAt: "2026-01-01T00:00:00.000Z", status: "executing" }], created_at: "x", updated_at: "x",
+    });
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 3, items: [stale(1, workspace), stale(2, join(root, "denied-project"))] }));
+    writeFileSync(join(root, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 2, runs: [] }));
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: broadcast };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const runItem = vi.fn();
+    const clearMissingRun = vi.fn((id: number, input: { revision: string; runId: string }) => store.clearMissingRun(id, input.revision, input.runId));
+    registerWorkBoardHandlers({
+      workBoardStore: store, workBoardEngine: { runItem, clearMissingRun, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const shown = await store.get(1);
+    if (shown.status !== "found") throw new Error("Missing item");
+    expect(shown.item).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
+    await expect(registeredHandler(WORK_BOARD.run)(event, 1)).resolves.toEqual({ status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" });
+    expect(runItem).not.toHaveBeenCalled();
+    const clear = registeredHandler(WORK_BOARD.clearRun);
+    const target = { revision: shown.item.mutationRevision, runId: "run-1" };
+    for (const [id, named] of [
+      ["1", target], [1.5, target], [1, undefined], [1, { revision: target.revision }], [1, { ...target, more: 1 }],
+      [1, { ...target, revision: "A".repeat(64) }], [1, { ...target, runId: "../run" }], [1, "run-1"],
+    ]) {
+      await expect(clear(event, id, named)).resolves.toEqual({ ok: false, error: "invalid-input" });
+    }
+    await expect(clear(event, 2, { revision: "0".repeat(64), runId: "run-2" })).resolves.toEqual({ status: "not_found", itemId: 2 });
+    await expect(clear(event, 1, { ...target, revision: "0".repeat(64) })).resolves.toEqual({ status: "invalid", itemId: 1, reason: "work-item-changed" });
+    expect(clearMissingRun).toHaveBeenCalledTimes(1);
+    expect(broadcast).not.toHaveBeenCalled();
+    await expect(clear(event, 1, target)).resolves.toMatchObject({ status: "updated", itemId: 1, item: { runStatus: "error", runId: "run-1" } });
+    expect(clearMissingRun).toHaveBeenLastCalledWith(1, target);
+    expect(broadcast.mock.calls.map(([, payload]) => payload)).toEqual([{ itemId: 1, change: "updated", changedAt: expect.any(String) }]);
+  });
+});
+
 describe("unreadable run record discard", () => {
   it("discards an entry of the run file that does not read as a run only as its card names it, by its place and content, and tells every window", async () => {
     const path = join(root, "board.json");

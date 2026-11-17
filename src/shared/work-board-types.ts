@@ -116,8 +116,10 @@ export type WorkPlanDecideIpcResult =
   | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
-  /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review. Never persisted. */
-  templateRunError?: "invalid-template-run" | "template-runs-pending-review";
+  /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review.
+   * `template-run-not-found`: the row says the run is in flight and the run file holds no record of it; the row is shown as error until
+   * the user clears it. Never persisted. */
+  templateRunError?: "invalid-template-run" | "template-runs-pending-review" | "template-run-not-found";
   /** Where the row's template run stands, told by the host from the run file and its own state. resuming: a restart left the run and
    * the host has not taken it over yet. Never persisted; a value a board row carries is dropped. */
   templateRunState?: "running" | "awaiting_review" | "resuming";

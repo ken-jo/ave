@@ -8,8 +8,9 @@ import { en } from "../../i18n/messages/en.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { ko } from "../../i18n/messages/ko.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
+import * as activityLog from "../../work-board/activity-log.js";
 import { workBoardStage } from "../../shared/work-board-lifecycle.js";
-import type { WorkItemResolved } from "../../shared/work-board-types.js";
+import type { WorkItem, WorkItemResolved } from "../../shared/work-board-types.js";
 import { WorkflowTemplateError } from "../../work-board/template-graph.js";
 import { boardRunState, type RunRecord, type WorkflowRunState } from "../../work-board/workflow/run-state.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
@@ -1421,6 +1422,7 @@ for (const [board, spoil] of [
     writeFileSync(h.boardPath, good);
     const next = h.makeEngine();
     await next.adoptParkedTemplateRuns();
+    expect(await shown(h, id)).toMatchObject({ runId, runStatus: "error", templateRunError: "template-run-not-found" });
     expect(h.live()).toHaveLength(0);
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
   }));
@@ -1467,3 +1469,115 @@ for (const [board, spoil] of [
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
   }));
 }
+
+// A row put back in flight by hand whose run the run file no longer holds: its record was pruned once the run was lost.
+async function restoredWithoutRecord(h: Harness) {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  await h.untilLive(1);
+  const runId = (await h.item(id)).runId ?? "";
+  const good = readFileSync(h.boardPath, "utf8");
+  writeFileSync(h.boardPath, "{");
+  await h.board.create({ title: "Unrelated" });
+  expect(await run).toMatchObject({ status: "error", reasonCode: "template-run-lost" });
+  expect(await h.runOf(runId)).toBeNull();
+  writeFileSync(h.boardPath, good);
+  h.makeEngine();
+  return { id, runId, version };
+}
+const runsFile = (h: Harness) => join(dirname(h.boardPath), "workflow-runs.json");
+
+it("a row put back in flight whose run has no record: reconcile writes nothing, the board shows it error and run record not found, and a restart or a move is refused with that code", () => withHarness(async (h) => {
+  const { id, runId, version } = await restoredWithoutRecord(h);
+  const onDisk = readFileSync(h.boardPath, "utf8");
+  expect(await h.board.reconcileInterruptedRuns()).toBe(0);
+  await h.engine.adoptParkedTemplateRuns();
+  expect(readFileSync(h.boardPath, "utf8")).toBe(onDisk);
+  const listed = await h.board.list();
+  const notFound = { runId, runStatus: "error", templateRunError: "template-run-not-found" };
+  expect(listed.status === "ok" ? listed.items.find(item => item.id === id) : undefined).toMatchObject(notFound);
+  expect(await shown(h, id)).toMatchObject(notFound);
+  expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" });
+  expect(await h.board.complete(id, (await row(h, id)).mutationRevision)).toEqual({ status: "invalid", itemId: id, reason: "template-run-not-found" });
+  expect(await h.board.transition(id, "planned")).toEqual({ status: "invalid", itemId: id, reason: "template-run-not-found" });
+  expect(h.children).toHaveLength(1);
+  expect(readFileSync(h.boardPath, "utf8")).toBe(onDisk);
+  expect(en["reasonCodes.template-run-not-found"]).toBeTruthy();
+  expect(ko["reasonCodes.template-run-not-found"]).toBeTruthy();
+}));
+
+for (const next of ["run", "complete"] as const) {
+  it(`clearing a row shown run record not found ends it error and closes its history entry, with no activity, no run record and no child; a card that does not match is refused; then the row can ${next === "run" ? "run again" : "be completed"}`, () => withHarness(async (h) => {
+    const { id, runId, version } = await restoredWithoutRecord(h);
+    await h.engine.adoptParkedTemplateRuns();
+    const revision = (await row(h, id)).mutationRevision ?? "";
+    const appended = vi.spyOn(activityLog, "appendActivity");
+    const changed = { status: "invalid", itemId: id, reason: "work-item-changed" };
+    expect(await h.engine.clearMissingRun(id, { revision: "0".repeat(64), runId })).toEqual(changed);
+    expect(await h.engine.clearMissingRun(id, { revision, runId: "another-run" })).toEqual(changed);
+    expect(await h.engine.clearMissingRun(id + 100, { revision, runId })).toEqual({ status: "not_found", itemId: id + 100 });
+    expect(await h.engine.clearMissingRun(id, { revision, runId })).toMatchObject({ status: "updated", itemId: id, item: { runId, runStatus: "error" } });
+    const stored = (JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: WorkItem[] }).items.find(item => item.id === id);
+    expect(stored?.runStatus).toBe("error");
+    expect(stored?.runHistory?.find(entry => entry.runId === runId)).toMatchObject({ status: "error", endedAt: expect.any(String) });
+    expect(await row(h, id)).not.toHaveProperty("templateRunError");
+    expect(appended).not.toHaveBeenCalled();
+    expect(await h.runOf(runId)).toBeNull();
+    expect(h.children).toHaveLength(1);
+    expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
+    // A second clear names a row that is no longer as its card showed it.
+    expect(await h.engine.clearMissingRun(id, { revision, runId })).toEqual(changed);
+    if (next === "run") {
+      const again = h.start(id, h.local(version));
+      const [child] = await h.untilLive(1);
+      expect((await h.item(id)).runId).not.toBe(runId);
+      child.finish();
+      expect(await again).toMatchObject({ status: "awaiting_approval" });
+    } else {
+      expect(await h.board.complete(id, (await row(h, id)).mutationRevision)).toMatchObject({ status: "completed" });
+    }
+  }));
+}
+
+it("a clear is refused while this host runs the item, even with its record taken out of the run file by hand: the run is left to end on its own", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  const [child] = await h.untilLive(1);
+  const runId = (await h.item(id)).runId ?? "";
+  const file = JSON.parse(readFileSync(runsFile(h), "utf8")) as { runs: { runId: string }[] };
+  writeFileSync(runsFile(h), JSON.stringify({ ...file, runs: file.runs.filter(entry => entry.runId !== runId) }));
+  const missing = await row(h, id);
+  expect(missing).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
+  const board = readFileSync(h.boardPath, "utf8");
+  expect(await h.engine.clearMissingRun(id, { revision: missing.mutationRevision ?? "", runId })).toEqual({ status: "invalid", itemId: id, reason: "moveRunActive" });
+  expect(readFileSync(h.boardPath, "utf8")).toBe(board);
+  expect(h.interrupts).toEqual([]);
+  expect(child.ended).toBe(false);
+  child.finish();
+  await run;
+}));
+
+it("a broken entry under another run id leaves a row whose run has no record shown so; an entry without a run id could be its record, so the row is shown as it says until that entry is discarded, then it can be cleared", () => withHarness(async (h) => {
+  const { id, runId } = await restoredWithoutRecord(h);
+  await h.engine.adoptParkedTemplateRuns();
+  const file = JSON.parse(readFileSync(runsFile(h), "utf8")) as { runs: unknown[] };
+  const other = { runId: "another-run", itemId: id };
+  writeFileSync(runsFile(h), JSON.stringify({ ...file, runs: [...file.runs, other] }));
+  expect(await shown(h, id)).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
+  const idless = { itemId: id };
+  writeFileSync(runsFile(h), JSON.stringify({ ...file, runs: [...file.runs, other, idless] }));
+  const held = await shown(h, id);
+  expect(held.runStatus).toBe("executing");
+  expect(held).not.toHaveProperty("templateRunError");
+  expect(await h.engine.clearMissingRun(id, { revision: held.mutationRevision ?? "", runId })).toEqual({ status: "invalid", itemId: id, reason: "work-item-changed" });
+  const listed = await h.board.list();
+  const hash = createHash("sha256").update(JSON.stringify(idless)).digest("hex");
+  const entry = listed.status === "ok" ? listed.unreadableRuns?.find(candidate => candidate.hash === hash) : undefined;
+  if (!entry) throw new Error("no unreadable run card");
+  expect(await h.board.discardUnreadableRun({ position: entry.position, hash })).toEqual({ status: "deleted" });
+  const freed = await shown(h, id);
+  expect(freed).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
+  expect(await h.engine.clearMissingRun(id, { revision: freed.mutationRevision ?? "", runId })).toMatchObject({ status: "updated", itemId: id });
+}));

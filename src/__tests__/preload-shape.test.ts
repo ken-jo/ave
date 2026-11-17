@@ -409,6 +409,7 @@ describe("preload contextBridge world shape lock", () => {
           "checkForAppUpdates": "function",
           "clearSessionGoal": "function",
           "clearSessionTasks": "function",
+          "clearWorkBoardRun": "function",
           "completeWorkBoardItem": "function",
           "confirmWorkflowTemplate": "function",
           "decideWorkJoin": "function",

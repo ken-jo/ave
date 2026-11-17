@@ -17,7 +17,7 @@ import {
   MAX_PLAN_NOTE_LENGTH, workBoardOriginSessionId,
   type StageGateDecideInput, type StageGateDecideResult, type StageJoinDecideInput, type StageJoinDecideResult, type StageRetryResult,
   type WorkBoardCancelResult, type WorkBoardRunEvent, type WorkBoardSteerAck, type WorkBoardSteerResult, type WorkItem, type WorkItemResolved,
-  type WorkItemRunResult,
+  type WorkItemRunResult, type WorkItemUpdateResult,
 } from "../../shared/work-board-types.js";
 import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
 import type {
@@ -57,7 +57,7 @@ interface RequestedOutputHooks {
 
 export interface StageRunEngineDeps {
   /** The board: the row of a run carries its id, its shown status and its final output. Nothing a run is decided from is read here. */
-  store: Pick<WorkBoardStore, "get" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted">;
+  store: Pick<WorkBoardStore, "get" | "setRunStatus" | "setRunResult" | "boardChanged" | "rowDeleted" | "clearMissingRun">;
   /** Every run-authority field: the pin, the source, the stage runs, the joins, the gates and how the run ended. */
   runs: WorkflowRunState;
   /** The authorised registry root of a project path, or null when the registry does not hold it. */
@@ -107,6 +107,9 @@ export interface StageRunEngine {
   adoptParkedRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run. */
   projectRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
+  /** The user's clear of a row whose run has no record (WorkBoardStore.clearMissingRun). Refused `moveRunActive` while this host holds a
+   * run of the item: that run's own end settles its row. Starts and stops nothing. */
+  clearMissingRun(itemId: number, i: { revision: string; runId: string }): Promise<WorkItemUpdateResult>;
   /** Resolves when the run has no queued event and no live or starting child. */
   whenIdle(itemId: number): Promise<void>;
 }
@@ -1014,7 +1017,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const shownOnRow = (itemId: number, patch: Parameters<typeof store.setRunResult>[1]): Promise<boolean> =>
       store.setRunResult(itemId, patch).then(result => result.status === "updated", () => false);
     for (const { item, run } of found.named) {
-      // The run file was read and holds no readable run of this row under that id: the row already says so, and nothing is adopted.
+      // The run file was read and holds no readable run of this row under that id, and nothing is adopted: the board shows the row
+      // invalid-template-run, or, with no record at all, template-run-not-found and error until the user clears it.
       if (!run) continue;
       // Taken over by an earlier attempt: a retry announces nothing again.
       if (runs.get(item.id)?.runId === run.runId) {
@@ -1178,8 +1182,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     });
   }
 
+  async function clearMissingRun(itemId: number, i: { revision: string; runId: string }): Promise<WorkItemUpdateResult> {
+    if (runs.has(itemId)) return { status: "invalid", itemId, reason: "moveRunActive" };
+    return store.clearMissingRun(itemId, i.revision, i.runId);
+  }
+
   return {
-    start, decideGate, decideJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns,
+    start, decideGate, decideJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns, clearMissingRun,
     adoptParkedRuns: async () => {
       const done = await adopted();
       if (!done.ok) log.warn("template runs not adopted at boot: %s", done.code);

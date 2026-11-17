@@ -167,6 +167,41 @@ describe("work board review", () => {
     expect(await screen.findByTestId("work-board-unreadable-row-error")).toHaveTextContent(t(message));
     expect(screen.getByTestId("work-board-unreadable-run")).toBeTruthy();
   });
+  const missingRun: WorkItemResolved = {
+    id: 3, title: "Sync notes", status: "in_progress", status_resolved: "in_progress", mutationRevision: "c".repeat(64), priority: "medium", templateId: "template-1",
+    runId: "run-3", runStatus: "error", templateRunError: "template-run-not-found", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-02T00:00:00Z",
+  };
+  const missingRunCard = async () => {
+    const badge = await screen.findByTestId("work-board-run-not-found");
+    const card = badge.closest<HTMLElement>("[data-testid='work-board-card']");
+    if (!card) throw new Error("no card");
+    return card;
+  };
+  it("shows a row whose run has no record as run record not found, with Clear in place of Run, and clears it as its card shows it, then reads the board again", async () => {
+    const api = apiFor([missingRun]);
+    const clear = vi.fn(async () => ({ status: "updated" as const, itemId: 3, item: { ...missingRun, templateRunError: undefined } }));
+    api.clearWorkBoardRun = clear;
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    const card = await missingRunCard();
+    expect(within(card).getByTestId("work-board-run-not-found")).toHaveTextContent(t("workBoard.runRecordNotFound"));
+    expect(within(card).queryByTestId("work-board-run")).toBeNull();
+    expect(within(card).queryByTestId("work-board-run-error")).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: t("workBoard.clearRunLabel", { id: 3 }) }));
+    await waitFor(() => expect(api.listWorkBoard).toHaveBeenCalledTimes(2));
+    expect(clear).toHaveBeenCalledExactlyOnceWith(3, { revision: "c".repeat(64), runId: "run-3" });
+    expect(screen.queryByTestId("work-board-unreadable-row-error")).toBeNull();
+  });
+  it.each([
+    [{ status: "invalid" as const, itemId: 3, reason: "work-item-changed" }, "workBoard.itemChangedReload"],
+    [{ status: "invalid" as const, itemId: 3, reason: "moveRunActive" }, "workBoard.errorMutationRefused"],
+  ] as const)("says why a refused clear (%o) did nothing and keeps the card", async (refusal, message) => {
+    const api = apiFor([missingRun]);
+    api.clearWorkBoardRun = vi.fn(async () => refusal);
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    fireEvent.click(within(await missingRunCard()).getByTestId("work-board-clear-run"));
+    expect(await screen.findByTestId("work-board-unreadable-row-error")).toHaveTextContent(t(message));
+    expect(screen.getByTestId("work-board-run-not-found")).toBeTruthy();
+  });
   it("shows a load error instead of an empty board when the first read fails", async () => {
     const api = apiFor([result]);
     vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ ok: false, error: "invalid-template-run" });

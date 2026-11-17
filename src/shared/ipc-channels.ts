@@ -67,6 +67,8 @@ export const WORK_BOARD = {
   complete: "ave:work-board:complete",
   reopen: "ave:work-board:reopen",
   remove: "ave:work-board:remove",
+  // Renderer → main: the user's clear of a row whose template run has no record (WorkItemResolved.templateRunError).
+  clearRun: "ave:work-board:clear-run",
   // Emitted by the work-board IPC domain after any successful mutation
   // (created/updated/transitioned/completed/reopened/removed) so the renderer board view re-lists without polling.
   itemChanged: "ave:work-board:item-changed",

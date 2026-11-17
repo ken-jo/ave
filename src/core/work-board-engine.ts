@@ -31,6 +31,7 @@ import type {
   StageJoinDecideResult,
   StageRetryInput,
   StageRetryResult,
+  WorkItemUpdateResult,
 } from "../shared/work-board-types.js";
 import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
 import { createStageRunEngine, type StageRunEngineDeps } from "../work-board/workflow/stage-run-engine.js";
@@ -202,6 +203,9 @@ export interface WorkBoardEngine {
   adoptParkedTemplateRuns(): Promise<void>;
   /** Adds what a board reader is told about each row's template run; drops whatever a row says about it itself. */
   projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
+  /** The user's clear of a row shown `template-run-not-found`, while it is as its card showed it: the row ends error. Starts and stops
+   * nothing. */
+  clearMissingRun(itemId: number, input: { revision: string; runId: string }): Promise<WorkItemUpdateResult>;
 
   /** A read-only survey files proposals for user review without plan approval; individual tools remain gated. Allow only one survey per briefing window. */
   runBriefing(
@@ -534,6 +538,8 @@ export function createWorkBoardEngine(
         reason: `Work item #${itemId} is already running (runStatus=${item.runStatus ?? "idle"}).`,
       };
     }
+    // Shown as error only until the user clears it: nothing runs on the row before that.
+    if (item.templateRunError === "template-run-not-found") return { status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" };
     inFlight.add(itemId);
     // An item made from a template runs its pinned stages; it never takes the plan and execute path, and never the other way round.
     if (opts.templateSource !== undefined) {
@@ -1037,5 +1043,6 @@ export function createWorkBoardEngine(
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
     adoptParkedTemplateRuns: async () => { await stageRuns?.adoptParkedRuns(); },
     projectTemplateRuns: async (items) => stageRuns ? stageRuns.projectRuns(items) : items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; }),
+    clearMissingRun: async (itemId, input) => stageRuns?.clearMissingRun(itemId, input) ?? { status: "not_found", itemId },
   };
 }

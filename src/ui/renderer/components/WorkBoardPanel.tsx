@@ -410,6 +410,8 @@ interface CardActions {
   onComplete: (id: number) => void;
   onReopen: (id: number) => void;
   onRun: (id: number) => void;
+  /** Clear a row shown `template-run-not-found`, as its card shows it. */
+  onClearRun: (item: WorkItemResolved) => void;
   onOpenDetail: (id: number) => void;
   /** Open the live step panel on the item's run. */
   onShowSteps: (id: number) => void;
@@ -434,6 +436,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
   const stage = workBoardStage(item);
   const overdue = item.status_resolved === "overdue";
   const isCompleted = item.status === "completed";
+  const runMissing = item.templateRunError === "template-run-not-found";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
   const narration = latestTurn(live);
   const toolApproval = live ? actions.toolApprovals.get(item.id)?.[0] : undefined;
@@ -548,7 +551,11 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
                   </Badge>
                 )}
                 <span className="text-dense text-muted-foreground">{formatDue(item.due_at)}</span>
-                <RunIndicator run={run} item={item} />
+                {runMissing ? (
+                  <Badge variant="outline" className="border-destructive/(--opacity-half) text-destructive" title={t("workBoard.runRecordNotFoundHint")} data-testid="work-board-run-not-found">
+                    {t("workBoard.runRecordNotFound")}
+                  </Badge>
+                ) : <RunIndicator run={run} item={item} />}
               </div>
             </>
           )}
@@ -577,7 +584,22 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
             {t("workBoard.liveStepsShow")}
           </Button>
         )}
-        {!isCompleted && !live && (
+        {runMissing && !live && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-dense"
+            aria-label={t("workBoard.clearRunLabel", { id: item.id })}
+            onClick={(e) => {
+              e.stopPropagation();
+              actions.onClearRun(item);
+            }}
+            data-testid="work-board-clear-run"
+          >
+            {t("workBoard.clearRunButton")}
+          </Button>
+        )}
+        {!isCompleted && !live && !runMissing && (
           <Button
             size="sm"
             variant="ghost"
@@ -1106,6 +1128,7 @@ function workItemMutationMessage(reason: unknown): string {
     case "movePlanDecision": return t("workBoard.movePlanDecision");
     case "moveReviewDerived": return t("workBoard.moveReviewDerived");
     case "moveResultDecision": return t("workBoard.moveResultDecision");
+    case "template-run-not-found": return t("reasonCodes.template-run-not-found");
     default: return t("workBoard.errorMutationRefused");
   }
 }
@@ -1749,7 +1772,8 @@ export function WorkBoardPanel({
     }
   }, [api, project]);
 
-  // The message for the last invalid card delete or unreadable run record discard that did nothing; `changed` when its entry changed.
+  // The message for the last invalid card delete, unreadable run record discard or missing run clear that did nothing; `changed` when
+  // its entry changed.
   const [entryError, setEntryError] = useState<string | null>(null);
   const removeEntry = useCallback(async (target: WorkItemDeleteTarget, changed: string, itemId: number | undefined) => {
     setEntryError(null);
@@ -1760,6 +1784,20 @@ export function WorkBoardPanel({
       else if ("reason" in result && result.reason === "work-board-row-changed") error = changed;
     } catch (failure) {
       console.error("[ave] work-board invalid entry delete failed", { itemId, message: errorMessage(failure) });
+    }
+    if (!mountedRef.current) return;
+    setEntryError(error);
+    await refresh();
+  }, [api, refresh]);
+  const clearRun = useCallback(async (item: WorkItemResolved) => {
+    setEntryError(null);
+    let error: string | null = "workBoard.errorMutationRefused";
+    try {
+      const result = await api.clearWorkBoardRun(item.id, { revision: item.mutationRevision ?? "", runId: item.runId ?? "" });
+      if ("status" in result && result.status === "updated") error = null;
+      else if ("reason" in result && result.reason === "work-item-changed") error = "workBoard.itemChangedReload";
+    } catch (failure) {
+      console.error("[ave] work-board run clear failed", { itemId: item.id, message: errorMessage(failure) });
     }
     if (!mountedRef.current) return;
     setEntryError(error);
@@ -1951,12 +1989,13 @@ export function WorkBoardPanel({
     onComplete,
     onReopen,
     onRun,
+    onClearRun: (item) => { void clearRun(item); },
     onOpenDetail,
     onShowSteps: showSteps,
     stepsShowingId: stepsOpen ? stepsItemId : null,
     toolApprovals,
     approvalSurface,
-  }), [onStart, onComplete, onReopen, onRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
+  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
   const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "review" | "completed">("in-progress");

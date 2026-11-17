@@ -457,18 +457,37 @@ function runSummary(run: WorkflowRunRecord): WorkflowRunRecord {
 }
 
 const namesTemplateRun = (item: WorkItem): boolean => item.templateId !== undefined && item.runId !== undefined;
+const RUN_IN_FLIGHT: ReadonlySet<string> = new Set(["planning", "awaiting_approval", "executing"]);
+// A start writes the run's record before its row names it, so a row in flight naming a run the file positively does not hold is never
+// one a process runs: a record pruned or discarded and the row put back by hand, or a hand edit.
+const runRecordMissing = (item: WorkItem, runs: WorkflowRunView): boolean =>
+  namesTemplateRun(item) && RUN_IN_FLIGHT.has(item.runStatus ?? "idle") && item.runId !== undefined && runs.missing?.(item.runId) === true;
 function templateRunError(item: WorkItem, runs: WorkflowRunView): WorkItemResolved["templateRunError"] {
   if (!namesTemplateRun(item) || item.runId === undefined) return undefined;
   const result = runs.get(item.runId);
   if (result.status === "pending-review") return "template-runs-pending-review";
+  if (result.status === "not-found") return runRecordMissing(item, runs) ? "template-run-not-found" : undefined;
   return result.status === "invalid" || (result.status === "found" && result.run.itemId !== item.id) ? "invalid-template-run" : undefined;
 }
 
-// A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader.
+// An in-flight run no process holds ends error and its open history entry closes: neither a crash nor a missing record is a user stop.
+function endedInterrupted(it: WorkItem, iso: string): WorkItem {
+  const updated: WorkItem = { ...it, runStatus: "error", runUpdatedAt: iso };
+  if (it.runId && Array.isArray(it.runHistory)) {
+    updated.runHistory = it.runHistory.map((h) =>
+      h.runId === it.runId && h.endedAt === undefined ? { ...h, status: "error" as WorkItemRunStatus, endedAt: iso } : h,
+    );
+  }
+  return updated;
+}
+
+// A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader. A row whose
+// run has no record is shown ended, never in flight, until the user clears it; its revision is the stored row's.
 function decorate(item: WorkItem, nowMs: number, runError?: WorkItemResolved["templateRunError"]): WorkItemResolved {
   const approval = item.planApproval;
   return {
     ...item,
+    ...(runError === "template-run-not-found" ? { runStatus: "error" as const } : {}),
     mutationRevision: mutationRevision(item),
     ...(runError ? { templateRunError: runError } : {}),
     status_resolved: resolveWorkItemStatus(item, nowMs),
@@ -651,14 +670,16 @@ export class WorkBoardStore {
   // List items, newest-id first, with `status_resolved` computed + filter applied.
   async list(filter: WorkItemListFilter = {}): Promise<WorkItemListResult> {
     await this.ensureLoaded();
-    // Read on every call, never cached: the marks follow the run file as it is now.
+    // The rows first, then the run file, read on every call: a run starts by writing its record before its row, so a row read here
+    // never names a run started after the run file was read.
+    const cache = this.cache;
     const runs = await this.runs.view();
     if (filter.limit !== undefined && (!Number.isFinite(filter.limit) || filter.limit < 0)) {
       return { status: "invalid", reason: "limit must be a non-negative number" };
     }
     const projectRoot = normalizeOptionalString(filter.projectRoot, MAX_PROJECT_ROOT_LENGTH);
     const nowMs = this.now();
-    let rows = this.cache.items
+    let rows = cache.items
       .map((item) => decorate(cloneItem(item), nowMs, templateRunError(item, runs)))
       .sort((a, b) => b.id - a.id);
     if (projectRoot) {
@@ -682,7 +703,7 @@ export class WorkBoardStore {
     if (filter.limit !== undefined) {
       rows = rows.slice(0, filter.limit);
     }
-    const unreadable = this.cache.unreadable.map((row, position) => {
+    const unreadable = cache.unreadable.map((row, position) => {
       const id = rowIdOf(row);
       return { ...(id === undefined ? {} : { id }), position, hash: sha256(JSON.stringify(row)) };
     });
@@ -905,7 +926,8 @@ export class WorkBoardStore {
       const refusal = workBoardMoveRefusal(current, target);
       if (refusal) {
         this.cache = cacheOf(board);
-        return { status: "invalid" as const, itemId: id, reason: refusal };
+        const missing = namesTemplateRun(current) && await this.runs.view().then(runs => runRecordMissing(current, runs), () => false);
+        return { status: "invalid" as const, itemId: id, reason: missing ? "template-run-not-found" : refusal };
       }
       const from = current.status;
       const updated: WorkItem = { ...board.items[idx], status: to, updated_at: iso };
@@ -1062,7 +1084,8 @@ export class WorkBoardStore {
 
   // At boot, active persisted phases belong to dead processes; mark them error and close history so items become runnable again.
   // A crash is not a user stop, so it never becomes cancelled; terminal statuses (cancelled included) are left as they are. A row
-  // that names a template run is left to the engine, which adopts the run back from its record.
+  // that names a template run is left to the engine, which adopts the run back from its record; one whose run has no record is shown
+  // as such until the user clears it (clearMissingRun), and is never written here.
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -1080,15 +1103,7 @@ export class WorkBoardStore {
           it.runStatus === "awaiting_approval" ||
           it.runStatus === "executing"
         ) {
-          const updated: WorkItem = { ...it, runStatus: "error", runUpdatedAt: iso };
-          if (it.runId && Array.isArray(it.runHistory)) {
-            updated.runHistory = it.runHistory.map((h) =>
-              h.runId === it.runId && h.endedAt === undefined
-                ? { ...h, status: "error" as WorkItemRunStatus, endedAt: iso }
-                : h,
-            );
-          }
-          board.items[i] = updated;
+          board.items[i] = endedInterrupted(it, iso);
           count += 1;
         }
       }
@@ -1096,6 +1111,26 @@ export class WorkBoardStore {
       else this.cache = cacheOf(board);
       if (count > 0) log.info("[work-board-store] reconciled %d interrupted run(s) → error", count);
       return count;
+    });
+  }
+
+  /** The user's clear of a row whose run has no record (`template-run-not-found`): the row as its card showed it ends error and its
+   * history entry closes, as reconcile closes an interrupted run. Nothing starts or stops and no activity is written. Refused unless the
+   * row is still exactly that and the run file still holds no record of the run. A run file that cannot be read throws. */
+  async clearMissingRun(id: number, expectedRevision: string, runId: string): Promise<WorkItemUpdateResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await this.readBoard();
+      const idx = board.items.findIndex((i) => i.id === id && mutationRevision(i) === expectedRevision);
+      const current = board.items[idx];
+      if (!current || current.runId !== runId || !runRecordMissing(current, await this.runs.view())) {
+        this.cache = cacheOf(board);
+        return board.items.some((i) => i.id === id) ? { status: "invalid" as const, itemId: id, reason: "work-item-changed" } : { status: "not_found" as const, itemId: id };
+      }
+      const nowMs = this.now();
+      board.items[idx] = endedInterrupted(current, new Date(nowMs).toISOString());
+      await this.commit(board);
+      return { status: "updated" as const, itemId: id, item: decorate(cloneItem(board.items[idx]), nowMs) };
     });
   }
 

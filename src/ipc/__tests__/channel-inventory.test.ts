@@ -642,6 +642,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:work-board:accept-proposal",
         "ave:work-board:add",
         "ave:work-board:cancel-run",
+        "ave:work-board:clear-run",
         "ave:work-board:complete",
         "ave:work-board:decide-join",
         "ave:work-board:decide-plan",

@@ -1040,6 +1040,14 @@ export type AvePreloadApi = {
     | import("../../shared/work-board-types.js").WorkBoardEntryDeleteResult
     | { ok: false; error: string }
   >;
+  /** Clear the row `id` shown `template-run-not-found`, only while it is as its card showed it (`revision`) and names `runId`. */
+  clearWorkBoardRun: (
+    id: number,
+    target: { revision: string; runId: string },
+  ) => Promise<
+    | import("../../shared/work-board-types.js").WorkItemUpdateResult
+    | { ok: false; error: string }
+  >;
   // Board view live refresh: emitted after any successful board mutation so the
   // renderer re-lists without polling.
   onWorkBoardItemChanged: (

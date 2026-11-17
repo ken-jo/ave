@@ -53,10 +53,13 @@ it("ignores run fields written by hand into a board row", async () => {
   const found = await store.get(1);
   if (found.status !== "found") throw new Error("Missing item");
   const { mutationRevision, status_resolved, planStale, ...surfaced } = found.item;
-  expect(surfaced).toEqual(kept);
+  // The run file holds no record of run-1: the row is shown so, never as executing.
+  const shown = { ...kept, runStatus: "error", templateRunError: "template-run-not-found" };
+  expect(surfaced).toEqual(shown);
   const listed = await store.list();
   if (listed.status !== "ok") throw new Error("Missing list");
-  for (const key of [...Object.keys(forged), "templateRunError"]) expect(listed.items[0]).not.toHaveProperty(key);
+  for (const key of Object.keys(forged)) expect(listed.items[0]).not.toHaveProperty(key);
+  expect(listed.items[0]).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
 
   // The run file holds no such run, so the forged gate and pin authorise nothing.
   expect(await store.getRun(1)).toEqual({ status: "not-found" });

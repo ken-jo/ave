@@ -17,8 +17,14 @@ interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoar
 /** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
  * row it names when that reads as a row id. */
 interface WorkflowRunUnreadable { position: number; hash: string; itemId?: number }
-/** One read of the run file, for a caller that looks up several runs; `unreadable`, every entry of it that does not read as a run. */
-export interface WorkflowRunView { readonly pendingReview: boolean; readonly unreadable?: readonly WorkflowRunUnreadable[]; get(runId: string): WorkflowRunReadResult }
+/** One read of the run file, for a caller that looks up several runs; `unreadable`, every entry of it that does not read as a run;
+ * `missing`, true only when the file read holds no entry under that run id and no entry without a string runId that could be it. */
+export interface WorkflowRunView {
+  readonly pendingReview: boolean;
+  readonly unreadable?: readonly WorkflowRunUnreadable[];
+  get(runId: string): WorkflowRunReadResult;
+  missing?(runId: string): boolean;
+}
 /** What a write does with another readable run: null removes it, a record replaces it (same item, pin and start authority). */
 export type WorkflowRunRetention = (run: WorkflowRunRecord) => WorkflowRunRecord | null;
 
@@ -169,7 +175,10 @@ export class WorkflowRunStore {
   async view(): Promise<WorkflowRunView> {
     const file = await this.read();
     if (file === undefined) return { pendingReview: true, get: () => ({ status: "pending-review" }) };
-    return { pendingReview: false, unreadable: unreadableEntries(file), get: runId => lookup(file, runId).result };
+    return {
+      pendingReview: false, unreadable: unreadableEntries(file), get: runId => lookup(file, runId).result,
+      missing: runId => lookup(file, runId).result.status === "not-found" && file.runs.every(entry => isRecord(entry) && typeof entry.runId === "string"),
+    };
   }
 
   /** Remove the entry at `position` that does not read as a run, only while its hash is `hash`; the file as it was is kept beside it

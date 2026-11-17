@@ -224,6 +224,20 @@ it("discards nothing while the run file awaits review, is past its read limit or
   expect((await store.view()).unreadable).toEqual([target]);
 });
 
+it("calls a run missing only when the file read holds no entry under its id and none without a string runId, and never while it awaits review", async () => {
+  const store = new WorkflowRunStore(file);
+  expect((await store.view()).missing?.("gone")).toBe(true);
+  await writeFile(file, JSON.stringify({ version: 1, runs: [run(), { runId: "broken", itemId: 4 }, run({ runId: "twice" }), run({ runId: "twice" })] }));
+  const view = await store.view();
+  expect(["gone", "run-1", "broken", "twice"].map(runId => view.missing?.(runId))).toEqual([true, false, false, false]);
+  for (const entry of [null, { itemId: 4 }, { runId: 7, itemId: 4 }, "run-x"]) {
+    await writeFile(file, JSON.stringify({ version: 1, runs: [run(), entry] }));
+    expect((await store.view()).missing?.("gone")).toBe(false);
+  }
+  vi.spyOn(homeTrust, "readAveHomeInput").mockResolvedValueOnce({ status: "untrusted", bytes: Buffer.from("{}"), reason: "changed" });
+  expect((await store.view()).missing?.("gone")).toBeUndefined();
+});
+
 it("lists every readable run, leaves out unreadable and repeated entries, and lists nothing while the file awaits review", async () => {
   const store = new WorkflowRunStore(file);
   expect(await store.list()).toEqual({ status: "found", runs: [] });

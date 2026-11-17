@@ -1013,6 +1013,11 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkBoardEntryDeleteResult
       | { ok: false; error: string }
     >,
+  clearWorkBoardRun: async (id: number, target: { revision: string; runId: string }) =>
+    ipcRenderer.invoke(WORK_BOARD.clearRun, id, target) as Promise<
+      | import("../shared/work-board-types.js").WorkItemUpdateResult
+      | { ok: false; error: string }
+    >,
   // Board view live refresh: emitted by the work-board IPC domain after any successful mutation
   // (created/updated/transitioned/completed/reopened/ removed) so the renderer board view re-lists without polling.
   onWorkBoardItemChanged: (

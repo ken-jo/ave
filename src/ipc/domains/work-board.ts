@@ -326,6 +326,24 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
+  // The user's clear of a row shown template-run-not-found: only the row as its card showed it, naming that run.
+  handle(WORK_BOARD.clearRun, async (e, id: number, target?: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, WORK_BOARD.clearRun, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!workBoardEngine) return NO_ENGINE;
+    if (!workBoardStore) return NO_STORE;
+    if (!Number.isSafeInteger(id) || !hasExactly(target, ["revision", "runId"])) return { ok: false, error: "invalid-input" };
+    const { revision, runId } = target;
+    if (typeof revision !== "string" || !PLAN_HASH_PATTERN.test(revision) || typeof runId !== "string" || !RUN_ID_PATTERN.test(runId)) return { ok: false, error: "invalid-input" };
+    const existing = await loadAuthorizedItem(id);
+    if (existing.status !== "found") return existing;
+    const result = await workBoardEngine.clearMissingRun(id, { revision, runId });
+    if (result.status === "updated") broadcastItemChanged(result.itemId, "updated");
+    return result;
+  });
+
   // Run returns a terminal result while progress events update the renderer.
   handle(WORK_BOARD.run, async (e, id: number, opts?: { agentName?: string; template?: TemplateRunRequest }, intent?: unknown) => {
     if (!validateHostRendererSender(e)) {
@@ -341,6 +359,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
 
+    if (existing.item.templateRunError === "template-run-not-found") return { status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" } satisfies WorkItemRunResult;
     if (existing.item.templateRunError) return { status: "error", reason: "invalid-template-run" } satisfies WorkItemRunResult;
     // A template run starts only from a consumed keyboard gesture, for the exact tuple and project the user saw on the card. The source
     // is minted here; nothing in a renderer payload is one.

@@ -3776,6 +3776,24 @@ with its own owner rule:
   content; a copy that cannot be made fails the discard. The discard then
   runs the prune above, so the mark drops once nothing else in the run file
   could be a run below it.
+  A row that names a template run as planning, awaiting approval or
+  executing while the run file (read, not awaiting review) holds no entry
+  under that run id and no entry without a string run id, which could be its
+  record, has no run: a start writes the record before the row names it, so
+  only a record pruned or discarded with the row put back by hand, or a hand
+  edit, leaves it so. Every reader is told `templateRunError:
+  "template-run-not-found"` with `runStatus` `error`; its revision stays the
+  stored row's, and boot reconcile and adoption write nothing for it. A run
+  or a move of it is refused with that code. The user clears it from its
+  card (`ave:work-board:clear-run`, with the revision the card showed and
+  the run id): the row stores `error` and its run history entry for that run
+  closes as `error`, as reconcile closes an interrupted run, with no activity
+  entry. The clear starts, cancels and settles nothing and writes no run
+  record; it is refused (`work-item-changed`) unless the row is still as its
+  card showed it and the run still has no record, and (`moveRunActive`)
+  while this host runs the item. An absent run file holds no record. While
+  an entry without a string run id is there, the row is shown as it says
+  until that entry is discarded.
   Invariant: a run's row is gone only when the board file on disk proves it.
   That takes all of these: the file is readable; the id is at or above
   `unknownBelow`, so the board was readable before the write that dropped
