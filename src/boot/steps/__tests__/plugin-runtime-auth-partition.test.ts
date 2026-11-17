@@ -1,16 +1,26 @@
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /** Auth surfaces require capability checks; partition clearing is limited to the caller’s own partitions. */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginHostApi } from "../../../plugins/public-contract.js";
 import { pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
 
-import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupTmpDir, createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const tmpDirs = createTmpDirTracker();
+
+// Fixture paths live under the configured test temp root; vi.mock factories read them through this hoisted value.
+const fixture = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "ave-test-"));
+  return { root, path: (...parts: string[]) => join(root, ...parts) };
+});
+afterAll(() => cleanupTmpDir(fixture.root));
 
 const runtimeTestState = vi.hoisted(() => ({
   capturedRuntimeOptions: null as Record<string, unknown> | null,
@@ -23,7 +33,7 @@ const runtimeTestState = vi.hoisted(() => ({
     listPluginIds: vi.fn(() => [] as string[]),
     listPluginManifests: vi.fn(() => [] as Array<{ pluginId: string; manifest: unknown }>,
     ),
-    getPluginRoot: vi.fn((pluginId: string) => `/tmp/ave-test/plugins/${pluginId}`,
+    getPluginRoot: vi.fn((pluginId: string) => fixture.path("plugins", pluginId),
     ),
     getPluginManifest: vi.fn(() => null),
     resolvePluginInstallId: vi.fn((pluginId: string) => pluginId),
@@ -42,7 +52,7 @@ const runtimeTestState = vi.hoisted(() => ({
 
 vi.mock("electron", () => ({
   app: {
-    getPath: vi.fn(() => "/tmp/ave-test"),
+    getPath: vi.fn(() => fixture.root),
     isPackaged: false,
     prependOnceListener: vi.fn(),
     once: vi.fn(),
@@ -72,9 +82,9 @@ vi.mock("../../../main/html-preview-partition.js", () => ({
 }));
 vi.mock("../../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
-    pluginsRoot: "/tmp/ave-test/plugins",
-    registryPath: "/tmp/ave-test/registry.json",
-    cacheRoot: "/tmp/ave-test/cache",
+    pluginsRoot: fixture.path("plugins"),
+    registryPath: fixture.path("registry.json"),
+    cacheRoot: fixture.path("cache"),
   })),
 }));
 vi.mock("../../../plugins/registry.js", () => ({
@@ -120,7 +130,7 @@ async function initAndGetFactory(): Promise<CreateHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
   await initPluginRuntime({
     host: createBootHostFixture(),
-    projectRoot: "/tmp/ave-test/project",
+    projectRoot: fixture.path("project"),
     settingsService: {
       get: vi.fn((key: string) => {
         if (key === "llm") return { provider: "openai" };
@@ -204,7 +214,7 @@ describe("HostApi openAuthWindow capability gate", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: [] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-auth-")))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );
@@ -220,7 +230,7 @@ describe("HostApi clearAuthPartition capability + partition gates", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: [] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-auth-")))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );
@@ -235,7 +245,7 @@ describe("HostApi clearAuthPartition capability + partition gates", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-auth-")))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );
@@ -250,7 +260,7 @@ describe("HostApi clearAuthPartition capability + partition gates", () => {
     const api = createHostApi(
       "plugin-a",
       { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"] },
-      pluginDataDirIn(tmpDirs.track(mkdtempSync("/tmp/ave-auth-"))),
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-auth-")))),
       ACTIVE_INCARNATION,
       "plugin-a",
     );
