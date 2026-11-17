@@ -3711,8 +3711,8 @@ with its own owner rule:
   while the file awaits review; at boot the engine adopts back each record
   without `settled`, and the board's boot reconcile leaves every row that names
   a template run to it. `updateRun` changes only the run a row names; a run
-  whose row the board file on disk shows gone or naming a newer run
-  (`runRowGoneOnDisk()`, only for a row id the board issued) is settled with
+  whose row the board file on disk shows gone (for a row id the board issued)
+  or naming a newer run after it named this one (`runRowGoneOnDisk()`) is settled with
   `runs.update`, then `pruneSettledRuns()` removes the settled runs no row
   lists. A board file that is missing, does not parse or awaits review proves
   nothing: the engine then settles, prunes and sweeps nothing and refuses
