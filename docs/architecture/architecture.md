@@ -3714,7 +3714,7 @@ with its own owner rule:
   a template run to it. `updateRun` changes only the run a row names, and
   `runRowsOnDisk()` tells where each run's row stands on the board file on
   disk: it names the run, holds it only in its run history, is there without
-  either, does not validate, or is gone. A board file that is missing, does
+  either, does not validate, is lost or is gone. A board file that is missing, does
   not parse, is not an object with an items list (`null`, a list) or awaits
   review shows nothing. A board write moves a file that does not parse or has
   no items list aside to `board.json.corrupt-<ms>-<hex>.bak` before it starts
@@ -3731,9 +3731,18 @@ with its own owner rule:
   file. While the floor cannot be read or stored (the run file awaits review,
   is past its read limit, does not parse or cannot be read), every create is
   refused with `work-item-ids-unavailable`; reads stay as described above.
-  A row is gone when a readable board file has no row with its id. Every
-  such id is at or below the floor, so the row was issued and then removed,
-  never one not issued yet. A run whose row is gone, or holds it only in its
+  A create that writes over a board file that showed none of its rows
+  (missing, not parsing, without an items list) stores the id it issued as
+  `unknownBelow` in the board, and every later write keeps it; a value that
+  is not a row id reads as the board's `nextId`. A row id below it that the
+  board does not list is lost: the row may have been in the file written
+  over. A later create over a board that again shows nothing stores its own,
+  higher id. A run on a lost row ends `error` (`template-run-lost`), written
+  by its run id, at boot and live alike, and keeps its record as a run whose
+  row names it does, so a board put back by hand shows how it ended.
+  A row is gone when a readable board file has no row with its id at or
+  above `unknownBelow`. Every such id is at or below the floor, so the row
+  was issued and then removed, never one not issued yet. A run whose row is gone, or holds it only in its
   run history, is cancelled as by Stop and settled with `runs.update`; its
   record is then pruned, or shrunk to its summary while a run history lists
   it. A run whose row is there without naming or holding it ends `error`

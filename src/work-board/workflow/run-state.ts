@@ -21,7 +21,7 @@ type RunAdoption = {
   named: { item: WorkItemResolved; run: RunRecord | null }[];
   /** Stored runs whose row the board on disk does not list, or lists naming a newer run. */
   orphans: RunRecord[];
-  /** Stored runs whose row the board on disk lists without naming or holding the run. */
+  /** Stored runs whose row the board on disk lists without naming or holding the run, or may have listed before it was written over. */
   lost: RunRecord[];
   /** Stored runs no adopted row names whose row on disk does not validate, or names the run though the board as read did not. */
   kept: RunRecord[];
@@ -111,7 +111,7 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const standing = await store.runRowsOnDisk();
       if (!standing) return { ok: false, code: "template-runs-board-unread" };
       const of = (...rows: RunRowStanding[]) => rest.filter(run => rows.includes(standing(run)));
-      return { ok: true, named, orphans: of("gone", "moved"), lost: of("unnamed"), kept: of("unreadable", "named") };
+      return { ok: true, named, orphans: of("gone", "moved"), lost: of("unnamed", "lost"), kept: of("unreadable", "named") };
     },
     pruneSettled: () => store.pruneSettledRuns(),
     rows: () => store.runRowsOnDisk(),

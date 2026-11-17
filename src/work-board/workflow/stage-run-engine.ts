@@ -289,7 +289,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** After any board write: a run whose row the board on disk shows gone or naming a newer run, by whichever path, is cancelled; one whose
-   * row no longer names or holds it ends error. A board file that shows nothing changes nothing. */
+   * row no longer names or holds it, or is lost with a board written over, ends error. A board file that shows nothing changes nothing. */
   async function checkRows(): Promise<void> {
     const standing = await records.rows();
     if (!standing) return;
@@ -297,7 +297,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (state.rowGone || state.lost) continue;
       const row = standing(state);
       if (row === "gone" || row === "moved") rowRemoved(state);
-      else if (row === "unnamed") {
+      else if (row === "unnamed" || row === "lost") {
         state.lost = true;
         fault(state, "template-run-lost");
       }

@@ -171,3 +171,54 @@ it("prunes the settled runs a readable board emptied by hand no longer lists, an
   expect(await runFile()).toEqual({ version: 1, rowIdFloor: id, runs: [] });
   expect(await add(new WorkBoardStore(boardPath))).toBe(id + 1);
 });
+
+const unreadBoards: [string, () => Promise<void>][] = [
+  ["does not parse", () => writeFile(boardPath, "{ not json")],
+  ["is missing", () => rm(boardPath)],
+  ["has no items list", () => writeFile(boardPath, JSON.stringify({ version: 1, nextId: 9, items: {} }))],
+  ["is null", () => writeFile(boardPath, "null")],
+];
+for (const [how, spoil] of unreadBoards) {
+  it(`a create over a board file that ${how} marks every id below its row unknown: a run on one is lost, never gone, and later writes keep the mark`, async () => {
+    const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
+    const start: TemplateRunStart = { ...pin, source: { kind: "local-create-and-run", pin }, stageRuns: [{ stageId: "plan", attempt: 1, status: "waiting" }] };
+    const store = new WorkBoardStore(boardPath);
+    const id = await add(store, pin.templateId);
+    await add(store);
+    await add(store);
+    expect(await store.beginRun(id, "run-1", "2026-01-01T00:00:00.000Z", start)).toMatchObject({ status: "updated" });
+    await spoil();
+    expect(await add(store)).toBe(4);
+    expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(4);
+    for (const reader of [store, new WorkBoardStore(boardPath)]) {
+      const standing = await reader.runRowsOnDisk();
+      expect([1, 2, 3].map(itemId => standing?.({ itemId, runId: "run-1" }))).toEqual(["lost", "lost", "lost"]);
+    }
+    expect(await store.updateRun(id, "run-1", run => ({ ...run, settled: { status: "error", at: "2026-01-02T00:00:00.000Z" } }))).toEqual({ status: "row-lost" });
+    expect(await store.runs.update("run-1", run => ({ ...run, settled: { status: "error", at: "2026-01-02T00:00:00.000Z" } }))).toMatchObject({ status: "stored" });
+    // A settled run on a lost row is kept.
+    await store.pruneSettledRuns();
+    expect((await runFile()).runs).toMatchObject([{ runId: "run-1", settled: { status: "error" } }]);
+    // Every later write keeps the mark; a row at or above it the board no longer lists is gone.
+    await add(store);
+    expect(await store.update(4, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    expect(await store.remove(4)).toMatchObject({ status: "deleted" });
+    expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(4);
+    const standing = await store.runRowsOnDisk();
+    expect(standing?.({ itemId: 2, runId: "run-1" })).toBe("lost");
+    expect(standing?.({ itemId: 4, runId: "run-1" })).toBe("gone");
+  });
+}
+
+it("a create on a home with neither file marks no id unknown: none was issued before", async () => {
+  expect(await add(new WorkBoardStore(boardPath))).toBe(1);
+  expect(JSON.parse(await readFile(boardPath, "utf8"))).not.toHaveProperty("unknownBelow");
+});
+
+it.each([["a string", "x"], ["zero", 0], ["a fraction", 2.5], ["past the safe-integer limit", 2 ** 53]])("a board whose unknownBelow is %s reads it as its next id", async (_, unknownBelow) => {
+  await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 6, unknownBelow, items: [1, 2, 4, 5].map(row) }));
+  const store = new WorkBoardStore(boardPath);
+  expect((await store.runRowsOnDisk())?.({ itemId: 3, runId: "run-1" })).toBe("lost");
+  expect(await add(store)).toBe(6);
+  expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(6);
+});

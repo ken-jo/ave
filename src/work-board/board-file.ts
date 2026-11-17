@@ -30,6 +30,9 @@ import { localDayStart, utcDateKey } from "../shared/local-date.js";
 export interface BoardFile {
   version: number;
   nextId: number;
+  /** Set when a create wrote this board over one that showed none of its rows (absent, damaged or without an items list): a row id
+   * below it that the board does not list is unknown, never gone. Every later write keeps it. */
+  unknownBelow?: number;
   items: WorkItem[];
   /** The rows of the file that do not validate, as they were read. Every write puts them back unchanged, after the valid rows. */
   unreadable: unknown[];
