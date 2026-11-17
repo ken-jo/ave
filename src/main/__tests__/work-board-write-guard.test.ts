@@ -48,8 +48,9 @@ function boardCase(seed: number): { text: string; canonical: boolean } {
   const escapes: [string, string][] = [];
   for (let n = 0, count = 3 + pick(4); n < count; n += 1) {
     const X = runId();
-    switch (pick(6)) {
+    switch (pick(7)) {
       case 0: listed.push(row(id())); break;
+      case 6: listed.push(row(id(), { templateId: "template-1", runId: "run-zz", runStatus: "executing", runHistory: [{ runId: "run-zz", startedAt: AT, status: "executing" }] })); break;
       case 1: listed.push(row(id(), { runId: X, runStatus: ["planning", "executing", "completed"][pick(3)], runHistory: [{ runId: X, startedAt: AT, status: "executing" }] })); break;
       case 2: listed.push(row(id(), { runId: "run-zz", runStatus: "executing", runHistory: [{ runId: X, startedAt: AT, status: "completed" }, { runId: "run-zz", startedAt: AT, status: "executing" }] })); break;
       case 3: listed.push(row(id(), { detail: pick(2) === 0 ? X : `see ${X} notes` })); break;
@@ -92,10 +93,19 @@ function boardCase(seed: number): { text: string; canonical: boolean } {
   return { text, canonical: form < 2 && escapes.length === 0 };
 }
 
+const PIN = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
 function start(): TemplateRunStart {
-  const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
-  return { ...pin, source: { kind: "local-create-and-run", pin }, stageRuns: [{ stageId: "plan", attempt: 1, status: "waiting" }] };
+  return { ...PIN, source: { kind: "local-create-and-run", pin: PIN }, stageRuns: [{ stageId: "plan", attempt: 1, status: "waiting" }] };
 }
+
+/** The stored runs: entries that do not read as runs (so any could be on any row), or settled runs (so a mark over them can drop). */
+const runsFile = (seed: number): string => `${JSON.stringify({
+  version: 1, rowIdFloor: 0,
+  runs: RUN_IDS.map((runId) => seed % 2 === 1 ? { runId, itemId: 1 } : {
+    runId, itemId: 1, pin: PIN, runStartedBy: { kind: "local-create-and-run", pin: PIN }, startedAt: AT,
+    stageRuns: [{ stageId: "plan", attempt: 1, status: "cancelled", endedAt: AT }], settled: { status: "cancelled", at: AT },
+  }),
+}, null, 2)}\n`;
 
 interface Seen { ids: number[]; templateIds: number[]; namingIds: { id: number; runId: string; revision: string }[]; cards: { position: number; hash: string }[]; runCards: { position: number; hash: string }[] }
 /** A write path: what it removes on purpose, given what the board showed before it. */
@@ -143,6 +153,7 @@ const OPS: Record<string, Op> = {
 
 it("no store write takes a stored run's id out of board.json unless the entry it removes held it, and every write over bytes it would not give back keeps them first", async () => {
   const tally = { writes: 0, refused: 0, kept: 0 };
+  const wrote = new Set<string>();
   for (let seed = 1; seed <= 24; seed += 1) {
     const { text, canonical } = boardCase(seed);
     for (const [name, op] of Object.entries(OPS)) {
@@ -150,7 +161,7 @@ it("no store write takes a stored run's id out of board.json unless the entry it
       try {
         const path = join(dir, "board.json");
         writeFileSync(path, text, "utf-8");
-        writeFileSync(join(dir, "workflow-runs.json"), `${JSON.stringify({ version: 1, rowIdFloor: 0, runs: RUN_IDS.map((runId) => ({ runId, itemId: 1 })) }, null, 2)}\n`, "utf-8");
+        writeFileSync(join(dir, "workflow-runs.json"), runsFile(seed), "utf-8");
         const store = new WorkBoardStore(path, () => Date.parse(AT));
         await store.load();
         const listed = await store.list();
@@ -170,6 +181,7 @@ it("no store write takes a stored run's id out of board.json unless the entry it
         const after = readFileSync(path);
         if (after.equals(before)) continue;
         tally.writes += 1;
+        wrote.add(name);
         const context = `seed ${seed}, ${name}`;
         for (const runId of RUN_IDS) {
           if (holds(before.toString("utf-8"), runId) && !holds(after.toString("utf-8"), runId)) {
@@ -186,7 +198,8 @@ it("no store write takes a stored run's id out of board.json unless the entry it
       }
     }
   }
-  // The draw reaches writes, refusals and copies alike.
+  // The draw reaches writes, refusals and copies alike, and a board write by every path; the run record discard writes the run file only.
+  expect(Object.keys(OPS).filter((name) => !wrote.has(name))).toEqual(["discardUnreadableRun"]);
   expect(tally.writes).toBeGreaterThan(50);
   expect(tally.refused).toBeGreaterThan(5);
   expect(tally.kept).toBeGreaterThan(10);
