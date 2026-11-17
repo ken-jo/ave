@@ -1104,6 +1104,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (left.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
       else if (left.lost) emit({ itemId: left.ref.itemId, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" });
       else await showOnRow(left.ref.itemId, left.status, undefined);
+      // The stop was shown with a note that its end is not saved; this clears it.
+      if (left.status === "cancelled" && !left.lost) emit({ itemId: left.ref.itemId, phase: "cancelled" });
       deps.itemChanged?.(left.ref.itemId);
     }
     return failed ?? { ok: true };

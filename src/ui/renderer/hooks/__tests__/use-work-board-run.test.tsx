@@ -298,6 +298,17 @@ describe("useWorkBoardRun — refusal text", () => {
     await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "cancelled", endUnconfirmed: true }));
   });
 
+  it("clears a stopped run's note once its end is saved, and leaves another run's error text as it is", async () => {
+    const { api, emit } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 7, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+    emit({ itemId: 8, phase: "error", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ phase: "cancelled", endUnconfirmed: true }));
+    emit({ itemId: 7, phase: "cancelled" });
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "cancelled", endUnconfirmed: false }));
+    expect(result.current.runState[8]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-board-unread") });
+  });
+
   it("has the text of every refusal code it maps in both catalogs", () => {
     for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "template-run-lost", "run-state-unavailable"]) {
       for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));

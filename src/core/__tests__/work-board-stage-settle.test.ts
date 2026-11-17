@@ -856,6 +856,36 @@ it("a stopped run whose end the run file did not confirm reads as stopped, with 
   expect((await h.runOf(runId))?.settled).toBeUndefined();
 }));
 
+it("a stopped run whose end is written again clears its note that the end is not saved, and an error end shows no stop", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const stopped = await h.addItem(version);
+  const failed = await h.addItem(version);
+  const runStopped = h.start(stopped, h.local(version));
+  await h.untilLive(1);
+  const runFailed = h.start(failed, h.local(version));
+  const [, b] = await h.untilLive(2);
+  const stoppedId = (await h.until(stopped, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const failedId = (await h.until(failed, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const updateRun = h.board.updateRun.bind(h.board);
+  const failing = new Set([stoppedId, failedId]);
+  vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
+    failing.has(target) ? { status: "pending-review" } : updateRun(itemId, target, mutate));
+  expect(h.engine.cancelRun(stopped)).toEqual({ ok: true });
+  expect(await runStopped).toMatchObject({ status: "cancelled", reasonCode: "run-end-unconfirmed" });
+  // A finished stage whose end the file refuses ends the run error, also unconfirmed.
+  b.finish();
+  expect(await runFailed).toMatchObject({ status: "error" });
+  const shown = h.events.length;
+  failing.clear();
+  await h.engine.projectTemplateRuns([await row(h, stopped), await row(h, failed)]);
+  for (let i = 0; i < 400 && (await h.runOf(failedId))?.settled === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  expect((await h.runOf(stoppedId))?.settled?.status).toBe("cancelled");
+  expect(h.events.slice(shown).filter(event => event.phase === "cancelled" || event.phase === "error")).toEqual([
+    expect.objectContaining({ itemId: stopped, phase: "cancelled" }),
+  ]);
+  expect(h.events.slice(shown).find(event => event.itemId === stopped && event.phase === "cancelled")?.reasonCode).toBeUndefined();
+}));
+
 for (const [write, refusal, code] of [
   ["stage end", "too-large", "template-runs-too-large"],
   ["workspace", "too-large", "template-runs-too-large"],
