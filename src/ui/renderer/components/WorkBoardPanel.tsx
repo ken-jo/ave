@@ -1650,6 +1650,7 @@ export function WorkBoardPanel({
   // Set once the first list read settled, so a focus request can see which item it names and what that item's run waits on.
   const [listedOnce, setListedOnce] = useState(false);
   const [pendingReview, setPendingReview] = useState(false);
+  const [unreadableRows, setUnreadableRows] = useState(0);
   // A failed read keeps the rows last listed for the same filter and shows the failure; it never stands in for an empty board.
   const [loadFailed, setLoadFailed] = useState(false);
   const listedKeyRef = useRef<string | null>(null);
@@ -1672,6 +1673,7 @@ export function WorkBoardPanel({
         listedKeyRef.current = null;
         setItems([]);
         setPendingReview(false);
+        setUnreadableRows(0);
       }
       setLoadFailed(true);
     };
@@ -1682,6 +1684,7 @@ export function WorkBoardPanel({
         listedKeyRef.current = key;
         setItems(result.items);
         setPendingReview(result.items.some((item) => item.templateRunError === "template-runs-pending-review"));
+        setUnreadableRows(result.unreadableRows ?? 0);
         setLoadFailed(false);
       } else {
         fail();
@@ -2088,6 +2091,7 @@ export function WorkBoardPanel({
       </div>
       {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t("workBoard.boardLoadFailed")}</p>}
       {pendingReview && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-pending-review">{t("workBoard.pendingReview", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>}
+      {unreadableRows > 0 && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-unreadable-rows">{t("workBoard.unreadableRows", { count: unreadableRows })}</p>}
       <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {narrow && (
           <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">

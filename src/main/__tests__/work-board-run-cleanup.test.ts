@@ -151,6 +151,20 @@ it("keeps the runs a row lists in its history and drops the ones it no longer li
   expect(await runIds()).toEqual(listed);
 });
 
+it("keeps a settled run whose row does not validate, and that row, through another row's delete", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  const other = await templateItem(store);
+  await settled(store, id, "run-1");
+  const file = JSON.parse(await readFile(boardPath, "utf8"));
+  const edited = { ...file.items.find((row: { id: number }) => row.id === id), priority: 42 };
+  file.items = file.items.map((row: { id: number }) => row.id === id ? edited : row);
+  await writeFile(boardPath, JSON.stringify(file));
+  expect(await store.remove(other)).toMatchObject({ status: "deleted" });
+  expect(await runIds()).toEqual(["run-1"]);
+  expect(JSON.parse(await readFile(boardPath, "utf8")).items).toEqual([edited]);
+});
+
 it("keeps every run while the board file cannot be read", async () => {
   const store = new WorkBoardStore(boardPath);
   await settled(store, await templateItem(store), "run-1");

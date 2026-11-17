@@ -317,7 +317,7 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
-  it("drops tampered records but keeps the valid rest and repairs nextId", async () => {
+  it("lists only the valid records, keeps the tampered ones in the file and repairs nextId", async () => {
     const { store, path, cleanup } = tempBoard();
     try {
       writeFileSync(
@@ -343,6 +343,34 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       const created = await store.create({ title: "next" });
       if (created.status !== "created") throw new Error("unreachable");
       expect(created.itemId).toBe(8);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("puts an unrelated row that does not validate back unchanged on every board write, and counts it in the list", async () => {
+    const { store, path, cleanup } = tempBoard();
+    try {
+      const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+      const invalid = { id: 2, title: "hand-edited", status: "planned", priority: 42, created_at: "x", updated_at: "x", note: { kept: [1, "two"] } };
+      const text = `${JSON.stringify({ version: 1, nextId: 3, items: [valid, invalid] }, null, 2)}\n`;
+      // The row as the file holds it, at its depth in the items list.
+      const rowText = JSON.stringify(invalid, null, 2).split("\n").map((line) => `    ${line}`).join("\n");
+      expect(text).toContain(rowText);
+      writeFileSync(path, text, "utf-8");
+
+      const listed = await store.list();
+      expect(listed).toMatchObject({ status: "ok", unreadableRows: 1 });
+      if (listed.status !== "ok") throw new Error("unreachable");
+      expect(listed.items.map((item) => item.id)).toEqual([1]);
+      const created = await store.create({ title: "next" });
+      expect(created).toMatchObject({ status: "created", itemId: 3 });
+      expect(readFileSync(path, "utf-8")).toContain(rowText);
+      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+      expect(await store.remove(3)).toMatchObject({ status: "deleted" });
+      const after = readFileSync(path, "utf-8");
+      expect(after).toContain(rowText);
+      expect(JSON.parse(after).items).toEqual([{ ...valid, title: "renamed", updated_at: expect.any(String) }, invalid]);
     } finally {
       await cleanup();
     }

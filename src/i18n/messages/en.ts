@@ -6280,6 +6280,7 @@ export const en = {
   // workBoard
   "workBoard.panelTitle": "Work Board",
   "workBoard.boardLoadFailed": "Could not load the work board.",
+  "workBoard.unreadableRows": "The work board file has {count} item(s) that cannot be read. They are kept in the file as they are and are not shown here.",
   "workBoard.pendingReview": "Workflow run state needs review. Open Settings > {tabPermissions} > {homeTrustTitle}, review work-board/workflow-runs.json, then restart Ave.",
   "workBoard.panelDescription": "Track work through Planned, In progress, Review, and Completed.",
   "workBoard.addItemButton": "Add task",

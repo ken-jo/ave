@@ -814,6 +814,26 @@ it("a board restored to an older copy without a live run's row adds rows above t
   expect(await h.runOf(runId)).toBeNull();
 }));
 
+it("a live run whose row was edited so it does not validate keeps that row through another row's add, and is never read as its row gone", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  const [a] = await h.untilLive(1);
+  const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+  const before = await h.runOf(runId);
+  h.editRow(id, row => ({ ...row, priority: 42 }));
+  const rowOnDisk = () => (JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: { id: number }[] }).items.find(row => row.id === id);
+  const edited = rowOnDisk();
+  expect(await h.addItem(version)).toBe(id + 1);
+  expect(rowOnDisk()).toEqual(edited);
+  expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: id, runId }))).toBe("unreadable");
+  a.finish();
+  expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+  expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
+  expect(await h.runOf(runId)).toEqual(before);
+  expect(rowOnDisk()).toEqual(edited);
+}));
+
 it("writing unconfirmed run ends again keeps going past one that still fails: the next one is confirmed", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const first = await h.addItem(version);

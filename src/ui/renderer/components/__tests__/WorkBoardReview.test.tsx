@@ -85,6 +85,17 @@ describe("work board review", () => {
     fireEvent.click(screen.getByTestId("work-board-plan-approve"));
     await waitFor(() => expect(api.decideWorkPlan).toHaveBeenCalledWith(item.id, { runId: "run-2", planHash: "b".repeat(64), decision: "approve" }));
   });
+  it("says how many rows of the board file cannot be read beside the listed rows, and clears it when none are left", async () => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], unreadableRows: 2 });
+    let changed = () => {};
+    api.onWorkBoardItemChanged = handler => { changed = () => handler(itemChanged); return () => {}; };
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    expect(await screen.findByTestId("work-board-unreadable-rows")).toHaveTextContent(t("workBoard.unreadableRows", { count: 2 }));
+    expect(screen.getAllByTestId("work-board-card")).toHaveLength(1);
+    changed();
+    await waitFor(() => expect(screen.queryByTestId("work-board-unreadable-rows")).toBeNull());
+  });
   it("shows a load error instead of an empty board when the first read fails", async () => {
     const api = apiFor([result]);
     vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ ok: false, error: "invalid-template-run" });

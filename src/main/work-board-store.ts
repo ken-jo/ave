@@ -286,7 +286,7 @@ function isValidProposal(r: unknown): r is WorkProposal {
 }
 
 function emptyBoard(): BoardFile {
-  return { version: BOARD_VERSION, nextId: 1, items: [] };
+  return { version: BOARD_VERSION, nextId: 1, items: [], unreadable: [] };
 }
 
 /** Where a stored run's row stands on a readable board. named: the row names the run. moved: it names another run and holds this one in its
@@ -306,7 +306,10 @@ function standingOf(items: readonly WorkItem[], unreadable: ReadonlySet<number>)
   };
 }
 
-const boardStanding = (board: BoardFile): RowStandings => standingOf(board.items, new Set());
+function boardStanding(board: BoardFile): RowStandings {
+  const listed = new Set(board.items.map((item) => item.id));
+  return standingOf(board.items, new Set(rawRowIds(board.unreadable).filter((id) => !listed.has(id))));
+}
 
 // The id of each row object in a board file's items, valid or not.
 function rawRowIds(items: readonly unknown[]): number[] {
@@ -322,8 +325,7 @@ async function readBoardOnDisk(filePath: string): Promise<{ board: BoardFile; st
   const parsed = await parseBoardOnDisk(filePath);
   if (!readableBoard(parsed)) return undefined;
   const board = hydrateBoard(parsed);
-  const listed = new Set(board.items.map((item) => item.id));
-  return { board, standing: standingOf(board.items, new Set(rawRowIds(parsed.items).filter((id) => !listed.has(id)))) };
+  return { board, standing: boardStanding(board) };
 }
 
 function readableBoard(parsed: unknown): parsed is BoardFile {
@@ -365,13 +367,14 @@ function hydrateBoard(parsed: unknown): BoardFile {
     typeof file.nextId === "number" && Number.isSafeInteger(file.nextId) && file.nextId > maxId
       ? file.nextId
       : maxId + 1;
-  return { version: BOARD_VERSION, nextId, items };
+  return { version: BOARD_VERSION, nextId, items, unreadable: file.items.filter((row) => !isValidRecord(row)) };
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
   // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the feature-namespace SOT helper. The injectable `filePath` (tests pass a temp path)
   // is preserved — the helper enforces the permission boundary on whatever parent directory the path resolves to.
-  await writeFileAtomicAtPath(filePath, `${JSON.stringify(data, null, 2)}\n`);
+  const { unreadable, ...board } = data;
+  await writeFileAtomicAtPath(filePath, `${JSON.stringify({ ...board, items: [...board.items, ...unreadable] }, null, 2)}\n`);
 }
 
 // Deep clone a WorkItem so callers cannot mutate shared cache refs.
@@ -491,7 +494,7 @@ export class WorkBoardStore {
     return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
-  // Back up corrupt JSON and start empty; filter invalid rows and repair nextId above every row id in the file.
+  // Back up corrupt JSON and start empty; set invalid rows aside as they are and repair nextId above every row id in the file.
   private async readBoard(): Promise<BoardFile> {
     return readJsonFileOrEmpty(this.filePath, emptyBoard, hydrateBoard);
   }
@@ -587,7 +590,8 @@ export class WorkBoardStore {
     if (filter.limit !== undefined) {
       rows = rows.slice(0, filter.limit);
     }
-    return { status: "ok", items: rows };
+    const unreadable = this.cache.unreadable.length;
+    return { status: "ok", items: rows, ...(unreadable > 0 ? { unreadableRows: unreadable } : {}) };
   }
 
   // Fetch one item by id.
