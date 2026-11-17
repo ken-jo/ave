@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
-import { calibratePermissionDecisionBudget } from "../../__tests__/support/permission-decision-cost.js";
+import { countDecisionWork, decisionWorkSummary, expectLinearDecisionWork, expectRefusedAtAnalysisCap } from "../../__tests__/support/permission-decision-cost.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
@@ -27,6 +27,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   __resetSessionStoreForTest();
   vi.unstubAllEnvs();
   rmSync(cwd, { recursive: true, force: true });
@@ -81,7 +82,7 @@ function pipelineCommand(stages: number, length: number): string {
   return `${command}${"x".repeat(length - command.length)}`;
 }
 
-interface TimingCase {
+interface DecisionWorkCase {
   name: string;
   command: string;
   dialect: "bash" | "powershell";
@@ -90,41 +91,56 @@ interface TimingCase {
   words?: number;
   executableChars: number;
   dataBytes?: number;
+  /** The same shape at a smaller scale in the same lane and decision, for the growth comparison of an admitted (fully analyzed) decision. */
+  small?: string;
 }
 
-const CASES: readonly TimingCase[] = [
+const CASES: readonly DecisionWorkCase[] = [
   { name: "plain", command: PLAIN_COMMAND, dialect: "bash", runsSandboxed: true, expected: "deny", executableChars: 7_900 },
   { name: "quoted-data", command: LARGE_COMMAND, dialect: "bash", runsSandboxed: true, expected: "deny", executableChars: 7_916, dataBytes: 60_000 },
   ...(["bash", "powershell"] as const).flatMap((dialect) => [false, true].map((runsSandboxed) => ({
     name: `max-${dialect}-${runsSandboxed ? "sandboxed" : "unsandboxed"}`,
     command: commandWithDistinctPaths(runsSandboxed ? 8_000 : 2_000), dialect, runsSandboxed, expected: runsSandboxed ? "deny" as const : "ask" as const,
     executableChars: runsSandboxed ? 8_000 : 2_000,
+    // 480 characters end on a complete path word, as 2,000 do; a cut stage name would add a native stage to one size only.
+    ...(runsSandboxed ? {} : { small: commandWithDistinctPaths(480) }),
   }))),
   { name: "max-quoted-data", command: quotedData(commandWithDistinctPaths(7_984), 65_536), dialect: "bash", runsSandboxed: true, expected: "deny", executableChars: 8_000, dataBytes: 65_536 },
-  { name: "admitted-token-cap", command: commandWithWords(MAX_SHELL_ANALYSIS_TOKENS, 8_000), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, words: MAX_SHELL_ANALYSIS_TOKENS },
-  { name: "admitted-token-cap-data", command: quotedData(commandWithWords(MAX_SHELL_ANALYSIS_TOKENS - 2, 7_984), 65_536), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, dataBytes: 65_536, words: MAX_SHELL_ANALYSIS_TOKENS },
-  { name: "admitted-pipeline", command: pipelineCommand(100, 8_000), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, words: 400 },
+  { name: "admitted-token-cap", command: commandWithWords(MAX_SHELL_ANALYSIS_TOKENS, 8_000), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, words: MAX_SHELL_ANALYSIS_TOKENS,
+    small: commandWithWords(MAX_SHELL_ANALYSIS_TOKENS / 2, 4_000) },
+  { name: "admitted-token-cap-data", command: quotedData(commandWithWords(MAX_SHELL_ANALYSIS_TOKENS - 2, 7_984), 65_536), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, dataBytes: 65_536, words: MAX_SHELL_ANALYSIS_TOKENS,
+    small: quotedData(commandWithWords(MAX_SHELL_ANALYSIS_TOKENS / 2 - 2, 3_984), 32_768) },
+  { name: "admitted-pipeline", command: pipelineCommand(100, 8_000), dialect: "bash", runsSandboxed: true, expected: "ask", executableChars: 8_000, words: 400,
+    small: pipelineCommand(50, 4_000) },
 ];
 
 describe("bounded complete decision cost", () => {
-  it.each(CASES)("$name", ({ name, command, dialect, runsSandboxed, expected, words, executableChars, dataBytes }) => {
+  it.each(CASES)("$name", ({ name, command, dialect, runsSandboxed, expected, words, executableChars, dataBytes, small }) => {
     expect(command.length).toBe(executableChars + (dataBytes ?? 0));
-    const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
-      checkShellPermission(manager, cwd, SESSION_ID, `printf %s ./p${iteration.toString(36)}`, dialect, runsSandboxed));
-    const samples: number[] = [];
-    const results = [];
-    for (let observation = 0; observation < 3; observation += 1) {
-      const start = performance.now();
-      const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-      samples.push(performance.now() - start);
-      results.push(result);
-    }
-    const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, executableChars, dataBytes, words, samples, median, referenceMs, budgetMs, ratio: median / referenceMs, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject(expected === "deny"
+    const outcome = expected === "deny"
       ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-      : { decision: "ask", reasonCode: "shell-approval" });
-    expect(median).toBeLessThan(budgetMs);
+      : { decision: "ask", reasonCode: "shell-approval" };
+    // A refusal at the cap is checked on its own; an admitted decision is compared with the same shape at a smaller scale.
+    expect(small === undefined).toBe(expected === "deny");
+    const smaller = small === undefined ? undefined : countDecisionWork(() => checkShellPermission(manager, cwd, SESSION_ID, small, dialect, runsSandboxed));
+    const results = [];
+    const counted = [];
+    for (let observation = 0; observation < 3; observation += 1) {
+      const { result, work } = countDecisionWork(() => checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed));
+      results.push(result);
+      counted.push(work);
+    }
+    const work = counted[0]!;
+    process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, smallChars: small?.length, executableChars, dataBytes, words, work: decisionWorkSummary(work), smallWork: smaller ? decisionWorkSummary(smaller.work) : undefined, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
+    for (const result of results) expect(result).toMatchObject(outcome);
+    // Repeating the decision repeats exactly the same work: nothing accumulates across decisions.
+    for (const repeated of counted) expect(decisionWorkSummary(repeated)).toEqual(decisionWorkSummary(work));
+    if (smaller && small !== undefined) {
+      expect(smaller.result).toMatchObject(outcome);
+      expectLinearDecisionWork(smaller.work, work, command.length / small.length);
+    } else {
+      expectRefusedAtAnalysisCap(work, command);
+    }
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
@@ -174,25 +190,31 @@ describe("bounded complete decision cost", () => {
 
   it.each([
     { name: "comments", command: "#\n".repeat(4_000), expected: "deny" },
-    { name: "empty-arithmetic", command: "(())\n".repeat(1_600), expected: "ask" },
-  ])("bounds low-record representation $name", ({ name, command, expected }) => {
+    // No word records: the shape is parsed and inspected once, so its growth is in input characters alone.
+    { name: "empty-arithmetic", command: "(())\n".repeat(1_600), expected: "ask", small: "(())\n".repeat(800) },
+  ])("bounds low-record representation $name", ({ name, command, expected, small }) => {
     expect(command.length).toBe(8_000);
-    const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
-      checkShellPermission(manager, cwd, SESSION_ID, `printf %s ./p${iteration.toString(36)}`, "bash", true));
-    const samples: number[] = [];
-    const results = [];
-    for (let observation = 0; observation < 3; observation += 1) {
-      const start = performance.now();
-      const result = checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true);
-      samples.push(performance.now() - start);
-      results.push(result);
-    }
-    const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`decision shape cost ${JSON.stringify({ name, chars: command.length, samples, median, referenceMs, budgetMs, ratio: median / referenceMs, results })}\n`);
-    for (const result of results) expect(result).toMatchObject(expected === "deny"
+    const outcome = expected === "deny"
       ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-      : { decision: "ask", reasonCode: "shell-approval" });
-    expect(median).toBeLessThan(budgetMs);
+      : { decision: "ask", reasonCode: "shell-approval" };
+    const results = [];
+    const counted = [];
+    for (let observation = 0; observation < 3; observation += 1) {
+      const { result, work } = countDecisionWork(() => checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true));
+      results.push(result);
+      counted.push(work);
+    }
+    const work = counted[0]!;
+    const smaller = small === undefined ? undefined : countDecisionWork(() => checkShellPermission(manager, cwd, SESSION_ID, small, "bash", true));
+    process.stdout.write(`decision shape cost ${JSON.stringify({ name, chars: command.length, work: decisionWorkSummary(work), smallWork: smaller ? decisionWorkSummary(smaller.work) : undefined, results })}\n`);
+    for (const result of results) expect(result).toMatchObject(outcome);
+    for (const repeated of counted) expect(decisionWorkSummary(repeated)).toEqual(decisionWorkSummary(work));
+    if (smaller && small !== undefined) {
+      expect(smaller.result).toMatchObject(outcome);
+      expectLinearDecisionWork(smaller.work, work, command.length / small.length, 0);
+    } else {
+      expectRefusedAtAnalysisCap(work, command);
+    }
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true);
