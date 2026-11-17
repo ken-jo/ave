@@ -124,6 +124,8 @@ interface RunState {
   stopping: boolean;
   /** No board row names the run any more. */
   rowGone: boolean;
+  /** Its row went with a board file that was lost: the run is written by its id alone, and ends error. */
+  lost: boolean;
   /** Why the run ends `error` without its graph being asked. */
   faulted: string | null;
   refused: { code: string; tool?: EnvelopeToolRef } | null;
@@ -148,11 +150,12 @@ function writeFault(reason: RunWriteFailure): string {
   if (reason === "too-large") return "template-runs-too-large";
   if (reason === "pending-review") return "template-runs-pending-review";
   if (reason === "board-unread") return "template-runs-board-unread";
+  if (reason === "row-lost") return "template-run-lost";
   return reason === "invalid" ? "invalid-template-run" : "run-state-unavailable";
 }
 /** Run-file refusals the renderer shows in the user's language. */
 const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set([
-  "template-runs-too-large", "template-runs-pending-review", "invalid-template-run", "run-state-unavailable", "template-runs-board-unread",
+  "template-runs-too-large", "template-runs-pending-review", "invalid-template-run", "run-state-unavailable", "template-runs-board-unread", "template-run-lost",
 ]);
 
 function rootKey(root: string): string {
@@ -179,7 +182,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   let adoption: Promise<Adopted> | null = null;
   /** Run ends the run file did not confirm, by run id: until each is written, nothing starts, nothing is pruned or swept, and that run
    * is never decided. */
-  const unconfirmed = new Map<string, { ref: RunRef; status: Settled; rowGone: boolean; unstarted?: boolean }>();
+  const unconfirmed = new Map<string, { ref: RunRef; status: Settled; rowGone: boolean; lost?: boolean; unstarted?: boolean }>();
   let confirming: Promise<Adopted> | null = null;
   /** The boot takeover succeeded: runs it left are decided while another run's end is unconfirmed. */
   let takenOver = false;
@@ -195,7 +198,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function openState(itemId: number, runId: string, projectRoot: string | undefined, surface: WebContents | null): RunState {
     const state: RunState = {
       itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, waiters: new Set(),
-      stopping: false, rowGone: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
+      stopping: false, rowGone: false, lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
       revoked: new Set(), results: new Map(),
     };
     runs.set(itemId, state);
@@ -298,9 +301,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** One write of the run. Null when nothing was stored. */
   async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
-    const result = await records.update(state.itemId, state.runId, mutate, state.rowGone);
+    const result = await records.update(state.itemId, state.runId, mutate, state.rowGone || state.lost);
     if (result.ok) return { run: result.run };
     if (result.reason === "row-gone") rowRemoved(state);
+    // Not a deleted row: the run ends error, and its end is written by its id.
+    if (result.reason === "row-lost") state.lost = true;
     return { run: null, reason: result.reason };
   }
 
@@ -328,9 +333,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** After the run file says the run is over: show it on the row, tell the listeners, and let the item go. */
   async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string, settled = true): Promise<void> {
     // A row that is gone or names another run is never written; the settled record goes with the prune.
-    if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus, rowGone: state.rowGone });
+    if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus, rowGone: state.rowGone, ...(state.lost ? { lost: true } : {}) });
     else if (state.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
-    else await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
+    else if (!state.lost) await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
     const reason = byAuthority && state.refused
       ? { reasonCode: state.refused.code, ...(state.refused.tool ? { reasonTool: state.refused.tool } : {}) }
@@ -1031,6 +1036,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return { ok: false, code: writeFault(ended.reason) };
       }
     }
+    // A run whose row was lost with the board file ends error, as it does live; its record stays.
+    for (const run of found.lost) {
+      if (run.settled !== undefined) continue;
+      const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "error", at), true);
+      if (!ended.ok) {
+        log.warn("a template run lost with the board could not be ended (id=%d): %s", run.itemId, ended.reason);
+        return { ok: false, code: writeFault(ended.reason) };
+      }
+    }
     await records.pruneSettled();
     await workspace.sweep(active).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
     return { ok: true };
@@ -1065,12 +1079,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         left.unstarted = false;
       }
       const at = new Date().toISOString();
-      const write = (rowGone: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.status, at), rowGone)
+      // A run whose row was lost with the board ends error, whatever end it was given.
+      const write = (byId: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.lost ? "error" : left.status, at), byId)
         .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return null; });
-      let ended = await write(left.rowGone);
-      // The row went meanwhile: the end is written by run id alone, and a run the file no longer holds has nothing left to end.
-      if (ended && !ended.ok && ended.reason === "row-gone") {
-        left.rowGone = true;
+      let ended = await write(left.rowGone || left.lost === true);
+      // The row went meanwhile, or the board on disk shows it lost with the board it replaced: the end is written by run id alone, and a
+      // run the file no longer holds has nothing left to end.
+      if (ended && !ended.ok && (ended.reason === "row-gone" || ended.reason === "row-lost")) {
+        if (ended.reason === "row-gone") left.rowGone = true;
+        else left.lost = true;
         ended = await write(true);
       }
       // A write that threw proves nothing. A run whose end is still unwritten does not hold back the others.
@@ -1078,13 +1095,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         failed ??= { ok: false, code: "run-state-unavailable" };
         continue;
       }
-      if (!ended.ok && ended.reason !== "refused" && !(left.rowGone && ended.reason === "unavailable")) {
+      if (!ended.ok && ended.reason !== "refused" && !((left.rowGone || left.lost === true) && ended.reason === "unavailable")) {
         failed ??= { ok: false, code: writeFault(ended.reason) };
         continue;
       }
       unconfirmed.delete(runId);
       await workspace.release(left.ref, "all").catch(() => undefined);
       if (left.rowGone) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
+      else if (left.lost) emit({ itemId: left.ref.itemId, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" });
       else await showOnRow(left.ref.itemId, left.status, undefined);
       deps.itemChanged?.(left.ref.itemId);
     }

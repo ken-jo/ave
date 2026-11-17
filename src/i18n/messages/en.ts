@@ -17,10 +17,11 @@ export const en = {
   "reasonCodes.template-runs-too-large": "The workflow run file is too large to store another run. Remove old template-run items, then try again.",
   "reasonCodes.invalid-template-run": "This item's template run cannot be read.",
   "reasonCodes.template-runs-pending-review": "Template runs are paused until you review the changed workflow run file.",
-  "reasonCodes.template-runs-board-unread": "Template runs are paused: the work board file is missing or cannot be read, so earlier runs cannot be matched to their items.",
+  "reasonCodes.template-runs-board-unread": "Template runs are paused while the work board file is missing or cannot be read, since earlier runs cannot be matched to their items. They resume once it can be read.",
+  "reasonCodes.template-run-lost": "This item was lost with a work board file that could not be read, so its template run ended.",
   "reasonCodes.run-state-unavailable": "The template run could not be read or saved in the workflow run file. Try again.",
   "reasonCodes.template-run-not-shown": "The template run could not be shown on the work board. Try again.",
-  "reasonCodes.run-end-unconfirmed": "This template run has ended, but its end is not saved in the workflow run file yet. Try again.",
+  "reasonCodes.run-end-unconfirmed": "This template run has ended, but its end is not saved in the workflow run file yet. It is saved the next time the board is read or a run starts.",
   "reasonCodes.runs-not-adopted": "Template runs left by the last restart are not taken over yet, so this decision cannot be made. Try again.",
   "be_mcpGovernance.reservedHostOwner": "Server ids cannot use the reserved host: prefix.",
 

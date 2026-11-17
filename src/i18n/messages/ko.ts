@@ -19,10 +19,11 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.template-runs-too-large": "워크플로 실행 파일이 너무 커서 실행을 더 저장할 수 없습니다. 오래된 템플릿 실행 항목을 삭제한 뒤 다시 시도하세요.",
   "reasonCodes.invalid-template-run": "이 항목의 템플릿 실행을 읽을 수 없습니다.",
   "reasonCodes.template-runs-pending-review": "변경된 워크플로 실행 파일을 검토할 때까지 템플릿 실행이 멈춰 있습니다.",
-  "reasonCodes.template-runs-board-unread": "작업 보드 파일이 없거나 읽을 수 없어 이전 실행을 항목과 맞출 수 없으므로 템플릿 실행이 멈춰 있습니다.",
+  "reasonCodes.template-runs-board-unread": "작업 보드 파일이 없거나 읽을 수 없는 동안에는 이전 실행을 항목과 맞출 수 없어 템플릿 실행이 멈춥니다. 파일을 읽을 수 있게 되면 다시 진행됩니다.",
+  "reasonCodes.template-run-lost": "읽을 수 없던 작업 보드 파일과 함께 이 항목이 사라져 템플릿 실행이 종료되었습니다.",
   "reasonCodes.run-state-unavailable": "워크플로 실행 파일에서 템플릿 실행을 읽거나 저장할 수 없습니다. 다시 시도하세요.",
   "reasonCodes.template-run-not-shown": "템플릿 실행을 작업 보드에 표시할 수 없습니다. 다시 시도하세요.",
-  "reasonCodes.run-end-unconfirmed": "이 템플릿 실행은 끝났지만 종료가 아직 워크플로 실행 파일에 저장되지 않았습니다. 다시 시도하세요.",
+  "reasonCodes.run-end-unconfirmed": "이 템플릿 실행은 끝났지만 종료가 아직 워크플로 실행 파일에 저장되지 않았습니다. 다음에 보드를 읽거나 실행을 시작할 때 저장됩니다.",
   "reasonCodes.runs-not-adopted": "마지막 재시작 전에 남은 템플릿 실행을 아직 이어받지 못해 이 결정을 처리할 수 없습니다. 다시 시도하세요.",
   "be_mcpGovernance.reservedHostOwner": "서버 ID에는 예약된 host: 접두사를 사용할 수 없습니다.",
 

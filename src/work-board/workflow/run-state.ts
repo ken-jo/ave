@@ -8,9 +8,10 @@ import { WorkflowTemplateError } from "../template-graph.js";
  * and nothing on a board row is ever read as one of these fields. */
 export type RunRecord = WorkflowRunRecord;
 
-/** row-gone: the board on disk shows the run's row gone, as boot reads it. board-unread: the board file is missing or unreadable, or does not show the row gone. refused: `mutate` returned null. pending-review and too-large: the run file awaits review,
+/** row-gone: the board on disk shows the run's row gone, as boot reads it. row-lost: the board on disk shows the row lost with a board it
+ * replaced. board-unread: the board file is missing or unreadable, or shows neither. refused: `mutate` returned null. pending-review and too-large: the run file awaits review,
  * or the write would take it past its read limit. invalid: the stored run cannot be read. unavailable: the run is not in the run file. */
-export type RunWriteFailure = "row-gone" | "board-unread" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable";
+export type RunWriteFailure = "row-gone" | "row-lost" | "board-unread" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable";
 type RunWrite = { ok: true; run: RunRecord } | { ok: false; reason: RunWriteFailure };
 
 type RunAdoption = {
@@ -19,7 +20,9 @@ type RunAdoption = {
   named: { item: WorkItemResolved; run: RunRecord | null }[];
   /** Stored runs whose row the board on disk shows gone or naming another run. */
   orphans: RunRecord[];
-  /** Stored runs no row names that the board on disk does not show gone: a row id it never issued, or a row that does not validate. */
+  /** Stored runs whose row the board on disk shows lost with a board it replaced. */
+  lost: RunRecord[];
+  /** Stored runs no row names that the board on disk shows neither gone nor lost: a row id it never issued, or a row that does not validate. */
   kept: RunRecord[];
 } | { ok: false; code: "template-runs-pending-review" | "template-runs-board-unread" };
 
@@ -49,7 +52,7 @@ export interface WorkflowRunState {
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runRowGoneOnDisk">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runRowGoneOnDisk" | "runRowLostOnDisk">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -102,11 +105,13 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       });
       const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
       const rest = stored.runs.filter(run => !adopted.has(run.runId));
-      if (rest.length === 0) return { ok: true, named, orphans: [], kept: [] };
+      if (rest.length === 0) return { ok: true, named, orphans: [], lost: [], kept: [] };
       // The listed board may be one seeded empty after the file went missing or was damaged: only the file on disk tells a deleted row.
       const gone = await store.runRowGoneOnDisk();
-      if (!gone) return { ok: false, code: "template-runs-board-unread" };
-      return { ok: true, named, orphans: rest.filter(gone), kept: rest.filter(run => !gone(run)) };
+      const lost = await store.runRowLostOnDisk();
+      if (!gone || !lost) return { ok: false, code: "template-runs-board-unread" };
+      const left = rest.filter(run => !gone(run));
+      return { ok: true, named, orphans: rest.filter(gone), lost: left.filter(lost), kept: left.filter(run => !lost(run)) };
     },
     pruneSettled: () => store.pruneSettledRuns(),
     rowGone: () => store.runRowGoneOnDisk(),

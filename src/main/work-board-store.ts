@@ -376,6 +376,15 @@ function rowGoneOn(parsed: unknown): ((run: { itemId: number; runId: string }) =
   };
 }
 
+/** Whether a parsed board file shows a run's row lost with a board it replaced: the file lists no such row and records that it never
+ * issues that id (below its first id, or skipped). Undefined when it is not a readable board. */
+function rowLostOn(parsed: unknown): ((run: { itemId: number }) => boolean) | undefined {
+  if (!readableBoard(parsed)) return undefined;
+  const board = hydrateBoard(parsed);
+  const present = new Set(parsed.items.flatMap((row) => typeof row === "object" && row !== null && typeof (row as WorkItem).id === "number" ? [(row as WorkItem).id] : []));
+  return (run) => !present.has(run.itemId) && (run.itemId < (board.firstId ?? 1) || (board.skippedIds ?? []).includes(run.itemId));
+}
+
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
   // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the feature-namespace SOT helper. The injectable `filePath` (tests pass a temp path)
   // is preserved — the helper enforces the permission boundary on whatever parent directory the path resolves to.
@@ -502,6 +511,12 @@ export class WorkBoardStore {
    * are never gone. */
   async runRowGoneOnDisk(): Promise<((run: { itemId: number; runId: string }) => boolean) | undefined> {
     return rowGoneOn(await parseBoardOnDisk(this.filePath));
+  }
+
+  /** For the engine: whether the board file on disk shows a run's row lost with a board it replaced, which it never issues again.
+   * Undefined while the file proves nothing. */
+  async runRowLostOnDisk(): Promise<((run: { itemId: number }) => boolean) | undefined> {
+    return rowLostOn(await parseBoardOnDisk(this.filePath));
   }
 
   // Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID. A board seeded again (missing,
@@ -632,8 +647,9 @@ export class WorkBoardStore {
 
   /** Change the template run a row names, under the board lock so the row cannot move to another run meanwhile. `mutate` never
    * runs when the row names a different run, the stored run belongs to another row, or the board file is missing or unreadable.
-   * `not-found` only when the board on disk shows the row gone; a board that cannot show it is `board-unread`. */
-  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult | { status: "board-unread" }> {
+   * `not-found` only when the board on disk shows the row gone, `row-lost` when it shows the row lost with a board it replaced; a board
+   * that shows neither is `board-unread`. */
+  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       // Only a readable board can show the row gone. A missing or unreadable one is never read as empty, and is left as it is.
@@ -641,7 +657,10 @@ export class WorkBoardStore {
       const gone = rowGoneOn(parsed);
       if (!gone) return { status: "board-unread" };
       // A row that does not name the run is gone only as boot reads it; any other such board proves nothing.
-      if (hydrateBoard(parsed).items.find((i) => i.id === id)?.runId !== runId) return gone({ itemId: id, runId }) ? { status: "not-found" } : { status: "board-unread" };
+      if (hydrateBoard(parsed).items.find((i) => i.id === id)?.runId !== runId) {
+        if (gone({ itemId: id, runId })) return { status: "not-found" };
+        return rowLostOn(parsed)?.({ itemId: id }) ? { status: "row-lost" } : { status: "board-unread" };
+      }
       return this.runs.update(runId, (run) => {
         requireTemplate(run.itemId === id, "invalid-template-run");
         return mutate(run);

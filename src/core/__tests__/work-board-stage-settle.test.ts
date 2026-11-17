@@ -920,7 +920,7 @@ for (const [board, spoil] of [
     expect(prune).not.toHaveBeenCalled();
   }));
 
-  it(`a live run whose board file is ${board} and then seeded again by another board write is never read as its row deleted`, () => withHarness(async (h) => {
+  it(`a live run whose board file is ${board} and then seeded again by another board write is never read as its row deleted, and ends error once the board can be read`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const run = h.start(id, h.local(version));
@@ -932,10 +932,16 @@ for (const [board, spoil] of [
     await h.addItem(version);
     expect(await h.board.runRowGoneOnDisk().then(gone => gone?.({ itemId: id, runId }))).toBe(seededShows);
     a.finish();
-    expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
-    expect(await h.runOf(runId)).toEqual(before);
     expect(prune).not.toHaveBeenCalled();
+    if (seededShows === undefined) {
+      expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+      expect(await h.runOf(runId)).toEqual(before);
+      return;
+    }
+    // The readable board's floor is above the run's row: the row went with the board, so the run ends error by its id.
+    expect(await run).toEqual({ status: "error", reason: "template-run-lost", reasonCode: "template-run-lost" });
+    expect((await h.runOf(runId))?.settled?.status).toBe("error");
   }));
 
   it(`a board file that is ${board} is seeded again above a live run's row, which it never shows gone, then or after a restart`, () => withHarness(async (h) => {
@@ -953,7 +959,7 @@ for (const [board, spoil] of [
     await run;
   }));
 
-  it(`an unconfirmed end of a run whose board file is ${board}, after another board write seeds it again, is not confirmed by a reader as its row deleted`, () => withHarness(async (h) => {
+  it(`an unconfirmed end of a run whose board file is ${board}, after another board write seeds it again, is never confirmed as its row deleted, and ends error once the board can be read`, () => withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const run = h.start(id, h.local(version));
@@ -971,10 +977,20 @@ for (const [board, spoil] of [
     let started: unknown;
     void h.start(added, h.local(version)).then((result) => { started = result; });
     for (let i = 0; i < 400 && started === undefined && h.live().length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-    expect(h.live()).toHaveLength(0);
-    expect(started).toMatchObject({ status: "error", reasonCode: "template-runs-board-unread" });
     expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
-    expect(await h.runOf(runId)).toEqual(before);
     expect(prune).not.toHaveBeenCalled();
+    if (seededShows === undefined) {
+      expect(h.live()).toHaveLength(0);
+      expect(started).toMatchObject({ status: "error", reasonCode: "template-runs-board-unread" });
+      expect(await h.runOf(runId)).toEqual(before);
+      return;
+    }
+    // Once readable, the board shows the row lost with the board it replaced: the end is confirmed as error and the start goes ahead.
+    const [b] = await h.untilLive(1);
+    expect((await h.runOf(runId))?.settled?.status).toBe("error");
+    expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" }));
+    b.finish();
+    for (let i = 0; i < 400 && started === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(started).toMatchObject({ status: "awaiting_approval" });
   }));
 }

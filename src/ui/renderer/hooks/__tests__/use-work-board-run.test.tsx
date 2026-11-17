@@ -299,7 +299,7 @@ describe("useWorkBoardRun — refusal text", () => {
   });
 
   it("has the text of every refusal code it maps in both catalogs", () => {
-    for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "run-state-unavailable"]) {
+    for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "template-run-lost", "run-state-unavailable"]) {
       for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
     }
   });
