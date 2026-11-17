@@ -1816,6 +1816,69 @@ describe("pty-manager typing an approved agent command", () => {
     }
   });
 
+  it("waits for the fresh prompt instead of sending Ctrl-C into prompt hooks that outlast the resend interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, mark, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // A loaded host: the shell takes the interrupt at once (its line is dropped and the prompt hooks report D), but the hooks take longer than the
+      // resend interval to draw the fresh prompt. A Ctrl-C that lands in them interrupts the hooks, not the line editor.
+      const respond = pty.respond;
+      let hookRunning = false;
+      pty.respond = (data) => {
+        if (data === "\u0003") {
+          if (hookRunning) return;
+          hookRunning = true;
+          queueMicrotask(() => pty.emitData(`^C\r\n${mark("D;130")}`));
+          setTimeout(() => {
+            hookRunning = false;
+            pty.emitData(prompt().slice(mark("D;0").length));
+          }, 1_200);
+          return;
+        }
+        respond?.(data);
+      };
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not resend Ctrl-C when the shell enters its prompt hooks during the operating-system check before the resend", async () => {
+    vi.useFakeTimers();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    try {
+      pty.emitData(prompt());
+      // The shell takes the interrupt late: its D arrives while the process table is read for the resend, after the resend interval passed.
+      const respond = pty.respond;
+      let interrupts = 0;
+      let entered = false;
+      pty.respond = (data) => {
+        if (data === "\u0003") { interrupts++; return; }
+        respond?.(data);
+      };
+      readForegroundMock.mockImplementation(async () => {
+        if (interrupts > 0 && !entered) {
+          entered = true;
+          pty.emitData(`^C\r\n${mark("D;130")}`);
+          setTimeout(() => pty.emitData(prompt().slice(mark("D;0").length)), 300);
+        }
+        return foregroundReading;
+      });
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(entered).toBe(true);
+      expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
+    } finally {
+      readForegroundMock.mockImplementation(async () => foregroundReading);
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses a prompt without bracketed paste, with vi keys, or with a command-not-found handler, before any key is sent", async () => {
     const { pty, prompt } = await zshTerminal(3);
     pty.emitData(prompt(";Keys=emacs;Paste=0"));
