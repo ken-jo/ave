@@ -251,7 +251,7 @@ describe("administrator hook authority", () => {
     expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: true, managedHooks: [], allowedHttpHookUrls: [] });
   });
 
-  it.runIf(process.platform === "win32")("refuses an administrator policy owned by an ordinary principal", async () => {
+  it.runIf(process.platform === "win32")("refuses an administrator policy whose owner or DACL is an ordinary principal's", async () => {
     const admin = join(root, "policy.json");
     writeFileSync(admin, JSON.stringify({ version: 1, allowManagedHooksOnly: false, allowedHttpHookUrls: ["https://hooks.example.test"] }));
     expect(await loadHookRuntimePolicy(admin)).toMatchObject({ allowManagedHooksOnly: true, allowedHttpHookUrls: [] });
