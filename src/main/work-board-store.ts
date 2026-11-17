@@ -577,11 +577,14 @@ export class WorkBoardStore {
   }
 
   /** Change the template run a row names, under the board lock so the row cannot move to another run meanwhile. `mutate` never
-   * runs when the row names a different run or the stored run belongs to another row. */
-  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult> {
+   * runs when the row names a different run, the stored run belongs to another row, or the board file is missing or unreadable. */
+  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult | { status: "board-unread" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      // Only a readable board can show the row gone. A missing or unreadable one is never read as empty, and is left as it is.
+      const parsed = await parseBoardOnDisk(this.filePath);
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as BoardFile).items)) return { status: "board-unread" };
+      const board = hydrateBoard(parsed);
       if (board.items.find((i) => i.id === id)?.runId !== runId) return { status: "not-found" };
       return this.runs.update(runId, (run) => {
         requireTemplate(run.itemId === id, "invalid-template-run");

@@ -8,9 +8,9 @@ import { WorkflowTemplateError } from "../template-graph.js";
  * and nothing on a board row is ever read as one of these fields. */
 export type RunRecord = WorkflowRunRecord;
 
-/** row-gone: no board row names the run any more. refused: `mutate` returned null. pending-review and too-large: the run file awaits review,
+/** row-gone: a readable board has no row naming the run. board-unread: the board file is missing or unreadable. refused: `mutate` returned null. pending-review and too-large: the run file awaits review,
  * or the write would take it past its read limit. invalid: the stored run cannot be read. unavailable: the run is not in the run file. */
-export type RunWriteFailure = "row-gone" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable";
+export type RunWriteFailure = "row-gone" | "board-unread" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable";
 type RunWrite = { ok: true; run: RunRecord } | { ok: false; reason: RunWriteFailure };
 
 type RunAdoption = {

@@ -147,10 +147,13 @@ const ROW_BUSY: ReadonlySet<string> = new Set(["planning", "awaiting_approval", 
 function writeFault(reason: RunWriteFailure): string {
   if (reason === "too-large") return "template-runs-too-large";
   if (reason === "pending-review") return "template-runs-pending-review";
+  if (reason === "board-unread") return "template-runs-board-unread";
   return reason === "invalid" ? "invalid-template-run" : "run-state-unavailable";
 }
 /** Run-file refusals the renderer shows in the user's language. */
-const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set(["template-runs-too-large", "template-runs-pending-review", "invalid-template-run", "run-state-unavailable"]);
+const RUN_FILE_REFUSALS: ReadonlySet<string> = new Set([
+  "template-runs-too-large", "template-runs-pending-review", "invalid-template-run", "run-state-unavailable", "template-runs-board-unread",
+]);
 
 function rootKey(root: string): string {
   const normal = root.replace(/\\/g, "/").replace(/\/+$/, "");

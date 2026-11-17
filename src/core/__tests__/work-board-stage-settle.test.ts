@@ -1,5 +1,6 @@
 /** How a template run ends, and what survives a crash or a deleted row: the run file is written first and is the truth; the board row is
  * shown from it. */
+import { rmSync, writeFileSync } from "node:fs";
 import { expect, it, vi } from "vitest";
 import { workBoardStage } from "../../shared/work-board-lifecycle.js";
 import type { WorkItemResolved } from "../../shared/work-board-types.js";
@@ -613,4 +614,23 @@ for (const [write, refusal, code] of [
       expect((await h.item(id)).record?.settled?.status).toBe("error");
     });
   });
+}
+
+for (const [board, spoil] of [["unreadable", (path: string) => writeFileSync(path, "{ not json")], ["missing", (path: string) => rmSync(path)]] as const) {
+  it(`a live run whose board file is ${board} is never read as its row deleted: nothing is cancelled and its record stays as it was`, () => withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+    const before = await h.runOf(runId);
+    const prune = vi.spyOn(h.board, "pruneSettledRuns");
+    spoil(h.boardPath);
+    a.finish();
+    expect(await run).not.toMatchObject({ status: "cancelled" });
+    expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "error", reasonCode: "template-runs-board-unread" });
+    expect(h.events.some(event => event.phase === "cancelled" || event.message === "item-removed")).toBe(false);
+    expect(await h.runOf(runId)).toEqual(before);
+    expect(prune).not.toHaveBeenCalled();
+  }));
 }
