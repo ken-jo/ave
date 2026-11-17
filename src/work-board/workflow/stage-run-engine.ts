@@ -192,6 +192,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   let takenOver = false;
   /** The run file may hold a delete intent whose run is not taken over yet: true at boot, after each delete and after a takeover failed. */
   let intentsPending = true;
+  /** The run file holds delete intents the last takeover left (their delete may not have landed, or the board still holds their run's
+   * id): each reader, start, decision and adoption reads them again. */
+  let intentsWaiting = false;
   let consuming: Promise<Adopted> | null = null;
   const unattendedAllowed = deps.unattendedAllowed
     ?? ((version: TemplateVersion): UnattendedQualification => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" });
@@ -363,10 +366,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return consuming;
   }
   async function takeOverIntents(): Promise<Adopted> {
-    const due = await records.deleted();
-    if (!Array.isArray(due)) return { ok: false, code: due };
+    const intents = await records.deleted();
+    if (typeof intents === "string") return { ok: false, code: intents };
+    intentsWaiting = intents.waiting.length > 0;
     let failed: Adopted | null = null;
-    for (const { itemId, runId } of due) {
+    for (const { itemId, runId } of intents.due) {
       if (removedHeld(itemId, runId) || unconfirmed.has(runId)) continue;
       const fault = await takeOverDeleted(itemId, runId);
       if (fault) failed ??= { ok: false, code: writeFault(fault) };
@@ -1225,6 +1229,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       },
     );
     const done = await adoption;
+    if (done.ok && intentsWaiting) intentsPending = true;
     return done.ok && intentsPending ? consumeIntents() : done;
   };
 
@@ -1233,7 +1238,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function projectRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]> {
     // Until the takeover is done and every run end is confirmed, a reader asks for both, whichever rows it reads: a run whose row is gone
     // or no longer names it is shown on no row and is ended this way too.
-    if (unconfirmed.size > 0 || !takenOver || intentsPending) void adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error)));
+    if (unconfirmed.size > 0 || !takenOver || intentsPending || intentsWaiting) void adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error)));
     const named = items.some(item => item.templateId !== undefined && item.runId !== undefined);
     const runOf = named ? await records.view().catch(() => null) : null;
     return items.map((item) => {

@@ -49,9 +49,9 @@ export interface WorkflowRunState {
   view(): Promise<(row: { id: number; runId?: string }) => RunRecord | null>;
   /** What boot adopts, from one read of the run file and, when a stored run is named by no row, of the board file on disk. */
   adoption(): Promise<RunAdoption>;
-  /** The unsettled runs whose row a user's delete took off the board, by the delete intents the run file holds; the refusal code while
-   * the run file awaits review or the board file on disk shows nothing. */
-  deleted(): Promise<DeleteIntent[] | "template-runs-pending-review" | "template-runs-board-unread">;
+  /** The run file's open delete intents, split by the store's one rule: `due`, the unsettled runs whose row a user's delete took off the
+   * board; `waiting`, the rest. The refusal code while the run file awaits review or the board file on disk shows nothing. */
+  deleted(): Promise<{ due: DeleteIntent[]; waiting: DeleteIntent[] } | "template-runs-pending-review" | "template-runs-board-unread">;
   /** Removes the settled runs no row lists any more. */
   pruneSettled(): Promise<void>;
   /** Where each run's row stands on the board file on disk. Undefined while that file shows nothing. */
@@ -59,7 +59,7 @@ export interface WorkflowRunState {
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runRowsOnDisk" | "deletedRuns">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runRowsOnDisk" | "deletedRuns" | "deleteIntentsOnDisk">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -123,7 +123,7 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const of = (...rows: RunRowStanding[]) => rest.filter(run => !removed.includes(run) && rows.includes(standing(run)));
       return { ok: true, named, orphans: of("gone", "moved"), lost: of("unnamed", "lost"), kept: of("unreadable", "named"), removed };
     },
-    deleted: () => store.deletedRuns(),
+    deleted: () => store.deleteIntentsOnDisk(),
     pruneSettled: () => store.pruneSettledRuns(),
     rows: () => store.runRowsOnDisk(),
   };

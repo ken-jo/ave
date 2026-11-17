@@ -652,20 +652,35 @@ export class WorkBoardStore {
     const file = cacheOf(board);
     const text = boardText(file);
     const runs = await this.runs.heldRuns();
-    await rewriteKeepingBytes(this.filePath, text, {
-      tag: "invalid-rows",
-      unchanged: board.unchanged,
-      check: (prior) => {
-        if (prior !== undefined && repeatsKey(prior.toString("utf8"))) {
-          this.repeatedKey = true;
-          throw new WorkBoardWriteRefusal("work-board-duplicate-key", this.filePath);
-        }
-        assertKeepsRunIds(prior, text, runs, board.unchanged, change);
-      },
-    });
+    try {
+      await rewriteKeepingBytes(this.filePath, text, {
+        tag: "invalid-rows",
+        unchanged: board.unchanged,
+        check: (prior) => {
+          if (prior !== undefined && repeatsKey(prior.toString("utf8"))) {
+            this.repeatedKey = true;
+            throw new WorkBoardWriteRefusal("work-board-duplicate-key", this.filePath);
+          }
+          assertKeepsRunIds(prior, text, runs, board.unchanged, change);
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof WorkBoardWriteRefusal)) await this.landedAnyway(file, text);
+      throw error;
+    }
     this.repeatedKey = false;
     this.cache = file;
     if (change.deleted) this.rowDeleted.emit(change.deleted);
+    this.boardChanged.emit();
+  }
+
+  // A board write that failed may still have replaced the file (a failed directory sync after the rename). While the file on disk is the
+  // text it wrote, the cache takes that board and listeners hear of it as after any write; the failure is still reported.
+  private async landedAnyway(file: BoardFile, text: string): Promise<void> {
+    const input = await readAveHomeInput(this.filePath).catch(() => undefined);
+    if (input?.status !== "trusted" || !input.bytes.equals(Buffer.from(text, "utf8"))) return;
+    this.repeatedKey = false;
+    this.cache = file;
     this.boardChanged.emit();
   }
 

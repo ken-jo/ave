@@ -1391,6 +1391,30 @@ it.each(["live", "parked at boot"] as const)("a user's delete of a %s run's row 
   expect(intentsOf(h)).toEqual([{ itemId: id, runId }]);
 }));
 
+it.each(["a reader", "an adoption", "a start"] as const)("a delete intent left waiting on the board file's other value is taken over by %s once that value is gone by hand, with no restart", (event) => withHarness(async (h) => {
+  const { id, runId } = await parkedRun(h);
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, archive: { value: runId } }));
+  // Deleted by a process that dies; the next one adopts nothing of it and keeps the intent waiting.
+  expect(await new WorkBoardStore(h.boardPath).remove(id, (await h.item(id)).mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
+  const before = h.events.length;
+  await h.makeEngine().adoptParkedTemplateRuns();
+  for (let i = 0; i < 20; i += 1) await tick();
+  const ended = () => h.events.slice(before).find(event => event.itemId === id && (event.phase === "cancelled" || event.phase === "error"));
+  expect(ended()).toBeUndefined();
+  const { archive: _, ...unheld } = JSON.parse(readFileSync(h.boardPath, "utf8")) as Record<string, unknown>;
+  writeFileSync(h.boardPath, JSON.stringify(unheld));
+  if (event === "a reader") await h.engine.projectTemplateRuns([]);
+  else if (event === "an adoption") await h.engine.adoptParkedTemplateRuns();
+  else {
+    const version = await h.confirm([stageOf("b")]);
+    void h.start(await h.addItem(version), h.local(version));
+  }
+  for (let i = 0; i < 400 && !ended(); i += 1) await tick();
+  expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
+  expect(intentsOf(h)).toEqual([]);
+}));
+
 for (const [how, input, code] of runFileRefusal) {
   it(`a delete of a live run's row while the run file ${how} stores no delete intent and deletes nothing: ${code}`, () => withHarness(async (h) => {
     const live = await liveRun(h);

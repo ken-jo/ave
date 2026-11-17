@@ -571,6 +571,26 @@ describe("a delete intent", () => {
   });
 });
 
+it.each([["before", false], ["after", true]] as const)("a board write that fails %s it replaces the file shows the board on disk and tells listeners only once it landed", async (_, lands) => {
+  const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [row(2)] }), []);
+  const write = namespace.writeFileAtomicAtPath;
+  vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+    if (target !== path) return write(target, body);
+    if (lands) await write(target, body);
+    throw new Error("directory sync failed");
+  });
+  let changed = 0;
+  store.boardChanged.subscribe(() => { changed += 1; });
+  try {
+    await expect(store.update(2, { title: "renamed" })).rejects.toThrow("directory sync failed");
+    const shown = await store.get(2);
+    expect([shown.status === "found" ? shown.item.title : undefined, changed]).toEqual(lands ? ["renamed", 1] : ["row 2", 0]);
+  } finally {
+    vi.restoreAllMocks();
+    await cleanupTmpDir(dir);
+  }
+});
+
 describe("a file that holds a key twice", () => {
   const backups = (dir: string, file: string) => readdirSync(dir).filter(name => name.startsWith(`${file}.`) && name.endsWith(".bak"));
   function home(board: string, runs: string): { dir: string; path: string; runsPath: string; store: WorkBoardStore } {
