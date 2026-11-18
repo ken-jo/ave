@@ -594,6 +594,23 @@ describe("LlmTab provider cards", () => {
     });
   }
 
+  it("refreshes compaction model choices after an independent evaluator change", async () => {
+    const api = makeApi();
+    const listeners = new Set<() => void>();
+    Object.assign(window.ave.permission, { onConfigChanged: vi.fn((listener: () => void) => {
+      listeners.add(listener); return () => { listeners.delete(listener); };
+    }) });
+    offerCompactionModels();
+    await renderTab(api);
+    await waitFor(() => expect(screen.getByTestId("compaction-model")).toBeEnabled());
+    offerCompactionModels([]);
+    act(() => { for (const listener of listeners) listener(); });
+    await waitFor(() => expect(window.ave.permission.judgeGet).toHaveBeenCalled());
+    openMenu(screen.getByTestId("compaction-model"));
+    await screen.findByRole("listbox");
+    expect(screen.queryByRole("option", { name: /summary-model/ })).toBeNull();
+  });
+
   it.each(["chatgpt-plan", "claude-code", "kimi-code"] as const)("enables the compaction picker on %s", async (provider) => {
     installSubscription([], {}, { kind: "subscription", provider });
     const api = makeApi();

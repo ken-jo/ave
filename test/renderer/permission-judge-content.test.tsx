@@ -39,15 +39,15 @@ function mount(overrides: Partial<PermissionJudgeSnapshot> = {}, editor = false,
     current = { ...current, settings: { ...current.settings, ...patch }, ...(Object.hasOwn(patch, "chain") ? { storedChainRejected: false } : {}), ...(Object.hasOwn(patch, "model") ? { reviewerModelUnavailable: false } : {}) };
     return { ok: true, ...current };
   });
-  let listener: (() => void) | undefined;
-  const onConfigChanged = vi.fn((callback: () => void) => { listener = callback; return () => { listener = undefined; }; });
+  const listeners = new Set<() => void>();
+  const onConfigChanged = vi.fn((callback: () => void) => { listeners.add(callback); return () => { listeners.delete(callback); }; });
   const previous = window.ave;
   window.ave = { permission: { judgeGet, judgeSet, onConfigChanged } } as unknown as typeof window.ave;
   const notifySaved = vi.fn();
   const { api } = makeMockAveApi();
   const content = <SavedToastProvider value={notifySaved}><PermissionJudgeContent /></SavedToastProvider>;
   const rendered = render(editor ? <SettingsEditorProvider api={api as never} modifiedOnly={modifiedOnly}>{content}</SettingsEditorProvider> : content);
-  return { ...rendered, api, judgeGet, judgeSet, notifySaved, notify: () => listener?.(), restore: () => { window.ave = previous; } };
+  return { ...rendered, api, judgeGet, judgeSet, notifySaved, notify: () => { for (const listener of listeners) listener(); }, restore: () => { window.ave = previous; } };
 }
 
 /** Pick a row of the shared model chooser by its visible text. */

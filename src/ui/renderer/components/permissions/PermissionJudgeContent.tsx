@@ -145,6 +145,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
       // The invocation happens in this user handler, before any await, so main can check its gesture.
       const request = window.ave.permission.judgeSet(changed);
       const result = await request;
+      if (result.ok) editorCache?.invalidate(PERMISSION_JUDGE_CACHE_KEY);
       if (requestRevision !== requestRevisionRef.current) return false;
       if (!result.ok) {
         setError(result.error === "invalid-judge-settings" ? "invalid"

@@ -18,14 +18,16 @@ export interface SettingsControlDescriptor {
 }
 /**
  * Reads a section makes from stores other than the settings document, kept for as long as the settings view they answer for:
- * the same loaded settings and the same reload. A section that mounts again over that view, because the user came back
- * to it or because a search shows every panel, takes the answer it already had instead of asking the store again.
+ * the same loaded settings and the same reload. A section that mounts again because a search shows every panel takes
+ * the answer it already had. Independent stores must invalidate their answers
+ * on changes or revalidate when their tab becomes active.
  */
 export interface SettingsEditorCache {
   /** The settled answer for `key` over the current settings view, if there is one. */
   peek: <T>(key: string) => T | undefined;
   /** The answer for `key` over the current settings view; `fresh` asks again even when one is held. */
   load: <T>(key: string, read: () => Promise<T>, options?: { fresh?: boolean }) => Promise<T>;
+  invalidate: (key: string) => void;
 }
 /** Cache keys shared by more than one section; each names the read it holds. */
 export const PERMISSION_JUDGE_CACHE_KEY = "permission.judge";
@@ -116,6 +118,7 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
     const current = (entry: SettingsEditorCacheEntry | undefined): entry is SettingsEditorCacheEntry =>
       entry !== undefined && entry.settings === viewRef.current.settings && entry.epoch === viewRef.current.epoch;
     return {
+      invalidate: (key) => { entries.delete(key); },
       peek: <T,>(key: string) => { const entry = entries.get(key); return current(entry) && entry.settled ? entry.settled.value as T : undefined; },
       load: <T,>(key: string, read: () => Promise<T>, options?: { fresh?: boolean }) => {
         const held = entries.get(key);
@@ -130,6 +133,8 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
       },
     };
   });
+  // The separate evaluator store can change while every consumer is unmounted.
+  useEffect(() => window.ave?.permission?.onConfigChanged?.(() => cache.invalidate(PERMISSION_JUDGE_CACHE_KEY)), [cache]);
   const locked = settings === null || defaults === null || failed || [...controls.values()].some((control) => control.loading || control.loadError);
   const settingsCurrent = settings !== null && loadedEpoch === epoch;
   const value = useMemo(() => ({ settings, settingsCurrent, defaults, modifiedOnly, reloadEpoch: epoch, register, unregister, reset, cache }), [settings, settingsCurrent, defaults, modifiedOnly, epoch, register, unregister, reset, cache]);

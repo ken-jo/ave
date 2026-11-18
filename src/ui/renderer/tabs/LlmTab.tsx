@@ -1758,10 +1758,10 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
     let compactionOptionsRevision = 0;
-    const applySettings = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
+    const refreshJudge = (fresh = false) => {
       const revision = ++compactionOptionsRevision;
       const readJudge = () => window.ave.permission.judgeGet();
-      void Promise.resolve().then(() => editorCache ? editorCache.load(PERMISSION_JUDGE_CACHE_KEY, readJudge) : readJudge()).then((result) => {
+      void Promise.resolve().then(() => editorCache ? editorCache.load(PERMISSION_JUDGE_CACHE_KEY, readJudge, { fresh }) : readJudge()).then((result) => {
         if (cancelled || providerSnapshotKeyRef.current !== providerSnapshotKey || revision !== compactionOptionsRevision) return;
         if (result.ok) {
           setCompactionSnapshot(result);
@@ -1772,6 +1772,10 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
       }).catch(() => {
         if (!cancelled && providerSnapshotKeyRef.current === providerSnapshotKey && revision === compactionOptionsRevision) setCompactionOptionsFailed(true);
       });
+    };
+    const unsubscribeJudge = window.ave?.permission?.onConfigChanged?.(() => refreshJudge(true));
+    const applySettings = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
+      refreshJudge();
       // Content-compared, like the credential set below it: a broadcast arrives for every settings write, and a fresh object identity
       // each time would re-run every effect that reads a row's endpoint; including the one that asks endpoints for their catalogues.
       // The mount already started from these settings; only the judge answer above may still be outstanding.
@@ -1803,7 +1807,7 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
     if (editorCache) {
       // The editor reads and follows the settings document; a broadcast reaches this tab through it.
       if (editorSettings) applySettings(editorSettings);
-      return () => { cancelled = true; };
+      return () => { cancelled = true; unsubscribeJudge?.(); };
     }
     void (async () => {
       try {
@@ -1822,6 +1826,7 @@ export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
     return () => {
       cancelled = true;
       unsubscribe?.();
+      unsubscribeJudge?.();
     };
   }, [api, editorCache, editorSettings, marketplaceProviderPresets, providerSnapshotKey, t]);
   const providerSelectOptions = useMemo(
