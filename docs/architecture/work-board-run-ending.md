@@ -18,9 +18,16 @@ that section describes them.
   write;
 - the delete intents `{itemId, runId}`, one per user delete of a row that
   named an unsettled run;
-- the unknown markers `unknownDeletes: [{itemId, runId}]`, one per delete step
-  whose outcome is not known yet (see [Failure lifecycle](#failure-lifecycle)).
-  The key is left out while there are none.
+- the unknown markers `unknownDeletes`, one per delete step whose outcome is
+  not known yet (see [Failure lifecycle](#failure-lifecycle)), each
+  `{itemId, runId, op, ownIntent, entrySha}`: `op` is `"row"` for the delete
+  of a listed row and `"card"` for the delete of an invalid card, `ownIntent`
+  says that delete stored the intent itself, and `entrySha` is the identity of
+  the entry it deleted (see [Evidence](#evidence)). The key is left out while
+  there are none;
+- the held events `heldEvents`, one per engine event of a run that a run write
+  could not store while the run's class held it (see
+  [Held events](#held-events)). The key is left out while there are none.
 
 An intent is open only while exactly one readable, unsettled record has its
 `runId`, and that record is bound to its `itemId`. A row id that is absent or
@@ -39,7 +46,15 @@ Evidence is read from the raw text of `board.json` on disk:
   no string in it holds the run id;
 - so does an entry of the items list that does not validate and has that
   numeric `id`. Such an entry is shown as an invalid card, and deleting that
-  card goes through its own intent (below), so a release it holds never wedges.
+  card goes through its own intent (below), so a release it holds never wedges;
+- an entry's identity, `entrySha`, is computed over its raw stored bytes, in
+  the unit this walk reads: the file's bytes decoded as UTF-8, the entry's span
+  of that text from its first character to its last (the element of the items
+  list exactly as stored, whitespace between elements left out), encoded back
+  as UTF-8 and hashed with SHA-256 (hex). It is never computed from a parse or
+  a re-serialization. When the entries cannot be read off the text so (a
+  top-level key given twice, or a count that differs from the parse), no entry
+  has an identity.
 
 ## One classifier
 
@@ -82,6 +97,7 @@ It reads the class when the row does not name the run:
 | delete-intent takeover | | cancelled, item removed | | | | |
 | reader, start, decide, `clearMissingRun` | reconsider intents and markers first, then act | | | | | |
 
+A run write that is held keeps its event (see [Held events](#held-events)).
 A run write whose board file shows nothing, or whose row's standing on disk
 reads unreadable (the no-intent `unreadable` row of the classifier table: an
 entry with its id that does not validate, an entry without a usable id, or a
@@ -116,8 +132,8 @@ under the board lock, and refuses a cause the class does not allow; the run
 then stays unconfirmed and the next permitted event tries again. So does an
 end whose write throws: whether it landed is not known, so the run ends as a
 fault and its end is written again. The settle writes the final stage states
-and `settled` in one write, and in that same write the run's intent and marker
-go. Stop, completion and failure never go through intent logic.
+and `settled` in one write, and in that same write the run's intent, marker and
+held events go. Stop, completion and failure never go through intent logic.
 
 ## Failure lifecycle
 
@@ -137,11 +153,37 @@ write is never a confirmation: a write is confirmed by reading the file back.
   restart. When the run file cannot be written either, the store keeps it in
   memory and the run stays held (`unreadable`) until a permitted read
   succeeds; it is never read as unlanded.
-- A marker is resolved under the board lock by the next permitted read: the
-  board lists a row with that id, so the delete did not land, and the intent
-  and marker are withdrawn together; a readable board without it means it
-  landed, so only the marker goes and the classifier decides when the intent is
-  due; a board that shows nothing keeps the marker.
+- A marker is resolved under the board lock by the next permitted read, by
+  its operation (`markerOutcome`, beside the classifier, pure and total). On a
+  readable board:
+  - no entry of the items list has the marker's `itemId`, valid or not: the
+    delete landed, whatever its operation, since nothing it could have left
+    remains; only the marker goes, and the classifier decides when the intent
+    is due;
+  - a row op that owns its intent follows the listed-row rule: the board lists
+    a row with that id, so the delete did not land, and the intent and marker
+    are withdrawn together; otherwise it landed, so only the marker goes;
+  - a card op that owns its intent, with an entry whose `entrySha` is the
+    marker's still on the board, did not land: the intent and marker are
+    withdrawn together;
+  - anything else is ambiguous and held, never withdrawn: the marker stays and
+    the run stays `unreadable`. That is a card op whose entry is gone while
+    another entry with its id remains, or whose entries have no identity; a
+    marker whose delete went through another delete's intent (`ownIntent`
+    false; the store records none); and a legacy marker of the pair alone, or
+    of any other shape, which says neither which operation it was nor which
+    entry.
+
+  A board that shows nothing keeps every marker.
+- A held row or card stays deletable by the user. That delete publishes a
+  fresh intent for the marker's run, owned by it, and the same run-file write
+  drops the old marker; from there the new delete's own lifecycle applies.
+  Deleting what holds the run leaves no entry with that id, which resolves any
+  marker as landed, so a held state never outlasts the user's delete.
+- A production marker always carries its operation; `entrySha` is left out
+  only when the entries have no identity. The store's call that records an
+  unknown outcome by the pair alone, which only tests make, records a row op
+  that owns its intent, without `entrySha`: the listed-row rule never reads it.
 - An invalid card's delete takes the same steps through its own intent. For
   the one open run bound to the entry's id, that is the intent of the row's
   delete when one is open, or one the card's delete stores first when the entry
@@ -154,8 +196,9 @@ write is never a confirmation: a write is confirmed by reading the file back.
 The permitted events are boot, a reader (list), a start, a decision, adoption
 and `clearMissingRun`; an ordinary row's start and plan decision count too.
 Each one reads the delete intents and markers again (the stage engine's
-`adopted`); an adoption that already ran never suppresses this, and nothing
-waits on a timer or a restart.
+`adopted`), then releases held events and checks for lost stages (see
+[Held events](#held-events)); an adoption that already ran never suppresses
+this, and nothing waits on a timer or a restart.
 
 A board write refused because the run file cannot be read opens an unreadable
 episode (`WorkBoardStore.recoverRuns`). The first permitted event once the file
@@ -169,6 +212,62 @@ own read of the run file still fails, the list carries the
 and recovery, clear it. A run file that does not parse or holds a key twice
 fails the list itself, with its own reason, as before.
 
+## Held events
+
+A scheduler event (a child's link or end, a gate verdict, a refused spawn, a
+seal or join outcome, a start, a Stop, a fault) is stored by a run write. When
+that write finds the row not naming the run (`row-gone`, `row-lost`), it reads
+the class: a class that ends the run (`due-delete`, `orphan`, `lost`) ends it
+as before, and the event goes with that end. Under any other outcome (the
+class holds the run, or cannot be read) the event is held: it is retained and
+revalidated, never dropped, and the run is not faulted for it.
+
+- Identity: `{run, stage, attempt, kind}`. The stage is the event's stage or
+  join, none for a run-wide event; the attempt is the event's own, else the
+  attempt the run file shows for that stage when the event is held, else 0 (a
+  join has no attempt counter). Held events are stored deduplicated by
+  identity and applied idempotently: an event held twice is held once, and a
+  replay of one already applied changes nothing.
+- Storage: `heldEvents` in the run file. When that write fails, the engine
+  keeps the event in memory, fail-closed: it is still held, still keeps its
+  stage off the lost path, and is resolved at the next permitted read like a
+  stored one. Within a process the engine's memory decides: an event leaves
+  memory once applied or dropped, then the file, and a copy left in the file
+  is never applied again by that process. The write that ends a run drops its
+  held events with its intent and marker.
+- Order: a run's events apply in arrival order. While a run holds events,
+  each later scheduler event of it is held behind them until the class ends
+  the run, so none overtakes an earlier one. A user decision is refused while
+  its write cannot be stored, as before.
+- Stop: a Stop takes effect when it is given: the engine marks the run
+  stopping at once, and a Stop whose event is held interrupts the run's live
+  children then. So a later Stop wins over an earlier completion still held:
+  the completion replays under the Stop, its stage ends `cancelled` with its
+  output kept, and the run ends `cancelled` (stopped). A completion applied
+  before the Stop stands, and the Stop cancels what is still open.
+- Release: each permitted read, after the intents and markers, replays each
+  run's held events in order while its class is `live`; under a class that
+  ends the run they go with its end, and under any other class they stay
+  held. Each replay is first revalidated against the run as stored: an event
+  whose run is over, whose stage is not in the run, whose stage moved on to
+  another attempt (retried) or out of the state the event was sent from
+  (superseded), or whose join is no longer being collected, is dropped with a
+  logged reason and never applied to the new attempt. A replay the class holds
+  again stops the release there, the rest kept in order.
+- Lost path: once the class is `live`, a stage the run file shows `running`
+  with no child, none starting, no launch of the run in flight and no held
+  event takes the existing lost path: it ends interrupted (failed
+  `interrupted`, or `cancelled` while the run winds down), as a stage whose
+  child is gone does. Each permitted read checks this after the release, so no
+  stage stays running forever. A run that boot kept unadopted (its class held
+  it) is adopted by a later permitted read once its class is `live`, as boot
+  adopts one (its stage that was running fails `interrupted`), without a
+  workspace sweep; a failure there is only logged.
+- Restart: boot reconciles a parked run before anything else, since nothing
+  starts after a restart. Of the held events read back from the run file, a
+  Stop still stops its run; every other one is superseded by that reconcile
+  and dropped with its reason.
+
 ## Retention and envelopes
 
 - Retention and the workspace sweep prune only records confirmed settled; an
@@ -180,7 +279,8 @@ fails the list itself, with its own reason, as before.
 ## Tests
 
 - `run-classification.test.ts`: the classifier table over every input
-  combination.
+  combination, the marker resolution table over every marker shape and board
+  fact, and what each marker shape makes the run file say of its run.
 - `run-ending-structure.test.ts`: syntax checks for the settle write and
   consumers, plus runtime rejection of terminal changes through `put`, `update`
   and retention, including computed fields. Named adoption must classify every
@@ -195,4 +295,9 @@ fails the list itself, with its own reason, as before.
   `classifyRun`. Separate cases cover one-shot unreadable writes and unreadable
   or repeated individual records without manufacturing a second child event.
 - The delete failure windows, marker resolution, recovery and the notice have
-  targeted tests beside the write guard's.
+  targeted tests beside the write guard's: a legacy marker is held, and a
+  delete from a held row or card resolves it.
+- Held events have targeted engine tests: deduplication and idempotent
+  replay, arrival order with a later Stop, the drop of an event whose stage
+  moved on, the lost path of a running stage with no child once the class is
+  `live`, and the memory fallback when the run file cannot be written.
