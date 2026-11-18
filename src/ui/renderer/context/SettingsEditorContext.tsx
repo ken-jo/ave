@@ -21,14 +21,21 @@ interface SettingsEditorState {
   defaults: AppSettings | null;
   modifiedOnly: boolean;
   reloadEpoch: number;
-  controls: ReadonlyMap<string, SettingsControlDescriptor>;
   register: (owner: object, controls: readonly SettingsControlDescriptor[]) => void;
   unregister: (owner: object) => void;
   reset: (path: string) => Promise<void>;
+}
+/**
+ * The registered controls change whenever any section registers or finishes loading. They live in their own context so a
+ * registration re-renders only the editor's own actions and lock, not every section that registers controls.
+ */
+interface SettingsEditorControlsState {
+  controls: ReadonlyMap<string, SettingsControlDescriptor>;
   /** Controls stay disabled until settings, defaults and every registered control have loaded. */
   locked: boolean;
 }
 const SettingsEditorContext = createContext<SettingsEditorState | null>(null);
+const SettingsEditorControlsContext = createContext<SettingsEditorControlsState | null>(null);
 
 export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onRetryLoad, children }: {
   api: AveApi; modifiedOnly: boolean; reloadEpoch?: number; onRetryLoad?: () => void; children: ReactNode;
@@ -63,8 +70,9 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
     for (const group of owners.values()) for (const control of group) merged.set(control.id, control);
     return merged;
   }, [owners]);
+  const controlsRef = useRef(controls); controlsRef.current = controls;
   const reset = useCallback(async (path: string) => {
-    const registered = controls.get(path);
+    const registered = controlsRef.current.get(path);
     if (!registered) throw new Error("Setting is not registered");
     if (registered.disabledReason || registered.loading || registered.loadError) throw new Error("Setting reset is unavailable");
     if (registered.reset) { await registered.reset(); return; }
@@ -77,14 +85,15 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
       : await api.updateSettings(patch as DeepPartial<AppSettings>);
     if (isIpcErrorResult(result)) throw new Error("Setting reset failed");
     setSettings(result);
-  }, [controls, api, defaults]);
+  }, [api, defaults]);
   const locked = settings === null || defaults === null || failed || [...controls.values()].some((control) => control.loading || control.loadError);
-  const value = useMemo(() => ({ settings, defaults, modifiedOnly, reloadEpoch: reloadEpoch + localReload, controls, register, unregister, reset, locked }), [settings, defaults, modifiedOnly, reloadEpoch, localReload, controls, register, unregister, reset, locked]);
+  const value = useMemo(() => ({ settings, defaults, modifiedOnly, reloadEpoch: reloadEpoch + localReload, register, unregister, reset }), [settings, defaults, modifiedOnly, reloadEpoch, localReload, register, unregister, reset]);
+  const controlsValue = useMemo(() => ({ controls, locked }), [controls, locked]);
   const controlLoadError = [...controls.values()].find((control) => control.loadError)?.loadError;
-  return <SettingsEditorContext.Provider value={value}>
+  return <SettingsEditorContext.Provider value={value}><SettingsEditorControlsContext.Provider value={controlsValue}>
     {(failed || controlLoadError) && <div role="alert" className="p-3 text-sm text-destructive">{controlLoadError ?? t("settingsEditor.defaultsFailed")} <Button size="sm" variant="outline" onClick={() => { if (onRetryLoad) onRetryLoad(); else setLocalReload((epoch) => epoch + 1); }}>{t("settingsEditor.retry")}</Button></div>}
     {children}
-  </SettingsEditorContext.Provider>;
+  </SettingsEditorControlsContext.Provider></SettingsEditorContext.Provider>;
 }
 
 /**
@@ -92,12 +101,15 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
  * toolbar actions sit outside it, so they work while a section is still loading.
  */
 export function SettingsEditorFieldset({ children }: { children: ReactNode }) {
-  const editor = useContext(SettingsEditorContext);
+  const editor = useSettingsEditorControls();
   if (!editor) throw new Error("SettingsEditorFieldset requires a SettingsEditorProvider");
   return <fieldset disabled={editor.locked} className="contents">{children}</fieldset>;
 }
 
 export function useSettingsEditor() { return useContext(SettingsEditorContext); }
+
+/** The registered controls and the editor lock; only the editor's own actions and tests read them. */
+export function useSettingsEditorControls() { return useContext(SettingsEditorControlsContext); }
 
 /** Registration metadata is stable; handlers always use the control's latest render. */
 export function useSettingsControls(descriptors: readonly SettingsControlDescriptor[]): void {
@@ -151,12 +163,13 @@ function descriptorModified(editor: SettingsEditorState, control: SettingsContro
 /** Every owning control participates, including write-only secrets and separate stores. */
 export function SettingsControlActions({ section }: { section: string }) {
   const editor = useSettingsEditor();
+  const registry = useSettingsEditorControls();
   const { t } = useTranslation();
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
-  if (!editor?.settings || !editor.defaults) return null;
+  if (!editor?.settings || !editor.defaults || !registry) return null;
   const resetControl = editor.reset;
-  const controls = [...editor.controls.values()].filter((control) => control.section === section);
+  const controls = [...registry.controls.values()].filter((control) => control.section === section);
   if (controls.length === 0) return null;
   const modified = controls.filter((control) => descriptorModified(editor, control));
   async function reset(path: string) {

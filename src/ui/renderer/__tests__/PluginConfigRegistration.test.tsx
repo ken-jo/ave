@@ -2,13 +2,13 @@ import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
-import { SettingsEditorProvider, useSettingsEditor } from "../context/SettingsEditorContext.js";
+import { SettingsEditorProvider, useSettingsEditorControls } from "../context/SettingsEditorContext.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../test/renderer/mock-ave-api.js";
 import { makePluginCard } from "./support/plugin-card.js";
 import type { PluginCardSummary } from "../types.js";
 
 function Metadata() {
-  const editor = useSettingsEditor();
+  const editor = useSettingsEditorControls();
   if (!editor) throw new Error("Settings editor provider missing");
   return <output data-testid="registered-plugin-settings">{JSON.stringify([...editor.controls.values()])}</output>;
 }
