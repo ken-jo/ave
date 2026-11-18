@@ -16,7 +16,7 @@ export type RunEvent =
   | { type: "join_integrated"; joinId: string } | { type: "join_conflict"; joinId: string; conflict: JoinConflict }
   | { type: "join_decided"; joinId: string; decision: "retry_merge" | "reject" }
   // Host outcomes of an effect: the run's source is no longer authorised, a passed stage could not be sealed, the pin or wiring failed.
-  | { type: "spawn_refused"; stageId: string; attempt: number } | { type: "seal_failed"; stageId: string } | { type: "fault" };
+  | { type: "spawn_requested"; stageId: string; attempt: number } | { type: "spawn_refused"; stageId: string; attempt: number } | { type: "seal_failed"; stageId: string } | { type: "fault" };
 
 export type RunEffect =
   | { type: "spawn"; stageId: string; attempt: number } | { type: "evaluate_gate"; stageId: string; attempt: number }
@@ -145,6 +145,11 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
       for (const run of stageRuns) if (run.status === "awaiting_gate") run.status = "cancelled";
       interruptRunning();
       break;
+    case "spawn_requested": {
+      const run = find(event.stageId);
+      if (run?.status === "running" && run.attempt === event.attempt && !winding()) effects.push({ type: "spawn", stageId: event.stageId, attempt: event.attempt });
+      break;
+    }
     case "spawn_refused": {
       const run = find(event.stageId);
       if (run?.status === "running" && run.attempt === event.attempt) run.status = "cancelled";

@@ -248,3 +248,52 @@ it("a run boot kept while its class held it is adopted by a later permitted read
     expect(h.engine.cancelRun(id)).toEqual({ ok: true });
     expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "cancelled" });
   }));
+
+it.each([false, true])("a pre-spawn workspace write held by row-lost retains its spawn attempt and revalidates it (superseded: %s)", async (superseded) => {
+  let refusing = true;
+  let prepared = false;
+  const h = await stageRunHarness({
+    wiring: (store, { workspace }) => {
+      const runs = boardRunState(store);
+      return {
+        workspace: { ...workspace, prepare: async (...args) => { const result = await workspace.prepare(...args); prepared = true; return result; } },
+        runs: { ...runs, update: async (...args) => refusing && prepared ? { ok: false, reason: "row-lost" } : runs.update(...args) },
+      };
+    },
+  });
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    expect(await h.start(id, h.local(version))).toMatchObject({ status: "awaiting_approval" });
+    const runId = (await h.item(id)).runId ?? "";
+    const held = { itemId: id, runId, stage: "a", attempt: 1, kind: "spawn_requested" };
+    expect(runsOnDisk(h).heldEvents).toEqual([held]);
+    expect(h.children).toHaveLength(0);
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+    await permittedRead(h);
+    await settle();
+    expect(runsOnDisk(h).heldEvents).toEqual([held]);
+    if (superseded) editRuns(h, file => { file.runs[0].stageRuns[0].attempt = 2; });
+    const log = vi.spyOn(console, "log");
+    refusing = false;
+    await Promise.all([permittedRead(h), permittedRead(h)]);
+    if (superseded) {
+      expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ attempt: 2, failure: "interrupted" });
+      expect(h.children).toHaveLength(0);
+      expect(logged(log, "its stage moved on to another attempt")).toBe(1);
+    } else {
+      const [child] = await h.untilLive(1);
+      expect(h.children).toHaveLength(1);
+      child.finish();
+      await h.untilStage(id, "a", "awaiting_gate");
+      await permittedRead(h);
+      expect(h.children).toHaveLength(1);
+    }
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+  } finally {
+    vi.restoreAllMocks();
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});

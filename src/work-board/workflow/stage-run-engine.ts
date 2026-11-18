@@ -511,6 +511,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { run: null, reason: result.reason };
   }
 
+  function holdsWrite(state: RunState, reason: RunWriteFailure): boolean {
+    return (reason === "row-gone" || reason === "row-lost") && !state.rowGone && !state.lost;
+  }
+
   function interruptAll(state: RunState): void {
     for (const stageId of state.starting) state.interruptAsked.add(stageId);
     for (const [stageId, child] of state.live) {
@@ -654,7 +658,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (refusal !== null) return refusal;
       // The row does not name the run: writeRun read its class, which ends it as lost or removed, and the event goes with that end, or holds
       // it, and the event is held with it (a replay stays where it is).
-      if (written.reason === "row-gone" || (written.reason === "row-lost" && !state.lost)) {
+      if (written.reason === "row-gone" || holdsWrite(state, written.reason)) {
         if (!precheck && !state.rowGone && !state.lost) {
           if (replay) state.heldAgain = true;
           else await hold(state, event, read);
@@ -842,7 +846,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         ...current,
         stageRuns: current.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === attempt ? { ...candidate, workspace: { ...prepared.workspace } } : candidate),
       }));
-      if (stored.run === null) throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
+      if (stored.run === null) {
+        if (holdsWrite(state, stored.reason)) throw new WorkflowInvariantError("run-write-held");
+        throw stored.reason === "row-gone" ? new WorkflowInvariantError("run-stopped") : new WorkflowInvariantError("run-state-failed", writeFault(stored.reason));
+      }
 
       // The spawn boundary. Preparing took time: the run's source is asked again, and a stop, a refusal or a fault that arrived meanwhile
       // ends the launch here. Nothing is awaited between these checks and the spawn.
@@ -918,7 +925,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         ...(result.stopReason === "interrupted" ? { interrupted: true } : {}),
       };
     } catch (error) {
-      if (error instanceof WorkflowInvariantError && error.code === "run-not-authorised") {
+      if (error instanceof WorkflowInvariantError && error.code === "run-write-held") {
+        next = { type: "spawn_requested", stageId, attempt };
+      } else if (error instanceof WorkflowInvariantError && error.code === "run-not-authorised") {
         state.refused ??= { code: error.reasonCode ?? error.code, ...(error.reasonTool ? { tool: error.reasonTool } : {}) };
         next = { type: "spawn_refused", stageId, attempt };
       } else if (error instanceof WorkflowInvariantError && (error.code === "version-missing" || error.code === "graph-mismatch" || error.code === "run-state-failed")) {

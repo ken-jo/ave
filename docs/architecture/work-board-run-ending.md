@@ -225,7 +225,11 @@ that write finds the row not naming the run (`row-gone`, `row-lost`), it reads
 the class: a class that ends the run (`due-delete`, `orphan`, `lost`) ends it
 as before, and the event goes with that end. Under any other outcome (the
 class holds the run, or cannot be read) the event is held: it is retained and
-revalidated, never dropped, and the run is not faulted for it.
+revalidated, never dropped, and the run is not faulted for it. A pre-spawn
+workspace write refused while its class holds the run follows this same path:
+its `spawn_requested` event retains the stage and attempt, spawns nothing while
+held, and retries preparation and the spawn checks once released. A retried or
+superseded attempt is dropped before any new preparation.
 
 - Identity: `{run, stage, attempt, kind}`. The stage is the event's stage or
   join, none for a run-wide event; the attempt is the event's own, else the
