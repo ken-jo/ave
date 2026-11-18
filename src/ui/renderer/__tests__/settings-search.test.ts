@@ -58,6 +58,19 @@ describe("rendered settings search", () => {
     expect(filterRenderedSettings(root, "api key")[0]?.section).toBe(section);
     root.remove();
   });
+  it("leaves out the text and names inside a row the filter hid, but keeps a field's own accessible name", () => {
+    const root = settingsFixture();
+    const section = root.querySelector<HTMLElement>('[data-settings-section="appearance-terminal"]');
+    assert(section);
+    section.insertAdjacentHTML("beforeend", '<div data-setting-filter-hidden="true"><span>Hidden row label</span><button aria-label="Hidden row action"></button></div><div contenteditable="true">Draft body text</div>');
+    const text = renderedSettingText(section);
+    expect(text).not.toContain("Hidden row label");
+    expect(text).not.toContain("Hidden row action");
+    expect(text).not.toContain("Draft body text");
+    expect(text).toContain("Terminal font size");
+    expect(text).not.toContain("12");
+    root.remove();
+  });
   it("combines Modified with text filters and restores sections when cleared", () => {
     const root = settingsFixture();
     expect(filterRenderedSettings(root, "", true).map((match) => match.section.dataset.settingsSection)).toEqual(["appearance-theme"]);

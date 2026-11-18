@@ -303,9 +303,19 @@ export function SettingsContent({
       setFilterCount(matches.length);
     };
     applyFilter();
-    const observer = new MutationObserver(applyFilter);
+    // Panels mounting for the search commit many times in a row; rescanning the whole view after each commit repeats the
+    // same work, so mutations within a frame share one rescan.
+    let frame: number | undefined;
+    const observer = new MutationObserver(() => {
+      if (frame !== undefined) return;
+      frame = requestAnimationFrame(() => { frame = undefined; applyFilter(); });
+    });
     observer.observe(rootElement, { childList: true, characterData: true, subtree: true });
-    return () => { observer.disconnect(); clearSettingsFilter(rootElement); };
+    return () => {
+      observer.disconnect();
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      clearSettingsFilter(rootElement);
+    };
   }, [rootElement, searchQuery, modifiedOnly, filterActive]);
 
   useEffect(() => {

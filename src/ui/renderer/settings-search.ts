@@ -8,20 +8,33 @@ export interface RenderedSettingsMatch {
   text: string;
 }
 
+const UNSEARCHED_TEXT = 'textarea, input, [contenteditable], [data-setting-filter-hidden="true"]';
+
+/**
+ * Walk a section's rendered text once. A row the filter hid is skipped whole, and the text inside an editable field is the
+ * user's value rather than a label, so the walk skips its subtree; the field's own accessible name still counts.
+ */
+function walkSettingsSection(section: HTMLElement, visitText: (node: Text) => void, visitElement?: (element: HTMLElement) => void): void {
+  const walker = section.ownerDocument.createTreeWalker(section, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+      const element = node as HTMLElement;
+      if (element.getAttribute("data-setting-filter-hidden") === "true") return NodeFilter.FILTER_REJECT;
+      visitElement?.(element);
+      return element.matches(UNSEARCHED_TEXT) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+    },
+  });
+  while (walker.nextNode()) visitText(walker.currentNode as Text);
+}
+
 /** Read the labels actually rendered, including names supplied to assistive technology. */
 export function renderedSettingText(section: HTMLElement): string {
-  const document = section.ownerDocument;
-  const walker = document.createTreeWalker(section, NodeFilter.SHOW_TEXT);
-  const labels: string[] = [section.dataset.settingsSection ?? "", section.dataset.settingsDescription ?? "", section.dataset.settingsKeywords ?? ""];
-  while (walker.nextNode()) {
-    if (walker.currentNode.parentElement?.closest('textarea, input, [contenteditable], [data-setting-filter-hidden="true"]')) continue;
-    labels.push(walker.currentNode.textContent ?? "");
-  }
-  for (const control of section.querySelectorAll<HTMLElement>("[aria-label], [data-setting-id]")) {
-    if (control.closest('[data-setting-filter-hidden="true"]')) continue;
-    labels.push(control.getAttribute("aria-label") ?? "", control.dataset.settingId ?? "");
-  }
-  return labels.join(" ");
+  const texts: string[] = [section.dataset.settingsSection ?? "", section.dataset.settingsDescription ?? "", section.dataset.settingsKeywords ?? ""];
+  const labels: string[] = [];
+  walkSettingsSection(section, (node) => { texts.push(node.textContent ?? ""); }, (element) => {
+    if (element.hasAttribute("aria-label") || element.hasAttribute("data-setting-id")) labels.push(element.getAttribute("aria-label") ?? "", element.dataset.settingId ?? "");
+  });
+  return [...texts, ...labels].join(" ");
 }
 
 export function settingsTextMatchesQuery(text: string, query: string): boolean {
@@ -77,10 +90,7 @@ export function highlightSettingsMatches(matches: readonly RenderedSettingsMatch
   const ranges: Range[] = [];
   const words = query.trim().split(/\s+/).filter(Boolean);
   for (const { section } of matches) {
-    const walker = section.ownerDocument.createTreeWalker(section, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      if (node.parentElement?.closest('textarea, input, [contenteditable], [data-setting-filter-hidden="true"]')) continue;
+    walkSettingsSection(section, (node) => {
       for (const word of words) {
         const range = matchSettingsText(word, node.textContent ?? "")?.[0];
         if (!range) continue;
@@ -88,7 +98,7 @@ export function highlightSettingsMatches(matches: readonly RenderedSettingsMatch
         selection.setStart(node, range.start); selection.setEnd(node, range.end);
         ranges.push(selection);
       }
-    }
+    });
   }
   CSS.highlights.set("ave-settings-match", new Highlight(...ranges));
 }
