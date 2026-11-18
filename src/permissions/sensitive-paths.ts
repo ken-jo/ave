@@ -38,7 +38,7 @@ import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
-import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
+import { isWindowsNetworkOrDevicePath, modelShellPath } from "../shared/shell-native-path.js";
 import { verifyLocalFilesystemChain } from "../shared/shell-filesystem-path.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
@@ -634,8 +634,12 @@ export function createProjectMembership(projectRoot: string, canonicalize: (path
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
   const within = (value: string, base: string) => value === base || value.startsWith(`${base}/`);
   const root = normalize(projectRoot);
+  // A current-drive or drive-relative root has no independent filesystem identity.
+  // Resolving it against the host's drive must not turn it into a project alias.
+  const hasNativeRoot = process.platform !== "win32" || modelShellPath(projectRoot, { dialect: "native" }).nativePath !== undefined;
   let realRoot: string | undefined;
   return (canonical) => {
+    if (!hasNativeRoot) return false;
     const target = normalize(canonical);
     if (within(target, root)) return true;
     realRoot ??= normalize(canonicalize(projectRoot));

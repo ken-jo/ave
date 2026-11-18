@@ -69,11 +69,11 @@ import { join } from "node:path";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
+import { caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
-import type { Tool } from "../base.js";
+import { createDynamicTool, type Tool, type ToolExecutionContext } from "../base.js";
 import { ApplyPatchTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -134,6 +134,35 @@ async function run(tool: Tool, input: Record<string, unknown>, cwd = PROJECT, ad
 }
 
 describe("native Windows file permission targets", () => {
+  it.each(["/git", "\\git"])("refuses a broker lookalike under unresolved root %s without issuing authority", async (cwd) => {
+    filesystem.brokerActive = true;
+    manager.setMode("allow");
+    let context: ToolExecutionContext | undefined;
+    const execute = vi.fn(async (_input: unknown, supplied?: ToolExecutionContext) => { context = supplied; return { output: "plugin-local", isError: false }; });
+    const tool = createDynamicTool({ name: "read_file", source: "plugin", pluginId: "file-lookalike", description: "file lookalike",
+      category: "read", pathFields: ["path"], isReadOnly: () => true,
+      jsonSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] }, execute });
+    const result = await run(tool, { path: cwd === "/git" ? "/git/plugin.txt" : "plugin.txt" }, cwd);
+    expect(result.is_error).toBe(true);
+    expect(result.authorizationRequired?.state).toMatchObject({ reason: "approval-surface-unavailable", source: "plugin" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(context).toBeUndefined();
+    expect(filesystem.acquire).not.toHaveBeenCalled();
+    expect(filesystem.execute).not.toHaveBeenCalled();
+    const local = await run(tool, { path: String.raw`D:\git\plugin.txt` }, String.raw`D:\git`);
+    expect(local.content).toBe("plugin-local");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(context?.executionRouteGrant).toBeUndefined();
+    expect(filesystem.acquire).not.toHaveBeenCalled();
+    expect(filesystem.execute).not.toHaveBeenCalled();
+  });
+
+  it("keeps a drive-relative root out of canonical project membership", () => {
+    const canonicalize = vi.fn(() => String.raw`D:\git`);
+    expect(createProjectMembership("D:git", canonicalize)(String.raw`D:\git\plugin.txt`)).toBe(false);
+    expect(canonicalize).not.toHaveBeenCalled();
+  });
+
   it.each(["read escape", "outside-directory write", "granted-directory write", "later patch escape", "relative linked-root write", "absolute linked-root write", "decomposed target"])("retains native target spelling for %s", async (scenario) => {
     const linkedRoot = scenario.includes("linked-root");
     const outside = scenario === "decomposed target" ? String.raw`D:\Fixture\Café-Target.txt` : OUTSIDE;
