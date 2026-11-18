@@ -4,11 +4,22 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { conditionalGates } from "./windows-test-gates.js";
+import { isInventorySource, nativeBackedTestFiles } from "./windows-native-test-inventory.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
+const nativeTestLists = new Map([[NATIVE_TEST_LIST, readFileSync(join(root, NATIVE_TEST_LIST), "utf8")]]);
 const REQUIRED_SECURITY_SUITES = [
+  // Boot, settings and transport callers reach native stores without platform guards.
+  "src/boot/steps/__tests__/terminal-scrollback-setup.test.ts",
+  "src/data/__tests__/settings-permission-store-independence.test.ts",
+  "src/ipc/handlers/__tests__/permissions.test.ts",
+  "src/main/terminal/__tests__/terminal-scrollback.test.ts",
+  "src/api/__tests__/local-api.test.ts",
+  "src/cli/__tests__/http-client.test.ts",
+  "src/engine/__tests__/conversation-loop-project.test.ts",
   "src/permissions/__tests__/allowed-directories-nfd-root.test.ts",
   "src/permissions/__tests__/mxc-extension-admission.test.ts",
   "src/permissions/__tests__/mxc-sdk-packaging.test.ts",
@@ -39,36 +50,52 @@ const REQUIRED_SECURITY_SUITES = [
   // Its fixture home must stay under the test temp root, which only a restricted Windows lane checks.
   "src/boot/__tests__/bootstrap-integration.test.ts",
 ] as const;
-function windowsJobFiles(workflow: string): string[] {
+function windowsJobFiles(workflow: string, inventories: ReadonlyMap<string, string> = nativeTestLists): string[] {
   const lines = workflow.split("\n");
   const start = lines.findIndex((line) => line.trim() === `- name: ${STEP_NAME}`);
   if (start < 0) throw new Error(`ci.yml has no "${STEP_NAME}" step`);
-  const files: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (/^\s*-\s/.test(line)) break;
-    const token = line.trim();
-    if (TEST_FILE_RE.test(token)) files.push(token);
+  const files = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^- name: Run Windows (?:permission|appearance|session persistence|native import) regressions$/.test(lines[i]?.trim() ?? "")) continue;
+    while (++i < lines.length && !/^\s*-\s/.test(lines[i] ?? "")) {
+      const line = lines[i] ?? "";
+      for (const file of line.match(/(?:src|test)\/[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?/g) ?? []) files.add(file);
+      if (line.includes(`scripts/run-windows-test-list.mjs ${NATIVE_TEST_LIST}`)) {
+        const inventory = inventories.get(NATIVE_TEST_LIST);
+        if (inventory === undefined) throw new Error("Windows native test inventory is missing");
+        for (const file of inventory.trim().split(/\r?\n/)) files.add(file);
+      }
+    }
+    i--;
   }
-  return files;
+  return [...files];
 }
 
-function testFiles(dir: string): string[] {
+function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (name === "node_modules") return [];
-    if (statSync(path).isDirectory()) return testFiles(path);
-    return TEST_FILE_RE.test(name) ? [relative(root, path).split("\\").join("/")] : [];
+    if (statSync(path).isDirectory()) return sourceFiles(path);
+    const file = relative(root, path).split("\\").join("/");
+    return isInventorySource(file) ? [file] : [];
   });
 }
 
+const nativeInventory = new WeakMap<ReadonlyMap<string, string>, Map<string, string[]>>();
 function listProblems(sources: Map<string, string>, workflow: string): string[] {
   const listed = windowsJobFiles(workflow);
+  let native = nativeInventory.get(sources);
+  if (native === undefined) {
+    native = nativeBackedTestFiles(sources);
+    nativeInventory.set(sources, native);
+  }
   return [...sources].flatMap(([file, source]) => {
+    if (!TEST_FILE_RE.test(file)) return [];
     const gates = conditionalGates(source);
     const unknown = gates.filter((gate) => gate.classification === "unclassifiable")
       .map((gate) => `${file}:${gate.line}: unclassifiable argument: ${gate.argument}`);
     const required = REQUIRED_SECURITY_SUITES.some((suite) => suite === file)
-      || file.endsWith(".windows.test.ts") || gates.some((gate) => gate.classification === "win32-only");
+      || file.endsWith(".windows.test.ts") || gates.some((gate) => gate.classification === "win32-only") || native.has(file);
     return [...unknown, ...(required && !listed.includes(file) ? [`${file}: missing from ${STEP_NAME}`] : [])];
   }).sort();
 }
@@ -76,15 +103,37 @@ function listProblems(sources: Map<string, string>, workflow: string): string[] 
 describe("Windows CI test list", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
   const listed = windowsJobFiles(workflow);
-  const sources = new Map(["src", "test"].flatMap((dir) => testFiles(join(root, dir)))
+  const sources = new Map(["src", "test", "scripts", "config", ".github"].flatMap((dir) => sourceFiles(join(root, dir)))
     .map((file) => [file, readFileSync(join(root, file), "utf8")]));
 
   it("names only files that exist", () => {
-    expect(listed.filter((file) => !testFiles(join(root, file.split("/")[0]!)).includes(file))).toEqual([]);
+    expect(listed.filter((file) => !sources.has(file))).toEqual([]);
   });
 
   it("names every file with win32-only cases", () => {
     expect(listProblems(sources, workflow)).toEqual([]);
+  });
+  it.each(["boot/steps", "ipc/handlers", "data"])("requires an indirect native caller in %s", (area) => {
+    const file = `src/${area}/__tests__/indirect.test.ts`;
+    const module = `src/${area}/store.ts`;
+    const indirect = new Map([
+      [file, 'import { read } from "../store.js"; it("reads", () => read());'],
+      [module, 'export { read } from "../../shared/windows-native-host.js";'],
+      ["src/shared/windows-native-host.ts", "export const read = () => {};"],
+    ]);
+    // Resolve each area's different depth without making the test platform-specific.
+    indirect.set(module, `export { read } from "${"../".repeat(area.split("/").length)}shared/windows-native-host.js";`);
+    expect(listProblems(indirect, workflow)).toEqual([`${file}: missing from ${STEP_NAME}`]);
+  });
+
+  it("requires an actual-module import through an indirect native re-export", () => {
+    const file = "src/data/__tests__/actual-store.test.ts";
+    const indirect = new Map([
+      [file, 'const { read } = await vi.importActual("../store.js"); it("reads", () => read());'],
+      ["src/data/store.ts", 'export { read } from "../shared/windows-native-host.js";'],
+      ["src/shared/windows-native-host.ts", "export const read = () => {};"],
+    ]);
+    expect(listProblems(indirect, workflow)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
   it("names every unconditional security suite", () => {
