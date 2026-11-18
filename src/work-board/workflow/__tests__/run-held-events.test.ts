@@ -242,7 +242,6 @@ it("a run boot kept while its class held it is adopted by a later permitted read
     const sweeps = h.sweeps.length;
     writeFileSync(h.boardPath, goodBoard);
     expect(await h.board.runs.withdrawIntent({ itemId: id, runId })).toBe(true);
-    await h.board.load();
     await permittedRead(h);
     expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ failure: "interrupted" });
     expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "executing", message: "resumed" }));

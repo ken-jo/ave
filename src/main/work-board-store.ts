@@ -852,9 +852,9 @@ export class WorkBoardStore {
 
   // Unknown deletes are decided first, then the board file on disk and one read of the run file: a delete stores its intent before its
   // board write, so a row this board shows gone was deleted with its intent already there. Never under the board lock.
-  private async classified(): Promise<{ intents: DeleteIntent[]; classOf: (run: DeleteIntent) => RunClass } | "template-runs-pending-review" | "template-runs-board-unread"> {
-    await this.resolveUnknownDeletes();
-    const onDisk = await readBoardOnDisk(this.filePath);
+  private async classified(snapshot?: BoardOnDisk): Promise<{ intents: DeleteIntent[]; classOf: (run: DeleteIntent) => RunClass } | "template-runs-pending-review" | "template-runs-board-unread"> {
+    if (!snapshot) await this.resolveUnknownDeletes();
+    const onDisk = snapshot ?? await readBoardOnDisk(this.filePath);
     const facts = await this.runs.runFacts();
     if (!facts) return "template-runs-pending-review";
     if (!onDisk) return "template-runs-board-unread";
@@ -863,8 +863,8 @@ export class WorkBoardStore {
 
   /** For the engine, at boot and live: the class of each unsettled run (see classifyRun), the one rule every consumer reads. The refusal
    * code while the run file awaits review or the board file on disk shows nothing. */
-  async runClasses(): Promise<((run: DeleteIntent) => RunClass) | "template-runs-pending-review" | "template-runs-board-unread"> {
-    const read = await this.classified();
+  async runClasses(snapshot?: BoardOnDisk): Promise<((run: DeleteIntent) => RunClass) | "template-runs-pending-review" | "template-runs-board-unread"> {
+    const read = await this.classified(snapshot);
     return typeof read === "string" ? read : read.classOf;
   }
 
@@ -998,12 +998,21 @@ export class WorkBoardStore {
     if (!this.loaded) await this.load();
   }
 
-  // List items, newest-id first, with `status_resolved` computed + filter applied.
-  async list(filter: WorkItemListFilter = {}): Promise<WorkItemListResult> {
+  /** One current board read shared by adoption's rows and classification, after resolving delete markers. */
+  async runBoardSnapshot(): Promise<BoardOnDisk | undefined> {
     await this.ensureLoaded();
+    await this.resolveUnknownDeletes();
+    const snapshot = await readBoardOnDisk(this.filePath);
+    if (snapshot) this.cache = snapshot.board;
+    return snapshot;
+  }
+
+  // List items, newest-id first, with `status_resolved` computed + filter applied.
+  async list(filter: WorkItemListFilter = {}, snapshot?: BoardOnDisk): Promise<WorkItemListResult> {
+    if (!snapshot) await this.ensureLoaded();
     // The rows first, then the run file, read on every call: a run starts by writing its record before its row, so a row read here
     // never names a run started after the run file was read.
-    const cache = this.cache;
+    const cache = snapshot?.board ?? this.cache;
     const runs = await this.runs.view().catch((error: unknown): WorkflowRunView => {
       if (error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal) throw error;
       log.warn("[work-board-store] run file could not be listed: %s", (error as Error).message);

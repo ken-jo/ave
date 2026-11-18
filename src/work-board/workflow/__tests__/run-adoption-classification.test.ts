@@ -15,8 +15,14 @@ it.each(["live", "waiting-delete", "unreadable", "due-delete", "orphan", "lost"]
     await running;
     const runId = (await h.item(id)).runId;
     const classify = vi.fn((): RunClass => cls);
-    vi.spyOn(h.board, "runClasses").mockResolvedValue(classify);
+    const classes = vi.spyOn(h.board, "runClasses").mockResolvedValue(classify);
+    const rows = vi.spyOn(h.board, "list");
+    const snapshot = vi.spyOn(h.board, "runBoardSnapshot");
     const adopted = await boardRunState(h.board).adoption();
+    const current = await snapshot.mock.results[0].value;
+    expect(current).toBeDefined();
+    expect(rows.mock.calls[0][1]).toBe(current);
+    expect(classes.mock.calls[0][0]).toBe(current);
     expect(classify).toHaveBeenCalledWith(expect.objectContaining({ itemId: id, runId }));
     expect(adopted.ok).toBe(true);
     if (!adopted.ok) throw new Error("Adoption refused");

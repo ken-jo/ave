@@ -25,7 +25,7 @@ type RunAdoption = {
   /** Workspace identities that must survive sweeping; undefined defers the sweep. */
   keepWorkspaces: readonly string[] | undefined;
   /** Unsettled runs no adopted row names, by class (see classifyRun): `orphans`, `lost`, `removed` (due-delete) and `kept`, every other
-   * class (waiting-delete, unreadable, and live where the board on disk names the run though the board as read did not). */
+   * class (waiting-delete or unreadable). */
   orphans: RunRecord[];
   lost: RunRecord[];
   kept: RunRecord[];
@@ -68,7 +68,7 @@ export interface WorkflowRunState {
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleRemovedRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runClasses" | "deleteIntentsOnDisk">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleRemovedRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runClasses" | "runBoardSnapshot" | "deleteIntentsOnDisk">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -113,9 +113,11 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const stored = await store.runs.list();
       if (stored.status !== "found") return { ok: false, code: "template-runs-pending-review" };
       const { keepWorkspaces } = await store.runs.view();
-      const listed = await store.list();
+      const snapshot = await store.runBoardSnapshot();
+      if (!snapshot) return { ok: false, code: "template-runs-board-unread" };
+      const listed = await store.list({}, snapshot);
       if (listed.status !== "ok") return { ok: false, code: "template-runs-board-unread" };
-      const classOf = await store.runClasses();
+      const classOf = await store.runClasses(snapshot);
       if (typeof classOf === "string") return { ok: false, code: classOf };
       const classes = new Map(stored.runs.filter(run => run.settled === undefined).map(run => [run.runId, classOf(run)]));
       const byId = new Map(stored.runs.map(run => [run.runId, run]));
