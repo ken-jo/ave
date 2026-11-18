@@ -148,6 +148,7 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
     const id = await h.addItem(version);
     void h.start(id, h.local(version)).catch(() => undefined);
     const [child] = await h.untilLive(1);
+    await h.until(id, item => item.stageRuns.some(stage => stage.childSessionId === child.sessionId));
     const runId = (await h.item(id)).runId ?? "";
     // Every consumer but the run write works on a parked run: stage a waits at its gate. The engine's own writes land before the hand edit.
     if (cell.consumer !== "run write") {
@@ -217,10 +218,10 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
 
     const classes = classify.mock.results.map(result => result.value);
     // The consumer read the oracle's class. Not asked: any consumer over a board file that shows nothing (the store answers every run
-    // unreadable, `template-runs-board-unread`, before a classifier call), an adoption over a row that names its run (adopted by name), a
+    // unreadable, `template-runs-board-unread`, before a classifier call), a
     // run write whose row's standing on disk decides it first (the row names the run, or the board shows it unreadable), and a reader with
     // no intent to read.
-    const asks = cell.board !== "corrupt" && (boot ? cell.board !== "named"
+    const asks = cell.board !== "corrupt" && (boot ? true
       : cell.consumer === "run write" ? !["named", "held elsewhere", "same-id invalid"].includes(cell.board)
       : cell.consumer === "board write" || resolved.intent);
     if (asks) expect(classes, context).toContain(cls);

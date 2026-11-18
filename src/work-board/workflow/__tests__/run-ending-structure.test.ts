@@ -4,7 +4,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript/unstable/ast";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { boardRunState, type RunRecord } from "../run-state.js";
+import type { RunClass } from "../../../main/run-classification.js";
 import { parseSourceTexts } from "../../../../scripts/lib/ts7-ast.mjs";
 
 const SRC = fileURLToPath(new URL("../../../", import.meta.url));
@@ -44,7 +46,7 @@ function find(where: (file: string, text: string) => boolean, pick: (node: ts.No
 const callsOf = (name: string): string[] => find((_, text) => text.includes(name), (node) => {
   if (!ts.isCallExpression(node)) return false;
   const callee = node.expression;
-  return (ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : undefined) === name;
+  return (ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined) === name;
 });
 const ENGINE = "work-board/workflow/stage-run-engine.ts";
 const RUN_STATE = "work-board/workflow/run-state.ts";
@@ -85,4 +87,24 @@ it("ends a run with its row removed only from its class or a due intent", () => 
   expect(inFile(ENGINE, callsOf("rowRemoved"))).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);
   expect(inFile(ENGINE, callsOf("byClass"))).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>writeRun"]);
   expect(inFile(ENGINE, callsOf("removedHeld"))).toEqual(["createStageRunEngine>takeOverDeleted", "createStageRunEngine>takeOverIntents"]);
+});
+
+it("never adopts an unsettled named candidate without classifying it", async () => {
+  const classes: RunClass[] = ["live", "waiting-delete", "unreadable", "due-delete", "orphan", "lost"];
+  const runs = classes.map((_, itemId) => ({ itemId, runId: String(itemId) }) as RunRecord);
+  const classified = vi.fn((run: RunRecord) => classes[run.itemId]);
+  const store = {
+    runs: { list: async () => ({ status: "found", runs }), view: async () => ({ keepWorkspaces: runs.map(run => run.runId) }) },
+    list: async () => ({ status: "ok", items: runs.map(run => ({ id: run.itemId, runId: run.runId, templateId: "template" })) }),
+    runClasses: async () => classified,
+  } as unknown as Parameters<typeof boardRunState>[0];
+  const adoption = await boardRunState(store).adoption();
+  expect(classified.mock.calls.map(([run]) => run.runId)).toEqual(runs.map(run => run.runId));
+  expect(adoption.ok).toBe(true);
+  if (!adoption.ok) throw new Error("Adoption refused");
+  expect(adoption.named.flatMap(entry => entry.run ? [entry.run.runId] : [])).toEqual(["0"]);
+  expect(adoption.kept.map(run => run.runId)).toEqual(["1", "2"]);
+  expect(adoption.removed.map(run => run.runId)).toEqual(["3"]);
+  expect(adoption.orphans.map(run => run.runId)).toEqual(["4"]);
+  expect(adoption.lost.map(run => run.runId)).toEqual(["5"]);
 });

@@ -50,7 +50,7 @@ export interface WorkflowRunState {
   settleUnstarted(itemId: number, runId: string): Promise<"settled" | "named" | RunWriteFailure>;
   /** One read of the run file: the run a row names, or null as for `get`. */
   view(): Promise<(row: { id: number; runId?: string }) => RunRecord | null>;
-  /** What boot adopts, from one read of the run file and, when a stored run is named by no row, of the board file on disk. */
+  /** What boot adopts, classifying every unsettled candidate from the run file and the board file on disk. */
   adoption(): Promise<RunAdoption>;
   /** The run file's open delete intents, split by the store's one rule: `due`, the unsettled runs whose row a user's delete took off the
    * board; `waiting`, the rest. The refusal code while the run file awaits review or the board file on disk shows nothing. */
@@ -110,18 +110,17 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const { keepWorkspaces } = await store.runs.view();
       const listed = await store.list();
       if (listed.status !== "ok") return { ok: false, code: "template-runs-board-unread" };
+      const classOf = await store.runClasses();
+      if (typeof classOf === "string") return { ok: false, code: classOf };
+      const classes = new Map(stored.runs.filter(run => run.settled === undefined).map(run => [run.runId, classOf(run)]));
       const byId = new Map(stored.runs.map(run => [run.runId, run]));
       const named = listed.items.filter(item => item.templateId !== undefined && item.runId !== undefined).map((item) => {
         const run = byId.get(item.runId ?? "");
-        return { item, run: run?.itemId === item.id ? run : null };
+        return { item, run: run?.itemId === item.id && (run.settled !== undefined || classes.get(run.runId) === "live") ? run : null };
       });
       const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
       const rest = stored.runs.filter(run => !adopted.has(run.runId) && run.settled === undefined);
-      if (rest.length === 0) return { ok: true, named, keepWorkspaces, orphans: [], lost: [], kept: [], removed: [] };
-      // The listed board may be one started empty after the file went missing or was damaged: only the file on disk shows a row gone.
-      const classOf = await store.runClasses();
-      if (typeof classOf === "string") return { ok: false, code: classOf };
-      const of = (...classes: RunClass[]) => rest.filter(run => classes.includes(classOf(run)));
+      const of = (...allowed: RunClass[]) => rest.filter(run => allowed.includes(classes.get(run.runId) as RunClass));
       return { ok: true, named, keepWorkspaces, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
     },
     deleted: () => store.deleteIntentsOnDisk(),

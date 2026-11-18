@@ -68,11 +68,11 @@ inputs with its expected class.
 
 ## Consumers
 
-Every consumer reads the class through the store (`runClasses`) and keeps no
-standing rule of its own, with two exceptions that end nothing the class would
-not: adoption takes a run whose row names it by that name, and a run write is
-decided by the row's standing on disk first, reading the class only when the
-row does not name the run:
+Every adoption candidate that is unsettled reads the class through the store
+(`runClasses`), including a run its row names. Held and unreadable candidates
+stay unadopted. Other consumers use the same class. A run write may decide by
+the row's standing on disk first; it requests an end, which `settleRun` writes.
+It reads the class when the row does not name the run:
 
 | Consumer | `live` | `due-delete` | `waiting-delete` | `unreadable` | `orphan` | `lost` |
 |---|---|---|---|---|---|---|

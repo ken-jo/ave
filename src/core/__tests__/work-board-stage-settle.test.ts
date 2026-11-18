@@ -1321,7 +1321,7 @@ it("an adoption while a deleted row's parked run is being cancelled leaves that 
   expect(h.sweeps.at(-1)).toContain(runId);
 }));
 
-it("a deleted row's parked run that an adoption takes over while the delete reads its record still ends cancelled as its row removed", () => withHarness(async (h) => {
+it("a delete while adoption reads a named row is classified before takeover and ends as its row removed", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);
   const run = h.start(id, h.local(version));
@@ -1355,12 +1355,10 @@ it("a deleted row's parked run that an adoption takes over while the delete read
   const before = h.events.length;
   expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
   listGate.open();
-  // The adoption takes the run over, then reads the delete intents again behind the delete's own read.
-  const resumed = () => h.events.slice(before).some(event => event.itemId === id && event.phase === "executing" && event.message === "resumed");
-  for (let i = 0; i < 400 && !resumed(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-  expect(h.events.slice(before)).toContainEqual(expect.objectContaining({ itemId: id, phase: "executing", message: "resumed" }));
+  // The on-disk delete class prevents adoption of the stale named-row snapshot.
   viewGate.open();
   await adopting;
+  expect(h.events.slice(before)).not.toContainEqual(expect.objectContaining({ itemId: id, phase: "executing", message: "resumed" }));
   const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
   for (let i = 0; i < 400 && !ended(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
   expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
