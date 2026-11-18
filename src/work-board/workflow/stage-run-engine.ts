@@ -157,15 +157,23 @@ interface RunState {
 }
 
 /** A scheduler event a run write held, with its identity: its stage or join (null for a run-wide event), its attempt and its kind. */
-interface Held { stage: string | null; attempt: number; kind: RunEvent["type"]; event: RunEvent }
+interface Held { stage: string | null; attempt: number; kind: RunEvent["type"]; event: RunEvent; effects: Set<string> }
 
 /** The event with its identity: an event without an attempt takes the attempt the run shows for its stage, else 0. */
 function heldOf(event: RunEvent, record: RunRecord): Held {
   const stage = "stageId" in event ? event.stageId : "joinId" in event ? event.joinId : null;
   const attempt = "attempt" in event ? event.attempt : "stageId" in event ? record.stageRuns.find(run => run.stageId === stage)?.attempt ?? 0 : 0;
-  return { stage, attempt, kind: event.type, event };
+  return { stage, attempt, kind: event.type, event, effects: new Set() };
 }
 const sameHeld = (a: Held) => (b: Held): boolean => a.stage === b.stage && a.attempt === b.attempt && a.kind === b.kind;
+
+/** Each replay effect claims its event token before it begins, including notifications. */
+function claimEffect(held: Held | undefined, key: string): boolean {
+  if (!held) return true;
+  if (held.effects.has(key)) return false;
+  held.effects.add(key);
+  return true;
+}
 
 /** Why a held event no longer applies to the run as stored, or null while it does. */
 function staleness(record: RunRecord, held: Held): string | null {
@@ -397,7 +405,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         if (stale !== null) log.info("held stage run event dropped (id=%d, event=%s): %s", state.itemId, first.kind, stale);
         else {
           state.heldAgain = false;
-          await handle(state, first.event, undefined, true);
+          try {
+            await handle(state, first.event, undefined, first);
+          } catch (error) {
+            log.warn("held stage run event threw (id=%d, event=%s): %s", state.itemId, first.kind, errorMessage(error));
+            if (first.effects.size === 0) return;
+          }
           if (state.heldAgain) return;
         }
         state.held = state.held.filter(held => held !== first);
@@ -604,7 +617,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
    * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
    * write. */
-  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay = false): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
+  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
     if (runs.get(state.itemId) !== state) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
       return "run_mismatch";
@@ -659,7 +672,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         return ending === null ? next : endOf(state, next, ending, now);
       });
     } catch (error) {
-      if (precheck) throw error;
+      if (precheck || replay) throw error;
       // Whether the write landed is not known: the run ends as a fault, and an end its write does not confirm is written again by the next
       // permitted event.
       log.warn("stage run write threw (id=%d, event=%s): %s", state.itemId, event.type, errorMessage(error));
@@ -692,14 +705,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     for (const run of record.stageRuns) {
       const prior = before.find(candidate => candidate.stageId === run.stageId);
       if (prior?.status === run.status && prior.attempt === run.attempt) continue;
+      if (!claimEffect(replay, `stage:${run.stageId}`)) continue;
       shown = true;
       const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt };
       if (run.status === "awaiting_gate") emit({ ...about, phase: "stage_gate" });
       else if (run.status === "passed") emit({ ...about, phase: "stage_passed" });
       else if (run.status === "failed") emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });
     }
-    if (shown || (record.stageJoins ?? []).some(join => join.status === "conflict")) deps.itemChanged?.(state.itemId);
-    await runEffects(state, record, version, effects);
+    if ((shown || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimEffect(replay, "item-changed")) deps.itemChanged(state.itemId);
+    await runEffects(state, record, version, effects, replay);
     return null;
   }
 
@@ -708,9 +722,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     post(state, { type: "fault" });
   }
 
-  async function runEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[]): Promise<void> {
+  async function runEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): Promise<void> {
     let sealFailed = false;
-    for (const effect of effects) {
+    for (const [index, effect] of effects.entries()) {
+      if (!claimEffect(replay, `effect:${index}`)) continue;
       switch (effect.type) {
         case "spawn":
           state.due.add(`${effect.stageId}#${effect.attempt}`);

@@ -241,7 +241,14 @@ superseded attempt is dropped before any new preparation.
   attempt the run file shows for that stage when the event is held, else 0 (a
   join has no attempt counter). Held events are stored deduplicated by
   identity and applied idempotently: an event held twice is held once, and a
-  replay of one already applied changes nothing.
+  replay of one already applied changes nothing. Each in-process replay has
+  an effect-attempt token, checked and claimed immediately before each effect
+  (including stage and item notifications). Auto-gate evaluation, spawn,
+  interrupt, seal, integrate, settle and workspace release all use it. If the
+  handle throws before any effect starts, the event stays held. Once an effect
+  starts, the event is consumed even if the handle later throws; the throw is
+  logged and that event never invokes an effect again. A running stage with
+  no remaining child or event still takes the lost path below.
 - Storage: `heldEvents` in the run file, each entry the event's run and
   identity (`{itemId, runId, stage, attempt, kind}`); the event itself is kept
   in the engine's memory, since a restart reads back only a Stop's kind

@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { WorkflowRunStore } from "../../../main/workflow-run-store.js";
 import { boardRunState } from "../run-state.js";
-import { stageOf } from "./stage-fixtures.js";
+import { createPassConditionRegistry, type PassConditionRegistry } from "../stage-gates.js";
+import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { type FakeChild, stageRunHarness } from "./stage-run-harness.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
@@ -15,18 +16,19 @@ interface Run { h: Harness; id: number; runId: string; children: FakeChild[]; lo
 
 /** One run on its own home. While `lose` is on, every run write reads `row-lost` while the class stays live: as a board edit between the
  * class read and the write leaves it. `onSpawn` runs right after each child links. */
-async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSpawn?: (lose: (on: boolean) => void) => void, reason: "row-lost" | "board-unread" = "row-lost"): Promise<void> {
+async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSpawn?: (lose: (on: boolean) => void) => void, reason: "row-lost" | "board-unread" = "row-lost", passConditions?: PassConditionRegistry): Promise<void> {
   let losing = false;
   const lose = (on: boolean): void => { losing = on; };
   const h = await stageRunHarness({
     script: () => { onSpawn?.(lose); return undefined; },
+    workflow: passConditions ? { passConditions } : undefined,
     wiring: (store) => {
       const runs = boardRunState(store);
       return { runs: { ...runs, update: async (...a) => losing ? { ok: false, reason } : runs.update(...a) } };
     },
   });
   try {
-    const version = await h.confirm(stages.map(id => stageOf(id)));
+    const version = await h.confirm(stages.map(id => passConditions ? autoStageOf(id) : stageOf(id)));
     const id = await h.addItem(version);
     void h.start(id, h.local(version)).catch(() => undefined);
     const children = await h.untilLive(stages.length);
@@ -339,3 +341,43 @@ it("a completion held by an unreadable board replays after the actual board file
     await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
     expect(h.events.some(event => event.phase === "error")).toBe(false);
   }));
+
+it.each(["before", "after", "none"] as const)("a held replay claims effects at most once when its handle throws %s the effect", async (failure) => {
+  const conditions = createPassConditionRegistry();
+  const original = conditions.evaluate;
+  const evaluate = vi.spyOn(conditions, "evaluate");
+  if (failure === "after") evaluate.mockImplementationOnce(async (...args) => { await original(...args); throw new Error("after gate effect"); });
+  await withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    const held = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([held]));
+    const warnings = vi.spyOn(console, "warn");
+    const write = failure === "before" ? vi.spyOn(h.board, "updateRun").mockRejectedValue(new Error("before gate effect")) : undefined;
+    lose(false);
+    await permittedRead(h);
+    if (failure === "before") {
+      await vi.waitFor(() => expect(write).toHaveBeenCalled());
+      await settle();
+      expect(runsOnDisk(h).heldEvents).toEqual([held]);
+      expect((await h.runOf(runId))?.settled).toBeUndefined();
+      expect(evaluate).not.toHaveBeenCalled();
+      write?.mockRestore();
+    } else if (failure === "after") {
+      await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    }
+    if (failure !== "none") expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes(`${failure} gate effect`)))).toBe(true);
+    await Promise.all([permittedRead(h), permittedRead(h)]);
+    if (failure === "after") await h.untilStage(id, "a", "failed");
+    else expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "done" });
+    await permittedRead(h);
+    await settle();
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(failure === "after" ? 0 : 1);
+  }, undefined, "row-lost", conditions);
+});
