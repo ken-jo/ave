@@ -156,10 +156,12 @@ write is never a confirmation: a write is confirmed by reading the file back.
 - A marker is resolved under the board lock by the next permitted read, by
   its operation (`markerOutcome`, beside the classifier, pure and total). On a
   readable board:
-  - no entry of the items list has the marker's `itemId`, valid or not: the
-    delete landed, whatever its operation, since nothing it could have left
-    remains; only the marker goes, and the classifier decides when the intent
-    is due;
+  - positive absence: no entry of the items list has the marker's `itemId`,
+    valid or not, and the evidence walk finds no string value equal to its
+    `runId`. The delete landed, whatever its operation; only the marker goes,
+    and the classifier decides when the intent is due. The board facts carry
+    both observations; an absent item id alone never resolves an ambiguous
+    marker while a value still holds its run id;
   - a row op that owns its intent follows the listed-row rule: the board lists
     a row with that id, so the delete did not land, and the intent and marker
     are withdrawn together; otherwise it landed, so only the marker goes;
@@ -178,8 +180,11 @@ write is never a confirmation: a write is confirmed by reading the file back.
 - A held row or card stays deletable by the user. That delete publishes a
   fresh intent for the marker's run, owned by it, and the same run-file write
   drops the old marker; from there the new delete's own lifecycle applies.
-  Deleting what holds the run leaves no entry with that id, which resolves any
-  marker as landed, so a held state never outlasts the user's delete.
+  Deleting its bound row or card takes this fresh-intent path. If only a run-id
+  remnant elsewhere remains, the marker stays held: deleting an unrelated row
+  grants no release authority. The user repairs that remnant on disk (or
+  restores the bound row or card and deletes it). Once the evidence walk also
+  confirms positive absence, the next permitted read drops the marker.
 - A production marker always carries its operation; `entrySha` is left out
   only when the entries have no identity. The store's call that records an
   unknown outcome by the pair alone, which only tests make, records a row op

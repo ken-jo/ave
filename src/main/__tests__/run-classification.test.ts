@@ -60,11 +60,11 @@ const markers: (MarkerOp | undefined)[] = [
   undefined,
   ...(["row", "card"] as const).flatMap(op => flags.flatMap(ownIntent => [{ op, ownIntent }, { op, ownIntent, entrySha: sha }])),
 ];
-const markerBoards: MarkerBoard[] = flags.flatMap(listed => flags.flatMap(sameId => [true, false, undefined].map(entryPresent => ({ listed, sameId, entryPresent }))));
+const markerBoards: MarkerBoard[] = flags.flatMap(listed => flags.flatMap(sameId => flags.flatMap(held => [true, false, undefined].map(entryPresent => ({ listed, sameId, held, entryPresent })))));
 
 // The marker bullets of work-board-run-ending.md (Failure lifecycle), in order: the first that matches gives the outcome.
 const markerTable: [string, (marker: MarkerOp | undefined, board: MarkerBoard) => boolean, "unlanded" | "landed" | "held"][] = [
-  ["no entry has its id", (_, board) => !board.sameId, "landed"],
+  ["no entry has its id and no value holds its run id", (_, board) => !board.sameId && !board.held, "landed"],
   ["a legacy marker, or one of any other shape", marker => marker === undefined, "held"],
   ["its delete went through another delete's intent", marker => marker?.ownIntent === false, "held"],
   ["a row op with a listed row of that id", (marker, board) => marker?.op === "row" && board.listed, "unlanded"],
@@ -87,13 +87,13 @@ describe("markerOutcome", () => {
     },
   );
 
-  it("withdraws only a delete that owns its intent and left what it deleted, and never wedges a run whose id is gone", () => {
-    expect(markerCases).toHaveLength(9 * 12);
+  it("withdraws only a delete that owns its intent and left what it deleted, and releases a marker only on positive absence or its operation", () => {
+    expect(markerCases).toHaveLength(9 * 24);
     for (const { marker, board } of markerCases) {
       const result = markerOutcome(marker, board);
       if (result === "unlanded") expect(marker?.ownIntent).toBe(true);
-      if (!board.sameId) expect(result).toBe("landed");
-      if (marker === undefined && board.sameId) expect(result).toBe("held");
+      if (!board.sameId && !board.held) expect(result).toBe("landed");
+      if (marker === undefined && (board.sameId || board.held)) expect(result).toBe("held");
     }
   });
 

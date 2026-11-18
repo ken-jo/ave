@@ -27,14 +27,14 @@ export interface BoardFacts { standing: RunRowStanding; held: boolean; listed: b
 export interface MarkerOp { op: "row" | "card"; ownIntent: boolean; entrySha?: string }
 
 /** What a readable board file on disk shows of a marker's delete: whether it lists a row with the marker's row id, whether any entry of
- * its items list has that id (valid or not), and whether an entry whose identity is the marker's `entrySha` is there (undefined when
+ * its items list has that id (valid or not), whether a string value holds the run id, and whether an entry whose identity is the marker's `entrySha` is there (undefined when
  * the marker has none or the entries have no identity). */
-export interface MarkerBoard { listed: boolean; sameId: boolean; entryPresent: boolean | undefined }
+export interface MarkerBoard extends Pick<BoardFacts, "listed" | "held"> { sameId: boolean; entryPresent: boolean | undefined }
 
 /** How a marker resolves on a readable board (work-board-run-ending.md, Failure lifecycle): `unlanded` withdraws the intent with the
  * marker, `landed` drops only the marker, `held` keeps both. Pure and total. */
 export function markerOutcome(marker: MarkerOp | undefined, board: MarkerBoard): "unlanded" | "landed" | "held" {
-  if (!board.sameId) return "landed";
+  if (!board.sameId && !board.held) return "landed";
   if (marker === undefined || !marker.ownIntent) return "held";
   if (marker.op === "row") return board.listed ? "unlanded" : "landed";
   return board.entryPresent === true ? "unlanded" : "held";

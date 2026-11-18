@@ -513,19 +513,23 @@ interface BoardOnDisk { board: BoardFile; holds: (runId: string) => boolean; sta
 const shaSet = (shas: readonly string[] | undefined): ReadonlySet<string> | undefined => shas && new Set(shas);
 
 // What a readable board shows of a marker's delete, for markerOutcome; `entries`, the identities of its entries.
-function markerBoard(board: BoardFile, entries: () => ReadonlySet<string> | undefined, marker: DeleteMarker): MarkerBoard {
+function markerBoard(onDisk: BoardOnDisk, marker: DeleteMarker): MarkerBoard {
+  const facts = boardFacts(onDisk, marker);
   const sha = marker.operation?.entrySha;
   return {
-    listed: board.items.some((row) => row.id === marker.itemId),
-    sameId: [...board.items, ...board.unreadable].some((row) => rowIdOf(row) === marker.itemId),
-    entryPresent: sha === undefined ? undefined : entries()?.has(sha),
+    listed: facts.listed,
+    held: facts.held,
+    sameId: facts.listed || facts.sameIdEntry,
+    entryPresent: sha === undefined ? undefined : onDisk.entries()?.has(sha),
   };
 }
 
 // Whether a marker stays held on a board a write read (see markerOutcome).
 function heldOn(board: BoardRead): (marker: DeleteMarker) => boolean {
   const entries = later(() => shaSet(board.stored?.shas()));
-  return (marker) => markerOutcome(marker.operation, markerBoard(board, entries, marker)) === "held";
+  const holds = heldLater(boardText(board));
+  const onDisk = { board, entries, holds, standing: boardStanding(board, holds) };
+  return (marker) => markerOutcome(marker.operation, markerBoard(onDisk, marker)) === "held";
 }
 
 // The identity of an entry a write read, by the element parsed from the file.
@@ -842,7 +846,7 @@ export class WorkBoardStore {
     if (!(await this.runs.hasUnknown())) return;
     await withInProcessFileQueue(this.filePath, async () => {
       const onDisk = await readBoardOnDisk(this.filePath).catch(() => undefined);
-      if (onDisk) await this.runs.resolveUnknown(marker => markerOutcome(marker.operation, markerBoard(onDisk.board, onDisk.entries, marker)));
+      if (onDisk) await this.runs.resolveUnknown(marker => markerOutcome(marker.operation, markerBoard(onDisk, marker)));
     });
   }
 

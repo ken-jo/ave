@@ -144,3 +144,18 @@ it.each([
       expect(readRuns().unknownDeletes).toBeUndefined();
     },
   ));
+
+it.each([
+  ["a legacy marker", {}],
+  ["a card with no identified entry", { op: "card", ownIntent: true }],
+  ["another delete's intent", { op: "card", ownIntent: false }],
+])("%s stays held when only the item id is absent and another entry holds the run id", async (_, shape) =>
+  withHome(
+    [{ id: 41, title: 0, retained: JSON.stringify({ nested: INTENT.runId }) }],
+    { deleteIntents: [INTENT], unknownDeletes: [{ ...INTENT, ...shape }] },
+    async ({ store, readRuns, reopen }) => {
+      expect(await classOf(store)).toBe("unreadable");
+      expect(readRuns()).toMatchObject({ deleteIntents: [INTENT], unknownDeletes: [{ ...INTENT, ...shape }] });
+      expect(await classOf(await reopen())).toBe("unreadable");
+    },
+  ));
