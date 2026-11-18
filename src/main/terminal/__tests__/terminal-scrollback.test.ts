@@ -3,7 +3,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { configureHostResources } from "../../host-resources.js";
 
 type DataCb = (chunk: string) => void;
 type ExitCb = (e: { exitCode: number; signal?: number }) => void;
@@ -63,6 +64,7 @@ const start = (options: { restore?: boolean; tabId?: string } = {}) =>
   spawnTerminal({ tabId: options.tabId ?? TAB, lane: "manual", purpose: "workspace", ownerWindowId: WINDOW, cwd: tmpdir(), ...(options.restore ? { restore: true } : {}) });
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   shellDir = mkdtempSync(join(tmpdir(), "ave-scrollback-shell-"));
   home = mkdtempSync(join(tmpdir(), "ave-scrollback-home-"));
   aveHome = mkdtempSync(join(tmpdir(), "ave-scrollback-avehome-"));
