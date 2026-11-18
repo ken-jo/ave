@@ -57,9 +57,10 @@ without an items list), and returns exactly one class:
 | open intent | the run id held, a listed row with its id, or an entry with its id that does not validate | `waiting-delete` |
 | open intent | none of these | `due-delete` |
 | no intent | the row names the run | `live` |
-| no intent | no row with its id, or the row holds the run only in its run history | `orphan` |
-| no intent | the row neither names nor holds it, or it may have been written over (`unknownBelow`) | `lost` |
-| no intent | the row does not validate | `unreadable` |
+| no intent | the row does not name the run but holds it in its run history | `orphan` |
+| no intent | no listed row with its id but an entry with that id that does not validate; or, the row absent or neither naming nor holding the run, a string value in the file holds the run id; or, the row absent, an entry has no usable id | `unreadable` |
+| no intent | no row with its id, at or above `unknownBelow` | `orphan` |
+| no intent | the row neither names nor holds it, or there is no row with its id below `unknownBelow` (it may have been written over) | `lost` |
 
 Rows are read in that order. A run with an open intent or an unknown marker is
 never `orphan` or `lost`. A table test enumerates every combination of these
@@ -74,7 +75,7 @@ standing rule of its own:
 |---|---|---|---|---|---|---|
 | boot and live adoption | adopted | cancelled, item removed | kept | kept | cancelled | error, `template-run-lost` |
 | `checkRows` after a board write | runs on | stopped, then item removed | runs on | runs on | stopped, then cancelled | ends error |
-| a run write whose row is gone | written | stopped, then item removed | held, not written | held, not written | stopped, then cancelled | ends error |
+| a run write | written | stopped, then item removed | held, not written | held, not written | stopped, then cancelled | ends error |
 | delete-intent takeover | | cancelled, item removed | | | | |
 | reader, start, decide, `clearMissingRun` | reconsider intents and markers first, then act | | | | | |
 
@@ -100,10 +101,11 @@ can write a terminal status. A structural test checks that.
 For the deletion-derived causes (item-removed, orphan, lost), `settleRun`
 classifies the run again inside the run-file lock, from the board file read
 under the board lock, and refuses a cause the class does not allow; the run
-then stays unconfirmed and the next permitted event tries again. The settle
-writes the final stage states and `settled` in one write, and in that same
-write the run's intent and marker go. Stop, completion and failure never go
-through intent logic.
+then stays unconfirmed and the next permitted event tries again. So does an
+end whose write throws: whether it landed is not known, so the run ends as a
+fault and its end is written again. The settle writes the final stage states
+and `settled` in one write, and in that same write the run's intent and marker
+go. Stop, completion and failure never go through intent logic.
 
 ## Failure lifecycle
 
@@ -170,8 +172,12 @@ fails the list itself, with its own reason, as before.
 - `run-ending-structure.test.ts`: no module but the run store writes a terminal
   status, and every listed consumer reads the class and ends runs through
   `settleRun`.
-- An engine property test drives the real engine through boot adoption, live
-  adoption, `checkRows` and run writes over every open-intent state and failure
-  window, with its own oracle, and checks each end against the class.
+- `run-ending-engine-property.test.ts` (`src/work-board/workflow/__tests__`)
+  drives the real engine through boot adoption, live adoption, `checkRows`
+  after a board write, a run write and a reader, over every board state, with
+  and without an open intent and an unknown marker, and in each failure window
+  (an end write that fails, a run file that cannot be read). Its own oracle
+  gives the class; it checks each end against it, that each end comes through
+  `settleRun`, and that each consumer read the class from `classifyRun`.
 - The delete failure windows, marker resolution, recovery and the notice have
   targeted tests beside the write guard's.
