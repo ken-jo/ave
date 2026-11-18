@@ -200,7 +200,7 @@ it("a state change is reduced from the run as stored at the write: a workspace s
           adoption: () => runs().adoption(),
           deleted: () => runs().deleted(),
           pruneSettled: () => runs().pruneSettled(),
-          rows: () => runs().rows(),
+          classes: () => runs().classes(),
           settleUnstarted: (...a) => runs().settleUnstarted(...a),
           // The read of one event returns only after another write has stored the second stage's workspace: what it read is stale.
           get: async (itemId, runId) => {
@@ -942,7 +942,7 @@ async function liveRun(h: Harness) {
   return { version, id, run, child, runId, record: await h.runOf(runId) };
 }
 
-/** Damage the run's row on disk, add another row (a board write, after which the engine checks every live run's row) and wait for that
+/** Damage the run's row on disk, add another row (a board write, after which the engine classifies every live run) and wait for that
  * check; the run must read unreadable through it and keep its child and record. Then put the row back as it was. */
 async function waitsThroughDamage(h: Harness, live: Awaited<ReturnType<typeof liveRun>>, damage: (row: Record<string, unknown>, freeId: number) => string): Promise<void> {
   const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { nextId: number; items: Record<string, unknown>[] };
@@ -950,13 +950,13 @@ async function waitsThroughDamage(h: Harness, live: Awaited<ReturnType<typeof li
   if (!original) throw new Error("the run's row is not on disk");
   const others = file.items.filter(row => row !== original);
   writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...others, "__row__"] }).replace('"__row__"', damage(original, file.nextId + 100)));
-  const rows = vi.spyOn(h.board, "runRowsOnDisk");
+  const rows = vi.spyOn(h.board, "runClasses");
   const checks = rows.mock.calls.length;
   await h.addItem(live.version);
   expect(rows.mock.calls.length).toBeGreaterThan(checks);
-  const standing = await rows.mock.results[checks].value;
+  const classOf = await rows.mock.results[checks].value;
   await new Promise(resolve => setTimeout(resolve, 0));
-  expect(standing?.({ itemId: live.id, runId: live.runId })).toBe("unreadable");
+  expect(typeof classOf === "function" && classOf({ itemId: live.id, runId: live.runId })).toBe("unreadable");
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
   expect(await h.runOf(live.runId)).toEqual(live.record);
@@ -999,13 +999,13 @@ it("a live run whose row was moved by hand from the items list under another top
   const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] };
   const archive = file.items.filter(row => row.id === live.id);
   writeFileSync(h.boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== live.id), archive }));
-  const rows = vi.spyOn(h.board, "runRowsOnDisk");
+  const rows = vi.spyOn(h.board, "runClasses");
   const checks = rows.mock.calls.length;
   await h.addItem(live.version);
   expect(rows.mock.calls.length).toBeGreaterThan(checks);
-  const standing = await rows.mock.results[checks].value;
+  const classOf = await rows.mock.results[checks].value;
   await new Promise(resolve => setTimeout(resolve, 0));
-  expect(standing?.({ itemId: live.id, runId: live.runId })).toBe("unreadable");
+  expect(typeof classOf === "function" && classOf({ itemId: live.id, runId: live.runId })).toBe("unreadable");
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
   expect(await h.runOf(live.runId)).toEqual(live.record);
@@ -1121,11 +1121,12 @@ it("a user's delete of a listed row whose twin with its id does not validate can
   const listed = await h.board.get(live.id);
   if (listed.status !== "found") throw new Error("twin not listed");
   expect(listed.item.title).toBe(twin.title);
-  const rows = vi.spyOn(h.board, "runRowsOnDisk");
+  const rows = vi.spyOn(h.board, "runClasses");
   const checks = rows.mock.calls.length;
   expect(await h.board.remove(live.id, listed.item.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: "run-old" });
   expect(rows.mock.calls.length).toBeGreaterThan(checks);
-  expect((await rows.mock.results[checks].value)?.({ itemId: live.id, runId: live.runId })).toBe("unreadable");
+  const classOf = await rows.mock.results[checks].value;
+  expect(typeof classOf === "function" && classOf({ itemId: live.id, runId: live.runId })).toBe("unreadable");
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
@@ -1136,7 +1137,6 @@ it("a user's delete of a listed row whose twin with its id does not validate can
 
 it.each([
   ["entries with no id", (items: unknown[]) => [...items, null, "text"]],
-  ["a twin that does not validate", (items: unknown[], id: number) => [...items, { id, title: 5 }]],
 ])("a user's delete of the listed row of a run a restart left parked ends the run cancelled as its row removed, with %s on the board", (_case, damage) => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);
@@ -1145,7 +1145,7 @@ it.each([
   expect(await run).toMatchObject({ status: "awaiting_approval" });
   const runId = (await h.item(id)).runId ?? "";
   const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: unknown[] };
-  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: damage(file.items, id) }));
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: damage(file.items) }));
 
   // The next process, before its engine has taken the run over.
   h.makeEngine();
@@ -1160,6 +1160,30 @@ it.each([
   expect(record?.settled?.status).toBe("cancelled");
   expect(record?.stageRuns.map(stage => stage.status)).toEqual(["cancelled"]);
   expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+}));
+
+it("a user's delete of the listed row of a run a restart left parked waits while a twin with its id that does not validate is on the board: the run stays parked and its intent waits", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  (await h.untilLive(1))[0].finish();
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  const runId = (await h.item(id)).runId ?? "";
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: unknown[] };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...file.items, { id, title: 5 }] }));
+
+  h.makeEngine();
+  const split = vi.spyOn(h.board, "deleteIntentsOnDisk");
+  const before = h.events.length;
+  const row = await h.item(id);
+  expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
+  for (let i = 0; i < 400 && split.mock.results.length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  const reads = await Promise.all(split.mock.results.map(result => result.value));
+  expect(reads.length).toBeGreaterThan(0);
+  for (const read of reads) expect(read).toEqual({ due: [], waiting: [{ itemId: id, runId }] });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(h.events.slice(before).some(event => event.phase === "cancelled" || event.phase === "error")).toBe(false);
+  expect((await h.runOf(runId))?.settled).toBeUndefined();
 }));
 
 it("an adoption while a deleted row's parked run is being cancelled leaves that run to the cancel, which ends it as its row removed", () => withHarness(async (h) => {

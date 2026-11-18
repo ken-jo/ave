@@ -3714,7 +3714,9 @@ with its own owner rule:
   a template run to it. `updateRun` changes only the run a row names, and
   `runRowsOnDisk()` tells where each run's row stands on the board file on
   disk: it names the run, holds it only in its run history, is there without
-  either, does not validate, is lost or is gone. A board file that is missing, does
+  either, does not validate, is lost or is gone. Consumers do not read that:
+  `runClasses()` gives each unsettled run's class from the one classifier
+  ([Work board run endings](./work-board-run-ending.md)). A board file that is missing, does
   not parse, is not an object with an items list (`null`, a list) or awaits
   review shows nothing. A board write moves a file that does not parse or has
   no items list aside to `board.json.corrupt-<ms>-<hex>.bak` before it starts
@@ -3856,10 +3858,11 @@ with its own owner rule:
   board write; an intent that cannot be stored refuses the delete and
   writes nothing (`template-runs-pending-review`,
   `template-runs-too-large`). One rule alone ends a run from its intent
-  (`deleteLanded`, applied only by `deleteIntentsOnDisk`): the intent is
+  (`classifyRun`, class `due-delete`): the intent is
   open (the run file holds its run once, readable, not over and of that
-  row) and the board file on disk, read after it, lists no row with that id
-  and holds the run's id as no string value under (a) below; whatever else
+  row) and the board file on disk, read after it, lists no row with that id,
+  has no entry with that id that does not validate, and holds the run's id
+  as no string value under (a) below; whatever else
   the file holds (entries without a usable id, an `unknownBelow` mark
   above it) does not matter. Short of that the intent waits: the delete
   may not have landed, or the file still holds what could be the run's row

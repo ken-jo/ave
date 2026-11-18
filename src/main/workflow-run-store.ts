@@ -9,6 +9,7 @@ import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
 import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
+import type { RunFileFacts } from "./run-classification.js";
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
@@ -81,6 +82,9 @@ function openIntent(file: RunsFile, intent: DeleteIntent): boolean {
   const { result } = lookup(file, intent.runId);
   return result.status === "found" && result.run.settled === undefined && result.run.itemId === intent.itemId;
 }
+
+const openIntents = (file: RunsFile): DeleteIntent[] =>
+  (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry));
 
 // An intent goes with the write that ends its run, or once the file holds no such run; one whose run entry does not read, or that does
 // not read as an intent, stays as it is.
@@ -275,7 +279,24 @@ export class WorkflowRunStore {
    * be read throws. */
   async deleteIntents(): Promise<DeleteIntent[] | undefined> {
     const file = await this.read();
-    return file && (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry));
+    return file && openIntents(file);
+  }
+
+  /** One read of the file for classifyRun: the open delete intents, and what the file says of a run (a record under its id that does not
+   * validate, is stored twice or belongs to another row reads as unreadable; an intent is open only for a readable, unsettled record of
+   * that row). Undefined while the file awaits review or is past its read limit; a file that cannot be read throws. */
+  async runFacts(): Promise<{ intents: DeleteIntent[]; of: (run: DeleteIntent) => RunFileFacts } | undefined> {
+    const file = await this.read();
+    if (file === undefined) return undefined;
+    const intents = openIntents(file);
+    return {
+      intents,
+      of: (run) => {
+        const { result } = lookup(file, run.runId);
+        if (result.status === "invalid" || (result.status === "found" && result.run.itemId !== run.itemId)) return { readable: false };
+        return { readable: true, intent: intents.some(intent => intent.itemId === run.itemId && intent.runId === run.runId), unknown: false };
+      },
+    };
   }
 
   /** What a board write must keep: `held`, the run id of every entry that is not a settled run (an unsettled run, or an entry that does
@@ -290,7 +311,7 @@ export class WorkflowRunStore {
       const { result } = lookup(file, entry.runId);
       if (result.status !== "found" || result.run.settled === undefined) held.add(entry.runId);
     }
-    return { held, intents: (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry)) };
+    return { held, intents: openIntents(file) };
   }
 
   /** Every readable run, whether or not a row names it: what the engine adopts back at boot. Unreadable and repeated entries are left

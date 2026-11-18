@@ -131,13 +131,16 @@ function openIntents(runs: Buffer): Intent[] {
     return open ? [{ itemId: itemId as number, runId: runId as string }] : [];
   });
 }
-// What may end from its intent: an open intent whose run id the board file holds as no string value; `due`, those whose row it lists
-// nowhere too. `plain`: the store reads the same string values in the file.
+// What may end from its intent: an open intent whose run id the board file holds as no string value; `due`, those whose row id no entry
+// of its items list has, valid or not, too. `plain`: the store reads the same string values in the file.
 function intentModel(board: Buffer, runs: Buffer, named: ReadonlySet<string>): { allowed: string[]; due: Intent[]; plain: boolean } {
   const text = board.toString("utf8");
   const blob = text.includes(BLOB);
   const { values, plain } = stringsOf(text, named);
-  const rowIds = new Set((parsed(board).items as unknown[]).filter(isRow).map(r => r.id));
+  const rowIds = new Set((parsed(board).items as unknown[]).flatMap((entry) => {
+    const id = typeof entry === "object" && entry !== null ? (entry as { id?: unknown }).id : undefined;
+    return typeof id === "number" && Number.isSafeInteger(id) && id >= 1 ? [id] : [];
+  }));
   const allowed = openIntents(runs).filter(intent => !blob && !values.has(intent.runId));
   return { allowed: allowed.map(key), due: allowed.filter(intent => !rowIds.has(intent.itemId)), plain: plain || blob };
 }
@@ -776,6 +779,8 @@ describe("a delete intent", () => {
       writeFileSync(path, JSON.stringify({ version: 1, nextId: 51, ...held([row(41)]) }));
       expect(await store.deletedRuns()).toEqual([]);
       writeFileSync(path, JSON.stringify({ version: 1, nextId: 51, items: [row(41), { id: 40, title: 5 }, null] }));
+      expect(await store.deletedRuns()).toEqual([]);
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 51, items: [row(41), { id: 39, title: 5 }, null] }));
       expect(await store.deletedRuns()).toEqual([{ itemId: 40, runId: "run-a" }]);
     } finally { await cleanupTmpDir(dir); }
   });

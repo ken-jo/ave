@@ -8,6 +8,7 @@ import { hasUnsafeDirectiveControlChars } from "../../engine/parent-directive.js
 import { exactToolScope, PARENT_ALL_TOOL_SCOPE, type SubAgentRunner, type SubAgentSpawnResult } from "../../engine/subagent-runner.js";
 import { createLogger } from "../../lib/logger.js";
 import type { LoadedAgentProfile } from "../../main/agent-profile-store.js";
+import type { RunClass } from "../../main/run-classification.js";
 import { WorkBoardWriteRefusal } from "../../main/storage/rewrite-keeping-bytes.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { WorkflowTemplateStore } from "../../main/workflow-template-store.js";
@@ -298,19 +299,23 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     post(state, { type: "stop_requested" });
   }
 
-  /** After any board write: a run whose row the board on disk shows gone or naming a newer run, by whichever path, is cancelled; one whose
-   * row no longer names or holds it, or is lost with a board written over, ends error. A board file that shows nothing changes nothing. */
+  /** What a run's class (classifyRun) does to it once its row is not named: a delete that is due or an orphan cancels it as its row
+   * removed, a lost run ends error, and every other class holds it. */
+  function byClass(state: RunState, runClass: RunClass, lost: () => void): void {
+    if (runClass === "due-delete" || runClass === "orphan") rowRemoved(state);
+    else if (runClass === "lost") lost();
+  }
+
+  /** After any board write, each run by its class. A run file awaiting review or a board file that shows nothing changes nothing. */
   async function checkRows(): Promise<void> {
-    const standing = await records.rows();
-    if (!standing) return;
+    const classOf = await records.classes();
+    if (typeof classOf === "string") return;
     for (const state of [...runs.values()]) {
       if (state.rowGone || state.lost) continue;
-      const row = standing(state);
-      if (row === "gone" || row === "moved") rowRemoved(state);
-      else if (row === "unnamed" || row === "lost") {
+      byClass(state, classOf(state), () => {
         state.lost = true;
         fault(state, "template-run-lost");
-      }
+      });
     }
   }
   store.boardChanged.subscribe(() => {
@@ -382,9 +387,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
     const result = await records.update(state.itemId, state.runId, mutate, state.rowGone || state.lost);
     if (result.ok) return { run: result.run };
-    if (result.reason === "row-gone") rowRemoved(state);
-    // Not a deleted row: the run ends error, and its end is written by its id.
-    if (result.reason === "row-lost") state.lost = true;
+    // The row does not name the run: its class says what follows. A lost run ends error, its end written by its id.
+    if (result.reason === "row-gone" || result.reason === "row-lost") {
+      // A run file or board that cannot be read holds the run.
+      const classOf = await records.classes().catch(() => undefined);
+      if (typeof classOf === "function") byClass(state, classOf(state), () => { state.lost = true; });
+    }
     return { run: null, reason: result.reason };
   }
 

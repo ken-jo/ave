@@ -67,7 +67,7 @@ inputs with its expected class.
 
 ## Consumers
 
-Every consumer reads the class through the store (`classifyRuns`) and keeps no
+Every consumer reads the class through the store (`runClasses`) and keeps no
 standing rule of its own:
 
 | Consumer | `live` | `due-delete` | `waiting-delete` | `unreadable` | `orphan` | `lost` |
