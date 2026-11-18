@@ -7,6 +7,8 @@ import { WorkBoardPanel } from "../WorkBoardPanel.js";
 import type { AveApi } from "../../types.js";
 import type { WorkItemChangedEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
 import { t } from "../../../../i18n/index.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 
 const result: WorkItemResolved = { id: 2, title: "Export journal", status: "in_progress", status_resolved: "overdue", mutationRevision: "a".repeat(64), priority: "high", runStatus: "completed", output: "Export finished with 3 files", runId: "run-2", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-02T00:00:00Z" };
 const itemChanged: WorkItemChangedEventPayload = { itemId: 2, change: "updated", changedAt: "2026-01-01T00:00:00.000Z" };
@@ -225,6 +227,19 @@ describe("work board review", () => {
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
     expect(await screen.findByTestId("work-board-writes-refused")).toHaveTextContent(t("reasonCodes.work-board-duplicate-key"));
     expect(t("reasonCodes.work-board-duplicate-key")).toContain("board.json");
+    expect(screen.getByTestId("work-board-card")).toBeTruthy();
+    changed();
+    await waitFor(() => expect(screen.queryByTestId("work-board-writes-refused")).toBeNull());
+  });
+  it("shows one notice while a list says writes wait for the run file, and drops it once a list no longer does", async () => {
+    const api = apiFor([result]);
+    let changed = () => {};
+    api.onWorkBoardItemChanged = handler => { changed = () => handler(itemChanged); return () => {}; };
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [result], writesRefused: "work-board-runs-unreadable" });
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    expect(await screen.findAllByTestId("work-board-writes-refused")).toHaveLength(1);
+    expect(screen.getByTestId("work-board-writes-refused")).toHaveTextContent(t("reasonCodes.work-board-runs-unreadable"));
+    for (const catalog of [en, ko]) expect(catalog["reasonCodes.work-board-runs-unreadable"]).toContain("workflow-runs.json");
     expect(screen.getByTestId("work-board-card")).toBeTruthy();
     changed();
     await waitFor(() => expect(screen.queryByTestId("work-board-writes-refused")).toBeNull());

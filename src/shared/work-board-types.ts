@@ -199,8 +199,9 @@ export type WorkBoardEntryDeleteResult =
 export type WorkItemListResult =
   // unreadableRows: one entry per row of the board file that does not validate, with its id when it has one; they are kept in the file
   // and are not listed. unreadableRuns: one per entry of the run file that does not read as a run. writesRefused: the board file as
-  // last read holds a key twice, so every write of it is refused until it is fixed by hand; the rows are listed as they read.
-  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[]; unreadableRuns?: WorkItemUnreadableRun[]; writesRefused?: "work-board-duplicate-key" }
+  // last read holds a key twice, so every write of it is refused until it is fixed by hand; or, once per unreadable episode, a write was
+  // refused because the run file cannot be read, and it still cannot (`work-board-runs-unreadable`). The rows are listed as they read.
+  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[]; unreadableRuns?: WorkItemUnreadableRun[]; writesRefused?: "work-board-duplicate-key" | "work-board-runs-unreadable" }
   | { status: "invalid"; reason: string };
 
 export type WorkItemCreateResult =

@@ -724,6 +724,39 @@ describe("what lets a write take a live run's id out of board.json", () => {
         await cleanupTmpDir(dir);
       }
     });
+
+    it("opens one episode at a refused write, whose notice a list carries while it can list, and the first recovery once the file reads closes its dead runs as boot does, leaves live ones and replays nothing", async () => {
+      const inFlight = (id: number) => row(id, { runId: `plain-${id}`, runStatus: "executing", runHistory: [{ runId: `plain-${id}`, startedAt: AT, status: "executing" }] });
+      const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items: [inFlight(2), inFlight(3)] }, null, 2)}\n`, []);
+      const notice = () => store.list().then(listed => listed.status === "ok" ? listed.writesRefused ?? "none" : listed.status, () => "unlisted");
+      const onDisk = (id: number) => (JSON.parse(readFileSync(path, "utf8")) as { items: Record<string, unknown>[] }).items.find(item => item.id === id);
+      try {
+        const read = homeTrust.readAveHomeInput;
+        const reading = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(target => target === join(dir, "workflow-runs.json") ? input() : read(target));
+        const listable = (await notice()) !== "unlisted";
+        expect(await notice()).toBe(listable ? "none" : "unlisted");
+        await expect(store.update(2, { title: "edited" })).rejects.toMatchObject({ code });
+        await expect(store.update(3, { title: "edited" })).rejects.toMatchObject({ code });
+        expect(await notice()).toBe(listable ? "work-board-runs-unreadable" : "unlisted");
+        const before = readFileSync(path, "utf8");
+        await store.recoverRuns(() => false);
+        expect(readFileSync(path, "utf8")).toBe(before);
+        expect(await notice()).toBe(listable ? "work-board-runs-unreadable" : "unlisted");
+
+        reading.mockRestore();
+        expect(await notice()).toBe("none");
+        await store.recoverRuns(id => id === 3);
+        expect(onDisk(2)).toMatchObject({ title: "row 2", runStatus: "error", runUpdatedAt: AT, runHistory: [{ runId: "plain-2", status: "error", endedAt: AT }] });
+        expect(onDisk(3)).toEqual(inFlight(3));
+        const recovered = readFileSync(path, "utf8");
+        await store.recoverRuns(() => false);
+        expect(readFileSync(path, "utf8")).toBe(recovered);
+        expect(await notice()).toBe("none");
+      } finally {
+        vi.restoreAllMocks();
+        await cleanupTmpDir(dir);
+      }
+    });
   });
 
   it("names workflow-runs.json in the notice a write refused while the run file cannot be read shows, in English and Korean", () => {

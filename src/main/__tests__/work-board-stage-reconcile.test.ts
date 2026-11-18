@@ -458,3 +458,94 @@ it("a deferred adoption is retried only by an event, never by time", async () =>
     await h.cleanup();
   }
 });
+
+/** An ordinary row started on the harness engine, once its plan child links. */
+async function ordinaryRun(h: Harness, title: string) {
+  const created = await h.board.create({ title });
+  if (created.status !== "created") throw new Error("no row");
+  const before = h.children.length;
+  const running = h.engine.runItem(created.itemId);
+  const [child] = (await h.untilSpawned(before + 1)).slice(before);
+  await h.until(created.itemId, item => item.runSessionId === child.sessionId);
+  return { id: created.itemId, child, running };
+}
+/** The run file made to hold a key twice, as a hand edit can: nothing reads it until it is put back. */
+function breakRunFile(h: Harness): () => void {
+  const runsPath = join(h.dir, "workflow-runs.json");
+  const original = readFileSync(runsPath, "utf8");
+  writeFileSync(runsPath, `{"version":1,${original.trim().slice(1)}`);
+  return () => writeFileSync(runsPath, original);
+}
+const rowOnDisk = (h: Harness, id: number) => (JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] }).items.find(row => row.id === id);
+
+it.each<[string, (h: Harness, id: number) => Promise<unknown>]>([
+  ["reader", async h => { const listed = await h.board.list(); if (listed.status === "ok") await h.engine.projectTemplateRuns(listed.items); }],
+  ["adoption", h => h.engine.adoptParkedTemplateRuns()],
+  ["plan decision", (h, id) => h.engine.decidePlan(id, { runId: "other-run", planHash: "c".repeat(64), decision: "approve" })],
+  ["stage decision", (h, id) => h.engine.decideStageGate(id, { runId: "other-run", stageId: "a", attempt: 1, resultHash: "c".repeat(64), decision: "approve" })],
+  ["missing run clear", (h, id) => h.engine.clearMissingRun(id, { revision: "c".repeat(64), runId: "other-run" })],
+])("an ordinary run whose end was refused while the run file could not be read ends error at the next %s once the file reads, never by time", async (_, event) => {
+  const h = await stageRunHarness();
+  try {
+    await h.engine.adoptParkedTemplateRuns();
+    const { id, child, running } = await ordinaryRun(h, "ordinary work");
+    const restore = breakRunFile(h);
+    child.finish({ ok: false, summary: "child failed", error: "child failed" });
+    expect(await running).toMatchObject({ status: "error" });
+    restore();
+    vi.useFakeTimers({ toFake: ["setTimeout", "setInterval"] });
+    try {
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(rowOnDisk(h, id)).toMatchObject({ runStatus: "planning" });
+    await event(h, id);
+    expect(rowOnDisk(h, id)).toMatchObject({ runStatus: "error", runHistory: [{ status: "error" }] });
+  } finally {
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});
+
+it("a start of an ordinary row whose end was refused while the run file could not be read runs it again once the file reads", async () => {
+  const h = await stageRunHarness();
+  try {
+    const { id, child, running } = await ordinaryRun(h, "ordinary work");
+    const restore = breakRunFile(h);
+    child.finish({ ok: false, summary: "child failed", error: "child failed" });
+    expect(await running).toMatchObject({ status: "error" });
+    restore();
+    const again = h.engine.runItem(id);
+    const [next] = await h.untilLive(1);
+    expect(next).not.toBe(child);
+    next.finish({ ok: false, summary: "again failed", error: "again failed" });
+    expect(await again).toMatchObject({ status: "error", reason: "again failed" });
+  } finally {
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});
+
+it("the recovery leaves an ordinary run in flight to end by its own write and replays no write the episode refused", async () => {
+  const h = await stageRunHarness();
+  try {
+    const dead = await ordinaryRun(h, "dead work");
+    const kept = await ordinaryRun(h, "kept work");
+    const restore = breakRunFile(h);
+    dead.child.finish();
+    expect(await dead.running).toMatchObject({ status: "error" });
+    await expect(h.board.update(kept.id, { title: "renamed" })).rejects.toMatchObject({ code: "work-board-runs-unreadable" });
+    restore();
+    await h.engine.adoptParkedTemplateRuns();
+    expect(rowOnDisk(h, dead.id)).toMatchObject({ runStatus: "error" });
+    expect(rowOnDisk(h, dead.id)).not.toHaveProperty("plan");
+    expect(rowOnDisk(h, kept.id)).toMatchObject({ title: "kept work", runStatus: "planning" });
+    kept.child.finish();
+    expect(await kept.running).toMatchObject({ status: "awaiting_approval" });
+    expect(rowOnDisk(h, kept.id)).toMatchObject({ title: "kept work", runStatus: "awaiting_approval", plan: `output of ${kept.child.sessionId}` });
+  } finally {
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});

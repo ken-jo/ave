@@ -142,13 +142,17 @@ and `clearMissingRun`. Each one reconsiders the open intents and markers;
 an adoption that already ran never suppresses this, and nothing waits on a
 timer or a restart.
 
-A run file that cannot be read opens an unreadable episode. The first permitted
-event that reads it again runs `reconcileInterruptedRuns`, the same function
-boot runs, with the core engine's in-flight runs left alone: a dead ordinary
-run closes as `error` and becomes runnable, a live execution is untouched, and
-refused user writes are not replayed. While the episode is open the list
-carries the `work-board-runs-unreadable` notice (en and ko) once, as one
-banner rather than per refusal, and recovery clears it.
+A board write refused because the run file cannot be read opens an unreadable
+episode (`WorkBoardStore.recoverRuns`). The first permitted event once the file
+reads again runs `reconcileInterruptedRuns`, the same function boot runs, with
+the rows of the core engine's in-flight items left alone: a dead ordinary run
+closes as `error` and becomes runnable, a live execution is untouched, and
+refused user writes are not replayed. While the episode is open and the list's
+own read of the run file still fails, the list carries the
+`work-board-runs-unreadable` notice (en and ko) once, as one banner
+(`writesRefused`) rather than per refusal; a list that reads the file again,
+and recovery, clear it. A run file that does not parse or holds a key twice
+fails the list itself, with its own reason, as before.
 
 ## Retention and envelopes
 

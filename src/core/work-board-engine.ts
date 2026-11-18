@@ -520,10 +520,22 @@ export function createWorkBoardEngine(
     }
   }
 
+  /** Each permitted event first ends an unreadable episode once the run file reads again (see WorkBoardStore.recoverRuns): the rows of the
+   * items in flight here are left alone, except `claimed`, the item the event itself holds. A recovery that fails is only logged; the next
+   * event tries again. */
+  async function recover(claimed?: number): Promise<void> {
+    try {
+      await store.recoverRuns((itemId) => itemId !== claimed && inFlight.has(itemId));
+    } catch (err) {
+      log.warn("work-board run recovery failed: %s", errorMessage(err));
+    }
+  }
+
   async function runItem(
     itemId: number,
     opts: RunItemOptions = {},
   ): Promise<RunItemResult> {
+    await recover();
     const got = await store.get(itemId);
     if (got.status !== "found") {
       return { status: "not_found" };
@@ -832,12 +844,15 @@ export function createWorkBoardEngine(
     if (refusal !== null) return { result: { ok: false, reason: refusal } };
     const note = input.note !== undefined && input.note.trim().length > 0 ? input.note.trim() : undefined;
     if (inFlight.has(itemId)) {
+      void recover();
       // planPhase stores the pending plan, then finishes its transcript before the run releases the item. A decision in that window is
       // early, not concurrent with a run, so it is told to retry rather than that the item is running.
       return { result: { ok: false, reason: planSettling.has(itemId) ? "plan_settling" : "already_running" } };
     }
-    // Claimed synchronously before the store write, so a second decision or a run start for this item waits on this one.
+    // Claimed synchronously before the store write, so a second decision or a run start for this item waits on this one. No run holds
+    // it, so the recovery may close its row.
     inFlight.add(itemId);
+    await recover(itemId);
     const status = DECISION_STATUS[input.decision];
     let decided: Awaited<ReturnType<WorkBoardStore["decidePlan"]>>;
     try {
@@ -1036,13 +1051,16 @@ export function createWorkBoardEngine(
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,
     cancelRun,
-    decideStageGate: async (itemId, input, opts) => stageRuns?.decideGate(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
-    decideStageJoin: async (itemId, input, opts) => stageRuns?.decideJoin(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
-    retryStage: async (itemId, input, opts) => stageRuns?.retryStage(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
-    continueRun: async (itemId, input, opts) => stageRuns?.continueRun(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
+    decideStageGate: async (itemId, input, opts) => { await recover(); return stageRuns?.decideGate(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
+    decideStageJoin: async (itemId, input, opts) => { await recover(); return stageRuns?.decideJoin(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
+    retryStage: async (itemId, input, opts) => { await recover(); return stageRuns?.retryStage(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
+    continueRun: async (itemId, input, opts) => { await recover(); return stageRuns?.continueRun(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" }; },
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
-    adoptParkedTemplateRuns: async () => { await stageRuns?.adoptParkedRuns(); },
-    projectTemplateRuns: async (items) => stageRuns ? stageRuns.projectRuns(items) : items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; }),
-    clearMissingRun: async (itemId, input) => stageRuns?.clearMissingRun(itemId, input) ?? { status: "not_found", itemId },
+    adoptParkedTemplateRuns: async () => { await recover(); await stageRuns?.adoptParkedRuns(); },
+    projectTemplateRuns: async (items) => {
+      await recover();
+      return stageRuns ? stageRuns.projectRuns(items) : items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; });
+    },
+    clearMissingRun: async (itemId, input) => { await recover(); return stageRuns?.clearMissingRun(itemId, input) ?? { status: "not_found", itemId }; },
   };
 }

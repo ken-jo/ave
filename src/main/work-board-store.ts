@@ -640,6 +640,9 @@ export class WorkBoardStore {
   private legacyCopySettled = false;
   // The board file as last read holds a key twice: every write of it is refused until it is fixed by hand.
   private repeatedKey = false;
+  // An unreadable episode: a write was refused because the run file could not be read, and no recovery has run since (see recoverRuns).
+  private runsUnreadable = false;
+  private recovering: Promise<void> | null = null;
   private readonly filePath: string;
   // Activity-log storage rooted in the same directory as `board.json`.
   private readonly activity: WorkBoardStorage;
@@ -685,6 +688,7 @@ export class WorkBoardStore {
         },
       });
     } catch (error) {
+      if (error instanceof WorkBoardWriteRefusal && error.code === "work-board-runs-unreadable") this.runsUnreadable = true;
       if (!(error instanceof WorkBoardWriteRefusal)) await this.landedAnyway(file, text);
       throw error;
     }
@@ -925,7 +929,8 @@ export class WorkBoardStore {
       items: rows,
       ...(unreadable.length > 0 ? { unreadableRows: unreadable } : {}),
       ...(unreadableRuns.length > 0 ? { unreadableRuns } : {}),
-      ...(this.repeatedKey ? { writesRefused: "work-board-duplicate-key" as const } : {}),
+      ...(this.repeatedKey ? { writesRefused: "work-board-duplicate-key" as const }
+        : this.runsUnreadable && runs.pendingReview ? { writesRefused: "work-board-runs-unreadable" as const } : {}),
     };
   }
 
@@ -1316,11 +1321,12 @@ export class WorkBoardStore {
     });
   }
 
-  // At boot, active persisted phases belong to dead processes; mark them error and close history so items become runnable again.
+  // At boot, and at the recovery of an unreadable episode (see recoverRuns), active persisted phases no process runs (`live` names
+  // those that one does) are dead; mark them error and close history so items become runnable again.
   // A crash is not a user stop, so it never becomes cancelled; terminal statuses (cancelled included) are left as they are. A row
   // that names a template run is left to the engine, which adopts the run back from its record; one whose run has no record is shown
   // as such until the user clears it (clearMissingRun), and is never written here.
-  async reconcileInterruptedRuns(): Promise<number> {
+  async reconcileInterruptedRuns(live: (itemId: number) => boolean = () => false): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await this.readBoard();
@@ -1328,7 +1334,7 @@ export class WorkBoardStore {
       let count = 0;
       for (let i = 0; i < board.items.length; i++) {
         const it = board.items[i];
-        if (namesTemplateRun(it)) continue;
+        if (namesTemplateRun(it) || live(it.id)) continue;
         // A plan waiting for the user's decision belongs to no process: it stays, with its stored decision object, as long as that
         // object is whole and still matches the stored plan. Anything less cannot be decided safely and becomes error like the rest.
         if (it.runStatus === "awaiting_approval" && isDecidablePlan(it)) continue;
@@ -1346,6 +1352,24 @@ export class WorkBoardStore {
       if (count > 0) log.info("[work-board-store] reconciled %d interrupted run(s) → error", count);
       return count;
     });
+  }
+
+  /** The first permitted event once the run file reads again ends an unreadable episode: reconcileInterruptedRuns, as at boot, leaves
+   * each row `live` names alone. A refused write is not replayed. Nothing while no episode is open or the file still cannot be read; a
+   * reconcile that fails keeps the episode open for the next event. */
+  recoverRuns(live: (itemId: number) => boolean): Promise<void> {
+    if (!this.runsUnreadable) return this.recovering ?? Promise.resolve();
+    this.recovering ??= (async () => {
+      if ((await this.runs.heldRuns()) === undefined) return;
+      this.runsUnreadable = false;
+      try {
+        await this.reconcileInterruptedRuns(live);
+      } catch (error) {
+        this.runsUnreadable = true;
+        throw error;
+      }
+    })().finally(() => { this.recovering = null; });
+    return this.recovering;
   }
 
   /** The user's clear of a row whose run has no record (`template-run-not-found`): the row as its card showed it ends error and its
