@@ -170,6 +170,8 @@ export const MOCK_DEFAULT_SETTINGS = {
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },
   // Every stored snapshot carries the telemetry consent block; its level is read wherever the diagnostics section mounts.
   telemetry: DEFAULT_SETTINGS.telemetry,
+  // Every stored snapshot carries the browsing flow; the web tab reads it as soon as it mounts from the editor's copy.
+  webView: DEFAULT_SETTINGS.webView,
 };
 
 function seedSettings(override: unknown): unknown {

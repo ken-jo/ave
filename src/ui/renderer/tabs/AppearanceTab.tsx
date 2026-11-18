@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
 import type { AppSettings } from "../types.js";
-import { useAppSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
+import { useAppSettingsControls, useSettingsDocumentRead, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import { Button } from "../../../components/ui/button.js";
 import { ZoomControls } from "../components/ZoomControls.js";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
@@ -106,6 +106,7 @@ function useFontPreferences() {
   const revisionsRef = useRef({ family: 0, sizeScale: 0 });
   const authoritativeRevisionRef = useRef(0);
   const notifySaved = useNotifySaved();
+  const readSettings = useSettingsDocumentRead(() => getApi().getSettings());
 
   useEffect(() => {
     let active = true;
@@ -128,11 +129,12 @@ function useFontPreferences() {
     };
     const api = getApi();
     const unsubscribe = api.onSettingsUpdated((settings) => { receivedUpdate = true; apply(settings); });
-    void api.getSettings().then((settings) => { if (!receivedUpdate) apply(settings); }).catch(() => {
+    // A retry here asks the document itself; the first read takes the editor's copy.
+    void (reload > 0 ? api.getSettings() : readSettings()).then((settings) => { if (!receivedUpdate) apply(settings); }).catch(() => {
       if (active && loadKeyRef.current === loadKey && !receivedUpdate) setLoadFailed(true);
     });
     return () => { active = false; unsubscribe(); };
-  }, [reload, reloadEpoch]);
+  }, [readSettings, reload, reloadEpoch]);
 
   const save = async (patch: { family: string } | { sizeScale: FontSizeScale }) => {
     if (!loaded) return;

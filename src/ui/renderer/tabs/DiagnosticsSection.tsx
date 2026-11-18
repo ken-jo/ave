@@ -11,7 +11,7 @@ import { requirePersistedResult, useSettingsPersistence } from "../hooks/use-set
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
 import { isRecord, isStringArray } from "../../../shared/is-record.js";
-import { useSettingsControl } from "../context/SettingsEditorContext.js";
+import { useSettingsControl, useSettingsDocumentRead } from "../context/SettingsEditorContext.js";
 
 interface CrashDumpMeta {
   name: string;
@@ -86,19 +86,20 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
     setConsentLoadError(t("auditTab.bundleConsentLoadFailed"));
   }, [t]);
 
+  const readSettings = useSettingsDocumentRead(() => api().getSettings());
   const loadConsent = useCallback(async () => {
     const id = ++consentRequestId.current;
     setConsentLoading(true);
     setConsentLoadError(null);
     try {
-      const settings = await api().getSettings();
+      const settings = await readSettings();
       if (id === consentRequestId.current) applyConsent(settings);
     } catch {
       if (id === consentRequestId.current) showConsentLoadError();
     } finally {
       if (id === consentRequestId.current) setConsentLoading(false);
     }
-  }, [applyConsent, showConsentLoadError]);
+  }, [applyConsent, readSettings, showConsentLoadError]);
 
   useEffect(() => {
     void loadConsent();

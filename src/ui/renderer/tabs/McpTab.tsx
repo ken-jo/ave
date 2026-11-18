@@ -218,6 +218,9 @@ function parseKeyValueLines(input: string, delimiter: ":" | "="): Record<string,
   );
 }
 
+type McpSnapshot = [McpServerState[], McpServerConfigDto[], string, McpManagementState];
+const MCP_SNAPSHOT_CACHE_KEY = "mcp.snapshot";
+
 export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = {}) {
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
@@ -241,7 +244,11 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     headers: `${formIdPrefix}-headers`,
   };
 
-  const [loading, setLoading] = useState(true);
+  // The server snapshot the editor holds for this settings view, from this tab's last read; mounting the tab again (opening it,
+  // or a search that shows every panel) starts from it. Every explicit read, and the window-focus refresh, still asks again.
+  const editorCache = settingsEditor?.cache;
+  const [heldSnapshot] = useState(() => editorCache?.peek<McpSnapshot>(MCP_SNAPSHOT_CACHE_KEY));
+  const [loading, setLoading] = useState(heldSnapshot === undefined);
   const [error, setError] = useState<string | null>(null);
 
   const { show: showNotice, notice: banner, dismiss: dismissBanner } = useInlineNotice();
@@ -252,11 +259,11 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     setPolicyGuidanceFor(policyApprovalRequired ? msg : null);
   }, [showNotice]);
 
-  const [states, setStates] = useState<McpServerState[]>([]);
-  const [configs, setConfigs] = useState<McpServerConfigDto[]>([]);
-  const [configPath, setConfigPath] = useState("");
+  const [states, setStates] = useState<McpServerState[]>(heldSnapshot?.[0] ?? []);
+  const [configs, setConfigs] = useState<McpServerConfigDto[]>(heldSnapshot?.[1] ?? []);
+  const [configPath, setConfigPath] = useState(heldSnapshot?.[2] ?? "");
   const [form, setForm] = useState(EMPTY_FORM);
-  const [management, setManagement] = useState<McpManagementState | null>(null);
+  const [management, setManagement] = useState<McpManagementState | null>(heldSnapshot?.[3] ?? null);
   const [reviewingServerId, setReviewingServerId] = useState<string | null>(null);
   const [startingServerId, setStartingServerId] = useState<string | null>(null);
   const startingServerIdRef = useRef<string | null>(null);
@@ -280,12 +287,15 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     setLoading(true);
     setError(null);
     try {
-      const [statesRes, configsRes, configPathRes, managementRes] = await Promise.all([
+      const read = (): Promise<McpSnapshot> => Promise.all([
         window.ave.mcp.servers(),
         window.ave.mcp.getConfigs(),
         window.ave.mcp.getConfigPath(),
         window.ave.mcp.getManagementState(),
       ]);
+      const [statesRes, configsRes, configPathRes, managementRes] = editorCache
+        ? await editorCache.load(MCP_SNAPSHOT_CACHE_KEY, read, { fresh: true })
+        : await read();
       if (managementRequestId !== managementRequestRef.current || editorRevision !== editorRevisionRef.current) return;
       if (requestId === statesRequestRef.current) setStates(statesRes);
       setConfigs(configsRes);
@@ -298,9 +308,11 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     } finally {
       if (managementRequestId === managementRequestRef.current && editorRevision === editorRevisionRef.current) setLoading(false);
     }
-  }, [t, settingsEditor?.reloadEpoch]);
+  }, [t, editorCache, settingsEditor?.reloadEpoch]);
 
+  const startedFromHeldSnapshotRef = useRef(heldSnapshot !== undefined);
   useEffect(() => {
+    if (startedFromHeldSnapshotRef.current) { startedFromHeldSnapshotRef.current = false; return; }
     void fetchAll();
   }, [fetchAll]);
 

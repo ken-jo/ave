@@ -19,13 +19,26 @@ const WEBVIEW_OPTIONS: ReadonlyArray<{ value: WebViewPreferredFlow; label: strin
   { value: "system-browser", label: "appearanceTab.webViewSystemBrowser", hint: "appearanceTab.webViewSystemBrowserHint" },
 ];
 
+const WEB_CREDENTIAL_PRESENCE_CACHE_KEY = "web.credentialPresence";
+
 function useWebViewPreferredFlow(api: AveApi, onSaved: () => void) {
   const { t } = useTranslation();
-  const [flow, setFlowState] = useState<WebViewPreferredFlow>("in-app");
-  const [loaded, setLoaded] = useState(false);
+  // Inside the settings view the editor reads and follows the settings document; mounting the tab does not read it again.
+  const editor = useSettingsEditor();
+  const inEditor = editor !== null;
+  const editorSettings = editor?.settings ?? null;
+  const [flow, setFlowState] = useState<WebViewPreferredFlow>(editorSettings?.webView.preferredFlow ?? "in-app");
+  const [loaded, setLoaded] = useState(editorSettings !== null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const persistence = useSettingsPersistence(onSaved);
   useEffect(() => {
+    if (!inEditor || !editorSettings) return;
+    setFlowState(editorSettings.webView.preferredFlow);
+    setLoaded(true);
+    setLoadError(null);
+  }, [editorSettings, inEditor]);
+  useEffect(() => {
+    if (inEditor) return;
     let cancelled = false;
     const applySnapshot = (settings: AppSettings) => {
       if (cancelled) return;
@@ -38,7 +51,7 @@ function useWebViewPreferredFlow(api: AveApi, onSaved: () => void) {
     });
     const unsubscribe = api.onSettingsUpdated(applySnapshot);
     return () => { cancelled = true; unsubscribe(); };
-  }, [api, t]);
+  }, [api, inEditor, t]);
   const setFlow = (next: WebViewPreferredFlow) => {
     if (!loaded || persistence.saving || next === flow) return;
     const previous = flow;
@@ -74,25 +87,35 @@ export function WebTab(props: WebTabProps) {
   const { flow: webViewFlow, setFlow: setWebViewFlow, loaded: webViewLoaded, saving: webViewSaving, error: webViewError } = useWebViewPreferredFlow(api, onSaved);
   const webViewOption = WEBVIEW_OPTIONS.find((option) => option.value === webViewFlow);
   const keyPersistence = useSettingsPersistence(onSaved);
-  const [keyPresence, setKeyPresence] = useState<Readonly<Record<string, boolean>>>({});
-  const [presenceLoading, setPresenceLoading] = useState(true);
+  const editorCache = editor?.cache;
+  const [heldPresence] = useState(() => editorCache?.peek<Readonly<Record<string, boolean>>>(WEB_CREDENTIAL_PRESENCE_CACHE_KEY));
+  const [keyPresence, setKeyPresence] = useState<Readonly<Record<string, boolean>>>(heldPresence ?? {});
+  const [presenceLoading, setPresenceLoading] = useState(heldPresence === undefined);
   const [presenceError, setPresenceError] = useState<string | undefined>(undefined);
   const presenceKey = JSON.stringify([hasWebKey, webProvider, editor?.reloadEpoch]);
   const presenceKeyRef = useRef(presenceKey);
   presenceKeyRef.current = presenceKey;
+  // A mount's first read may take the answer the editor holds for the current settings view; a later one follows a change
+  // (a key saved here, a provider switch, a broadcast) and asks the store again.
+  const presenceReadsRef = useRef(0);
   useEffect(() => {
     let active = true; let revision = 0;
-    const refresh = async () => {
+    const read = async (): Promise<Readonly<Record<string, boolean>>> => Object.fromEntries(await Promise.all(WEB_PROVIDERS.filter((provider) => provider.needsKey).map(async (provider) => { const present = await api.hasWebApiKey(provider.id); if (typeof present !== "boolean") throw new Error("Invalid credential presence response"); return [provider.id, present] as const; })));
+    const refresh = async (fresh: boolean) => {
       const request = ++revision; setPresenceLoading(true);
       try {
-        const entries = await Promise.all(WEB_PROVIDERS.filter((provider) => provider.needsKey).map(async (provider) => { const present = await api.hasWebApiKey(provider.id); if (typeof present !== "boolean") throw new Error("Invalid credential presence response"); return [provider.id, present] as const; }));
-        if (active && presenceKeyRef.current === presenceKey && request === revision) { setKeyPresence(Object.fromEntries(entries)); setPresenceError(undefined); }
+        const presence = editorCache ? await editorCache.load(WEB_CREDENTIAL_PRESENCE_CACHE_KEY, read, { fresh }) : await read();
+        if (active && presenceKeyRef.current === presenceKey && request === revision) { setKeyPresence(presence); setPresenceError(undefined); }
       } catch { if (active && presenceKeyRef.current === presenceKey && request === revision) setPresenceError(t("settingsEditor.secretPresenceFailed")); }
       finally { if (active && presenceKeyRef.current === presenceKey && request === revision) setPresenceLoading(false); }
     };
-    void refresh(); const unsubscribe = api.onSettingsUpdated(() => void refresh());
+    const fresh = presenceReadsRef.current++ > 0;
+    const held = fresh ? undefined : editorCache?.peek<Readonly<Record<string, boolean>>>(WEB_CREDENTIAL_PRESENCE_CACHE_KEY);
+    if (held) { setKeyPresence((current) => current === held ? current : held); setPresenceError(undefined); setPresenceLoading(false); }
+    else void refresh(fresh);
+    const unsubscribe = api.onSettingsUpdated(() => void refresh(true));
     return () => { active = false; unsubscribe(); };
-  }, [api, presenceKey, t]);
+  }, [api, editorCache, presenceKey, t]);
   useSettingsControls(WEB_PROVIDERS.filter((provider) => provider.needsKey).map((provider) => ({
     id: `webSearch.apiKey.${provider.id}`, section: "web-api-key", label: `${provider.label} · ${t("webTab.apiKeyStaticTitle")}`,
     modified: keyPresence[provider.id] === true, loading: presenceLoading, loadError: presenceError,

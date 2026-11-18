@@ -1,4 +1,4 @@
-import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
+import { useAppSettingsControls, useSettingsDocumentRead } from "../context/SettingsEditorContext.js";
 import { useEffect, useState } from "react";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
@@ -22,6 +22,7 @@ export function DocumentSettingsContent() {
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
+  const readSettings = useSettingsDocumentRead(() => getApi().getSettings());
 
   useEffect(() => {
     let active = true;
@@ -37,9 +38,9 @@ export function DocumentSettingsContent() {
       }
     };
     const unsubscribe = api.onSettingsUpdated((settings) => { receivedUpdate = true; apply(settings); });
-    void api.getSettings().then((settings) => { if (!receivedUpdate) apply(settings); }).catch(() => { if (active && !receivedUpdate) setFailed(true); });
+    void readSettings().then((settings) => { if (!receivedUpdate) apply(settings); }).catch(() => { if (active && !receivedUpdate) setFailed(true); });
     return () => { active = false; unsubscribe(); };
-  }, []);
+  }, [readSettings]);
 
   const handleModeChange = async (next: DocumentOpenMode) => {
     if (next === openMode) return;

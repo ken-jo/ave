@@ -13,7 +13,7 @@ import { FileEditDiff } from "../components/FileEditDiff.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { formatIpcError } from "../format-ipc-error.js";
-import { useSettingsControl, useSettingsControls } from "../context/SettingsEditorContext.js";
+import { useSettingsControl, useSettingsControls, useSettingsDocumentRead } from "../context/SettingsEditorContext.js";
 
 const EMPTY_DRAFT: RolePreset = { id: "", name: "", systemPromptAdd: "" };
 
@@ -63,6 +63,7 @@ export function RolesTab({ api }: { api: AveApi }) {
       disabledReason: t(preset.isDefault || preset.origin ? "rolesTab.suppliedPersonaResetUnavailable" : "rolesTab.personaResetUnavailable") })),
   ]);
 
+  const readSettings = useSettingsDocumentRead(() => api.getSettings());
   const loadSources = useCallback(async () => {
     const revision = settingsRevision.current;
     setLoading(true);
@@ -84,7 +85,7 @@ export function RolesTab({ api }: { api: AveApi }) {
       api.memoryGetUserPrefs(),
       api.homeDocsStatus(),
       api.homeDocsGetCustom(),
-      api.getSettings(),
+      readSettings(),
     ]);
     if (agents.status === "fulfilled") {
       setAgentsDraft(agents.value);
@@ -113,7 +114,7 @@ export function RolesTab({ api }: { api: AveApi }) {
       setError(failures.join("\n"));
     }
     setLoading(false);
-  }, [api]);
+  }, [api, readSettings]);
 
   useEffect(() => {
     void loadSources();

@@ -13,7 +13,7 @@ import {
 } from "../../../../shared/permission-judge-settings.js";
 import { SettingsSection } from "../PageShell.js";
 import { useNotifySaved } from "../../context/SavedToastContext.js";
-import { useSettingsControls } from "../../context/SettingsEditorContext.js";
+import { PERMISSION_JUDGE_CACHE_KEY, useSettingsControls, useSettingsEditor } from "../../context/SettingsEditorContext.js";
 import {
   SystemSubagentModelSelect,
 } from "../../tabs/LlmTab.js";
@@ -52,6 +52,8 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
   const [externalChange, setExternalChange] = useState(false);
   const dirtyRef = useRef(false);
   const editRevisionRef = useRef(0);
+  // The first read may take the judge answer the settings view already holds; a retry or a change event asks again.
+  const editorCache = useSettingsEditor()?.cache;
 
   useEffect(() => {
     if (busyRef.current) return;
@@ -62,7 +64,8 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
       try {
         const api = window.ave?.permission;
         if (!api?.judgeGet) throw new Error("Judge settings unavailable");
-        const result = await api.judgeGet();
+        const read = () => api.judgeGet();
+        const result = editorCache ? await editorCache.load(PERMISSION_JUDGE_CACHE_KEY, read, { fresh: readAttempt > 0 }) : await read();
         if (cancelled || requestRevision !== requestRevisionRef.current) return;
         if (!result.ok) {
           setError("read");
@@ -82,7 +85,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
       }
     })();
     return () => { cancelled = true; };
-  }, [readAttempt]);
+  }, [editorCache, readAttempt]);
 
   useEffect(() => window.ave?.permission?.onConfigChanged?.(() => {
     if (busyRef.current) return;

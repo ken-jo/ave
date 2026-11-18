@@ -1,4 +1,4 @@
-import { useAppSettingsControls, useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
+import { PERMISSION_JUDGE_CACHE_KEY, useAppSettingsControls, useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import { requirePersistedResult, useSettingsPersistence } from "../hooks/use-settings-persistence.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
@@ -539,6 +539,20 @@ function providerOptionsForPresets(
 ): ProviderOption[] {
   return presets.map(providerOptionFromPreset);
 }
+
+/** Every provider that could own a row, including the API counterparts of the subscription runtimes; each counterpart's key is
+ * its own API row, and that vendor need not be in the visible catalogue. */
+function credentialCandidateKeyFor(presets: readonly MarketplaceInstalledProviderPreset[]): string {
+  return [...new Set([
+    ...[...visibleVendorsFor(), ...providerOptionsForPresets(presets)].map((option) => option.id),
+    ...Object.values(SUBSCRIPTION_RUNTIME_API_COUNTERPART),
+  ])].filter(Boolean).sort().join("\n");
+}
+
+function credentialPresenceCacheKey(candidateKey: string): string {
+  return `llm.credentialPresence\n${candidateKey}`;
+}
+
 
 
 /** Whether this provider has a model list worth asking its endpoint for. The two contract questions come FIRST, before any address is considered: may the host fetch this provider's list at all, and does this provider have an endpoint list at all. An address is not a catalogue; Azure AI Foundry's `baseUrl` names one deployment
@@ -1422,7 +1436,22 @@ export function LlmTab(props: LlmTabProps) {
   const persistence = useSettingsPersistence(onSaved);
   const editor = useSettingsEditor();
   useAppSettingsControls(["llm-providers", "llm-compaction", "llm-fallback"]);
-  const [credentialPresenceLoading, setCredentialPresenceLoading] = useState(true);
+  // Inside the settings view the tab starts from what the editor already holds: its settings, and the credential and judge
+  // answers it read for them. Mounting the tab again, by opening it or by a search that shows every panel, reads nothing.
+  const [mountView] = useState(() => {
+    const settings = editor?.settings ?? null;
+    if (!settings || !editor) return null;
+    const modelListCache = settings.llm?.modelListCache ?? {};
+    const modelLists = reconcileModelListStatesWithCache({}, modelListStatesFromCache(modelListCache, marketplaceProviderPresets));
+    const judge = editor.cache.peek<Awaited<ReturnType<typeof window.ave.permission.judgeGet>>>(PERMISSION_JUDGE_CACHE_KEY);
+    return {
+      settings, modelListCache, modelLists,
+      compaction: compactionModelSelection(settings.llm, settings.marketplace?.installedProviderPresets),
+      judgeSnapshot: judge?.ok ? judge : null,
+      credentialedProviderIds: editor.cache.peek<ReadonlySet<string>>(credentialPresenceCacheKey(credentialCandidateKeyFor(marketplaceProviderPresets))),
+    };
+  });
+  const [credentialPresenceLoading, setCredentialPresenceLoading] = useState(mountView?.credentialedProviderIds === undefined);
   const [credentialPresenceError, setCredentialPresenceError] = useState<string | undefined>(undefined);
   const [providerSnapshotError, setProviderSnapshotError] = useState<string | undefined>(undefined);
   const selectedMarketplaceProviderPreset = vendor === "openai-compatible" && marketplaceProviderPresetId
@@ -1430,7 +1459,7 @@ export function LlmTab(props: LlmTabProps) {
     : undefined;
   const activeModelListCredentialScope = selectedMarketplaceProviderPreset?.providerId ?? "";
   const hasOnSave = typeof onSave === "function";
-  const [savedFallbackChain, setSavedFallbackChain] = useState<readonly FallbackEntry[]>([]);
+  const [savedFallbackChain, setSavedFallbackChain] = useState<readonly FallbackEntry[]>(mountView?.settings.llm.fallbackChain ?? []);
   const fallbackDirty = JSON.stringify(fallbackChain) !== JSON.stringify(savedFallbackChain);
   const fallbackComplete = fallbackChain.every((entry) => entry.provider && entry.model.trim());
   const trimmedModel = model.trim();
@@ -1447,7 +1476,7 @@ export function LlmTab(props: LlmTabProps) {
       vertexProject?: string;
       vertexLocation?: string;
     }>>
-  >({});
+  >(mountView?.settings.llm?.vendors ?? {});
   const [imageInputSaving, setImageInputSaving] = useState(false);
   const [imageInputError, setImageInputError] = useState<string | null>(null);
   const imageInputPresetId = vendor === "openai-compatible" ? marketplaceProviderPresetId : undefined;
@@ -1471,11 +1500,11 @@ export function LlmTab(props: LlmTabProps) {
     }
   };
   /** Capability reports the engine can read, after the cache save succeeds. */
-  const [savedModelListCache, setSavedModelListCache] = useState<LlmModelListCache>({});
+  const [savedModelListCache, setSavedModelListCache] = useState<LlmModelListCache>(mountView?.modelListCache ?? {});
   /** Which providers actually have a key in the store. A stored credential IS a configuration, whatever the endpoint has since said back. Reading configuration
    * off the handshake alone made a provider whose key had gone stale vanish from the page; taking with it the only place that key can be replaced or deleted. */
   const [credentialedProviderIds, setCredentialedProviderIds] = useState<ReadonlySet<string>>(
-    new Set(),
+    mountView?.credentialedProviderIds ?? new Set(),
   );
   /** The row whose credential was saved on this screen, if any. Saving never moves the chat route, so that row may need telling where the switch is. */
   const [credentialSavedRowId, setCredentialSavedRowId] = useState<string | null>(null);
@@ -1495,13 +1524,13 @@ export function LlmTab(props: LlmTabProps) {
   }, [savedVendorBlocks]);
 
   /** Bumped on every settings broadcast; `setApiKey`/`deleteApiKey` send one, so this is what re-asks the credential store. */
-  const [settingsRevision, setSettingsRevision] = useState(0);
-  const [modelLists, setModelLists] = useState<Record<string, ModelListState>>({});
-  const modelListsRef = useRef<Record<string, ModelListState>>({});
+  const [settingsRevision, setSettingsRevision] = useState(mountView ? 1 : 0);
+  const [modelLists, setModelLists] = useState<Record<string, ModelListState>>(mountView?.modelLists ?? {});
+  const modelListsRef = useRef<Record<string, ModelListState>>(mountView?.modelLists ?? {});
   /** Keys with a catalogue request out right now. Per instance, not per launch: a request belongs to the
    * component that made it, and the settings tab unmounting mid-request must not leave the next mount unable to ask. */
   const modelListRequestsInFlight = useRef<Set<string> | null>(null);
-  const modelListCacheRef = useRef<LlmModelListCache>({});
+  const modelListCacheRef = useRef<LlmModelListCache>(mountView?.modelListCache ?? {});
   const setModelListState = useCallback((key: string, state: ModelListState) => {
     setModelLists((current) => {
       // Writing an identical state must not produce a new map: `connections` is derived from this, and a fresh identity re-runs the launch refresh,
@@ -1649,11 +1678,11 @@ export function LlmTab(props: LlmTabProps) {
   // Subscription providers live beside the API vendor in ONE chooser, so this tab owns both halves of the state rather than handing one down.
   const subscription = useSubscriptionProviders(api);
   // Mirrored from settings rather than held locally: another window may pin a model too, and the chooser must show one truth.
-  const [pinnedModels, setPinnedModels] = useState<readonly string[]>([]);
-  const [compactionModel, setCompactionModel] = useState<JudgeModel | null>(null);
-  const savedCompactionSelectionRef = useRef<ReturnType<typeof compactionModelSelection> | null>(null);
-  const [compactionUnavailableSelection, setCompactionUnavailableSelection] = useState<string>();
-  const [compactionSnapshot, setCompactionSnapshot] = useState<PermissionJudgeSnapshot | null>(null);
+  const [pinnedModels, setPinnedModels] = useState<readonly string[]>(mountView?.settings.llm?.pinnedModels ?? []);
+  const [compactionModel, setCompactionModel] = useState<JudgeModel | null>(mountView?.compaction.model ?? null);
+  const savedCompactionSelectionRef = useRef<ReturnType<typeof compactionModelSelection> | null>(mountView?.compaction ?? null);
+  const [compactionUnavailableSelection, setCompactionUnavailableSelection] = useState<string | undefined>(mountView?.compaction.unavailableLabel);
+  const [compactionSnapshot, setCompactionSnapshot] = useState<PermissionJudgeSnapshot | null>(mountView?.judgeSnapshot ?? null);
   const [compactionOptionsFailed, setCompactionOptionsFailed] = useState(false);
   const [compactionSaving, setCompactionSaving] = useState(false);
   const [compactionSaveFailed, setCompactionSaveFailed] = useState(false);
@@ -1718,13 +1747,17 @@ export function LlmTab(props: LlmTabProps) {
   const providerSnapshotKey = JSON.stringify([editor?.reloadEpoch]);
   const providerSnapshotKeyRef = useRef(providerSnapshotKey);
   providerSnapshotKeyRef.current = providerSnapshotKey;
+  const editorSettings = editor?.settings ?? null;
+  const editorCache = editor?.cache;
+  const appliedSettingsRef = useRef(mountView?.settings ?? null);
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
     let compactionOptionsRevision = 0;
     const applySettings = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
       const revision = ++compactionOptionsRevision;
-      void Promise.resolve().then(() => window.ave.permission.judgeGet()).then((result) => {
+      const readJudge = () => window.ave.permission.judgeGet();
+      void Promise.resolve().then(() => editorCache ? editorCache.load(PERMISSION_JUDGE_CACHE_KEY, readJudge) : readJudge()).then((result) => {
         if (cancelled || providerSnapshotKeyRef.current !== providerSnapshotKey || revision !== compactionOptionsRevision) return;
         if (result.ok) {
           setCompactionSnapshot(result);
@@ -1737,6 +1770,9 @@ export function LlmTab(props: LlmTabProps) {
       });
       // Content-compared, like the credential set below it: a broadcast arrives for every settings write, and a fresh object identity
       // each time would re-run every effect that reads a row's endpoint; including the one that asks endpoints for their catalogues.
+      // The mount already started from these settings; only the judge answer above may still be outstanding.
+      if (appliedSettingsRef.current === settings) return;
+      appliedSettingsRef.current = settings;
       setSavedVendorBlocks((current) => {
         const next = settings.llm?.vendors ?? {};
         return sameSavedVendorBlocks(current, next) ? current : next;
@@ -1760,6 +1796,11 @@ export function LlmTab(props: LlmTabProps) {
         return next;
       });
     };
+    if (editorCache) {
+      // The editor reads and follows the settings document; a broadcast reaches this tab through it.
+      if (editorSettings) applySettings(editorSettings);
+      return () => { cancelled = true; };
+    }
     void (async () => {
       try {
         const settings = await api.getSettings();
@@ -1778,7 +1819,7 @@ export function LlmTab(props: LlmTabProps) {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [api, marketplaceProviderPresets, providerSnapshotKey, t]);
+  }, [api, editorCache, editorSettings, marketplaceProviderPresets, providerSnapshotKey, t]);
   const providerSelectOptions = useMemo(
     () => [
       ...visibleVendorsFor(),
@@ -1788,28 +1829,38 @@ export function LlmTab(props: LlmTabProps) {
   );
   // Every provider that could own a row, including the API counterparts of the subscription runtimes; each
   // counterpart's key is its own API row, and that vendor need not be in the visible catalogue.
-  const credentialCandidateKey = useMemo(
-    () => [...new Set([
-      ...providerSelectOptions.map((option) => option.id),
-      ...Object.values(SUBSCRIPTION_RUNTIME_API_COUNTERPART),
-    ])].filter(Boolean).sort().join("\n"),
-    [providerSelectOptions],
-  );
+  const credentialCandidateKey = useMemo(() => credentialCandidateKeyFor(marketplaceProviderPresets), [marketplaceProviderPresets]);
   const credentialPresenceKey = JSON.stringify([settingsRevision, editor?.reloadEpoch]);
   const credentialPresenceKeyRef = useRef(credentialPresenceKey);
   credentialPresenceKeyRef.current = credentialPresenceKey;
+  // A mount's first read may take the answer the editor holds for the current settings view; every later one follows a change
+  // this tab made or saw (a key saved or deleted here, a broadcast) and asks the store again.
+  const credentialPresenceReadsRef = useRef(0);
   useEffect(() => {
     let cancelled = false;
     const candidates = credentialCandidateKey.split("\n").filter(Boolean);
+    const cacheKey = credentialPresenceCacheKey(credentialCandidateKey);
+    const fresh = credentialPresenceReadsRef.current++ > 0;
+    const held = fresh ? undefined : editorCache?.peek<ReadonlySet<string>>(cacheKey);
+    if (held) {
+      setCredentialedProviderIds((current) => current === held ? current : held);
+      setCredentialPresenceError(undefined);
+      setCredentialPresenceLoading(false);
+      return () => { cancelled = true; };
+    }
+    const read = async (): Promise<ReadonlySet<string>> => {
+      const entries = await Promise.all(candidates.map(async (providerId) => { const present = await api.hasApiKey(providerId); if (typeof present !== "boolean") throw new Error("Invalid credential presence response"); return [providerId, present] as const; }));
+      return new Set(entries.filter(([, present]) => present).map(([id]) => id));
+    };
     setCredentialPresenceLoading(true);
-    void Promise.all(candidates.map(async (providerId) => { const present = await api.hasApiKey(providerId); if (typeof present !== "boolean") throw new Error("Invalid credential presence response"); return [providerId, present] as const; })).then((entries) => {
+    void (editorCache ? editorCache.load(cacheKey, read, { fresh }) : read()).then((ids) => {
       if (cancelled || credentialPresenceKeyRef.current !== credentialPresenceKey) return;
-      setCredentialedProviderIds(new Set(entries.filter(([, present]) => present).map(([id]) => id)));
+      setCredentialedProviderIds(ids);
       setCredentialPresenceError(undefined);
     }).catch(() => { if (!cancelled && credentialPresenceKeyRef.current === credentialPresenceKey) setCredentialPresenceError(t("settingsEditor.secretPresenceFailed")); })
       .finally(() => { if (!cancelled && credentialPresenceKeyRef.current === credentialPresenceKey) setCredentialPresenceLoading(false); });
     return () => { cancelled = true; };
-  }, [api, credentialCandidateKey, credentialPresenceKey, t]);
+  }, [api, credentialCandidateKey, credentialPresenceKey, editorCache, t]);
   const fallbackProviderKey = useMemo(
     () => [...new Set(fallbackChain.map((entry) => entry.provider).filter(Boolean))]
       .sort()

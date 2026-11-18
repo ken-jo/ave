@@ -106,4 +106,36 @@ describe("settings in-place editor", () => {
     clickSettingsTab(view.container, "chat");
     await waitFor(() => expect(row("features.idleMemoryConsolidation").hidden).toBe(false));
   });
+  it("mounts the panels again for a second search without re-reading what the editor already holds", async () => {
+    const view = await renderSettings();
+    const settingsReaders: string[] = [];
+    const readSettings = requiredFixture(view.api.getSettings.getMockImplementation());
+    view.api.getSettings.mockImplementation(() => { settingsReaders.push(new Error("settings read").stack ?? ""); return readSettings(); });
+    const fieldset = () => requiredFixture(view.container.querySelector<HTMLFieldSetElement>("fieldset.contents"));
+    const search = view.getByRole("searchbox", { name: "Search settings" });
+    fireEvent.change(search, { target: { value: "terminal font" } });
+    await waitFor(() => expect(requiredFixture(view.container.querySelector<HTMLElement>('[data-settings-section="appearance-terminal"]')).hidden).toBe(false));
+    await waitFor(() => expect(fieldset()).not.toBeDisabled());
+    expect(view.api.hasApiKey).toHaveBeenCalled();
+    expect(view.api.hasWebApiKey).toHaveBeenCalled();
+    fireEvent.change(search, { target: { value: "" } });
+    await waitFor(() => expect(view.container.querySelector('[data-settings-section="appearance-terminal"]')).toBeNull());
+    const before = { hasApiKey: view.api.hasApiKey.mock.calls.length, hasWebApiKey: view.api.hasWebApiKey.mock.calls.length, judgeGet: view.ns.permission.judgeGet.mock.calls.length };
+    settingsReaders.length = 0;
+    let lockEngaged = false;
+    const watch = new MutationObserver(() => { if (fieldset().disabled) lockEngaged = true; });
+    watch.observe(fieldset(), { attributes: true, attributeFilter: ["disabled"] });
+    fireEvent.change(search, { target: { value: "terminal font" } });
+    await waitFor(() => expect(requiredFixture(view.container.querySelector<HTMLElement>('[data-settings-section="appearance-terminal"]')).hidden).toBe(false));
+    await waitFor(() => expect(fieldset()).not.toBeDisabled());
+    watch.disconnect();
+    // Every panel was loaded by the first search, so mounting them again asks no store for credentials or the judge, and
+    // reads the settings document only where a section re-reads it on purpose: permissions refreshes its whole view after each
+    // change, and remote surfaces re-reads gates that have no change event whenever a row opens or closes.
+    expect(view.api.hasApiKey.mock.calls.length).toBe(before.hasApiKey);
+    expect(view.api.hasWebApiKey.mock.calls.length).toBe(before.hasWebApiKey);
+    expect(view.ns.permission.judgeGet.mock.calls.length - before.judgeGet).toBe(0);
+    expect(settingsReaders.filter((stack) => !/(PermissionsTab|RemoteSurfacesTab)\.tsx/.test(stack))).toEqual([]);
+    expect(lockEngaged).toBe(false);
+  });
 });

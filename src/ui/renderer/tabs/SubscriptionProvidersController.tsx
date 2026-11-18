@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSettingsEditor } from "../context/SettingsEditorContext.js";
 import {
   SUBSCRIPTION_RUNTIME_DESCRIPTORS,
   subscriptionRuntimeDescriptor,
@@ -314,15 +315,27 @@ export function useSubscriptionProviders(api: AveApi) {
     });
   }, [api]);
 
+  // Inside the settings view the editor reads and follows the settings document, so mounting here does not read it again.
+  const editor = useSettingsEditor();
+  const inEditor = editor !== null;
+  const editorSettings = editor?.settings ?? null;
   useEffect(() => {
+    if (!inEditor || !editorSettings) return;
+    settingsRevisionRef.current += 1;
+    applySettings(editorSettings);
+  }, [applySettings, editorSettings, inEditor]);
+  useEffect(() => {
+    if (inEditor) return;
     const unsubscribe = api.onSettingsUpdated((settings) => {
       settingsRevisionRef.current += 1;
       applySettings(settings);
     });
     void refreshSettings();
-    for (const provider of PROVIDER_IDS) void refreshStatus(provider);
     return unsubscribe;
-  }, [api, applySettings, refreshSettings, refreshStatus]);
+  }, [api, applySettings, inEditor, refreshSettings]);
+  useEffect(() => {
+    for (const provider of PROVIDER_IDS) void refreshStatus(provider);
+  }, [refreshStatus]);
 
   useEffect(() => api.onSubscriptionRuntimeStatusUpdated(({ provider }) => {
     // A different settings window or an external completion changed a safe status projection. Refresh only that provider card.
