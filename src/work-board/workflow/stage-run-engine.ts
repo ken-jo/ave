@@ -162,9 +162,9 @@ interface RunState {
 interface Held { stage: string | null; attempt: number; kind: RunEvent["type"]; event: RunEvent; effects: Set<string> }
 
 /** The event with its identity: an event without an attempt takes the attempt the run shows for its stage, else 0. */
-function heldOf(event: RunEvent, record: RunRecord): Held {
+function heldOf(event: RunEvent, record?: RunRecord, knownAttempt?: number): Held {
   const stage = "stageId" in event ? event.stageId : "joinId" in event ? event.joinId : null;
-  const attempt = "attempt" in event ? event.attempt : "stageId" in event ? record.stageRuns.find(run => run.stageId === stage)?.attempt ?? 0 : 0;
+  const attempt = "attempt" in event ? event.attempt : knownAttempt ?? ("stageId" in event ? record?.stageRuns.find(run => run.stageId === stage)?.attempt ?? 0 : 0);
   return { stage, attempt, kind: event.type, event, effects: new Set() };
 }
 const sameHeld = (a: Held) => (b: Held): boolean => a.stage === b.stage && a.attempt === b.attempt && a.kind === b.kind;
@@ -355,7 +355,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function post(state: RunState, event: RunEvent, attempt?: number): void {
     const eventAttempt = "attempt" in event ? event.attempt : attempt;
     const done = "stageId" in event && eventAttempt !== undefined ? trackStageWork(state, event.stageId, eventAttempt) : () => undefined;
-    void enqueue(state, () => handle(state, event)).finally(done).catch(() => undefined);
+    void enqueue(state, () => handle(state, event, undefined, undefined, eventAttempt)).finally(done).catch(() => undefined);
   }
 
   /** The run's board row is gone: the run is cancelled as by Stop, and from here its record is written by run id alone and ends as `cause`. */
@@ -395,9 +395,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** Holds a scheduler event behind the run's held ones, in memory and in the run file; one the file cannot store stays held in memory. A
    * held Stop reaches the run's live children now. */
-  async function hold(state: RunState, event: RunEvent, record: RunRecord): Promise<void> {
+  async function hold(state: RunState, event: RunEvent, record?: RunRecord, knownAttempt?: number): Promise<void> {
     if (event.type === "stop_requested") interruptAll(state);
-    const held = heldOf(event, record);
+    const held = heldOf(event, record, knownAttempt);
     if (state.held.some(sameHeld(held))) return;
     state.held.push(held);
     const { stage, attempt, kind } = held;
@@ -632,12 +632,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
    * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
    * write. */
-  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
+  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay?: Held, knownAttempt?: number): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
     if (runs.get(state.itemId) !== state) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
       return "run_mismatch";
     }
-    const read = await records.get(state.itemId, state.runId);
+    let read: RunRecord | null;
+    try {
+      read = await records.get(state.itemId, state.runId);
+    } catch (error) {
+      if (precheck || replay) throw error;
+      log.warn("a scheduler event is held while its run record cannot be read (id=%d, event=%s): %s", state.itemId, event.type, errorMessage(error));
+      await hold(state, event, undefined, knownAttempt);
+      return "run_mismatch";
+    }
     if (!read) {
       if (precheck) return "not_found";
       await unwind(state, event, "run-state-unavailable");

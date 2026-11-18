@@ -276,7 +276,7 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
   }
 }
 
-// One-shot unreadable writes have their own preservation test below; held-event replay remains a separate lifecycle decision.
+// One-shot unreadable events have positive retention and recovery checks below for every intent and marker pair.
 const windowsOf = (consumer: Consumer): FailureWindow[] => WINDOWS.filter(window => consumer !== "run write" || window !== "run file unreadable");
 const HELD_WINDOWS = ["none", "run file unreadable"] as const;
 const ends = (cell: Omit<Cell, "window">): boolean => END[cell.consumer][oracle({ ...cell, window: "none" }).cls] !== "open";
@@ -327,7 +327,7 @@ it("unreadable and repeated individual records stay unconfirmed under every cons
   }
 });
 
-it("one-shot run-file I/O failures preserve every intent and marker pair without unsafe terminal causes", { timeout: 120_000 }, async () => {
+it("one-shot run-file I/O failures retain a completion and recover its output under every intent and marker pair", { timeout: 120_000 }, async () => {
   for (const intent of [false, true]) {
     for (const marker of [false, true]) {
       const h = await stageRunHarness();
@@ -337,25 +337,34 @@ it("one-shot run-file I/O failures preserve every intent and marker pair without
         const running = h.start(id, h.local(version));
         void running.catch(() => undefined);
         const [child] = await h.untilLive(1);
-        await h.untilStage(id, "a", "running");
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await h.until(id, item => item.stageRuns[0]?.childSessionId === child.sessionId);
         const runId = (await h.item(id)).runId ?? "";
         leave(h, { consumer: "run write", board: "named", intent, marker, window: "none" }, { id, runId, holder: -1 });
         const settles = watchSettles(h, false);
-        const update = vi.spyOn(h.board, "updateRun");
+        const retain = vi.spyOn(h.board.runs, "holdEvent");
+        const identity = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
         const held = holdRunFile(h, true);
         child.finish();
-        await until(() => update.mock.calls.length > 0, 400);
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await vi.waitFor(() => expect(retain).toHaveBeenCalledWith(identity));
         expect(settles.stored).toEqual([]);
-        const raw = JSON.parse(readFileSync(runsPath(h), "utf8")) as { runs: { runId: string; settled?: unknown }[] };
+        const raw = JSON.parse(readFileSync(runsPath(h), "utf8")) as {
+          runs: { runId: string; settled?: unknown; stageRuns: { status: string }[] }[];
+          deleteIntents?: unknown[]; unknownDeletes?: unknown[];
+        };
+        expect(raw.runs.find(run => run.runId === runId)).toMatchObject({ stageRuns: [{ status: "running" }] });
         expect(raw.runs.find(run => run.runId === runId)?.settled).toBeUndefined();
+        expect(raw.deleteIntents ?? []).toEqual(intent ? [{ itemId: id, runId }] : []);
+        expect(raw.unknownDeletes ?? []).toEqual(marker ? [{ itemId: id, runId, op: "row", ownIntent: true }] : []);
         held.release();
+        // An open delete intent with its row still present keeps the event until the intent is withdrawn.
+        if (intent && !marker) expect(await h.board.runs.withdrawIntent({ itemId: id, runId })).toBe(true);
         await reader(h);
         await h.engine.adoptParkedTemplateRuns();
-        await new Promise(resolve => setTimeout(resolve, 100));
-        // A confirmed fault is allowed once live. A completion held before its write remains pending the held-event amendment.
-        expect(settles.stored.every(end => end.runId === runId && end.cause === "failed" && end.status === "error")).toBe(true);
+        const recovered = await h.untilStage(id, "a", "awaiting_gate");
+        expect(recovered.stageRuns[0]).toMatchObject({ attempt: 1, output: `output of ${child.sessionId}` });
+        expect(await h.board.runs.heldEvents({ itemId: id, runId })).toEqual([]);
+        expect(settles.stored).toEqual([]);
+        expect(h.events.filter(event => event.phase === "error" || event.phase === "cancelled")).toEqual([]);
         await h.board.runs.prune(() => null);
         expect((await h.board.runs.get(runId)).status).toBe("found");
       } finally {

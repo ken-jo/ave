@@ -85,7 +85,10 @@ inputs with its expected class.
 
 Every adoption candidate that is unsettled reads the class through the store
 (`runClasses`), including a run its row names. Held and unreadable candidates
-stay unadopted. Other consumers use the same class. A run write may decide by
+stay unadopted. Adoption's row list and classification share one current board
+snapshot object, read after marker resolution. A later permitted read sees a
+repaired row even when an earlier read cached it as an invalid card.
+Other consumers use the same class. A run write may decide by
 the row's standing on disk first; it requests an end, which `settleRun` writes.
 It reads the class when the row does not name the run:
 
@@ -237,8 +240,9 @@ held, and retries preparation and the spawn checks once released. A retried or
 superseded attempt is dropped before any new preparation.
 
 - Identity: `{run, stage, attempt, kind}`. The stage is the event's stage or
-  join, none for a run-wide event; the attempt is the event's own, else the
-  attempt the run file shows for that stage when the event is held, else 0 (a
+  join, none for a run-wide event; the attempt is the event's own, else its
+  queued launch's known attempt, else the attempt the run file shows for that
+  stage when the event is held, else 0 (a
   join has no attempt counter). Held events are stored deduplicated by
   identity and applied idempotently: an event held twice is held once, and a
   replay of one already applied changes nothing. Each in-process replay has
@@ -261,6 +265,9 @@ superseded attempt is dropped before any new preparation.
   memory once applied or dropped, then the file, and a copy left in the file
   is never applied again by that process. The write that ends a run drops its
   held events with its intent and marker.
+  A run-record read that throws before a scheduler event can be written also
+  retains that event with its known identity in memory. The next permitted
+  read revalidates it against the stored record before replay.
 - Order: a run's events apply in arrival order. While a run holds events,
   each later scheduler event of it is held behind them until the class ends
   the run, so none overtakes an earlier one. A user decision is refused
@@ -282,8 +289,10 @@ superseded attempt is dropped before any new preparation.
   logged reason and never applied to the new attempt. A replay the class holds
   again stops the release there, the rest kept in order.
 - Lost path: once the class is `live`, a stage the run file shows `running`
-  with no child, none starting, no launch of the run in flight and no held
-  event takes the existing lost path: it ends interrupted (failed
+  takes the existing lost path when that exact `{run, stage, attempt}` has no
+  child, pending launch, pending scheduler event or held event. Each attempt
+  is checked independently of its siblings' live children or pending work.
+  It ends interrupted (failed
   `interrupted`, or `cancelled` while the run winds down), as a stage whose
   child is gone does. Each permitted read checks this after the release, so no
   stage stays running forever. A run that boot kept unadopted (its class held
@@ -320,8 +329,10 @@ superseded attempt is dropped before any new preparation.
   (an end write that fails, a run file that cannot be read). Its own oracle
   gives the class; it checks each end's cause and status against it, that each
   end comes through `settleRun`, and that each consumer read the class from
-  `classifyRun`. Separate cases cover one-shot unreadable writes and unreadable
-  or repeated individual records without manufacturing a second child event.
+  `classifyRun`. Separate cases cover unreadable or repeated individual
+  records. The one-shot run-file I/O case positively checks the held completion
+  identity, preserved intent and marker, and recovery of the same attempt and
+  child output at its gate, without manufacturing another child event.
 - The delete failure windows, marker resolution, recovery and the notice have
   targeted tests beside the write guard's: a legacy marker is held, and a
   delete from a held row or card resolves it.
@@ -330,4 +341,7 @@ superseded attempt is dropped before any new preparation.
   moved on, the lost path of a running stage with no child once the class is
   `live`, the memory fallback when the run file cannot be written, a decision
   refused while its run holds events, the restart rule, and the adoption of a
-  run boot kept once its class is `live`.
+  run boot kept once its class is `live`. They also assert snapshot object
+  identity, a lost attempt beside a live sibling or an older live attempt,
+  safety during a pending preparation, and original-attempt link and completion
+  identities retained across failed scheduler reads.
