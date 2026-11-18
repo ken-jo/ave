@@ -33,6 +33,8 @@ export interface RunSnapshot {
   refused: boolean;
   /** The pin, the run state or the wiring failed. Like a stop, it starts nothing more; the run ends `error` once no child is live. */
   faulted?: boolean;
+  /** Recovery may finish an existing join while leaving the next child for an explicit continuation. */
+  parked?: boolean;
   now: string;
 }
 
@@ -208,7 +210,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
     effects.push({ type: "integrate", joinId, stageIds: [...step] });
   } else {
     let slots = MAX_PARALLEL_STAGES - stageRuns.filter(run => run.status === "running").length;
-    for (const id of readyStages(graph, stageRuns, joins)) {
+    for (const id of snapshot.parked ? [] : readyStages(graph, stageRuns, joins)) {
       const run = find(id);
       if (slots <= 0 || !run) continue;
       run.status = "running";

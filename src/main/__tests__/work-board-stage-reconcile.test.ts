@@ -73,7 +73,7 @@ it("fails a gate whose stored output no longer matches its hash, and a kept stag
   }
 });
 
-it("turns a join that was being collected into a conflict the user decides", async () => {
+it("resumes an intact join after restart without manufacturing a conflict", async () => {
   let hold = true;
   let held = false;
   const h = await stageRunHarness({ integrate: () => { if (!hold) return { ok: true }; held = true; return new Promise(() => undefined); } });
@@ -82,29 +82,19 @@ it("turns a join that was being collected into a conflict the user decides", asy
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     (await h.untilLive(1))[0].finish();
-    const before = await h.until(id, item => item.stageJoins[0]?.status === "integrating");
-    // The join is stored as integrating before its stages are sealed: the first process must be inside the collect it never finishes.
-    for (let i = 0; i < 400 && !held; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-    expect(held).toBe(true);
-
+    await h.until(id, item => item.stageJoins[0]?.status === "integrating");
+    await vi.waitFor(() => expect(held).toBe(true));
     hold = false;
-    const next = await restarted(h);
-    const item = await h.item(id);
-    expect(item.runStatus).toBe("executing");
+    await restarted(h);
+    const item = await h.until(id, current => current.runStatus === "completed");
     expect(item.stageRuns[0].status).toBe("passed");
-    const join = item.stageJoins[0];
-    expect(join).toMatchObject({ status: "conflict", conflict: { reason: "interrupted", files: [] } });
-    expect(item.record && isAwaitingStageReview(item.record)).toBe(true);
-
-    // The next process collects it again only on the decision that names this conflict.
-    const decision = { runId: before.runId ?? "", joinId: join.joinId, decision: "retry_merge" } as const;
-    expect(await next.decideStageJoin(id, { ...decision, conflictHash: "d".repeat(64) })).toEqual({ ok: false, reason: "conflict_mismatch" });
-    expect(await next.decideStageJoin(id, { ...decision, conflictHash: join.conflict?.conflictHash ?? "" })).toEqual({ ok: true });
-    expect((await h.until(id, current => current.runStatus !== "executing")).runStatus).toBe("completed");
+    expect(item.stageJoins[0]).toMatchObject({ status: "integrated" });
+    expect(item.stageJoins[0].conflict).toBeUndefined();
+    expect(item.record && isAwaitingStageReview(item.record)).toBe(false);
+    await restarted(h);
+    expect((await h.item(id)).record).toEqual(item.record);
     expect(h.children).toHaveLength(1);
-  } finally {
-    await h.cleanup();
-  }
+  } finally { await h.cleanup(); }
 });
 
 it("a row deleted while its run is parked after a restart ends the run cancelled in the run file", async () => {

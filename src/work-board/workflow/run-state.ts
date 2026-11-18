@@ -146,8 +146,7 @@ export function isAwaitingStageReview(run: Pick<RunRecord, "settled" | "stageRun
 }
 
 /** What a restart leaves of an unsettled run: a run that waits for the user, and nothing starts. A stage that was running lost its child
- * and fails as interrupted; a gate stays only while its stored output still matches its hash; a join that was being collected becomes a
- * conflict the user decides; a kept stage whose workspace folder is gone fails as workspace-lost. Null when nothing changes. */
+ * and fails as interrupted; a gate stays only while its stored output still matches its hash; an intact join being collected stays resumable; a kept stage whose workspace folder is gone fails as workspace-lost. Null when nothing changes. */
 export async function reconcileRunRecord(run: RunRecord, now: string, folderExists: (root: string) => Promise<boolean>): Promise<RunRecord | null> {
   let changed = false;
   const joins = run.stageJoins ?? [];
@@ -169,7 +168,7 @@ export async function reconcileRunRecord(run: RunRecord, now: string, folderExis
     stageRuns.push(failed);
   }
   const stageJoins = joins.map((join): StageJoin => {
-    if (join.status !== "integrating") return join;
+    if (join.status !== "integrating" || join.stageIds.every(id => stageRuns.some(stage => stage.stageId === id && stage.status === "passed"))) return join;
     changed = true;
     return { ...join, status: "conflict", conflict: { conflictHash: resultHashOf(`${run.runId}:${join.joinId}:interrupted`), reason: "interrupted", files: [] } };
   });

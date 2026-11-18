@@ -157,6 +157,9 @@ interface RunState {
   draining: boolean;
   /** One coded notice per unreadable-board episode, cleared by a successful run write. */
   boardUnread: boolean;
+  parked: boolean;
+  sealed: Set<string>;
+  integrating: Set<string>;
 }
 
 /** A scheduler event a run write held, with its identity: its stage or join (null for a run-wide event), its attempt and its kind. */
@@ -235,7 +238,12 @@ function pinFault(error: unknown): "version-missing" | "graph-mismatch" | null {
 }
 
 export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
-  const { store, templates, workspace, emit } = deps;
+  const { store, templates, workspace } = deps;
+  function notify(deliver: () => void): void {
+    try { deliver(); } catch (error) { log.warn("stage run notification failed: %s", errorMessage(error)); }
+  }
+  const emit: StageRunEngineDeps["emit"] = event => notify(() => deps.emit(event));
+  const notifyItemChanged = (itemId: number): void => notify(() => deps.itemChanged?.(itemId));
   const records = deps.runs;
   const runs = new Map<number, RunState>();
   let adoption: Promise<Adopted> | null = null;
@@ -261,11 +269,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     for (const resolve of waiters) resolve();
   }
 
-  function openState(itemId: number, runId: string, projectRoot: string | undefined, surface: WebContents | null): RunState {
+  function openState(itemId: number, runId: string, projectRoot: string | undefined, surface: WebContents | null, parked = false): RunState {
     const state: RunState = {
       itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
-      revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false,
+      revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false, parked, sealed: new Set(), integrating: new Set(),
     };
     runs.set(itemId, state);
     deps.holdItem(itemId);
@@ -303,7 +311,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       return known;
     }
     const projectRoot = await runProjectOf(record.runStartedBy);
-    return runs.get(record.itemId) ?? openState(record.itemId, record.runId, projectRoot, surface);
+    return runs.get(record.itemId) ?? openState(record.itemId, record.runId, projectRoot, surface, true);
   }
 
   async function resolvePinned(pin: RunPin): Promise<TemplateVersion> {
@@ -438,9 +446,21 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (!record || runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
       const missing = record.stageRuns.filter(run => run.status === "running"
         && !state.pendingStages.has(`${run.stageId}#${run.attempt}`) && !state.held.some(held => held.stage === run.stageId && held.attempt === run.attempt));
-      if (missing.length === 0) return;
+      const joining = (record.stageJoins ?? []).filter(join => join.status === "integrating" && !state.integrating.has(join.joinId)
+        && join.stageIds.every(stageId => record.stageRuns.some(run => run.stageId === stageId && run.status === "passed")));
+      if (missing.length === 0 && joining.length === 0) return;
       const classOf = await records.classes();
       if (typeof classOf !== "function" || classOf(state) !== "live") return;
+      if (joining.length > 0 && !state.stopping && state.faulted === null && state.refused === null) {
+        const version = await resolvePinned(record.pin);
+        for (const join of joining) {
+          const seals: RunEffect[] = join.stageIds.flatMap(stageId => {
+            const run = record.stageRuns.find(candidate => candidate.stageId === stageId);
+            return run && !state.sealed.has(`${stageId}#${run.attempt}`) ? [{ type: "seal" as const, stageId }] : [];
+          });
+          await runEffects(state, record, version, [...seals, { type: "integrate", joinId: join.joinId, stageIds: [...join.stageIds] }]);
+        }
+      }
       for (const run of missing) {
         log.info("a running stage with nothing left to end it ends interrupted (id=%d, stage=%s)", state.itemId, run.stageId);
         post(state, { type: "stage_ended", stageId: run.stageId, attempt: run.attempt, ok: false, interrupted: true });
@@ -598,7 +618,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const told = message ?? (runStatus !== "cancelled" || byAuthority ? undefined : state.rowGone ? "item-removed" : "user-stopped");
     emit({ itemId: state.itemId, phase, ...(told ? { message: told } : {}), ...reason });
     closeState(state);
-    deps.itemChanged?.(state.itemId);
+    notifyItemChanged(state.itemId);
   }
 
   /** Ends a run without its graph: the pin no longer resolves, or the run file cannot be written. Every live child is interrupted from the
@@ -676,6 +696,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
 
     const now = new Date().toISOString();
+    const resumes = event.type === "continue_requested" || event.type === "retry_requested" || event.type === "gate_decided" || event.type === "join_decided";
     let refusal: R | "run_mismatch" | null = null;
     let ending: Settled | null = null;
     let before: readonly WorkItemStageRun[] = [];
@@ -695,7 +716,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         before = current.stageRuns;
         const step = reduceRun({
           graph: version, stageRuns: current.stageRuns, joins: current.stageJoins ?? [], stopping: state.stopping, refused: state.refused !== null,
-          faulted: state.faulted !== null, now,
+          faulted: state.faulted !== null, parked: state.parked && !resumes, now,
         }, event);
         effects = step.effects;
         // The write that ends the run says so: the final stage states and how it ended are one write.
@@ -733,6 +754,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       return null;
     }
     const record = written.run;
+    if (resumes) state.parked = false;
+    if (event.type === "join_integrated" || event.type === "join_conflict") state.integrating.delete(event.joinId);
     let shown = false;
     for (const run of record.stageRuns) {
       const prior = before.find(candidate => candidate.stageId === run.stageId);
@@ -744,7 +767,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       else if (run.status === "passed") emit({ ...about, phase: "stage_passed" });
       else if (run.status === "failed") emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });
     }
-    if ((shown || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimEffect(replay, "item-changed")) deps.itemChanged(state.itemId);
+    if ((shown || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimEffect(replay, "item-changed")) notifyItemChanged(state.itemId);
     await runEffects(state, record, version, effects, replay);
     return null;
   }
@@ -788,22 +811,29 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           break;
         }
         case "seal": {
+          const attempt = record.stageRuns.find(run => run.stageId === effect.stageId)?.attempt;
+          const sealKey = `${effect.stageId}#${attempt}`;
+          if (state.sealed.has(sealKey)) break;
           const sealed = await workspace.seal(state.ref, effect.stageId).catch((): { ok: false } => ({ ok: false }));
           if (!sealed.ok) {
             sealFailed = true;
             post(state, { type: "seal_failed", stageId: effect.stageId }, record.stageRuns.find(run => run.stageId === effect.stageId)?.attempt);
-          } else if (sealed.sealCommit !== undefined) {
-            const sealCommit = sealed.sealCommit;
-            await writeRun(state, current => ({
-              ...current,
-              stageRuns: current.stageRuns.map(run => run.stageId === effect.stageId && run.workspace ? { ...run, workspace: { ...run.workspace, sealCommit } } : run),
-            }));
+          } else {
+            state.sealed.add(sealKey);
+            if (sealed.sealCommit !== undefined) {
+              const sealCommit = sealed.sealCommit;
+              await writeRun(state, current => ({
+                ...current,
+                stageRuns: current.stageRuns.map(run => run.stageId === effect.stageId && run.workspace ? { ...run, workspace: { ...run.workspace, sealCommit } } : run),
+              }));
+            }
           }
           break;
         }
         case "integrate": {
           // A stage of this step could not be sealed: the join the reducer opened is dropped by `seal_failed`, so nothing is collected.
-          if (sealFailed) break;
+          if (sealFailed || state.integrating.has(effect.joinId)) break;
+          state.integrating.add(effect.joinId);
           try {
             const merged = await workspace.integrate(state.ref, effect.joinId, effect.stageIds);
             post(state, merged.ok ? { type: "join_integrated", joinId: effect.joinId } : { type: "join_conflict", joinId: effect.joinId, conflict: merged.conflict });
@@ -1331,7 +1361,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const output = finalOutput(run, version);
           if (!(await shownOnRow(item.id, { runStatus: run.settled.status, ...(run.settled.status === "completed" && output !== undefined ? { output } : {}) }))) return { ok: false, code: "run-state-unavailable" };
           emit({ itemId: item.id, phase: run.settled.status === "completed" ? "done" : run.settled.status, message: "restored" });
-          deps.itemChanged?.(item.id);
+          notifyItemChanged(item.id);
         }
         continue;
       }
@@ -1351,13 +1381,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       active.push(record.runId);
       const state = await stateFor(record, null);
       emit({ itemId: item.id, phase: "executing", message: "resumed" });
-      deps.itemChanged?.(item.id);
-      if (heldBefore.length === 0 || !state) continue;
+      notifyItemChanged(item.id);
+      if (!state) continue;
       for (const held of heldBefore) {
         if (held.kind !== "stop_requested") log.info("held stage run event dropped (id=%d, event=%s): superseded by the restart reconcile", item.id, held.kind);
       }
       await records.dropHeld(record).catch((error: unknown) => log.warn("held stage run events stay in the run file (id=%d): %s", item.id, errorMessage(error)));
       if (heldBefore.some(held => held.kind === "stop_requested")) stop(item.id);
+      else drain(state);
     }
     const at = new Date().toISOString();
     // A run taken over since (its row was deleted) ends as that takeover ends it.
