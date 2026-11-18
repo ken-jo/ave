@@ -328,11 +328,17 @@ describe("the file a tab's output is kept in", () => {
     expect(await store.read("terminal:other-1")).toBe("two\r\n");
   });
 
-  it("refuses a file larger than a terminal's replay", async () => {
+  it.each([TERMINAL_REPLAY_MAX_BYTES, TERMINAL_REPLAY_MAX_BYTES + 1])("bounds a kept file of %i bytes to a terminal's replay", async (size) => {
     const store = terminalScrollbackStore(PROFILE);
     await store.save(TAB, ("x\r\n"));
-    writeFileSync(join(directory(), keptFiles()[0] ?? ""), "y".repeat(TERMINAL_REPLAY_MAX_BYTES + 1));
-    await expect(store.read(TAB)).rejects.toThrow(/larger than a terminal's replay/u);
+    writeFileSync(join(directory(), keptFiles()[0] ?? ""), "y".repeat(size));
+    if (size > TERMINAL_REPLAY_MAX_BYTES) await expect(store.read(TAB)).rejects.toThrow(/larger than a terminal's replay/u);
+    else expect(await store.read(TAB)).toBe("y".repeat(size));
+  });
+  it.runIf(process.platform === "win32")("keeps an unrelated native read failure distinct from an oversized replay", async () => {
+    const failure: unknown = await windowsKeptFileReader()(join(aveHome, "invalid|target")).catch(error => error);
+    expect(failure).toMatchObject({ status: 4, message: expect.stringContaining("Command failed") });
+    expect((failure as Error).message).not.toContain("larger than a terminal's replay");
   });
 
   it("finds a saved layout's terminal tabs wherever they are", () => {

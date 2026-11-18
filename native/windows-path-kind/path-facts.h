@@ -141,16 +141,18 @@ bool token_json(std::string& output) {
   return true;
 }
 
-bool content_json(HANDLE handle, std::string& output) {
+constexpr int CONTENT_TOO_LARGE_EXIT_CODE = 5;
+int content_json(HANDLE handle, std::string& output) {
   LARGE_INTEGER size{};
-  if (!GetFileSizeEx(handle, &size) || size.QuadPart < 0 || size.QuadPart > 1048576) return false;
+  if (!GetFileSizeEx(handle, &size) || size.QuadPart < 0) return 4;
+  if (size.QuadPart > 1048576) return CONTENT_TOO_LARGE_EXIT_CODE;
   std::vector<BYTE> bytes(static_cast<size_t>(size.QuadPart)); DWORD read = 0;
-  if (!bytes.empty() && (!ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())) return false;
+  if (!bytes.empty() && (!ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())) return 4;
   static constexpr char HEX[] = "0123456789abcdef";
   output = "\"";
   for (BYTE byte : bytes) { output += HEX[byte >> 4]; output += HEX[byte & 15]; }
   output += "\"";
-  return true;
+  return 0;
 }
 
 int print_path_facts(int argc, wchar_t** argv) {
@@ -183,8 +185,11 @@ int print_path_facts(int argc, wchar_t** argv) {
       const auto& facts = pinned.facts.back();
       if (facts.exists == 1) {
         if (!descriptor_json(pinned.handles.back().value, facts, descriptor)) return 4;
-        if (content && (facts.tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0
-            && ((facts.tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 || !content_json(pinned.handles.back().value, bytes))) return 4;
+        if (content && (facts.tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+          if ((facts.tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return 4;
+          const int result = content_json(pinned.handles.back().value, bytes);
+          if (result != 0) return result;
+        }
       }
       if (parent && pinned.facts.size() > 1 && pinned.facts[pinned.facts.size() - 2].exists == 1) {
         const size_t position = pinned.facts.size() - 2;
