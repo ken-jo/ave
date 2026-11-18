@@ -668,3 +668,15 @@ describe("useWorkBoardRun — a plan waiting for the user's decision", () => {
     expect(result.current.runState[4]?.turns).toHaveLength(0);
   });
 });
+
+it("keeps a localized held notice through active updates and clears it on recovery without an error phase", () => {
+  const { api, emit } = harness();
+  const { result } = renderHook(() => useWorkBoardRun(api, [runningItem()]));
+  emit({ itemId: 4, phase: "executing", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+  expect(result.current.runState[4]).toMatchObject({ busy: true, phase: "executing", heldNotice: t("reasonCodes.template-runs-board-unread") });
+  emit({ itemId: 4, phase: "executing", turn: 1, text: "working" });
+  expect(result.current.runState[4]?.heldNotice).toBe(t("reasonCodes.template-runs-board-unread"));
+  emit({ itemId: 4, phase: "executing", message: "resumed" });
+  expect(result.current.runState[4]?.heldNotice).toBeUndefined();
+  expect(result.current.runState[4]?.phase).toBe("executing");
+});

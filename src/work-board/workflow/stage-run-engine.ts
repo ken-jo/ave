@@ -152,6 +152,8 @@ interface RunState {
   held: Held[];
   /** The replay of a held event was held again. */
   heldAgain: boolean;
+  /** One coded notice per unreadable-board episode, cleared by a successful run write. */
+  boardUnread: boolean;
 }
 
 /** A scheduler event a run write held, with its identity: its stage or join (null for a run-wide event), its attempt and its kind. */
@@ -252,7 +254,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const state: RunState = {
       itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
-      revoked: new Set(), results: new Map(), held: [], heldAgain: false,
+      revoked: new Set(), results: new Map(), held: [], heldAgain: false, boardUnread: false,
     };
     runs.set(itemId, state);
     deps.holdItem(itemId);
@@ -501,7 +503,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** One write of the run. Null when nothing was stored. */
   async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | RunEnd | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
     const result = await records.update(state.itemId, state.runId, mutate, state.lost ? "lost" : state.rowGone ? state.removedAs : undefined);
-    if (result.ok) return { run: result.run };
+    if (result.ok) {
+      if (state.boardUnread) {
+        state.boardUnread = false;
+        emit({ itemId: state.itemId, phase: "executing", message: "resumed" });
+      }
+      return { run: result.run };
+    }
+    if (result.reason === "board-unread" && !state.boardUnread) {
+      state.boardUnread = true;
+      emit({ itemId: state.itemId, phase: "executing", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+    }
     // The row does not name the run: its class says what follows. A lost run ends error, its end written by its id.
     if (result.reason === "row-gone" || result.reason === "row-lost") {
       // A run file or board that cannot be read holds the run.
@@ -512,7 +524,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   function holdsWrite(state: RunState, reason: RunWriteFailure): boolean {
-    return (reason === "row-gone" || reason === "row-lost") && !state.rowGone && !state.lost;
+    return (reason === "row-gone" || reason === "row-lost" || reason === "board-unread") && !state.rowGone && !state.lost;
   }
 
   function interruptAll(state: RunState): void {

@@ -246,6 +246,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
   const duration = settledDuration(item);
   const inFlight = isRunInFlight(run);
   const phase = run.phase;
+  if (run.heldNotice) return <span role="status" className="text-tiny text-muted-foreground" data-testid="work-board-run-held">{run.heldNotice}</span>;
 
   // Settled states of a run this board saw: done, rejected, failed or stopped, each with its own chip (livestep cases 10-12). Every phase
   // is named so a new one cannot fall through to "no chip" unnoticed.
@@ -442,7 +443,9 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
   const toolApproval = live ? actions.toolApprovals.get(item.id)?.[0] : undefined;
   const stepsShowing = actions.stepsShowingId === item.id;
   const narrationLine = (className: string) => (
-    toolApproval ? (
+    live?.heldNotice ? (
+      <p role="status" className={className} data-testid="work-board-run-held">{live.heldNotice}</p>
+    ) : toolApproval ? (
       // A waiting tool approval takes the narration's line, so the card keeps its height. In chat mode the line links to the run's
       // step panel, where the approval card is; in dialog mode the card is already over the board.
       <p className={className} data-testid="work-board-live-narration" title={toolApproval.toolName}>

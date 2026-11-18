@@ -2,7 +2,7 @@
 import "../../../../../test/renderer/setup.js";
 import { withApprovalSurface } from "../../../../../test/renderer/helpers.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { WorkBoardPanel } from "../WorkBoardPanel.js";
 import type { AveApi } from "../../types.js";
 import type { WorkItemChangedEventPayload, WorkItemResolved } from "../../../../shared/work-board-types.js";
@@ -263,4 +263,23 @@ describe("work board review", () => {
     await waitFor(() => expect(screen.queryByTestId("work-board-load-error")).toBeNull());
     expect(screen.getByTestId("work-board-card")).toBeTruthy();
   });
+});
+
+it("shows a held run's coded notice once and removes it after recovery", async () => {
+  const item = { ...result, runStatus: "executing" as const };
+  const api = apiFor([item]);
+  const handlers: Parameters<AveApi["onWorkBoardRunProgress"]>[0][] = [];
+  api.onWorkBoardRunProgress = handler => { handlers.push(handler); return () => {}; };
+  const progress = (event: Parameters<Parameters<AveApi["onWorkBoardRunProgress"]>[0]>[0]) => act(() => { for (const handler of handlers) handler(event); });
+  render(withApprovalSurface(<WorkBoardPanel api={api} />));
+  await screen.findByTestId("work-board-card");
+  const held = { itemId: item.id, phase: "executing" as const, message: "template-runs-board-unread", reasonCode: "template-runs-board-unread", at: item.updated_at };
+  progress(held);
+  expect(await screen.findAllByTestId("work-board-run-held")).toHaveLength(1);
+  progress(held);
+  expect(await screen.findAllByTestId("work-board-run-held")).toHaveLength(1);
+  expect(screen.getByTestId("work-board-run-held")).toHaveTextContent(t("reasonCodes.template-runs-board-unread"));
+  expect(screen.queryByTestId("work-board-run-error")).toBeNull();
+  progress({ itemId: item.id, phase: "executing", message: "resumed", at: item.updated_at });
+  await waitFor(() => expect(screen.queryByTestId("work-board-run-held")).toBeNull());
 });

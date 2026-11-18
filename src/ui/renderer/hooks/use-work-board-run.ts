@@ -58,6 +58,8 @@ export interface WorkItemRunState {
   turns: RunTurn[];
   /** Terminal failure / denial reason (error / denied phase or runFailed). */
   reason?: string;
+  /** A nonterminal pause notice, kept until the host reports recovery. */
+  heldNotice?: string;
   /** A stopped run whose end the run file has not saved yet. */
   endUnconfirmed?: boolean;
   /** Child session id, once an event or the run result carried it. */
@@ -458,6 +460,8 @@ export function useWorkBoardRun(
               phase,
               turns,
               reason: phase === "error" || phase === "denied" ? reasonText(ev.message) : undefined,
+              heldNotice: ev.reasonCode === "template-runs-board-unread" ? reasonText(ev.reasonCode)
+                : ev.message === "resumed" || isTerminalPhase(phase) ? undefined : cur.heldNotice,
               endUnconfirmed: phase === "cancelled" && ev.reasonCode === END_UNCONFIRMED,
               runSessionId: ev.runSessionId ?? cur.runSessionId,
               sessionIds: withSession(cur.sessionIds, ev.runSessionId),
@@ -486,14 +490,15 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunFinished === "function") {
       unsubs.push(
         api.onWorkBoardRunFinished(({ itemId, status }) => {
-          patch(itemId, { busy: false, stopping: false, phase: phaseForRunResult(status) });
+          const phase = phaseForRunResult(status);
+          update(itemId, cur => ({ ...cur, busy: false, stopping: false, phase, heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice }));
         }),
       );
     }
     if (typeof api.onWorkBoardRunFailed === "function") {
       unsubs.push(
         api.onWorkBoardRunFailed(({ itemId, reason }) => {
-          patch(itemId, { busy: false, stopping: false, phase: "error", reason: reasonText(reason) });
+          patch(itemId, { busy: false, stopping: false, phase: "error", reason: reasonText(reason), heldNotice: undefined });
         }),
       );
     }
@@ -547,7 +552,7 @@ export function useWorkBoardRun(
       void api.runWorkBoardItem(id).then((result) => {
         if (!mountedRef.current) return;
         if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: reasonText(result.error) });
+          patch(id, { busy: false, phase: "error", reason: reasonText(result.error), heldNotice: undefined });
           return;
         }
         if (result && "status" in result) {
@@ -560,6 +565,7 @@ export function useWorkBoardRun(
               busy: false,
               phase,
               reason: reasonText(result.reason) ?? kept,
+              heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice,
               endUnconfirmed: phase === "cancelled" && result.reasonCode === END_UNCONFIRMED,
               runSessionId: result.runSessionId ?? cur.runSessionId,
             };
@@ -567,7 +573,7 @@ export function useWorkBoardRun(
         }
       }).catch((err: unknown) => {
         if (!mountedRef.current) return;
-        patch(id, { busy: false, phase: "error", reason: errorMessage(err) });
+        patch(id, { busy: false, phase: "error", reason: errorMessage(err), heldNotice: undefined });
       });
     },
     [api, patch, resetRun, update],

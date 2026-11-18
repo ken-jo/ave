@@ -102,9 +102,13 @@ A run write whose board file shows nothing, or whose row's standing on disk
 reads unreadable (the no-intent `unreadable` row of the classifier table: an
 entry with its id that does not validate, an entry without a usable id, or a
 string value elsewhere holding the run id), is refused `board-unread` before
-any class is read, whatever the intent: the run ends as a fault, error
-`template-runs-board-unread`, with its end unconfirmed, so its record stays
-unsettled and the next permitted event writes the end once the class allows.
+any class is read, whatever the intent. This refusal holds the scheduler event
+with the same identity, ordering and revalidation rules as a held row write;
+it never faults the run. The host reports `template-runs-board-unread` once per
+unreadable-board episode, shown as one localized pause notice while the run
+stays unsettled. A successful run write clears the episode and its notice.
+Once the board is readable again, the next permitted read revalidates and
+replays held events without a restart.
 Adoption ends an orphan or a lost run without an event.
 
 A start or a decision is refused while a run end is not confirmed, as before.
@@ -221,7 +225,8 @@ fails the list itself, with its own reason, as before.
 
 A scheduler event (a child's link or end, a gate verdict, a refused spawn, a
 seal or join outcome, a start, a Stop, a fault) is stored by a run write. When
-that write finds the row not naming the run (`row-gone`, `row-lost`), it reads
+that write is refused `board-unread`, it holds the event as described above.
+When it finds the row not naming the run (`row-gone`, `row-lost`), it reads
 the class: a class that ends the run (`due-delete`, `orphan`, `lost`) ends it
 as before, and the event goes with that end. Under any other outcome (the
 class holds the run, or cannot be read) the event is held: it is retained and

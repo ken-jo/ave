@@ -459,7 +459,7 @@ it("a row with run fields hand-written into the board file is kept as written an
   const forgedLive = rowOnDisk();
   await h.confirm([auto("a", { goal: "v2 a" }), auto("b", { inputs: ["a"], goal: "v2 b" })], { id: v1.templateId });
   a.finish({ summary: "real a" });
-  expect(await run).toEqual({ status: "error", reason: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+  expect(await run).toEqual({ status: "awaiting_approval" });
   expect(h.children).toHaveLength(1);
   expect(await h.runOf(runId)).toEqual(before);
   expect(JSON.stringify(await h.runOf(runId))).not.toContain("forged");

@@ -15,14 +15,14 @@ interface Run { h: Harness; id: number; runId: string; children: FakeChild[]; lo
 
 /** One run on its own home. While `lose` is on, every run write reads `row-lost` while the class stays live: as a board edit between the
  * class read and the write leaves it. `onSpawn` runs right after each child links. */
-async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSpawn?: (lose: (on: boolean) => void) => void): Promise<void> {
+async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSpawn?: (lose: (on: boolean) => void) => void, reason: "row-lost" | "board-unread" = "row-lost"): Promise<void> {
   let losing = false;
   const lose = (on: boolean): void => { losing = on; };
   const h = await stageRunHarness({
     script: () => { onSpawn?.(lose); return undefined; },
     wiring: (store) => {
       const runs = boardRunState(store);
-      return { runs: { ...runs, update: async (...a) => losing ? { ok: false, reason: "row-lost" } : runs.update(...a) } };
+      return { runs: { ...runs, update: async (...a) => losing ? { ok: false, reason } : runs.update(...a) } };
     },
   });
   try {
@@ -249,7 +249,7 @@ it("a run boot kept while its class held it is adopted by a later permitted read
     expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "cancelled" });
   }));
 
-it.each([false, true])("a pre-spawn workspace write held by row-lost retains its spawn attempt and revalidates it (superseded: %s)", async (superseded) => {
+it.each((["row-lost", "board-unread"] as const).flatMap(reason => [false, true].map(superseded => ({ reason, superseded }))))("a pre-spawn workspace write held by $reason retains its spawn attempt and revalidates it (superseded: $superseded)", async ({ reason, superseded }) => {
   let refusing = true;
   let prepared = false;
   const h = await stageRunHarness({
@@ -257,7 +257,7 @@ it.each([false, true])("a pre-spawn workspace write held by row-lost retains its
       const runs = boardRunState(store);
       return {
         workspace: { ...workspace, prepare: async (...args) => { const result = await workspace.prepare(...args); prepared = true; return result; } },
-        runs: { ...runs, update: async (...args) => refusing && prepared ? { ok: false, reason: "row-lost" } : runs.update(...args) },
+        runs: { ...runs, update: async (...args) => refusing && prepared ? { ok: false, reason } : runs.update(...args) },
       };
     },
   });
@@ -297,3 +297,45 @@ it.each([false, true])("a pre-spawn workspace write held by row-lost retains its
     await h.cleanup();
   }
 });
+
+it("board-unread holds each completion with one coded notice per episode and revalidates without a restart", async () =>
+  withRun(["a", "b"], async (run) => {
+    const { h, id, runId, children, lose } = run;
+    await linked(run);
+    for (const [index, child] of children.entries()) {
+      lose(true);
+      child.finish();
+      const stage = index === 0 ? "a" : "b";
+      await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ itemId: id, runId, stage, attempt: 1, kind: "stage_ended" }]));
+      expect((await h.stageRun(id, stage)).status).toBe("running");
+      expect((await h.runOf(runId))?.settled).toBeUndefined();
+      expect(h.events.filter(event => event.reasonCode === "template-runs-board-unread")).toHaveLength(index + 1);
+      await permittedRead(h);
+      await settle();
+      expect(h.events.filter(event => event.reasonCode === "template-runs-board-unread")).toHaveLength(index + 1);
+      lose(false);
+      await permittedRead(h);
+      await h.untilStage(id, stage, "awaiting_gate");
+      await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
+      expect(h.events.filter(event => event.message === "resumed")).toHaveLength(index + 1);
+    }
+    expect(h.events.some(event => event.phase === "error")).toBe(false);
+  }, undefined, "board-unread"));
+
+it("a completion held by an unreadable board replays after the actual board file is restored", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child] } = run;
+    await linked(run);
+    const readable = readFileSync(h.boardPath);
+    writeFileSync(h.boardPath, "{unreadable");
+    child.finish();
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" }]));
+    expect((await h.runOf(runId))?.stageRuns[0].status).toBe("running");
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+    expect(h.events.filter(event => event.reasonCode === "template-runs-board-unread")).toHaveLength(1);
+    writeFileSync(h.boardPath, readable);
+    await permittedRead(h);
+    await h.untilStage(id, "a", "awaiting_gate");
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
+    expect(h.events.some(event => event.phase === "error")).toBe(false);
+  }));
