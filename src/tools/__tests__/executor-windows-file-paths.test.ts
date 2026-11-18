@@ -49,6 +49,11 @@ vi.mock("node:fs", async (original) => {
       }
       return { isSymbolicLink: () => entry.target !== undefined, isDirectory: () => entry.directory, isFile: () => !entry.directory };
     },
+    statSync: (path: Parameters<typeof actual.statSync>[0], options?: unknown) => {
+      if (!isVirtual(path)) return actual.statSync(path, options as never);
+      const entry = filesystem.entries.get(lookup(path).toLowerCase())!;
+      return { isDirectory: () => entry.directory, isFile: () => !entry.directory };
+    },
     readlinkSync: (path: Parameters<typeof actual.readlinkSync>[0], options?: unknown) => isVirtual(path)
       ? filesystem.entries.get(win32.normalize(path).toLowerCase())!.target
       : actual.readlinkSync(path, options as never),
@@ -134,6 +139,22 @@ async function run(tool: Tool, input: Record<string, unknown>, cwd = PROJECT, ad
 }
 
 describe("native Windows file permission targets", () => {
+  it.each(["file", "directory"])("keeps the native spelling of a %s directory suggestion", async (kind) => {
+    const directory = String.raw`D:\Fixture\Café-Folder`;
+    const target = kind === "directory" ? directory : directory + String.raw`\Leaf.txt`;
+    entry(directory, true);
+    if (kind === "file") entry(target, false);
+    entry(PROJECT + String.raw`\linked.txt`, kind === "directory", target);
+    const tool = new WriteFileTool();
+    const execute = vi.spyOn(tool, "execute");
+    const result = await run(tool, { path: "linked.txt", content: "changed" });
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.target?.canonicalPath).toBe(target);
+    expect(requests[0]?.outOfAllowedDir?.suggestedParent).toBe(directory);
+  });
+
   it.each(["/git", "\\git"])("refuses a broker lookalike under unresolved root %s without issuing authority", async (cwd) => {
     filesystem.brokerActive = true;
     manager.setMode("allow");

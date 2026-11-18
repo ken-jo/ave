@@ -1495,7 +1495,7 @@ async function runToolInvocationAttempt(
         if (headless) directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
         else directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
       }
-      if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.canonicalPath, scope: "turn", permissionResult: directoryPermission,
+      if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn", permissionResult: directoryPermission,
         ...(rationaleResumeContext === undefined ? {} : { pendingRationale: true as const, humanApproved: false }) };
       if (directoryPermission.decision === "deny") {
         const msg = directoryPermission.reason;
@@ -1516,7 +1516,7 @@ async function runToolInvocationAttempt(
       const remoteControllerOrigin = remoteControllerOriginOf(
         invocationPermissionContext.remoteControllerAuthority,
       );
-      const validation = validateDirectoryAddition(outOfAllowedTarget.canonicalPath);
+      const validation = validateDirectoryAddition(outOfAllowedTarget.realPath);
       if (!validation.ok) {
         // A path the host will never add to the allowed set — the filesystem
         // root, or a Layer-0 sensitive pattern. The VERDICT matches an ordinary
@@ -1548,13 +1548,13 @@ async function runToolInvocationAttempt(
       // re-type the suggested path before persisting (phishing defense).
       let isDirectoryTarget = false;
       try {
-        isDirectoryTarget = statSync(outOfAllowedTarget.canonicalPath).isDirectory();
+        isDirectoryTarget = statSync(outOfAllowedTarget.realPath).isDirectory();
       } catch {
         // Path does not exist yet (e.g. write target before first write);
         // fall back to file-style behavior (suggest the parent dir).
       }
       const suggestedParent = pickClosestParent(
-        outOfAllowedTarget.canonicalPath,
+        outOfAllowedTarget.realPath,
         directoryScope,
         isDirectoryTarget,
       );
@@ -1571,7 +1571,7 @@ async function runToolInvocationAttempt(
       });
       if (eligibleDirectoryChoice) {
         // These exact targets are provisional validator inputs only. Execution still requires the sealed receipt.
-        return { allowed: true, approvedDirectory: outOfAllowedTarget.canonicalPath, scope: "turn",
+        return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn",
           permissionResult: directoryPermission, humanApproved: false, pendingRationale: true,
           requestHumanApproval: async ({ requestId, abortSignal: approvalAbortSignal }) => {
             const beforeDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
@@ -2378,7 +2378,7 @@ async function runToolInvocationAttempt(
         applyApprovedDirectory(resolution.approvedDirectory);
         if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
-        for (const target of canonicalTargets) applyApprovedDirectory(target.canonicalPath);
+        for (const target of canonicalTargets) applyApprovedDirectory(target.runtimePath);
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;
         break;
         // allow-once / allow-session / allow-always — fall through to Step 3

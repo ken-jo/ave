@@ -958,12 +958,12 @@ describe("native invocation permission evidence", () => {
     const pending = coordinator.promptForApproval(control.ticketId);
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     const card = cards[0]!;
-    expect(card).toMatchObject({ kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: path, suggestedParent: canonicalForMatch(outside) } });
+    expect(card).toMatchObject({ kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: path, suggestedParent: outside } });
     if (change === "late-owner") vi.spyOn(Date, "now").mockReturnValue(control.anchor.expiresAt + 60_001);
     gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: scope === "session" ? "allow-session" : "allow-always", rememberPattern: outside, nonce: card.nonce, hmac: card.hmac }, contents as never);
     const approval = await pending;
     expect(approval, JSON.stringify({ outcome: approval?.outcome, reason: approval !== null && "reason" in approval ? approval.reason : undefined, directorySaveFailure })).toMatchObject({ outcome: "allowed-once" });
-    expect(directories).toEqual([scope === "always" ? foldCanonicalPathSeparators(outside) : canonicalForMatch(outside)]);
+    expect(directories).toEqual([scope === "always" ? foldCanonicalPathSeparators(outside) : outside]);
     const protectedTarget = join(project, ".git", "config");
     if (change === "unrelated-folder") directories = [...directories, join(root, "unrelated-folder")];
     if (change === "deny-rule") manager.setRules([{ pattern: "write_file", action: "deny" }]);
