@@ -364,21 +364,25 @@ export class WorkflowRunStore {
    * counts once a read of the file again holds no marker of it (and, not landed, no intent); the rest stay unknown. */
   async resolveUnknown(landed: (intent: DeleteIntent) => boolean): Promise<void> {
     let back: DeleteIntent[] = [];
+    let evaluated = new Set<DeleteIntent>();
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return;
-      const unknown = [...markersIn(file), ...this.unknown];
+      const memory = this.unknown;
+      const unknown = [...markersIn(file), ...memory];
       if (unknown.length === 0) return;
       back = unknown.filter(intent => !landed(intent));
+      evaluated = new Set(memory);
       const kept = (file.deleteIntents ?? []).filter(entry => !back.some(intent => sameIntent(intent)(entry)));
       file.deleteIntents = kept.length > 0 ? kept : undefined;
       const left = (file.unknownDeletes ?? []).filter(entry => !isIntent(entry));
       file.unknownDeletes = left.length > 0 ? left : undefined;
       await this.commit(file);
     }).catch(() => undefined);
+    if (evaluated.size === 0) return;
     const file = await this.read().catch(() => undefined);
     if (file === undefined) return;
-    this.unknown = this.unknown.filter(intent => (file.unknownDeletes ?? []).some(sameIntent(intent))
+    this.unknown = this.unknown.filter(intent => !evaluated.has(intent) || (file.unknownDeletes ?? []).some(sameIntent(intent))
       || (back.some(sameIntent(intent)) && (file.deleteIntents ?? []).some(sameIntent(intent))));
   }
 
