@@ -148,6 +148,35 @@ interface RunState {
   interruptAsked: Set<string>;
   revoked: Set<string>;
   results: Map<string, SubAgentSpawnResult>;
+  /** Scheduler events its run writes held, in arrival order (work-board-run-ending.md, Held events). */
+  held: Held[];
+  /** The replay of a held event was held again. */
+  heldAgain: boolean;
+}
+
+/** A scheduler event a run write held, with its identity: its stage or join (null for a run-wide event), its attempt and its kind. */
+interface Held { stage: string | null; attempt: number; kind: RunEvent["type"]; event: RunEvent }
+
+/** The event with its identity: an event without an attempt takes the attempt the run shows for its stage, else 0. */
+function heldOf(event: RunEvent, record: RunRecord): Held {
+  const stage = "stageId" in event ? event.stageId : "joinId" in event ? event.joinId : null;
+  const attempt = "attempt" in event ? event.attempt : "stageId" in event ? record.stageRuns.find(run => run.stageId === stage)?.attempt ?? 0 : 0;
+  return { stage, attempt, kind: event.type, event };
+}
+const sameHeld = (a: Held) => (b: Held): boolean => a.stage === b.stage && a.attempt === b.attempt && a.kind === b.kind;
+
+/** Why a held event no longer applies to the run as stored, or null while it does. */
+function staleness(record: RunRecord, held: Held): string | null {
+  const { event } = held;
+  if (record.settled !== undefined) return "its run is over";
+  if (event.type === "join_integrated" || event.type === "join_conflict") {
+    return (record.stageJoins ?? []).some(join => join.joinId === event.joinId && join.status === "integrating") ? null : "its join is no longer being collected";
+  }
+  if (held.stage === null) return null;
+  const run = record.stageRuns.find(candidate => candidate.stageId === held.stage);
+  if (!run) return "its stage is not in the run";
+  if (run.attempt !== held.attempt) return "its stage moved on to another attempt";
+  return run.status === (event.type === "seal_failed" ? "passed" : "running") ? null : "its stage moved on from the state it was sent from";
 }
 
 type Precheck<R extends string> = (record: RunRecord) => R | null;
@@ -207,6 +236,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
    * failed. */
   let intentsPending = true;
   let consuming: Promise<Adopted> | null = null;
+  /** Unsettled runs boot left unadopted while their class held them, by run id: a later permitted read adopts each once it is live. */
+  let kept = new Set<string>();
+  let keeping: Promise<Adopted> | null = null;
   const unattendedAllowed = deps.unattendedAllowed
     ?? ((version: TemplateVersion): UnattendedQualification => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" });
 
@@ -220,7 +252,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const state: RunState = {
       itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
-      revoked: new Set(), results: new Map(),
+      revoked: new Set(), results: new Map(), held: [], heldAgain: false,
     };
     runs.set(itemId, state);
     deps.holdItem(itemId);
@@ -230,6 +262,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   function closeState(state: RunState): void {
     if (runs.get(state.itemId) !== state) return;
+    if (state.held.length > 0) log.info("held stage run events went with their run's end (id=%d): %s", state.itemId, state.held.map(held => held.kind).join(", "));
     runs.delete(state.itemId);
     deps.releaseItem(state.itemId);
     updateApprovalSurface({ kind: "release", sessionId: workBoardOriginSessionId(state.itemId) });
@@ -318,16 +351,82 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     else if (runClass === "lost") lost();
   }
 
-  /** After any board write, each run by its class. A run file awaiting review or a board file that shows nothing changes nothing. */
-  async function checkRows(): Promise<void> {
+  /** After any board write, each run by its class. A run file awaiting review or a board file that shows nothing changes nothing. With
+   * `release` (a permitted read), a live run replays its held events (drain), and only a run that holds events is ended by its class. */
+  async function checkRows(release = false): Promise<void> {
     const classOf = await records.classes();
     if (typeof classOf === "string") return;
     for (const state of [...runs.values()]) {
       if (state.rowGone || state.lost) continue;
-      byClass(state, classOf(state), () => {
-        state.lost = true;
-        fault(state, "template-run-lost");
-      });
+      const runClass = classOf(state);
+      if (release && runClass === "live") drain(state);
+      else if (!release || state.held.length > 0) {
+        byClass(state, runClass, () => {
+          state.lost = true;
+          fault(state, "template-run-lost");
+        });
+      }
+    }
+  }
+
+  /** Holds a scheduler event behind the run's held ones, in memory and in the run file; one the file cannot store stays held in memory. A
+   * held Stop reaches the run's live children now. */
+  async function hold(state: RunState, event: RunEvent, record: RunRecord): Promise<void> {
+    if (event.type === "stop_requested") interruptAll(state);
+    const held = heldOf(event, record);
+    if (state.held.some(sameHeld(held))) return;
+    state.held.push(held);
+    const { stage, attempt, kind } = held;
+    const stored = await records.holdEvent({ itemId: state.itemId, runId: state.runId, stage, attempt, kind }).catch(() => false);
+    if (!stored) log.warn("a held stage run event is kept in memory only (id=%d, event=%s)", state.itemId, kind);
+  }
+
+  /** On the run's chain, once its class is live: its held events replay in order, each revalidated against the run as stored first; then a
+   * stage the run file shows running with no child, none starting, no launch in flight and nothing queued behind takes the lost path. */
+  function drain(state: RunState): void {
+    let tail: Promise<unknown> | undefined;
+    void enqueue(state, async () => {
+      while (state.held.length > 0) {
+        if (runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
+        const record = await records.get(state.itemId, state.runId);
+        if (!record) return;
+        const first = state.held[0];
+        const stale = staleness(record, first);
+        if (stale !== null) log.info("held stage run event dropped (id=%d, event=%s): %s", state.itemId, first.kind, stale);
+        else {
+          state.heldAgain = false;
+          await handle(state, first.event, undefined, true);
+          if (state.heldAgain) return;
+        }
+        state.held = state.held.filter(held => held !== first);
+        const { stage, attempt, kind } = first;
+        await records.dropHeld(state.ref, { stage, attempt, kind })
+          .catch((error: unknown) => log.warn("a replayed stage run event stays in the run file (id=%d): %s", state.itemId, errorMessage(error)));
+      }
+      const record = await records.get(state.itemId, state.runId);
+      if (!record || state.chain !== tail || runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
+      if (state.held.length > 0 || state.busy > 0 || state.live.size > 0 || state.starting.size > 0) return;
+      for (const run of record.stageRuns) {
+        if (run.status !== "running") continue;
+        log.info("a running stage with nothing left to end it ends interrupted (id=%d, stage=%s)", state.itemId, run.stageId);
+        post(state, { type: "stage_ended", stageId: run.stageId, attempt: run.attempt, ok: false, interrupted: true });
+      }
+    }).catch(() => undefined);
+    tail = state.chain;
+  }
+
+  /** A permitted read, after the intents and markers: each run boot kept is adopted once its class is live, and each run's held events are
+   * released (checkRows). The replays run on each run's chain and are not awaited. A failure is only logged. */
+  async function releaseHeld(): Promise<void> {
+    try {
+      if (kept.size > 0) {
+        keeping ??= adoptRuns(kept).finally(() => { keeping = null; });
+        const done = await keeping;
+        if (!done.ok) log.warn("template runs boot kept were not adopted: %s", done.code);
+      }
+      if (runs.size > 0) await checkRows(true);
+    } catch (error) {
+      log.warn("held stage run events not released: %s", errorMessage(error));
     }
   }
   store.boardChanged.subscribe(() => {
@@ -489,7 +588,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
    * `precheck` refuses a user decision before anything is written: on the run as read, before the pin is resolved, and again inside the
    * write. */
-  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
+  async function handle<R extends string = never>(state: RunState, event: RunEvent, precheck?: Precheck<R>, replay = false): Promise<R | PinRefusal | "run_mismatch" | "not_found" | null> {
     if (runs.get(state.itemId) !== state) {
       log.warn("dropped a stage event of another run (id=%d, event=%s)", state.itemId, event.type);
       return "run_mismatch";
@@ -504,6 +603,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     // A stale decision is refused for its binding (run, stage, attempt, pending, result, output) before any pin refusal.
     const stale = precheck?.(read) ?? null;
     if (stale !== null) return stale;
+    // While the run holds events, a decision is refused and each later scheduler event is held behind them, until the class ends the run.
+    if (state.held.length > 0 && !replay && !state.rowGone && !state.lost) {
+      if (!precheck) await hold(state, event, read);
+      return "run_mismatch";
+    }
     let version: TemplateVersion;
     try {
       version = await resolvePinned(read.pin);
@@ -548,8 +652,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     if (written.run === null) {
       if (refusal !== null) return refusal;
-      // The row does not name the run: writeRun read its class, which ends it as lost or removed, or holds it, and then the event goes.
-      if (written.reason === "row-gone" || (written.reason === "row-lost" && !state.lost)) return "run_mismatch";
+      // The row does not name the run: writeRun read its class, which ends it as lost or removed, and the event goes with that end, or holds
+      // it, and the event is held with it (a replay stays where it is).
+      if (written.reason === "row-gone" || (written.reason === "row-lost" && !state.lost)) {
+        if (!precheck && !state.rowGone && !state.lost) {
+          if (replay) state.heldAgain = true;
+          else await hold(state, event, read);
+        }
+        return "run_mismatch";
+      }
       log.warn("stage run write failed (id=%d, event=%s): %s", state.itemId, event.type, written.reason);
       if (precheck) return "run_mismatch";
       // Its class holds the run: the end is not written, and the next permitted event writes it again first.
@@ -1119,10 +1230,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
    * writes); an unsettled run is parked and taken over. A run whose row the board file on disk shows gone or naming a newer run is
    * cancelled by its id alone, and one whose row is there without naming or holding it ends error; one whose row does not validate is
    * kept as it is. Refused while the run file awaits review or the board file on disk shows nothing: nothing is settled, swept or taken
-   * over. */
-  async function adoptRuns(): Promise<Adopted> {
+   * over. With `only`, a later permitted read adopts only those runs boot kept, as boot does, without a sweep. */
+  async function adoptRuns(only?: ReadonlySet<string>): Promise<Adopted> {
     const found = await records.adoption();
     if (!found.ok) return found;
+    const wanted = (runId: string): boolean => only === undefined || only.has(runId);
     // A run whose row a user deleted is taken over by its intent (consumeIntents), never ended here.
     const active = [...(found.keepWorkspaces ?? [])];
     const releaseWorkspace = (runId: string): void => {
@@ -1134,7 +1246,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     for (const { item, run } of found.named) {
       // The run file was read and holds no readable run of this row under that id, and nothing is adopted: the board shows the row
       // invalid-template-run, or, with no record at all, template-run-not-found and error until the user clears it.
-      if (!run) continue;
+      if (!run || !wanted(run.runId)) continue;
       // Taken over by an earlier attempt: a retry announces nothing again.
       if (runs.get(item.id)?.runId === run.runId) {
         active.push(run.runId);
@@ -1161,10 +1273,18 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }
       // This run is not lost: it waits for the user. The row and its history entry say so again.
       if (item.runStatus !== "executing" && !(await shownOnRow(item.id, { runStatus: "executing" }))) return { ok: false, code: "run-state-unavailable" };
+      // Of the events a process before held, the reconcile above supersedes every one but a Stop, which still stops the run.
+      const heldBefore = await records.heldEvents(record);
       active.push(record.runId);
-      await stateFor(record, null);
+      const state = await stateFor(record, null);
       emit({ itemId: item.id, phase: "executing", message: "resumed" });
       deps.itemChanged?.(item.id);
+      if (heldBefore.length === 0 || !state) continue;
+      for (const held of heldBefore) {
+        if (held.kind !== "stop_requested") log.info("held stage run event dropped (id=%d, event=%s): superseded by the restart reconcile", item.id, held.kind);
+      }
+      await records.dropHeld(record).catch((error: unknown) => log.warn("held stage run events stay in the run file (id=%d): %s", item.id, errorMessage(error)));
+      if (heldBefore.some(held => held.kind === "stop_requested")) stop(item.id);
     }
     const at = new Date().toISOString();
     // A run taken over since (its row was deleted) ends as that takeover ends it.
@@ -1174,7 +1294,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       return true;
     };
     for (const run of found.orphans) {
-      if (run.settled !== undefined || held(run)) continue;
+      if (run.settled !== undefined || !wanted(run.runId) || held(run)) continue;
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "orphan", at), "orphan");
       // Not confirmed over: nothing is pruned or swept, and the record keeps its workspace until an adoption ends it.
       if (!ended.ok) {
@@ -1185,7 +1305,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
     // A run whose row no longer names or holds it ends error, as it does live.
     for (const run of found.lost) {
-      if (run.settled !== undefined || held(run)) continue;
+      if (run.settled !== undefined || !wanted(run.runId) || held(run)) continue;
       const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "lost", at), "lost");
       if (!ended.ok) {
         log.warn("a template run its row no longer names could not be ended (id=%d): %s", run.itemId, ended.reason);
@@ -1194,7 +1314,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       releaseWorkspace(run.runId);
     }
     await records.pruneSettled();
-    if (found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)]).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)]).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    const still = new Set(found.kept.map(run => run.runId));
+    kept = only === undefined ? still : new Set([...kept].filter(runId => still.has(runId)));
     return { ok: true };
   }
 
@@ -1290,7 +1412,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const done = await adoption;
     if (!done.ok) return done;
     intentsPending = true;
-    return consumeIntents();
+    const consumed = await consumeIntents();
+    if (consumed.ok) await releaseHeld();
+    return consumed;
   };
 
   /** What a board reader is told about each row's template run, from the run file and the host's own state. Whatever a row itself says

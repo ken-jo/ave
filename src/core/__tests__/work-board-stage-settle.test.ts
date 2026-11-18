@@ -202,6 +202,9 @@ it("a state change is reduced from the run as stored at the write: a workspace s
           pruneSettled: () => runs().pruneSettled(),
           classes: () => runs().classes(),
           settleUnstarted: (...a) => runs().settleUnstarted(...a),
+          holdEvent: (...a) => runs().holdEvent(...a),
+          dropHeld: (...a) => runs().dropHeld(...a),
+          heldEvents: (...a) => runs().heldEvents(...a),
           // The read of one event returns only after another write has stored the second stage's workspace: what it read is stale.
           get: async (itemId, runId) => {
             const run = await runs().get(itemId, runId);

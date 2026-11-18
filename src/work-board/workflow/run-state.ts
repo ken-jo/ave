@@ -1,6 +1,6 @@
 import type { RunClass } from "../../main/run-classification.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
-import type { DeleteIntent, RunEnd, RunRemovalCause } from "../../main/workflow-run-store.js";
+import type { DeleteIntent, HeldEvent, HeldIdentity, RunEnd, RunRemovalCause } from "../../main/workflow-run-store.js";
 import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
@@ -60,6 +60,11 @@ export interface WorkflowRunState {
   /** The class of each unsettled run (see classifyRun). The refusal code while the run file awaits review or the board file on disk shows
    * nothing. */
   classes(): Promise<((run: { itemId: number; runId: string }) => RunClass) | "template-runs-pending-review" | "template-runs-board-unread">;
+  /** The run file's held events (work-board-run-ending.md, Held events): `holdEvent` stores one once by its identity (false when it is not
+   * stored), `dropHeld` drops that one or every one of the run, `heldEvents` reads the run's back in order. */
+  holdEvent(held: HeldEvent): Promise<boolean>;
+  dropHeld(run: { itemId: number; runId: string }, identity?: HeldIdentity): Promise<void>;
+  heldEvents(run: { itemId: number; runId: string }): Promise<HeldEvent[]>;
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
@@ -126,6 +131,9 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
     deleted: () => store.deleteIntentsOnDisk(),
     pruneSettled: () => store.pruneSettledRuns(),
     classes: () => store.runClasses(),
+    holdEvent: held => store.runs.holdEvent(held),
+    dropHeld: (run, identity) => store.runs.dropHeld(run, identity),
+    heldEvents: run => store.runs.heldEvents(run),
   };
 }
 

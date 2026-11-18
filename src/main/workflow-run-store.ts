@@ -14,16 +14,22 @@ import type { MarkerOp, RunClass, RunFileFacts } from "./run-classification.js";
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
 // `legacyBoardCopy`: the copy of a legacy board, as stored; it is only read by the copy and the board writes that wait on it, and written
-// back as it is. `deleteIntents`: see markDeleted; `unknownDeletes`: see markUnknown. `raw`, the file's top-level object as read: a write
-// writes its other keys back as they were, in their place; `unchanged`, the text a write writes for the file as read.
+// back as it is. `deleteIntents`: see markDeleted; `unknownDeletes`: see markUnknown; `heldEvents`: see holdEvent. `raw`, the file's
+// top-level object as read: a write writes its other keys back as they were, in their place; `unchanged`, the text a write writes for the
+// file as read.
 interface RunsFile {
-  version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown; deleteIntents?: unknown[]; unknownDeletes?: unknown[]; raw?: Record<string, unknown>;
-  unchanged?: string;
+  version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown; deleteIntents?: unknown[]; unknownDeletes?: unknown[]; heldEvents?: unknown[];
+  raw?: Record<string, unknown>; unchanged?: string;
 }
 /** A user's delete of row `itemId`, which named the unsettled run `runId` of that row. */
 export interface DeleteIntent { itemId: number; runId: string }
 /** A delete step whose outcome is not known (see markUnknown): its run, and its operation unless the marker does not say. */
 export interface DeleteMarker extends DeleteIntent { operation?: MarkerOp }
+/** What identifies a scheduler event a run write held (work-board-run-ending.md, Held events): its stage or join (null for a run-wide
+ * event), its attempt (0 where none applies) and its kind. */
+export interface HeldIdentity { stage: string | null; attempt: number; kind: string }
+/** A held event as the run file stores it: its run and its identity. */
+export interface HeldEvent extends DeleteIntent, HeldIdentity {}
 /** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
  * row it names when that reads as a row id. */
 interface WorkflowRunUnreadable { position: number; hash: string; itemId?: number }
@@ -134,6 +140,18 @@ const dropFrom = (entries: unknown[] | undefined, drop: (entry: unknown) => bool
   const kept = (entries ?? []).filter(entry => !drop(entry));
   return kept.length > 0 ? kept : undefined;
 };
+// A stored held event; undefined for an entry of any other shape.
+function heldOf(entry: unknown): HeldEvent | undefined {
+  if (!isRecord(entry) || Object.keys(entry).length !== 5 || !isRowId(entry.itemId) || typeof entry.runId !== "string") return undefined;
+  const { stage, attempt, kind } = entry;
+  if ((stage !== null && typeof stage !== "string") || !isRowId(attempt) || typeof kind !== "string") return undefined;
+  return { itemId: entry.itemId, runId: entry.runId, stage, attempt, kind };
+}
+const sameHeld = (run: DeleteIntent, identity?: HeldIdentity) => (entry: unknown): boolean => {
+  const held = heldOf(entry);
+  return held !== undefined && samePair(run)(held)
+    && (identity === undefined || (held.stage === identity.stage && held.attempt === identity.attempt && held.kind === identity.kind));
+};
 // Whether the file still holds the intent or a marker of that delete.
 const holdsDelete = (file: RunsFile, intent: DeleteIntent): boolean =>
   (file.deleteIntents ?? []).some(sameIntent(intent)) || (file.unknownDeletes ?? []).some(aboutPair(intent));
@@ -149,12 +167,13 @@ function factsIn(file: RunsFile, held: readonly DeleteMarker[]): (run: DeleteInt
   };
 }
 
-// An intent or marker goes with the write that ends its run, or once the file holds no such run; one whose run entry does not read, or
-// that does not read as an intent (a marker: about no pair), stays as it is.
+// An intent, marker or held event goes with the write that ends its run, or once the file holds no such run; one whose run entry does not
+// read, or that does not read as an intent (a marker: about no pair; a held event: of no known shape), stays as it is.
 function keepOpenIntents(file: RunsFile): void {
   const open = (pair: DeleteIntent | undefined): boolean => pair === undefined || lookup(file, pair.runId).result.status === "invalid" || openIntent(file, pair);
   file.deleteIntents = dropFrom(file.deleteIntents, entry => !open(isIntent(entry) ? entry : undefined));
   file.unknownDeletes = dropFrom(file.unknownDeletes, entry => !open(markerOf(entry)));
+  file.heldEvents = dropFrom(file.heldEvents, entry => !open(heldOf(entry)));
 }
 
 function fileText({ raw, unchanged: _, ...known }: RunsFile): string {
@@ -205,13 +224,15 @@ export class WorkflowRunStore {
     try { raw = JSON.parse(text); } catch { throw new WorkflowTemplateError("invalid-template-run"); }
     if (repeatsKey(text)) throw new WorkBoardWriteRefusal("workflow-runs-duplicate-key", this.filePath);
     requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor))
-      && (raw.deleteIntents === undefined || Array.isArray(raw.deleteIntents)) && (raw.unknownDeletes === undefined || Array.isArray(raw.unknownDeletes)),
+      && (raw.deleteIntents === undefined || Array.isArray(raw.deleteIntents)) && (raw.unknownDeletes === undefined || Array.isArray(raw.unknownDeletes))
+      && (raw.heldEvents === undefined || Array.isArray(raw.heldEvents)),
       "invalid-template-run");
     const runs: unknown[] = raw.runs;
     const copy = raw.legacyBoardCopy === undefined ? {} : { legacyBoardCopy: raw.legacyBoardCopy };
     const intents = raw.deleteIntents === undefined ? {} : { deleteIntents: raw.deleteIntents as unknown[] };
     const markers = raw.unknownDeletes === undefined ? {} : { unknownDeletes: raw.unknownDeletes as unknown[] };
-    const file: RunsFile = { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy, ...intents, ...markers, raw };
+    const held = raw.heldEvents === undefined ? {} : { heldEvents: raw.heldEvents as unknown[] };
+    const file: RunsFile = { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy, ...intents, ...markers, ...held, raw };
     file.unchanged = fileText(file);
     return { file, bytes: input.bytes };
   }
@@ -422,6 +443,38 @@ export class WorkflowRunStore {
     const stored = markersIn(file);
     this.unknown = this.unknown.filter(marker => !decided.has(marker) || stored.some(sameMarker(marker))
       || (back.includes(marker) && (file.deleteIntents ?? []).some(sameIntent(marker))));
+  }
+
+  /** Holds a scheduler event of a run (work-board-run-ending.md, Held events), stored once by its identity; one of a run that is not open
+   * goes at once, as for an intent. False while the file awaits review or has no room; a file that cannot be read or written throws. */
+  async holdEvent(held: HeldEvent): Promise<boolean> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file === undefined) return false;
+      if ((file.heldEvents ?? []).some(sameHeld(held, held))) return true;
+      const { itemId, runId, stage, attempt, kind } = held;
+      file.heldEvents = [...(file.heldEvents ?? []), { itemId, runId, stage, attempt, kind }];
+      return this.commit(file);
+    });
+  }
+
+  /** Drops the held event of that identity of a run, or, without one, every held event of the run. */
+  async dropHeld(run: DeleteIntent, identity?: HeldIdentity): Promise<void> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file === undefined || !(file.heldEvents ?? []).some(sameHeld(run, identity))) return;
+      file.heldEvents = dropFrom(file.heldEvents, sameHeld(run, identity));
+      await this.commit(file);
+    });
+  }
+
+  /** The held events of a run, in the order they were held. A file that cannot be read throws. */
+  async heldEvents(run: DeleteIntent): Promise<HeldEvent[]> {
+    const file = await this.read();
+    return (file?.heldEvents ?? []).flatMap((entry) => {
+      const held = heldOf(entry);
+      return held !== undefined && samePair(run)(held) ? [held] : [];
+    });
   }
 
   /** The delete intents whose run is still to end. Undefined while the file awaits review or is past its read limit; a file that cannot
