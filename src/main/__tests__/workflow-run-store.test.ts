@@ -216,7 +216,7 @@ it.each([
   expect(await store.markDeleted(intent)).toBe("marked");
   await store.markUnknown(intent);
   expect(await store.deleteIntents()).toEqual([intent]);
-  expect(JSON.parse(await readFile(file, "utf8")).unknownDeletes).toEqual([intent]);
+  expect(JSON.parse(await readFile(file, "utf8")).unknownDeletes).toEqual([{ ...intent, op: "row", ownIntent: true }]);
   expect(await store.settleRun("run-1", value => ({ run: value, ends, at: "2026-01-02T00:00:00.000Z" }), cause => cause === ends))
     .toMatchObject({ status: "stored", run: { settled: { status, at: "2026-01-02T00:00:00.000Z" } } });
   expect(await store.deleteIntents()).toEqual([]);
@@ -237,12 +237,12 @@ it("reads a delete as unknown while the file holds its marker or the store holds
   const restarted = new WorkflowRunStore(file);
   expect((await restarted.runFacts())?.of(intent)).toEqual({ readable: true, intent: true, unknown: true });
   // Landed: only the marker goes, and the intent decides.
-  await restarted.resolveUnknown(() => true);
+  await restarted.resolveUnknown(() => "landed");
   expect((await restarted.runFacts())?.of(intent)).toEqual({ readable: true, intent: true, unknown: false });
   expect(await restarted.hasUnknown()).toBe(false);
   // The first store still holds it in memory until it resolves it: not landed takes the intent back with it.
   expect((await store.runFacts())?.of(intent)).toEqual({ readable: true, intent: true, unknown: true });
-  await store.resolveUnknown(() => false);
+  await store.resolveUnknown(() => "unlanded");
   expect((await store.runFacts())?.of(intent)).toEqual({ readable: true, intent: false, unknown: false });
   expect(await store.hasUnknown()).toBe(false);
   expect(await store.withdrawIntent(intent)).toBe(true);

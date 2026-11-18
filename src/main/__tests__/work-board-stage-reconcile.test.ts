@@ -610,7 +610,7 @@ it.each(PERMITTED_EVENTS)("after the takeover, each %s reads an unknown marker w
     const rows = await adoptedWithRows(h);
     editRunFile(h, file => {
       file.deleteIntents = [{ itemId: rows.id, runId: rows.runId }];
-      file.unknownDeletes = [{ itemId: rows.id, runId: rows.runId }];
+      file.unknownDeletes = [{ itemId: rows.id, runId: rows.runId, op: "row", ownIntent: true }];
     });
     await event(h, rows);
     expect(await untilTrue(() => !("deleteIntents" in runFileOnDisk(h)) && !("unknownDeletes" in runFileOnDisk(h)))).toBe(true);

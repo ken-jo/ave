@@ -28,13 +28,13 @@ it.each(["initial read", "readback"] as const)("keeps memory unknowns after a fa
     if (calls === (failure === "initial read" ? 1 : 2)) throw Object.assign(new Error("read refused"), { code: "EIO" });
     return read(path);
   });
-  const landed = vi.fn(() => true);
+  const landed = vi.fn((): "landed" => "landed");
   await store.resolveUnknown(landed);
   expect(await store.hasUnknown()).toBe(true);
   if (failure === "initial read") expect(landed).not.toHaveBeenCalled();
   spy.mockRestore();
   write.mockRestore();
-  await store.resolveUnknown(() => true);
+  await store.resolveUnknown(() => "landed");
   expect(await store.hasUnknown()).toBe(false);
 });
 
@@ -42,13 +42,13 @@ it("keeps a memory unknown added after the resolution snapshot", async () => {
   await memoryOnly();
   const write = vi.spyOn(rewrite, "rewriteKeepingBytes").mockRejectedValue(new Error("write refused"));
   let added: Promise<void> | undefined;
-  await store.resolveUnknown(() => { added = store.markUnknown(second); return true; });
+  await store.resolveUnknown(() => { added = store.markUnknown(second); return "landed"; });
   await added;
   write.mockRestore();
   const facts = await store.runFacts();
   expect(facts?.of(first)).toMatchObject({ readable: true, unknown: false });
   expect(facts?.of(second)).toMatchObject({ readable: true, unknown: true });
-  await store.resolveUnknown(() => true);
+  await store.resolveUnknown(() => "landed");
   expect(await store.hasUnknown()).toBe(false);
 });
 
@@ -69,10 +69,10 @@ it("keeps a reopened durable marker in memory until its resolution readback succ
     if (failReadback) { failReadback = false; throw Object.assign(new Error("readback refused"), { code: "EIO" }); }
     return read(path);
   });
-  await store.resolveUnknown(() => true);
+  await store.resolveUnknown(() => "landed");
   expect(await store.hasUnknown()).toBe(true);
   writing.mockRestore();
   reading.mockRestore();
-  await store.resolveUnknown(() => true);
+  await store.resolveUnknown(() => "landed");
   expect(await store.hasUnknown()).toBe(false);
 });

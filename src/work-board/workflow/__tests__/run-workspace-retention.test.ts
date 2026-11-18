@@ -34,7 +34,7 @@ it.each(["unsettled", "unreadable", "repeated", "unidentified"] as const)("retai
       const retained = JSON.parse(readFileSync(path, "utf8")) as typeof file;
       expect(retained.runs).toContainEqual(record);
       expect(retained.deleteIntents).toContainEqual({ itemId: id, runId });
-      expect(retained.unknownDeletes).toContainEqual({ itemId: id, runId });
+      expect(retained.unknownDeletes).toContainEqual({ itemId: id, runId, op: "row", ownIntent: true });
     }
     h.makeEngine();
     const start = h.sweeps.length;

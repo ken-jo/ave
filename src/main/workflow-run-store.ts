@@ -9,7 +9,7 @@ import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
 import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
-import type { RunClass, RunFileFacts } from "./run-classification.js";
+import type { MarkerOp, RunClass, RunFileFacts } from "./run-classification.js";
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
@@ -22,6 +22,8 @@ interface RunsFile {
 }
 /** A user's delete of row `itemId`, which named the unsettled run `runId` of that row. */
 export interface DeleteIntent { itemId: number; runId: string }
+/** A delete step whose outcome is not known (see markUnknown): its run, and its operation unless the marker does not say. */
+export interface DeleteMarker extends DeleteIntent { operation?: MarkerOp }
 /** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
  * row it names when that reads as a row id. */
 interface WorkflowRunUnreadable { position: number; hash: string; itemId?: number }
@@ -108,31 +110,51 @@ const openIntents = (file: RunsFile): DeleteIntent[] =>
   (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry));
 
 const sameIntent = (a: DeleteIntent) => (b: unknown): boolean => isIntent(b) && b.itemId === a.itemId && b.runId === a.runId;
-const markersIn = (file: RunsFile): DeleteIntent[] => (file.unknownDeletes ?? []).filter(isIntent);
+const samePair = (a: DeleteIntent) => (b: DeleteIntent): boolean => b.itemId === a.itemId && b.runId === a.runId;
+
+const MARKER_KEYS: ReadonlySet<string> = new Set(["itemId", "runId", "op", "ownIntent", "entrySha"]);
+// A stored marker: the pair it is about, with its operation only when it is whole; undefined for an entry about no pair.
+function markerOf(entry: unknown): DeleteMarker | undefined {
+  if (!isRecord(entry) || !isRowId(entry.itemId) || typeof entry.runId !== "string") return undefined;
+  const pair = { itemId: entry.itemId, runId: entry.runId };
+  const { op, ownIntent, entrySha } = entry;
+  const keys = Object.keys(entry);
+  const whole = (op === "row" || op === "card") && typeof ownIntent === "boolean" && keys.every(key => MARKER_KEYS.has(key))
+    && (entrySha === undefined ? keys.length === 4 : typeof entrySha === "string" && /^[0-9a-f]{64}$/.test(entrySha) && keys.length === 5);
+  if (!whole) return pair;
+  return { ...pair, operation: { op: op as MarkerOp["op"], ownIntent: ownIntent as boolean, ...(entrySha === undefined ? {} : { entrySha: entrySha as string }) } };
+}
+const sameMarker = (a: DeleteMarker) => (b: DeleteMarker): boolean =>
+  samePair(a)(b) && canonicalWorkflowJson(a.operation ?? null) === canonicalWorkflowJson(b.operation ?? null);
+const markerEntry = ({ itemId, runId, operation }: DeleteMarker): Record<string, unknown> => ({ itemId, runId, ...operation });
+const markersIn = (file: RunsFile): DeleteMarker[] => (file.unknownDeletes ?? []).flatMap(entry => markerOf(entry) ?? []);
+// Whether a stored entry is a marker about the pair, whatever its shape.
+const aboutPair = (pair: DeleteIntent) => (entry: unknown): boolean => { const marker = markerOf(entry); return marker !== undefined && samePair(pair)(marker); };
+const dropFrom = (entries: unknown[] | undefined, drop: (entry: unknown) => boolean): unknown[] | undefined => {
+  const kept = (entries ?? []).filter(entry => !drop(entry));
+  return kept.length > 0 ? kept : undefined;
+};
 // Whether the file still holds the intent or a marker of that delete.
 const holdsDelete = (file: RunsFile, intent: DeleteIntent): boolean =>
-  (file.deleteIntents ?? []).some(sameIntent(intent)) || (file.unknownDeletes ?? []).some(sameIntent(intent));
+  (file.deleteIntents ?? []).some(sameIntent(intent)) || (file.unknownDeletes ?? []).some(aboutPair(intent));
 
 // What the file says of one run, for classifyRun (see runFacts): `unknown` for a marker in the file or one the store holds in memory.
-function factsIn(file: RunsFile, held: readonly DeleteIntent[]): (run: DeleteIntent) => RunFileFacts {
+function factsIn(file: RunsFile, held: readonly DeleteMarker[]): (run: DeleteIntent) => RunFileFacts {
   const intents = openIntents(file);
   const unknown = [...markersIn(file), ...held];
   return (run) => {
     const { result } = lookup(file, run.runId);
     if (result.status === "invalid" || (result.status === "found" && result.run.itemId !== run.itemId)) return { readable: false };
-    return { readable: true, intent: intents.some(sameIntent(run)), unknown: unknown.some(sameIntent(run)) };
+    return { readable: true, intent: intents.some(sameIntent(run)), unknown: unknown.some(samePair(run)) };
   };
 }
 
 // An intent or marker goes with the write that ends its run, or once the file holds no such run; one whose run entry does not read, or
-// that does not read as an intent, stays as it is.
+// that does not read as an intent (a marker: about no pair), stays as it is.
 function keepOpenIntents(file: RunsFile): void {
-  const keep = (entries: unknown[] | undefined): unknown[] | undefined => {
-    const kept = (entries ?? []).filter(entry => !isIntent(entry) || lookup(file, entry.runId).result.status === "invalid" || openIntent(file, entry));
-    return kept.length > 0 ? kept : undefined;
-  };
-  file.deleteIntents = keep(file.deleteIntents);
-  file.unknownDeletes = keep(file.unknownDeletes);
+  const open = (pair: DeleteIntent | undefined): boolean => pair === undefined || lookup(file, pair.runId).result.status === "invalid" || openIntent(file, pair);
+  file.deleteIntents = dropFrom(file.deleteIntents, entry => !open(isIntent(entry) ? entry : undefined));
+  file.unknownDeletes = dropFrom(file.unknownDeletes, entry => !open(markerOf(entry)));
 }
 
 function fileText({ raw, unchanged: _, ...known }: RunsFile): string {
@@ -161,7 +183,7 @@ function bindingOf(run: WorkflowRunRecord): string {
 /** Template-run state in the covered `work-board/workflow-runs.json`, keyed by runId. */
 export class WorkflowRunStore {
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
-  private unknown: DeleteIntent[] = [];
+  private unknown: DeleteMarker[] = [];
 
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "workflow-runs.json")) {}
 
@@ -304,51 +326,61 @@ export class WorkflowRunStore {
   /** Store, before the board write that deletes row `intent.itemId`, that the user deletes it: the engine ends its run as its row removed,
    * after a crash too, and the intent goes with the write that ends the run. `none`, with nothing written, when the file holds no
    * readable unsettled run of that row under that id; `pending-review` while the file awaits review or is past its read limit;
-   * `too-large` when the file would be. A file that cannot be read throws. */
-  async markDeleted(intent: DeleteIntent): Promise<"marked" | "none" | "pending-review" | "too-large"> {
+   * `too-large` when the file would be. A file that cannot be read throws. A delete of what holds an earlier delete's marker (`held`, the
+   * markers the board just read leaves held) publishes the intent afresh: the same write drops those markers, in the file and in memory. */
+  async markDeleted(intent: DeleteIntent, held: (marker: DeleteMarker) => boolean = () => false): Promise<"marked" | "none" | "pending-review" | "too-large"> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return "pending-review";
       if (!openIntent(file, intent)) return "none";
       const intents = file.deleteIntents ?? [];
-      if (intents.some(entry => isIntent(entry) && entry.itemId === intent.itemId && entry.runId === intent.runId)) return "marked";
-      file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
-      return (await this.commit(file)) ? "marked" : "too-large";
+      const stale = (marker: DeleteMarker | undefined): boolean => marker !== undefined && samePair(intent)(marker) && held(marker);
+      const dropping = (file.unknownDeletes ?? []).some(entry => stale(markerOf(entry))) || this.unknown.some(stale);
+      if (intents.some(sameIntent(intent)) && !dropping) return "marked";
+      if (!intents.some(sameIntent(intent))) file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
+      file.unknownDeletes = dropFrom(file.unknownDeletes, entry => stale(markerOf(entry)));
+      if (!(await this.commit(file))) return "too-large";
+      this.unknown = this.unknown.filter(marker => !stale(marker));
+      return "marked";
     });
   }
 
-  /** Take back the intent of a delete that did not land, with its marker. It counts once a read of the file again holds neither, whatever
-   * the write reported: true then. Otherwise the delete stays unknown (see markUnknown), never read as not landed, and false. */
-  async withdrawIntent(intent: DeleteIntent): Promise<boolean> {
+  /** The markers of the delete of that pair: in the file and in memory. Empty while the file cannot be read. */
+  async markersOf(intent: DeleteIntent): Promise<DeleteMarker[]> {
+    const file = await this.read().catch(() => undefined);
+    return [...(file === undefined ? [] : markersIn(file)), ...this.unknown].filter(samePair(intent));
+  }
+
+  /** Take back the intent of a delete that did not land, with every marker of that pair. It counts once a read of the file again holds
+   * neither, whatever the write reported: true then. Otherwise the delete stays unknown as `operation` (see markUnknown), never read as not
+   * landed, and false. */
+  async withdrawIntent(intent: DeleteIntent, operation?: MarkerOp): Promise<boolean> {
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined || !holdsDelete(file, intent)) return;
-      const drop = (entries: unknown[] | undefined) => {
-        const kept = (entries ?? []).filter(entry => !sameIntent(intent)(entry));
-        return kept.length > 0 ? kept : undefined;
-      };
-      file.deleteIntents = drop(file.deleteIntents);
-      file.unknownDeletes = drop(file.unknownDeletes);
+      file.deleteIntents = dropFrom(file.deleteIntents, sameIntent(intent));
+      file.unknownDeletes = dropFrom(file.unknownDeletes, aboutPair(intent));
       await this.commit(file);
     }).catch(() => undefined);
     const file = await this.read().catch(() => undefined);
     if (file !== undefined && !holdsDelete(file, intent)) {
-      this.unknown = this.unknown.filter(entry => !sameIntent(entry)(intent));
+      this.unknown = this.unknown.filter(marker => !samePair(intent)(marker));
       return true;
     }
-    await this.markUnknown(intent);
+    await this.markUnknown(intent, operation);
     return false;
   }
 
-  /** A delete whose outcome is not known: the store holds it in memory, and stores it as a marker beside the intents so it outlives a
-   * restart; while either holds it the run classifies as unreadable. It goes once resolveUnknown decides it. A marker that cannot be
-   * written stays in memory only. */
-  async markUnknown(intent: DeleteIntent): Promise<void> {
-    if (!this.unknown.some(sameIntent(intent))) this.unknown = [...this.unknown, { itemId: intent.itemId, runId: intent.runId }];
+  /** A delete step whose outcome is not known, as `operation`: the store holds it in memory, and stores it as a marker beside the intents
+   * so it outlives a restart; while either holds it the run classifies as unreadable. It goes once resolveUnknown decides it. A marker
+   * that cannot be written stays in memory only. Given the pair alone (only tests do), it is a row's delete that stored its intent. */
+  async markUnknown(intent: DeleteIntent, operation: MarkerOp = { op: "row", ownIntent: true }): Promise<void> {
+    const marker: DeleteMarker = { itemId: intent.itemId, runId: intent.runId, operation };
+    if (!this.unknown.some(sameMarker(marker))) this.unknown = [...this.unknown, marker];
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      if (file === undefined || (file.unknownDeletes ?? []).some(sameIntent(intent))) return;
-      file.unknownDeletes = [...(file.unknownDeletes ?? []), { itemId: intent.itemId, runId: intent.runId }];
+      if (file === undefined || markersIn(file).some(sameMarker(marker))) return;
+      file.unknownDeletes = [...(file.unknownDeletes ?? []), markerEntry(marker)];
       await this.commit(file);
     }).catch(() => undefined);
   }
@@ -360,33 +392,36 @@ export class WorkflowRunStore {
     return file !== undefined && markersIn(file).length > 0;
   }
 
-  /** Decide every delete whose outcome is unknown: `landed` false takes back its intent with the marker, true only the marker. Each
-   * counts once a read of the file again holds no marker of it (and, not landed, no intent); the rest stay unknown. */
-  async resolveUnknown(landed: (intent: DeleteIntent) => boolean): Promise<void> {
-    let back: DeleteIntent[] = [];
-    let evaluated = new Set<DeleteIntent>();
+  /** Resolve every delete whose outcome is unknown (see markerOutcome): `unlanded` takes back its intent with the marker, `landed` drops
+   * only the marker, `held` keeps both. Each decided one counts once a read of the file again holds no such marker (and, not landed, no
+   * intent); the rest stay unknown. */
+  async resolveUnknown(outcome: (marker: DeleteMarker) => "unlanded" | "landed" | "held"): Promise<void> {
+    let back: DeleteMarker[] = [];
+    let decided = new Set<DeleteMarker>();
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return;
       for (const marker of markersIn(file)) {
-        if (!this.unknown.some(sameIntent(marker))) this.unknown = [...this.unknown, marker];
+        if (!this.unknown.some(sameMarker(marker))) this.unknown = [...this.unknown, marker];
       }
       const memory = this.unknown;
-      const unknown = [...memory];
-      if (unknown.length === 0) return;
-      back = unknown.filter(intent => !landed(intent));
-      evaluated = new Set(memory);
-      const kept = (file.deleteIntents ?? []).filter(entry => !back.some(intent => sameIntent(intent)(entry)));
-      file.deleteIntents = kept.length > 0 ? kept : undefined;
-      const left = (file.unknownDeletes ?? []).filter(entry => !isIntent(entry));
-      file.unknownDeletes = left.length > 0 ? left : undefined;
+      const outcomes = new Map(memory.map(marker => [marker, outcome(marker)]));
+      decided = new Set(memory.filter(marker => outcomes.get(marker) !== "held"));
+      if (decided.size === 0) return;
+      back = memory.filter(marker => outcomes.get(marker) === "unlanded");
+      file.deleteIntents = dropFrom(file.deleteIntents, entry => back.some(marker => sameIntent(marker)(entry)));
+      file.unknownDeletes = dropFrom(file.unknownDeletes, (entry) => {
+        const marker = markerOf(entry);
+        return marker !== undefined && [...decided].some(sameMarker(marker));
+      });
       await this.commit(file);
     }).catch(() => undefined);
-    if (evaluated.size === 0) return;
+    if (decided.size === 0) return;
     const file = await this.read().catch(() => undefined);
     if (file === undefined) return;
-    this.unknown = this.unknown.filter(intent => !evaluated.has(intent) || (file.unknownDeletes ?? []).some(sameIntent(intent))
-      || (back.some(sameIntent(intent)) && (file.deleteIntents ?? []).some(sameIntent(intent))));
+    const stored = markersIn(file);
+    this.unknown = this.unknown.filter(marker => !decided.has(marker) || stored.some(sameMarker(marker))
+      || (back.includes(marker) && (file.deleteIntents ?? []).some(sameIntent(marker))));
   }
 
   /** The delete intents whose run is still to end. Undefined while the file awaits review or is past its read limit; a file that cannot

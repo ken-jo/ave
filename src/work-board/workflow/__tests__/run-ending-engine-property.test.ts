@@ -98,7 +98,7 @@ function leave(h: Harness, cell: Cell, at: { id: number; runId: string; holder: 
     else records.push(structuredClone(record));
   }
   if (cell.intent) runs.deleteIntents = [{ itemId: at.id, runId: at.runId }];
-  if (cell.marker) runs.unknownDeletes = [{ itemId: at.id, runId: at.runId }];
+  if (cell.marker) runs.unknownDeletes = [{ itemId: at.id, runId: at.runId, op: "row", ownIntent: true }];
   writeFileSync(runsPath(h), JSON.stringify(runs));
 }
 
