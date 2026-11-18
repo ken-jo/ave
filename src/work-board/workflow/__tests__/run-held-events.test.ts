@@ -394,10 +394,11 @@ it("a completion held by an unreadable board replays after the actual board file
     expect(h.events.some(event => event.phase === "error")).toBe(false);
   }));
 
-it.each(["before", "after", "none"] as const)("a held replay claims effects at most once when its handle throws %s the effect", async (failure) => {
+it.each(["before", "before-evaluation", "after", "none"] as const)("a held replay claims effects at most once when its handle throws %s the effect", async (failure) => {
   const conditions = createPassConditionRegistry();
   const original = conditions.evaluate;
   const evaluate = vi.spyOn(conditions, "evaluate");
+  if (failure === "before-evaluation") evaluate.mockRejectedValueOnce(new Error("before gate effect"));
   if (failure === "after") evaluate.mockImplementationOnce(async (...args) => { await original(...args); throw new Error("after gate effect"); });
   await withRun(["a"], async (run) => {
     const { h, id, runId, children: [child], lose } = run;
@@ -409,7 +410,7 @@ it.each(["before", "after", "none"] as const)("a held replay claims effects at m
     const warnings = vi.spyOn(console, "warn");
     const write = failure === "before" ? vi.spyOn(h.board, "updateRun").mockRejectedValue(new Error("before gate effect")) : undefined;
     lose(false);
-    await permittedRead(h);
+    await h.engine.adoptParkedTemplateRuns();
     if (failure === "before") {
       await vi.waitFor(() => expect(write).toHaveBeenCalled());
       await settle();
@@ -417,18 +418,24 @@ it.each(["before", "after", "none"] as const)("a held replay claims effects at m
       expect((await h.runOf(runId))?.settled).toBeUndefined();
       expect(evaluate).not.toHaveBeenCalled();
       write?.mockRestore();
+    } else if (failure === "before-evaluation") {
+      await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(runsOnDisk(h).heldEvents).toEqual([held]);
+      expect((await h.runOf(runId))?.settled).toBeUndefined();
     } else if (failure === "after") {
       await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
       await settle();
       expect(runsOnDisk(h).heldEvents).toBeUndefined();
     }
-    if (failure !== "none") expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes(`${failure} gate effect`)))).toBe(true);
+    const boundary = failure === "before-evaluation" ? "before" : failure;
+    if (failure !== "none") expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes(`${boundary} gate effect`)))).toBe(true);
     await Promise.all([permittedRead(h), permittedRead(h)]);
     if (failure === "after") await h.untilStage(id, "a", "failed");
     else expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "done" });
     await permittedRead(h);
     await settle();
-    expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluate).toHaveBeenCalledTimes(failure === "before-evaluation" ? 2 : 1);
     expect(runsOnDisk(h).heldEvents).toBeUndefined();
     expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(failure === "after" ? 0 : 1);
   }, undefined, "row-lost", conditions);

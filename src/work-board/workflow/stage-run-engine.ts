@@ -169,7 +169,7 @@ function heldOf(event: RunEvent, record: RunRecord): Held {
 }
 const sameHeld = (a: Held) => (b: Held): boolean => a.stage === b.stage && a.attempt === b.attempt && a.kind === b.kind;
 
-/** Each replay effect claims its event token before it begins, including notifications. */
+/** Each replay effect claims its event token at its application boundary, including notifications. */
 function claimEffect(held: Held | undefined, key: string): boolean {
   if (!held) return true;
   if (held.effects.has(key)) return false;
@@ -740,7 +740,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function runEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): Promise<void> {
     let sealFailed = false;
     for (const [index, effect] of effects.entries()) {
-      if (!claimEffect(replay, `effect:${index}`)) continue;
+      const key = `effect:${index}`;
+      if (replay?.effects.has(key)) continue;
+      if (effect.type !== "evaluate_gate" && !claimEffect(replay, key)) continue;
       switch (effect.type) {
         case "spawn":
           state.due.add(`${effect.stageId}#${effect.attempt}`);
@@ -751,8 +753,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const stage = version.stages.find(candidate => candidate.id === effect.stageId);
           const result = state.results.get(effect.stageId);
           const verdict = stage?.gate.type === "auto" && result
-            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage })
+            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage, claimEffect: () => claimEffect(replay, key) })
             : { passed: false, evidence: "the stage result is not available to the host", judgedBy: "host" as const };
+          claimEffect(replay, key);
           post(state, { type: "gate_evaluated", stageId: effect.stageId, attempt: effect.attempt, ...verdict });
           break;
         }

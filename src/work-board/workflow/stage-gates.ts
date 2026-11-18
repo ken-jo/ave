@@ -2,7 +2,12 @@ import type { SubAgentSpawnResult } from "../../engine/subagent-runner.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
 
 type PassCondition = Extract<TemplateStage["gate"], { type: "auto" }>["pass"];
-interface GateFacts { result: SubAgentSpawnResult; stage: TemplateStage }
+interface GateFacts {
+  result: SubAgentSpawnResult;
+  stage: TemplateStage;
+  /** An evaluator checks this receipt immediately before applying its effect. False means it was already consumed. */
+  claimEffect?: () => boolean;
+}
 interface GateVerdict { passed: boolean; evidence: string; judgedBy: "host" | "model" }
 interface PassConditionEntry {
   evaluate(facts: GateFacts, pass: PassCondition): GateVerdict | Promise<GateVerdict>;
@@ -30,6 +35,7 @@ export function createPassConditionRegistry(): PassConditionRegistry {
     evaluate: async (pass, facts) => {
       const entry = entries.get(pass.kind);
       if (!entry) return { passed: false, evidence: `no evaluator for ${pass.kind}`, judgedBy: "host" };
+      if (facts.claimEffect?.() === false) return { passed: false, evidence: "the gate effect was already consumed", judgedBy: "host" };
       try {
         return await entry.evaluate(facts, pass);
       } catch {
