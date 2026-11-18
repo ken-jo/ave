@@ -22,6 +22,8 @@ type RunAdoption = {
   ok: true;
   /** Every board row that names a template run, with that run: null when the run file holds no readable run of that row under that id. */
   named: { item: WorkItemResolved; run: RunRecord | null }[];
+  /** Workspace identities that must survive sweeping; undefined defers the sweep. */
+  keepWorkspaces: readonly string[] | undefined;
   /** Unsettled runs no adopted row names, by class (see classifyRun): `orphans`, `lost`, `removed` (due-delete) and `kept`, every other
    * class (waiting-delete, unreadable, and live where the board on disk names the run though the board as read did not). */
   orphans: RunRecord[];
@@ -105,6 +107,7 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
     adoption: async () => {
       const stored = await store.runs.list();
       if (stored.status !== "found") return { ok: false, code: "template-runs-pending-review" };
+      const { keepWorkspaces } = await store.runs.view();
       const listed = await store.list();
       if (listed.status !== "ok") return { ok: false, code: "template-runs-board-unread" };
       const byId = new Map(stored.runs.map(run => [run.runId, run]));
@@ -114,12 +117,12 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       });
       const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
       const rest = stored.runs.filter(run => !adopted.has(run.runId) && run.settled === undefined);
-      if (rest.length === 0) return { ok: true, named, orphans: [], lost: [], kept: [], removed: [] };
+      if (rest.length === 0) return { ok: true, named, keepWorkspaces, orphans: [], lost: [], kept: [], removed: [] };
       // The listed board may be one started empty after the file went missing or was damaged: only the file on disk shows a row gone.
       const classOf = await store.runClasses();
       if (typeof classOf === "string") return { ok: false, code: classOf };
       const of = (...classes: RunClass[]) => rest.filter(run => classes.includes(classOf(run)));
-      return { ok: true, named, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
+      return { ok: true, named, keepWorkspaces, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
     },
     deleted: () => store.deleteIntentsOnDisk(),
     pruneSettled: () => store.pruneSettledRuns(),

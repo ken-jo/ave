@@ -1124,7 +1124,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const found = await records.adoption();
     if (!found.ok) return found;
     // A run whose row a user deleted is taken over by its intent (consumeIntents), never ended here.
-    const active = [...found.kept.filter(run => run.settled === undefined), ...found.removed].map(run => run.runId);
+    const active = [...(found.keepWorkspaces ?? [])];
+    const releaseWorkspace = (runId: string): void => {
+      for (let i = active.length - 1; i >= 0; i -= 1) if (active[i] === runId) active.splice(i, 1);
+    };
     // A row write that fails leaves the adoption to the next attempt; a row that is gone by then is an orphan for that attempt.
     const shownOnRow = (itemId: number, patch: Parameters<typeof store.setRunResult>[1]): Promise<boolean> =>
       store.setRunResult(itemId, patch).then(result => result.status === "updated", () => false);
@@ -1178,6 +1181,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         log.warn("an orphaned template run could not be cancelled (id=%d): %s", run.itemId, ended.reason);
         return { ok: false, code: writeFault(ended.reason) };
       }
+      releaseWorkspace(run.runId);
     }
     // A run whose row no longer names or holds it ends error, as it does live.
     for (const run of found.lost) {
@@ -1187,9 +1191,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         log.warn("a template run its row no longer names could not be ended (id=%d): %s", run.itemId, ended.reason);
         return { ok: false, code: writeFault(ended.reason) };
       }
+      releaseWorkspace(run.runId);
     }
     await records.pruneSettled();
-    await workspace.sweep(active).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    if (found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)]).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
     return { ok: true };
   }
 

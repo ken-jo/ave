@@ -30,6 +30,8 @@ interface WorkflowRunUnreadable { position: number; hash: string; itemId?: numbe
 export interface WorkflowRunView {
   readonly pendingReview: boolean;
   readonly unreadable?: readonly WorkflowRunUnreadable[];
+  /** All workspace identities not confirmed settled; undefined when any identity cannot be read safely. */
+  readonly keepWorkspaces?: readonly string[];
   get(runId: string): WorkflowRunReadResult;
   missing?(runId: string): boolean;
 }
@@ -71,7 +73,10 @@ function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
     try { assertWorkflowRunRecord(entry); }
     catch (error) { if (error instanceof WorkflowTemplateError) { kept.push(entry); continue; } throw error; }
     const next = retain(structuredClone(entry));
-    if (next === null) { changed = true; continue; }
+    if (next === null) {
+      if (entry.settled === undefined) kept.push(entry); else changed = true;
+      continue;
+    }
     assertWorkflowRunRecord(next);
     requireTemplate(bindingOf(next) === bindingOf(entry) && sameEnd(next.settled, entry.settled), "invalid-template-run");
     if (canonicalWorkflowJson(next) !== canonicalWorkflowJson(entry)) changed = true;
@@ -265,6 +270,12 @@ export class WorkflowRunStore {
     if (file === undefined) return { pendingReview: true, get: () => ({ status: "pending-review" }) };
     return {
       pendingReview: false, unreadable: unreadableEntries(file), get: runId => lookup(file, runId).result,
+      keepWorkspaces: file.runs.every(entry => isRecord(entry) && typeof entry.runId === "string" && entry.runId.length > 0 && entry.runId.length <= 256)
+        ? file.runs.flatMap(entry => {
+          const runId = (entry as Record<string, unknown>).runId as string;
+          const { result } = lookup(file, runId);
+          return result.status === "found" && result.run.settled !== undefined ? [] : [runId];
+        }) : undefined,
       missing: runId => lookup(file, runId).result.status === "not-found" && file.runs.every(entry => isRecord(entry) && typeof entry.runId === "string"),
     };
   }

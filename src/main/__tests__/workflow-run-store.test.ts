@@ -143,7 +143,7 @@ it("issues each row id above the floor and above every id seen, stores it, and n
   await store.put(run({ itemId: 20 }));
   expect(await stored()).toMatchObject({ rowIdFloor: 20 });
   await store.prune(() => null);
-  expect(await stored()).toEqual({ version: 1, rowIdFloor: 20, runs: [] });
+  expect(await stored()).toEqual({ version: 1, rowIdFloor: 20, runs: [run({ itemId: 20 })] });
 });
 
 it("issues no id past the safe-integer limit, and says so: the floor stays at the limit", async () => {
@@ -322,7 +322,7 @@ it.each(RUN_FILE_WRITES)("%s writes the run file's other keys and every entry th
   const unreadable = [{ runId: "broken", itemId: 4, extra: 1 }, { itemId: "two" }, "stray"];
   const copy = { through: 5, board: "a".repeat(64) };
   // Compact and a floor below a stored run's row: neither is what a write writes.
-  const text = `{"archive":${JSON.stringify(archive)},"version":1,"rowIdFloor":0,"runs":${JSON.stringify([run(), ...unreadable])},"note":"moved by hand","legacyBoardCopy":${JSON.stringify(copy)}}`;
+  const text = `{"archive":${JSON.stringify(archive)},"version":1,"rowIdFloor":0,"runs":${JSON.stringify([run(name === "prune" ? { stageRuns: [], settled: { status: "cancelled", at: "2026-01-02T00:00:00.000Z" } } : {}), ...unreadable])},"note":"moved by hand","legacyBoardCopy":${JSON.stringify(copy)}}`;
   await writeFile(file, text);
   const store = new WorkflowRunStore(file);
   await write(store);
