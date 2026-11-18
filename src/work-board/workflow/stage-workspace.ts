@@ -13,11 +13,15 @@ type WorkspaceRefusal = typeof WORKSPACE_REFUSALS[number];
 export interface StageWorkspaceProvider {
   /** Once, at start. */
   open(run: RunRef, projectRoot: string | undefined): Promise<{ ok: true; workspace: RunWorkspace } | { ok: false; code: WorkspaceRefusal }>;
+  /** Reopens the same workspace for a run/stage/attempt; repetition never creates another attempt. */
   prepare(run: RunRef, stage: TemplateStage, attempt: number): Promise<{ ok: true; workspace: StageWorkspace } | { ok: false; code: WorkspaceRefusal }>;
-  /** After the stage passed. */
+  /** Freeze one immutable result for the passed attempt. Repetition returns the same seal, without another snapshot.
+   * A non-idempotent implementation must commit its receipt atomically with the freeze. */
   seal(run: RunRef, stageId: string): Promise<{ ok: true; sealCommit?: string } | { ok: false; code: WorkspaceRefusal }>;
+  /** Install one immutable result per run/join from the stage seals; repetition returns that result without another merge.
+   * A non-idempotent implementation must commit its receipt atomically with the integration. */
   integrate(run: RunRef, joinId: string, stageIds: readonly string[]): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
-  /** Stage folders only; the run branch and the output folder stay. */
+  /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. */
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
   /** Boot: drop what no active run owns. */
   sweep(activeRunIds: readonly string[]): Promise<void>;

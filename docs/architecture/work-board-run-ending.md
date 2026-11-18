@@ -252,9 +252,49 @@ superseded attempt is dropped before any new preparation.
   the event. Spawn, interrupt, seal, integrate, settle and workspace release
   also check their tokens. A throw before the effect leaves the event held
   with no consumed token, so a later replay can apply it once. Once an effect
-  applies, the event is consumed even if the evaluator or handle later throws;
-  the throw is logged and that event never invokes an effect again. A running stage with
-  no remaining child or event still takes the lost path below.
+  applies, that effect stays consumed even if evaluation later throws; the
+  throw is logged. A running stage with no remaining child or event still
+  takes the lost path below.
+  The real registry leaves the token unclaimed when an entry throws before
+  applying its effect and propagates the error to the drain. An entry claims
+  immediately at its application boundary; a successful pure evaluation claims
+  on return. A post-effect error propagates too, so the drain logs it without
+  repeating that effect. Notification failures are logged independently and
+  cannot abort the remaining seal, integrate or release work.
+
+  Every replayable effect uses one of the durability arguments below. A memory
+  token is only a cache of consumption, never the restart authority. **(a)**
+  means the effect and its consumption share one durable commit; **(b)** means
+  the operation is idempotent by construction.
+
+  | Effect | Durability and consumption | Recovery |
+  |---|---|---|
+  | Gate evaluation | **(b)** Entries are pure or idempotent; evaluation itself performs no non-idempotent write. | A stored verdict is used as stored; a child without a verdict follows interrupted reconciliation, without re-invoking the lost payload. |
+  | Gate verdict, human-gate completion, seal failure and join outcome | **(a)** The new stage/attempt status, gate or join status is the consumption record in that same atomic run-file write. | Staleness checks reject the old transition; an intact passed stage or integrating join re-derives its remaining work. |
+  | Link and auto-gate completion | **(b)** Assigning the same child identity or bounded output is idempotent. Any subsequent evaluation satisfies the separate gate-evaluation rule. | A child with no durable verdict is reconciled as interrupted; its old completion is never used to launch another child. |
+  | Stop and fault reduction | **(b)** Cancelling the same open stages and requesting the same child interruptions adds no new work. A terminal result uses the settle commit below. | A held Stop retains its kind across restart; reconciliation closes children that no longer exist. |
+  | Seal | **(b)** The provider freezes one immutable result per run/stage/attempt. Repeated calls return that same seal, including its commit, without making another snapshot. | The host's per-attempt sealed set avoids repeats within a process; restart may request the same seal again. |
+  | Integrate | **(b)** The provider installs one result per run/join from its immutable stage seals. Repetition returns the same result without another merge or publication. | An integrating join resumes on the next permitted read or event, including boot. Its pending outcome suppresses parallel calls in one engine. |
+  | Spawn and preparation | **(b)** The running attempt is a durable launch intent. Within a process the due/starting guards admit it once; restart closes that original attempt as interrupted and never launches it again. Preparation is keyed by that same attempt. | Boot starts no child; a user continuation or retry authorizes new work. |
+  | Interrupt | **(b)** Requesting cancellation of the same child again adds no work. | Restart has no child to interrupt and reconciles the running attempt as interrupted. |
+  | Settle | **(a)** Final stage state, terminal result and held-event removal share the settle commit. | A restart uses the terminal record; it never re-settles that run. |
+  | Board-row projection | **(b)** It assigns the terminal status and output already stored in the run. | Boot repairs the row from that same record. |
+  | Stage/item/progress notifications | **(b)** They announce or invalidate the current stored state; they grant no mutation authority. | Receipts suppress repeated delivery within a replay; a fresh reader derives the same state. Delivery failure cannot stop effect continuation. |
+  | Workspace release and sweep | **(b)** Removing an already released stage folder or unowned workspace is a no-op. | Confirmed terminal state and active run ownership determine what may be removed again. |
+
+  A provider that cannot make seal or integrate idempotent must persist the
+  effect's receipt together with its filesystem effect in that same commit,
+  and return the recorded result on repetition. A fresh snapshot or merge per
+  invocation does not meet this contract. The unavailable provider performs no
+  filesystem effect; a usable provider owns and must satisfy this boundary.
+
+  Non-Stop held payloads lost on restart are re-derived by reconcile from the
+  durable run state, per the existing contract. This includes remaining seals
+  and integration of an intact integrating join; it never changes a passed gate
+  into a conflict merely because the process restarted. A parked join may
+  complete, while the next step stays waiting for an explicit continuation.
+  A missing workspace still follows the existing workspace-lost rule.
+
 - Storage: `heldEvents` in the run file, each entry the event's run and
   identity (`{itemId, runId, stage, attempt, kind}`); the event itself is kept
   in the engine's memory, since a restart reads back only a Stop's kind
@@ -305,7 +345,8 @@ superseded attempt is dropped before any new preparation.
 - Restart: boot reconciles a parked run before anything else, since nothing
   starts after a restart. Of the held events read back from the run file, a
   Stop still stops its run; every other one is superseded by that reconcile
-  and dropped with its reason.
+  and dropped with its reason. Reconcile re-derives their state and any
+  unfinished join work rather than replaying their lost payloads.
 
 ## Retention and envelopes
 
@@ -347,3 +388,12 @@ superseded attempt is dropped before any new preparation.
   identity, a lost attempt beside a live sibling or an older live attempt,
   safety during a pending preparation, and original-attempt link and completion
   identities retained across failed scheduler reads.
+
+The crash-between case in `run-effect-crash-recovery.test.ts` uses a faithful
+process-abandonment simulation: the real run-file update commits a passed gate
+and integrating join, then its wrapper never returns to the old engine. No
+receipt, stage notification, effect continuation or cleanup for that event can
+run. A new store and engine open the same files. The test asserts one gate
+transition and evaluation, the unchanged stored verdict, one seal and one
+integration, including after another read and restart. It does not launch a
+separate application process.
