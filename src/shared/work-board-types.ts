@@ -446,13 +446,15 @@ export interface StageGateDecideInput {
   decision: WorkPlanDecision;
   note?: string;
 }
+/** A store's refusal of a write behind a stage decision or retry, by its code. */
+type StageStoreRefusal = WorkBoardRefusalCode | "invalid-template-run";
 /** Decision refusals are snake_case. One with text shows reasonCodes.<the refusal with "-" for "_">, as run reason codes do. */
 type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
   | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
 export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
 export type StageGateDecideIpcResult =
   | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }
-  | { ok: false; reason: StageGateRefusal | "user-gesture-required" | "invalid-input" };
+  | { ok: false; reason: StageGateRefusal | "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 
 /** The user's decision on a join that could not be collected, bound to the conflict they saw. */
 export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; decision: "retry_merge" | "reject" }
@@ -460,10 +462,10 @@ export interface StageJoinDecideInput { runId: string; joinId: string; conflictH
  * yet. Both are shown by their reasonCodes text. */
 type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_pending" | "version_missing" | "graph_mismatch";
 export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" };
-export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" };
+export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 /** Retry of a failed stage, or continuing a run that has only ready stages after a restart. not_idle: a child of the run is still live. */
 export type StageRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "attempts_exhausted" | "not_idle" };
-export type StageRetryIpcResult = StageRetryResult | { ok: false; reason: "user-gesture-required" | "invalid-input" };
+export type StageRetryIpcResult = StageRetryResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 
 /** Steering a running execution (permission-decision-tree.md S→T): accepted means queued for the execute child's next round boundary,
  * not delivered; a steer still queued when the child's turn ends is dropped and recorded only in the audit.

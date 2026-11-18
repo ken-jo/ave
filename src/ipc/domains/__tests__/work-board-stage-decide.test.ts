@@ -231,9 +231,9 @@ it.each<[string, string, Parameters<typeof stageRunHarness>[0], (h: Harness) => 
       throw Object.assign(new Error("EACCES: permission denied, open 'C:\\private'"), { code: "EACCES" });
     });
     try {
-      const answer = JSON.stringify(await handler(channel)({ sender: owner, senderFrame: owner.mainFrame }, ...args));
-      expect(answer).toContain("\"work-board-backup-failed\"");
-      expect(answer).not.toMatch(/EACCES|private/);
+      const answer = await handler(channel)({ sender: owner, senderFrame: owner.mainFrame }, ...args);
+      expect(answer).toEqual(channel === WORK_BOARD.run ? { status: "error", reason: "work-board-backup-failed", reasonCode: "work-board-backup-failed" } : { ok: false, reason: "work-board-backup-failed" });
+      expect(JSON.stringify(answer)).not.toMatch(/EACCES|private/);
       expect([...new Set(copies.map(copy => copy.slice(h.dir.length + 1).split(".").slice(0, 2).join(".")))]).toEqual([file]);
       expect(files.map(written => readFileSync(written))).toEqual(before);
       expect(kept()).toEqual(keptBefore);

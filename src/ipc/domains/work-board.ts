@@ -189,7 +189,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         const code = error instanceof WorkBoardWriteRefusal ? error.code
           : error instanceof WorkflowTemplateError && error.code === "invalid-template-run" ? error.code : undefined;
         if (code === undefined) throw error;
-        if (channel === WORK_BOARD.decidePlan) return { ok: false, reason: code };
+        if (channel === WORK_BOARD.decidePlan || channel === WORK_BOARD.decideStage || channel === WORK_BOARD.decideJoin || channel === WORK_BOARD.retryStage) {
+          return { ok: false, reason: code };
+        }
         if (channel === WORK_BOARD.list || channel === WORK_BOARD.get || channel === WORK_BOARD.steerRun || channel === WORK_BOARD.cancelRun) {
           return { ok: false, error: code };
         }
