@@ -165,6 +165,7 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
     return config;
   } catch (error) {
     verifiedConfigurationIdentities.delete(key);
+    if (error instanceof Error && error.message === "host-resources-unavailable") throw error;
     if (error instanceof AveHomeConfigurationUntrustedError) throw error;
     throw new AveHomeConfigurationUntrustedError(config, (error as Error).message);
   }
