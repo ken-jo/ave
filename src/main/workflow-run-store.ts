@@ -368,8 +368,11 @@ export class WorkflowRunStore {
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return;
+      for (const marker of markersIn(file)) {
+        if (!this.unknown.some(sameIntent(marker))) this.unknown = [...this.unknown, marker];
+      }
       const memory = this.unknown;
-      const unknown = [...markersIn(file), ...memory];
+      const unknown = [...memory];
       if (unknown.length === 0) return;
       back = unknown.filter(intent => !landed(intent));
       evaluated = new Set(memory);

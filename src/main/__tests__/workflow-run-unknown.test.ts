@@ -51,3 +51,28 @@ it("keeps a memory unknown added after the resolution snapshot", async () => {
   await store.resolveUnknown(() => true);
   expect(await store.hasUnknown()).toBe(false);
 });
+
+it("keeps a reopened durable marker in memory until its resolution readback succeeds", async () => {
+  const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+  await store.put({ ...first, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z", stageRuns: [] });
+  await store.markUnknown(first);
+  store = new WorkflowRunStore(join(dir, "runs.json"));
+  const read = homeTrust.readAveHomeInput;
+  const write = rewrite.rewriteKeepingBytes;
+  let failReadback = false;
+  const writing = vi.spyOn(rewrite, "rewriteKeepingBytes").mockImplementation(async (...args) => {
+    const result = await write(...args);
+    failReadback = true;
+    return result;
+  });
+  const reading = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path => {
+    if (failReadback) { failReadback = false; throw Object.assign(new Error("readback refused"), { code: "EIO" }); }
+    return read(path);
+  });
+  await store.resolveUnknown(() => true);
+  expect(await store.hasUnknown()).toBe(true);
+  writing.mockRestore();
+  reading.mockRestore();
+  await store.resolveUnknown(() => true);
+  expect(await store.hasUnknown()).toBe(false);
+});
