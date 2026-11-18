@@ -13,7 +13,7 @@ const source = readFileSync(SCRIPT, "utf8");
 const ASSETS = [...source.matchAll(/(AMD64|ARM64) = @\{ Name = '([^']+)'; Size = (\d+); Sha256 = '([0-9a-f]{64})'; Prefix = '([a-z0-9]+)' \}/gu)]
   .map((m) => ({ arch: m[1]!, name: m[2]!, prefix: m[5]! }));
 /** The pinned archive's real top level for this machine (x64 MinGit has ucrt64\, arm64 has clangarm64\; neither has mingw64\). */
-const NATIVE = ASSETS.find((asset) => asset.arch === (process.env.PROCESSOR_ARCHITEW6432 ?? process.env.PROCESSOR_ARCHITECTURE));
+const NATIVE = ASSETS.find((asset) => asset.arch === ({ x64: "AMD64", arm64: "ARM64" } as Record<string, string>)[process.arch]);
 
 describe("install-windows-git.ps1 pins", () => {
   it("pins each architecture to an official Git for Windows MinGit asset by size and sha256", () => {
@@ -75,9 +75,11 @@ describe.runIf(process.platform === "win32")("install-windows-git.ps1 on Windows
 
   // customInstall downloads into $INSTDIR itself, which only an administrator can write.
   function run({ scriptPath, install }: ReturnType<typeof stage>) {
+    const env: NodeJS.ProcessEnv = { ...process.env, PROCESSOR_ARCHITECTURE: NATIVE?.arch, GITHUB_TOKEN: "", GH_TOKEN: "" };
+    delete env.PROCESSOR_ARCHITEW6432;
     return spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath,
       "-InstallDir", install, "-DownloadDir", install], {
-      env: { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" }, encoding: "utf8", timeout: 60_000,
+      env, encoding: "utf8", timeout: 60_000,
     });
   }
 
