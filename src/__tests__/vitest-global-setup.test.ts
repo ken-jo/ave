@@ -50,6 +50,7 @@ const RUN_ENV = [
   "AVE_TEST_TMP_ROOT", "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",
   "TMPDIR", "TEMP", "TMP",
   "ProgramData", "PROGRAMDATA", "ALLUSERSPROFILE",
+  "LOCALAPPDATA", "APPDATA",
 ] as const;
 const savedEnv = Object.fromEntries(RUN_ENV.map((name) => [name, process.env[name]]));
 const scratch = useTempDirs("vitest-setup-");
@@ -127,6 +128,27 @@ const removeTree = async (path: string) => {
 };
 
 describe("vitest global setup", () => {
+  it.runIf(process.platform === "win32")("keeps inherited profile stores inside the owned run temp directory", async () => {
+    const inherited = scratch();
+    const local = join(inherited, "local");
+    const roaming = join(inherited, "roaming");
+    process.env.LOCALAPPDATA = local;
+    process.env.APPDATA = roaming;
+    process.env.AVE_TEST_TMP_ROOT = join(scratch(), "test-tmp");
+    const teardown = await setup(project());
+    try {
+      expect(process.env.LOCALAPPDATA).toBe(join(tmpdir(), "local-app-data"));
+      expect(process.env.APPDATA).toBe(join(tmpdir(), "app-data"));
+      expect(existsSync(join(tmpdir(), "local-app-data", "Temp"))).toBe(true);
+      expect(existsSync(join(tmpdir(), "app-data"))).toBe(true);
+      expect(existsSync(local)).toBe(false);
+      expect(existsSync(roaming)).toBe(false);
+    } finally { await teardown(); }
+  });
+  it.runIf(process.platform === "win32")("starts workers with profile stores confined to their run", () => {
+    expect(process.env.LOCALAPPDATA).toBe(join(tmpdir(), "local-app-data"));
+    expect(process.env.APPDATA).toBe(join(tmpdir(), "app-data"));
+  });
   it("uses an explicit isolated scratch root without changing the account home", async () => {
     const home = homedir();
     const root = join(scratch(), "test-tmp");
