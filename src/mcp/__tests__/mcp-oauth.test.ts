@@ -255,6 +255,21 @@ function createSession(state: Fixture, options: { store?: Map<string, string>; c
 }
 
 describe("remote authorization", () => {
+  it("preserves the login callback failure as the cause of the authentication error", async () => {
+    const state = await fixture();
+    const { session, openAuthorizationUrl, catchers } = createSession(state);
+    const close = vi.spyOn(catchers, "close");
+    const original = new Error("authorization window could not open");
+    openAuthorizationUrl.mockRejectedValueOnce(original);
+
+    const failure = await session.authenticate().catch((error: unknown) => error as Error);
+    expect(failure).toMatchObject({ message: "MCP authentication failed" });
+    expect((failure as Error).cause).toMatchObject({ message: "MCP authentication failed", cause: original });
+    expect(((failure as Error).cause as Error).cause).toBe(original);
+    expect(close).toHaveBeenCalled();
+    expect(session.getStatus()).toBe("error");
+  });
+
   it("releases the loopback catcher and reports failure when the login window cancels", async () => {
     const state = await fixture();
     const { session, openAuthorizationUrl, catchers } = createSession(state);
