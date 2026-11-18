@@ -3935,7 +3935,9 @@ with its own owner rule:
   Invariant: the write guard. The board store owns `board.json` and the
   check below; the run store owns `workflow-runs.json`, the row-id floor
   and the delete intents; the engine owns run state and writes either file
-  only through them. Three properties rest on it: (I1) no row id is issued
+  only through them. How a run ends (one classifier, one settle point, the
+  delete failure lifecycle and recovery) is designed in
+  [Work board run endings](./work-board-run-ending.md). Three properties rest on it: (I1) no row id is issued
   twice (the floor); (I2) a run's row is gone only with the proof on disk
   above, save for a user's delete of a listed row and the judged drop of
   `unknownBelow`, so the id of a stored run that is not over never leaves
@@ -3981,7 +3983,8 @@ with its own owner rule:
   past 16 levels, only text past them too); one that would is refused with
   the same code, whose notice names `workflow-runs.json`. The next write
   after the file reads again is judged as usual, with no restart; a plain
-  run's end refused so stays unwritten until boot reconcile closes it.
+  run's end refused so is closed by the first permitted event that reads
+  the file again, which runs the same reconcile as boot.
   (d) Every rewrite goes through one function, `rewriteKeepingBytes`: bytes
   on disk that are not the text the file was read as are copied first to
   `<file>.<tag>-<sha256>.bak`, once per content (`invalid-rows` for the
