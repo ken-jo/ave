@@ -414,6 +414,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (!stored) log.warn("a held stage run event is kept in memory only (id=%d, event=%s)", state.itemId, kind);
   }
 
+  function pendingSeals(state: RunState, record: RunRecord): Extract<RunEffect, { type: "seal" }>[] {
+    if (record.settled !== undefined || state.stopping || state.faulted !== null || state.refused !== null) return [];
+    const collected = new Set((record.stageJoins ?? []).filter(join => join.status === "integrated").flatMap(join => join.stageIds));
+    return record.stageRuns.filter(run => run.status === "passed" && !collected.has(run.stageId) && !state.sealed.has(`${run.stageId}#${run.attempt}`))
+      .map(run => ({ type: "seal", stageId: run.stageId }));
+  }
+
   /** On the run's chain, once its class is live: its held events replay in order, each revalidated against the run as stored first; then a
    * stage the run file shows running with no child, launch or event of that attempt takes the lost path. */
   function drain(state: RunState): void {
@@ -448,18 +455,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         && !state.pendingStages.has(`${run.stageId}#${run.attempt}`) && !state.held.some(held => held.stage === run.stageId && held.attempt === run.attempt));
       const joining = (record.stageJoins ?? []).filter(join => join.status === "integrating" && !state.integrating.has(join.joinId)
         && join.stageIds.every(stageId => record.stageRuns.some(run => run.stageId === stageId && run.status === "passed")));
-      if (missing.length === 0 && joining.length === 0) return;
+      const seals = pendingSeals(state, record);
+      if (missing.length === 0 && joining.length === 0 && seals.length === 0) return;
       const classOf = await records.classes();
       if (typeof classOf !== "function" || classOf(state) !== "live") return;
-      if (joining.length > 0 && !state.stopping && state.faulted === null && state.refused === null) {
+      if ((seals.length > 0 || joining.length > 0) && !state.stopping && state.faulted === null && state.refused === null) {
         const version = await resolvePinned(record.pin);
-        for (const join of joining) {
-          const seals: RunEffect[] = join.stageIds.flatMap(stageId => {
-            const run = record.stageRuns.find(candidate => candidate.stageId === stageId);
-            return run && !state.sealed.has(`${stageId}#${run.attempt}`) ? [{ type: "seal" as const, stageId }] : [];
-          });
-          await runEffects(state, record, version, [...seals, { type: "integrate", joinId: join.joinId, stageIds: [...join.stageIds] }]);
-        }
+        await runEffects(state, record, version, [...seals, ...joining.map(join => ({ type: "integrate" as const, joinId: join.joinId, stageIds: [...join.stageIds] }))]);
       }
       for (const run of missing) {
         log.info("a running stage with nothing left to end it ends interrupted (id=%d, stage=%s)", state.itemId, run.stageId);
@@ -768,7 +770,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       else if (run.status === "failed") emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });
     }
     if ((shown || (record.stageJoins ?? []).some(join => join.status === "conflict")) && deps.itemChanged && claimEffect(replay, "item-changed")) notifyItemChanged(state.itemId);
-    await runEffects(state, record, version, effects, replay);
+    const seals = pendingSeals(state, record).filter(seal => !effects.some(effect => effect.type === "seal" && effect.stageId === seal.stageId));
+    await runEffects(state, record, version, [...effects, ...seals], replay);
     return null;
   }
 
@@ -778,7 +781,30 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function runEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): Promise<void> {
-    let sealFailed = false;
+    const failedSeals = new Set<string>();
+    async function sealStage(stageId: string): Promise<boolean> {
+      const run = record.stageRuns.find(candidate => candidate.stageId === stageId);
+      if (run?.status !== "passed") return false;
+      const sealKey = `${stageId}#${run.attempt}`;
+      if (state.sealed.has(sealKey)) return true;
+      if (failedSeals.has(sealKey)) return false;
+      const sealed = await workspace.seal(state.ref, stageId).catch((): { ok: false } => ({ ok: false }));
+      if (!sealed.ok) {
+        failedSeals.add(sealKey);
+        post(state, { type: "seal_failed", stageId }, run.attempt);
+        return false;
+      }
+      state.sealed.add(sealKey);
+      if (sealed.sealCommit !== undefined) {
+        const sealCommit = sealed.sealCommit;
+        await writeRun(state, current => ({
+          ...current,
+          stageRuns: current.stageRuns.map(candidate => candidate.stageId === stageId && candidate.attempt === run.attempt && candidate.workspace
+            ? { ...candidate, workspace: { ...candidate.workspace, sealCommit } } : candidate),
+        }));
+      }
+      return true;
+    }
     for (const [index, effect] of effects.entries()) {
       const key = `effect:${index}`;
       if (replay?.effects.has(key)) continue;
@@ -811,28 +837,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           break;
         }
         case "seal": {
-          const attempt = record.stageRuns.find(run => run.stageId === effect.stageId)?.attempt;
-          const sealKey = `${effect.stageId}#${attempt}`;
-          if (state.sealed.has(sealKey)) break;
-          const sealed = await workspace.seal(state.ref, effect.stageId).catch((): { ok: false } => ({ ok: false }));
-          if (!sealed.ok) {
-            sealFailed = true;
-            post(state, { type: "seal_failed", stageId: effect.stageId }, record.stageRuns.find(run => run.stageId === effect.stageId)?.attempt);
-          } else {
-            state.sealed.add(sealKey);
-            if (sealed.sealCommit !== undefined) {
-              const sealCommit = sealed.sealCommit;
-              await writeRun(state, current => ({
-                ...current,
-                stageRuns: current.stageRuns.map(run => run.stageId === effect.stageId && run.workspace ? { ...run, workspace: { ...run.workspace, sealCommit } } : run),
-              }));
-            }
-          }
+          await sealStage(effect.stageId);
           break;
         }
         case "integrate": {
-          // A stage of this step could not be sealed: the join the reducer opened is dropped by `seal_failed`, so nothing is collected.
-          if (sealFailed || state.integrating.has(effect.joinId)) break;
+          if (state.integrating.has(effect.joinId)) break;
+          let complete = true;
+          for (const stageId of effect.stageIds) if (!(await sealStage(stageId))) complete = false;
+          // A failed seal drops the open join through `seal_failed`; incomplete inputs never reach integration.
+          if (!complete) break;
           state.integrating.add(effect.joinId);
           try {
             const merged = await workspace.integrate(state.ref, effect.joinId, effect.stageIds);

@@ -270,11 +270,11 @@ superseded attempt is dropped before any new preparation.
   | Effect | Durability and consumption | Recovery |
   |---|---|---|
   | Gate evaluation | **(b)** Entries are pure or idempotent; evaluation itself performs no non-idempotent write. | A stored verdict is used as stored; a child without a verdict follows interrupted reconciliation, without re-invoking the lost payload. |
-  | Gate verdict, human-gate completion, seal failure and join outcome | **(a)** The new stage/attempt status, gate or join status is the consumption record in that same atomic run-file write. | Staleness checks reject the old transition; an intact passed stage or integrating join re-derives its remaining work. |
+  | Gate verdict, human-gate completion, seal failure and join outcome | **(a)** The new stage/attempt status, gate or join status is the consumption record in that same atomic run-file write. | Staleness checks reject the old transition; every passed, uncollected attempt re-derives its seal, even before its siblings pass and a join exists. An intact integrating join re-derives integration. |
   | Link and auto-gate completion | **(b)** Assigning the same child identity or bounded output is idempotent. Any subsequent evaluation satisfies the separate gate-evaluation rule. | A child with no durable verdict is reconciled as interrupted; its old completion is never used to launch another child. |
   | Stop and fault reduction | **(b)** Cancelling the same open stages and requesting the same child interruptions adds no new work. A terminal result uses the settle commit below. | A held Stop retains its kind across restart; reconciliation closes children that no longer exist. |
-  | Seal | **(b)** The provider freezes one immutable result per run/stage/attempt. Repeated calls return that same seal, including its commit, without making another snapshot. | The host's per-attempt sealed set avoids repeats within a process; restart may request the same seal again. |
-  | Integrate | **(b)** The provider installs one result per run/join from its immutable stage seals. Repetition returns the same result without another merge or publication. | An integrating join resumes on the next permitted read or event, including boot. Its pending outcome suppresses parallel calls in one engine. |
+  | Seal | **(b)** The provider freezes one immutable result per run/stage/attempt. Repeated calls return that same seal, including its commit, without making another snapshot. | Every passed attempt outside an integrated join is checked on permitted reads and scheduler events, including boot. The host's per-attempt sealed set avoids repeat calls within a process; restart may request the same immutable result again. |
+  | Integrate | **(b)** The provider installs one result per run/join from its immutable stage seals. Repetition returns the same result without another merge or publication. | Before every integration the host ensures every member's current attempt has sealed successfully, sealing missing inputs first. A failed seal prevents integration and follows the existing stage-failure path. An integrating join resumes on the next permitted read or event, including boot; its pending outcome suppresses parallel calls in one engine. |
   | Spawn and preparation | **(b)** The running attempt is a durable launch intent. Within a process the due/starting guards admit it once; restart closes that original attempt as interrupted and never launches it again. Preparation is keyed by that same attempt. | Boot starts no child; a user continuation or retry authorizes new work. |
   | Interrupt | **(b)** Requesting cancellation of the same child again adds no work. | Restart has no child to interrupt and reconciles the running attempt as interrupted. |
   | Settle | **(a)** Final stage state, terminal result and held-event removal share the settle commit. | A restart uses the terminal record; it never re-settles that run. |
@@ -288,11 +288,15 @@ superseded attempt is dropped before any new preparation.
   invocation does not meet this contract. The unavailable provider performs no
   filesystem effect; a usable provider owns and must satisfy this boundary.
 
-  Non-Stop held payloads lost on restart are re-derived by reconcile from the
-  durable run state, per the existing contract. This includes remaining seals
-  and integration of an intact integrating join; it never changes a passed gate
-  into a conflict merely because the process restarted. A parked join may
-  complete, while the next step stays waiting for an explicit continuation.
+  Restart reconciliation preserves passed, uncollected attempts whose workspace
+  still exists and intact integrating joins. The scheduler then re-derives
+  remaining seals from those passed attempts, including partially finished
+  parallel steps with no join, and integration from integrating joins. The same
+  work is re-derived on the next permitted read or scheduler event without a
+  restart; no lost completion payload is needed. Every integration waits for
+  all member seals to succeed. Recovery never changes a passed gate into a
+  conflict merely because the process restarted. A parked join may complete,
+  while the next step stays waiting for an explicit continuation.
   A missing workspace still follows the existing workspace-lost rule.
 
 - Storage: `heldEvents` in the run file, each entry the event's run and
