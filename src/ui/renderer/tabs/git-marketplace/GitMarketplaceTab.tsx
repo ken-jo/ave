@@ -1,4 +1,4 @@
-import { useAppSettingsControls, useSettingsDocumentRead } from "../../context/SettingsEditorContext.js";
+import { useAppSettingsControls, useSettingsDocumentRead, useSettingsEditor } from "../../context/SettingsEditorContext.js";
 import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -307,17 +307,22 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   };
 
   const readSettings = useSettingsDocumentRead(() => api.getSettings());
+  const editorSettings = useSettingsEditor()?.settings;
   useEffect(() => {
-    void readSettings().then(
+    let active = true;
+    void (editorSettings ? Promise.resolve(editorSettings) : readSettings()).then(
       (settings) => {
+        if (!active) return;
         setUpdateCheckEnabled(settings.marketplace?.updateCheckEnabled !== false);
         setOfflineCacheEnabled(settings.marketplace?.offlineCacheEnabled !== false);
         setFlagsLoaded(true);
+        setFlagsFailure(null);
       },
       // The switches stay disabled, since their state is unknown; the failure says why.
-      (error: unknown) => setFlagsFailure(errorMessage(error)),
+      (error: unknown) => { if (active) setFlagsFailure(errorMessage(error)); },
     );
-  }, [readSettings]);
+    return () => { active = false; };
+  }, [readSettings, editorSettings]);
 
   /** Save an automatic-update switch (§18.9) through the settings channel. A source's or package's switch rewrites its whole
    * map, read fresh, so a switch set back to the default is removed rather than kept. */

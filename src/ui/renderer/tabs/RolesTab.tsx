@@ -13,7 +13,7 @@ import { FileEditDiff } from "../components/FileEditDiff.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { formatIpcError } from "../format-ipc-error.js";
-import { useSettingsControl, useSettingsControls, useSettingsDocumentRead } from "../context/SettingsEditorContext.js";
+import { useSettingsControl, useSettingsControls, useSettingsDocumentRead, useSettingsEditor } from "../context/SettingsEditorContext.js";
 
 const EMPTY_DRAFT: RolePreset = { id: "", name: "", systemPromptAdd: "" };
 
@@ -64,6 +64,13 @@ export function RolesTab({ api }: { api: AveApi }) {
   ]);
 
   const readSettings = useSettingsDocumentRead(() => api.getSettings());
+  const editorSettings = useSettingsEditor()?.settings;
+  useEffect(() => {
+    if (editorSettings) {
+      settingsRevision.current++;
+      setKeepLatest(editorSettings.homeDocs.keepLatest);
+    }
+  }, [editorSettings]);
   const loadSources = useCallback(async () => {
     const revision = settingsRevision.current;
     setLoading(true);

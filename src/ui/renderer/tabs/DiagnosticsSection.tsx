@@ -11,7 +11,7 @@ import { requirePersistedResult, useSettingsPersistence } from "../hooks/use-set
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
 import { isRecord, isStringArray } from "../../../shared/is-record.js";
-import { useSettingsControl, useSettingsDocumentRead } from "../context/SettingsEditorContext.js";
+import { useSettingsControl, useSettingsDocumentRead, useSettingsEditor } from "../context/SettingsEditorContext.js";
 
 interface CrashDumpMeta {
   name: string;
@@ -87,12 +87,13 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   }, [t]);
 
   const readSettings = useSettingsDocumentRead(() => api().getSettings());
-  const loadConsent = useCallback(async () => {
+  const editorSettings = useSettingsEditor()?.settings;
+  const loadConsent = useCallback(async (fresh = false) => {
     const id = ++consentRequestId.current;
     setConsentLoading(true);
     setConsentLoadError(null);
     try {
-      const settings = await readSettings();
+      const settings = await readSettings({ fresh });
       if (id === consentRequestId.current) applyConsent(settings);
     } catch {
       if (id === consentRequestId.current) showConsentLoadError();
@@ -102,7 +103,11 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   }, [applyConsent, readSettings, showConsentLoadError]);
 
   useEffect(() => {
-    void loadConsent();
+    if (editorSettings) {
+      consentRequestId.current++;
+      try { applyConsent(editorSettings); } catch { showConsentLoadError(); }
+      setConsentLoading(false);
+    } else void loadConsent();
     const unsubscribe = api().onSettingsUpdated((settings) => {
       consentRequestId.current++;
       try {
@@ -113,7 +118,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
       setConsentLoading(false);
     });
     return () => { consentRequestId.current++; unsubscribe(); };
-  }, [applyConsent, loadConsent, showConsentLoadError]);
+  }, [applyConsent, loadConsent, showConsentLoadError, editorSettings]);
 
   const handleToggleCrashDumps = useCallback(async (next: boolean) => {
     if (storedConsent.current === null || consentLoading || saving) return;
@@ -216,7 +221,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
         {consentLoadError && (
           <div className="space-y-2">
             <p role="alert" className="text-dense text-destructive">{consentLoadError}</p>
-            <Button data-settings-transient="true" size="sm" variant="outline" onClick={() => void loadConsent()} disabled={consentLoading}>{t("common.retry")}</Button>
+            <Button data-settings-transient="true" size="sm" variant="outline" onClick={() => void loadConsent(true)} disabled={consentLoading}>{t("common.retry")}</Button>
           </div>
         )}
         {saveError && <p role="alert" className="text-dense text-destructive">{saveError}</p>}

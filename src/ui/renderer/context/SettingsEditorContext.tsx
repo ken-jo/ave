@@ -48,6 +48,7 @@ interface SettingsEditorState {
   unregister: (owner: object) => void;
   reset: (path: string) => Promise<void>;
   cache: SettingsEditorCache;
+  refreshSettings: () => Promise<AppSettings>;
 }
 /**
  * The registered controls change whenever any section registers or finishes loading. They live in their own context so a
@@ -70,20 +71,34 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
   const [failed, setFailed] = useState(false);
   const [localReload, setLocalReload] = useState(0);
   const [loadedEpoch, setLoadedEpoch] = useState<number | null>(null);
+  const settingsRevisionRef = useRef(0);
+  const settingsRef = useRef(settings);
+  const applySettings = useCallback((next: AppSettings) => {
+    settingsRevisionRef.current++;
+    settingsRef.current = next;
+    setSettings(next);
+  }, []);
+  const refreshSettings = useCallback(async () => {
+    const revision = settingsRevisionRef.current;
+    const next = await api.getSettings();
+    if (revision === settingsRevisionRef.current) applySettings(next);
+    return settingsRef.current ?? next;
+  }, [api, applySettings]);
   const { t } = useTranslation();
   const loadRequest = useMemo(() => ({ api, reloadEpoch, localReload }), [api, reloadEpoch, localReload]);
   useEffect(() => {
     const { api, reloadEpoch, localReload } = loadRequest;
+    const revision = settingsRevisionRef.current;
     let active = true;
     let receivedUpdate = false;
-    const unsubscribe = api.onSettingsUpdated((next) => { receivedUpdate = true; if (active) setSettings(next); });
+    const unsubscribe = api.onSettingsUpdated((next) => { receivedUpdate = true; if (active) applySettings(next); });
     void Promise.all([api.getSettings(), api.getSettingsDefaults()]).then(([current, baseline]) => {
       if (!active) return;
-      if (!receivedUpdate) setSettings(current);
+      if (!receivedUpdate && revision === settingsRevisionRef.current) applySettings(current);
       setDefaults(baseline); setFailed(false); setLoadedEpoch(reloadEpoch + localReload);
     }).catch(() => { if (active) setFailed(true); });
     return () => { active = false; unsubscribe(); };
-  }, [loadRequest]);
+  }, [loadRequest, applySettings]);
   const register = useCallback((owner: object, controls: readonly SettingsControlDescriptor[]) => {
     setOwners((current) => { const next = new Map(current); next.set(owner, controls); return next; });
   }, []);
@@ -109,8 +124,8 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
       ? await window.ave.permission.updateSecuritySettings(patch)
       : await api.updateSettings(patch as DeepPartial<AppSettings>);
     if (isIpcErrorResult(result)) throw new Error("Setting reset failed");
-    setSettings(result);
-  }, [api, defaults]);
+    applySettings(result);
+  }, [api, defaults, applySettings]);
   const epoch = reloadEpoch + localReload;
   const viewRef = useRef({ settings, epoch }); viewRef.current = { settings, epoch };
   const [cache] = useState<SettingsEditorCache>(() => {
@@ -137,7 +152,7 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
   useEffect(() => window.ave?.permission?.onConfigChanged?.(() => cache.invalidate(PERMISSION_JUDGE_CACHE_KEY)), [cache]);
   const locked = settings === null || defaults === null || failed || [...controls.values()].some((control) => control.loading || control.loadError);
   const settingsCurrent = settings !== null && loadedEpoch === epoch;
-  const value = useMemo(() => ({ settings, settingsCurrent, defaults, modifiedOnly, reloadEpoch: epoch, register, unregister, reset, cache }), [settings, settingsCurrent, defaults, modifiedOnly, epoch, register, unregister, reset, cache]);
+  const value = useMemo(() => ({ settings, settingsCurrent, defaults, modifiedOnly, reloadEpoch: epoch, register, unregister, reset, cache, refreshSettings }), [settings, settingsCurrent, defaults, modifiedOnly, epoch, register, unregister, reset, cache, refreshSettings]);
   const controlsValue = useMemo(() => ({ controls, locked }), [controls, locked]);
   const controlLoadError = [...controls.values()].find((control) => control.loadError)?.loadError;
   return <SettingsEditorContext.Provider value={value}><SettingsEditorControlsContext.Provider value={controlsValue}>
@@ -161,13 +176,18 @@ export function useSettingsEditor() { return useContext(SettingsEditorContext); 
 /**
  * A section's read of the settings document. Inside the settings view the editor already read it for the current reload and
  * follows every broadcast, so the read answers from that copy; outside the view, or before the editor's read returns, it
- * reads the document. The returned function keeps its identity.
+ * reads the document. A fresh read updates the editor's copy without overwriting a newer broadcast.
+ * The returned function keeps its identity.
  */
-export function useSettingsDocumentRead(read: () => Promise<AppSettings>): () => Promise<AppSettings> {
+export function useSettingsDocumentRead(read: () => Promise<AppSettings>): (options?: { fresh?: boolean }) => Promise<AppSettings> {
   const editor = useSettingsEditor();
-  const latest = useRef({ held: editor?.settingsCurrent ? editor.settings : null, read });
-  latest.current = { held: editor?.settingsCurrent ? editor.settings : null, read };
-  return useCallback(() => latest.current.held ? Promise.resolve(latest.current.held) : latest.current.read(), []);
+  const latest = useRef({ editor, read });
+  latest.current = { editor, read };
+  return useCallback((options?: { fresh?: boolean }) => {
+    const { editor, read } = latest.current;
+    if (options?.fresh) return editor ? editor.refreshSettings() : read();
+    return editor?.settingsCurrent && editor.settings ? Promise.resolve(editor.settings) : read();
+  }, []);
 }
 
 /** The registered controls and the editor lock; only the editor's own actions and tests read them. */
