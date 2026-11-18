@@ -158,7 +158,7 @@ interface RunState {
   /** One coded notice per unreadable-board episode, cleared by a successful run write. */
   boardUnread: boolean;
   parked: boolean;
-  sealed: Set<string>;
+  sealOutcomes: Map<string, boolean>;
   integrating: Set<string>;
 }
 
@@ -273,7 +273,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const state: RunState = {
       itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
-      revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false, parked, sealed: new Set(), integrating: new Set(),
+      revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false, parked, sealOutcomes: new Map(), integrating: new Set(),
     };
     runs.set(itemId, state);
     deps.holdItem(itemId);
@@ -417,7 +417,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function pendingSeals(state: RunState, record: RunRecord): Extract<RunEffect, { type: "seal" }>[] {
     if (record.settled !== undefined || state.stopping || state.faulted !== null || state.refused !== null) return [];
     const collected = new Set((record.stageJoins ?? []).filter(join => join.status === "integrated").flatMap(join => join.stageIds));
-    return record.stageRuns.filter(run => run.status === "passed" && !collected.has(run.stageId) && !state.sealed.has(`${run.stageId}#${run.attempt}`))
+    return record.stageRuns.filter(run => run.status === "passed" && !collected.has(run.stageId) && !state.sealOutcomes.has(`${run.stageId}#${run.attempt}`))
       .map(run => ({ type: "seal", stageId: run.stageId }));
   }
 
@@ -728,6 +728,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       });
     } catch (error) {
       if (precheck || replay) throw error;
+      if (event.type === "seal_failed") {
+        log.warn("a failed seal outcome is held while its run write is unconfirmed (id=%d): %s", state.itemId, errorMessage(error));
+        await hold(state, event, read, knownAttempt);
+        return "run_mismatch";
+      }
       // Whether the write landed is not known: the run ends as a fault, and an end its write does not confirm is written again by the next
       // permitted event.
       log.warn("stage run write threw (id=%d, event=%s): %s", state.itemId, event.type, errorMessage(error));
@@ -781,20 +786,19 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function runEffects(state: RunState, record: RunRecord, version: TemplateVersion, effects: RunEffect[], replay?: Held): Promise<void> {
-    const failedSeals = new Set<string>();
     async function sealStage(stageId: string): Promise<boolean> {
       const run = record.stageRuns.find(candidate => candidate.stageId === stageId);
       if (run?.status !== "passed") return false;
       const sealKey = `${stageId}#${run.attempt}`;
-      if (state.sealed.has(sealKey)) return true;
-      if (failedSeals.has(sealKey)) return false;
+      const outcome = state.sealOutcomes.get(sealKey);
+      if (outcome !== undefined) return outcome;
       const sealed = await workspace.seal(state.ref, stageId).catch((): { ok: false } => ({ ok: false }));
       if (!sealed.ok) {
-        failedSeals.add(sealKey);
+        state.sealOutcomes.set(sealKey, false);
         post(state, { type: "seal_failed", stageId }, run.attempt);
         return false;
       }
-      state.sealed.add(sealKey);
+      state.sealOutcomes.set(sealKey, true);
       if (sealed.sealCommit !== undefined) {
         const sealCommit = sealed.sealCommit;
         await writeRun(state, current => ({
