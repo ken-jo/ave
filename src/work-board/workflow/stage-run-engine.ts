@@ -660,7 +660,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (stale !== null) return stale;
     // While the run holds events, a decision is refused and each later scheduler event is held behind them, until the class ends the run.
     if (state.held.length > 0 && !replay && !state.rowGone && !state.lost) {
-      if (!precheck) await hold(state, event, read);
+      if (!precheck) await hold(state, event, read, knownAttempt);
       return "run_mismatch";
     }
     let version: TemplateVersion;
@@ -686,6 +686,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         // Reduced from the run as stored now, inside the write: a field another write stored meanwhile is never lost.
         refusal = current.settled !== undefined ? "run_mismatch" : precheck?.(current) ?? null;
         if (refusal !== null) return null;
+        const expectedAttempt = knownAttempt ?? replay?.attempt ?? ("attempt" in event ? event.attempt : undefined);
+        if ("stageId" in event && expectedAttempt !== undefined && current.stageRuns.find(run => run.stageId === event.stageId)?.attempt !== expectedAttempt) {
+          log.info("stage run event dropped (id=%d, event=%s): %s", state.itemId, event.type, "its stage moved on to another attempt");
+          refusal = "run_mismatch";
+          return null;
+        }
         before = current.stageRuns;
         const step = reduceRun({
           graph: version, stageRuns: current.stageRuns, joins: current.stageJoins ?? [], stopping: state.stopping, refused: state.refused !== null,
@@ -712,7 +718,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (written.reason === "row-gone" || holdsWrite(state, written.reason)) {
         if (!precheck && !state.rowGone && !state.lost) {
           if (replay) state.heldAgain = true;
-          else await hold(state, event, read);
+          else await hold(state, event, read, knownAttempt);
         }
         return "run_mismatch";
       }
