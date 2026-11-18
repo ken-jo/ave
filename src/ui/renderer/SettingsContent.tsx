@@ -51,7 +51,7 @@ import { normalizeSettingsTab, SETTINGS_TAB_LABEL_KEYS, type SettingsTab } from 
 import type { PackageKind } from "../../shared/git-marketplace.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 import { clearSettingsFilter, filterRenderedSettings, highlightSettingsMatches } from "./settings-search.js";
-import { SettingsEditorProvider } from "./context/SettingsEditorContext.js";
+import { SettingsEditorFieldset, SettingsEditorProvider } from "./context/SettingsEditorContext.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
 
 type SettingsNavItem = { value: SettingsTab; icon: LucideIcon; labelKey: string };
@@ -543,6 +543,7 @@ export function SettingsContent({
           </div>
         )}
 
+          <SettingsEditorFieldset>
           <TabsContent data-settings-panel="about" forceMount={filterActive ? true : undefined} value="about" className={tabContentCls}>
             <AboutTab api={api} />
           </TabsContent>
@@ -665,6 +666,7 @@ export function SettingsContent({
               onOpenPluginSettings={(pluginId) => { setPluginSettingsTarget(pluginId); handleTabValueChange("plugin-config"); }}
             />
           </TabsContent>
+          </SettingsEditorFieldset>
       </div>
       </div>
     </Tabs>

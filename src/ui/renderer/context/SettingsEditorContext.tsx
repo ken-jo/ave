@@ -25,6 +25,8 @@ interface SettingsEditorState {
   register: (owner: object, controls: readonly SettingsControlDescriptor[]) => void;
   unregister: (owner: object) => void;
   reset: (path: string) => Promise<void>;
+  /** Controls stay disabled until settings, defaults and every registered control have loaded. */
+  locked: boolean;
 }
 const SettingsEditorContext = createContext<SettingsEditorState | null>(null);
 
@@ -76,12 +78,23 @@ export function SettingsEditorProvider({ api, modifiedOnly, reloadEpoch = 0, onR
     if (isIpcErrorResult(result)) throw new Error("Setting reset failed");
     setSettings(result);
   }, [controls, api, defaults]);
-  const value = useMemo(() => ({ settings, defaults, modifiedOnly, reloadEpoch: reloadEpoch + localReload, controls, register, unregister, reset }), [settings, defaults, modifiedOnly, reloadEpoch, localReload, controls, register, unregister, reset]);
+  const locked = settings === null || defaults === null || failed || [...controls.values()].some((control) => control.loading || control.loadError);
+  const value = useMemo(() => ({ settings, defaults, modifiedOnly, reloadEpoch: reloadEpoch + localReload, controls, register, unregister, reset, locked }), [settings, defaults, modifiedOnly, reloadEpoch, localReload, controls, register, unregister, reset, locked]);
   const controlLoadError = [...controls.values()].find((control) => control.loadError)?.loadError;
   return <SettingsEditorContext.Provider value={value}>
     {(failed || controlLoadError) && <div role="alert" className="p-3 text-sm text-destructive">{controlLoadError ?? t("settingsEditor.defaultsFailed")} <Button size="sm" variant="outline" onClick={() => { if (onRetryLoad) onRetryLoad(); else setLocalReload((epoch) => epoch + 1); }}>{t("settingsEditor.retry")}</Button></div>}
-    <fieldset disabled={settings === null || defaults === null || failed || [...controls.values()].some((control) => control.loading || control.loadError)} className="contents">{children}</fieldset>
+    {children}
   </SettingsEditorContext.Provider>;
+}
+
+/**
+ * Disables the setting controls it wraps while the editor is locked. Search, navigation and the editor's own retry and
+ * toolbar actions sit outside it, so they work while a section is still loading.
+ */
+export function SettingsEditorFieldset({ children }: { children: ReactNode }) {
+  const editor = useContext(SettingsEditorContext);
+  if (!editor) throw new Error("SettingsEditorFieldset requires a SettingsEditorProvider");
+  return <fieldset disabled={editor.locked} className="contents">{children}</fieldset>;
 }
 
 export function useSettingsEditor() { return useContext(SettingsEditorContext); }

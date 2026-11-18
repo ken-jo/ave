@@ -4,7 +4,7 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { DEFAULT_SETTINGS } from "../../../../data/settings-defaults.js";
 import { requiredFixture } from "../../../../__tests__/support/required-fixture.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
-import { SettingsControlActions, SettingsEditorProvider, useAppSettingsControls } from "../SettingsEditorContext.js";
+import { SettingsControlActions, SettingsEditorFieldset, SettingsEditorProvider, useAppSettingsControls } from "../SettingsEditorContext.js";
 
 function RegisteredActions({ section }: { section: string }) { useAppSettingsControls([section]); return <SettingsControlActions section={section} />; }
 
@@ -66,5 +66,22 @@ describe("modified settings actions", () => {
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("chat.autoCompact"));
       expect(api.updateSettings).not.toHaveBeenCalled();
     } finally { if (previous) Object.defineProperty(navigator, "clipboard", previous); else Reflect.deleteProperty(navigator, "clipboard"); }
+  });
+});
+
+describe("settings editor lock", () => {
+  it("disables only the controls inside its fieldset until settings and defaults load", async () => {
+    const { api } = makeMockAveApi({ settings: structuredClone(DEFAULT_SETTINGS) });
+    let releaseDefaults: (value: typeof DEFAULT_SETTINGS) => void = () => {};
+    api.getSettingsDefaults.mockReturnValue(new Promise((resolve) => { releaseDefaults = resolve; }));
+    window.ave = makeMockAveNamespace().ns as never;
+    const view = render(<SettingsEditorProvider api={api as never} modifiedOnly={false}>
+      <input aria-label="outside" />
+      <SettingsEditorFieldset><input aria-label="inside" /></SettingsEditorFieldset>
+    </SettingsEditorProvider>);
+    expect(view.getByRole("textbox", { name: "inside" })).toBeDisabled();
+    expect(view.getByRole("textbox", { name: "outside" })).not.toBeDisabled();
+    releaseDefaults(structuredClone(DEFAULT_SETTINGS));
+    await waitFor(() => expect(view.getByRole("textbox", { name: "inside" })).not.toBeDisabled());
   });
 });
