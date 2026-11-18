@@ -681,7 +681,7 @@ describe("what lets a write take a live run's id out of board.json", () => {
   });
 
   // A write that removes an entry or the user's text while no run can be read: it cannot tell which runs that held.
-  describe.each(RUN_FILE_UNREADABLE)("while the run file %s", (_, input, code) => {
+  describe.each(RUN_FILE_UNREADABLE)("while the run file %s", (state, input, code) => {
     it.each<[string, unknown[], (store: WorkBoardStore) => Promise<() => Promise<unknown>>]>([
       ["a delete of a row", [row(2, { detail: "run-a" })], async store => () => store.remove(2)],
       ["an edit of the user's text", [row(2, { detail: "run-a" })], async store => () => store.update(2, { detail: "done" })],
@@ -725,7 +725,7 @@ describe("what lets a write take a live run's id out of board.json", () => {
       }
     });
 
-    it("opens one episode at a refused write, whose notice a list carries while it can list, and the first recovery once the file reads closes its dead runs as boot does, leaves live ones and replays nothing", async () => {
+    it("opens one episode at an unreadable I/O list or a refused write, then recovery closes dead runs, leaves live ones and replays nothing", async () => {
       const inFlight = (id: number) => row(id, { runId: `plain-${id}`, runStatus: "executing", runHistory: [{ runId: `plain-${id}`, startedAt: AT, status: "executing" }] });
       const { dir, path, store } = await home(`${JSON.stringify({ version: 1, nextId: 51, items: [inFlight(2), inFlight(3)] }, null, 2)}\n`, []);
       const notice = () => store.list().then(listed => listed.status === "ok" ? listed.writesRefused ?? "none" : listed.status, () => "unlisted");
@@ -734,7 +734,7 @@ describe("what lets a write take a live run's id out of board.json", () => {
         const read = homeTrust.readAveHomeInput;
         const reading = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(target => target === join(dir, "workflow-runs.json") ? input() : read(target));
         const listable = (await notice()) !== "unlisted";
-        expect(await notice()).toBe(listable ? "none" : "unlisted");
+        expect(await notice()).toBe(state === "cannot be read" ? "work-board-runs-unreadable" : listable ? "none" : "unlisted");
         await expect(store.update(2, { title: "edited" })).rejects.toMatchObject({ code });
         await expect(store.update(3, { title: "edited" })).rejects.toMatchObject({ code });
         expect(await notice()).toBe(listable ? "work-board-runs-unreadable" : "unlisted");

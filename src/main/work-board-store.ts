@@ -889,7 +889,12 @@ export class WorkBoardStore {
     // The rows first, then the run file, read on every call: a run starts by writing its record before its row, so a row read here
     // never names a run started after the run file was read.
     const cache = this.cache;
-    const runs = await this.runs.view();
+    const runs = await this.runs.view().catch((error: unknown): WorkflowRunView => {
+      if (error instanceof WorkflowTemplateError || error instanceof WorkBoardWriteRefusal) throw error;
+      log.warn("[work-board-store] run file could not be listed: %s", (error as Error).message);
+      this.runsUnreadable = true;
+      return { pendingReview: true, get: () => ({ status: "pending-review" }) };
+    });
     if (filter.limit !== undefined && (!Number.isFinite(filter.limit) || filter.limit < 0)) {
       return { status: "invalid", reason: "limit must be a non-negative number" };
     }
