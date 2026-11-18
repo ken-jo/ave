@@ -4,7 +4,7 @@ import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { CUSTOM_PROVIDER_WIRES, customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
 import { PROVIDER_PICKER_GROUPS, providerPickerEntries } from "../../../shared/provider-picker.js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -1398,7 +1398,11 @@ function reconcileModelListStatesWithCache(
   return next;
 }
 
-export function LlmTab(props: LlmTabProps) {
+/**
+ * The provider list renders every provider row, so a render costs far more than its parent's. The settings view re-renders on
+ * every search keystroke and result count; the tab re-renders only when its own props change.
+ */
+export const LlmTab = memo(function LlmTab(props: LlmTabProps) {
   const {
     api,
     vendor,
@@ -3661,4 +3665,4 @@ export function LlmTab(props: LlmTabProps) {
       <ModelCatalogRefreshSection />
     </div>
   );
-}
+});

@@ -200,6 +200,10 @@ export function SettingsContent({
     setMarketplaceKind(kind);
     selectTab("marketplace");
   }, [selectTab]);
+  const openProviderMarketplace = useCallback(() => openMarketplaceTab("provider"), [openMarketplaceTab]);
+  // The provider tab keeps one save handler; the save it runs is always the one from this render.
+  const saveRef = useRef(s.save); saveRef.current = s.save;
+  const saveLlmFallback = useCallback(() => { void saveRef.current("llm-fallback"); }, []);
   const handleTabValueChange = useCallback((nextTab: string) => {
     const normalized = normalizeSettingsTab(nextTab);
     if (normalized === "marketplace") setMarketplaceKind(null);
@@ -573,7 +577,7 @@ export function SettingsContent({
               marketplaceProviderPresets={s.marketplaceProviderPresets}
               onSelectMarketplaceProviderPreset={s.selectMarketplaceProviderPreset}
               onClearMarketplaceProviderPreset={s.clearMarketplaceProviderPreset}
-              onOpenMarketplace={() => openMarketplaceTab("provider")}
+              onOpenMarketplace={openProviderMarketplace}
               model={s.model}
               setModel={s.setModel}
               selectApiVendorModel={s.selectApiVendorModel}
@@ -588,9 +592,7 @@ export function SettingsContent({
               setFallbackOpen={s.setFallbackOpen}
               onSaved={onSaved}
               onImmediateChange={llmSave.schedule}
-              onSave={() => {
-                void s.save("llm-fallback");
-              }}
+              onSave={saveLlmFallback}
               saving={s.saving}
               settingsLoaded={s.settingsLoaded}
             />
