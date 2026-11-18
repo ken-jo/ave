@@ -69,7 +69,10 @@ inputs with its expected class.
 ## Consumers
 
 Every consumer reads the class through the store (`runClasses`) and keeps no
-standing rule of its own:
+standing rule of its own, with two exceptions that end nothing the class would
+not: adoption takes a run whose row names it by that name, and a run write is
+decided by the row's standing on disk first, reading the class only when the
+row does not name the run:
 
 | Consumer | `live` | `due-delete` | `waiting-delete` | `unreadable` | `orphan` | `lost` |
 |---|---|---|---|---|---|---|
@@ -78,6 +81,15 @@ standing rule of its own:
 | a run write | written | stopped, then item removed | held, not written | held, not written | stopped, then cancelled | ends error |
 | delete-intent takeover | | cancelled, item removed | | | | |
 | reader, start, decide, `clearMissingRun` | reconsider intents and markers first, then act | | | | | |
+
+A run write whose board file shows nothing, or whose row's standing on disk
+reads unreadable (the no-intent `unreadable` row of the classifier table: an
+entry with its id that does not validate, an entry without a usable id, or a
+string value elsewhere holding the run id), is refused `board-unread` before
+any class is read, whatever the intent: the run ends as a fault, error
+`template-runs-board-unread`, with its end unconfirmed, so its record stays
+unsettled and the next permitted event writes the end once the class allows.
+Adoption ends an orphan or a lost run without an event.
 
 A start or a decision is refused while a run end is not confirmed, as before.
 
