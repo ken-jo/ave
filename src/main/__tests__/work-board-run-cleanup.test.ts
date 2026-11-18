@@ -31,7 +31,7 @@ const over = { status: "completed", at: "2026-01-02T00:00:00.000Z" } as const;
 async function settled(store: WorkBoardStore, id: number, runId: string, templateId?: string): Promise<void> {
   await begin(store, id, runId, templateId);
   expect(await store.setRunResult(id, { runStatus: "completed" })).toMatchObject({ status: "updated" });
-  expect(await store.updateRun(id, runId, run => ({ ...run, settled: over }))).toMatchObject({ status: "stored" });
+  expect(await store.updateRun(id, runId, run => ({ run, ends: "completed", at: over.at }))).toMatchObject({ status: "stored" });
 }
 const entries = async (): Promise<{ runId: string }[]> => JSON.parse(await readFile(runsPath, "utf8")).runs;
 const runIds = async (): Promise<string[]> => (await entries()).map(entry => entry.runId);
@@ -81,7 +81,7 @@ it("keeps the unsettled run of a deleted row until its record says it is over", 
   await settled(store, other, "other-1");
   expect(await runIds()).toEqual(["gone-live", "other-1"]);
 
-  expect(await store.runs.update("gone-live", run => ({ ...run, settled: { status: "cancelled", at: over.at } }))).toMatchObject({ status: "stored" });
+  expect(await store.runs.settleRun("gone-live", run => ({ run, ends: "item-removed", at: over.at }), () => true)).toMatchObject({ status: "stored" });
   await store.pruneSettledRuns();
   expect(await runIds()).toEqual(["other-1"]);
 });
@@ -344,7 +344,7 @@ it("keeps a run record whose row write never happened until it is settled", asyn
   expect(await restarted.getRun(id)).toEqual({ status: "not-found" });
   await begin(restarted, id, "run-retry");
   expect(await runIds()).toEqual(["run-orphan", "run-retry"]);
-  expect(await restarted.runs.update("run-orphan", run => ({ ...run, settled: { status: "error", at: over.at } }))).toMatchObject({ status: "stored" });
+  expect(await restarted.runs.settleRun("run-orphan", run => ({ run, ends: "unstarted", at: over.at }), () => true)).toMatchObject({ status: "stored" });
   await restarted.pruneSettledRuns();
   expect(await runIds()).toEqual(["run-retry"]);
 });
@@ -360,7 +360,7 @@ it("keeps the full record only for each row's current run and a summary for its 
   const stageRuns = stageRunsOf("x");
   for (let run = 1; run <= 20; run++) {
     await begin(store, id, `run-${run}`);
-    expect(await store.updateRun(id, `run-${run}`, value => ({ ...value, stageRuns, settled: over }))).toMatchObject({ status: "stored" });
+    expect(await store.updateRun(id, `run-${run}`, value => ({ run: { ...value, stageRuns }, ends: "completed", at: over.at }))).toMatchObject({ status: "stored" });
     expect(await store.setRunResult(id, { runStatus: "completed" })).toMatchObject({ status: "updated" });
   }
   expect((await store.get(id) as { item: { runHistory: unknown[] } }).item.runHistory).toHaveLength(20);

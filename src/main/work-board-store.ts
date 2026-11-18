@@ -31,8 +31,10 @@ import { projectRootEquals, projectRootKey } from "../shared/project-identity.js
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { workBoardMoveRefusal } from "../shared/work-board-lifecycle.js";
 import { ChangeSignal } from "../lib/change-signal.js";
-import { type DeleteIntent, WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView } from "./workflow-run-store.js";
-import { type BoardFacts, classifyRun, type RunClass, type RunRowStanding } from "./run-classification.js";
+import {
+  type DeleteIntent, REMOVAL_CLASS, type RunEnd, type RunEndCause, type RunRemovalCause, WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView,
+} from "./workflow-run-store.js";
+import { type BoardFacts, classifyRun, type RunClass, type RunFileFacts, type RunRowStanding } from "./run-classification.js";
 import { stripBoardRunFields } from "../work-board/template-run-fields.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
@@ -435,6 +437,14 @@ function boardFacts(onDisk: BoardOnDisk, run: DeleteIntent): BoardFacts {
   };
 }
 
+// The one place a run is classified: what the run file says of it, with the board file on disk.
+function classOn(onDisk: BoardOnDisk, facts: RunFileFacts, run: DeleteIntent): RunClass {
+  return classifyRun(facts, boardFacts(onDisk, run));
+}
+
+// The ends a run whose row names it may take: that row, read under the board lock, shows no delete of it landed.
+const ROW_ENDS: ReadonlySet<RunEndCause> = new Set(["completed", "denied", "failed", "stopped"]);
+
 function readableBoard(parsed: unknown): parsed is BoardFile {
   return typeof parsed === "object" && parsed !== null && Array.isArray((parsed as BoardFile).items);
 }
@@ -717,7 +727,7 @@ export class WorkBoardStore {
     const facts = await this.runs.runFacts();
     if (!facts) return "template-runs-pending-review";
     if (!onDisk) return "template-runs-board-unread";
-    return { intents: facts.intents, classOf: (run) => classifyRun(facts.of(run), boardFacts(onDisk, run)) };
+    return { intents: facts.intents, classOf: (run) => classOn(onDisk, facts.of(run), run) };
   }
 
   /** For the engine, at boot and live: the class of each unsettled run (see classifyRun), the one rule every consumer reads. The refusal
@@ -759,8 +769,9 @@ export class WorkBoardStore {
 
   // A failed row write may still have replaced the board (a failed directory sync after the rename). While the board on disk shows the
   // row naming the run (`named`), shows nothing, or holds a row with that id that does not validate, the record stays as it is. Any other
-  // readable board shows the start never landed: the run ends error and no row shows it.
-  private async settleUnstarted(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" }> {
+  // readable board shows the start never landed: the run ends error and no row shows it. A delete intent for it says the row did land and
+  // was deleted: nothing is written (`cause-refused`), and the run ends by its class.
+  private async settleUnstarted(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" | "cause-refused" }> {
     const onDisk = await readBoardOnDisk(this.filePath);
     const row = onDisk?.standing({ itemId: id, runId });
     if (!onDisk || row === "unreadable") return { status: "board-unread" };
@@ -770,16 +781,16 @@ export class WorkBoardStore {
       return { status: "named" };
     }
     const at = new Date(this.now()).toISOString();
-    const settledRun = await this.runs.update(runId, (run) => {
+    const settledRun = await this.runs.settleRun(runId, (run) => {
       requireTemplate(run.itemId === id, "invalid-template-run");
-      return run.settled === undefined ? { ...run, settled: { status: "error", at } } : null;
-    });
+      return { run, ends: "unstarted", at };
+    }, (cause, facts) => cause === "unstarted" && facts.readable && !facts.intent && !facts.unknown);
     if (settledRun.status === "stored") await this.pruneAfterWrite(this.retention(onDisk.standing));
     return settledRun;
   }
 
   /** For the engine: end a run whose start failed before its row write was known to land, by the rule above. Never for a run that started. */
-  async settleUnstartedRun(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" }> {
+  async settleUnstartedRun(id: number, runId: string): Promise<WorkflowRunWriteResult | { status: "board-unread" | "named" | "cause-refused" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, () => this.settleUnstarted(id, runId));
   }
@@ -926,18 +937,31 @@ export class WorkBoardStore {
   /** Change the template run a row names, under the board lock so the row cannot move to another run meanwhile. `mutate` runs only
    * while the board file on disk shows the row naming the run, and the stored run belongs to that row. `not-found` when that board shows
    * the row gone or naming a newer run, `row-lost` when the row is there without naming or holding the run or is lost, `board-unread` while the
-   * board file shows nothing or the row does not validate. A missing or unreadable board is never read as empty, and is left as it is. */
-  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" }> {
+   * board file shows nothing or the row does not validate. A missing or unreadable board is never read as empty, and is left as it is.
+   * `mutate` may end the run only as completed, denied, failed or stopped (`cause-refused` otherwise). */
+  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" | "cause-refused" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const row = (await readBoardOnDisk(this.filePath))?.standing({ itemId: id, runId });
       if (row === "gone" || row === "moved") return { status: "not-found" };
       if (row === "unnamed" || row === "lost") return { status: "row-lost" };
       if (row !== "named") return { status: "board-unread" };
-      return this.runs.update(runId, (run) => {
+      return this.runs.settleRun(runId, (run) => {
         requireTemplate(run.itemId === id, "invalid-template-run");
         return mutate(run);
-      });
+      }, cause => ROW_ENDS.has(cause));
+    });
+  }
+
+  /** For the engine: write a run by its id alone, once its row was removed or lost, under the board lock. `step` may end it only as
+   * `cause`, and only while the run, classified again from the board file on disk and the run file inside its lock, still has the class
+   * that cause needs (`cause-refused` otherwise). */
+  async settleRemovedRun(id: number, runId: string, cause: RunRemovalCause, step: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const onDisk = await readBoardOnDisk(this.filePath);
+      return this.runs.settleRun(runId, run => run.itemId === id ? step(run) : null,
+        (ends, facts) => ends === cause && onDisk !== undefined && classOn(onDisk, facts, { itemId: id, runId }) === REMOVAL_CLASS[cause]);
     });
   }
 

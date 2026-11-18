@@ -1,6 +1,6 @@
 import type { RunClass } from "../../main/run-classification.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
-import type { DeleteIntent } from "../../main/workflow-run-store.js";
+import type { DeleteIntent, RunEnd, RunRemovalCause } from "../../main/workflow-run-store.js";
 import type { WorkItemResolved, WorkItemUpdateResult } from "../../shared/work-board-types.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import type { StageJoin, TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkItemStageRun } from "../../shared/workflow-template-types.js";
@@ -13,8 +13,9 @@ export type RunRecord = WorkflowRunRecord;
 /** row-gone: the board on disk lists no row with the run's id, or the row names a newer run. row-lost: the row is there without naming or
  * holding the run. board-unread: the board file shows nothing, or the row does not validate. refused: `mutate` returned null. pending-review
  * and too-large: the run file awaits review, or the write would take it past its read limit. invalid: the stored run cannot be read.
- * unavailable: the run is not in the run file. */
-export type RunWriteFailure = "row-gone" | "row-lost" | "board-unread" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable";
+ * unavailable: the run is not in the run file. cause-refused: the run's class, read again inside the write, does not allow how it was to
+ * end; nothing was written. */
+export type RunWriteFailure = "row-gone" | "row-lost" | "board-unread" | "refused" | "pending-review" | "too-large" | "invalid" | "unavailable" | "cause-refused";
 type RunWrite = { ok: true; run: RunRecord } | { ok: false; reason: RunWriteFailure };
 
 type RunAdoption = {
@@ -38,9 +39,10 @@ export interface WorkflowRunState {
   get(itemId: number, runId: string): Promise<RunRecord | null>;
   /** As `get`, with how the read went: a run stored for another row reads `invalid`. */
   read(itemId: number, runId: string): Promise<WorkflowRunReadResult>;
-  /** One atomic read-modify-write. While the row exists it runs under the board lock and only for the run the row names; `rowGone` writes
-   * by run id alone, for a run whose row was deleted. */
-  update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | null, rowGone?: boolean): Promise<RunWrite>;
+  /** One atomic read-modify-write, under the board lock; `mutate` may end the run (a RunEnd). Without `removedAs` it runs only for the run
+   * the row names, and ends it only by the row's causes; with it, by run id alone, for a run whose row was removed or lost, and ends it
+   * only as that cause while its class allows it. */
+  update(itemId: number, runId: string, mutate: (run: RunRecord) => RunRecord | RunEnd | null, removedAs?: RunRemovalCause): Promise<RunWrite>;
   /** Ends a run whose start failed before its row write was known to land: `settled` once the run is over (or the file no longer holds
    * it), `named` when the board on disk shows the row naming it after all, so it ends as any stored run does. */
   settleUnstarted(itemId: number, runId: string): Promise<"settled" | "named" | RunWriteFailure>;
@@ -59,7 +61,7 @@ export interface WorkflowRunState {
 }
 
 /** Run state in the board store's run file. The record is used as stored: there is no second shape. */
-export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runClasses" | "deleteIntentsOnDisk">): WorkflowRunState {
+export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRun" | "settleRemovedRun" | "settleUnstartedRun" | "list" | "runs" | "pruneSettledRuns" | "runClasses" | "deleteIntentsOnDisk">): WorkflowRunState {
   const view: WorkflowRunState["view"] = async () => {
     const runs = await store.runs.view();
     return (row) => {
@@ -75,13 +77,13 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const read = (await store.runs.view()).get(runId);
       return read.status === "found" && read.run.itemId !== itemId ? { status: "invalid" } : read;
     },
-    update: async (itemId, runId, mutate, rowGone = false) => {
+    update: async (itemId, runId, mutate, removedAs) => {
       try {
-        const result = rowGone
-          ? await store.runs.update(runId, run => run.itemId === itemId ? mutate(run) : null)
+        const result = removedAs
+          ? await store.settleRemovedRun(itemId, runId, removedAs, mutate)
           : await store.updateRun(itemId, runId, mutate);
         if (result.status === "stored") return { ok: true, run: result.run };
-        if (result.status === "not-found") return { ok: false, reason: rowGone ? "unavailable" : "row-gone" };
+        if (result.status === "not-found") return { ok: false, reason: removedAs ? "unavailable" : "row-gone" };
         return { ok: false, reason: result.status };
       } catch (error) {
         // The store refuses a record it does not understand by throwing; nothing was written.

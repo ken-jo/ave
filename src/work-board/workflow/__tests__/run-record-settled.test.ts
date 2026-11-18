@@ -19,7 +19,8 @@ it("the run file keeps how a run ended, and refuses an unknown ending", async ()
   const store = new WorkflowRunStore(join(dir, "workflow-runs.json"));
   await store.put(run);
   const settled = { status: "cancelled" as const, at: "2026-01-02T00:00:00.000Z" };
-  expect(await store.update("run-1", current => ({ ...current, settled }))).toMatchObject({ status: "stored", run: { settled } });
+  await expect(store.settleRun("run-1", current => ({ run: current, ends: "executing" as never, at: settled.at }), () => true)).rejects.toMatchObject({ code: "invalid-template-run" });
+  expect(await store.settleRun("run-1", current => ({ run: current, ends: "stopped", at: settled.at }), () => true)).toMatchObject({ status: "stored", run: { settled } });
   expect(await store.get("run-1")).toMatchObject({ status: "found", run: { settled } });
   for (const bad of [{ status: "executing", at: settled.at }, { status: "cancelled" }, { ...settled, extra: 1 }]) {
     await expect(store.update("run-1", current => ({ ...current, settled: bad as never }))).rejects.toMatchObject({ code: "invalid-template-run" });

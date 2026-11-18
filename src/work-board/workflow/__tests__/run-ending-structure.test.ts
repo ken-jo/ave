@@ -52,7 +52,8 @@ const STORE = "main/work-board-store.ts";
 const inFile = (file: string, found: string[]): string[] => found.filter(entry => entry.startsWith(`${file}#`)).map(entry => entry.slice(file.length + 1));
 
 it("classifies a run in one place, which every consumer reads through the store", () => {
-  expect(callsOf("classifyRun")).toEqual([`${STORE}#WorkBoardStore>classified>classOf`]);
+  expect(callsOf("classifyRun")).toEqual([`${STORE}#classOn`]);
+  expect(callsOf("classOn")).toEqual([`${STORE}#WorkBoardStore>classified>classOf`, `${STORE}#WorkBoardStore>settleRemovedRun`]);
   expect(callsOf("classified")).toEqual([`${STORE}#WorkBoardStore>deleteIntentsOnDisk`, `${STORE}#WorkBoardStore>runClasses`]);
   expect(callsOf("runClasses")).toEqual([`${RUN_STATE}#boardRunState>adoption`, `${RUN_STATE}#boardRunState>classes`]);
   expect(callsOf("deleteIntentsOnDisk")).toEqual([`${STORE}#WorkBoardStore>deletedRuns`, `${RUN_STATE}#boardRunState>deleted`]);
@@ -62,11 +63,26 @@ it("classifies a run in one place, which every consumer reads through the store"
   expect(find(file => file === ENGINE || file === RUN_STATE, node => ts.isStringLiteral(node) && ["gone", "moved", "unnamed"].includes(node.text))).toEqual([]);
 });
 
+it("writes how a run ended only in the run store's one settle write, which the store reaches with a cause it checks", () => {
+  const runModules = (_: string, text: string): boolean => text.includes("RunRecord");
+  const named = (node: ts.Node): boolean => {
+    const name = ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node) ? node.name : undefined;
+    return name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "settled";
+  };
+  expect(find(runModules, node => ts.isPropertyAssignment(node) && named(node))).toEqual(["main/workflow-run-store.ts#WorkflowRunStore>write"]);
+  // A copy of the stored value, never a new one: retention refuses any change of it.
+  expect(find(runModules, node => ts.isShorthandPropertyAssignment(node) && named(node))).toEqual([`${STORE}#runSummary`]);
+  expect(find(runModules, node => (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken || ts.isDeleteExpression(node))
+    && /\.settled\b/.test((ts.isBinaryExpression(node) ? node.left : node.expression).getText()))).toEqual([]);
+  expect(callsOf("settleRun")).toEqual([`${STORE}#WorkBoardStore>settleRemovedRun`, `${STORE}#WorkBoardStore>settleUnstarted`, `${STORE}#WorkBoardStore>updateRun`]);
+  expect(inFile(RUN_STATE, callsOf("settleRemovedRun"))).toEqual(["boardRunState>update"]);
+});
+
 it("ends a run with its row removed only from its class or a due intent", () => {
-  expect(inFile(ENGINE, callsOf("classes")).sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>writeRun"]);
+  expect(inFile(ENGINE, callsOf("classes")).sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>confirmSettles", "createStageRunEngine>writeRun"]);
   expect(inFile(ENGINE, callsOf("deleted"))).toEqual(["createStageRunEngine>takeOverIntents"]);
   expect(inFile(ENGINE, callsOf("adoption"))).toEqual(["createStageRunEngine>adoptRuns"]);
-  expect(inFile(ENGINE, callsOf("rowRemoved"))).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);
+  expect(inFile(ENGINE, callsOf("rowRemoved"))).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);
   expect(inFile(ENGINE, callsOf("byClass"))).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>writeRun"]);
   expect(inFile(ENGINE, callsOf("removedHeld"))).toEqual(["createStageRunEngine>takeOverDeleted", "createStageRunEngine>takeOverIntents"]);
 });

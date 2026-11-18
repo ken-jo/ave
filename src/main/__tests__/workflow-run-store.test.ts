@@ -166,15 +166,48 @@ it("reports a size-limit refusal as pending review and lets other read errors th
   expect(await readFile(file, "utf8")).toBe(before);
 });
 
-it("stores how a run ended and refuses a malformed end", async () => {
+it("stores how a run ended only through settleRun, from its cause, once, and refuses a malformed end", async () => {
   const store = new WorkflowRunStore(file);
   const settled = { status: "cancelled", at: "2026-01-02T00:00:00.000Z" } as const;
   expect(await store.put(run())).toMatchObject({ status: "stored" });
-  expect(await store.update("run-1", value => ({ ...value, settled }))).toMatchObject({ status: "stored", run: { settled } });
+  // No other write sets an end, changes one or drops one.
+  await expect(store.update("run-1", value => ({ ...value, settled }))).rejects.toMatchObject({ code: "invalid-template-run" });
+  await expect(store.update("run-1", value => ({ run: value, ends: "stopped", at: settled.at }) as never)).rejects.toMatchObject({ code: "invalid-template-run" });
+  await expect(store.put(run({ runId: "run-2", settled }))).rejects.toMatchObject({ code: "invalid-template-run" });
+  await expect(store.settleRun("run-1", value => ({ ...value, settled }), () => true)).rejects.toMatchObject({ code: "invalid-template-run" });
+  // A cause `allowed` refuses on what the file holds of the run writes nothing.
+  const asked: unknown[] = [];
+  expect(await store.settleRun("run-1", value => ({ run: value, ends: "orphan", at: settled.at }), (cause, facts) => { asked.push([cause, facts]); return false; }))
+    .toEqual({ status: "cause-refused" });
+  expect(asked).toEqual([["orphan", { readable: true, intent: false, unknown: false }]]);
+  expect(await store.get("run-1")).toMatchObject({ status: "found", run: { stageRuns: run().stageRuns } });
+  expect((await store.get("run-1") as { run: object }).run).not.toHaveProperty("settled");
+  expect(await store.settleRun("run-1", value => ({ run: value, ends: "stopped", at: settled.at }), () => true)).toMatchObject({ status: "stored", run: { settled } });
+  expect(await store.get("run-1")).toMatchObject({ status: "found", run: { settled } });
+  // Once over, its end stays: another end is refused as the run already over, and a write that changes or drops it is refused.
+  expect(await store.settleRun("run-1", value => ({ run: value, ends: "completed", at: settled.at }), () => true)).toEqual({ status: "refused" });
+  for (const next of [{ status: "completed" as const, at: settled.at }, undefined]) {
+    await expect(store.update("run-1", ({ settled: _, ...value }) => ({ ...value, ...(next ? { settled: next } : {}) }) as WorkflowRunRecord)).rejects.toMatchObject({ code: "invalid-template-run" });
+    await expect(store.put(next ? run({ settled: next }) : run(), value => value)).rejects.toMatchObject({ code: "invalid-template-run" });
+  }
   expect(await store.get("run-1")).toMatchObject({ status: "found", run: { settled } });
   for (const bad of [{ status: "idle", at: settled.at }, { status: "error", at: "never" }, { status: "error" }, { ...settled, by: "user" }]) {
     await expect(store.update("run-1", value => ({ ...value, settled: bad as never }))).rejects.toMatchObject({ code: "invalid-template-run" });
   }
+});
+
+it.each([
+  ["completed", "completed"], ["denied", "denied"], ["failed", "error"], ["stopped", "cancelled"], ["unstarted", "error"], ["item-removed", "cancelled"],
+  ["orphan", "cancelled"], ["lost", "error"],
+] as const)("a run that ends %s is stored %s, and its delete intent goes in the same write", async (ends, status) => {
+  const store = new WorkflowRunStore(file);
+  expect(await store.put(run())).toMatchObject({ status: "stored" });
+  expect(await store.markDeleted({ itemId: run().itemId, runId: "run-1" })).toBe("marked");
+  expect(await store.deleteIntents()).toEqual([{ itemId: run().itemId, runId: "run-1" }]);
+  expect(await store.settleRun("run-1", value => ({ run: value, ends, at: "2026-01-02T00:00:00.000Z" }), cause => cause === ends))
+    .toMatchObject({ status: "stored", run: { settled: { status, at: "2026-01-02T00:00:00.000Z" } } });
+  expect(await store.deleteIntents()).toEqual([]);
+  expect(JSON.parse(await readFile(file, "utf8")).deleteIntents ?? []).toEqual([]);
 });
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");

@@ -3712,6 +3712,10 @@ with its own owner rule:
   while the file awaits review; at boot the engine adopts back each record
   without `settled`, and the board's boot reconcile leaves every row that names
   a template run to it. `updateRun` changes only the run a row names, and
+  ends it only as completed, denied, failed or stopped; `settleRemovedRun`
+  writes a run by its id once its row is removed or lost, and ends it only as
+  that removal while its class, read again under both locks, still allows it.
+  Either reaches `runs.settleRun`, the one write that sets `settled`. And
   `runRowsOnDisk()` tells where each run's row stands on the board file on
   disk: it names the run, holds it only in its run history, is there without
   either, does not validate, is lost or is gone. Consumers do not read that:
@@ -3886,7 +3890,7 @@ with its own owner rule:
   untouched. Every gone id is at or below the floor,
   so the row was issued and then removed, never one not issued yet. A run
   whose row is gone, or holds it only in its run history, is cancelled as by
-  Stop and settled with `runs.update`; its
+  Stop and settled with `settleRemovedRun` (item-removed or orphan); its
   record is then pruned, or shrunk to its summary while a run history lists
   it. A run whose row is there without naming or holding it ends `error`
   (`template-run-lost`), written by its run id, at boot and live alike, and

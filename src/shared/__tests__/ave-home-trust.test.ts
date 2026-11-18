@@ -971,7 +971,7 @@ describe("workflow run file", () => {
       const made = await board.create({ title: "Work", templateId: pin.templateId });
       if (made.status !== "created") throw new Error("Missing item");
       expect(await board.beginRun(made.itemId, runId, run.startedAt, { ...pin, source: run.runStartedBy, stageRuns: [] })).toMatchObject({ status: "updated" });
-      expect(await board.updateRun(made.itemId, runId, value => ({ ...value, stageRuns, settled: { status: "completed" as const, at: run.startedAt } }))).toMatchObject({ status: "stored" });
+      expect(await board.updateRun(made.itemId, runId, value => ({ run: { ...value, stageRuns }, ends: "completed", at: run.startedAt }))).toMatchObject({ status: "stored" });
       expect(await board.setRunResult(made.itemId, { runStatus: "completed" })).toMatchObject({ status: "updated" });
       return made.itemId;
     };

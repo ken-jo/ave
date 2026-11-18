@@ -9,7 +9,7 @@ import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
 import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
-import type { RunFileFacts } from "./run-classification.js";
+import type { RunClass, RunFileFacts } from "./run-classification.js";
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
@@ -30,8 +30,21 @@ export interface WorkflowRunView {
   get(runId: string): WorkflowRunReadResult;
   missing?(runId: string): boolean;
 }
-/** What a write does with another readable run: null removes it, a record replaces it (same item, pin and start authority). */
+/** What a write does with another readable run: null removes it, a record replaces it (same item, pin, start authority and end). */
 export type WorkflowRunRetention = (run: WorkflowRunRecord) => WorkflowRunRecord | null;
+
+/** Why a template run ends (work-board-run-ending.md, One settle point). */
+export type RunEndCause = "completed" | "denied" | "failed" | "stopped" | "unstarted" | "item-removed" | "orphan" | "lost";
+/** The causes a row's removal or loss gives, each with the class a run must still have for it to end so. */
+export type RunRemovalCause = "item-removed" | "orphan" | "lost";
+export const REMOVAL_CLASS: Readonly<Record<RunRemovalCause, RunClass>> = { "item-removed": "due-delete", orphan: "orphan", lost: "lost" };
+const SETTLED_AS: Readonly<Record<RunEndCause, NonNullable<WorkflowRunRecord["settled"]>["status"]>> = {
+  completed: "completed", denied: "denied", failed: "error", stopped: "cancelled", unstarted: "error", "item-removed": "cancelled", orphan: "cancelled", lost: "error",
+};
+/** A write that ends the run: its final state (every stage as it ends) and why, at `at`. */
+export interface RunEnd { run: WorkflowRunRecord; ends: RunEndCause; at: string }
+const isRunEnd = (next: WorkflowRunRecord | RunEnd): next is RunEnd => "ends" in next && "run" in next;
+const sameEnd = (a: WorkflowRunRecord["settled"], b: WorkflowRunRecord["settled"]): boolean => canonicalWorkflowJson(a ?? null) === canonicalWorkflowJson(b ?? null);
 
 // An unreadable or repeated entry is refused on its own: the other runs stay usable and its stored value is never rewritten.
 function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult; index: number } {
@@ -57,7 +70,7 @@ function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
     const next = retain(structuredClone(entry));
     if (next === null) { changed = true; continue; }
     assertWorkflowRunRecord(next);
-    requireTemplate(bindingOf(next) === bindingOf(entry), "invalid-template-run");
+    requireTemplate(bindingOf(next) === bindingOf(entry) && sameEnd(next.settled, entry.settled), "invalid-template-run");
     if (canonicalWorkflowJson(next) !== canonicalWorkflowJson(entry)) changed = true;
     kept.push(next);
   }
@@ -85,6 +98,13 @@ function openIntent(file: RunsFile, intent: DeleteIntent): boolean {
 
 const openIntents = (file: RunsFile): DeleteIntent[] =>
   (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry));
+
+// What the file says of one run, for classifyRun (see runFacts).
+function factsIn(file: RunsFile, run: DeleteIntent, intents = openIntents(file)): RunFileFacts {
+  const { result } = lookup(file, run.runId);
+  if (result.status === "invalid" || (result.status === "found" && result.run.itemId !== run.itemId)) return { readable: false };
+  return { readable: true, intent: intents.some(intent => intent.itemId === run.itemId && intent.runId === run.runId), unknown: false };
+}
 
 // An intent goes with the write that ends its run, or once the file holds no such run; one whose run entry does not read, or that does
 // not read as an intent, stays as it is.
@@ -289,14 +309,7 @@ export class WorkflowRunStore {
     const file = await this.read();
     if (file === undefined) return undefined;
     const intents = openIntents(file);
-    return {
-      intents,
-      of: (run) => {
-        const { result } = lookup(file, run.runId);
-        if (result.status === "invalid" || (result.status === "found" && result.run.itemId !== run.itemId)) return { readable: false };
-        return { readable: true, intent: intents.some(intent => intent.itemId === run.itemId && intent.runId === run.runId), unknown: false };
-      },
-    };
+    return { intents, of: run => factsIn(file, run, intents) };
   }
 
   /** What a board write must keep: `held`, the run id of every entry that is not a settled run (an unsettled run, or an entry that does
@@ -328,10 +341,11 @@ export class WorkflowRunStore {
     return { status: "found", runs };
   }
 
-  /** Store a new run, or replace one whose item, pin and start authority are unchanged. The same write applies `retain` to the other runs. */
+  /** Store a new run that is not over, or replace one whose item, pin, start authority and end are unchanged. The same write applies
+   * `retain` to the other runs. */
   async put(record: WorkflowRunRecord, retain?: WorkflowRunRetention): Promise<WorkflowRunWriteResult> {
     assertWorkflowRunRecord(record);
-    return this.write(record.runId, prior => prior ?? record, () => record, retain && (run => run.runId === record.runId ? run : retain(run)));
+    return this.write(record.runId, prior => prior ?? record, () => record, retain && (run => run.runId === record.runId ? run : retain(run))) as Promise<WorkflowRunWriteResult>;
   }
 
   /** Whether a run that is not over may be on a row below `id`: true for a readable one, and while the file awaits review, is past its read
@@ -354,29 +368,50 @@ export class WorkflowRunStore {
     });
   }
 
-  /** Change a stored run under the file lock. `mutate` returns null to refuse; it never runs for a missing or unreadable run. */
+  /** Change a stored run under the file lock, never how it ended: a change of `settled` is refused (see settleRun). `mutate` returns null
+   * to refuse; it never runs for a missing or unreadable run. */
   async update(runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult> {
-    return this.write(runId, prior => prior, mutate);
+    return this.write(runId, prior => prior, mutate) as Promise<WorkflowRunWriteResult>;
   }
 
+  /** The one write that ends a run, and so the only one that sets `settled`. `step`, from the run as stored now, returns its next state,
+   * or a RunEnd: its final state and why it ends; `settled` is then set from that cause in the same write, and the run's delete intent
+   * goes with it. A cause `allowed` refuses on what the file holds of the run, read inside the lock, writes nothing (`cause-refused`); so
+   * does an end of a run already over (`refused`). */
+  async settleRun(runId: string, step: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null, allowed: (cause: RunEndCause, run: RunFileFacts) => boolean): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> {
+    return this.write(runId, prior => prior, step, undefined, allowed);
+  }
+
+  // Without `allowed` no write may end a run; a run's end, once stored, never changes.
   private write(
     runId: string,
     base: (prior: WorkflowRunRecord | undefined) => WorkflowRunRecord | undefined,
-    next: (run: WorkflowRunRecord) => WorkflowRunRecord | null,
+    next: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null,
     retain?: WorkflowRunRetention,
-  ): Promise<WorkflowRunWriteResult> {
-    return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult> => {
+    allowed?: (cause: RunEndCause, run: RunFileFacts) => boolean,
+  ): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> {
+    return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> => {
       const file = await this.read();
       if (file === undefined) return { status: "pending-review" };
       if (retain) retainRuns(file, retain);
       const { result, index } = lookup(file, runId);
       if (result.status === "invalid" || result.status === "pending-review") return result;
+      const stored = result.status === "found" ? result.run.settled : undefined;
       const prior = base(result.status === "found" ? result.run : undefined);
       if (prior === undefined) return { status: "not-found" };
-      const run = next(structuredClone(prior));
-      if (run === null) return { status: "refused" };
+      const step = next(structuredClone(prior));
+      if (step === null) return { status: "refused" };
+      const end = isRunEnd(step) ? step : undefined;
+      let run = end ? end.run : step as WorkflowRunRecord;
       assertWorkflowRunRecord(run);
-      requireTemplate(bindingOf(run) === bindingOf(prior), "invalid-template-run");
+      requireTemplate(bindingOf(run) === bindingOf(prior) && sameEnd(run.settled, stored), "invalid-template-run");
+      if (end) {
+        if (allowed === undefined) throw new WorkflowTemplateError("invalid-template-run");
+        if (stored !== undefined) return { status: "refused" };
+        if (!allowed(end.ends, factsIn(file, run))) return { status: "cause-refused" };
+        run = { ...run, settled: { status: SETTLED_AS[end.ends], at: end.at } };
+        assertWorkflowRunRecord(run);
+      }
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
       if (!(await this.commit(file))) return { status: "too-large" };
       return { status: "stored", run: structuredClone(run) };

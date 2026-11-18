@@ -208,7 +208,7 @@ const STORE_OPS: Record<string, (s: Step) => Promise<unknown>> = {
     const runId = one(s.pick, [...s.live].filter(([, run]) => run.readable).map(([id]) => id));
     if (runId === undefined) return;
     s.eff = { kind: "settle", runId };
-    s.eff.result = await s.store.runs.update(runId, run => ({ ...run, settled: { status: "cancelled", at: AT } }));
+    s.eff.result = await s.store.runs.settleRun(runId, run => ({ run, ends: "stopped", at: AT }), () => true);
   },
   // To a row naming a live run, one whose detail is past the escape cap, or any.
   remove: async s => {
@@ -238,8 +238,10 @@ const STORE_OPS: Record<string, (s: Step) => Promise<unknown>> = {
   consume: async s => {
     if (s.due.length === 0) return;
     s.eff = { kind: "consume", ended: [] };
-    for (const { runId } of s.due) {
-      const result = await s.store.runs.update(runId, run => ({ ...run, settled: { status: "cancelled", at: AT } }));
+    for (const { itemId, runId } of s.due) {
+      const result = await s.store.settleRemovedRun(itemId, runId, "item-removed", run => ({ run, ends: "item-removed", at: AT }));
+      // The model's due runs are the store's: only a full file refuses the end.
+      expect(["stored", "too-large"], `consume ${runId}: ${result.status}`).toContain(result.status);
       if (result.status === "stored") s.eff.ended?.push(runId);
     }
   },

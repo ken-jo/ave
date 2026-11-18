@@ -48,7 +48,7 @@ it("deleting the row of a live run interrupts its child and ends the run cancell
   const run = h.start(id, h.local(version));
   await h.untilLive(1);
   const runId = (await h.item(id)).runId ?? "";
-  const update = vi.spyOn(h.board.runs, "update");
+  const update = vi.spyOn(h.board.runs, "settleRun");
 
   expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
   expect(await run).toMatchObject({ status: "cancelled", reason: "item-removed" });
@@ -645,7 +645,7 @@ it("a start whose row write never landed, and whose end could not be written, en
     const id = await h.addItem(version);
     // The row write fails before the board file is replaced, and so do the two writes that would end the stored run.
     vi.spyOn(h.board as unknown as { commit: (board: unknown) => Promise<void> }, "commit").mockRejectedValueOnce(new Error("the board write failed"));
-    vi.spyOn(h.board.runs, "update").mockRejectedValueOnce(new Error("disk error")).mockRejectedValueOnce(new Error("disk error"));
+    vi.spyOn(h.board.runs, "settleRun").mockRejectedValueOnce(new Error("disk error")).mockRejectedValueOnce(new Error("disk error"));
     expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
     const listed = await h.board.runs.list();
     const stored = listed.status === "found" ? listed.runs.find(run => run.itemId === id) : undefined;
@@ -741,7 +741,7 @@ it("an unconfirmed run end whose row is then deleted is confirmed only by a by-i
     expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
     failing.mockRestore();
 
-    vi.spyOn(h.board.runs, "update").mockRejectedValueOnce(new Error("disk error"));
+    vi.spyOn(h.board.runs, "settleRun").mockRejectedValueOnce(new Error("disk error"));
     let refused: unknown;
     void h.start(other, h.local(version)).then((result) => { refused = result; });
     for (let i = 0; i < 400 && refused === undefined && h.live().length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
@@ -758,6 +758,55 @@ it("an unconfirmed run end whose row is then deleted is confirmed only by a by-i
     await started;
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
+
+for (const how of ["a Stop", "an unconfirmed end written again"] as const) {
+  it(`${how} never ends a run whose row now names a newer run while its delete intent is open: its class holds it, and once the intent is withdrawn it ends as an orphan`, () => withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const other = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [a] = await h.untilLive(1);
+    const runId = (await h.until(id, item => item.stageRuns[0].childSessionId !== undefined)).runId ?? "";
+    const intents = (deleteIntents: unknown[]): void => {
+      const file = JSON.parse(readFileSync(runsFile(h), "utf8")) as Record<string, unknown>;
+      writeFileSync(runsFile(h), JSON.stringify({ ...file, deleteIntents }));
+    };
+    const moveWithIntent = (): void => {
+      h.editRow(id, row => ({ ...row, runId: "run-other" }));
+      intents([{ itemId: id, runId }]);
+    };
+    let before = h.events.length;
+    if (how === "a Stop") {
+      moveWithIntent();
+      before = h.events.length;
+      expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+      a.finish();
+      for (let i = 0; i < 40; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    } else {
+      const updateRun = h.board.updateRun.bind(h.board);
+      const failing = vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
+        target === runId ? { status: "pending-review" } : updateRun(itemId, target, mutate));
+      a.finish();
+      await run;
+      failing.mockRestore();
+      moveWithIntent();
+      before = h.events.length;
+      expect(await h.start(other, h.local(version))).toMatchObject({ status: "error", reasonCode: "run-state-unavailable" });
+      expect(await h.start(other, h.local(version))).toMatchObject({ status: "error", reasonCode: "run-state-unavailable" });
+    }
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+    expect(h.events.slice(before).filter(event => event.itemId === id && (event.phase === "cancelled" || event.phase === "error"))).toEqual([]);
+
+    // The delete did not land: its intent is taken back, the run is an orphan, and the next start, or the board write it makes, ends it.
+    intents([]);
+    const started = h.start(other, h.local(version));
+    await h.untilLive(1);
+    for (let i = 0; i < 400 && (await h.runOf(runId))?.settled === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect((await h.runOf(runId))?.settled?.status).toBe("cancelled");
+    expect(h.engine.cancelRun(other)).toEqual({ ok: true });
+    await started;
+  }));
+}
 
 it("a settled run whose row a board written again after it went missing does not list goes with the mark: no run that is not over is below it", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
@@ -872,6 +921,38 @@ it("a start whose row write may not have landed, while the board file cannot be 
     for (let i = 0; i < 400 && released.length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
     expect(released).toEqual([runId]);
     expect(await h.runOf(runId)).toBeNull();
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
+});
+
+it("a start whose row write landed unseen ends as its row removed once the user deletes that row, never as a start that did not land", () => {
+  const released: string[] = [];
+  return withHarness(async (h) => {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    let landed = "";
+    const begin = h.board.beginRun.bind(h.board);
+    vi.spyOn(h.board, "beginRun").mockImplementationOnce(async (...args) => {
+      await begin(...args);
+      landed = readFileSync(h.boardPath, "utf8");
+      writeFileSync(h.boardPath, "{ not json");
+      throw new Error("the board sync failed");
+    });
+    expect(await h.start(id, h.local(version))).toEqual({ status: "error", reason: "run-state-unavailable", reasonCode: "run-state-unavailable" });
+    const listed = await h.board.runs.list();
+    const runId = (listed.status === "found" ? listed.runs.find(run => run.itemId === id)?.runId : undefined) ?? "";
+    // The row write had landed: the board shows the row naming the run, and the user deletes that row.
+    writeFileSync(h.boardPath, landed);
+    const row = await h.item(id);
+    expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
+    const ends = vi.spyOn(h.board.runs, "settleRun");
+    await h.engine.projectTemplateRuns([]);
+    for (let i = 0; i < 400 && released.length === 0; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    expect(released).toEqual([runId]);
+    const stored = (await Promise.all(ends.mock.results.map(result => result.value)) as { status: string; run?: RunRecord }[])
+      .flatMap(result => result.status === "stored" ? [result.run?.settled?.status] : []);
+    expect(stored).toEqual(["cancelled"]);
+    const left = await h.runOf(runId);
+    expect(left === null || left.settled?.status === "cancelled").toBe(true);
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
 });
 
@@ -1149,7 +1230,7 @@ it.each([
 
   // The next process, before its engine has taken the run over.
   h.makeEngine();
-  const update = vi.spyOn(h.board.runs, "update");
+  const update = vi.spyOn(h.board.runs, "settleRun");
   const before = h.events.length;
   const row = await h.item(id);
   expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
@@ -1198,8 +1279,8 @@ it("an adoption while a deleted row's parked run is being cancelled leaves that 
   // The cancel's write waits until the adoption is done.
   let release = (): void => undefined;
   const held = new Promise<void>((resolve) => { release = resolve; });
-  const write = h.board.runs.update.bind(h.board.runs);
-  const update = vi.spyOn(h.board.runs, "update").mockImplementation(async (...args) => {
+  const write = h.board.settleRemovedRun.bind(h.board);
+  const update = vi.spyOn(h.board, "settleRemovedRun").mockImplementation(async (...args) => {
     if (update.mock.calls.length === 1) await held;
     return write(...args);
   });
@@ -1266,7 +1347,7 @@ it("a user's delete of the listed row of a run a restart left with a stage runni
   writeFileSync(h.boardPath, JSON.stringify({ ...file, items: [...file.items, null] }));
 
   h.makeEngine();
-  const update = vi.spyOn(h.board.runs, "update");
+  const update = vi.spyOn(h.board.runs, "settleRun");
   const before = h.events.length;
   const row = await h.item(live.id);
   expect(await h.board.remove(live.id, row.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: live.runId });
@@ -1340,8 +1421,8 @@ it("a deleted row's run whose takeover write fails keeps its delete intent, and 
   const live = await liveRun(h);
   h.makeEngine();
   const row = await h.item(live.id);
-  const write = h.board.runs.update.bind(h.board.runs);
-  const update = vi.spyOn(h.board.runs, "update").mockImplementation(async (...args) => update.mock.calls.length === 1 ? { status: "too-large" } : write(...args));
+  const write = h.board.runs.settleRun.bind(h.board.runs);
+  const update = vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (...args) => update.mock.calls.length === 1 ? { status: "too-large" } : write(...args));
   const before = h.events.length;
   expect(await h.board.remove(live.id, row.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: live.runId });
   for (let i = 0; i < 400 && update.mock.calls.length === 0; i += 1) await tick();
@@ -1632,7 +1713,8 @@ for (const [write, refusal, code] of [
       // follows fits.
       vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, runId, mutate) => {
         const current = await h.runOf(runId);
-        const next = current && mutate(current);
+        const step = current && mutate(current);
+        const next = step && "ends" in step ? step.run : step;
         const refuse = write === "workspace" ? !!next?.stageRuns.some(stage => stage.workspace) && !current?.stageRuns.some(stage => stage.workspace) : true;
         if (!armed || !refuse) return updateRun(itemId, runId, mutate);
         armed = false;
@@ -1844,7 +1926,7 @@ for (const [board, spoil] of [
     spoil(h.boardPath);
     await new WorkBoardStore(h.boardPath).create({ title: "Unrelated" });
     const next = h.makeEngine();
-    const ended = vi.spyOn(h.board.runs, "update");
+    const ended = vi.spyOn(h.board.runs, "settleRun");
     await next.adoptParkedTemplateRuns();
     // It ended error by its id; no run that is not over is below the mark, so the mark is dropped and the record goes with it.
     const writes = await Promise.all(ended.mock.results.map(result => result.value));

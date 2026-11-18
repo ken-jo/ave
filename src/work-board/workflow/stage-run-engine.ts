@@ -12,6 +12,7 @@ import type { RunClass } from "../../main/run-classification.js";
 import { WorkBoardWriteRefusal } from "../../main/storage/rewrite-keeping-bytes.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { WorkflowTemplateStore } from "../../main/workflow-template-store.js";
+import type { RunEnd, RunEndCause, RunRemovalCause } from "../../main/workflow-run-store.js";
 import { requiredTier } from "../../permissions/permission-manager.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -129,6 +130,8 @@ interface RunState {
   stopping: boolean;
   /** No board row names the run any more. */
   rowGone: boolean;
+  /** Why, once `rowGone`: the user's delete was due, or the run was an orphan. */
+  removedAs: "item-removed" | "orphan";
   /** Its row is there without naming or holding the run: the run is written by its id alone, and ends error. */
   lost: boolean;
   /** Why the run ends `error` without its graph being asked. */
@@ -146,6 +149,12 @@ interface RunState {
 
 type Precheck<R extends string> = (record: RunRecord) => R | null;
 type Settled = NonNullable<RunRecord["settled"]>["status"];
+/** The cause of a run's end while its row names it, by the status the run reached. */
+const ROW_END: Readonly<Record<Settled, RunEndCause>> = { completed: "completed", denied: "denied", error: "failed", cancelled: "stopped" };
+/** The cause a class gives the end of a run its row no longer names; undefined for a class that holds it, or leaves the row naming it. */
+function removalOf(runClass: RunClass): RunRemovalCause | undefined {
+  return runClass === "due-delete" ? "item-removed" : runClass === "orphan" || runClass === "lost" ? runClass : undefined;
+}
 type PinRefusal = "version_missing" | "graph_mismatch";
 type Adopted = { ok: true } | { ok: false; code: string };
 const ROW_BUSY: ReadonlySet<string> = new Set(["planning", "awaiting_approval", "executing"]);
@@ -187,7 +196,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   let adoption: Promise<Adopted> | null = null;
   /** Run ends the run file did not confirm, by run id: until each is written, nothing starts, nothing is pruned or swept, and that run
    * is never decided. */
-  const unconfirmed = new Map<string, { ref: RunRef; status: Settled; rowGone: boolean; lost?: boolean; unstarted?: boolean }>();
+  const unconfirmed = new Map<string, { ref: RunRef; status: Settled; unstarted?: boolean }>();
   let confirming: Promise<Adopted> | null = null;
   /** The boot takeover succeeded: runs it left are decided while another run's end is unconfirmed. */
   let takenOver = false;
@@ -209,7 +218,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function openState(itemId: number, runId: string, projectRoot: string | undefined, surface: WebContents | null): RunState {
     const state: RunState = {
       itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, waiters: new Set(),
-      stopping: false, rowGone: false, lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
+      stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
       revoked: new Set(), results: new Map(),
     };
     runs.set(itemId, state);
@@ -291,10 +300,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     void enqueue(state, () => handle(state, event)).catch(() => undefined);
   }
 
-  /** The run's board row is gone: the run is cancelled as by Stop, and from here its record is written by run id alone. */
-  function rowRemoved(state: RunState): void {
+  /** The run's board row is gone: the run is cancelled as by Stop, and from here its record is written by run id alone and ends as `cause`. */
+  function rowRemoved(state: RunState, cause: RunState["removedAs"]): void {
     if (state.rowGone || runs.get(state.itemId) !== state) return;
     state.rowGone = true;
+    state.removedAs = cause;
     state.stopping = true;
     post(state, { type: "stop_requested" });
   }
@@ -302,7 +312,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** What a run's class (classifyRun) does to it once its row is not named: a delete that is due or an orphan cancels it as its row
    * removed, a lost run ends error, and every other class holds it. */
   function byClass(state: RunState, runClass: RunClass, lost: () => void): void {
-    if (runClass === "due-delete" || runClass === "orphan") rowRemoved(state);
+    if (runClass === "due-delete") rowRemoved(state, "item-removed");
+    else if (runClass === "orphan") rowRemoved(state, "orphan");
     else if (runClass === "lost") lost();
   }
 
@@ -331,7 +342,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function removedHeld(itemId: number, runId: string): boolean {
     const state = runs.get(itemId);
     if (state === undefined) return false;
-    if (state.runId === runId) rowRemoved(state);
+    if (state.runId === runId) rowRemoved(state, "item-removed");
     return true;
   }
   /** Takes a parked run whose row the user deleted over by its id and cancels it so. Null once it is, or needs nothing (held, over or
@@ -344,12 +355,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const parked = await reconcileRunRecord(read.run, new Date().toISOString(), root => access(root).then(() => true, () => false));
     let taken = read.run;
     if (parked) {
-      const stored = await records.update(itemId, runId, current => current.settled === undefined ? parked : null, true);
+      const stored = await records.update(itemId, runId, current => current.settled === undefined ? parked : null, "item-removed");
       if (!stored.ok) return stored.reason;
       taken = stored.run;
     }
     const state = await stateFor(taken, null);
-    if (state?.runId === runId) rowRemoved(state);
+    if (state?.runId === runId) rowRemoved(state, "item-removed");
     return null;
   }
 
@@ -383,9 +394,14 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return failed ?? { ok: true };
   }
 
+  /** How a run ends now that it reached `status`: by its row while the row names it, otherwise as its row's removal or loss. */
+  function endOf(state: RunState, run: RunRecord, status: Settled, at: string): RunEnd {
+    return { run, ends: state.lost ? "lost" : state.rowGone ? state.removedAs : ROW_END[status], at };
+  }
+
   /** One write of the run. Null when nothing was stored. */
-  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
-    const result = await records.update(state.itemId, state.runId, mutate, state.rowGone || state.lost);
+  async function writeRun(state: RunState, mutate: (run: RunRecord) => RunRecord | RunEnd | null): Promise<{ run: RunRecord } | { run: null; reason: RunWriteFailure }> {
+    const result = await records.update(state.itemId, state.runId, mutate, state.lost ? "lost" : state.rowGone ? state.removedAs : undefined);
     if (result.ok) return { run: result.run };
     // The row does not name the run: its class says what follows. A lost run ends error, its end written by its id.
     if (result.reason === "row-gone" || result.reason === "row-lost") {
@@ -420,7 +436,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** After the run file says the run is over: show it on the row, tell the listeners, and let the item go. */
   async function finish(state: RunState, record: RunRecord | null, runStatus: Settled, version: TemplateVersion | null, message?: string, settled = true): Promise<void> {
     // A row that is gone, or no longer names or holds the run, is never written; the settled record goes with the prune.
-    if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus, rowGone: state.rowGone, ...(state.lost ? { lost: true } : {}) });
+    if (!settled) unconfirmed.set(state.runId, { ref: state.ref, status: runStatus });
     else if (state.rowGone || state.lost) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", state.itemId, errorMessage(error)));
     else await showOnRow(state.itemId, runStatus, record ? finalOutput(record, version) : undefined);
     const byAuthority = state.refused !== null && runStatus === "cancelled" && !state.stopping;
@@ -457,14 +473,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         }
         return idle && (run.status === "waiting" || run.status === "running" || run.status === "awaiting_gate") ? { ...run, status: "cancelled" } : run;
       });
-      return { ...current, stageRuns, ...(idle ? { settled: { status: runStatus, at: now } } : {}) };
+      const next = { ...current, stageRuns };
+      return idle ? endOf(state, next, runStatus, now) : next;
     }).catch((error: unknown) => { log.warn("stage run could not be ended in the run file (id=%d): %s", state.itemId, errorMessage(error)); return { run: null, reason: "unavailable" as const }; });
     if (!idle) return;
     // A write refused because the run is already over confirms it. Otherwise the record still owns its workspace, nothing is shown on
     // the row or pruned, and the next start, decision or reader writes the end again first.
     const settled = written.run !== null || written.reason === "refused";
     if (settled) await workspace.release(state.ref, "all").catch(() => undefined);
-    await finish(state, written.run, runStatus, null, state.stopping ? undefined : state.faulted ?? cause, settled);
+    // As stored: a lost run ends error, a Stop or not.
+    const status = written.run?.settled?.status ?? runStatus;
+    await finish(state, written.run, status, null, status === "cancelled" ? undefined : state.faulted ?? cause, settled);
   }
 
   /** One event: resolve the pin, then one atomic write that checks, reduces and stores the run as it is at that moment, then the effects.
@@ -499,6 +518,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
     const now = new Date().toISOString();
     let refusal: R | "run_mismatch" | null = null;
+    let ending: Settled | null = null;
     let before: readonly WorkItemStageRun[] = [];
     let effects: RunEffect[] = [];
     const written = await writeRun(state, (current) => {
@@ -512,13 +532,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }, event);
       effects = step.effects;
       // The write that ends the run says so: the final stage states and how it ended are one write.
-      return { ...current, stageRuns: step.stageRuns, stageJoins: step.joins, ...(step.runStatus !== "executing" ? { settled: { status: step.runStatus, at: now } } : {}) };
+      const next = { ...current, stageRuns: step.stageRuns, stageJoins: step.joins };
+      ending = step.runStatus === "executing" ? null : step.runStatus;
+      return ending === null ? next : endOf(state, next, ending, now);
     });
     if (written.run === null) {
       if (refusal !== null) return refusal;
       if (written.reason === "row-gone") return "run_mismatch";
       log.warn("stage run write failed (id=%d, event=%s): %s", state.itemId, event.type, written.reason);
       if (precheck) return "run_mismatch";
+      // Its class holds the run: the end is not written, and the next permitted event writes it again first.
+      if (written.reason === "cause-refused" && ending !== null) {
+        await finish(state, null, ending, version, undefined, false);
+        return null;
+      }
       await unwind(state, event, writeFault(written.reason));
       return null;
     }
@@ -600,7 +627,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         }
         case "settle":
           // The run file already says so (the write above). The row follows; a crash here is repaired from the record at boot.
-          await finish(state, record, effect.runStatus, version, effect.runStatus === "error" ? state.faulted ?? undefined : undefined);
+          await finish(state, record, record.settled?.status ?? effect.runStatus, version, effect.runStatus === "error" ? state.faulted ?? undefined : undefined);
           break;
         case "release_workspace":
           await workspace.release(state.ref, effect.stageIds).catch((error: unknown) => log.warn("stage workspace release failed (id=%d): %s", state.itemId, errorMessage(error)));
@@ -948,10 +975,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }
       if (named) {
         const at = new Date().toISOString();
-        ended = await records.update(ref.itemId, ref.runId, current => ({ ...current, settled: { status: "error", at } })).then(write => write.ok, () => false);
+        ended = await records.update(ref.itemId, ref.runId, current => ({ run: current, ends: "failed", at }))
+          .then(write => write.ok || write.reason === "refused", () => false);
       }
       if (!ended) {
-        unconfirmed.set(ref.runId, { ref, status: "error", rowGone: false, ...(named ? {} : { unstarted: true }) });
+        unconfirmed.set(ref.runId, { ref, status: "error", ...(named ? {} : { unstarted: true }) });
         return result;
       }
       if (named) await showOnRow(ref.itemId, "error", undefined);
@@ -1133,7 +1161,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     };
     for (const run of found.orphans) {
       if (run.settled !== undefined || held(run)) continue;
-      const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "cancelled", at), true);
+      const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "orphan", at), "orphan");
       // Not confirmed over: nothing is pruned or swept, and the record keeps its workspace until an adoption ends it.
       if (!ended.ok) {
         log.warn("an orphaned template run could not be cancelled (id=%d): %s", run.itemId, ended.reason);
@@ -1143,7 +1171,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     // A run whose row no longer names or holds it ends error, as it does live.
     for (const run of found.lost) {
       if (run.settled !== undefined || held(run)) continue;
-      const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "error", at), true);
+      const ended = await records.update(run.itemId, run.runId, current => endedAs(current, "lost", at), "lost");
       if (!ended.ok) {
         log.warn("a template run its row no longer names could not be ended (id=%d): %s", run.itemId, ended.reason);
         return { ok: false, code: writeFault(ended.reason) };
@@ -1154,12 +1182,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return { ok: true };
   }
 
-  /** The run as it ends now: every open stage cancelled. Null when it is already over. */
-  function endedAs(current: RunRecord, status: Settled, at: string): RunRecord | null {
+  /** The run as it ends now, as `ends`: every open stage cancelled. Null when it is already over. */
+  function endedAs(current: RunRecord, ends: RunEndCause, at: string): RunEnd | null {
     if (current.settled !== undefined) return null;
     const stageRuns = current.stageRuns.map((stage): WorkItemStageRun =>
       stage.status === "waiting" || stage.status === "running" || stage.status === "awaiting_gate" ? { ...stage, status: "cancelled", endedAt: stage.endedAt ?? at } : stage);
-    return { ...current, stageRuns, settled: { status, at } };
+    return { run: { ...current, stageRuns }, ends, at };
   }
 
   /** Writes again each run end the run file did not confirm, then does what the end left undone. Only those runs: nothing else is pruned or
@@ -1176,40 +1204,46 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           await workspace.release(left.ref, "all").catch(() => undefined);
           continue;
         }
-        if (how !== "named") {
+        // The row named it after all, or its delete intent shows it did: it ends as a run that started.
+        if (how !== "named" && how !== "cause-refused") {
           failed ??= { ok: false, code: how === null ? "run-state-unavailable" : writeFault(how) };
           continue;
         }
         left.unstarted = false;
       }
       const at = new Date().toISOString();
-      // A run whose row no longer names or holds it ends error, whatever end it was given.
-      const write = (byId: boolean) => records.update(left.ref.itemId, runId, current => endedAs(current, left.lost ? "error" : left.status, at), byId)
-        .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return null; });
-      let ended = await write(left.rowGone || left.lost === true);
-      // The row went meanwhile, or no longer names or holds the run: the end is written by run id alone, and a run the file no longer
-      // holds has nothing left to end.
-      if (ended && !ended.ok && (ended.reason === "row-gone" || ended.reason === "row-lost")) {
-        if (ended.reason === "row-gone") left.rowGone = true;
-        else left.lost = true;
-        ended = await write(true);
+      // The run's class, read now, says how its end is written again: by its row while the row names it, by its id as its row's removal or
+      // loss, and not at all while the class holds it. The write classifies it again inside its lock.
+      const classOf = await records.classes().catch(() => undefined);
+      if (typeof classOf !== "function") {
+        failed ??= { ok: false, code: classOf ?? "run-state-unavailable" };
+        continue;
       }
+      const runClass = classOf(left.ref);
+      const removal = removalOf(runClass);
+      if (removal === undefined && runClass !== "live") {
+        failed ??= { ok: false, code: runClass === "unreadable" ? "template-runs-board-unread" : "run-state-unavailable" };
+        continue;
+      }
+      const ended = await records.update(left.ref.itemId, runId, current => endedAs(current, removal ?? ROW_END[left.status], at), removal)
+        .catch((error: unknown) => { log.warn("stage run end not written again (id=%d): %s", left.ref.itemId, errorMessage(error)); return null; });
       // A write that threw proves nothing. A run whose end is still unwritten does not hold back the others.
       if (!ended) {
         failed ??= { ok: false, code: "run-state-unavailable" };
         continue;
       }
-      if (!ended.ok && ended.reason !== "refused" && !((left.rowGone || left.lost === true) && ended.reason === "unavailable")) {
+      // A run the file no longer holds has nothing left to end.
+      if (!ended.ok && ended.reason !== "refused" && !(removal && ended.reason === "unavailable")) {
         failed ??= { ok: false, code: writeFault(ended.reason) };
         continue;
       }
       unconfirmed.delete(runId);
       await workspace.release(left.ref, "all").catch(() => undefined);
-      if (left.rowGone || left.lost) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
+      if (removal) await records.pruneSettled().catch((error: unknown) => log.warn("settled runs not pruned (id=%d): %s", left.ref.itemId, errorMessage(error)));
       else await showOnRow(left.ref.itemId, left.status, undefined);
-      if (left.lost) emit({ itemId: left.ref.itemId, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" });
+      if (removal === "lost") emit({ itemId: left.ref.itemId, phase: "error", message: "template-run-lost", reasonCode: "template-run-lost" });
       // The stop was shown with a note that its end is not saved; this code clears that note and nothing else.
-      if (left.status === "cancelled" && !left.lost) emit({ itemId: left.ref.itemId, phase: "cancelled", reasonCode: "run-end-confirmed" });
+      if (left.status === "cancelled" && removal !== "lost") emit({ itemId: left.ref.itemId, phase: "cancelled", reasonCode: "run-end-confirmed" });
       deps.itemChanged?.(left.ref.itemId);
     }
     return failed ?? { ok: true };

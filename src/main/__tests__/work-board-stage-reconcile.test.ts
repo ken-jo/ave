@@ -117,7 +117,7 @@ it("a row deleted while its run is parked after a restart ends the run cancelled
     const runId = (await h.untilStage(id, "a", "awaiting_gate")).runId ?? "";
 
     const engine = await restarted(h);
-    const update = vi.spyOn(h.board.runs, "update");
+    const update = vi.spyOn(h.board.runs, "settleRun");
     expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
     for (let i = 0; i < 400 && !h.events.some(event => event.itemId === id && event.message === "item-removed"); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
     expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "cancelled", message: "item-removed" });
@@ -158,7 +158,7 @@ it("a run whose row was deleted while the app was down is cancelled at boot and 
     deleteRowOffline(h, id);
     await h.board.reconcileInterruptedRuns();
     const engine = h.makeEngine();
-    const update = vi.spyOn(h.board.runs, "update");
+    const update = vi.spyOn(h.board.runs, "settleRun");
     await engine.adoptParkedTemplateRuns();
     const cancelled = await Promise.all(update.mock.results.map(result => result.value));
     expect(cancelled).toContainEqual(expect.objectContaining({ status: "stored", run: expect.objectContaining({ runId, settled: expect.objectContaining({ status: "cancelled" }) }) }));
@@ -235,7 +235,7 @@ async function bootOverBoard(h: Harness, edit: (id: number) => void) {
   const before = await h.runOf(parked.runId);
   edit(parked.id);
   const engine = h.makeEngine();
-  const update = vi.spyOn(h.board.runs, "update");
+  const update = vi.spyOn(h.board.runs, "settleRun");
   const prune = vi.spyOn(h.board, "pruneSettledRuns");
   const swept = h.sweeps.length;
   await engine.adoptParkedTemplateRuns();
@@ -286,7 +286,7 @@ it("a boot over a row on the board without naming its run, as a start whose row 
     expect(h.sweeps.slice(boot.swept)).toEqual([[]]);
     // The next boot finds nothing of it to adopt.
     const again = h.makeEngine();
-    const update = vi.spyOn(h.board.runs, "update");
+    const update = vi.spyOn(h.board.runs, "settleRun");
     await again.adoptParkedTemplateRuns();
     expect(update).not.toHaveBeenCalled();
     expect(h.children).toHaveLength(1);
@@ -315,7 +315,7 @@ it("a board written again after it went missing issues ids above the run's row, 
     const created = await h.board.create({ title: "Other", templateId: boot.version.templateId });
     expect(created).toMatchObject({ status: "created", itemId: boot.id + 1 });
     if (created.status !== "created") throw new Error("item not created");
-    const ended = vi.spyOn(h.board.runs, "update");
+    const ended = vi.spyOn(h.board.runs, "settleRun");
     const started = boot.engine.runItem(created.itemId, { templateSource: h.local(boot.version) });
     await h.untilLive(1);
     // The board was written over one that showed nothing, below the run's row: the run ends error by its id. The new run's row is at the
@@ -339,7 +339,7 @@ it("an orphaned run whose cancel write fails is neither pruned nor swept, and th
     deleteRowOffline(h, id);
     const before = await h.runOf(runId);
     const engine = h.makeEngine();
-    const update = vi.spyOn(h.board.runs, "update").mockResolvedValueOnce({ status: "pending-review" });
+    const update = vi.spyOn(h.board.runs, "settleRun").mockResolvedValueOnce({ status: "pending-review" });
     const prune = vi.spyOn(h.board, "pruneSettledRuns");
     const swept = h.sweeps.length;
     await engine.adoptParkedTemplateRuns();
