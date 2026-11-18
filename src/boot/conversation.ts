@@ -15,6 +15,7 @@ import type { PluginRuntime } from "../plugins/runtime.js";
 import { SystemPromptBuilder } from "../prompts/system-prompt-builder.js";
 import { PermissionManager } from "../permissions/permission-manager.js";
 import { readPermissionSettings } from "../permissions/permission-settings-store.js";
+import { recoverInterruptedPermissionModeChange } from "../permissions/permission-mode-apply.js";
 import {
   ApprovalGate,
   type ApprovalSurfaceResolver,
@@ -77,6 +78,8 @@ export function createSystemPromptBuilder(opts: {
 export async function createPermissionManager(): Promise<PermissionManager> {
   // Register category descriptors before any permission check; registration is idempotent.
   registerStandardCategories();
+  // The mode file is read below and the reviewer settings right after; a mode change cut short must be finished first.
+  await recoverInterruptedPermissionModeChange();
   const permissionManager = new PermissionManager(undefined, () => {
     const fault = readPermissionSettings().fault;
     return fault === null || fault.kind === "reviewer-mode-invalid" ? undefined : `Permission settings are unreadable (${fault.kind}: ${fault.filePath}).`;

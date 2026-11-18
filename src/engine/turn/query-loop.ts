@@ -9,7 +9,7 @@ import { appendRequestOnlyText } from "./request-only-text.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
-import type { GuidanceInjectionSource, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, ToolScope } from "./types.js";
+import type { GuidanceInjectionSource, RunTurnOptions, TurnCallbacks, TurnDecisionEvent, TurnInputRequired, TurnStopReason, ToolScope } from "./types.js";
 import type { GenericMessage, LLMProvider, LLMVendor, MessageMeta, TokenUsage, TokenUsageByModel, ToolCallBlock, ToolSchema } from "../llm/types.js";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
@@ -110,6 +110,7 @@ export async function queryLoop(
     overlayTriggerOrigin: string | null,
     bounds: {
       maxRounds?: number;
+      thinkingOverride?: RunTurnOptions["thinkingOverride"];
       sessionIdOverride?: string;
       spawnDepth?: number;
       approvalReasonPrefix?: string;
@@ -148,10 +149,11 @@ export async function queryLoop(
     // What history stores of an answer. A routine loop keeps its <summary> block out of the conversation; the turn's return keeps it.
     const storedText = (text: string, partial = false): string => (self.deps.stripRoutineSummary ? stripRoutineSummary(text, { partial }) : text);
     const llmSettings = self.deps.settingsService.get("llm");
-    const activeBlock = getLlmVendorSettings(
+    const storedBlock = getLlmVendorSettings(
       llmSettings.vendors,
       llmSettings.provider,
     );
+    const activeBlock = bounds.thinkingOverride ? { ...storedBlock, ...bounds.thinkingOverride } : storedBlock;
     const subscriptionRuntime = self.provider?.subscriptionRuntime;
     // Subscription usage requires an explicit telemetry contract, never an inferred API-key billing identity.
     const subscriptionUsageIsOpaque = subscriptionRuntime !== undefined;

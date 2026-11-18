@@ -1,15 +1,12 @@
 // Both surfaces must share one gesture-token map so minting, reporting, and consumption enforce the same intent.
 import { randomUUID } from "node:crypto";
-import type {
-  UserKeyboardIntent,
-  UserKeyboardIntentSnapshot,
+import { hasActiveUserGesture } from "./user-activation.js";
+export { ipcUserKeyboardIntent } from "./user-activation.js";
+import {
+  USER_GESTURE_LIFETIME_MS,
+  type UserKeyboardIntentSnapshot,
 } from "../shared/chat-origin.js";
 
-function hasActiveUserGesture(): boolean {
-  return globalThis.navigator?.userActivation?.isActive === true;
-}
-
-const USER_KEYBOARD_INTENT_TTL_MS = 5_000;
 const userKeyboardIntentTokens = new Map<string, number>();
 
 function pruneExpiredUserKeyboardIntents(now = Date.now()): void {
@@ -25,7 +22,7 @@ export function captureUserKeyboardIntent(): UserKeyboardIntentSnapshot {
   const now = Date.now();
   pruneExpiredUserKeyboardIntents(now);
   const token = randomUUID();
-  userKeyboardIntentTokens.set(token, now + USER_KEYBOARD_INTENT_TTL_MS);
+  userKeyboardIntentTokens.set(token, now + USER_GESTURE_LIFETIME_MS);
   return { inputOrigin: "user-keyboard", token };
 }
 
@@ -36,11 +33,4 @@ export function consumeUserKeyboardIntent(userIntent?: UserKeyboardIntentSnapsho
   const expiresAt = userKeyboardIntentTokens.get(userIntent.token);
   userKeyboardIntentTokens.delete(userIntent.token);
   return typeof expiresAt === "number" && expiresAt > Date.now();
-}
-
-export function ipcUserKeyboardIntent(): UserKeyboardIntent | { inputOrigin: "user-keyboard"; userActivation: false } {
-  return {
-    inputOrigin: "user-keyboard",
-    userActivation: hasActiveUserGesture(),
-  };
 }

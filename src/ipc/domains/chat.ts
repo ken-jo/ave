@@ -56,7 +56,6 @@ import {
   getLlmVendorSettings,
   getLlmThinkingBudgetLimit,
   normalizeLlmThinkingBudgetTokens,
-  llmRouteBaseUrlSignature,
 } from "../../shared/llm-vendor-defaults.js";
 import {
   deferTurnCompletion,
@@ -89,7 +88,7 @@ import { isSuggestionsSession } from "../../shared/suggestions-session.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "../../main/conversation-command-port.js";
 import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
-import type { ConversationLoop } from "../../engine/conversation-loop.js";
+import type { ConversationLoop, RunTurnOptions } from "../../engine/conversation-loop.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
@@ -528,6 +527,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       resumesInterruptedTurn: true | undefined,
       // The replay's click, verified by main; a replay is the user's own turn only with it, and a staged envelope keeps its own origin.
       userKeyboardIntent: VerifiedUserKeyboardIntent,
+      thinkingOverride?: RunTurnOptions["thinkingOverride"],
     ) => {
       // Replay and edit/resend need the same input DLP boundary as ordinary sends.
       const replayStagedInputOrigin = parseStagedEnvelope(input)?.kind.inputOrigin;
@@ -545,6 +545,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
             ? { attachments: sanitized.attachments }
             : {}),
           ...(rolePrompt ? { rolePrompt } : {}),
+          ...(thinkingOverride ? { thinkingOverride } : {}),
           ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
           ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
         },
@@ -564,7 +565,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     };
 
     const continueFromLastUserTurnWithinLease = async (
-      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent },
+      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent; thinkingOverride?: RunTurnOptions["thinkingOverride"] },
       transport: StreamTurnTransport,
     ) => {
       const messages = [...(loop.getHistory().getMessages() as GenericMessage[])];
@@ -612,6 +613,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           t("be_conversationLoop.resumeInterruptedTurnDisplay"),
           true,
           opts.userKeyboardIntent,
+          opts.thinkingOverride,
         );
         return { ok: true, result };
       }
@@ -627,6 +629,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           typeof priorDisplayText === "string" ? priorDisplayText : undefined,
           undefined,
           opts.userKeyboardIntent,
+          opts.thinkingOverride,
         );
         return { ok: true, result };
       } catch (err) {
@@ -638,7 +641,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       }
     };
     const continueFromLastUserTurn = async (
-      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent },
+      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent; thinkingOverride?: RunTurnOptions["thinkingOverride"] },
       expectedSessionId?: string,
     ) => {
       const turn = tryStreamTurn(async (transport) => {
@@ -1486,51 +1489,23 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // Retrying replays the user's request: their turn only with the click's consumed gesture intent.
     const userKeyboardIntent = mintUserKeyboardIntent(intent);
     if (userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
+    if (opts?.enableThinking !== undefined && typeof opts.enableThinking !== "boolean") return { ok: false, error: "invalid-args" };
     const group = groupOf(e, chatGroupId, CHANNELS.chat.retryEffort);
     const turn = group.turns.tryStreamTurn(async (transport) => {
       const prevLlm = settingsService.get("llm");
       const provider = prevLlm.provider;
       const prevBlock = getLlmVendorSettings(prevLlm.vendors, provider);
-      // Read settings before and after the patch through the same resolver.
-      const currentVendorBaseUrlSig = () => llmRouteBaseUrlSignature(
-        settingsService.get("llm"),
-        settingsService.get("marketplace").installedProviderPresets,
+      const retryThinking = {
+        enableThinking: opts?.enableThinking ?? true,
+        thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(
+          opts?.thinkingBudgetTokens ?? getLlmThinkingBudgetLimit(prevBlock.outputTokenLimit),
+          prevBlock.outputTokenLimit,
+        ),
+      };
+      return group.turns.continueFromLastUserTurnWithinLease(
+        { requireTerminalUser: false, restoreOnFailure: false, userKeyboardIntent, thinkingOverride: retryThinking },
+        transport,
       );
-      const prevVendorBaseUrlSig = currentVendorBaseUrlSig();
-      await settingsService.patch({
-        llm: {
-          vendors: {
-            [provider]: {
-              ...prevBlock,
-              enableThinking: opts?.enableThinking ?? true,
-              thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(
-                opts?.thinkingBudgetTokens ?? getLlmThinkingBudgetLimit(prevBlock.outputTokenLimit),
-                prevBlock.outputTokenLimit,
-              ),
-            },
-          },
-        },
-      });
-      // Only address changes require sandbox network refresh; spreading the prior block preserves its address.
-      if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
-        void deps.refreshSandboxNetworkConfig?.();
-      }
-      await group.loop.refreshProvider();
-      try {
-        return await group.turns.continueFromLastUserTurnWithinLease(
-          { requireTerminalUser: false, restoreOnFailure: false, userKeyboardIntent },
-          transport,
-        );
-      } finally {
-        await settingsService.patch({
-          llm: { vendors: { [provider]: prevBlock } },
-        });
-        // Restoring the same address must not refresh sandbox network configuration.
-        if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
-          void deps.refreshSandboxNetworkConfig?.();
-        }
-        await group.loop.refreshProvider();
-      }
     });
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });

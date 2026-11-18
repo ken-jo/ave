@@ -138,3 +138,16 @@ describe("host-zone locale styles", () => {
     expect(formatMonthYear(INSTANT, "ko-KR")).toContain("2026");
   });
 });
+
+describe("formatMediumDateTime explicit locale", () => {
+  it("uses the requested UI language while keeping the host timezone", () => {
+    process.env.TZ = "Asia/Seoul";
+    const english = formatMediumDateTime(INSTANT, "en");
+    const korean = formatMediumDateTime(INSTANT, "ko");
+    expect(english).toContain("Jan");
+    expect(korean).toContain("오후");
+    expect(english).not.toBe(korean);
+    process.env.TZ = "America/Los_Angeles";
+    expect(formatMediumDateTime(INSTANT, "en")).not.toBe(english);
+  });
+});

@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 import { useCallback, useMemo, useState } from "react";
 import { Play } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -35,6 +36,7 @@ const MODE_LABEL_KEYS: Record<AccessibilitySignalMode, string> = {
 /** Settings → Chat → Sound signals: one mode and one preview per signal. Self-loading like the documents section, and saved
  * per change; the window's signal engine follows the same settings broadcast. */
 export function AccessibilitySignalsSettings() {
+  useAppSettingsControls(["chat-signals"]);
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
   const api = useMemo(() => getApi(), []);
@@ -73,19 +75,22 @@ export function AccessibilitySignalsSettings() {
     <SettingsSection
       data-settings-section="chat-signals"
       title={t("accessibilitySignals.title")}
+      searchKeywords={t("accessibilitySignals.keywords")}
       description={t("accessibilitySignals.description")}
     >
-      <div className="space-y-2" data-testid="accessibility-signals">
+      <div className="@container space-y-2" data-testid="accessibility-signals">
         {ACCESSIBILITY_SIGNAL_IDS.map((id) => {
           const label = t(SIGNAL_LABEL_KEYS[id].label);
           return (
-            <div key={id} className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-3" data-testid={`accessibility-signal:${id}`}>
+            <div key={id} className="flex flex-col items-stretch gap-3 rounded-md border px-3 py-3 @min-[30rem]:flex-row @min-[30rem]:items-center" data-testid={`accessibility-signal:${id}`}>
               <div className="min-w-0 flex-1 space-y-0.5">
                 <p className="text-sm font-medium">{label}</p>
                 <p className="text-dense text-muted-foreground">{t(SIGNAL_LABEL_KEYS[id].hint)}</p>
                 {playFailed === id && <p role="alert" className="text-dense text-destructive">{t("accessibilitySignals.playFailed")}</p>}
               </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-3">
               <NativeSelect
+                data-setting-id={`system.${ACCESSIBILITY_SIGNAL_SETTING_KEYS[id]}`}
                 size="sm"
                 value={modes?.[id] ?? ""}
                 disabled={modes === null || saving}
@@ -111,6 +116,7 @@ export function AccessibilitySignalsSettings() {
                 <Play className="size-3.5" aria-hidden="true" />
                 {t("accessibilitySignals.play")}
               </Button>
+              </div>
             </div>
           );
         })}

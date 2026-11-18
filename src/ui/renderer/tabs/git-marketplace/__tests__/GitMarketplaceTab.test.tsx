@@ -925,6 +925,7 @@ describe("GitMarketplaceTab maintenance", () => {
     expect(problem).toHaveTextContent("설정을 저장하지 못해 이전 값이 그대로 적용됩니다.");
     expect(problem).not.toHaveTextContent("EACCES");
     expect(screen.queryByTestId("git-marketplace:error")).toBeNull();
+    expect(offline).toHaveAttribute("aria-checked", "true");
   });
 
   it("says when the environment decides a switch", async () => {

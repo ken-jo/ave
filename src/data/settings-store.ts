@@ -1,3 +1,5 @@
+import { isSubAgentMaxRounds } from "../shared/subagent-policy.js";
+import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
@@ -79,8 +81,7 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import {
   normalizeAccelerator,
-  fixedShortcutOwner,
-  nativeAcceleratorIdentity,
+  globalShortcutBindingRefusal,
   applyShortcutBindingsPatch,
   normalizeShortcuts,
   shortcutPlatformOf,
@@ -116,6 +117,8 @@ import {
   normalizeWorkBoard,
   isWebViewPreferredFlow,
   normalizeWebView,
+  normalizeWebSearch,
+  normalizePrivacy,
   preserveInstalledProviderPresetMetadata,
   sanitizeStoredPluginConfigs,
   normalizeAlertSettings,
@@ -657,11 +660,12 @@ export interface UpdateSettings {
   skippedVersion?: string;
 }
 
-/** Anonymous opt-in telemetry defaults off. Sending requires both a recorded consent choice and enabled=true. */
+/** Reporting defaults off; the normalized level controls crash, error and usage consent. */
 export interface TelemetrySettings {
+  /** Always present in normalized settings; optional at the legacy migration boundary. */
+  level?: TelemetryLevel;
   enabled: boolean;
   endpoint?: string;
-  sentryDsn?: string;
   crashReportEndpoint?: string;
   crashReportingEnabled?: boolean;
   /** True once the user records a telemetry choice in settings. */
@@ -686,7 +690,7 @@ export interface PrivacySettings {
 export type RoutineSettings = Record<string, unknown>;
 
 export interface WebSearchSettings {
-  provider: "duckduckgo" | "tavily" | "serper" | "google";
+  provider: "duckduckgo" | "tavily" | "serper";
 }
 
 /** The git marketplace's settings (design §16.2). Sources, pins and tokens live in
@@ -922,6 +926,10 @@ export class SettingsService {
     }
   }
 
+  getSettingsFilePath(): string {
+    return this.settingsPath;
+  }
+
   getAll(): AppSettings {
     return structuredClone(this.settings);
   }
@@ -985,6 +993,8 @@ export class SettingsService {
   }
 
   private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
+    if (partial.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) throw new Error("Invalid sub-agent round budget");
+    if (partial.telemetry?.level !== undefined && !isTelemetryLevel(partial.telemetry.level)) throw new Error("Invalid telemetry level");
     const terminalFontPatch = partial.appearance?.terminalFont;
     if (terminalFontPatch && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
       throw new Error("Invalid terminal font family");
@@ -1051,7 +1061,7 @@ export class SettingsService {
     }
     if (partial.chat) this.settings.chat = normalizeChat({ ...this.settings.chat, ...partial.chat });
     if (partial.a2aRemote) this.settings.a2aRemote = normalizeA2ARemote({ ...this.settings.a2aRemote, ...partial.a2aRemote });
-    if (partial.webSearch) this.settings.webSearch = { ...this.settings.webSearch, ...partial.webSearch };
+    if (partial.webSearch) this.settings.webSearch = normalizeWebSearch(partial.webSearch, this.settings.webSearch, PATCHED_FIELD);
     if (partial.marketplace) {
       this.settings.marketplace = nextMarketplace;
       const normalizedLlm = mergeLlmPatch(
@@ -1084,7 +1094,7 @@ export class SettingsService {
       this.settings.permissions = { ...this.settings.permissions, ownerAwayAutoSkipMinutes: partial.permissions.ownerAwayAutoSkipMinutes };
     }
     if (partial.privacy) {
-      this.settings.privacy = { ...this.settings.privacy, ...partial.privacy };
+      this.settings.privacy = normalizePrivacy(partial.privacy, this.settings.privacy, PATCHED_FIELD);
     }
     if (partial.plugins) {
       this.settings.plugins = { ...this.settings.plugins, ...partial.plugins };
@@ -1110,6 +1120,12 @@ export class SettingsService {
       );
       for (const key of TELEMETRY_TEXT_KEYS) {
         acceptTelemetryText(nextTelemetry, key, partial.telemetry[key], PATCHED_FIELD);
+      }
+      if (partial.telemetry.level !== undefined) {
+        nextTelemetry.level = partial.telemetry.level;
+        Object.assign(nextTelemetry, telemetryLevelFlags(partial.telemetry.level));
+      } else if (partial.telemetry.enabled !== undefined || partial.telemetry.crashReportingEnabled !== undefined) {
+        nextTelemetry.level = telemetryLevel({ enabled: nextTelemetry.enabled, crashReportingEnabled: nextTelemetry.crashReportingEnabled });
       }
       this.settings.telemetry = nextTelemetry;
     }
@@ -1284,7 +1300,7 @@ export class SettingsService {
         nextShortcuts.toggleWindow = null;
       } else if (rawToggle !== undefined) {
         const accel = normalizeAccelerator(rawToggle);
-        if (accel !== null && nativeAcceleratorIdentity(accel, shortcutPlatformOf(process.platform)) !== null && fixedShortcutOwner(accel, shortcutPlatformOf(process.platform)) === null) {
+        if (accel !== null && globalShortcutBindingRefusal(accel, shortcutPlatformOf(process.platform)) === null) {
           nextShortcuts.toggleWindow = accel;
         } else {
           log.warn(
@@ -1313,7 +1329,7 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    for (const key of ["permissions", "appearance", "shortcuts"] as const) {
+    for (const key of ["permissions", "appearance", "shortcuts", "telemetry"] as const) {
       if (!partial[key]) continue;
       for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
@@ -1772,11 +1788,15 @@ export class SettingsService {
       );
       if (appliedMigrations.length !== migrationsBeforeMarketDefaults) migrationWriteBack = true;
 
+      if ((parsed.webSearch?.provider as unknown) === "google") {
+        parsed = { ...parsed, webSearch: { provider: "duckduckgo" } };
+        migrationWriteBack = true;
+      }
       const result: AppSettings = {
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),
-        webSearch: { ...DEFAULT_SETTINGS.webSearch, ...parsed.webSearch },
+        webSearch: normalizeWebSearch(parsed.webSearch),
         marketplace,
         routine: normalizedRoutine,
         homeDocs: normalizeHomeDocs(parsed.homeDocs),
@@ -1784,7 +1804,7 @@ export class SettingsService {
           ownerAwayAutoSkipMinutes: isOwnerAwayAutoSkipMinutes(parsed.permissions?.ownerAwayAutoSkipMinutes)
             ? parsed.permissions.ownerAwayAutoSkipMinutes : DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES,
         },
-        privacy: { ...DEFAULT_SETTINGS.privacy, ...parsed.privacy },
+        privacy: normalizePrivacy(parsed.privacy),
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
         audit: { ...DEFAULT_SETTINGS.audit, ...parsed.audit },

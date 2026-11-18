@@ -281,6 +281,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
               <label className="grid gap-1 text-xs font-medium">
                 <span>{t("tailnetAccessTab.inviteDurationLabel")}</span>
                 <NativeSelect
+                  data-settings-transient="invitation-and-share-draft"
                   size="sm"
                   value={invitationDuration}
                   disabled={busy !== null}
@@ -363,6 +364,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
               <label className="grid gap-1 text-xs font-medium">
                 <span>{t("tailnetAccessTab.sharePermissionLabel")}</span>
                 <NativeSelect
+                  data-settings-transient="invitation-and-share-draft"
                   size="sm"
                   value={sharePermission}
                   disabled={busy !== null}
@@ -380,6 +382,7 @@ export function TailnetAccessContent({ api, onCompleted }: TailnetAccessContentP
               <label className="grid gap-1 text-xs font-medium">
                 <span>{t("tailnetAccessTab.shareDurationLabel")}</span>
                 <NativeSelect
+                  data-settings-transient="invitation-and-share-draft"
                   size="sm"
                   value={shareDuration}
                   disabled={busy !== null}

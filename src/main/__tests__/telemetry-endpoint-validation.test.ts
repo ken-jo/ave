@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { MockAgent, fetch as undiciFetch } from "undici";
 import {
   DEFAULT_TELEMETRY_ALLOWLIST,
   TelemetryService,
@@ -288,5 +289,57 @@ describe("telemetryAllowedHosts", () => {
 
   it("is frozen — the surface reads the bound, it does not edit it", () => {
     expect(Object.isFrozen(telemetryAllowedHosts({}))).toBe(true);
+  });
+});
+
+describe("telemetry live settings", () => {
+  it("accepts a corrected endpoint without requiring a restart", () => {
+    const settings: TelemetrySettings = { enabled: true, endpoint: "http://reports.example/events" };
+    const service = new TelemetryService({ settings: () => settings, fetchImpl: unusedNetworkFetch, allowlistEnv: "reports.example" });
+    expect(service.isActive()).toBe(false);
+    settings.endpoint = "https://reports.example/events";
+    expect(service.isActive()).toBe(true);
+  });
+  it("filters queued usage events when the level drops to error", async () => {
+    const calls: unknown[] = [];
+    const settings: TelemetrySettings = { level: "all", enabled: true, endpoint: "https://reports.example/events" };
+    const service = new TelemetryService({ settings: () => settings, allowlistEnv: "reports.example", fetchImpl: (async (_url, init) => { calls.push(JSON.parse(init?.body as string)); return new Response(null, { status: 200 }); }) as typeof fetch });
+    service.track("chat_turn");
+    service.track("error");
+    settings.level = "error";
+    service.settingsChanged();
+    await service.flush();
+    expect(calls).toEqual([{ events: [expect.objectContaining({ name: "error" })] }]);
+  });
+});
+
+describe("TelemetryService upload redirects", () => {
+  it.each([307, 308])("never forwards a batch that an allowed endpoint redirects (%i) to an unlisted host", async (status) => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    const outside: unknown[] = [];
+    agent.get("https://reports.example").intercept({ path: "/ingest", method: "POST" })
+      .reply(status, "", { headers: { location: "https://outside.example/collect" } });
+    agent.get("https://outside.example").intercept({ path: "/collect", method: "POST" })
+      .reply(200, (options) => { outside.push(options.body); return ""; }).persist();
+    try {
+      const service = new TelemetryService({
+        fetchImpl: ((input: string, init: object) => undiciFetch(input, { ...init, dispatcher: agent })) as unknown as typeof fetch,
+        settings: () => ({ enabled: true, level: "all", endpoint: "https://reports.example/ingest" } as TelemetrySettings),
+        isPackaged: true,
+        allowlistEnv: "reports.example",
+      });
+      service.track("app_start");
+      await service.flush();
+      expect(outside).toEqual([]);
+      // Nothing was accepted, so the batch stays queued for a later flush to the allowed endpoint.
+      const accepted: unknown[] = [];
+      agent.get("https://reports.example").intercept({ path: "/ingest", method: "POST" })
+        .reply(200, (options) => { accepted.push(JSON.parse(String(options.body))); return ""; });
+      await service.flush();
+      expect(accepted).toEqual([{ events: [expect.objectContaining({ name: "app_start" })] }]);
+    } finally {
+      await agent.close();
+    }
   });
 });

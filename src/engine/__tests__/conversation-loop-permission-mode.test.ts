@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { setupCommittedAveHome } from "../../__tests__/support/committed-ave-home.js";
 
 import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -8,6 +9,9 @@ import type { LLMProvider, StreamEvent, StreamTurnInput,
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 import { AveHomeConfigurationRefusedWriteError } from "../../shared/ave-home.js";
 import { t } from "../../i18n/runtime.js";
+
+// A durable mode change also saves the reviewer mode in the home's configuration, which only its owner may write.
+setupCommittedAveHome("ave-permission-mode-loop-");
 
 class UnusedProvider implements LLMProvider {
   readonly vendor = "openai" as const;

@@ -1,6 +1,6 @@
 /** Reject rows normalization would drop; preserve drafts across unchanged broadcasts and honor environment read-only mode. */
 import "../../../../../test/renderer/setup.js";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { PricingOverridesSection } from "../PricingOverridesSection.js";
 import { installMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
@@ -15,6 +15,21 @@ function withOverrides(pricingOverrides: unknown[]) {
 }
 
 describe("PricingOverridesSection", () => {
+  it("keeps the draft dirty and reports a refused write", async () => {
+    const api = installMockAveApi({ settings: BASE_SETTINGS });
+    vi.mocked(api.updateSettings).mockResolvedValueOnce({ ok: false, error: "invalid-args" });
+    const { findByTestId, getByRole } = render(<PricingOverridesSection />);
+    fireEvent.click(await findByTestId("llm-pricing-override-add"));
+    fireEvent.change(await findByTestId("llm-pricing-override-model-0"), { target: { value: "draft-model" } });
+    fireEvent.change(await findByTestId("llm-pricing-override-input-0"), { target: { value: "2" } });
+    fireEvent.change(await findByTestId("llm-pricing-override-output-0"), { target: { value: "4" } });
+    const save = await findByTestId("llm-pricing-override-save") as HTMLButtonElement;
+    fireEvent.click(save);
+    await waitFor(() => expect(getByRole("alert")).toBeTruthy());
+    expect(save.disabled).toBe(false);
+    expect((await findByTestId("llm-pricing-override-model-0") as HTMLInputElement).value).toBe("draft-model");
+  });
+
   it("preserves a completed unsaved row across an unrelated settings broadcast", async () => {
     const api = installMockAveApi({ settings: BASE_SETTINGS });
     const { findByTestId, getByTestId } = render(<PricingOverridesSection />);

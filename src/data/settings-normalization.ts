@@ -1,3 +1,5 @@
+import { SUBAGENT_MAX_ROUNDS_MAX, SUBAGENT_MAX_ROUNDS_MIN } from "../shared/subagent-policy.js";
+import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags } from "../shared/telemetry-policy.js";
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
@@ -83,6 +85,7 @@ import { createLogger } from "../lib/logger.js";
 import { isAbsoluteHostPath, parseMainLayout, type MainLayoutSnapshot } from "../shared/main-layout.js";
 import {
   STORED_FIELD,
+  PATCHED_FIELD,
   acceptField,
   acceptNormalizedField,
   isBooleanValue,
@@ -110,11 +113,13 @@ import type {
   LLMSettings,
   LLMSettingsPatch,
   MarketplaceSettings,
+  PrivacySettings,
   SystemCloseBehavior,
   SystemSettings,
   TelemetrySettings,
   WebViewPreferredFlow,
   WebViewSettings,
+  WebSearchSettings,
 } from "./settings-store.js";
 import { isRecord } from "../shared/is-record.js";
 import { compactionModelSelection, isCompactionModelSelection } from "../shared/compaction-model.js";
@@ -495,7 +500,7 @@ export function mergeLlmPatch(
     provider: activeProvider,
     ...(marketplaceProviderPresetId ? { marketplaceProviderPresetId } : {}),
     vendors,
-    streamSmoothing: partial.streamSmoothing ?? base.streamSmoothing,
+    streamSmoothing: base.streamSmoothing,
     compactionModel: normalizeModelId("compactionModel" in partial ? partial.compactionModel : base.compactionModel) ?? "",
     compactionModelRoute: normalizeCompactionModelRoute("compactionModelRoute" in partial ? partial.compactionModelRoute : base.compactionModelRoute),
     fallbackChain,
@@ -516,6 +521,8 @@ export function mergeLlmPatch(
       : {}),
     // Drop the inert legacy host-resolver map rather than retaining internal hostnames.
   };
+  acceptField(normalized, "streamSmoothing", partial.streamSmoothing,
+    (value) => value === "none" || value === "word" || value === "char", "llm", PATCHED_FIELD);
   const selection = "compactionModelSelection" in partial
     ? partial.compactionModelSelection
     : "compactionModel" in partial ? undefined : base.compactionModelSelection;
@@ -692,6 +699,30 @@ const VALID_WEBVIEW_FLOWS: readonly WebViewPreferredFlow[] = ["in-app", "system-
 /** Share the accepted flow predicate across disk load and patches so invalid values cannot persist. */
 export function isWebViewPreferredFlow(value: unknown): value is WebViewPreferredFlow {
   return typeof value === "string" && (VALID_WEBVIEW_FLOWS as readonly string[]).includes(value);
+}
+
+export function isWebSearchProvider(value: unknown): value is WebSearchSettings["provider"] {
+  return value === "duckduckgo" || value === "tavily" || value === "serper";
+}
+
+export function normalizeWebSearch(
+  input: unknown,
+  retained: WebSearchSettings = DEFAULT_SETTINGS.webSearch,
+  rejection: FieldRejection = STORED_FIELD,
+): WebSearchSettings {
+  const result = { provider: retained.provider };
+  if (isRecord(input)) acceptField(result, "provider", input.provider, isWebSearchProvider, "webSearch", rejection);
+  return result;
+}
+
+export function normalizePrivacy(
+  input: unknown,
+  retained: PrivacySettings = DEFAULT_SETTINGS.privacy,
+  rejection: FieldRejection = STORED_FIELD,
+): PrivacySettings {
+  const result = { piiRedactEnabled: retained.piiRedactEnabled };
+  if (isRecord(input)) acceptField(result, "piiRedactEnabled", input.piiRedactEnabled, isBooleanValue, "privacy", rejection);
+  return result;
 }
 
 export function normalizeWebView(input: unknown): WebViewSettings {
@@ -988,10 +1019,20 @@ export function normalizeTelemetry(input: unknown): TelemetrySettings {
   for (const key of TELEMETRY_TEXT_KEYS) {
     acceptTelemetryText(result, key, input[key], STORED_FIELD);
   }
+  if (input.level === undefined) {
+    result.level = telemetryLevel({ enabled: result.enabled, crashReportingEnabled: result.crashReportingEnabled });
+  } else if (isTelemetryLevel(input.level)) {
+    result.level = input.level;
+    if (input.crashReportingEnabled !== false || result.level === "off") Object.assign(result, telemetryLevelFlags(result.level));
+  } else {
+    log.warn("telemetry.level invalid, disabling reporting");
+    result.level = "off";
+    Object.assign(result, telemetryLevelFlags("off"));
+  }
   return result;
 }
 
-export const TELEMETRY_TEXT_KEYS = ["endpoint", "sentryDsn", "crashReportEndpoint"] as const;
+export const TELEMETRY_TEXT_KEYS = ["endpoint", "crashReportEndpoint"] as const;
 
 /** Require real booleans; truthy strings must not enable document moves on update. */
 export function normalizeHomeDocs(input: unknown): HomeDocsSettings {
@@ -1001,7 +1042,7 @@ export function normalizeHomeDocs(input: unknown): HomeDocsSettings {
   return result;
 }
 
-/** Clearing an endpoint deletes its key; warn by field name only because URLs and DSNs may contain secrets. */
+/** Clearing an endpoint deletes its key; warnings name the field without exposing address contents. */
 export function acceptTelemetryText(
   target: TelemetrySettings,
   key: (typeof TELEMETRY_TEXT_KEYS)[number],
@@ -1020,7 +1061,7 @@ export function acceptTelemetryText(
   else target[key] = trimmed;
 }
 
-/** Round budgets require valid positive integers and have no upper clamp; enforce timer bounds where timers are armed. */
+/** Stored round budgets normalize to the shared inclusive bounds. */
 export function normalizeChat(input: unknown): ChatSettings {
   const result: ChatSettings = { ...DEFAULT_SETTINGS.chat };
   if (!isRecord(input)) return result;
@@ -1031,7 +1072,7 @@ export function normalizeChat(input: unknown): ChatSettings {
     result.processingDisplayLevel = chat.processingDisplayLevel;
   }
   if (typeof chat.subAgentMaxRounds === "number" && Number.isFinite(chat.subAgentMaxRounds)) {
-    result.subAgentMaxRounds = Math.max(1, Math.floor(chat.subAgentMaxRounds));
+    result.subAgentMaxRounds = Math.min(SUBAGENT_MAX_ROUNDS_MAX, Math.max(SUBAGENT_MAX_ROUNDS_MIN, Math.floor(chat.subAgentMaxRounds)));
   }
   // Preserve zero as off; invalid fractional or negative notification intervals also read as off.
   if (

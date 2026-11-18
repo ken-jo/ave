@@ -13,6 +13,17 @@ import { isAppRelaunchRequested, setAppRelaunchRequested } from "../../main/app-
 
 export function registerAppHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
+  const systemAtBoot = deps.settingsService.get("system");
+  const startupSettings: import("../../shared/restart-settings.js").BootSystemSettings = {
+    hardwareAcceleration: systemAtBoot.hardwareAcceleration,
+    corpCaEnabled: systemAtBoot.corpCaEnabled,
+    corpCaCommonName: systemAtBoot.corpCaCommonName,
+    corpCaDebugLog: systemAtBoot.corpCaDebugLog,
+  };
+  const bootSettings: import("../../shared/restart-settings.js").BootSettingsSnapshot = {
+    startupSettings,
+    bootCrashReportEndpoint: deps.settingsService.get("telemetry").crashReportEndpoint,
+  };
   ipcMain.handle(CHANNELS.app.relaunch, (event, payload: unknown): AppRelaunchResult => {
     const refuse = (error: AppRelaunchError): AppRelaunchResult => {
       auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "ipc-guard", type: "warn",
@@ -56,6 +67,7 @@ export function registerAppHandlers(deps: IpcDeps): void {
       platform: process.platform,
       arch: process.arch,
       userDataPath: app.getPath("userData"),
+      ...bootSettings,
     };
   });
 }

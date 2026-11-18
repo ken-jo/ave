@@ -1,7 +1,7 @@
 // Reconcile shortcuts at boot and settings changes; report registration conflicts and release every accelerator during shutdown.
 import { globalShortcut } from "electron";
 import { createLogger } from "../lib/logger.js";
-import { fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator, shortcutPlatformOf, type ShortcutSettings } from "../shared/shortcuts.js";
+import { globalShortcutBindingRefusal, normalizeAccelerator, shortcutPlatformOf, type ShortcutSettings } from "../shared/shortcuts.js";
 import { getMainWindow, getServices } from "./app-state.js";
 import { showOrCreateMainWindow } from "./app-tray.js";
 import { toggleMainWindowVisibility } from "./main-window.js";
@@ -89,7 +89,7 @@ export function reconcileGlobalShortcuts(
   }
 
   const accelerator = normalizeAccelerator(shortcuts.toggleWindow);
-  if (accelerator === null || nativeAcceleratorIdentity(accelerator, shortcutPlatformOf(process.platform)) === null || fixedShortcutOwner(accelerator, shortcutPlatformOf(process.platform)) !== null) {
+  if (accelerator === null || globalShortcutBindingRefusal(accelerator, shortcutPlatformOf(process.platform)) !== null) {
     // Malformed accelerator that slipped past the store (defensive) — surface it.
     log.warn("global-shortcuts: invalid accelerator %s", JSON.stringify(shortcuts.toggleWindow));
     deps.notifyFailure(String(shortcuts.toggleWindow));

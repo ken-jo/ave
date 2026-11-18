@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useConfigurationOwner as configureTestOwner } from "../../../__tests__/support/configuration-owner.js";
+import { migrateAveHomeConfiguration } from "../../../shared/ave-home-configuration.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
+
+configureTestOwner();
+beforeEach(() => migrateAveHomeConfiguration(aveHome(), ensureAveHomePrivate(aveHome())));
 
 import {
   handleSetPermissionMode,

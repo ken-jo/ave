@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type {
   McpCapability,
   McpGovernancePolicy,
+  McpPolicyStatus,
   McpServerApproval,
   McpServerConfig,
   McpToolSchema,
@@ -23,6 +24,8 @@ import {
   RESERVED_HEADERS,
 } from "./safe-names.js";
 import { t } from "../i18n/index.js";
+import { userServerApproval } from "./user-server-trust.js";
+import { isUsableMcpServerId } from "../shared/mcp-app-partition.js";
 import { isLoopbackUrlHostname } from "../shared/loopback-url.js";
 const log = createLogger("mcp-governance");
 
@@ -61,8 +64,15 @@ const DEFAULT_POLICY: McpGovernancePolicy = {
   },
 };
 
+/** A policy file that exists but cannot be used (pending review or unparseable) never inherits the absent-file permission. */
+const USER_TRUST_DISABLED_POLICY: McpGovernancePolicy = {
+  ...DEFAULT_POLICY,
+  globalRules: { ...DEFAULT_POLICY.globalRules, allowUserApprovedServers: false },
+};
+
 export class McpGovernance {
   private policy: McpGovernancePolicy;
+  private policyStatus: McpPolicyStatus;
   private runtimeApprovals: Map<string, McpServerApproval>;
   private readonly policyPath: string;
   private refreshTimer: NodeJS.Timeout | null = null;
@@ -71,20 +81,27 @@ export class McpGovernance {
     policyPath?: string,
     scopedState?: {
       policy: McpGovernancePolicy;
+      policyStatus: McpPolicyStatus;
       runtimeApprovals: Map<string, McpServerApproval>;
     },
   ) {
     this.policyPath = policyPath ?? join(aveHome(), "governance", "mcp-policy.json");
-    this.policy = scopedState?.policy ?? this.loadPolicy();
+    const loaded = scopedState ?? this.loadPolicy();
+    this.policy = loaded.policy;
+    this.policyStatus = loaded.policyStatus;
     this.runtimeApprovals = scopedState?.runtimeApprovals ?? new Map();
   }
 
-  private loadPolicy(): McpGovernancePolicy {
-    // A policy pending review in the home content trust manifest reads as missing, which is already deny-by-default.
+  private loadPolicy(): { policy: McpGovernancePolicy; policyStatus: McpPolicyStatus } {
     const input = readAveHomeInputSync(this.policyPath);
-    if (input.status !== "trusted") {
-      log.info(input.status === "absent" ? "Policy file missing — applying deny-by-default" : "Policy file is waiting for review — applying deny-by-default");
-      return DEFAULT_POLICY;
+    if (input.status === "absent") {
+      log.info("Policy file missing — applying deny-by-default");
+      return { policy: DEFAULT_POLICY, policyStatus: "absent" };
+    }
+    // An existing policy that is pending review has no authority yet, and its unread rules may restrict user trust, so user trust stays off.
+    if (input.status === "untrusted") {
+      log.info("Policy file is waiting for review — applying deny-by-default without user trust");
+      return { policy: USER_TRUST_DISABLED_POLICY, policyStatus: "pending-review" };
     }
     try {
       const raw = input.bytes.toString("utf-8");
@@ -107,10 +124,10 @@ export class McpGovernance {
       }
 
     log.info(`Policy loaded: ${parsed.servers.length} server rules`);
-      return parsed;
+      return { policy: parsed, policyStatus: "active" };
     } catch (err) {
     log.error({ err }, "Policy file parse failed — applying deny-by-default");
-      return { ...DEFAULT_POLICY, globalRules: { ...DEFAULT_POLICY.globalRules, allowUserApprovedServers: false } };
+      return { policy: USER_TRUST_DISABLED_POLICY, policyStatus: "invalid" };
     }
   }
 
@@ -131,7 +148,9 @@ export class McpGovernance {
 
   reloadPolicy(): string[] {
     const previous = this.policy;
-    this.policy = this.loadPolicy();
+    const loaded = this.loadPolicy();
+    this.policy = loaded.policy;
+    this.policyStatus = loaded.policyStatus;
     const prevStatusById = new Map(previous.servers.map((server) => [server.id, server.status]));
     const revokedManaged = this.policy.servers
       .filter((server) => server.status === "revoked" && prevStatusById.get(server.id) !== "revoked")
@@ -315,8 +334,36 @@ export class McpGovernance {
     return this.findApproval(serverId);
   }
 
+  getUserServerPolicy(): { policyPath: string; policyStatus: McpPolicyStatus; userServersAllowed: boolean; managedServerIds: string[] } {
+    return { policyPath: this.policyPath, policyStatus: this.policyStatus,
+      userServersAllowed: this.policy.globalRules.allowUserApprovedServers !== false,
+      managedServerIds: this.policy.servers.map((server) => server.id) };
+  }
+
+  /** Saving never publishes an approval; policy and transport checks still apply before any write. */
+  validateUserConfig(config: McpServerConfig): ValidationResult {
+    const isStringRecord = (value: unknown): boolean => value !== null && typeof value === "object" && !Array.isArray(value)
+      && Object.values(value).every((entry) => typeof entry === "string");
+    if (!isUsableMcpServerId(config.id) || config.auth !== undefined && !["none", "api-key", "oauth", "sso"].includes(config.auth)
+      || config.transport === "stdio" && (typeof config.command !== "string" || config.args !== undefined
+        && (!Array.isArray(config.args) || !config.args.every((argument) => typeof argument === "string"))
+        || config.env !== undefined && !isStringRecord(config.env))
+      || config.transport === "http" && (typeof config.url !== "string" || config.headers !== undefined && !isStringRecord(config.headers))) {
+      return { valid: false, layer: 1, reason: t("be_mcpGovernance.invalidUserConfig") };
+    }
+    if (this.policy.servers.some((entry) => entry.id === config.id)) return this.validateServer(config);
+    const approval = userServerApproval(config);
+    if (!this.isRuntimeApprovalAdmitted(approval)) {
+      return { valid: false, layer: 1, reason: t("be_mcpGovernance.userTrustDisabled") };
+    }
+    return this.scopedRuntimeApproval(approval).validateServer(config);
+  }
+
   isRuntimeApprovalAdmitted(approval: McpServerApproval): boolean {
     if (this.policy.servers.some((entry) => entry.id === approval.id)) return true;
+    if (approval.provenance === "user" && approval.userConfigFingerprint !== undefined) {
+      return /^[a-f0-9]{64}$/u.test(approval.userConfigFingerprint) && this.policy.globalRules.allowUserApprovedServers !== false;
+    }
     if (!approval.bundled) return false;
     if (approval.provenance === "user") return this.policy.globalRules.allowUserApprovedServers !== false;
     if (approval.provenance !== "policy-fingerprint") return false;
@@ -358,7 +405,7 @@ export class McpGovernance {
     }
     const approvals = new Map(this.runtimeApprovals);
     approvals.set(approval.id, Object.freeze({ ...approval }));
-    return new McpGovernance(this.policyPath, { policy: this.policy, runtimeApprovals: approvals });
+    return new McpGovernance(this.policyPath, { policy: this.policy, policyStatus: this.policyStatus, runtimeApprovals: approvals });
   }
 
   /** Publish generation approvals atomically only after preparation. */

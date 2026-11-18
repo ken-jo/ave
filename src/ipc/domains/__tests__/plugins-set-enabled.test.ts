@@ -69,6 +69,7 @@ async function setup() {
   let pluginCards: Array<{ id: string; lastAttemptRefusal?: unknown }> = [];
   const listPluginCards = vi.fn(() => pluginCards);
   const setSecret = vi.fn(async () => {});
+  const deleteSecret = vi.fn(async () => {});
   // Declare apiKey secret so secret-write tests reach the intended handler gate.
   const pluginManifest = {
     id: "plugin-config",
@@ -96,12 +97,16 @@ async function setup() {
       setConfigOverride: vi.fn(),
       restartPlugin,
       listPluginCards,
+      getPerfStats: vi.fn(() => [{ pluginId: "plugin-config", calls: 2 }]),
     },
     settingsService: {
       get: vi.fn(() => ({})),
       getPluginConfig: vi.fn(() => ({ ...pluginConfig })),
       setPluginConfig,
       setSecret,
+      deleteSecret,
+      hasStoredSecret: vi.fn(async () => false),
+      getSecret: vi.fn(async () => null),
     },
     auditLogger: { log: vi.fn() },
     getMainWindow: vi.fn(() => appWindows[0]),
@@ -120,6 +125,7 @@ async function setup() {
     setPluginConfig,
     restartPlugin,
     setSecret,
+    deleteSecret,
     seedPluginConfig: (next: Record<string, unknown>) => { pluginConfig = { ...next }; },
     readPluginConfig: () => ({ ...pluginConfig }),
     setPluginCards: (next: typeof pluginCards) => { pluginCards = next; },
@@ -460,6 +466,105 @@ describe("ave:plugins:set-enabled", () => {
 });
 
 describe("ave:plugins:config:set", () => {
+  it("guards performance reads while allowing the host renderer", async () => {
+    const { deps } = await setup();
+    const handler = handlers.get("ave:plugins:perf-stats");
+    expect(handler).toBeDefined();
+    if (!handler) throw new Error("Performance handler missing");
+    expect(await handler({ senderFrame: { url: "https://untrusted.example" } })).toMatchObject({ ok: false, error: "unauthorized-frame" });
+    expect(deps.pluginRuntime.getPerfStats).not.toHaveBeenCalled();
+    expect(await invoke("ave:plugins:perf-stats")).toEqual([{ pluginId: "plugin-config", calls: 2 }]);
+    expect(deps.pluginRuntime.getPerfStats).toHaveBeenCalledOnce();
+  });
+  it.each([
+    { count: -1, name: "valid" },
+    { count: 11, name: "valid" },
+    { count: 1.5, name: "valid" },
+    { count: 4, name: "bad!" },
+    { count: 4 },
+  ])("rejects schema-invalid configuration before storage and restart: %j", async (config) => {
+    const { deps, setPluginConfig, restartPlugin } = await setup();
+    deps.pluginRuntime.getPluginManifest.mockReturnValue({
+      id: "plugin-config",
+      configSchema: {
+        properties: {
+          count: { type: "integer", minimum: 1, maximum: 10 },
+          name: { type: "string", pattern: "^[a-z]+$" },
+        },
+        required: ["name"],
+      },
+    } as never);
+    expect(await invoke("ave:plugins:config:set", "plugin-config", config)).toMatchObject({ ok: false, error: "plugin-config-save-failed" });
+    expect(setPluginConfig).not.toHaveBeenCalled();
+    expect(restartPlugin).not.toHaveBeenCalled();
+  });
+
+  it("validates cleartext defaults against separately stored required secrets", async () => {
+    const { deps, setPluginConfig } = await setup();
+    deps.pluginRuntime.getPluginManifest.mockReturnValue({
+      id: "plugin-config",
+      configSchema: {
+        properties: {
+          name: { type: "string", default: "valid" },
+          token: { type: "string", format: "secret" },
+        },
+        required: ["name", "token"],
+      },
+    } as never);
+    deps.settingsService.hasStoredSecret.mockResolvedValueOnce(true);
+    expect(await invoke("ave:plugins:config:set", "plugin-config", { token: "must-not-persist" })).toMatchObject({ ok: true });
+    expect(setPluginConfig).toHaveBeenCalledExactlyOnceWith("plugin-config", {});
+    expect(deps.settingsService.hasStoredSecret).toHaveBeenCalledExactlyOnceWith("plugin.plugin-config.token");
+    expect(deps.settingsService.getSecret).not.toHaveBeenCalled();
+  });
+
+  it("refuses nonsecret config writes until every required secret is stored", async () => {
+    const { deps, setPluginConfig, restartPlugin } = await setup();
+    deps.pluginRuntime.getPluginManifest.mockReturnValue({
+      id: "plugin-config", configSchema: {
+        properties: { token: { type: "string", format: "secret" }, name: { type: "string" } }, required: ["token"],
+      },
+    } as never);
+    expect(await invoke("ave:plugins:config:set", "plugin-config", { name: "valid", token: "cleartext-does-not-count" }))
+      .toMatchObject({ ok: false, error: "plugin-config-secret-required" });
+    expect(deps.settingsService.hasStoredSecret).toHaveBeenCalledExactlyOnceWith("plugin.plugin-config.token");
+    expect(deps.settingsService.getSecret).not.toHaveBeenCalled();
+    expect(setPluginConfig).not.toHaveBeenCalled();
+    expect(restartPlugin).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for an invalid declared schema", async () => {
+    const { deps, setPluginConfig, restartPlugin } = await setup();
+    deps.pluginRuntime.getPluginManifest.mockReturnValue({
+      id: "plugin-config", configSchema: { properties: { kept: { type: "invalid-type" } } },
+    } as never);
+    expect(await invoke("ave:plugins:config:set", "plugin-config", { kept: "new" })).toMatchObject({ ok: false });
+    expect(setPluginConfig).not.toHaveBeenCalled();
+    expect(restartPlugin).not.toHaveBeenCalled();
+  });
+
+  it("deletes a secret instead of storing an empty plaintext value", async () => {
+    const { deleteSecret, setSecret } = await setup();
+    expect(await invoke("ave:plugins:config:secret:set", "plugin-config", "apiKey", "")).toMatchObject({ ok: true });
+    expect(deleteSecret).toHaveBeenCalledExactlyOnceWith("plugin.plugin-config.apiKey");
+    expect(setSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "manifest-plaintext-default"])("refuses deletion of a required secret without changing storage, including manifest default %j", async (defaultValue) => {
+    const { deps, deleteSecret, setSecret, setPluginConfig } = await setup();
+    deps.pluginRuntime.getPluginManifest.mockReturnValue({
+      id: "plugin-config", configSchema: {
+        properties: { apiKey: { type: "string", format: "secret", ...(defaultValue === undefined ? {} : { default: defaultValue }) } },
+        required: ["apiKey"],
+      },
+    } as never);
+    expect(await invoke("ave:plugins:config:secret:set", "plugin-config", "apiKey", ""))
+      .toMatchObject({ ok: false, error: "plugin-config-secret-required" });
+    expect(deleteSecret).not.toHaveBeenCalled();
+    expect(setSecret).not.toHaveBeenCalled();
+    expect(setPluginConfig).not.toHaveBeenCalled();
+  });
+
   it("emits undefined for deleted keys captured before persistence", async () => {
     const { subscribePluginConfigChange } = await import("../../../plugins/config-change-bus.js");
     await setup();

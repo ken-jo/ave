@@ -460,6 +460,9 @@ export type AvePreloadApi = {
     tokens: Record<string, string>;
   }) => Promise<{ ok: boolean; error?: string }>;
   getSettings: () => Promise<AppSettings>;
+  getSettingsDefaults: () => Promise<AppSettings>;
+  openSettingsFile: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  pickSettingsDirectory: () => Promise<{ ok: true; path: string | null } | { ok: false; error: string }>;
   updateSettings: (patch: DeepPartial<AppSettings>) => Promise<SettingsUpdateResult>;
   /** Settings paths the boot environment is forcing ON; presence only, never values. */
   envForcedSettings: () => Promise<readonly string[]>;
@@ -505,7 +508,7 @@ export type AvePreloadApi = {
 
   setWebApiKey: (provider: string, k: string) => Promise<{ ok: true }>;
   hasWebApiKey: (provider: string) => Promise<boolean>;
-  deleteWebApiKey: (provider: string) => Promise<{ ok: true }>;
+  deleteWebApiKey: (provider: string) => Promise<{ ok: true } | IpcErrorResult>;
   /**
    * Browser tabs for the agent browser tools (shared/browser-surface.ts):
    * bind a tab id to its guest <webview> after attach, revoke control on stop or user navigation,
@@ -1172,6 +1175,7 @@ export type AvePreloadApi = {
   ) => () => void;
   /** Late-mount sync: fetch the last broadcasted state. */
   getAppUpdateState: () => Promise<import("../../shared/update-state.js").UpdateState>;
+  checkForAppUpdates: () => Promise<import("../../shared/restart-settings.js").AppUpdateCheckResult>;
   /** Trigger download. Valid only when state is "available". */
   downloadAppUpdate: () => Promise<{ ok: boolean; reason?: string }>;
   /** Quit & install after main-owned native confirmation. Valid only when state is "downloaded". */
@@ -1216,7 +1220,7 @@ export type AvePreloadApi = {
     platform: NodeJS.Platform;
     arch: string;
     userDataPath: string;
-  }>;
+  } & import("../../shared/restart-settings.js").BootSettingsSnapshot>;
   onViewActivate: (h: (k: string, settingsTab?: string) => void) => () => void;
 
   getUsageRange: (opts: { dateFrom: string; dateTo: string }) => Promise<UsageSummaryShape>;
@@ -1425,7 +1429,7 @@ export type AvePermissionApi = {
   listRules: () => Promise<PermissionRule[]>;
   listScopedRules: () => Promise<{ rules: ScopedPermissionRule[]; errors: ScopedPermissionRuleError[] }>;
   removeScopedRule: (rule: ScopedPermissionRule) => Promise<{ ok: boolean; error?: string; message?: string }>;
-  addRule: (pattern: string, action: "allow" | "deny") => Promise<AddRuleResult>;
+  addRule: (pattern: string, action: "allow" | "deny" | "ask") => Promise<AddRuleResult>;
   removeRule: (pattern: string, action: "allow" | "deny" | "ask") => Promise<RemoveRuleResult>;
   recentlyDeniedList: () => Promise<{ ok: true; entries: import("../../shared/recently-denied.js").RecentlyDeniedEntry[] } | { ok: false; error: string }>;
   recentlyDeniedRerun: (id: string) => Promise<import("../../shared/recently-denied.js").RecentlyDeniedRerunResult | { ok: false; error: string }>;
@@ -1476,6 +1480,7 @@ export type AvePermissionApi = {
     | IpcErrorResult
   >;
   /** Read-only: the upstream proxy setting (no credential values) and the effective upstream for https://example.com. */
+  updateSecuritySettings: (patch: import("../../shared/security-settings.js").SecuritySettingsPatch) => Promise<AppSettings | IpcErrorResult>;
   upstreamProxyGet: () => Promise<UpstreamProxyView | IpcErrorResult>;
   /** MUTATING: change the upstream proxy setting; resolves to the new view or a refusal. */
   upstreamProxySet: (patch: UpstreamProxyPatch) => Promise<
@@ -1650,6 +1655,10 @@ export type AveMcpApi = {
   authenticate: (id: string) => Promise<McpAuthenticationResult>;
   getConfigs: () => Promise<McpServerConfigDto[]>;
   getConfigPath: () => Promise<string>;
+  getManagementState: () => Promise<import("../../mcp/types.js").McpManagementState>;
+  startServer: (id: string, approvedFingerprint?: string) => Promise<McpConfigMutationResult>;
+  undoRemove: (id: string) => Promise<void>;
+  clearApiKey: (id: string) => Promise<void>;
   addConfig: (config: McpServerConfig) => Promise<McpConfigMutationResult>;
   setApiKey: (id: string, apiKey: string) => Promise<{ connected: boolean; warning?: string }>;
   removeConfig: (id: string) => Promise<void>;

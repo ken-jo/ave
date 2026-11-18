@@ -1,4 +1,4 @@
-/** Render all app time labels in the host’s zone and locale; main and renderer share this policy. */
+/** Render time labels in the host zone; date-time callers may select the app locale. */
 
 import type { TranslateFn } from "../i18n/translate.js";
 
@@ -18,8 +18,8 @@ export function formatLocalClock(value: number | string): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-export function formatMediumDateTime(value: number | string): string {
-  return new Intl.DateTimeFormat(undefined, {
+export function formatMediumDateTime(value: number | string, locale?: string): string {
+  return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));

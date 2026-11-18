@@ -1,16 +1,16 @@
-import { useCallback } from "react";
-import { DocumentSettingsContent } from "./DocumentSettingsContent.js";
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
+import { useCallback, useEffect, useState } from "react";
 import { PrivacyTab } from "./PrivacyTab.js";
-import { AccessibilitySignalsSettings } from "./AccessibilitySignalsSettings.js";
 import { Badge } from "../../../components/ui/badge.js";
-import { Checkbox } from "../../../components/ui/checkbox.js";
+import { Switch } from "../../../components/ui/switch.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
-import { Slider } from "../../../components/ui/slider.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
   SUBAGENT_MAX_ROUNDS_MIN,
+  SUBAGENT_MAX_ROUNDS_MAX,
+  isSubAgentMaxRounds,
 } from "../../../shared/subagent-policy.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -75,8 +75,11 @@ export function ChatTab({
   settingsLoaded,
   onImmediateChange,
 }: ChatTabProps) {
+  useAppSettingsControls(["chat-optimization", "chat-stream-smoothing", "chat-processing-display", "chat-experimental"]);
   const { t } = useTranslation();
-  const processingDisplayIndex = PROCESSING_DISPLAY_LEVELS.indexOf(processingDisplayLevel);
+  const [roundDraft, setRoundDraft] = useState(String(subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT));
+  const [roundError, setRoundError] = useState(false);
+  useEffect(() => { setRoundDraft(String(subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT)); setRoundError(false); }, [subAgentMaxRounds]);
   // Memoize the wrapped onToggle so PrivacyTab receives a stable identity across re-renders — if PrivacyTab ever memoizes
   // via React.memo / props comparison, an inline arrow would defeat it.
   const handlePiiRedactToggle = useCallback(() => {
@@ -96,11 +99,13 @@ export function ChatTab({
         title={t("chatTab.conversationOptimizationTitle")}
         description={t("chatTab.conversationOptimizationDescription")}
       >
-        <div className="flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+        <div className="flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="chat.autoCompact">
+          <Switch
+            data-setting-id="chat.autoCompact"
+            aria-label={t("chatTab.autoCompactLabel")}
             checked={autoCompact}
             disabled={!settingsLoaded}
-            className="size-5"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setAutoCompact(checked === true);
               onImmediateChange?.();
@@ -113,16 +118,13 @@ export function ChatTab({
         </div>
       </SettingsSection>
 
-      <DocumentSettingsContent />
-
-      <AccessibilitySignalsSettings />
-
       <SettingsSection
         data-settings-section="chat-stream-smoothing"
         title={t("chatTab.streamSmoothingTitle")}
         description={t("chatTab.streamSmoothingDescription")}
       >
         <RadioGroup
+          data-setting-id="llm.streamSmoothing"
           className="flex gap-4 text-sm"
           value={streamSmoothing}
           disabled={!settingsLoaded}
@@ -147,39 +149,19 @@ export function ChatTab({
         description={t("chatTab.processingDisplayDescription")}
       >
         <div className="space-y-3 rounded-md border px-3 py-3">
-          <Slider
-            min={0}
-            max={2}
-            step={1}
-            value={[processingDisplayIndex]}
-            disabled={!settingsLoaded}
-            data-testid="processing-display-slider"
+          <RadioGroup data-setting-id="chat.processingDisplayLevel" value={processingDisplayLevel} disabled={!settingsLoaded}
             aria-label={t("chatTab.processingDisplayAriaLabel")}
-            aria-valuetext={t(PROCESSING_DISPLAY_LABEL_KEYS[processingDisplayLevel])}
-            onValueChange={([value]) => {
-              const next = PROCESSING_DISPLAY_LEVELS[value ?? 0];
-              if (!next) return;
-              setProcessingDisplayLevel(next);
+            className="flex flex-wrap gap-4"
+            onValueChange={(value) => {
+              if (!PROCESSING_DISPLAY_LEVELS.includes(value as ProcessingDisplayLevel)) return;
+              setProcessingDisplayLevel(value as ProcessingDisplayLevel);
               onImmediateChange?.();
-            }}
-          />
-          <div className="grid grid-cols-3 gap-2 text-dense text-muted-foreground">
-            {PROCESSING_DISPLAY_LEVELS.map((level) => (
-              <button
-                key={level}
-                type="button"
-                disabled={!settingsLoaded}
-                aria-pressed={processingDisplayLevel === level}
-                className="rounded px-1 py-1 text-center hover:text-foreground disabled:pointer-events-none"
-                onClick={() => {
-                  setProcessingDisplayLevel(level);
-                  onImmediateChange?.();
-                }}
-              >
-                {t(PROCESSING_DISPLAY_LABEL_KEYS[level])}
-              </button>
-            ))}
-          </div>
+            }}>
+            {PROCESSING_DISPLAY_LEVELS.map((level) => <Label key={level} className="flex items-center gap-2">
+              <RadioGroupItem value={level} aria-label={t(PROCESSING_DISPLAY_LABEL_KEYS[level])} />
+              {t(PROCESSING_DISPLAY_LABEL_KEYS[level])}
+            </Label>)}
+          </RadioGroup>
           <p className="text-dense text-muted-foreground" data-testid="processing-display-hint">
             {t(PROCESSING_DISPLAY_HINT_KEYS[processingDisplayLevel])}
           </p>
@@ -196,12 +178,14 @@ export function ChatTab({
           </Badge>
         }
       >
-        <div className="flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+        <div className="flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="features.idlePreferenceRefresh">
+          <Switch
             checked={idlePreferenceRefresh ?? false}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.idleRefreshLabel")}
             data-testid="idle-preference-refresh-toggle"
-            className="size-5"
+            data-setting-id="features.idlePreferenceRefresh"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setIdlePreferenceRefresh?.(checked === true);
             }}
@@ -213,12 +197,14 @@ export function ChatTab({
             </p>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="features.idleMemoryConsolidation">
+          <Switch
             checked={idleMemoryConsolidation ?? false}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.idleMemoryConsolidationLabel")}
             data-testid="idle-memory-consolidation-toggle"
-            className="size-5"
+            data-setting-id="features.idleMemoryConsolidation"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setIdleMemoryConsolidation?.(checked === true);
             }}
@@ -230,12 +216,14 @@ export function ChatTab({
             </p>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="features.subAgentAutonomousWake">
+          <Switch
             checked={subAgentAutonomousWake ?? false}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.subAgentWakeLabel")}
             data-testid="subagent-autonomous-wake-toggle"
-            className="size-5"
+            data-setting-id="features.subAgentAutonomousWake"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setSubAgentAutonomousWake?.(checked === true);
             }}
@@ -247,30 +235,34 @@ export function ChatTab({
             </p>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
+        <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3" data-setting-row="chat.subAgentMaxRounds">
           <Input
             type="number"
             min={SUBAGENT_MAX_ROUNDS_MIN}
-            // No `max`: the engine runs the configured budget as-is, so the
-            // field must not refuse a value the engine would honour.
-            // Commit on blur, not per keystroke: typing "12" passes through
-            // "1", and a per-keystroke write would persist that and clamp it
-            // back into the field mid-edit. `key` remounts the field when the
-            // stored value changes, so a clamped value is reflected back.
-            key={subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT}
-            defaultValue={subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT}
+            max={SUBAGENT_MAX_ROUNDS_MAX}
+            step={1}
+            value={roundDraft}
+            aria-invalid={roundError}
+            aria-describedby="subagent-round-budget-hint"
+            onChange={(event) => { setRoundDraft(event.target.value); setRoundError(false); }}
             disabled={!settingsLoaded}
+            aria-label={t("chatTab.subAgentMaxRoundsLabel")}
             data-testid="subagent-max-rounds-input"
+            data-setting-id="chat.subAgentMaxRounds"
             className="w-20"
             onBlur={(e) => {
-              const parsed = Number.parseInt(e.target.value, 10);
-              if (Number.isFinite(parsed)) setSubAgentMaxRounds?.(parsed);
+              const parsed = e.currentTarget.value.trim() === "" ? Number.NaN : Number(e.currentTarget.value);
+              if (!isSubAgentMaxRounds(parsed)) { setRoundError(true); return; }
+              setRoundError(false);
+              setRoundDraft(String(parsed));
+              if (parsed !== subAgentMaxRounds) setSubAgentMaxRounds?.(parsed);
             }}
           />
           <div className="space-y-0.5">
             <p className="text-sm font-medium">{t("chatTab.subAgentMaxRoundsLabel")}</p>
-            <p className="text-dense text-muted-foreground">
-              {t("chatTab.subAgentMaxRoundsHint")}
+            <p id="subagent-round-budget-hint" className="text-dense text-muted-foreground">
+              {t("chatTab.subAgentMaxRoundsHint", { min: SUBAGENT_MAX_ROUNDS_MIN, max: SUBAGENT_MAX_ROUNDS_MAX })}
+              {roundError && <span role="alert" className="block text-destructive">{t("chatTab.subAgentRoundsInvalid", { min: SUBAGENT_MAX_ROUNDS_MIN, max: SUBAGENT_MAX_ROUNDS_MAX })}</span>}
             </p>
           </div>
         </div>

@@ -31,6 +31,8 @@ function installApi(boot: unknown, sandboxOn = true, shell: unknown = undefined)
       egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
       getMode: vi.fn(async () => ({ mode: "default" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
+      // Security switches are written by the main process from a verified user action, never through the generic settings patch.
+      updateSecuritySettings: vi.fn(async () => ({ ok: true as const })),
       onModeChanged: vi.fn(() => () => undefined),
       listRules: vi.fn(async () => []),
       listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
@@ -257,7 +259,9 @@ describe("PermissionsTab — boot sandbox outcome notice", () => {
       screen.getByTestId("os-sandbox-toggle").click();
     });
     await waitFor(() =>
-      expect(ave.aveApi.updateSettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } }),
+      expect(ave.permission.updateSecuritySettings).toHaveBeenCalledWith({ features: { osToolSandbox: false } }),
     );
+    expect(ave.aveApi.updateSettings).not.toHaveBeenCalledWith({ features: { osToolSandbox: false } });
+    expect(screen.getByTestId("os-sandbox-toggle")).toHaveAttribute("aria-checked", "false");
   });
 });

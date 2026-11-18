@@ -9,6 +9,7 @@ import { parseConfigurationObject } from "../shared/configuration-document.js";
 import { readAveHomeConfigurationFile, readAveHomeRestrictionSource, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
+import { isExecutionMode, type ExecutionMode } from "../shared/permission-mode.js";
 import { isLLMVendor } from "../shared/llm-vendor-defaults.js";
 import { isSystemSubagentModelRef, type SystemSubagentModelRef } from "../shared/system-subagent-model.js";
 import {
@@ -43,6 +44,19 @@ export interface PermissionSettingsBlock {
   blockReadsOutsideWorkingDirectories: boolean;
   pendingWorkspaceRootRemovals: PendingWorkspaceRootRemoval[];
   reviewer: ReviewerSettingsBlock;
+  // Present only between the two writes of a durable mode change; boot finishes it before any reader uses the mode.
+  pendingModeChange?: PendingPermissionModeChange;
+}
+
+/**
+ * Durable forward-only journal for one mode change. The execution mode lives in the permissions file and the reviewer mode
+ * here, so one atomic write records the new reviewer mode together with this intent; the mode file is written next, and the
+ * intent is cleared last. A restart that finds the intent writes its execution mode, so the pair on disk never disagrees.
+ */
+export interface PendingPermissionModeChange {
+  operationId: string;
+  executionMode: ExecutionMode;
+  reviewerMode: ReviewerMode;
 }
 
 // Durable forward-only cleanup journal for a removed workspace root.
@@ -66,6 +80,11 @@ export type PermissionSettingsFault =
       kind: "file-unreadable";
       filePath: string;
       detail: string;
+    }
+  | {
+      // The mode-change journal could not be interpreted, so the stored execution and reviewer modes may disagree.
+      kind: "pending-mode-change-malformed";
+      filePath: string;
     }
   | {
       // Individual cleanup-journal entries failed validation.
@@ -257,15 +276,23 @@ export function normalizePermissionSettings(
       return key === null || !pendingKeys.has(key);
     });
   }
+  const pendingModeChange = parsePendingModeChange(perm.pendingModeChange);
+  if (pendingModeChange === "malformed") {
+    log.error("permissions.pendingModeChange in %s could not be interpreted — kept on disk, not applied", filePath);
+  }
   return {
     permissions: {
       additionalDirectories: dirs,
       blockReadsOutsideWorkingDirectories: perm.blockReadsOutsideWorkingDirectories === true,
       pendingWorkspaceRootRemovals,
       reviewer: normalizeReviewerBlock(perm.reviewer),
+      ...(pendingModeChange === undefined || pendingModeChange === "malformed" ? {} : { pendingModeChange }),
     },
+    // An unreadable mode-change record denies permission admission, so it outranks the reviewer-only fault that admission tolerates.
     fault:
-      isReviewerModeInvalid(perm.reviewer)
+      pendingModeChange === "malformed"
+        ? { kind: "pending-mode-change-malformed", filePath }
+        : isReviewerModeInvalid(perm.reviewer)
         ? { kind: "reviewer-mode-invalid", filePath, detail: "Permission reviewer mode must be llm or disabled." }
         : journal.malformed.length > 0
         ? {
@@ -333,6 +360,17 @@ function composePendingWorkspaceRootRemovals(
   malformed: readonly unknown[],
 ): unknown[] {
   return [...intents, ...malformed];
+}
+
+function parsePendingModeChange(parsed: unknown): PendingPermissionModeChange | "malformed" | undefined {
+  if (parsed === undefined) return undefined;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "malformed";
+  const value = parsed as Record<string, unknown>;
+  if (Object.keys(value).length !== 3 || typeof value.operationId !== "string" || !UUID_PATTERN.test(value.operationId)
+    || !isExecutionMode(value.executionMode) || typeof value.reviewerMode !== "string" || !REVIEWER_MODES.has(value.reviewerMode as ReviewerMode)) {
+    return "malformed";
+  }
+  return { operationId: value.operationId, executionMode: value.executionMode, reviewerMode: value.reviewerMode as ReviewerMode };
 }
 
 function isReviewerModeInvalid(parsed: unknown): boolean {
@@ -449,6 +487,52 @@ function validateReviewerPatch(patch: ReviewerSettingsBlock): ReviewerSettingsBl
     );
   }
   return patch;
+}
+
+/** Record a durable mode change: the new reviewer mode and the intent in one atomic write. A previous intent, readable or not, is superseded. */
+export async function beginPermissionModeChangePersist(
+  change: { executionMode: ExecutionMode; reviewerMode: ReviewerMode },
+  pathOverride?: string,
+): Promise<string> {
+  const operationId = randomUUID();
+  await withPermissionSettingsWrite(pathOverride ?? permissionSettingsPath(), async (filePath) => {
+    const existing = readSettingsObjectForUpdate(filePath);
+    const existingPerm = (existing.permissions ?? {}) as Record<string, unknown>;
+    const reviewer = validateReviewerPatch({ ...normalizeReviewerBlock(existingPerm.reviewer), mode: change.reviewerMode });
+    const pendingModeChange: PendingPermissionModeChange = { operationId, executionMode: change.executionMode, reviewerMode: change.reviewerMode };
+    const merged = composeSettingsForPersist(existing, { ...existingPerm, pendingModeChange }, {
+      additionalDirectories: Array.isArray(existingPerm.additionalDirectories) ? (existingPerm.additionalDirectories as string[]) : [],
+      reviewer,
+    });
+    writeUtf8FileAtomicSync(filePath, JSON.stringify(merged, null, 2), 0o600);
+  });
+  return operationId;
+}
+
+/**
+ * Clear a mode change's intent once both stores hold its pair, or, with `restoreReviewerMode`, abandon it before the mode file
+ * changed and put the previous reviewer mode back in the same write.
+ */
+export async function finishPermissionModeChangePersist(
+  operationId: string,
+  pathOverride?: string,
+  restoreReviewerMode?: ReviewerMode,
+): Promise<void> {
+  await withPermissionSettingsWrite(pathOverride ?? permissionSettingsPath(), async (filePath) => {
+    const existing = readSettingsObjectForUpdate(filePath);
+    const { pendingModeChange, ...existingPerm } = (existing.permissions ?? {}) as Record<string, unknown>;
+    const pending = parsePendingModeChange(pendingModeChange);
+    if (pending === undefined || pending === "malformed" || pending.operationId !== operationId) {
+      throw new Error(`Permission mode change ${operationId} is no longer the recorded change; repair or restore the settings file.`);
+    }
+    const merged = composeSettingsForPersist(existing, existingPerm, {
+      additionalDirectories: Array.isArray(existingPerm.additionalDirectories) ? (existingPerm.additionalDirectories as string[]) : [],
+      ...(restoreReviewerMode === undefined ? {} : {
+        reviewer: validateReviewerPatch({ ...normalizeReviewerBlock(existingPerm.reviewer), mode: restoreReviewerMode }),
+      }),
+    });
+    writeUtf8FileAtomicSync(filePath, JSON.stringify(merged, null, 2), 0o600);
+  });
 }
 
 // Permission policy persist a reviewer-block partial. Convenience helper for `/permission reviewer...` slash dispatchers.

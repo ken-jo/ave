@@ -95,11 +95,16 @@ describe("AuditTab", () => {
     });
   });
 
-  it("shows expanded JSON when row is clicked", async () => {
+  it("shows expanded JSON when the row's expand control is used", async () => {
     await renderAuditTab();
     await waitFor(() => screen.getByText("turn"));
     const rows = document.querySelectorAll("tbody tr");
-    fireEvent.click(rows[0]);
+    // The row's details open from its own button, so keyboard and pointer users reach them the same way.
+    const expand = rows[0]?.querySelector<HTMLButtonElement>("button[aria-expanded]");
+    if (!expand) throw new Error("Expected the row's expand button");
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(expand);
+    expect(expand).toHaveAttribute("aria-expanded", "true");
     await waitFor(() => {
       const pres = document.querySelectorAll("pre");
       const found = Array.from(pres).some((p) => p.textContent?.includes("sess-abc"));

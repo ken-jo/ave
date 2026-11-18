@@ -43,40 +43,38 @@ function renderChatTab(overrides: Partial<Parameters<typeof ChatTab>[0]> = {}) {
 }
 
 describe("ChatTab processing detail", () => {
-  it("exposes the three localized levels as an accessible discrete slider", () => {
+  it("exposes three localized choices with a checked radio", () => {
     renderChatTab({ processingDisplayLevel: "reasoning" });
-
-    const slider = screen.getByRole("slider", { name: "처리 과정 표시 수준" });
-    expect(slider.getAttribute("aria-valuemin")).toBe("0");
-    expect(slider.getAttribute("aria-valuemax")).toBe("2");
-    expect(slider.getAttribute("aria-valuenow")).toBe("1");
-    expect(slider.getAttribute("aria-valuetext")).toBe("중간");
-    expect(screen.getByRole("button", { name: "간략히" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "중간" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "자세히" })).toBeTruthy();
+    const group = screen.getByRole("radiogroup", { name: "처리 과정 표시 수준" });
+    expect(group).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "간략히" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("radio", { name: "중간" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "자세히" }).getAttribute("aria-checked")).toBe("false");
     expect(screen.getByTestId("processing-display-hint").textContent).toContain("도구 호출과 모델이 제공한 생각");
   });
 
-  it("saves label clicks immediately and disables the control before settings load", () => {
+  it("saves a selected choice immediately", () => {
     const { setProcessingDisplayLevel, onImmediateChange } = renderChatTab();
-    fireEvent.click(screen.getByRole("button", { name: "간략히" }));
+    fireEvent.click(screen.getByRole("radio", { name: "간략히" }));
     expect(setProcessingDisplayLevel).toHaveBeenCalledWith("tools");
     expect(onImmediateChange).toHaveBeenCalledOnce();
   });
 
-  it("disables the slider and labels until settings finish loading", () => {
+  it("disables every choice until settings finish loading", () => {
     renderChatTab({ settingsLoaded: false });
-    expect(screen.getByRole("slider", { name: "처리 과정 표시 수준" }).getAttribute("data-disabled")).toBe("");
-    expect((screen.getByRole("button", { name: "간략히" }) as HTMLButtonElement).disabled).toBe(true);
+    for (const radio of screen.getAllByRole("radio").filter((node) => ["간략히", "중간", "자세히"].includes(node.getAttribute("aria-label") ?? ""))) {
+      expect((radio as HTMLButtonElement).disabled).toBe(true);
+    }
   });
 });
 
 describe("ChatTab autonomous sub-agent wake", () => {
-  it("renders default-off guidance and persists only an explicit opt-in", () => {
+  it("describes autonomous wake without asserting a default and persists the choice", () => {
     const { setSubAgentAutonomousWake } = renderChatTab();
     const toggle = screen.getByTestId("subagent-autonomous-wake-toggle");
 
     expect(toggle.getAttribute("data-state")).toBe("unchecked");
+    expect(screen.getByText(/유휴 부모가 백그라운드 서브에이전트 메시지를 받으면/).textContent).not.toContain("기본값");
     expect(screen.getByText("서브에이전트 메시지로 부모 자동 깨우기")).toBeTruthy();
     expect(screen.getByText(/유휴 부모가 백그라운드 서브에이전트 메시지를 받으면/)).toBeTruthy();
 
@@ -105,5 +103,30 @@ describe("ChatTab memory capture", () => {
     renderChatTab();
     expect(screen.queryByTestId("memory-capture-mode")).toBeNull();
     expect(screen.queryByText("기억 자동 캡처")).toBeNull();
+  });
+});
+
+describe('chat settings accessible names', () => {
+  it('names every experimental toggle and the round budget input', () => {
+    renderChatTab();
+    for (const id of ['idle-preference-refresh-toggle', 'idle-memory-consolidation-toggle', 'subagent-autonomous-wake-toggle']) expect(screen.getByTestId(id)).toHaveAccessibleName();
+    expect(screen.getByRole('spinbutton', { name: '서브에이전트 라운드 예산' })).toHaveAccessibleName();
+  });
+});
+
+describe('sub-agent round budget validation', () => {
+  it.each(['', '-5', '0', '1.5', '1001'])('refuses invalid input %s visibly without saving', (value) => {
+    const save = vi.fn(); renderChatTab({ subAgentMaxRounds: 60, setSubAgentMaxRounds: save });
+    const input = screen.getByTestId('subagent-max-rounds-input');
+    fireEvent.change(input, { target: { value } }); fireEvent.blur(input);
+    expect(save).not.toHaveBeenCalled(); expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByRole('alert')).toHaveTextContent('1~1000');
+  });
+  it('accepts the inclusive maximum and skips an unchanged value', () => {
+    const save = vi.fn(); renderChatTab({ subAgentMaxRounds: 60, setSubAgentMaxRounds: save });
+    const input = screen.getByTestId('subagent-max-rounds-input');
+    fireEvent.blur(input); expect(save).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '1000' } }); fireEvent.blur(input);
+    expect(save).toHaveBeenCalledExactlyOnceWith(1000); expect(input).toHaveValue(1000);
   });
 });

@@ -1,60 +1,16 @@
 // Opt-in telemetry contains event names, numeric metrics, and hashed session IDs only.
 import { randomUUID } from "node:crypto";
+import { telemetryLevel, telemetryEndpointHosts, validateTelemetryEndpoint } from "../shared/telemetry-policy.js";
+export { DEFAULT_TELEMETRY_ALLOWLIST, validateTelemetryEndpoint } from "../shared/telemetry-policy.js";
 import type { TelemetrySettings } from "../data/settings-store.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("telemetry");
 
-// Production operators supply their endpoint allowlist; localhost is allowed only in unpackaged builds.
-export const DEFAULT_TELEMETRY_ALLOWLIST: readonly string[] = [
-  "localhost",
-];
-
-function parseAllowlist(envVal: string | undefined): string[] {
-  if (!envVal) return [...DEFAULT_TELEMETRY_ALLOWLIST];
-  return envVal
-    .split(",")
-    .map((h) => h.trim().toLowerCase())
-    .filter((h) => h.length > 0);
-}
-
-// Show the enforced endpoint allowlist read-only; ordinary endpoint settings must not widen the operator’s bound.
-export function telemetryAllowedHosts(env: NodeJS.ProcessEnv = process.env): readonly string[] {
-  return Object.freeze(parseAllowlist(env.AVE_TELEMETRY_ALLOWLIST));
-}
-
-export interface EndpointValidationResult {
-  valid: boolean;
-  reason?: string;
-}
-
-// Require HTTPS and an allowlisted host; packaged builds also reject localhost.
-export function validateTelemetryEndpoint(
-  endpoint: string | undefined,
-  opts: { isPackaged: boolean; allowlistEnv?: string },
-): EndpointValidationResult {
-  if (typeof endpoint !== "string" || endpoint.length === 0) {
-    return { valid: false, reason: "endpoint missing" };
-  }
-  let url: URL;
-  try {
-    url = new URL(endpoint);
-  } catch {
-    return { valid: false, reason: "endpoint not a valid URL" };
-  }
-  if (url.protocol !== "https:") {
-    return { valid: false, reason: `protocol '${url.protocol}' not allowed (https: required)` };
-  }
-  const host = url.hostname.toLowerCase();
-  const allowlist = parseAllowlist(opts.allowlistEnv);
-  if (!allowlist.includes(host)) {
-    return { valid: false, reason: `host '${host}' not in telemetry allowlist` };
-  }
-  if (host === "localhost" && opts.isPackaged) {
-    return { valid: false, reason: "localhost endpoint rejected in packaged build" };
-  }
-  return { valid: true };
+// Endpoint settings cannot widen this operator-owned bound.
+export function telemetryAllowedHosts(env: NodeJS.ProcessEnv = process.env, isPackaged = false): readonly string[] {
+  return telemetryEndpointHosts(env.AVE_TELEMETRY_ALLOWLIST, isPackaged);
 }
 
 // Remove URL credentials, query, and fragment before audit; keep only scheme, host, and path.
@@ -75,7 +31,8 @@ export type TelemetryEventName =
   | "chat_turn"
   | "tool_call"
   | "plugin_load"
-  | "crash";
+  | "crash"
+  | "error";
 
 export interface TelemetryEvent {
   v: 1;
@@ -110,8 +67,8 @@ export class TelemetryService {
   private readonly fetchImpl: typeof fetch;
   private readonly flushIntervalMs: number;
   private timer: NodeJS.Timeout | undefined;
-  // An invalid endpoint disables telemetry for the session without retry.
-  private sessionDisabled = false;
+  private rejectedEndpoint: string | undefined;
+  private inFlight: AbortController | undefined;
 
   constructor(private readonly deps: TelemetryDeps) {
     this.sid = sha256Hex(randomUUID()).slice(0, 16);
@@ -123,20 +80,20 @@ export class TelemetryService {
     return this.deps.settings();
   }
 
-  // Audit the first invalid endpoint and disable further session traffic.
+  // Audit each rejected endpoint once; a corrected setting is effective immediately.
   private endpointAllowed(endpoint: string | undefined): boolean {
-    if (this.sessionDisabled) return false;
     const result = validateTelemetryEndpoint(endpoint, {
       isPackaged: this.deps.isPackaged ?? false,
       allowlistEnv: this.deps.allowlistEnv ?? process.env.AVE_TELEMETRY_ALLOWLIST,
     });
     if (!result.valid) {
-      this.sessionDisabled = true;
+      if (this.rejectedEndpoint === endpoint) return false;
+      this.rejectedEndpoint = endpoint;
       try {
         this.deps.auditLogger?.log({
           timestamp: new Date().toISOString(),
           sessionId: "telemetry",
-          // Warn-level: rejection is expected on misconfig; the app still functions (telemetry disabled for session). Not an error.
+          // Endpoint rejection is a configuration warning; a later valid setting can resume reporting.
           type: "warn",
           input: `[telemetry] endpoint rejected: ${result.reason}`,
           // Sanitize: never log raw URL — may contain userinfo (user:pass@), query-string secrets, or fragment tokens. Keep only protocol+host+path.
@@ -145,21 +102,21 @@ export class TelemetryService {
       } catch {
         // audit failure must not break app
       }
-      log.warn(`endpoint rejected (${result.reason}) — disabling for session`);
+      log.warn(`endpoint rejected (${result.reason})`);
       return false;
     }
+    this.rejectedEndpoint = undefined;
     return true;
   }
 
   isActive(): boolean {
-    if (this.sessionDisabled) return false;
     const s = this.currentSettings();
-    if (s.enabled !== true) return false;
+    if (telemetryLevel(s) === "off") return false;
     return this.endpointAllowed(s.endpoint);
   }
 
   track(name: TelemetryEventName, extra: { durMs?: number; count?: number } = {}): void {
-    if (!this.isActive()) return;
+    if (!this.eventAllowed(name) || !this.isActive()) return;
     const ev: TelemetryEvent = {
       v: 1,
       name,
@@ -169,6 +126,17 @@ export class TelemetryService {
       ...extra,
     };
     this.queue.push(ev);
+  }
+
+  private eventAllowed(name: TelemetryEventName): boolean {
+    const level = telemetryLevel(this.currentSettings());
+    return level === "all" || (level === "error" && (name === "error" || name === "crash")) || (level === "crash" && name === "crash");
+  }
+
+  settingsChanged(): void {
+    const retained = this.queue.filter((event) => this.eventAllowed(event.name));
+    this.queue.splice(0, this.queue.length, ...retained);
+    this.inFlight?.abort();
   }
 
   start(): void {
@@ -183,15 +151,22 @@ export class TelemetryService {
   }
 
   async flush(): Promise<void> {
-    if (!this.isActive() || this.queue.length === 0) return;
+    const retained = this.queue.filter((event) => this.eventAllowed(event.name));
+    this.queue.splice(0, this.queue.length, ...retained);
+    if (this.queue.length === 0 || !this.isActive()) return;
     // Snapshot the batch but DO NOT dequeue until after a confirmed 2xx. On error or non-ok HTTP we leave events in the queue so they retry on the next
     // flush instead of being silently lost.
     const batch = this.queue.slice(0);
     const batchLen = batch.length;
     const endpoint = this.currentSettings().endpoint!;
+    const controller = new AbortController();
+    this.inFlight = controller;
     try {
       const res = await this.fetchImpl(endpoint, {
+        signal: controller.signal,
         method: "POST",
+        // The endpoint was checked against the allow-list; a redirect would carry the batch to a host that was never checked.
+        redirect: "error",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ events: batch }),
       });
@@ -199,9 +174,11 @@ export class TelemetryService {
         log.warn(`flush non-ok HTTP ${res.status}; re-queued ${batchLen} event(s)`);
         return;
       }
-      this.queue.splice(0, batchLen);
+      if (!controller.signal.aborted) this.queue.splice(0, batchLen);
     } catch (err) {
-      log.warn("flush failed (re-queued): %s", (err as Error).message);
+      if (!controller.signal.aborted) log.warn("flush failed (re-queued): %s", (err as Error).message);
+    } finally {
+      if (this.inFlight === controller) this.inFlight = undefined;
     }
   }
 }

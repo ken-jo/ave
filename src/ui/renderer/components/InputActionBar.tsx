@@ -28,7 +28,6 @@ import type { CustomCommandEntry } from "../../../shared/custom-command.js";
 import type { InputStatusRow } from "../hooks/use-input-status-row.js";
 import type { ExecutionMode, ExecutionModeDisplay } from "../../../shared/permission-mode.js";
 import { EXEC_MODE_OPTIONS } from "../constants.js";
-import { reviewerModeForExecMode } from "../tabs/PermissionsTab.js";
 import type {
   ShellSandboxStatusInfo,
   ShellSandboxUnavailableCause,
@@ -446,13 +445,8 @@ function PermissionQuickPicker({
         console.warn("[ave] permission mode pick was refused: %s", res.message ?? res.error);
         return;
       }
-      const reviewer = await perm.reviewerDispatch(`mode ${reviewerModeForExecMode(mode)}`);
-      if (!reviewer.ok) {
-        console.warn("[ave] reviewer mode did not follow the permission mode: %s", reviewer.error);
-        return;
-      }
-      // The pick took, but only for this session: the home folder refusal keeps it from being saved.
-      if (res.notice !== undefined || reviewer.notice !== undefined) notice?.(t("permissionsTab.homeFolderRefusedSessionOnly"));
+      // Main applies the mode and its reviewer configuration as one operation.
+      if (res.notice !== undefined) notice?.(t("permissionsTab.homeFolderRefusedSessionOnly"));
       setOpen(false);
     } finally {
       setBusy(false);

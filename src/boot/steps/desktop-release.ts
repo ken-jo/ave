@@ -22,11 +22,18 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
 
   try {
     // Collect minidumps locally; remoteReporting alone controls whether they leave the machine.
-    startCrashReporter({
+    const crashReporter = startCrashReporter({
       userDataPath: app.getPath("userData"),
       telemetry: settingsService.get("telemetry"),
       remoteReporting: input.discretionaryEgress,
+      isPackaged: app.isPackaged,
     });
+    const unsubscribeTelemetry = settingsService.onChanged("telemetry", () => {
+      crashReporter.updateSettings(settingsService.get("telemetry"));
+      telemetry?.settingsChanged();
+      pluginTelemetry?.settingsChanged();
+    });
+    registerShutdownHook("telemetry-settings-listener", unsubscribeTelemetry);
     if (!input.discretionaryEgress) {
       log.info("boot: release prep wired (local crash dumps only)");
       return { telemetry, pluginTelemetry, autoUpdaterStop };
@@ -55,20 +62,29 @@ export function prepareDesktopRelease(input: ReleasePrepInput): ReleasePrepOutpu
     pluginTelemetry = ptClient;
     ptClient.start();
 
-    onEvent("plugin.installed", (data) => {
+    const unsubscribePluginInstalled = onEvent("plugin.installed", (data) => {
       const d = data as { pluginId?: string; version?: string } | undefined;
       ptClient.track("plugin_install", {
         slug: d?.pluginId ?? "unknown",
         version: d?.version ?? "unknown",
       });
     });
-    onEvent("plugin.uninstalled", (data) => {
+    const unsubscribePluginUninstalled = onEvent("plugin.uninstalled", (data) => {
       const d = data as { pluginId?: string; version?: string } | undefined;
       ptClient.track("plugin_uninstall", {
         slug: d?.pluginId ?? "unknown",
         version: d?.version ?? "unknown",
       });
     });
+
+    registerShutdownHook("plugin-telemetry-lifecycle-listeners", () => { unsubscribePluginInstalled(); unsubscribePluginUninstalled(); });
+    const unsubscribePluginFailure = onEvent("plugin.lifecycle.failed", (data) => {
+      if (!data || typeof data !== "object") return;
+      const failure = data as { pluginId?: unknown; version?: unknown; errorClass?: unknown };
+      if (typeof failure.pluginId !== "string" || typeof failure.version !== "string" || typeof failure.errorClass !== "string") return;
+      ptClient.track("plugin_error", { slug: failure.pluginId, version: failure.version, errorClass: failure.errorClass });
+    });
+    registerShutdownHook("plugin-telemetry-errors-listener", unsubscribePluginFailure);
 
     registerShutdownHook("plugin-telemetry-flush", () => {
       try {

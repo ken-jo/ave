@@ -1,80 +1,104 @@
-import { SETTINGS_TAB_LABEL_KEYS, type SettingsTab } from "../../shared/settings-tabs.js";
-import { SHORTCUTS } from "../../shared/shortcuts.js";
+import { matchSettingsText } from "./settings-text-match.js";
 
-interface SettingsSearchEntry {
-  tab: SettingsTab;
-  section: string;
-  title: string;
-  labels: readonly string[];
+const settingsRowDisplay = new WeakMap<HTMLElement, string>();
+
+export interface RenderedSettingsMatch {
+  section: HTMLElement;
+  panel: HTMLElement;
+  text: string;
 }
 
-const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
-  {"tab":"llm","section":"llm-providers","title":"llmTab.providerConfig","labels":[]},
-  {"tab":"llm","section":"llm-thinking","title":"llmTab.thinkingTitle","labels":["llmTab.reasoningEffortLabel","llmTab.reasoningEffortAriaLabel"]},
-  {"tab":"llm","section":"llm-fallback","title":"llmTab.fallbackTitle","labels":[]},
-  {"tab":"llm","section":"llm-pricing-overrides","title":"llmTab.pricingOverridesTitle","labels":[]},
-  {"tab":"llm","section":"llm-model-catalog","title":"llmTab.modelCatalogTitle","labels":["llmTab.pageTitle"]},
-  {"tab":"appearance","section":"appearance-language","title":"settings.appearance.language.title","labels":[]},
-  {"tab":"appearance","section":"appearance-theme","title":"appearanceTab.schemeTitle","labels":["appearanceTab.mode","appearanceTab.scheme.dark","appearanceTab.scheme.light","appearanceTab.glassTintLabel","appearanceTab.glassTintKeywords"]},
-  {"tab":"appearance","section":"appearance-font","title":"appearanceTab.fontSectionTitle","labels":["appearanceTab.fontFamilyLabel","appearanceTab.fontFamilyRadioGroupLabel","appearanceTab.fontSizeLabel","appearanceTab.fontSizeRadioGroupLabel"]},
-  {"tab":"appearance","section":"appearance-terminal","title":"appearanceTab.terminalTitle","labels":["appearanceTab.terminalFamily","appearanceTab.terminalSize","appearanceTab.terminalLineHeight","appearanceTab.terminalScrollback","appearanceTab.terminalCursor","appearanceTab.terminalCopyOnSelect","appearanceTab.terminalOptionAsMeta","appearanceTab.terminalShell"]},
-  {"tab":"chat","section":"chat-optimization","title":"chatTab.conversationOptimizationTitle","labels":["chatTab.autoCompactLabel"]},
-  {"tab":"chat","section":"chat-stream-smoothing","title":"chatTab.streamSmoothingTitle","labels":[]},
-  {"tab":"chat","section":"chat-processing-display","title":"chatTab.processingDisplayTitle","labels":["chatTab.processingDisplayAriaLabel"]},
-  {"tab":"chat","section":"chat-experimental","title":"chatTab.experimentalTitle","labels":["chatTab.idleRefreshLabel","chatTab.idleMemoryConsolidationLabel","chatTab.subAgentWakeLabel","chatTab.subAgentMaxRoundsLabel"]},
-  {"tab":"chat","section":"chat-privacy","title":"chatTab.privacyTitle","labels":["privacyTab.piiRedactTitle","privacyTab.piiRedactToggleLabel"]},
-  {"tab":"chat","section":"chat-signals","title":"accessibilitySignals.title","labels":["accessibilitySignals.keywords","accessibilitySignals.turnFinished","accessibilitySignals.approvalNeeded","accessibilitySignals.turnFailed","accessibilitySignals.modeUnfocused"]},
-  {"tab":"chat","section":"chat-documents","title":"documentSettings.title","labels":["documentSettings.direct","documentSettings.link","documentEngine.title"]},
-  {"tab":"web","section":"web-search-engine","title":"webTab.searchEngineTitle","labels":[]},
-  {"tab":"web","section":"web-api-key","title":"webTab.apiKeyTitle","labels":["webTab.apiKeyLabel"]},
-  {"tab":"web","section":"web-view-flow","title":"appearanceTab.webViewSectionTitle","labels":["appearanceTab.webViewCurrentLabel","appearanceTab.webViewRadioGroupLabel"]},
-  {"tab":"startup","section":"startup-shortcut","title":"startupTab.shortcutSectionTitle","labels":["startupTab.shortcutEnabledLabel","startupTab.shortcutAcceleratorLabel"]},
-  {"tab":"startup","section":"startup-launch","title":"startupTab.launchSectionTitle","labels":["startupTab.launchAtStartupLabel","startupTab.launchMinimizedLabel"]},
-  {"tab":"startup","section":"startup-rendering","title":"startupTab.renderingSectionTitle","labels":["startupTab.hardwareAccelerationLabel"]},
-  {"tab":"startup","section":"startup-corp-ca","title":"startupTab.corpCaSectionTitle","labels":["startupTab.corpCaEnabledLabel","startupTab.corpCaCommonNameLabel","startupTab.corpCaDebugLabel"]},
-  {"tab":"startup","section":"startup-system-behavior","title":"generalTab.systemBehaviorTitle","labels":["generalTab.hideToTrayLabel","generalTab.quitLabel","startupTab.shutdownTimeoutLabel"]},
-  {"tab":"permissions","section":"permissions-os-sandbox","title":"permissionsTab.osSandboxTitle","labels":["permissionsTab.osSandboxCheckboxAriaLabel","permissionsTab.osSandboxShellLabel","permissionsTab.workerConfinementCheckboxAriaLabel","permissionsTab.workerConfinementLabel","permissionsTab.pageTitle","permissionsTab.closeBannerAriaLabel","permissionsTab.exactDenyDraftTitle","permissionsTab.hookQuarantineTitle"]},
-  {"tab":"permissions","section":"permissions-policy-summary","title":"permissionsTab.currentPolicySummaryTitle","labels":["permissionsTab.reviewerModeFaultTitle"]},
-  {"tab":"permissions","section":"permissions-policy","title":"permissionsTab.policyTitle","labels":["permissionsTab.policyAriaLabel","permissionsTab.frameworkSystemPromptTitle"]},
-  {"tab":"permissions","section":"permissions-approval-dialog","title":"permissionsTab.approvalDialogTitle","labels":["permissionsTab.approvalDialogCheckboxAriaLabel","permissionsTab.adminManagedTitle","permissionsTab.ownerAwayAutoSkipLabel","notices.showHiddenAgain"]},
-  {"tab":"permissions","section":"permissions-network","title":"permissionsTab.networkTitle","labels":[]},
-  {"tab":"permissions","section":"permissions-rules","title":"permissionsTab.unifiedRulesTitle","labels":["permissionsTab.exactApprovalLabel"]},
-  {"tab":"permissions","section":"permissions-directories","title":"permissionsTab.directoriesTitle","labels":["permissionsTab.directoryWarningTitle"]},
-  {"tab":"permissions","section":"permissions-audit-log","title":"permissionsTab.auditLogTitle","labels":[]},
-  {"tab":"permissions","section":"permissions-judge","title":"permissionJudge.title","labels":[]},
-  {"tab":"permissions","section":"permissions-work-board-approvals","title":"workBoard.approvalSurfaceTitle","labels":[]},
-  {"tab":"remote-surfaces","section":"remote-tailnet","title":"remoteSurfacesTab.tailnetSectionTitle","labels":["tailnetAccessTab.inviteTitle","tailnetAccessTab.inviteDurationLabel","tailnetAccessTab.createdInvitationTitle","tailnetAccessTab.pairingsTitle","tailnetAccessTab.shareTitle","tailnetAccessTab.sharePermissionLabel","tailnetAccessTab.shareDurationLabel"]},
-  {"tab":"remote-surfaces","section":"remote-tailnet-observer","title":"tailnetSetup.sectionTitle","labels":["tailnetObserver.enabledLabel","tailnetObserver.appCapabilityLabel","tailnetObserver.capabilityLabel","tailnetObserver.portLabel","tailnetObserver.pairedSharingLabel"]},
-  {"tab":"remote-surfaces","section":"remote-telegram","title":"telegramConnection.sectionTitle","labels":["telegramConnection.botLabel","telegramConnection.ownerUserIdLabel","telegramConnection.connectDialogTitle","telegramConnection.botTokenLabel","telegramConnection.pairingCodeTitle","telegramConnection.approvalDurationLabel"]},
-  {"tab":"remote-surfaces","section":"remote-local-api","title":"localApiSurfaces.sectionTitle","labels":["localApiSurfaces.localApiLabel","localApiSurfaces.a2aLoopbackLabel","localApiSurfaces.a2aRemoteRoutingLabel","localApiSurfaces.a2aRemoteReceiverLabel"]},
-  {"tab":"roles","section":"roles-agents","title":"rolesTab.sectionAgents","labels":["rolesTab.keepLatestLabel","rolesTab.savingLabel","rolesTab.upgradeMarkersTitle","rolesTab.mergingLabel","rolesTab.mergedTitle"]},
-  {"tab":"roles","section":"roles-memory","title":"rolesTab.sectionMemory","labels":["rolesTab.consolidatingLongTermMemoryLabel"]},
-  {"tab":"roles","section":"roles-preferences","title":"rolesTab.sectionPreferences","labels":["rolesTab.refreshingLabel","rolesTab.savingLabel"]},
-  {"tab":"roles","section":"roles-presets","title":"rolesTab.sectionRoles","labels":[]},
-  {"tab":"roles","section":"roles-preview","title":"rolesTab.sectionPreview","labels":[]},
-  {"tab":"usage","section":"usage-workspace","title":"generalTab.workspaceTitle","labels":["generalTab.refreshStatsAriaLabel","generalTab.statsGroupAriaLabel","generalTab.marketplaceLabel"]},
-  {"tab":"audit","section":"audit-stats","title":"auditTab.statsTitle","labels":[]},
-  {"tab":"audit","section":"audit-filter","title":"auditTab.filterTitle","labels":[]},
-  {"tab":"audit","section":"audit-bundle","title":"auditTab.bundleSectionTitle","labels":[]},
-  {"tab":"audit","section":"audit-log-file","title":"auditTab.logSectionTitle","labels":[]},
-  {"tab":"audit","section":"audit-crash","title":"auditTab.crashSectionTitle","labels":["auditTab.crashColSize"]},
-  {"tab":"audit","section":"audit-telemetry","title":"auditTab.telemetrySectionTitle","labels":["auditTab.telemetryEnabledLabel","auditTab.telemetryEndpointLabel","auditTab.telemetryCrashReportingLabel","auditTab.telemetryCrashEndpointLabel","auditTab.telemetrySentryDsnLabel"]},
-  {"tab":"plugin-config","section":"plugin-config-installed","title":"pluginConfigTab.pageTitle","labels":["pluginConfigTab.activeLabel","pluginConfigTab.inactiveLabel","pluginConfigTab.envVarsLabel"]},
-  {"tab":"plugin-config","section":"plugin-config-performance","title":"pluginPerfTab.sectionTitle","labels":["pluginPerfTab.chartLabel","pluginPerfTab.chartAriaLabel"]},
-  {"tab":"marketplace","section":"marketplace-maintenance","title":"gitMarketplace.maintenance.title","labels":[]},
-  {"tab":"about","section":"about-system-info","title":"generalTab.systemInfoTitle","labels":["generalTab.osLabel","generalTab.appVersionLabel","generalTab.techStackLabel","generalTab.dataPathLabel","generalTab.copyDataPathAriaLabel"]},
-  {"tab":"remote-surfaces","section":"remote-messaging-connections","title":"settingsContent.tabRemoteSurfaces","labels":[]},
-  {"tab":"usage","section":"usage-summary","title":"usageDashboard.title","labels":[]},
-  {"tab":"audit","section":"audit-results","title":"auditTab.resultsTitle","labels":[]},
-  {"tab":"mcp","section":"mcp-servers","title":"mcpTab.pageTitle","labels":[]},
-  {"tab":"marketplace","section":"marketplace-inventory","title":"gitMarketplace.title","labels":[]},
-  // Every shortcut's label, so searching settings for a command finds the page that rebinds it.
-  { tab: "shortcuts", section: "shortcuts-list", title: "shortcutsTab.listTitle", labels: SHORTCUTS.map((entry) => entry.labelKey) },
-];
+const UNSEARCHED_TEXT = 'textarea, input, [contenteditable], [data-setting-filter-hidden="true"]';
 
-/** Match the visible section title and setting labels in the current locale. */
-export function searchSettings(query: string, translate: (key: string) => string): readonly SettingsSearchEntry[] {
-  const term = query.trim().toLocaleLowerCase();
-  if (!term) return [];
-  return SETTINGS_SEARCH_ENTRIES.filter((entry) => [SETTINGS_TAB_LABEL_KEYS[entry.tab], entry.title, ...entry.labels].some((key) => translate(key).toLocaleLowerCase().includes(term)));
+/**
+ * Walk a section's rendered text once. A row the filter hid is skipped whole, and the text inside an editable field is the
+ * user's value rather than a label, so the walk skips its subtree; the field's own accessible name still counts.
+ */
+function walkSettingsSection(section: HTMLElement, visitText: (node: Text) => void, visitElement?: (element: HTMLElement) => void): void {
+  const walker = section.ownerDocument.createTreeWalker(section, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+      const element = node as HTMLElement;
+      if (element.getAttribute("data-setting-filter-hidden") === "true") return NodeFilter.FILTER_REJECT;
+      visitElement?.(element);
+      return element.matches(UNSEARCHED_TEXT) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_SKIP;
+    },
+  });
+  while (walker.nextNode()) visitText(walker.currentNode as Text);
+}
+
+/** Read the labels actually rendered, including names supplied to assistive technology. */
+export function renderedSettingText(section: HTMLElement): string {
+  const texts: string[] = [section.dataset.settingsSection ?? "", section.dataset.settingsDescription ?? "", section.dataset.settingsKeywords ?? ""];
+  const labels: string[] = [];
+  walkSettingsSection(section, (node) => { texts.push(node.textContent ?? ""); }, (element) => {
+    if (element.hasAttribute("aria-label") || element.hasAttribute("data-setting-id")) labels.push(element.getAttribute("aria-label") ?? "", element.dataset.settingId ?? "");
+  });
+  return [...texts, ...labels].join(" ");
+}
+
+export function settingsTextMatchesQuery(text: string, query: string): boolean {
+  return query.trim().split(/\s+/).filter(Boolean).every((term) => matchSettingsText(term, text) !== null);
+}
+
+/** Search uses rendered controls, so a new setting is indexed as soon as its section mounts. */
+export function filterRenderedSettings(root: HTMLElement, query: string, modifiedOnly = false): readonly RenderedSettingsMatch[] {
+  const modifiedIds = new Set([...root.querySelectorAll<HTMLElement>('[data-setting-registered="true"][data-setting-modified="true"]')].map((node) => node.dataset.settingControlId ?? node.dataset.settingId));
+  for (const row of root.querySelectorAll<HTMLElement>("[data-setting-row], [data-setting-id]")) {
+    if (row.closest("[data-settings-actions], [data-settings-control-registry]") || row.hasAttribute("data-settings-section")) continue;
+    const id = row.dataset.settingRow ?? row.dataset.settingId;
+    const hidden = modifiedOnly && !modifiedIds.has(id);
+    if (!settingsRowDisplay.has(row)) settingsRowDisplay.set(row, row.style.display);
+    row.dataset.settingFilterHidden = hidden ? "true" : "false";
+    row.hidden = hidden;
+    row.style.display = hidden ? "none" : (settingsRowDisplay.get(row) ?? "");
+  }
+  const matches: RenderedSettingsMatch[] = [];
+  for (const panel of root.querySelectorAll<HTMLElement>("[data-settings-panel]")) {
+    let visible = 0;
+    for (const section of panel.querySelectorAll<HTMLElement>("[data-settings-section]")) {
+      const text = renderedSettingText(section);
+      const modified = section.querySelector('[data-setting-modified="true"]') !== null;
+      const matched = settingsTextMatchesQuery(text, query) && (!modifiedOnly || modified);
+      section.hidden = !matched;
+      section.style.display = matched ? "" : "none";
+      if (matched) { ++visible; matches.push({ section, panel, text }); }
+    }
+    panel.hidden = visible === 0;
+    panel.style.display = visible > 0 ? "flex" : "none";
+  }
+  return matches;
+}
+
+export function clearSettingsFilter(root: HTMLElement): void {
+  for (const row of root.querySelectorAll<HTMLElement>("[data-setting-filter-hidden]")) {
+    row.hidden = false; row.style.display = settingsRowDisplay.get(row) ?? "";
+    settingsRowDisplay.delete(row); delete row.dataset.settingFilterHidden;
+  }
+  for (const section of root.querySelectorAll<HTMLElement>("[data-settings-section], [data-settings-panel]")) {
+    // An inactive tab panel stays mounted; the tab library hides it through `hidden` and reveals it on selection.
+    // An inline display would outlive that selection and keep the chosen tab blank.
+    section.hidden = section.hasAttribute("data-settings-panel") && section.dataset.state === "inactive";
+    section.style.removeProperty("display");
+  }
+  if (typeof CSS !== "undefined" && "highlights" in CSS) CSS.highlights.delete("ave-settings-match");
+}
+
+/** Browser-native ranges highlight text without rewriting nodes owned by the renderer. */
+export function highlightSettingsMatches(matches: readonly RenderedSettingsMatch[], query: string): void {
+  if (typeof CSS === "undefined" || !("highlights" in CSS) || typeof Highlight === "undefined") return;
+  const ranges: Range[] = [];
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  for (const { section } of matches) {
+    walkSettingsSection(section, (node) => {
+      for (const word of words) {
+        const range = matchSettingsText(word, node.textContent ?? "")?.[0];
+        if (!range) continue;
+        const selection = section.ownerDocument.createRange();
+        selection.setStart(node, range.start); selection.setEnd(node, range.end);
+        ranges.push(selection);
+      }
+    });
+  }
+  CSS.highlights.set("ave-settings-match", new Highlight(...ranges));
 }

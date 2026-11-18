@@ -49,6 +49,7 @@ export function EnvForcedNotice({
   if (!envVar) return null;
   return (
     <p
+      data-setting-row={settingsPath}
       className={`text-xs text-muted-foreground${className ? ` ${className}` : ""}`}
       data-testid={testId}
     >

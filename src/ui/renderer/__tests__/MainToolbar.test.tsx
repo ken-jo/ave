@@ -7,6 +7,9 @@ import { ThemeProvider } from "../theme/ThemeProvider.js";
 import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
 import { userEvent } from "@testing-library/user-event";
 import { TEST_IDS } from "../../../shared/test-ids.js";
+import { defaultAccelerator, formatAccelerator } from "../../../shared/shortcuts.js";
+import { t } from "../../../i18n/runtime.js";
+import { rendererShortcutPlatform } from "../hooks/use-shortcuts.js";
 
 function defaultProps(overrides: Partial<Parameters<typeof MainToolbar>[0]> = {}) {
   return {
@@ -182,7 +185,11 @@ it("shows the title zoom popover only away from the default level", () => {
  expect(indicator).toHaveAttribute("aria-label", expect.stringContaining("120%"));
  fireEvent.click(indicator);
  expect(screen.getByText("120%")).toBeInTheDocument();
- expect(screen.getByRole("button", { name: /Num0/ })).toBeEnabled();
+ // The reset action names the platform's own shortcut, as the settings zoom controls do.
+ const platform = rendererShortcutPlatform();
+ const resetAccelerator = defaultAccelerator("menu.resetZoom", platform);
+ if (resetAccelerator === null) throw new Error("Expected a reset zoom shortcut");
+ expect(screen.getByRole("button", { name: t("appearanceTab.shortcutLabel", { label: t("be_main.menuResetZoom"), shortcut: formatAccelerator(resetAccelerator, platform) }) })).toBeEnabled();
  view.unmount();
  render(<TooltipProvider><ThemeProvider initialAppearance={DEFAULT_APPEARANCE}><MainToolbar {...defaultProps()} /></ThemeProvider></TooltipProvider>);
  expect(screen.queryByTestId("zoom-indicator")).toBeNull();

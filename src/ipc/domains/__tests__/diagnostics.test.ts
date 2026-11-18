@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { invokeRegisteredHandlerWithEvent } from "../../../__tests__/test-helpers.js";
+import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -319,5 +320,20 @@ describe("ave:diagnostics:export", () => {
       }),
     ).rejects.toThrow(TypeError);
     expect(existsSync(out)).toBe(false);
+  });
+});
+
+describe("diagnostics save dialog locale", () => {
+  it.each(["en", "ko"] as const)("uses the active %s language", async (locale) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      showSaveDialog.mockResolvedValue({ canceled: true });
+      await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.diagnostics.export, ACCEPT_EVENT, {});
+      expect(showSaveDialog).toHaveBeenCalledWith(expect.objectContaining({ title: t("mainDialog.diagnosticsExportTitle") }));
+      if (locale === "en") expect(showSaveDialog.mock.calls[0][0].title).toBe("Save diagnostics bundle");
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 });

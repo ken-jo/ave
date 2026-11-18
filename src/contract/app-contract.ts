@@ -371,6 +371,10 @@ export const CHANNELS = {
     authenticate: "ave:mcp:authenticate",
     configGet: "ave:mcp:config:get",
     configPath: "ave:mcp:config:path",
+    managementState: "ave:mcp:management-state",
+    startServer: "ave:mcp:start-server",
+    undoRemove: "ave:mcp:undo-remove",
+    clearApiKey: "ave:mcp:clear-api-key",
     configAdd: "ave:mcp:config:add",
     configSetApiKey: "ave:mcp:config:set-api-key",
     configRemove: "ave:mcp:config:remove",
@@ -576,6 +580,7 @@ export const CHANNELS = {
   update: {
     state: "ave:update:state",
     getState: "ave:update:get-state",
+    checkNow: "ave:update:check-now",
     downloadNow: "ave:update:download-now",
     installNow: "ave:update:install-now",
     skipVersion: "ave:update:skip-version",

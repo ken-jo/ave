@@ -1,5 +1,5 @@
 import { EmptyState } from "../../../components/ui/empty-state.js";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -12,7 +12,6 @@ import { formatMediumDateTime } from "../../../shared/format-time.js";
 import { localDateKey, shiftLocalDateKey } from "../../../shared/local-date.js";
 import { DiagnosticsSection } from "./DiagnosticsSection.js";
 import { TelemetrySection } from "./TelemetrySection.js";
-import { errorMessage } from "../../../shared/error-message.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 
 interface AuditStats {
@@ -51,7 +50,7 @@ const TYPE_BADGE: Record<string, string> = {
 };
 
 export function AuditTab() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   // The picker shows host-local civil days: "today" is the day on the person's calendar, not the UTC day the store
   // partitions by. The search side maps these keys back onto the UTC partitions.
   const [dateFrom, setDateFrom] = useState(() =>
@@ -61,61 +60,76 @@ export function AuditTab() {
   const [typeFilter, setTypeFilter] = useState("");
   const [textSearch, setTextSearch] = useState("");
   const [page, setPage] = useState(0);
+  const [submittedFilter, setSubmittedFilter] = useState(() => ({ dateFrom, dateTo, type: "", textSearch: "" }));
+  const searchRequestId = useRef(0);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AuditSearchResult>({ entries: [], total: 0 });
   const [stats, setStats] = useState<AuditStats | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const statsRequestId = useRef(0);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   const fetchStats = useCallback(async () => {
+    const id = ++statsRequestId.current;
+    setStats(null);
+    setStatsError(null);
     try {
       const s = await (window as unknown as { aveApi: { audit: { getStats: (d: number) => Promise<AuditStats> } } }).aveApi.audit.getStats(7);
-      setStats(s);
+      if (id === statsRequestId.current) setStats(s);
     } catch {
-      // stats are best-effort
+      if (id === statsRequestId.current) setStatsError(t("auditTab.statsFailed"));
     }
-  }, []);
+  }, [t]);
 
-  const runSearch = useCallback(async (currentPage: number) => {
+  const runSearch = useCallback(async (currentPage: number, filter: typeof submittedFilter) => {
+    const id = ++searchRequestId.current;
     setLoading(true);
     setError(null);
+    setResult({ entries: [], total: 0 });
     try {
       const res = await (window as unknown as { aveApi: { audit: { search: (f: unknown) => Promise<AuditSearchResult> } } }).aveApi.audit.search({
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        type: typeFilter || undefined,
-        textSearch: textSearch || undefined,
+        dateFrom: filter.dateFrom || undefined,
+        dateTo: filter.dateTo || undefined,
+        type: filter.type || undefined,
+        textSearch: filter.textSearch || undefined,
         limit: PAGE_SIZE,
         offset: currentPage * PAGE_SIZE,
       });
-      setResult(res);
-    } catch (e) {
-      setError(errorMessage(e) || t("auditTab.searchFailed"));
+      if (id === searchRequestId.current) setResult(res);
+    } catch {
+      if (id === searchRequestId.current) setError(t("auditTab.searchFailed"));
     } finally {
-      setLoading(false);
+      if (id === searchRequestId.current) setLoading(false);
     }
-  }, [dateFrom, dateTo, typeFilter, textSearch]);
+  }, [t]);
 
   useEffect(() => {
     void fetchStats();
-    void runSearch(0);
-    setPage(0);
-    setExpandedIdx(null);
+    void runSearch(0, submittedFilter);
+    return () => { searchRequestId.current++; statsRequestId.current++; };
+  // The initial submitted filter is the mount snapshot; edits apply on Search.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSearch = () => {
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      setError(t("auditTab.invalidDateRange"));
+      return;
+    }
+    const filter = { dateFrom, dateTo, type: typeFilter, textSearch };
+    setSubmittedFilter(filter);
     setPage(0);
     setExpandedIdx(null);
-    void runSearch(0);
+    void runSearch(0, filter);
     void fetchStats();
   };
 
   const handlePage = (next: number) => {
     setPage(next);
     setExpandedIdx(null);
-    void runSearch(next);
+    void runSearch(next, submittedFilter);
   };
 
   const totalPages = Math.ceil(result.total / PAGE_SIZE);
@@ -139,6 +153,7 @@ export function AuditTab() {
         />
 
         {/* ── Stats Bar ── */}
+        {statsError && <p role="alert" className="text-sm text-destructive">{statsError}</p>}
         {stats && (
           <SettingsSection data-settings-section="audit-stats" title={t("auditTab.statsTitle")}>
             <div className="flex flex-wrap gap-3">
@@ -181,20 +196,24 @@ export function AuditTab() {
         <SettingsSection data-settings-section="audit-filter" title={t("auditTab.filterTitle")}>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <Label className="text-dense text-muted-foreground">{t("auditTab.filterDateFrom")}</Label>
+              <Label htmlFor="audit-date-from" className="text-dense text-muted-foreground">{t("auditTab.filterDateFrom")}</Label>
               <Input
+                data-settings-transient="true"
                 type="date"
                 className="h-8 text-xs"
+                id="audit-date-from"
                 data-testid="audit-date-from"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-dense text-muted-foreground">{t("auditTab.filterDateTo")}</Label>
+              <Label htmlFor="audit-date-to" className="text-dense text-muted-foreground">{t("auditTab.filterDateTo")}</Label>
               <Input
+                data-settings-transient="true"
                 type="date"
                 className="h-8 text-xs"
+                id="audit-date-to"
                 data-testid="audit-date-to"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
@@ -205,6 +224,8 @@ export function AuditTab() {
             <NativeSelect
               size="sm"
               className="w-32 flex-shrink-0"
+              data-settings-transient="true"
+              aria-label={t("auditTab.filterType")}
               value={typeFilter}
               onChange={(e) => setTypeFilter(e.target.value)}
             >
@@ -219,12 +240,14 @@ export function AuditTab() {
             </NativeSelect>
             <Input
               className="h-8 flex-1 text-xs"
+              data-settings-transient="true"
+              aria-label={t("auditTab.filterTextPlaceholder")}
               placeholder={t("auditTab.filterTextPlaceholder")}
               value={textSearch}
               onChange={(e) => setTextSearch(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}
             />
-            <Button size="sm" className="h-8" onClick={handleSearch} disabled={loading}>
+            <Button data-settings-transient="true" size="sm" className="h-8" onClick={handleSearch} disabled={loading}>
               {loading ? "..." : t("auditTab.searchButton")}
             </Button>
           </div>
@@ -239,7 +262,9 @@ export function AuditTab() {
               <div className="flex items-center gap-1 text-dense">
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
-                  disabled={page === 0}
+                  data-settings-transient="true"
+                  aria-label={t("auditTab.previousPage")}
+                  disabled={loading || page === 0}
                   onClick={() => handlePage(page - 1)}
                 >
                   ‹
@@ -247,7 +272,9 @@ export function AuditTab() {
                 <span>{page + 1} / {totalPages}</span>
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
-                  disabled={page >= totalPages - 1}
+                  data-settings-transient="true"
+                  aria-label={t("auditTab.nextPage")}
+                  disabled={loading || page >= totalPages - 1}
                   onClick={() => handlePage(page + 1)}
                 >
                   ›
@@ -257,7 +284,7 @@ export function AuditTab() {
           }
         >
           {error && (
-            <div className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-xs text-destructive">
+            <div role="alert" className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-xs text-destructive">
               {error}
             </div>
           )}
@@ -292,14 +319,13 @@ export function AuditTab() {
                     return (
                       <React.Fragment key={i}>
                         <tr
-                          className="cursor-pointer border-b last:border-0 hover:bg-muted/(--opacity-light)"
-                          onClick={() => setExpandedIdx(isExpanded ? null : i)}
+                          className="border-b last:border-0 hover:bg-muted/(--opacity-light)"
                         >
                           <td
                             className="px-3 py-1.5 font-mono text-tiny text-muted-foreground whitespace-nowrap"
                             data-testid="audit-row-time"
                           >
-                            {ts === undefined ? "—" : formatMediumDateTime(ts)}
+                            {ts === undefined ? "—" : formatMediumDateTime(ts, locale)}
                           </td>
                           <td className="px-3 py-1.5">
                             <Badge className={`text-tiny ${badgeClass}`}>{rowType}</Badge>
@@ -308,12 +334,22 @@ export function AuditTab() {
                             {routeOrTool ?? "—"}
                           </td>
                           <td className="max-w-[200px] truncate px-3 py-1.5 text-muted-foreground">
-                            {preview.slice(0, 80)}
+                            <button
+                              type="button"
+                              className="w-full cursor-pointer text-left underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+                              data-settings-transient="true"
+                              aria-expanded={isExpanded}
+                              aria-controls={`audit-entry-details-${i}`}
+                              aria-label={t("auditTab.toggleDetails", { number: i + 1 })}
+                              onClick={() => setExpandedIdx(isExpanded ? null : i)}
+                            >
+                              {preview.slice(0, 80) || t("auditTab.entryDetails")}
+                            </button>
                           </td>
                         </tr>
                         {isExpanded && (
                           <tr className="border-b last:border-0 bg-muted/(--opacity-muted)">
-                            <td colSpan={4} className="px-3 py-2">
+                            <td id={`audit-entry-details-${i}`} colSpan={4} className="px-3 py-2">
                               <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-tiny">
                                 {JSON.stringify(entry, null, 2)}
                               </pre>
@@ -330,7 +366,7 @@ export function AuditTab() {
         </SettingsSection>
 
         {/* ── Diagnostics: bundle export + log tail + crash list ── */}
-        <DiagnosticsSection defaultDateFrom={dateFrom} defaultDateTo={dateTo} />
+        <DiagnosticsSection defaultDateFrom={submittedFilter.dateFrom} defaultDateTo={submittedFilter.dateTo} />
 
         {/* ── Telemetry: what leaves this machine, and where it goes ── */}
         <TelemetrySection />

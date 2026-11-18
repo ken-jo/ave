@@ -1,5 +1,12 @@
+import { securitySettingsGestures } from "../security-settings-gesture.js";
+import { hasUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
+import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
+import { telemetryPatchError } from "../../shared/telemetry-policy.js";
+import { containsSecuritySettings } from "../../shared/security-settings.js";
+import { isWebSearchProvider } from "../../data/settings-normalization.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
-import { dialog, ipcMain } from "electron";
+import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import { app, dialog, ipcMain } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { OpenOAuthLogin } from "../../main/oauth-login.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -592,6 +599,37 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
   };
 
+  const authorizeSettingsEditorAction = (event: import("electron").IpcMainInvokeEvent, payload: unknown, channel: string) => {
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow?.()];
+    const mainFrame = event.senderFrame !== null && event.senderFrame === event.sender?.mainFrame
+      && windows.some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
+    if (!validateHostRendererSender(event) || !mainFrame) { auditUnauthorized(auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
+    const intent = typeof payload === "object" && payload !== null ? (payload as { intent?: unknown }).intent : undefined;
+    if (!hasUserKeyboardIntent(intent) || !securitySettingsGestures.consume(event.sender, { channel, payload })) return USER_KEYBOARD_REQUIRED;
+    return null;
+  };
+
+  ipcMain.handle(SETTINGS.defaults, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, SETTINGS.defaults, event); return UNAUTHORIZED_FRAME; }
+    return rendererSettingsSnapshot(settingsService, DEFAULT_SETTINGS);
+  });
+
+  ipcMain.handle(SETTINGS.openFile, async (event, payload: unknown) => {
+    const refused = authorizeSettingsEditorAction(event, payload, SETTINGS.openFile);
+    if (refused) return refused;
+    const { shell } = await import("electron");
+    const error = await shell.openPath(settingsService.getSettingsFilePath());
+    return error ? { ok: false, error: "settings-file-open-failed" } : { ok: true };
+  });
+
+  ipcMain.handle(SETTINGS.pickDirectory, async (event, payload: unknown) => {
+    const refused = authorizeSettingsEditorAction(event, payload, SETTINGS.pickDirectory);
+    if (refused) return refused;
+    const result = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+    if (!result.canceled && !result.filePaths[0]) return { ok: false, error: "directory-picker-empty-result" };
+    return { ok: true, path: result.canceled ? null : result.filePaths[0] };
+  });
+
   ipcMain.handle(CHANNELS.settings.get, (event) => {
     if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.get, event); return UNAUTHORIZED_FRAME; }
     return rendererSettingsSnapshot(settingsService);
@@ -599,10 +637,22 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
   // showed the saved value alone would be describing a state the running app is not in, since every one of these gates resolves as `settings || env`.
-  ipcMain.handle(CHANNELS.settings.envForcedSettings, () => envForcedSettingsPaths());
+  ipcMain.handle(CHANNELS.settings.envForcedSettings, (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.envForcedSettings, e); return UNAUTHORIZED_FRAME; }
+    return envForcedSettingsPaths();
+  });
 
   ipcMain.handle(CHANNELS.settings.update, async (e, partial) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.update, e); return UNAUTHORIZED_FRAME; }
+    if (partial?.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) return { ok: false, error: "invalid-subagent-max-rounds" };
+    if (partial?.telemetry !== undefined) {
+      const error = telemetryPatchError(partial.telemetry, { isPackaged: app.isPackaged, allowlistEnv: process.env.AVE_TELEMETRY_ALLOWLIST });
+      if (error) return { ok: false, error };
+    }
+    if (containsSecuritySettings(partial)) return { ok: false, error: "security-settings-main-owned" };
+    if (partial && typeof partial === "object" && Object.hasOwn(partial, "pluginConfigs")) {
+      return { ok: false, error: "plugin-config-settings-main-owned" };
+    }
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
       return { ok: false, error: "a2a-remote-settings-main-owned" };
     }
@@ -804,7 +854,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     reconcileShortcutStartupIfChanged();
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
-    return result;
+    return rendererSettingsSnapshot(settingsService, result);
   });
 
   ipcMain.handle(CHANNELS.settings.setApiKey, async (e, vendor: string, apiKey: string) => {
@@ -1199,18 +1249,23 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   ipcMain.handle(CHANNELS.settings.setWebApiKey, async (e, provider: string, apiKey: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.setWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!isWebSearchProvider(provider) || typeof apiKey !== "string" || apiKey.trim() === "") {
+      return { ok: false, error: "invalid-input" };
+    }
     await settingsService.setSecret(`web.apiKey.${provider}`, apiKey);
     await broadcastSettingsSnapshot(deps);
     return { ok: true };
   });
 
-  // read-only; sender guard optional
-  ipcMain.handle(CHANNELS.settings.hasWebApiKey, async (_e, provider: string) => {
-    return (await settingsService.getSecret(`web.apiKey.${provider}`)) !== null;
+  ipcMain.handle(CHANNELS.settings.hasWebApiKey, async (e, provider: string) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.hasWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!isWebSearchProvider(provider)) throw new Error("Unsupported web search provider.");
+    return settingsService.hasStoredSecret(`web.apiKey.${provider}`);
   });
 
   ipcMain.handle(CHANNELS.settings.deleteWebApiKey, async (e, provider: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.deleteWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!isWebSearchProvider(provider)) return { ok: false, error: "invalid-input" };
     await settingsService.deleteSecret(`web.apiKey.${provider}`);
     await broadcastSettingsSnapshot(deps);
     return { ok: true };
@@ -1218,7 +1273,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   // Read-only. The allowlist bounds `telemetry.endpoint`, which the renderer can already write; so it is shown, never set: a
   // control the same party could widen is not a bound. Host names only, which is exactly what the endpoint field needs the user to know.
-  ipcMain.handle(CHANNELS.telemetry.allowedHosts, () => telemetryAllowedHosts());
+  ipcMain.handle(CHANNELS.telemetry.allowedHosts, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.telemetry.allowedHosts, event); return UNAUTHORIZED_FRAME; }
+    return telemetryAllowedHosts(process.env, app.isPackaged);
+  });
 
   return stopStatusChangedListener;
 }

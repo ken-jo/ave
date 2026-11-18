@@ -538,6 +538,7 @@ export function buildInternalApiSurface() {
       import("../shared/update-state.js").UpdateState
     >,
   /** Start the actual download. Only valid when the current state is "available"; rejected (ok:false) otherwise. */
+  checkForAppUpdates: () => ipcRenderer.invoke(CHANNELS.update.checkNow) as Promise<import("../shared/restart-settings.js").AppUpdateCheckResult>,
   downloadAppUpdate: () =>
     ipcRenderer.invoke(CHANNELS.update.downloadNow) as Promise<{ ok: boolean; reason?: string }>,
   /** Quit and apply the downloaded update. Main validates the sender and owns the native confirmation dialog before
@@ -632,7 +633,7 @@ export function buildInternalApiSurface() {
       platform: NodeJS.Platform;
       arch: string;
       userDataPath: string;
-    }>,
+    } & import("../shared/restart-settings.js").BootSettingsSnapshot>,
 
   // Assembled in its own module for size; spliced in here unchanged.
   mcp: mcpApiSurface,
@@ -678,6 +679,8 @@ export function buildInternalApiSurface() {
     egressGrantRevoke: async (grant: RevocableEgressGrant) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
     /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
     upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
+    updateSecuritySettings: async (patch: import("../shared/security-settings.js").SecuritySettingsPatch) =>
+      ipcRenderer.invoke(PERMISSIONS.updateSecuritySettings, { patch, intent: ipcUserKeyboardIntent() }),
     /** MUTATING: change the upstream proxy setting (user-gesture intent attached). */
     upstreamProxySet: async (patch: {
       mode?: "off" | "system" | "manual";

@@ -1,10 +1,13 @@
+import { securitySettingsGestures } from "../security-settings-gesture.js";
+import { isSecuritySettingsPatch } from "../../shared/security-settings.js";
+import { broadcastSettingsSnapshot, rendererSettingsSnapshot } from "./settings.js";
 /** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
 import { isBrowserSiteChoice } from "../../shared/permissions-events.js";
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
-import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
+import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
@@ -36,6 +39,7 @@ import {
   isUserOwnedSurfaceChoice,
   type PermissionReviewSuggestionPayload,
   type PermissionReviewSuggestionReason,
+  type ScopedPermissionRule,
 } from "../../shared/permissions-events.js";
 import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
 import {
@@ -52,7 +56,6 @@ import type { IpcDeps } from "../types.js";
 import type {
   PermissionDirCommand,
   PermissionReviewerCommand,
-  PermissionRulesCommand,
 } from "../../permissions/permission-slash.js";
 import {
 } from "../../permissions/permission-settings-store.js";
@@ -289,8 +292,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     return windows.some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
   };
 
-  // read-only, sender guard optional
-  ipcMain.handle(PERMISSIONS.getMode, () => handleGetMode(deps));
+  ipcMain.handle(PERMISSIONS.getMode, (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.getMode, e); return UNAUTHORIZED_FRAME; }
+    return handleGetMode(deps);
+  });
 
   // read-only, sender guard optional; honest OS sandbox capability for the current platform. `available`/`kind` report the PLATFORM's potential (macOS/Linux can fully confine, Windows can partially confine filesystem + network, others cannot), NOT whether a runner
   // is currently registered; registration is verified at boot, so reporting the platform potential lets the toggle show "not available on this platform" rather than reading as unavailable merely because it's off. `enabled` separately reflects the current setting.
@@ -649,6 +654,61 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     });
   });
 
+  let securitySettingsWrite: Promise<unknown> = Promise.resolve();
+  ipcMain.handle(PERMISSIONS.updateSecuritySettings, async (event, payload: unknown) => {
+    if (!validateHostRendererSender(event) || !isNativeApprovalFrame(event)) {
+      auditUnauthorized(auditLogger, PERMISSIONS.updateSecuritySettings, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    const body = payloadRecord(payload);
+    const gesture = hasUserKeyboardIntent(body.intent)
+      ? securitySettingsGestures.consume(event.sender, { channel: PERMISSIONS.updateSecuritySettings, payload: body.patch })
+      : null;
+    if (!gesture) {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        input: JSON.stringify({ action: "security_settings_refused", reason: "user-keyboard-required" }) });
+      return { ok: false, error: "user-keyboard-required" };
+    }
+    if (!isSecuritySettingsPatch(body.patch)) return { ok: false, error: "invalid-security-settings" };
+    const patch = body.patch;
+    const write = securitySettingsWrite.then(async () => {
+      const previous = deps.settingsService.getAll();
+      const changes = Object.entries(patch).flatMap(([group, fields]) => Object.entries(fields).map(([key, value]) => ({
+        path: `${group}.${key}`, previous: (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key], value,
+      })));
+      const record = (phase: string) => auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        input: JSON.stringify({ action: "security_settings_changed", phase, changes, gestureSequence: gesture.sequence, gesturePayloadDigest: gesture.payloadDigest }) });
+      try { await record("requested"); } catch (error) {
+        log.warn({ err: error }, "Security settings audit is unavailable");
+        return { ok: false, error: "security-settings-audit-unavailable" };
+      }
+      const updated = await deps.settingsService.patch(patch.system === undefined
+        ? { features: patch.features }
+        : { features: patch.features, system: {
+          closeBehavior: deps.settingsService.getAll().system.closeBehavior,
+          ...patch.system,
+        } });
+      try { await record("committed"); } catch (error) {
+        const rollback = Object.fromEntries(Object.entries(patch).map(([group, fields]) => [group,
+          Object.fromEntries(Object.keys(fields).map((key) => [key, (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key]])),
+        ]));
+        try { await deps.settingsService.patch(rollback); } catch (rollbackError) {
+          log.error({ err: rollbackError, auditError: error }, "Security settings rollback failed");
+          return { ok: false, error: "security-settings-rollback-failed" };
+        }
+        await deps.refreshSandboxNetworkConfig?.();
+        await broadcastSettingsSnapshot(deps);
+        return { ok: false, error: "security-settings-audit-unavailable" };
+      }
+      await deps.refreshSandboxNetworkConfig?.();
+      await broadcastSettingsSnapshot(deps);
+      return rendererSettingsSnapshot(deps.settingsService, updated);
+    });
+    // Keep later writes runnable while returning this operation's own failure to its caller.
+    securitySettingsWrite = write.catch(() => undefined);
+    return write;
+  });
+
   ipcMain.handle(PERMISSIONS.setMode, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.setMode, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
@@ -661,8 +721,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     });
   });
 
-  // read-only, sender guard optional
-  ipcMain.handle(PERMISSIONS.listRules, async () => {
+  ipcMain.handle(PERMISSIONS.listRules, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.listRules, e); return UNAUTHORIZED_FRAME; }
     const pm = conversationLoop.permissionManager;
     if (!pm) return [];
     return pm.listPersistedRules();
@@ -703,20 +763,17 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
     const action = body.action;
-    if (action !== "allow" && action !== "deny") {
-      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny)` };
+    if (action !== "allow" && action !== "deny" && action !== "ask") {
+      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny, ask)` };
     }
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
-    const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const ruleAction = action === "allow" ? "allow" : "deny";
-    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
-      ? { verb: "rules", sub: "add", action: ruleAction, pattern: validated.pattern }
-      : parsePermissionRulesCommand(`add ${ruleAction} ${validated.pattern}`);
-    if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
-    if (parsed.sub !== "add") return { ok: false, error: "parse-error", message: "add rule command did not parse as add" };
+    const parsed: Pick<ScopedPermissionRule, "pattern" | "action"> = { pattern: validated.pattern, action };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
+    if ((await pm.listPersistedRules()).some((rule) => rule.pattern === parsed.pattern && rule.action === parsed.action)) {
+      return { ok: false, error: "duplicate-rule", message: "This rule already exists" };
+    }
     if (isRuleSpecifier(parsed.pattern)) {
       // The store's own check: refused prefixes, irreversible argv and wildcards outside the allowlist.
       try { validatePermissionRule({ pattern: parsed.pattern, action: parsed.action }); } catch (error) {
@@ -728,6 +785,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         await pm.addRulePersist({ pattern: parsed.pattern, action: parsed.action }, { kind: "user" });
       } else if (parsed.action === "allow") {
         await pm.addAlwaysAllowedPersist(parsed.pattern);
+      } else if (parsed.action === "ask") {
+        await pm.addAlwaysAskedPersist(parsed.pattern);
       } else {
         await pm.addAlwaysDeniedPersist(parsed.pattern);
       }
@@ -745,22 +804,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
     const action = body.action;
-    if (action !== "allow" && action !== "deny") {
-      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny)` };
+    if (action !== "allow" && action !== "deny" && action !== "ask") {
+      return { ok: false, error: "invalid-action", message: `invalid action: '${action}' (allowed: allow, deny, ask)` };
     }
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
-    const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const ruleAction = action === "allow" ? "allow" : "deny";
-    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
-      ? { verb: "rules", sub: "remove", action: ruleAction, pattern: validated.pattern }
-      : parsePermissionRulesCommand(`remove ${ruleAction} ${validated.pattern}`);
-    if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
-    if (parsed.sub !== "remove") return { ok: false, error: "parse-error", message: "remove rule command did not parse as remove" };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
     try {
-      await pm.removeRule(parsed.pattern, parsed.action);
+      await pm.removeRule(validated.pattern, action);
       deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
       // No explicit broadcast; PermissionManager.removeRule fires broadcastConfigChanged via the boot-wired setter.
       return { ok: true };
@@ -879,8 +931,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // read-only, sender guard optional
-  ipcMain.handle(PERMISSIONS.policyGet, async () => {
+  ipcMain.handle(PERMISSIONS.policyGet, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.policyGet, e); return UNAUTHORIZED_FRAME; }
     const policy = await loadPolicy();
     // `editable` is host-derived, never re-derived in the renderer: it is the same predicate that decides whether `savePolicy` will accept a write.
     return { ...policy, editable: isPolicyUserEditable(policy) };
@@ -939,6 +991,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const result = await dispatchPermissionReviewerCommandWithRewire(
         parsed,
         deps.rewireReviewerAgent,
+        undefined,
+        conversationLoop.permissionManager,
       );
       // Surface the runtime degrade flag (persisted mode="llm" but wiring fell back to rule because no provider/key is configured). This is a
       // runtime condition computed at boot wiring, not a persisted setting, so it is read from the live PermissionManager rather than the settings file.
@@ -1094,21 +1148,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const patch = payloadRecord(body.patch);
-    if ("managed" in patch) {
-      return { ok: false, error: "invalid-patch", message: "'managed' field is read-only and cannot be modified by user" };
-    }
-    if ("requireExplicitApproval" in patch && typeof patch.requireExplicitApproval !== "boolean") {
-      return { ok: false, error: "invalid-patch", message: "'requireExplicitApproval' must be a boolean" };
-    }
     try {
-      const updated = await savePolicy(patch as Parameters<typeof savePolicy>[0]);
+      const patch = validatePolicyPatch(body.patch);
+      const updated = await savePolicy(patch);
       if (approvalGate) {
         approvalGate.setPolicy(updated);
       }
       return { ok: true, policy: updated };
     } catch (err) {
-      return { ok: false, error: "managed", message: (err as Error).message };
+      return { ok: false, error: err instanceof PolicyWriteError ? err.code : "policy-save-failed" };
     }
   });
 

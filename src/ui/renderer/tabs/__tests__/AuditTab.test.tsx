@@ -10,6 +10,9 @@ vi.mock("../DiagnosticsSection.js", () => ({ DiagnosticsSection: () => null }));
 vi.mock("../TelemetrySection.js", () => ({ TelemetrySection: () => null }));
 
 import { AuditTab } from "../AuditTab.js";
+import { I18nProvider } from "../../../../i18n/react.js";
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import type { Locale } from "../../../../i18n/locale.js";
 
 /** 01:30 on the 16th in Seoul, 12:30 on the 15th in New York, 16:30 on the 15th in UTC. */
 const SEOUL_SMALL_HOURS = Date.parse("2026-06-15T16:30:00.000Z");
@@ -17,13 +20,16 @@ const SEOUL_SMALL_HOURS = Date.parse("2026-06-15T16:30:00.000Z");
 const NEW_YORK_EVENING = Date.parse("2026-06-16T01:00:00.000Z");
 
 let previousTz: string | undefined;
+let previousLocale: Locale;
 
 beforeEach(() => {
   previousTz = process.env.TZ;
+  previousLocale = getLocale();
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  setLocale(previousLocale);
   if (previousTz === undefined) delete process.env.TZ;
   else process.env.TZ = previousTz;
 });
@@ -78,12 +84,87 @@ describe("AuditTab row timestamps", () => {
       { timestamp, sessionId: "session-1", type: "turn", input: "hello", output: "world" },
     ]);
     process.env.TZ = "UTC";
-    const utcLabel = formatMediumDateTime(timestamp);
+    const utcLabel = formatMediumDateTime(timestamp, getLocale());
     const { findByTestId } = renderAt("Asia/Seoul", SEOUL_SMALL_HOURS);
-    const seoulLabel = formatMediumDateTime(timestamp);
+    const seoulLabel = formatMediumDateTime(timestamp, getLocale());
     expect(seoulLabel).not.toBe(utcLabel);
     const cell = await findByTestId("audit-row-time");
     expect(cell.textContent).toBe(seoulLabel);
     expect(cell.textContent).not.toContain("2026-06-15T16:30");
+  });
+});
+
+describe("AuditTab submitted filters", () => {
+  it("pages using the submitted filter rather than unsaved edits", async () => {
+    const { search } = installAuditApi();
+    search.mockResolvedValue({ entries: [], total: 120 });
+    const view = render(<AuditTab />);
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+    const original = search.mock.calls[0][0] as { dateFrom: string };
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.change(view.getByTestId("audit-date-from"), { target: { value: "2020-01-01" } });
+    fireEvent.click(await view.findByRole("button", { name: (await import("../../../../i18n/runtime.js")).t("auditTab.nextPage") }));
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+    expect(search.mock.calls[1][0]).toMatchObject({ dateFrom: original.dateFrom, offset: 50 });
+  });
+
+  it("refuses a reversed date range before IPC and gives a localized error", async () => {
+    const { search } = installAuditApi();
+    const view = render(<AuditTab />);
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.change(view.getByTestId("audit-date-from"), { target: { value: "2027-01-01" } });
+    fireEvent.change(view.getByTestId("audit-date-to"), { target: { value: "2026-01-01" } });
+    const { t } = await import("../../../../i18n/runtime.js");
+    fireEvent.click(view.getByRole("button", { name: t("auditTab.searchButton") }));
+    expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.invalidDateRange"));
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears old results when the submitted search fails", async () => {
+    const { search } = installAuditApi([{ timestamp: new Date().toISOString(), sessionId: "test", type: "turn", input: "previous data" }]);
+    const view = render(<AuditTab />);
+    await view.findByText("previous data");
+    search.mockRejectedValueOnce(new Error("raw internal error"));
+    const { fireEvent } = await import("@testing-library/react");
+    const { t } = await import("../../../../i18n/runtime.js");
+    fireEvent.click(view.getByRole("button", { name: t("auditTab.searchButton") }));
+    expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.searchFailed"));
+    expect(view.queryByText("previous data")).toBeNull();
+    expect(view.queryByText("raw internal error")).toBeNull();
+  });
+});
+
+describe("AuditTab accessible controls", () => {
+  it("labels date, type and text filters and exposes row details as an expandable button", async () => {
+    installAuditApi([{ timestamp: new Date().toISOString(), sessionId: "session-1", type: "turn", input: "keyboard entry" }]);
+    const view = render(<AuditTab />);
+    const { t } = await import("../../../../i18n/runtime.js");
+    expect(view.getByLabelText(t("auditTab.filterDateFrom"))).toBe(view.getByTestId("audit-date-from"));
+    expect(view.getByLabelText(t("auditTab.filterDateTo"))).toBe(view.getByTestId("audit-date-to"));
+    expect(view.getByRole("combobox", { name: t("auditTab.filterType") })).toBeVisible();
+    expect(view.getByRole("textbox", { name: t("auditTab.filterTextPlaceholder") })).toBeVisible();
+    const toggle = await view.findByRole("button", { name: t("auditTab.toggleDetails", { number: 1 }) });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const detailsId = toggle.getAttribute("aria-controls");
+    expect(detailsId).toBeTruthy();
+    if (!detailsId) throw new Error("Audit details control target is missing.");
+    expect(document.getElementById(detailsId)).toHaveTextContent('"keyboard entry"');
+  });
+});
+
+describe("AuditTab active UI locale", () => {
+  it.each(["en", "ko"] as const)("renders timestamps in %s while using the host timezone", async (locale) => {
+    const timestamp = "2026-06-15T16:30:00.000Z";
+    installAuditApi([{ timestamp, sessionId: "session-1", type: "turn", input: "localized timestamp" }]);
+    process.env.TZ = "Asia/Seoul";
+    const view = render(<I18nProvider locale={locale} setLocale={vi.fn()}><AuditTab /></I18nProvider>);
+    const cell = await view.findByTestId("audit-row-time");
+    expect(cell.textContent).toBe(formatMediumDateTime(timestamp, locale));
+    if (locale === "en") expect(cell.textContent).toContain("Jun");
+    if (locale === "ko") expect(cell.textContent).toContain("오전");
   });
 });

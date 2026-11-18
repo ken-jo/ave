@@ -1,3 +1,4 @@
+import type { LLMVendorSettings } from "../../shared/llm-vendor-defaults.js";
 import type {
   GenericMessage,
   LLMProvider,
@@ -158,6 +159,8 @@ export interface TurnCallbacks {
 }
 
 export interface RunTurnOptions {
+  /** Request-local reasoning controls; never mutate persisted provider settings for a retry. */
+  thinkingOverride?: Readonly<Pick<LLMVendorSettings, "enableThinking" | "thinkingBudgetTokens">>;
   // Omitted attachment parts leave plain-string user input.
   attachments?: UserContentPart[];
   originSource?: string | null;

@@ -3336,9 +3336,25 @@ describe("SettingsService telemetry normalization", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it("notifies live report consumers after the telemetry write is durable", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const changed = vi.fn(() => expect(service.get("telemetry")).toMatchObject({ level: "off", crashReportingEnabled: false }));
+    service.onChanged("telemetry", changed);
+    await service.patch({ telemetry: { level: "off" } });
+    expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a legacy crash opt-out until the new level is explicitly confirmed", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ telemetry: { enabled: true, crashReportingEnabled: false } });
+    expect(service.get("telemetry")).toMatchObject({ level: "all", crashReportingEnabled: false });
+    await service.patch({ telemetry: { level: "all", telemetryPromptAnswered: true } });
+    expect(service.get("telemetry")).toMatchObject({ level: "all", crashReportingEnabled: true });
+  });
+
   it("defaults to everything off and no destination", () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("telemetry")).toEqual({ enabled: false, crashReportingEnabled: false });
+    expect(s.get("telemetry")).toEqual({ level: "off", enabled: false, crashReportingEnabled: false });
   });
 
   it("patches one field without disturbing the rest of the block", async () => {
@@ -3346,6 +3362,7 @@ describe("SettingsService telemetry normalization", () => {
     await s.patch({ telemetry: { endpoint: "https://metrics.corp.example/v1" } });
     await s.patch({ telemetry: { enabled: true } });
     expect(s.get("telemetry")).toEqual({
+      level: "all",
       enabled: true,
       crashReportingEnabled: false,
       endpoint: "https://metrics.corp.example/v1",
@@ -3362,12 +3379,13 @@ describe("SettingsService telemetry normalization", () => {
 
   it("drops a non-boolean switch and a non-string address, keeping the stored value", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ telemetry: { enabled: true, sentryDsn: "https://k@sentry.example/1" } });
-    await s.patch({ telemetry: { enabled: "yes" as never, sentryDsn: 42 as never } });
+    await s.patch({ telemetry: { enabled: true, crashReportEndpoint: "https://reports.example/crash" } });
+    await s.patch({ telemetry: { enabled: "yes" as never, crashReportEndpoint: 42 as never } });
     expect(s.get("telemetry")).toEqual({
+      level: "all",
       enabled: true,
       crashReportingEnabled: false,
-      sentryDsn: "https://k@sentry.example/1",
+      crashReportEndpoint: "https://reports.example/crash",
     });
   });
 
@@ -3379,16 +3397,17 @@ describe("SettingsService telemetry normalization", () => {
           enabled: "true",
           crashReportingEnabled: true,
           endpoint: { url: "https://nope.example" },
-          sentryDsn: "  https://k@sentry.example/1  ",
+          crashReportEndpoint: "  https://reports.example/crash  ",
         },
       }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(s.get("telemetry")).toEqual({
+      level: "crash",
       enabled: false,
       crashReportingEnabled: true,
-      sentryDsn: "https://k@sentry.example/1",
+      crashReportEndpoint: "https://reports.example/crash",
     });
   });
 });
@@ -3456,37 +3475,26 @@ describe("SettingsService chat normalization", () => {
     });
   });
 
-  it("floors a fractional sub-agent round budget and drops mistyped fields", async () => {
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({
-      chat: {
-        ...s.get("chat"),
-        subAgentMaxRounds: 12.7,
-        autoCompact: "yes" as never,
-        systemPrompt: 42 as never,
-      },
-    });
-    const chat = s.get("chat");
-    expect(chat.subAgentMaxRounds).toBe(12);
-    // Mistyped values are dropped, so the prior (default) value stands.
-    expect(chat.autoCompact).toBe(DEFAULT_SETTINGS.chat.autoCompact);
-    expect(chat.systemPrompt).toBe(DEFAULT_SETTINGS.chat.systemPrompt);
+  it("rejects fractional sub-agent rounds without changing other fields", async () => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const previous = store.get("chat");
+    await expect(store.patch({ chat: { subAgentMaxRounds: 12.7, autoCompact: false } })).rejects.toThrow("Invalid sub-agent round budget");
+    expect(store.get("chat")).toEqual(previous);
+    await store.patch({ chat: { subAgentMaxRounds: 12, autoCompact: "yes" as never, systemPrompt: 42 as never } });
+    expect(store.get("chat")).toMatchObject({ subAgentMaxRounds: 12, autoCompact: previous.autoCompact, systemPrompt: previous.systemPrompt });
   });
 
-  it("raises a non-positive round budget to the runnable minimum", async () => {
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: 0 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(1);
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: -5 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(1);
+  it.each([0, -5, 1001, 300_000])("refuses an out-of-range round budget %s without changing the stored value", async (value) => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const previous = store.get("chat").subAgentMaxRounds;
+    await expect(store.patch({ chat: { subAgentMaxRounds: value } })).rejects.toThrow("Invalid sub-agent round budget");
+    expect(store.get("chat").subAgentMaxRounds).toBe(previous);
   });
 
-  it("keeps a very large round budget — the budget has no upper clamp", async () => {
-    // Deliberate: an absolute ceiling above the configured budget can only surface as an agent that stops
-    // mid-task. The 32-bit timer bound this could once overflow is enforced where the timer is armed instead.
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: 300_000 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(300_000);
+  it("accepts the inclusive maximum round budget", async () => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await store.patch({ chat: { subAgentMaxRounds: 1000 } });
+    expect(store.get("chat").subAgentMaxRounds).toBe(1000);
   });
 
   it("corrupt on-disk chat falls back to defaults", () => {
@@ -3503,7 +3511,7 @@ describe("SettingsService chat normalization", () => {
 
   it("rejects a non-finite round budget rather than persisting NaN", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: Number.NaN } });
+    await expect(s.patch({ chat: { subAgentMaxRounds: Number.NaN } })).rejects.toThrow("Invalid sub-agent round budget");
     expect(s.get("chat").subAgentMaxRounds).toBe(
       DEFAULT_SETTINGS.chat.subAgentMaxRounds,
     );

@@ -2,6 +2,7 @@ export const SETTINGS_TABS = [
   "llm",
   "appearance",
   "chat",
+  "notifications",
   "web",
   "startup",
   "shortcuts",
@@ -24,6 +25,7 @@ export const SETTINGS_TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   llm: "settingsContent.tabLlm",
   appearance: "settingsContent.tabAppearance",
   chat: "settingsContent.tabChat",
+  notifications: "settingsContent.tabNotifications",
   web: "settingsContent.tabWeb",
   startup: "settingsContent.tabStartup",
   shortcuts: "settingsContent.tabShortcuts",
@@ -40,17 +42,16 @@ export const SETTINGS_TAB_LABEL_KEYS: Record<SettingsTab, string> = {
 
 /** Settings links resolve globally unique DOM section anchors; tests check registry and anchors in both directions. */
 export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
-  llm: ["llm-providers", "llm-thinking", "llm-fallback", "llm-pricing-overrides", "llm-model-catalog"],
-  appearance: ["appearance-language", "appearance-theme", "appearance-font", "appearance-terminal"],
+  llm: ["llm-providers", "llm-thinking", "llm-fallback", "llm-pricing-overrides", "llm-model-catalog", "llm-compaction"],
+  appearance: ["appearance-language", "appearance-theme", "appearance-font", "appearance-terminal", "appearance-zoom"],
   chat: [
     "chat-optimization",
-    "chat-documents",
-    "chat-signals",
     "chat-stream-smoothing",
     "chat-processing-display",
     "chat-experimental",
     "chat-privacy",
   ],
+  notifications: ["chat-signals", "notifications-delivery", "notifications-notices"],
   web: ["web-search-engine", "web-api-key", "web-view-flow"],
   startup: [
     "startup-shortcut",
@@ -93,7 +94,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
   mcp: ["mcp-servers"],
   "plugin-config": ["plugin-config-installed", "plugin-config-performance"],
   marketplace: ["marketplace-inventory", "marketplace-maintenance"],
-  about: ["about-system-info"],
+  about: ["about-system-info", "about-updates", "chat-documents"],
 };
 
 /** Strict membership: is this the id of a tab this build actually ships? Separate from `normalizeSettingsTab`, which answers "llm" for anything it cannot place. That answer is right
@@ -123,6 +124,8 @@ export function parseSettingsPath(path: unknown): SettingsPath | null {
   const segments = path.split("/");
   if (segments.length > 2) return null;
   const [tab, section] = segments;
+  if (tab === "chat" && section === "chat-documents") return { tab: "about", section };
+  if (tab === "chat" && section === "chat-signals") return { tab: "notifications", section };
   if (!isSettingsTab(tab)) return null;
   if (section === undefined) return { tab };
   return isSettingsSection(tab, section) ? { tab, section } : null;

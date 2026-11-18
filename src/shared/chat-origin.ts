@@ -201,6 +201,9 @@ export interface UserKeyboardIntent {
   userActivation: true;
 }
 
+/** How long one user gesture can authorize an action, in preload (its intent token) and in main (its native input receipt). */
+export const USER_GESTURE_LIFETIME_MS = 5_000;
+
 /**
  * Turn-entry provenance. Do not pass this through as the tool invocation
  * provenance without reclassifying at the model/tool boundary.

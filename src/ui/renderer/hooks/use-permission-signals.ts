@@ -113,10 +113,6 @@ export function usePermissionSignals(
     );
     try {
       const api = window.ave;
-      const reviewerResult = await api.permission.reviewerDispatch("mode llm");
-      if (!reviewerResult?.ok) {
-        throw new Error(reviewerResult?.error ?? "reviewer mode change failed");
-      }
       const modeResult = await api.permission.setMode("auto");
       if (!modeResult?.ok) {
         throw new Error(modeResult?.message ?? modeResult?.error ?? "mode change failed");

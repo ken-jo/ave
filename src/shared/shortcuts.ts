@@ -7,7 +7,7 @@ export interface ShortcutSettings {
   /** A null accelerator registers nothing even when enabled. */
   toggleWindow: string | null;
   enabled: boolean;
-  /** The user's rebinds of registry rows: only rows that differ from their platform default are stored. */
+  /** The user's rebinds; an empty string explicitly unbinds an action. Only differences from the platform default are stored. */
   bindings: ShortcutBindings;
 }
 
@@ -66,7 +66,7 @@ export function normalizeShortcuts(
     result.toggleWindow = null;
   } else if (obj.toggleWindow !== undefined) {
     const accel = normalizeAccelerator(obj.toggleWindow);
-    result.toggleWindow = accel !== null && nativeAcceleratorIdentity(accel, platform) !== null && fixedShortcutOwner(accel, platform) === null ? accel : null;
+    result.toggleWindow = accel !== null && globalShortcutBindingRefusal(accel, platform) === null ? accel : null;
   }
   if (typeof obj.enabled === "boolean") {
     result.enabled = obj.enabled;
@@ -333,13 +333,17 @@ const OTHER_KEY_LABELS: Readonly<Record<string, string>> = {
 export function acceleratorKeycaps(accelerator: string, platform: ShortcutPlatform): string[] {
   const parsed = parseAccelerator(accelerator);
   if (!parsed) throw new Error(`Malformed shortcut accelerator: ${JSON.stringify(accelerator)}`);
-  const chord = resolveChord(parsed, platform);
+  return chordKeycaps(resolveChord(parsed, platform), platform);
+}
+
+function chordKeycaps(chord: ResolvedChord, platform: ShortcutPlatform, altGraph = false): string[] {
   const caps: string[] = [];
   if (platform === "darwin") {
     if (chord.ctrl) caps.push("⌃");
     if (chord.alt) caps.push("⌥");
     if (chord.shift) caps.push("⇧");
     if (chord.meta) caps.push("⌘");
+    if (altGraph) caps.push("AltGr");
     caps.push(DARWIN_KEY_GLYPHS[chord.key] ?? chord.key);
     return caps;
   }
@@ -347,6 +351,7 @@ export function acceleratorKeycaps(accelerator: string, platform: ShortcutPlatfo
   if (chord.alt) caps.push("Alt");
   if (chord.shift) caps.push("Shift");
   if (chord.meta) caps.push("Win");
+  if (altGraph) caps.push("AltGr");
   caps.push(OTHER_KEY_LABELS[chord.key] ?? chord.key);
   return caps;
 }
@@ -356,10 +361,28 @@ export function formatAccelerator(accelerator: string, platform: ShortcutPlatfor
   return acceleratorKeycaps(accelerator, platform).join(platform === "darwin" ? "" : "+");
 }
 
+/** Global bindings also accept native modifier aliases and key names outside the in-app grammar. */
+export function formatGlobalAccelerator(accelerator: string, platform: ShortcutPlatform): string {
+  const identity = nativeAcceleratorIdentity(accelerator, platform);
+  if (normalizeAccelerator(accelerator) === null || identity === null) throw new Error(`Malformed shortcut accelerator: ${JSON.stringify(accelerator)}`);
+  const modifiers = identity.slice(0, identity.indexOf("+"));
+  const parts = accelerator.split("+");
+  const rawKey = parts[parts.length - 1].trim();
+  const nativeKey = rawKey.toLowerCase();
+  const physicalKey = Object.hasOwn(NATIVE_SHIFTED_KEYS, nativeKey) ? NATIVE_SHIFTED_KEYS[nativeKey] : rawKey;
+  const chord: ResolvedChord = {
+    ctrl: modifiers.includes("C"), alt: modifiers.includes("A"), shift: modifiers.includes("S"), meta: modifiers.includes("M"),
+    key: canonicalKeyToken(physicalKey) ?? physicalKey,
+  };
+  return chordKeycaps(chord, platform, modifiers.includes("G")).join(platform === "darwin" ? "" : "+");
+}
+
+
 // ── Registry ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Where a shortcut is listened for. `app` fires anywhere in the window, `menu` is a native menu accelerator, `system` is
  * OS-wide; those three overlap every other scope. The rest fire only while their surface has focus. */
+
 export const SHORTCUT_SCOPES = ["app", "menu", "workspace", "composer", "lists", "system"] as const;
 export type ShortcutScope = (typeof SHORTCUT_SCOPES)[number];
 
@@ -535,7 +558,7 @@ export function resolveShortcut(id: ShortcutId, input: ShortcutResolutionInput, 
   if (id === "system.toggleWindow") return input.enabled ? input.toggleWindow : null;
   if (entry.readOnly === undefined) {
     const override = input.bindings[id];
-    if (override !== undefined) return override;
+    if (override !== undefined) return override === "" ? null : override;
   }
   return entry.defaults[platform];
 }
@@ -613,6 +636,33 @@ export type ShortcutBindingRefusal =
   | { reason: "os-reserved" }
   | { reason: "fixed-key"; ownerId: ShortcutId };
 
+/** Common reservation and modifier rules for in-app and system-wide bindings. */
+function acceleratorSafetyRefusal(accelerator: string, platform: ShortcutPlatform, functionKeysAllowed: boolean): ShortcutBindingRefusal | null {
+  const owner = fixedShortcutOwner(accelerator, platform);
+  if (owner !== null) return { reason: "fixed-key", ownerId: owner.id as ShortcutId };
+  const identity = nativeAcceleratorIdentity(accelerator, platform);
+  if (normalizeAccelerator(accelerator) === null || identity === null) return { reason: "malformed" };
+  const [modifiers, keyCode] = identity.split("+");
+  const functionKey = Number(keyCode) >= 112 && Number(keyCode) <= 135;
+  if (!/[MCAG]/.test(modifiers) && !(functionKeysAllowed && functionKey)) return { reason: "needs-modifier" };
+  if (platform === "other" && modifiers.includes("M")) return { reason: "os-reserved" };
+  if (OS_RESERVED[platform].some((reserved) => nativeAcceleratorIdentity(reserved, platform) === identity)) return { reason: "os-reserved" };
+  return null;
+}
+
+/** A system-wide chord always requires a non-Shift modifier, including function keys. */
+export function globalShortcutBindingRefusal(accelerator: string, platform: ShortcutPlatform): ShortcutBindingRefusal | null {
+  return acceleratorSafetyRefusal(accelerator, platform, false);
+}
+
+/** App actions sharing this global chord, in registry order, for the overlap warning. */
+export function globalShortcutOverlaps(accelerator: string, input: ShortcutResolutionInput, platform: ShortcutPlatform): ResolvedShortcut[] {
+  const identity = nativeAcceleratorIdentity(accelerator, platform);
+  if (identity === null) return [];
+  return resolveShortcuts(input, platform).filter((row) => row.definition.scope !== "system"
+    && row.accelerator !== null && nativeAcceleratorIdentity(row.accelerator, platform) === identity);
+}
+
 /** Why `accelerator` cannot be bound to `id` on `platform`, or null when it can. The settings page shows the reason and
  * the store refuses the same patch, so neither side persists what the other would reject. Pairwise overlaps are checked at patch time; persisted overlaps remain visible as conflicts. */
 export function shortcutBindingRefusal(
@@ -623,17 +673,10 @@ export function shortcutBindingRefusal(
 ): ShortcutBindingRefusal | null {
   if (!isShortcutId(id)) return { reason: "unknown-shortcut" };
   if (!isRebindableShortcut(id)) return { reason: "read-only" };
-  const owner = fixedShortcutOwner(accelerator, platform);
-  if (owner !== null) return { reason: "fixed-key", ownerId: owner.id as ShortcutId };
-  const parsed = parseAccelerator(accelerator);
-  if (!parsed || canonicalAccelerator(accelerator) !== accelerator) return { reason: "malformed" };
-  const chord = resolveChord(parsed, platform);
-  const functionKey = /^F\d+$/.test(chord.key);
-  if (!chord.ctrl && !chord.meta && !chord.alt && !functionKey) return { reason: "needs-modifier" };
-  // The Windows/Super key belongs to the shell off macOS.
-  if (platform === "other" && chord.meta) return { reason: "os-reserved" };
+  const refusal = acceleratorSafetyRefusal(accelerator, platform, true);
+  if (refusal !== null) return refusal;
+  if (canonicalAccelerator(accelerator) !== accelerator) return { reason: "malformed" };
   const signature = chordSignature(accelerator, platform);
-  if (OS_RESERVED[platform].some((reserved) => chordSignature(reserved, platform) === signature)) return { reason: "os-reserved" };
   const toggle = resolveShortcut("system.toggleWindow", input, platform);
   if (toggle !== null && chordSignature(toggle, platform) === signature) {
     return { reason: "fixed-key", ownerId: "system.toggleWindow" };
@@ -658,6 +701,10 @@ export function loadShortcutBindings(input: unknown, platform: ShortcutPlatform)
     }
     if (typeof value !== "string") {
       dropped.push({ id, value, reason: "malformed" });
+      continue;
+    }
+    if (value === "" && isRebindableShortcut(id)) {
+      bindings[id] = value;
       continue;
     }
     const refusal = shortcutBindingRefusal(id, value, platform, NO_SHORTCUT_OVERRIDES);
@@ -691,7 +738,7 @@ export class ShortcutBindingsPatchError extends Error {
 }
 
 /** The bindings after `patch`: an accelerator rebinds its row and `null` resets it; a rebind to the default is stored as
- * no override. Throws ShortcutBindingsPatchError on anything the settings page would have refused, since a refusal
+ * no override; an empty string explicitly unbinds the action. Throws ShortcutBindingsPatchError on anything the settings page would have refused, since a refusal
  * here means a caller broke the contract. */
 export function applyShortcutBindingsPatch(
   current: ShortcutSettings,
@@ -709,6 +756,10 @@ export function applyShortcutBindingsPatch(
       continue;
     }
     if (typeof value !== "string") throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} must be an accelerator or null.`);
+    if (value === "" && isRebindableShortcut(id)) {
+      next[id] = value;
+      continue;
+    }
     const refusal = shortcutBindingRefusal(id, value, platform, { ...current, bindings: next });
     if (refusal !== null) throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} refused (${refusal.reason}): ${value}`);
     if (value === defaultAccelerator(id, platform)) delete next[id];

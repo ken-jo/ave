@@ -67,6 +67,26 @@ describe("reconcileGlobalShortcuts", () => {
       setProcessPlatform(original);
     }
   });
+  it.each(["J", "Space", "Backspace", "Tab", "Shift+Tab", "F1"])("never registers the unsafe system-wide chord %s", (accelerator) => {
+    const deps = makeDeps();
+    expect(reconcileGlobalShortcuts({ toggleWindow: accelerator, enabled: true }, deps)).toEqual({ status: "invalid", accelerator });
+    expect(deps.register).not.toHaveBeenCalled();
+    expect(deps.notifyFailure).toHaveBeenCalledWith(accelerator);
+  });
+
+  it.each(["darwin", "win32"] as const)("never registers an OS reservation on %s", (platform) => {
+    const original = process.platform;
+    try {
+      setProcessPlatform(platform);
+      const accelerator = platform === "darwin" ? "CommandOrControl+Space" : "Alt+Tab";
+      const deps = makeDeps();
+      expect(reconcileGlobalShortcuts({ toggleWindow: accelerator, enabled: true }, deps).status).toBe("invalid");
+      expect(deps.register).not.toHaveBeenCalled();
+    } finally {
+      setProcessPlatform(original);
+    }
+  });
+
   it("registers the accelerator when enabled + accelerator present", () => {
     const deps = makeDeps();
     const outcome = reconcileGlobalShortcuts(

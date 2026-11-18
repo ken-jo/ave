@@ -1,8 +1,12 @@
+import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
+import type { AppearancePersistenceResult } from "../../../shared/appearance-settings.js";
 /** Render the saved language from the first paint and follow settings broadcasts across windows; without a preload bridge, render
  * children using the default English locale. */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_LOCALE,
+  isLocale,
+  t,
   normalizeLocale,
   tryLoadLocaleMessages,
   type Locale,
@@ -40,14 +44,19 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
   const [locale, setActiveLocale] = useState<Locale>(initialLocale);
   const mountedRef = useRef(true);
   const localeRequestRef = useRef(0);
+  const writeRevisionRef = useRef(0);
+  const broadcastRevisionRef = useRef(0);
+  const authoritativeLocaleRef = useRef(initialLocale);
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
   const applyLocale = useCallback(async (next: Locale) => {
     const requestId = ++localeRequestRef.current;
     const loaded = await tryLoadLocaleMessages(next);
-    if (!mountedRef.current || requestId !== localeRequestRef.current) return;
-    if (!loaded) return;
+    if (!mountedRef.current || requestId !== localeRequestRef.current) return false;
+    if (!loaded) { setPersistenceError(t("useSettingsOrchestration.saveFailed")); return false; }
     setActiveLocale(next);
+    return true;
   }, []);
 
   // Hydrate from persisted settings on mount.
@@ -61,7 +70,8 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
         const settings = await api.getSettings();
         if (cancelled || !mountedRef.current) return;
         if (localeRequestRef.current !== requestAtStart) return;
-        await applyLocale(normalizeLocale(settings.appearance?.language));
+        authoritativeLocaleRef.current = normalizeLocale(settings.appearance?.language);
+        await applyLocale(authoritativeLocaleRef.current);
       } catch {
         /* ignore — render continues at the English default */
       }
@@ -75,24 +85,34 @@ export function I18nSettingsProvider({ children, initialLocale = DEFAULT_LOCALE 
     if (!api?.onSettingsUpdated) return;
     return api.onSettingsUpdated((settings) => {
       if (!mountedRef.current) return;
-      void applyLocale(normalizeLocale(settings.appearance?.language));
+      broadcastRevisionRef.current++;
+      authoritativeLocaleRef.current = normalizeLocale(settings.appearance?.language);
+      void applyLocale(authoritativeLocaleRef.current);
     });
   }, [api, applyLocale]);
 
-  const setLocale = useCallback(
-    (next: Locale) => {
-      void applyLocale(next);
-      if (api) {
-        void api
-          .updateSettings({ appearance: { schemaVersion: 3, language: next } })
-          .catch(() => { /* ignore — local state already reflects the choice */ });
-      }
-    },
-    [api, applyLocale],
-  );
+  const setLocale = useCallback(async (next: Locale): Promise<AppearancePersistenceResult> => {
+    const revision = ++writeRevisionRef.current;
+    const broadcastAtStart = broadcastRevisionRef.current;
+    try {
+      if (!await tryLoadLocaleMessages(next)) throw new Error("Language messages unavailable");
+      if (!mountedRef.current || writeRevisionRef.current !== revision) return { ok: false };
+      if (!api) throw new Error("Settings bridge unavailable");
+      const saved = requirePersistedResult(await api.updateSettings({ appearance: { schemaVersion: 3, language: next } }));
+      if (!isLocale(saved.appearance.language)) throw new Error("Invalid saved language");
+      if (!mountedRef.current || writeRevisionRef.current !== revision) return { ok: false };
+      if (broadcastRevisionRef.current === broadcastAtStart) authoritativeLocaleRef.current = saved.appearance.language;
+      if (!await applyLocale(authoritativeLocaleRef.current)) return { ok: false };
+      setPersistenceError(null);
+      return { ok: true };
+    } catch {
+      if (mountedRef.current && writeRevisionRef.current === revision) setPersistenceError(t("useSettingsOrchestration.saveFailed"));
+      return { ok: false };
+    }
+  }, [api, applyLocale]);
 
   return (
-    <I18nProvider locale={locale} setLocale={setLocale}>
+    <I18nProvider locale={locale} setLocale={setLocale} persistenceError={persistenceError}>
       {children}
     </I18nProvider>
   );

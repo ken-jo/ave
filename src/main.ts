@@ -1,3 +1,4 @@
+import { installSecuritySettingsGestureTracking } from "./main/security-settings-gesture.js";
 import { app, net, powerMonitor } from "electron";
 import { applyAppZoomLevel, configureAppZoom } from "./main/app-zoom.js";
 import { desktopSecretEncryption } from "./main/desktop-secret-encryption.js";
@@ -391,6 +392,7 @@ async function main() {
   }
 
   // §4.1 IPC Bridge — 반드시 index.html 로드 전에 등록 (renderer useEffect race 방지)
+  installSecuritySettingsGestureTracking();
   const ipcRegistration = registerIpcHandlers(
     services,
     () => getMainWindow(),

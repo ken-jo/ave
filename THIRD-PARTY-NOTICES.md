@@ -341,3 +341,37 @@ THE SOFTWARE.
 - **node-pty:** 1.1.0 (MIT), shared with the existing terminal runtime; its winpty payload includes the MIT license in `winpty-LICENSE.txt`.
 
 License texts and the native API header notices embedded by the FFI and terminal addons are included under `resources/licenses/mxc/`. Installed-byte hashes for the selected runtime artifacts are recorded in `src/permissions/mxc-launcher-pins.json`. Native packaged loading and dynamic DLL dependencies require verification on each target architecture.
+
+---
+
+## microsoft/vscode (Code - OSS)
+
+- **Source:** `src/vs/base/common/filters.ts` and `src/vs/base/common/objects.ts` at commit `6659689e6b03ec062f5b7bcea9850b4c59045807`
+- **License:** MIT
+- **Ave files containing adapted code:**
+  - `src/ui/renderer/settings-text-match.ts`
+  - `src/ui/renderer/settings-modified.ts`
+
+```text
+MIT License
+
+Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

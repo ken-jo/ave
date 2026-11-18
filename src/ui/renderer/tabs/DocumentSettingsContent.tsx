@@ -1,3 +1,4 @@
+import { useAppSettingsControls, useSettingsDocumentRead, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import { useEffect, useState } from "react";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
@@ -14,12 +15,15 @@ const OPEN_MODE_OPTIONS: readonly { value: DocumentOpenMode; label: string; hint
 ];
 
 export function DocumentSettingsContent() {
+  useAppSettingsControls(["chat-documents"]);
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
   const [openMode, setOpenMode] = useState<DocumentOpenMode>("direct");
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
+  const readSettings = useSettingsDocumentRead(() => getApi().getSettings());
+  const editorSettings = useSettingsEditor()?.settings;
 
   useEffect(() => {
     let active = true;
@@ -35,9 +39,9 @@ export function DocumentSettingsContent() {
       }
     };
     const unsubscribe = api.onSettingsUpdated((settings) => { receivedUpdate = true; apply(settings); });
-    void api.getSettings().then((settings) => { if (!receivedUpdate) apply(settings); }).catch(() => { if (active && !receivedUpdate) setFailed(true); });
+    void (editorSettings ? Promise.resolve(editorSettings) : readSettings()).then((settings) => { if (!receivedUpdate) apply(settings); }).catch(() => { if (active && !receivedUpdate) setFailed(true); });
     return () => { active = false; unsubscribe(); };
-  }, []);
+  }, [readSettings, editorSettings]);
 
   const handleModeChange = async (next: DocumentOpenMode) => {
     if (next === openMode) return;
@@ -59,7 +63,7 @@ export function DocumentSettingsContent() {
   };
 
   return (
-    <SettingsSection data-settings-section="chat-documents" title={t("documentSettings.title")} description={t("documentSettings.description")}>
+    <SettingsSection data-setting-id="documents.openMode" data-settings-section="chat-documents" title={t("documentSettings.title")} description={t("documentSettings.description")}>
       <DocumentEngineInstallContent />
       <RadioGroup
         value={openMode}

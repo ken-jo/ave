@@ -1,3 +1,5 @@
+import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 import { ToolbarStatusMenuButton } from "./toolbar-status-menu.js";
 import { useEffect, useRef, useState } from "react";
 import { ZoomIn, ZoomOut } from "lucide-react";
@@ -8,17 +10,29 @@ import { useTranslation } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { useTheme } from "../theme/index.js";
+import { defaultAccelerator, formatAccelerator } from "../../../shared/shortcuts.js";
+import { rendererShortcutPlatform } from "../hooks/use-shortcuts.js";
+
+function zoomShortcut(id: "menu.zoomIn" | "menu.zoomOut" | "menu.resetZoom"): string {
+  const platform = rendererShortcutPlatform();
+  const accelerator = defaultAccelerator(id, platform);
+  if (accelerator === null) throw new Error("Zoom shortcut is unavailable.");
+  return formatAccelerator(accelerator, platform);
+}
 
 export function ZoomControls() {
+  useAppSettingsControls(["appearance-zoom"]);
   const { t } = useTranslation();
   const { appearance } = useTheme();
   const [level, setLevel] = useState(normalizeZoomLevel(appearance.zoomLevel));
   const [failed, setFailed] = useState(false);
   const levelRef = useRef(level);
+  const authoritativeRef = useRef(normalizeZoomLevel(appearance.zoomLevel));
   const revisionRef = useRef(0);
   useEffect(() => {
     revisionRef.current++;
-    levelRef.current = normalizeZoomLevel(appearance.zoomLevel);
+    authoritativeRef.current = normalizeZoomLevel(appearance.zoomLevel);
+    levelRef.current = authoritativeRef.current;
     setLevel(levelRef.current);
   }, [appearance.zoomLevel]);
   const run = (command: ZoomCommand) => {
@@ -27,19 +41,24 @@ export function ZoomControls() {
     setLevel(next);
     setFailed(false);
     const revision = ++revisionRef.current;
-    void getApi().updateSettings({ appearance: { zoomLevel: next } }).catch(() => {
+    void getApi().updateSettings({ appearance: { zoomLevel: next } }).then(requirePersistedResult).then((saved) => {
       if (revision !== revisionRef.current) return;
-      levelRef.current = normalizeZoomLevel(appearance.zoomLevel);
+      authoritativeRef.current = normalizeZoomLevel(saved.appearance.zoomLevel);
+      levelRef.current = authoritativeRef.current;
+      setLevel(levelRef.current);
+    }).catch(() => {
+      if (revision !== revisionRef.current) return;
+      levelRef.current = authoritativeRef.current;
       setLevel(levelRef.current);
       setFailed(true);
     });
   };
-  return <div className="space-y-1" data-testid="zoom-controls">
+  return <div className="space-y-1" data-testid="zoom-controls" data-setting-id="appearance.zoomLevel">
     <fieldset className="flex items-center gap-2 text-sm" aria-label={t("appearanceTab.zoom")}>
-      <Button type="button" variant="outline" size="icon" aria-label={`${t("be_main.menuZoomOut")} (Cmd/Ctrl+-)`} disabled={level === MIN_ZOOM_LEVEL} onClick={() => run("out")}>−</Button>
+      <Button type="button" variant="outline" size="icon" aria-label={t("appearanceTab.shortcutLabel", { label: t("be_main.menuZoomOut"), shortcut: zoomShortcut("menu.zoomOut") })} disabled={level === MIN_ZOOM_LEVEL} onClick={() => run("out")}>−</Button>
       <span className="min-w-12 text-center tabular-nums">{Math.round(zoomLevelToZoomFactor(level) * 100)}%</span>
-      <Button type="button" variant="outline" size="icon" aria-label={`${t("be_main.menuZoomIn")} (Cmd/Ctrl+=)`} disabled={level === MAX_ZOOM_LEVEL} onClick={() => run("in")}>+</Button>
-      <Button type="button" variant="ghost" size="sm" aria-label={`${t("be_main.menuResetZoom")} (Cmd/Ctrl+Num0)`} disabled={level === 0} onClick={() => run("reset")}>{t("appearanceTab.zoomReset")}</Button>
+      <Button type="button" variant="outline" size="icon" aria-label={t("appearanceTab.shortcutLabel", { label: t("be_main.menuZoomIn"), shortcut: zoomShortcut("menu.zoomIn") })} disabled={level === MAX_ZOOM_LEVEL} onClick={() => run("in")}>+</Button>
+      <Button type="button" variant="ghost" size="sm" aria-label={t("appearanceTab.shortcutLabel", { label: t("be_main.menuResetZoom"), shortcut: zoomShortcut("menu.resetZoom") })} disabled={level === 0} onClick={() => run("reset")}>{t("appearanceTab.zoomReset")}</Button>
     </fieldset>
     {failed && <p role="alert" className="text-dense text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
   </div>;
@@ -54,7 +73,7 @@ export function ZoomIndicator() {
   return <Popover>
     <PopoverTrigger asChild>
       <ToolbarStatusMenuButton menuLabel={t("appearanceTab.zoom")} type="button" variant="ghost" className="h-(--chrome-icon-button) w-(--chrome-icon-button) p-0" data-testid="zoom-indicator" onDoubleClick={(event) => event.stopPropagation()}
-        aria-label={`${t("appearanceTab.zoom")} ${Math.round(zoomLevelToZoomFactor(level) * 100)}% (Cmd/Ctrl+= / Cmd/Ctrl+-)`}>
+        aria-label={t("appearanceTab.zoomIndicatorLabel", { label: t("appearanceTab.zoom"), percent: Math.round(zoomLevelToZoomFactor(level) * 100), zoomIn: zoomShortcut("menu.zoomIn"), zoomOut: zoomShortcut("menu.zoomOut") })}>
         <Icon size={14} />
       </ToolbarStatusMenuButton>
     </PopoverTrigger>

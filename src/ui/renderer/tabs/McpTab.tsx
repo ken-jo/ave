@@ -8,18 +8,25 @@ import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-
 import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { Separator } from "../../../components/ui/separator.js";
 import { Textarea } from "../../../components/ui/textarea.js";
+import type { McpManagementState } from "../../../mcp/types.js";
 import type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState } from "../types.js";
 import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
 import { useInlineNotice } from "../hooks/use-status-bar.js";
+import { SettingsControlActions, useSettingsControls, useSettingsEditor, type SettingsControlDescriptor } from "../context/SettingsEditorContext.js";
+import { isIpcErrorResult } from "../types.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
+import { MCP_CONFIG_RECOVERY_REQUIRED, MCP_CREDENTIAL_MIGRATION_FAILED, MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
 import { invokeErrorCode, invokeErrorDetail } from "../format-ipc-error.js";
 import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
+
+function getMcpRecoveryError(error: unknown): string | undefined {
+  return errorMessage(error).includes(`${MCP_CONFIG_RECOVERY_REQUIRED}:`) ? t("mcpTab.configRecoveryRequired") : undefined;
+}
 
 type Transport = "stdio" | "http";
 
@@ -81,6 +88,8 @@ const EMPTY_FORM = {
   url: "",
   auth: "none" as "none" | "sso" | "api-key" | "oauth",
   apiKey: "",
+  apiKeyEnv: "",
+  apiKeyHeader: "",
   oauthClientId: "",
   headers: "",
   env: "",
@@ -209,15 +218,23 @@ function parseKeyValueLines(input: string, delimiter: ":" | "="): Record<string,
   );
 }
 
-export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = {}) {
+type McpSnapshot = [McpServerState[], McpServerConfigDto[], string, McpManagementState];
+const MCP_SNAPSHOT_CACHE_KEY = "mcp.snapshot";
+
+export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: string) => void; active?: boolean } = {}) {
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
+  const settingsEditor = useSettingsEditor();
+  const editorRevisionRef = useRef(settingsEditor?.reloadEpoch);
+  editorRevisionRef.current = settingsEditor?.reloadEpoch;
   const formIdPrefix = useId();
   const formIds = {
     id: `${formIdPrefix}-server-id`,
     transport: `${formIdPrefix}-transport`,
     auth: `${formIdPrefix}-auth`,
     apiKey: `${formIdPrefix}-api-key`,
+    apiKeyEnv: `${formIdPrefix}-api-key-env`,
+    apiKeyHeader: `${formIdPrefix}-api-key-header`,
     oauthClientId: `${formIdPrefix}-oauth-client-id`,
     command: `${formIdPrefix}-command`,
     args: `${formIdPrefix}-args`,
@@ -227,7 +244,10 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     headers: `${formIdPrefix}-headers`,
   };
 
-  const [loading, setLoading] = useState(true);
+  // Search mounts can reuse the last answer; entering the actual tab revalidates all independent server stores.
+  const editorCache = settingsEditor?.cache;
+  const [heldSnapshot] = useState(() => editorCache?.peek<McpSnapshot>(MCP_SNAPSHOT_CACHE_KEY));
+  const [loading, setLoading] = useState(heldSnapshot === undefined);
   const [error, setError] = useState<string | null>(null);
 
   const { show: showNotice, notice: banner, dismiss: dismissBanner } = useInlineNotice();
@@ -238,10 +258,15 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     setPolicyGuidanceFor(policyApprovalRequired ? msg : null);
   }, [showNotice]);
 
-  const [states, setStates] = useState<McpServerState[]>([]);
-  const [configs, setConfigs] = useState<McpServerConfigDto[]>([]);
-  const [configPath, setConfigPath] = useState("");
+  const [states, setStates] = useState<McpServerState[]>(heldSnapshot?.[0] ?? []);
+  const [configs, setConfigs] = useState<McpServerConfigDto[]>(heldSnapshot?.[1] ?? []);
+  const [configPath, setConfigPath] = useState(heldSnapshot?.[2] ?? "");
   const [form, setForm] = useState(EMPTY_FORM);
+  const [management, setManagement] = useState<McpManagementState | null>(heldSnapshot?.[3] ?? null);
+  const [reviewingServerId, setReviewingServerId] = useState<string | null>(null);
+  const [startingServerId, setStartingServerId] = useState<string | null>(null);
+  const startingServerIdRef = useRef<string | null>(null);
+  const [removedServerId, setRemovedServerId] = useState<string | null>(null);
   const [formBusy, setFormBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
@@ -252,50 +277,65 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
   const [authenticatingId, setAuthenticatingId] = useState<string | null>(null);
   const authenticatingIdRef = useRef<string | null>(null);
   const statesRequestRef = useRef(0);
+  const managementRequestRef = useRef(0);
 
-  const fetchAll = useCallback(async () => {
+  const fetchAll = useCallback(async (background = false) => {
+    const editorRevision = settingsEditor?.reloadEpoch;
     const requestId = ++statesRequestRef.current;
-    setLoading(true);
+    const managementRequestId = ++managementRequestRef.current;
+    setLoading(!background);
     setError(null);
     try {
-      const [statesRes, configsRes, configPathRes] = await Promise.all([
+      const read = (): Promise<McpSnapshot> => Promise.all([
         window.ave.mcp.servers(),
         window.ave.mcp.getConfigs(),
         window.ave.mcp.getConfigPath(),
+        window.ave.mcp.getManagementState(),
       ]);
+      const [statesRes, configsRes, configPathRes, managementRes] = editorCache
+        ? await editorCache.load(MCP_SNAPSHOT_CACHE_KEY, read, { fresh: true })
+        : await read();
+      if (managementRequestId !== managementRequestRef.current || editorRevision !== editorRevisionRef.current) return;
       if (requestId === statesRequestRef.current) setStates(statesRes);
       setConfigs(configsRes);
       setConfigPath(configPathRes);
+      setManagement(managementRes);
     } catch (e) {
-      setError(errorMessage(e) || t("mcpTab.fetchError"));
+      if (managementRequestId !== managementRequestRef.current || editorRevision !== editorRevisionRef.current) return;
+      const message = errorMessage(e);
+      setError(message.includes(`${MCP_CREDENTIAL_MIGRATION_FAILED}:`) ? t("mcpTab.credentialMigrationFailed") : (getMcpRecoveryError(e) ?? message) || t("mcpTab.fetchError"));
     } finally {
-      setLoading(false);
+      if (managementRequestId === managementRequestRef.current && editorRevision === editorRevisionRef.current) setLoading(false);
     }
-  }, []);
+  }, [t, editorCache, settingsEditor?.reloadEpoch]);
 
+  const initialReadRef = useRef(true);
+  const previousReadRef = useRef(fetchAll);
   useEffect(() => {
-    void fetchAll();
-  }, [fetchAll]);
+    const initial = initialReadRef.current;
+    const readChanged = previousReadRef.current !== fetchAll;
+    initialReadRef.current = false;
+    previousReadRef.current = fetchAll;
+    if (!active && !readChanged && (!initial || heldSnapshot !== undefined)) return;
+    void fetchAll(heldSnapshot !== undefined);
+  }, [active, fetchAll, heldSnapshot]);
 
   // There is no server-state event: a status that changes while the tab stays open (a contained server quarantined at
   // disconnect, a crash) is re-read when the user returns to the window, without polling.
   useEffect(() => {
-    let active = true;
+    let mounted = true;
     const refreshStates = (): void => {
-      if (document.visibilityState === "hidden") return;
-      const requestId = ++statesRequestRef.current;
-      void window.ave.mcp.servers().then((nextStates) => {
-        if (active && requestId === statesRequestRef.current) setStates(nextStates);
-      }).catch(() => { /* Keep the last observed status until the next refresh. */ });
+      if (!active || document.visibilityState === "hidden") return;
+      if (mounted) void fetchAll(true);
     };
     window.addEventListener("focus", refreshStates);
     document.addEventListener("visibilitychange", refreshStates);
     return () => {
-      active = false;
+      mounted = false;
       window.removeEventListener("focus", refreshStates);
       document.removeEventListener("visibilitychange", refreshStates);
     };
-  }, []);
+  }, [active, fetchAll]);
 
   const hasOAuthServer = configs.some((config) => config.transport === "http" && config.auth === "oauth")
     || states.some((state) => state.authStatus !== undefined);
@@ -306,9 +346,15 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     const timer = setInterval(() => {
       if (inFlight) return;
       inFlight = true;
+      const editorRevision = editorRevisionRef.current;
       const requestId = ++statesRequestRef.current;
       void window.ave.mcp.servers().then((nextStates) => {
-        if (active && requestId === statesRequestRef.current) setStates(nextStates);
+        if (active && requestId === statesRequestRef.current && editorRevision === editorRevisionRef.current) {
+          const held = editorCache?.peek<McpSnapshot>(MCP_SNAPSHOT_CACHE_KEY);
+          // A changed polled status must not leave an older tuple available to search mounts.
+          if (!held || JSON.stringify(held[0]) !== JSON.stringify(nextStates)) editorCache?.invalidate(MCP_SNAPSHOT_CACHE_KEY);
+          setStates(nextStates);
+        }
       }).catch(() => { /* Keep the last observed status until the next refresh. */ })
         .finally(() => { inFlight = false; });
     }, AUTH_STATUS_POLL_MS);
@@ -316,7 +362,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       active = false;
       clearInterval(timer);
     };
-  }, [hasOAuthServer]);
+  }, [hasOAuthServer, editorCache]);
 
   // 킬 스위치
   const handleKill = useCallback(
@@ -326,7 +372,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
         showBanner("success", t("mcpTab.killSuccess", { id }));
         void fetchAll();
       } catch (e) {
-        showBanner("error", errorMessage(e));
+        showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
       }
     },
     [fetchAll, showBanner],
@@ -359,11 +405,12 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       setRemovingId(id);
       try {
         await window.ave.mcp.removeConfig(id);
+        setRemovedServerId(id);
         await fetchAll();
         showBanner("success", t("mcpTab.removeSuccess", { id }));
         notifySaved();
       } catch (e) {
-        showBanner("error", errorMessage(e));
+        showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
       } finally {
         removingIdRef.current = null;
         setRemovingId(null);
@@ -371,6 +418,52 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     },
     [fetchAll, showBanner, notifySaved],
   );
+
+  const managementError = useCallback((error: unknown, fallbackKey = "mcpTab.startFailed") => {
+    const message = errorMessage(error);
+    const recoveryError = getMcpRecoveryError(error);
+    if (recoveryError) return recoveryError;
+    if (message.includes("user-keyboard-required:")) return t("formatIpcError.userKeyboardRequired");
+    if (message.includes("mcp-api-key-required:")) return t("mcpTab.missingApiKey");
+    if (message.includes("mcp-trust-stale:")) return t("mcpTab.trustStale");
+    if (message.includes("mcp-trust-required:")) return t("mcpTab.trustRequired");
+    if (message.includes("mcp-policy-refused:") || message.includes("runtime approval not admitted by policy")) return t("mcpTab.policyRefused");
+    if (message.includes("mcp-undo-unavailable:")) return t("mcpTab.undoUnavailable");
+    if (message.includes("mcp-server-missing:")) return t("mcpTab.serverMissing");
+    if (message.includes("mcp-server-exists:")) return t("mcpTab.serverExists");
+    return t(fallbackKey);
+  }, [t]);
+
+  const handleStart = useCallback(async (id: string, fingerprint?: string) => {
+    if (startingServerIdRef.current !== null) return;
+    startingServerIdRef.current = id;
+    setStartingServerId(id);
+    try {
+      const result = await window.ave.mcp.startServer(id, fingerprint);
+      if (!result.connected) showBanner("error", getAuthErrorMessage(result.errorCode));
+      else showBanner("success", t("mcpTab.reconnected", { id }));
+      setReviewingServerId(null);
+      await fetchAll();
+    } catch (error) {
+      showBanner("error", managementError(error));
+      await fetchAll();
+    } finally {
+      startingServerIdRef.current = null;
+      setStartingServerId(null);
+    }
+  }, [fetchAll, showBanner, managementError, t]);
+
+  const handleUndoRemove = useCallback(async () => {
+    if (!removedServerId) return;
+    try {
+      await window.ave.mcp.undoRemove(removedServerId);
+      setRemovedServerId(null);
+      await fetchAll();
+      notifySaved();
+    } catch (error) {
+      showBanner("error", managementError(error, "mcpTab.restoreFailed"));
+    }
+  }, [removedServerId, fetchAll, notifySaved, showBanner, managementError]);
 
   const handleSetApiKey = useCallback(async () => {
     if (!credentialTargetId) return;
@@ -388,11 +481,11 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
         result.connected ? "success" : "error",
         result.connected
           ? t("mcpTab.apiKeySavedConnected", { id: credentialTargetId })
-          : t("mcpTab.apiKeySavedNotConnected", { id: credentialTargetId, warning: result.warning ?? t("mcpTab.unknownCause") }),
+          : t("mcpTab.apiKeySavedNotConnected", { id: credentialTargetId, warning: result.warning === "mcp-trust-required" ? t("mcpTab.trustRequired") : result.warning ?? t("mcpTab.unknownCause") }),
       );
       notifySaved();
     } catch (e) {
-      showBanner("error", errorMessage(e));
+      showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
     } finally {
       setCredentialBusy(false);
     }
@@ -445,6 +538,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
           command,
           ...(args.length > 0 ? { args } : {}),
           ...(env ? { env } : {}),
+          ...(form.auth === "api-key" ? { apiKeyEnv: form.apiKeyEnv.trim() } : {}),
         };
       } else {
         const headers = parseKeyValueLines(form.headers, ":");
@@ -455,10 +549,11 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
           allowPrivateNetworks: form.allowPrivateNetworks,
           ...(form.auth === "oauth" ? { oauth: oauthClientId ? { clientId: oauthClientId } : {} } : {}),
           ...(headers ? { headers } : {}),
+          ...(form.auth === "api-key" && form.apiKeyHeader.trim() ? { apiKeyHeader: form.apiKeyHeader.trim() } : {}),
         };
       }
     } catch (e) {
-      showBanner("error", errorMessage(e));
+      showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
       return;
     }
 
@@ -468,9 +563,10 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       setForm(EMPTY_FORM);
       setShowForm(false);
       showBanner(
-        result.connected || result.errorCode === "mcp-auth-required" ? "success" : "error",
+        result.connected || result.requiresTrust || result.errorCode === "mcp-auth-required" ? "success" : "error",
         result.connected
           ? t("mcpTab.serverAddedConnected", { id: config.id })
+          : result.requiresTrust ? t("mcpTab.serverSavedTrustRequired", { id: config.id })
           : result.errorCode === "mcp-auth-required"
             ? t("mcpTab.serverSavedAuthRequired", { id: config.id })
             : result.errorCode
@@ -480,12 +576,41 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       notifySaved();
       void fetchAll();
     } catch (e) {
-      const message = invokeErrorDetail(e) ?? errorMessage(e);
+      const message = getMcpRecoveryError(e) ?? invokeErrorDetail(e) ?? errorMessage(e);
       showBanner("error", message, invokeErrorCode(e) === MCP_GOVERNANCE_UNAPPROVED_SERVER);
     } finally {
       setFormBusy(false);
     }
   }, [form, fetchAll, showBanner, notifySaved]);
+
+  const handleClearApiKey = useCallback(async (id: string): Promise<void> => {
+    try {
+      await window.ave.mcp.clearApiKey(id);
+    } finally {
+      await fetchAll();
+    }
+  }, [fetchAll]);
+
+  const controls: SettingsControlDescriptor[] = [{ id: "mcp.management", section: "mcp-servers", label: t("mcpTab.pageTitle"),
+    modified: false, loading, loadError: error ?? undefined, disabledReason: t("settingsEditor.noDefault") }];
+  for (const config of configs) {
+    if (!config.bundled) controls.push({ id: `mcp.server.${config.id}`, section: "mcp-servers",
+      label: t("mcpTab.serverSetting", { id: config.id }), modified: true, loading, loadError: error ?? undefined,
+      reset: async () => {
+        const result: unknown = await window.ave.mcp.removeConfig(config.id);
+        if (isIpcErrorResult(result)) throw new Error(t("mcpTab.removeFailed"));
+        setRemovedServerId(config.id);
+        await fetchAll();
+      } });
+    if (config.auth === "api-key") {
+      const known = management !== null && Object.hasOwn(management.hasApiKey, config.id);
+      controls.push({ id: `mcp.apiKey.${config.id}`, section: "mcp-servers", label: t("mcpTab.credentialSetting", { id: config.id }),
+        modified: known ? management.hasApiKey[config.id] : undefined, loading,
+        loadError: error ?? (!loading && !known ? t("mcpTab.fetchError") : undefined),
+        reset: () => handleClearApiKey(config.id) });
+    }
+  }
+  useSettingsControls(controls);
 
   // 설정에는 있지만 현재 연결 상태가 없는 서버도 표시
   const allIds = new Set([
@@ -529,6 +654,18 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
           <div className="rounded-md bg-destructive/(--opacity-soft) px-3 py-2 text-sm text-destructive">{error}</div>
         )}
 
+        {management && <div data-testid="mcp-policy-state" className="rounded-md border p-3 text-sm space-y-1">
+          <p>{t(management.policyStatus === "pending-review" ? "mcpTab.policyPendingReview"
+            : management.policyStatus === "invalid" ? "mcpTab.policyInvalid"
+              : management.userServersAllowed ? "mcpTab.policyUserTrustAllowed" : "mcpTab.policyUserTrustBlocked")}</p>
+          <code className="text-xs [overflow-wrap:anywhere]">{management.policyPath}</code>
+          {management.managedServerIds.length > 0 && <p>{t("mcpTab.managedServers", { ids: management.managedServerIds.join(", ") })}</p>}
+        </div>}
+        {removedServerId && <div role="status" className="flex flex-wrap items-center gap-2 text-sm">
+          <span>{t("mcpTab.removeSuccess", { id: removedServerId })}</span>
+          <Button variant="outline" size="sm" onClick={() => void handleUndoRemove()}>{t("mcpTab.undoRemove")}</Button>
+        </div>}
+
         {/* ── Section A: 서버 목록 ──────────────────────
             The page header (SettingsPageHeader above) already titles this
             surface "MCP"; the server-list toolbar must NOT repeat that title
@@ -562,10 +699,13 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                 const st = getState(id);
                 const cfg = getConfig(id);
                 const status = st?.status ?? "disconnected";
+                const launch = management?.servers[id];
+                const hasApiKey = management?.hasApiKey[id];
+                const policyBlocked = management !== null && !management.userServersAllowed && !management.managedServerIds.includes(id);
                 const authStatus = authenticatingId === id ? "authenticating" : st?.authStatus;
                 const canAuthenticate = cfg?.transport === "http" && (cfg.auth === "oauth" || authStatus !== undefined);
                 return (
-                  <div key={id} data-mcp-server-id={id} className="rounded-md border bg-card p-3">
+                  <div key={id} data-mcp-server-id={id} data-setting-id={`mcp.server.${id}`} data-setting-registered={!cfg?.bundled ? "true" : undefined} className="rounded-md border bg-card p-3">
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
@@ -591,6 +731,10 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                             </Badge>
                           )}
                         </div>
+                        {cfg?.auth === "api-key" && hasApiKey === false && <p role="status" className="mt-1 text-dense text-warning">{t("mcpTab.missingApiKey")}</p>}
+                        {launch && <p className="mt-1 text-dense text-muted-foreground">
+                          {t("mcpTab.launchSummary", { count: String(launch.argumentCount), names: launch.environmentKeys.join(", ") || t("mcpTab.noEnvironmentKeys") })}
+                        </p>}
                         {st?.registeredTools.length ? (
                           <p className="mt-1 text-dense text-muted-foreground">
                             {t("mcpTab.toolsLabel")} {st.registeredTools.join(", ")}
@@ -651,6 +795,15 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                             {t("mcpTab.setKeyButton")}
                           </Button>
                         )}
+                        {!cfg?.bundled && launch && status !== "connected" && <Button variant="outline" size="sm"
+                          className="h-6 text-xs px-2" disabled={policyBlocked || startingServerId !== null || st?.containedQuarantined || cfg?.auth === "api-key" && hasApiKey === false}
+                          onClick={() => launch.trusted ? void handleStart(id) : setReviewingServerId(id)}>
+                          {t(launch.trusted ? "mcpTab.reconnect" : "mcpTab.reviewAndStart")}
+                        </Button>}
+                        {cfg?.auth === "api-key" && hasApiKey === true && <Button size="sm" variant="outline" className="h-6 text-xs px-2"
+                          onClick={() => { void handleClearApiKey(id).catch((clearError) => showBanner("error", managementError(clearError, "mcpTab.clearApiKeyFailed"))); }}>
+                          {t("mcpTab.clearApiKey")}
+                        </Button>}
                         {status === "connected" && (
                           <Button
                             variant="outline"
@@ -672,6 +825,17 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                         </Button>}
                       </div>
                     </div>
+                    {reviewingServerId === id && cfg && launch && <fieldset className="mt-3 min-w-0 space-y-2 border-t pt-3" aria-label={t("mcpTab.trustReviewTitle")}>
+                      <p className="text-sm">{t("mcpTab.trustReviewDescription")}</p>
+                      <code className="block whitespace-pre-wrap break-all text-xs">{cfg.transport === "stdio"
+                        ? [cfg.command, ...launch.arguments.map((argument) => JSON.stringify(argument))].join(" ") : cfg.url}</code>
+                      <p className="text-xs">{t("mcpTab.launchSummary", { count: String(launch.argumentCount), names: launch.environmentKeys.join(", ") || t("mcpTab.noEnvironmentKeys") })}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" disabled={policyBlocked || startingServerId !== null}
+                          onClick={() => void handleStart(id, launch.fingerprint)}>{t("mcpTab.trustAndStart")}</Button>
+                        <Button size="sm" variant="outline" onClick={() => setReviewingServerId(null)}>{t("common.cancel")}</Button>
+                      </div>
+                    </fieldset>}
                     {credentialTargetId === id && (
                       <div className="mt-3 flex items-end gap-2 border-t pt-3">
                         <div className="min-w-0 flex-1 space-y-1">
@@ -680,6 +844,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                           </Label>
                           <Input
                             id={`${id}-api-key-update`}
+                            data-setting-id={`mcp.apiKey.${id}`} data-setting-registered="true"
                             type="password"
                             className="h-7 text-xs font-mono"
                             placeholder={
@@ -714,7 +879,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
         {showForm && (
           <>
             <Separator />
-            <div className="space-y-3 rounded-md border bg-muted/(--opacity-medium) p-4">
+            <div className="space-y-3 rounded-md border bg-muted/(--opacity-medium) p-4" data-settings-transient="mcp-server-draft">
               <h4 className="text-xs font-semibold text-foreground">{t("mcpTab.addFormTitle")}</h4>
 
               <div className="grid grid-cols-2 gap-3">
@@ -787,6 +952,16 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
                   />
                 </div>
               </div>
+
+              {form.auth === "api-key" && <div className="space-y-1">
+                <Label htmlFor={form.transport === "stdio" ? formIds.apiKeyEnv : formIds.apiKeyHeader} className="text-xs">
+                  {t(form.transport === "stdio" ? "mcpTab.apiKeyEnvironmentName" : "mcpTab.apiKeyHeaderName")}
+                </Label>
+                <Input id={form.transport === "stdio" ? formIds.apiKeyEnv : formIds.apiKeyHeader} className="h-7 text-xs font-mono"
+                  value={form.transport === "stdio" ? form.apiKeyEnv : form.apiKeyHeader}
+                  onChange={(event) => setForm((current) => ({ ...current, [form.transport === "stdio" ? "apiKeyEnv" : "apiKeyHeader"]: event.target.value }))} />
+                {form.transport === "http" && <p className="text-tiny text-muted-foreground">{t("mcpTab.apiKeyHeaderHint")}</p>}
+              </div>}
 
               {form.transport === "http" && form.auth === "oauth" && (
                 <div className="space-y-1">
@@ -912,6 +1087,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
             </div>
           </>
         )}
+        <SettingsControlActions section="mcp-servers" />
       </div>
     </div>
   );

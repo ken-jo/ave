@@ -32,6 +32,7 @@ async function openForm(error: Error) {
   vi.stubGlobal("ave", { mcp: {
     servers: vi.fn(async () => []),
     getConfigs: vi.fn(async () => []),
+    getManagementState: vi.fn(async () => ({ policyPath: "governance/mcp-policy.json", policyStatus: "absent", userServersAllowed: true, managedServerIds: [], hasApiKey: {}, servers: {} })),
     getConfigPath: vi.fn(async () => "mcp/servers.json"),
     addConfig,
   } });
@@ -55,7 +56,7 @@ describe.each(["en", "ko"] as const)("McpTab policy refusal in %s", (locale) => 
     try {
       const reason = t("be_mcpGovernance.unapprovedServer", { id: SERVER_ID });
       const validateServer = vi.fn(() => ({ valid: false as const, layer: 1, reason, reasonCode: MCP_GOVERNANCE_UNAPPROVED_SERVER }));
-      const manager = new McpManager({ validateServer } as never, {} as never, unusedNetworkFetch, join(dir, "servers.json"));
+      const manager = new McpManager({ validateServer, validateUserConfig: () => ({ valid: false, layer: 1, reason, reasonCode: MCP_GOVERNANCE_UNAPPROVED_SERVER }) } as never, {} as never, unusedNetworkFetch, join(dir, "servers.json"));
       const error = await manager.addConfig({ id: SERVER_ID, transport: "stdio", command: "notes-server" }).catch((error: unknown) => error);
       expect(error).toBeInstanceOf(Error);
       expect(validateServer).toHaveBeenCalledOnce();

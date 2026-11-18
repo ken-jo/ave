@@ -1,7 +1,9 @@
+import { t } from "../../../i18n/runtime.js";
+import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AveApi } from "../types.js";
-import { DEFAULT_APPEARANCE, isGlassTint, type AppearanceSettings, type AppearanceMode } from "../../../shared/appearance-settings.js";
+import { DEFAULT_APPEARANCE, isGlassTint, type AppearanceSettings, type AppearanceMode, type AppearancePersistenceResult } from "../../../shared/appearance-settings.js";
 import { applyAppearance, resolveAppearanceScheme, resolveTheme } from "./resolve-theme.js";
 import { requireScheme } from "./schemes/index.js";
 import { schemeToHostTokens } from "./host-theme-tokens.js";
@@ -25,8 +27,20 @@ export function ThemeProvider({ api, initialAppearance, children }: ThemeProvide
   const [appearance, setAppearance] = useState<AppearanceSettings>(() => initialAppearance ?? window.__aveInitialAppearance ?? DEFAULT_APPEARANCE);
   const [prefersDark, setPrefersDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
   const touchedRef = useRef(false);
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const authoritativeRef = useRef(appearance);
+  const broadcastRevisionRef = useRef(0);
+  const editRevisionsRef = useRef<Partial<Record<keyof AppearanceSettings, number>>>({});
+  const pendingKeysRef = useRef(new Set<keyof AppearanceSettings>());
+  const savedRevisionsRef = useRef<Partial<Record<keyof AppearanceSettings, number>>>({});
   const appearanceRef = useRef(appearance);
   appearanceRef.current = appearance;
+  const applyAuthoritative = useCallback(() => {
+    const next = { ...authoritativeRef.current };
+    for (const key of pendingKeysRef.current) Object.assign(next, { [key]: appearanceRef.current[key] });
+    appearanceRef.current = next;
+    setAppearance(next);
+  }, []);
   const scheme = useMemo(() => resolveAppearanceScheme(appearance, prefersDark), [appearance, prefersDark]);
   const [applied, setApplied] = useState(() => ({ theme: resolveTheme(scheme), revision: 0 }));
 
@@ -49,14 +63,16 @@ export function ThemeProvider({ api, initialAppearance, children }: ThemeProvide
     const unsubscribe = api.onSettingsUpdated((settings) => {
       if (!cancelled) {
         touchedRef.current = true;
-        setAppearance(settings.appearance);
+        broadcastRevisionRef.current++;
+        authoritativeRef.current = settings.appearance;
+        applyAuthoritative();
       }
     });
     void api.getSettings().then((settings) => {
-      if (!cancelled && !touchedRef.current) setAppearance(settings.appearance);
+      if (!cancelled && !touchedRef.current) { authoritativeRef.current = settings.appearance; applyAuthoritative(); }
     }).catch((error: unknown) => console.error("Appearance settings could not be loaded", error));
     return () => { cancelled = true; unsubscribe(); };
-  }, [api]);
+  }, [api, applyAuthoritative]);
 
   // One projection per applied theme feeds both the plugin broadcast and the in-window app panels.
   const hostTokens = useMemo(() => schemeToHostTokens(applied.theme), [applied]);
@@ -66,28 +82,75 @@ export function ThemeProvider({ api, initialAppearance, children }: ThemeProvide
       .catch((error: unknown) => console.error("Theme notification failed", error));
   }, [api, applied, hostTokens]);
 
-  const update = useCallback((patch: Partial<AppearanceSettings>, persist = true) => {
-    touchedRef.current = true;
-    const next = { ...appearanceRef.current, ...patch };
-    // Validate mode/selection at the same boundary that resolves the document.
-    resolveAppearanceScheme(next, prefersDark);
-    appearanceRef.current = next;
-    setAppearance(next);
-    if (persist && api) void api.updateSettings({ appearance: patch }).catch((error: unknown) => console.error("Appearance settings could not be saved", error));
-  }, [api, prefersDark]);
+  const update = useCallback(async (patch: Partial<AppearanceSettings>, persist = true): Promise<AppearancePersistenceResult> => {
+    const edits = (Object.keys(patch) as Array<keyof AppearanceSettings>).map((key) => {
+      const revision = (editRevisionsRef.current[key] ?? 0) + 1;
+      editRevisionsRef.current[key] = revision;
+      return { key, revision };
+    });
+    const broadcastAtStart = broadcastRevisionRef.current;
+    try {
+      const next = { ...appearanceRef.current, ...patch };
+      resolveAppearanceScheme(next, prefersDark);
+      touchedRef.current = true;
+      for (const { key } of edits) pendingKeysRef.current.add(key);
+      appearanceRef.current = next;
+      setAppearance(next);
+      if (!persist || !api) return { ok: true };
+      const saved = requirePersistedResult(await api.updateSettings({ appearance: patch }));
+      resolveAppearanceScheme(saved.appearance, prefersDark);
+      if (broadcastRevisionRef.current === broadcastAtStart) {
+        const authoritative = { ...authoritativeRef.current };
+        for (const { key, revision } of edits) {
+          if (revision < (savedRevisionsRef.current[key] ?? 0)) continue;
+          savedRevisionsRef.current[key] = revision;
+          Object.assign(authoritative, { [key]: saved.appearance[key] });
+        }
+        authoritativeRef.current = authoritative;
+      }
+      let current = false;
+      for (const { key, revision } of edits) {
+        if (editRevisionsRef.current[key] === revision) { pendingKeysRef.current.delete(key); current = true; }
+      }
+      applyAuthoritative();
+      if (current) setPersistenceError(null);
+      return current ? { ok: true } : { ok: false };
+    } catch {
+      const rollback: Partial<AppearanceSettings> = {};
+      let current = false;
+      for (const { key, revision } of edits) {
+        if (editRevisionsRef.current[key] !== revision) continue;
+        pendingKeysRef.current.delete(key);
+        Object.assign(rollback, { [key]: authoritativeRef.current[key] });
+        current = true;
+      }
+      if (current) {
+        const next = { ...appearanceRef.current, ...rollback };
+        appearanceRef.current = next;
+        setAppearance(next);
+        setPersistenceError(t("useSettingsOrchestration.saveFailed"));
+      }
+      return { ok: false };
+    }
+  }, [api, applyAuthoritative, prefersDark]);
   const setMode = useCallback((mode: AppearanceMode) => update({ mode }), [update]);
-  const setScheme = useCallback((shell: ResolvedShell, id: string) => {
-    if (requireScheme(id).shell !== shell) throw new Error(`Color scheme does not match mode: ${id}`);
-    update(shell === "dark" ? { darkScheme: id as AppearanceSettings["darkScheme"] } : { lightScheme: id as AppearanceSettings["lightScheme"] });
+  const setScheme = useCallback(async (shell: ResolvedShell, id: string): Promise<AppearancePersistenceResult> => {
+    try {
+      if (requireScheme(id).shell !== shell) throw new Error("Color scheme does not match mode");
+    } catch {
+      setPersistenceError(t("useSettingsOrchestration.saveFailed"));
+      return { ok: false };
+    }
+    return update(shell === "dark" ? { darkScheme: id as AppearanceSettings["darkScheme"] } : { lightScheme: id as AppearanceSettings["lightScheme"] });
   }, [update]);
-  const setGlassTint = useCallback((tint: number, persist: boolean) => {
-    if (!isGlassTint(tint)) throw new Error(`Invalid glass tint: ${tint}`);
-    update({ glassTint: tint }, persist);
+  const setGlassTint = useCallback(async (tint: number, persist: boolean): Promise<AppearancePersistenceResult> => {
+    if (!isGlassTint(tint)) { setPersistenceError(t("useSettingsOrchestration.saveFailed")); return { ok: false }; }
+    return update({ glassTint: tint }, persist);
   }, [update]);
   const value = useMemo<ThemeContextValue>(() => ({
     appearance, mode: appearance.mode, darkScheme: appearance.darkScheme, lightScheme: appearance.lightScheme,
-    setMode, setScheme, setGlassTint, resolved: scheme.shell, scheme, appliedTheme: applied.theme, appliedRevision: applied.revision,
-  }), [appearance, setMode, setScheme, setGlassTint, scheme, applied]);
+    setMode, setScheme, setGlassTint, persistenceError, resolved: scheme.shell, scheme, appliedTheme: applied.theme, appliedRevision: applied.revision,
+  }), [appearance, setMode, setScheme, setGlassTint, persistenceError, scheme, applied]);
   const hostAppearance = useMemo(() => ({
     shell: applied.theme.shell,
     tokens: hostTokens,

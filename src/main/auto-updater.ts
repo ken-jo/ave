@@ -7,6 +7,7 @@ import type { AuditLogger } from "../audit/audit-logger.js";
 import { auditUnauthorized, validateHostRendererSender } from "../ipc/gated.js";
 import { createLogger } from "../lib/logger.js";
 import { t } from "../i18n/index.js";
+import type { AppUpdateCheckResult } from "../shared/restart-settings.js";
 import type { UpdateState } from "../shared/update-state.js";
 import { getAveAppVersion } from "../shared/app-version.js";
 import { compareSemver, SEMVER_CORE_PATTERN } from "../shared/semver-compare.js";
@@ -98,6 +99,8 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
   triggerCheck: () => Promise<void>;
   // Expose private updater operations and IPC wrappers only for gate tests; registered handlers remain runtime authority.
   _testOnly: {
+    checkNow: () => Promise<AppUpdateCheckResult>;
+    ipcCheckNow: (event: IpcMainInvokeEvent) => Promise<AppUpdateCheckResult>;
     downloadNow: () => Promise<{ ok: boolean; reason?: string }>;
     installNow: () => Promise<{ ok: boolean; reason?: string }>;
     ipcDownloadNow: (event: IpcMainInvokeEvent) => Promise<{ ok: boolean; reason?: string }>;
@@ -227,19 +230,25 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
 
   const triggerCheck = async (): Promise<void> => {
     if (!deps.isEnabled()) return;
+    await checkNow();
+  };
+
+  const checkNow = async (): Promise<AppUpdateCheckResult> => {
     const u = loadUpdater();
-    if (!u) return;
+    if (!u) return { ok: false, reason: "updater-unavailable" };
     wire(u);
     try {
       await u.checkForUpdates();
-    } catch (err) {
-      log.warn("checkForUpdates failed: %s", (err as Error).message);
+      return { ok: true };
+    } catch (error) {
+      log.warn("update check failed: %s", (error as Error).message);
+      return { ok: false, reason: "update-check-failed" };
     }
   };
 
   // Remove IPC handlers on stop to avoid duplicate registration after restart; commands are inert when the updater is unavailable.
   const rejectUnauthorizedIpc = (
-    channel: typeof CHANNELS.update.downloadNow | typeof CHANNELS.update.installNow | typeof CHANNELS.update.skipVersion,
+    channel: typeof CHANNELS.update.checkNow | typeof CHANNELS.update.downloadNow | typeof CHANNELS.update.installNow | typeof CHANNELS.update.skipVersion,
     event: IpcMainInvokeEvent,
   ): { ok: false; reason: "unauthorized-frame" } => {
     auditUnauthorized(deps.auditLogger, channel, event);
@@ -412,6 +421,11 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     return skipCurrentVersion();
   };
 
+  const onCheckNow = async (event: IpcMainInvokeEvent): Promise<AppUpdateCheckResult> => {
+    if (!isAuthorizedHostRenderer(event)) return rejectUnauthorizedIpc(CHANNELS.update.checkNow, event);
+    return checkNow();
+  };
+
   const onGetState = (): UpdateState => lastState;
 
   // Load IPC at start and skip absent APIs so unit tests can use the updater outside the desktop runtime.
@@ -429,6 +443,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     const ipc = loadIpcMain();
     if (!ipc) return;
     ipcRegistered = true;
+    ipc.handle(CHANNELS.update.checkNow, onCheckNow);
     ipc.handle(CHANNELS.update.downloadNow, onDownloadNow);
     ipc.handle(CHANNELS.update.installNow, onInstallNow);
     ipc.handle(CHANNELS.update.skipVersion, onSkipVersion);
@@ -440,6 +455,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     ipcRegistered = false;
     const ipc = loadIpcMain();
     if (!ipc) return;
+    ipc.removeHandler(CHANNELS.update.checkNow);
     ipc.removeHandler(CHANNELS.update.downloadNow);
     ipc.removeHandler(CHANNELS.update.installNow);
     ipc.removeHandler(CHANNELS.update.skipVersion);
@@ -463,6 +479,8 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     },
     triggerCheck,
     _testOnly: {
+      checkNow,
+      ipcCheckNow: onCheckNow,
       downloadNow: downloadAvailableUpdate,
       installNow: installDownloadedUpdate,
       ipcDownloadNow: onDownloadNow,

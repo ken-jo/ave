@@ -3,6 +3,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fakeLlmSettings } from "../shared/__tests__/fake-llm-settings.js";
 import { t } from "../i18n/runtime.js";
 import { invokeRegisteredHandler, invokeRegisteredHandlerWithEvent } from "./test-helpers.js";
+import { setupCommittedAveHome } from "./support/committed-ave-home.js";
+import { PolicyWriteError } from "../permissions/policy-store.js";
+
+// A durable mode change also saves the reviewer mode in the home's configuration, which only its owner may write.
+setupCommittedAveHome("ave-ipc-permissions-");
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -16,10 +21,10 @@ vi.mock("electron", () => ({
   },
 }));
 
-const mockLoadPolicy = vi.fn();
-const mockSavePolicy = vi.fn();
+const { mockLoadPolicy, mockSavePolicy } = vi.hoisted(() => ({ mockLoadPolicy: vi.fn(), mockSavePolicy: vi.fn() }));
 
-vi.mock("../permissions/policy-store.js", () => ({
+vi.mock("../permissions/policy-store.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../permissions/policy-store.js")>()),
   loadPolicy: mockLoadPolicy,
   savePolicy: mockSavePolicy,
 }));
@@ -569,13 +574,18 @@ describe("ave:policy:set", () => {
   });
 
   it("managed error → returns { ok: false, error: 'managed' } without throwing", async () => {
-    mockSavePolicy.mockRejectedValue(new Error("IT 관리 정책은 사용자가 변경할 수 없습니다."));
+    mockSavePolicy.mockRejectedValue(new PolicyWriteError("managed", "Managed policy cannot be changed by the user."));
     const { gate } = await setupHandlers();
-    const result = await invokeRegisteredHandler(handlers, "ave:policy:set", policyPayload({ requireExplicitApproval: false })) as { ok: boolean; error: string; message: string };
-    expect(result.ok).toBe(false);
-    expect(result.error).toBe("managed");
-    expect(result.message).toContain("IT 관리");
+    const result = await invokeRegisteredHandler(handlers, "ave:policy:set", policyPayload({ requireExplicitApproval: false })) as { ok: boolean; error: string };
+    expect(result).toEqual({ ok: false, error: "managed" });
     expect(gate.setPolicy).not.toHaveBeenCalled();
+  });
+
+  it("reports any other save failure as a generic code without its message", async () => {
+    mockSavePolicy.mockRejectedValue(new Error("disk unavailable"));
+    await setupHandlers();
+    expect(await invokeRegisteredHandler(handlers, "ave:policy:set", policyPayload({ requireExplicitApproval: false })))
+      .toEqual({ ok: false, error: "policy-save-failed" });
   });
 
   it("gate.setPolicy is skipped when approvalGate is undefined", async () => {

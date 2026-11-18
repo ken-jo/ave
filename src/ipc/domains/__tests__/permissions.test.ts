@@ -2,11 +2,12 @@ import { useConfigurationOwner } from "../../../__tests__/support/configuration-
 
 useConfigurationOwner();
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { migrateAveHomeConfiguration } from "../../../shared/ave-home-configuration.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import type { PluginReadjudicationEvidence, ScopedPermissionRule, ScopedPermissionRuleError } from "../../../shared/permissions-events.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
@@ -44,6 +45,7 @@ vi.mock("electron", () => ({
 // `policyGet` must attach the host-derived `editable` flag. loadPolicy itself reads real OS paths (/etc/ave,
 // %ProgramData%), so the file layer is stubbed while the handler under test; and the predicate it calls; stay real.
 const loadPolicyMock = vi.hoisted(() => vi.fn());
+const savePolicyMock = vi.hoisted(() => vi.fn());
 const egressRuntimeMock = vi.hoisted(() => ({
   listEgressGrants: vi.fn(async (): Promise<unknown[]> => []),
   revokeEgressGrant: vi.fn(async (_target: unknown) => ({ removed: true, closed: 0 })),
@@ -52,7 +54,7 @@ vi.mock("../../../permissions/egress-runtime.js", () => egressRuntimeMock);
 
 vi.mock("../../../permissions/policy-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/policy-store.js")>();
-  return { ...actual, loadPolicy: loadPolicyMock };
+  return { ...actual, loadPolicy: loadPolicyMock, savePolicy: savePolicyMock };
 });
 
 vi.mock("../../../permissions/user-approval-store.js", async (importOriginal) => {
@@ -137,6 +139,7 @@ function makeDeps(options: {
     addRulePersist: vi.fn(async () => undefined),
     addSessionRule: vi.fn(() => undefined),
     removeRulePersist: vi.fn(async () => undefined),
+    addAlwaysAskedPersist: vi.fn(async () => undefined),
     addAlwaysAllowedPersist: vi.fn(async () => undefined),
     addAlwaysDeniedPersist: vi.fn(async () => undefined),
     removeRule: vi.fn(async () => undefined),
@@ -241,10 +244,71 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
   return { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate };
 }
 
+/**
+ * A durable mode change also writes the reviewer settings store. The file's shared home is not owned by the test account on
+ * a Windows runner, so boot refuses it and every such write reports the refused-home notice. Give those tests a home the
+ * account owns, as the reviewer dispatch test does.
+ */
+function useOwnedAveHome(): string {
+  const oldHome = process.env.HOME;
+  const parent = mkdtempSync(join(tmpdir(), "ave-permissions-ipc-home-"));
+  setFixtureOwner(parent);
+  const home = join(parent, ".ave");
+  const privacy = ensureAveHomePrivate(home);
+  expect(privacy).not.toMatchObject({ enforcement: "none" });
+  vi.stubEnv("AVE_HOME", home);
+  process.env.HOME = parent;
+  migrateAveHomeConfiguration(home, privacy);
+  onTestFinished(async () => {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(parent);
+  });
+  return home;
+}
+
 beforeEach(() => {
+  migrateAveHomeConfiguration(aveHome(), ensureAveHomePrivate(aveHome()));
   handlers.clear();
   recordApprovalMock.mockClear();
   readWindowsStatusMock.mockReset();
+  savePolicyMock.mockReset();
+});
+
+describe("policy patch validation and failure kinds", () => {
+  it.each([null, [], "invalid", { managed: false }, { extra: true }, { version: 2 }, { requireExplicitApproval: "false" }])("rejects unsupported policy patch %j", async (patch) => {
+    await setup();
+    expect(await invoke(PERMISSIONS.policySet, { patch, intent: USER_INTENT })).toMatchObject({ ok: false, error: "invalid-patch" });
+    expect(savePolicyMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a storage error separately from a managed policy refusal", async () => {
+    await setup();
+    savePolicyMock.mockRejectedValueOnce(new Error("disk unavailable"));
+    expect(await invoke(PERMISSIONS.policySet, { patch: { requireExplicitApproval: false }, intent: USER_INTENT }))
+      .toEqual({ ok: false, error: "policy-save-failed" });
+    const { PolicyWriteError } = await import("../../../permissions/policy-store.js");
+    savePolicyMock.mockRejectedValueOnce(new PolicyWriteError("managed", "Policy is managed."));
+    expect(await invoke(PERMISSIONS.policySet, { patch: { requireExplicitApproval: false }, intent: USER_INTENT }))
+      .toEqual({ ok: false, error: "managed" });
+  });
+
+  it.each([PERMISSIONS.getMode, PERMISSIONS.listRules, PERMISSIONS.policyGet])("guards read handler %s before reading host state", async (channel) => {
+    const { permissionManager } = await setup();
+    expect(await invokeRegisteredHandlerWithEvent(handlers, channel, isolatedAppFrameEvent())).toEqual(UNAUTHORIZED_FRAME);
+    expect(permissionManager.getMode).not.toHaveBeenCalled();
+    expect(permissionManager.listPersistedRules).not.toHaveBeenCalled();
+  });
+
+  it("keeps mode, rules and policy readable from the host renderer", async () => {
+    const { permissionManager } = await setup({ mode: "strict" });
+    expect(await invoke(PERMISSIONS.getMode)).toMatchObject({ mode: "strict" });
+    expect(await invoke(PERMISSIONS.listRules)).toEqual([]);
+    expect(permissionManager.listPersistedRules).toHaveBeenCalledOnce();
+    loadPolicyMock.mockResolvedValueOnce({ version: 1, requireExplicitApproval: true, managed: false, source: "defaults", updatedAt: "2026-01-01T00:00:00Z" });
+    expect(await invoke(PERMISSIONS.policyGet)).toMatchObject({ editable: true });
+  });
 });
 
 describe("permissions IPC handlers", () => {
@@ -263,6 +327,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("setMode persists internal durable mode changes with audit but no approval prompt", async () => {
+    useOwnedAveHome();
     const { deps, permissionManager } = await setup({ approvalChoice: "allow-once" });
 
     const result = await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT });
@@ -282,6 +347,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("broadcasts successful durable mode changes to all app windows", async () => {
+    useOwnedAveHome();
     const { appWindows } = await setup({ approvalChoice: "allow-once" });
 
     await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT });
@@ -292,6 +358,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("setMode ignores approval denial because built-in settings changes do not request approval", async () => {
+    useOwnedAveHome();
     const { permissionManager } = await setup({ approvalChoice: "deny-once" });
 
     const result = await invoke(PERMISSIONS.setMode, { mode: "strict", intent: USER_INTENT });
@@ -462,7 +529,7 @@ describe("permissions IPC handlers", () => {
     }
   });
 
-  it("addRule and removeRule mutate only through parsed rule commands", async () => {
+  it("addRule and removeRule apply validated rule mutations", async () => {
     const { deps, permissionManager } = await setup();
 
     await invoke(PERMISSIONS.addRule, {
@@ -1233,6 +1300,7 @@ describe("state-mutating permission channels refuse non-host frames", () => {
   });
 
   it("still accepts the host renderer frame on the same channels", async () => {
+    useOwnedAveHome();
     const { permissionManager } = await setup();
 
     const result = await invokeRegisteredHandlerWithEvent(handlers,
@@ -1877,4 +1945,12 @@ describe("home content review IPC", () => {
       await cleanupTmpDir(parent);
     }
   });
+});
+
+it('adds and removes ordinary Ask rules through the host boundary', async () => {
+  const { permissionManager } = await setup();
+  expect(await invoke(PERMISSIONS.addRule, { pattern: 'read_*', action: 'ask', intent: USER_INTENT })).toMatchObject({ ok: true });
+  expect(permissionManager.addAlwaysAskedPersist).toHaveBeenCalledExactlyOnceWith('read_*');
+  expect(await invoke(PERMISSIONS.removeRule, { pattern: 'read_*', action: 'ask', intent: USER_INTENT })).toMatchObject({ ok: true });
+  expect(permissionManager.removeRule).toHaveBeenCalledExactlyOnceWith('read_*', 'ask');
 });

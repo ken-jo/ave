@@ -1,19 +1,17 @@
-// Local minidumps are collected without upload; remote reporting requires user configuration. Optional reporting is inert without its dependency or DSN;
-// environment configuration takes precedence over settings.
+// Local minidumps stay local unless the user enables crash reporting to an authorized endpoint.
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { TelemetrySettings } from "../data/settings-store.js";
 import { createLogger } from "../lib/logger.js";
-import { envForcedStringForSettingsPath } from "../shared/env-backed-settings.js";
+import { telemetryLevel, validateTelemetryEndpoint } from "../shared/telemetry-policy.js";
 const log = createLogger("crash-reporter");
 
 export interface CrashReporterDeps {
-  // Base path for crash dumps. We pass this through `app.setPath("crashDumps", …)` before `crashReporter.start()` so Electron writes minidumps into an
-  // Ave-owned directory (consistent across OSes + easy to locate during triage).
   userDataPath: string;
   telemetry: TelemetrySettings;
-  // Headless one-shot runs collect local dumps but cannot enable discretionary crash uploads; true still defers to user settings.
   remoteReporting: boolean;
+  isPackaged?: boolean;
+  allowlistEnv?: string;
   crashReporter?: {
     start: (opts: {
       submitURL?: string;
@@ -21,108 +19,65 @@ export interface CrashReporterDeps {
       uploadToServer?: boolean;
       ignoreSystemCrashHandler?: boolean;
     }) => void;
+    setUploadToServer: (enabled: boolean) => void;
   };
-  // Optional hook to override Electron's crashDumps path (test seam).
   setCrashDumpsPath?: (path: string) => void;
-  sentryLoader?: () => SentryLike | null;
-}
-
-interface SentryLike {
-  init(opts: { dsn: string }): void;
 }
 
 export interface CrashReporterHandle {
   dumpDir: string;
   started: boolean;
-  sentryActive: boolean;
+  /** Disable immediately; a different destination needs a restart because the native submit URL is boot-latched. */
+  updateSettings: (telemetry: TelemetrySettings) => void;
 }
 
 export function startCrashReporter(deps: CrashReporterDeps): CrashReporterHandle {
   const dumpDir = resolve(deps.userDataPath, "crash-dumps");
-  try {
-    mkdirSync(dumpDir, { recursive: true });
-  } catch (err) {
-    log.warn("mkdir dumpDir failed: %s", (err as Error).message);
-  }
-
-  // Override Electron's crashDumps location BEFORE crashReporter.start() so native minidumps land next to our userData (not the OS default).
+  try { mkdirSync(dumpDir, { recursive: true }); } catch (err) { log.warn("mkdir dumpDir failed: %s", (err as Error).message); }
   const setPath = deps.setCrashDumpsPath ?? loadElectronSetCrashDumpsPath();
   if (setPath) {
-    try {
-      setPath(dumpDir);
-    } catch (err) {
-      log.warn("setPath(crashDumps) failed: %s", (err as Error).message);
-    }
+    try { setPath(dumpDir); } catch (err) { log.warn("setPath(crashDumps) failed: %s", (err as Error).message); }
   }
-
-  const uploadEnabled =
-    deps.remoteReporting &&
-    deps.telemetry.crashReportingEnabled === true &&
-    typeof deps.telemetry.crashReportEndpoint === "string" &&
-    deps.telemetry.crashReportEndpoint.length > 0;
-
+  const endpoint = deps.telemetry.crashReportEndpoint;
+  const endpointAuthorized = validateTelemetryEndpoint(endpoint, {
+    isPackaged: deps.isPackaged ?? false,
+    allowlistEnv: deps.allowlistEnv ?? process.env.AVE_TELEMETRY_ALLOWLIST,
+  }).valid;
+  const canUpload = (settings: TelemetrySettings) => deps.remoteReporting
+    && telemetryLevel(settings) !== "off"
+    && settings.crashReportingEnabled === true
+    && endpointAuthorized
+    && settings.crashReportEndpoint === endpoint;
   let started = false;
   const reporter = deps.crashReporter ?? loadElectronCrashReporter();
   if (reporter) {
     try {
       reporter.start({
-        submitURL: uploadEnabled ? deps.telemetry.crashReportEndpoint : undefined,
+        submitURL: deps.remoteReporting && endpointAuthorized ? endpoint : undefined,
         productName: "Ave",
-        uploadToServer: uploadEnabled,
+        uploadToServer: canUpload(deps.telemetry),
         ignoreSystemCrashHandler: false,
       });
       started = true;
-    } catch (err) {
-      log.warn("start failed: %s", (err as Error).message);
-    }
+    } catch (err) { log.warn("start failed: %s", (err as Error).message); }
   }
-
-  // Precedence through the registry rather than a local `env ?? setting`, so the Settings control can tell the user the environment is deciding using the
-  // same rule that decides it.
-  const dsn = envForcedStringForSettingsPath("telemetry.sentryDsn")
-    ?? deps.telemetry.sentryDsn
-    ?? "";
-  let sentryActive = false;
-  if (deps.remoteReporting && dsn) {
-    const sentry = (deps.sentryLoader ?? loadSentry)();
-    if (sentry) {
-      try {
-        sentry.init({ dsn });
-        sentryActive = true;
-      } catch (err) {
-        log.warn("sentry init failed: %s", (err as Error).message);
-      }
-    }
-  }
-
-  return { dumpDir, started, sentryActive };
+  return {
+    dumpDir,
+    started,
+    updateSettings: (settings) => {
+      if (started && reporter) reporter.setUploadToServer(canUpload(settings));
+    },
+  };
 }
 
 function loadElectronCrashReporter(): CrashReporterDeps["crashReporter"] | undefined {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("electron").crashReporter;
-  } catch {
-    return undefined;
-  }
+  try { return require("electron").crashReporter; } catch { return undefined; }
 }
 
 function loadElectronSetCrashDumpsPath(): ((path: string) => void) | undefined {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app } = require("electron") as { app?: { setPath?: (name: string, p: string) => void } };
     if (app?.setPath) return (p: string) => app.setPath!("crashDumps", p);
     return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function loadSentry(): SentryLike | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require("@sentry/electron") as SentryLike;
-  } catch {
-    return null;
-  }
+  } catch { return undefined; }
 }

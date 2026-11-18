@@ -16,6 +16,8 @@ export interface SettingsTextFieldProps {
   readonly value: string;
   /** Called only when the normalized draft differs from {@link value}. */
   readonly onCommit: (next: string) => void;
+  /** An invalid draft remains editable and cannot be committed. */
+  readonly validate?: (raw: string) => string | null;
   readonly disabled?: boolean;
   readonly placeholder?: string;
   /** Defaults to trimming. Return the value the store should hold. */
@@ -37,6 +39,7 @@ export function SettingsTextField({
   disabled,
   placeholder,
   normalize = trimOnly,
+  validate,
   className,
   children,
 }: SettingsTextFieldProps) {
@@ -54,7 +57,9 @@ export function SettingsTextField({
   // instead would disable Save on a field the user has cleared — leaving it
   // visibly empty, unable to commit, and with no way back to showing the value
   // the app is actually running on.
+  const validationError = validate?.(draft) ?? null;
   const commit = () => {
+    if (validationError !== null || disabled) return;
     const normalized = normalize(draft);
     setDraft(normalized);
     if (normalized !== value) onCommit(normalized);
@@ -71,6 +76,8 @@ export function SettingsTextField({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") commit(); }}
           disabled={disabled}
+          aria-invalid={validationError !== null}
+          aria-describedby={validationError !== null ? `${id}-error` : undefined}
           className="flex-1"
           data-testid={id}
         />
@@ -78,12 +85,13 @@ export function SettingsTextField({
           type="button"
           size="sm"
           onClick={commit}
-          disabled={disabled || draft === value}
+          disabled={disabled || validationError !== null || draft === value}
           data-testid={`${id}-save`}
         >
           {t("common.save")}
         </Button>
       </div>
+      {validationError !== null ? <p role="alert" id={`${id}-error`} className="text-xs text-destructive">{validationError}</p> : null}
       {help ? (
         <p className="text-xs text-muted-foreground" data-testid={`${id}-help`}>{help}</p>
       ) : null}

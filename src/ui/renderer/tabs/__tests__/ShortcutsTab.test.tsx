@@ -8,6 +8,8 @@ import * as shortcutHooks from "../../hooks/use-shortcuts.js";
 import type { AveApi } from "../../types.js";
 import { ShortcutsTab } from "../ShortcutsTab.js";
 import { ko } from "../../../../i18n/messages/ko.js";
+import { SettingsEditorProvider, _unregisteredSettingsControlsForTest } from "../../context/SettingsEditorContext.js";
+import { filterRenderedSettings } from "../../settings-search.js";
 
 /** The mock's generic section merge replaces `bindings` wholesale; apply rebinds the way the store does instead, so a
  * reset (writing the default) really leaves no override behind. These tests run as a non-Mac renderer in Korean. */
@@ -21,7 +23,7 @@ function installApi(bindings: ShortcutSettings["bindings"] = {}) {
   });
   const snapshot = () => ({ ...MOCK_DEFAULT_SETTINGS, shortcuts });
   api.getSettings.mockImplementation(async () => snapshot());
-  api.updateSettings.mockImplementation(async (patch: { shortcuts?: { bindings?: Record<string, string> } }) => {
+  api.updateSettings.mockImplementation(async (patch: { shortcuts?: { bindings?: Record<string, string | null> } }) => {
     if (patch.shortcuts?.bindings) {
       shortcuts = { ...shortcuts, bindings: applyShortcutBindingsPatch(shortcuts, patch.shortcuts.bindings, "other") };
     }
@@ -206,6 +208,73 @@ describe("ShortcutsTab", () => {
     fireEvent.click(screen.getByTestId("shortcuts:filter-all"));
     expect(screen.getByTestId("shortcuts:record-app.search").textContent).toBe("CtrlF");
     expect((screen.getByTestId("shortcuts:reset-app.search") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("names the taken chord and changes bindings only after Replace", async () => {
+    const api = installApi();
+    render(<Harness api={api} />);
+    fireEvent.click(await screen.findByTestId("shortcuts:record-app.commandPalette"));
+    press({ key: "f", ctrlKey: true });
+    expect(screen.getByTestId("shortcuts:replacement").textContent).toContain(ko["shortcuts.label.search"]);
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("shortcuts:cancel-replace"));
+    expect(screen.queryByTestId("shortcuts:replacement")).toBeNull();
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("shortcuts:record-app.commandPalette"));
+    press({ key: "f", ctrlKey: true });
+    fireEvent.click(screen.getByTestId("shortcuts:replace"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": "", "app.commandPalette": "CommandOrControl+F" } } }));
+    await waitFor(() => expect(screen.getByTestId("shortcuts:record-app.search").textContent).toBe(ko["shortcutsTab.unset"]));
+    expect(screen.queryByTestId("shortcuts:conflict-app.search")).toBeNull();
+  });
+
+  it("preserves an unrelated scope when replacing a chord in retained conflicted settings", async () => {
+    const api = installApi({ "app.search": "Alt+Shift+F9", "workspace.openBrowser": "Alt+Shift+F9" });
+    render(<Harness api={api} />);
+    fireEvent.click(await screen.findByTestId("shortcuts:record-composer.sendNow"));
+    press({ key: "F9", altKey: true, shiftKey: true });
+    expect(screen.getByTestId("shortcuts:replacement").textContent).toContain(ko["shortcuts.label.search"]);
+    expect(screen.getByTestId("shortcuts:replacement").textContent).not.toContain(ko["chatPreviewRail.launcher.browser"]);
+    fireEvent.click(screen.getByTestId("shortcuts:replace"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": "", "composer.sendNow": "Alt+Shift+F9" } } }));
+    expect(screen.getByTestId("shortcuts:record-workspace.openBrowser").textContent).toBe("AltShiftF9");
+  });
+
+  it("unbinds an action and resets every modified action together", async () => {
+    const api = installApi({ "app.commandPalette": "Alt+Shift+K" });
+    render(<Harness api={api} />);
+    fireEvent.click(await screen.findByTestId("shortcuts:unbind-app.search"));
+    await waitFor(() => expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key: "f", ctrlKey: true }))).toBe(false));
+    expect(screen.getByTestId("shortcuts:record-app.search").textContent).toBe(ko["shortcutsTab.unset"]);
+    fireEvent.click(screen.getByTestId("shortcuts:reset-all"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ shortcuts: { bindings: { "app.commandPalette": null, "app.search": null } } }));
+    await waitFor(() => expect(screen.getByTestId("shortcuts:reset-all")).toBeDisabled());
+    expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key: "f", ctrlKey: true }))).toBe(true);
+  });
+
+  it("shows modified shortcut actions and resets one without resetting another", async () => {
+    const api = installApi({ "app.commandPalette": "Alt+Shift+K", "app.search": "Alt+Shift+F" });
+    const { container } = render(<SettingsEditorProvider api={api as never} modifiedOnly>
+      <div data-settings-panel="shortcuts"><Harness api={api} /></div>
+    </SettingsEditorProvider>);
+    const selected = await waitFor(() => {
+      const row = container.querySelector<HTMLElement>('[data-setting-id="shortcuts.bindings.app.search"][data-setting-registered="true"]');
+      expect(row).toBeTruthy();
+      if (row === null) throw new Error("Expected the modified shortcut actions");
+      return row;
+    });
+    expect(selected.dataset.settingModified).toBe("true");
+    expect(_unregisteredSettingsControlsForTest(container)).toEqual([]);
+    expect(container.querySelector('[data-setting-id="shortcuts.bindings.edit.copy"][data-setting-registered="true"]')).toBeNull();
+    expect(filterRenderedSettings(container, "", true).some((match) => match.section.dataset.settingsSection === "shortcuts-list")).toBe(true);
+    expect(screen.getByTestId("shortcuts:row-edit.copy")).not.toBeVisible();
+    const resetLabel = ko["settingsEditor.resetLabel"].replace("{label}", ko["shortcuts.label.search"]);
+    fireEvent.click(within(selected).getByRole("button", { name: resetLabel }));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": null } } }));
+    await waitFor(() => expect(container.querySelector('[data-setting-id="shortcuts.bindings.app.search"][data-setting-registered="true"]')).toBeNull());
+    expect(container.querySelector('[data-setting-id="shortcuts.bindings.app.commandPalette"][data-setting-registered="true"]')).toBeTruthy();
+    expect(screen.getByTestId("shortcuts:record-app.commandPalette").textContent).toBe("AltShiftK");
+    expect(screen.getByTestId("shortcuts:record-app.search").textContent).toBe("CtrlF");
   });
 
   it("moves between rows with the arrow keys", async () => {

@@ -1,3 +1,5 @@
+import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
+import { DEFAULT_CORP_CA_COMMON_NAME } from "../../src/shared/corp-ca-common-name.js";
 import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
 import type { AveApi } from "../../src/ui/renderer/types.js";
@@ -166,6 +168,10 @@ export const MOCK_DEFAULT_SETTINGS = {
   // Z onboarding chain; mark the seed user as already past onboarding so the first-boot probe dispatches `probe-skip` and the chain advances straight to
   // `done`. Without this, the chain stays at the new default initial stage ("showcase") and masks the ChatView empty-state branch that several tests rely on.
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },
+  // Every stored snapshot carries the telemetry consent block; its level is read wherever the diagnostics section mounts.
+  telemetry: DEFAULT_SETTINGS.telemetry,
+  // Every stored snapshot carries the browsing flow; the web tab reads it as soon as it mounts from the editor's copy.
+  webView: DEFAULT_SETTINGS.webView,
 };
 
 function seedSettings(override: unknown): unknown {
@@ -192,6 +198,8 @@ export const DEFAULT_APP_INFO = {
   platform: "test",
   arch: "x64",
   userDataPath: "/tmp/ave-test-user-data",
+  startupSettings: { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: DEFAULT_CORP_CA_COMMON_NAME, corpCaDebugLog: false },
+  bootCrashReportEndpoint: undefined,
 };
 
 /** The terminal surface: every shell spawns, and output reaches the app through the `onData` listeners the app registered; a test drives them with `emitTerminalData` below. */
@@ -466,6 +474,9 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       listPending: vi.fn(async () => ({ ok: true, pending: [] })),
       answer: vi.fn(async () => ({ ok: true, pending: [] })),
     } as unknown as Mock,
+    getSettingsDefaults: vi.fn(async () => structuredClone(DEFAULT_SETTINGS)),
+    openSettingsFile: vi.fn(async () => ({ ok: true as const })),
+    pickSettingsDirectory: vi.fn(async () => ({ ok: true as const, path: null })),
     getSettings: vi.fn(overrides.getSettings ?? (async () => projectSnapshot(settings))),
     updateSettings: vi.fn(async (p: unknown) => {
       // Like the settings store, a patch replaces the fields it names within a section and keeps the section's others.
@@ -475,7 +486,17 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
         const patch = (p as Record<string, unknown>)[key];
         if (patch === undefined) return [key, before];
         const section = (value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value);
-        return [key, section(before) && section(patch) ? { ...(before as object), ...(patch as object) } : patch];
+        if (!section(before) || !section(patch)) return [key, patch];
+        const merged: Record<string, unknown> = { ...(before as object), ...(patch as object) };
+        // Appearance keeps its terminal font and terminal behaviour groups field by field, as the store does.
+        if (key === "appearance") {
+          for (const group of ["terminalFont", "terminal"]) {
+            const groupBefore = (before as Record<string, unknown>)[group];
+            const groupPatch = (patch as Record<string, unknown>)[group];
+            if (section(groupBefore) && section(groupPatch)) merged[group] = { ...(groupBefore as object), ...(groupPatch as object) };
+          }
+        }
+        return [key, merged];
       }));
       const snapshot = projectSnapshot(settings);
       settingsUpdatedHandlers.forEach((handler) => handler(snapshot));
@@ -793,6 +814,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     getUsageDailySummary: vi.fn(async () => ({ ok: false, error: "mock-unavailable" })),
     getPricingOverrides: vi.fn(async () => []),
     getAppInfo: vi.fn(async () => appInfo),
+    relaunchApp: vi.fn(async (): Promise<import("../../src/shared/app-relaunch.js").AppRelaunchResult> => ({ ok: true })),
+    checkForAppUpdates: vi.fn(async (): Promise<import("../../src/shared/restart-settings.js").AppUpdateCheckResult> => ({ ok: true })),
     // Routine API
     listRoutines: vi.fn(async () => ({ routines: [], invalid: [] })),
 
@@ -1054,6 +1077,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
     ns: {
       permission: {
         getMode: vi.fn(async () => ({ mode: "default" })),
+        updateSecuritySettings: vi.fn(async (_patch: import("../../src/shared/security-settings.js").SecuritySettingsPatch) => structuredClone(DEFAULT_SETTINGS)),
         setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
         recentlyDeniedList: vi.fn(async () => ({ ok: true, entries: [] })),
         recentlyDeniedRerun: vi.fn(async () => ({ ok: true })),
