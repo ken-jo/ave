@@ -228,7 +228,10 @@ revalidated, never dropped, and the run is not faulted for it.
   join has no attempt counter). Held events are stored deduplicated by
   identity and applied idempotently: an event held twice is held once, and a
   replay of one already applied changes nothing.
-- Storage: `heldEvents` in the run file. When that write fails, the engine
+- Storage: `heldEvents` in the run file, each entry the event's run and
+  identity (`{itemId, runId, stage, attempt, kind}`); the event itself is kept
+  in the engine's memory, since a restart reads back only a Stop's kind
+  (Restart). When that write fails, the engine
   keeps the event in memory, fail-closed: it is still held, still keeps its
   stage off the lost path, and is resolved at the next permitted read like a
   stored one. Within a process the engine's memory decides: an event leaves
@@ -237,8 +240,9 @@ revalidated, never dropped, and the run is not faulted for it.
   held events with its intent and marker.
 - Order: a run's events apply in arrival order. While a run holds events,
   each later scheduler event of it is held behind them until the class ends
-  the run, so none overtakes an earlier one. A user decision is refused while
-  its write cannot be stored, as before.
+  the run, so none overtakes an earlier one. A user decision is refused
+  (`run_mismatch`) while its run holds events, and while its write cannot be
+  stored, as before.
 - Stop: a Stop takes effect when it is given: the engine marks the run
   stopping at once, and a Stop whose event is held interrupts the run's live
   children then. So a later Stop wins over an earlier completion still held:
@@ -260,9 +264,10 @@ revalidated, never dropped, and the run is not faulted for it.
   `interrupted`, or `cancelled` while the run winds down), as a stage whose
   child is gone does. Each permitted read checks this after the release, so no
   stage stays running forever. A run that boot kept unadopted (its class held
-  it) is adopted by a later permitted read once its class is `live`, as boot
-  adopts one (its stage that was running fails `interrupted`), without a
-  workspace sweep; a failure there is only logged.
+  it) is taken over by a later permitted read as boot takes one over, once its
+  class no longer holds it: adopted once `live` (its stage that was running
+  fails `interrupted`), ended once `orphan` or `lost`, without a workspace
+  sweep; a failure there is only logged.
 - Restart: boot reconciles a parked run before anything else, since nothing
   starts after a restart. Of the held events read back from the run file, a
   Stop still stops its run; every other one is superseded by that reconcile
@@ -300,4 +305,6 @@ revalidated, never dropped, and the run is not faulted for it.
 - Held events have targeted engine tests: deduplication and idempotent
   replay, arrival order with a later Stop, the drop of an event whose stage
   moved on, the lost path of a running stage with no child once the class is
-  `live`, and the memory fallback when the run file cannot be written.
+  `live`, the memory fallback when the run file cannot be written, a decision
+  refused while its run holds events, the restart rule, and the adoption of a
+  run boot kept once its class is `live`.
