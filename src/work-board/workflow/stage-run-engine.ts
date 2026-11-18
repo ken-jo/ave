@@ -154,6 +154,7 @@ interface RunState {
   held: Held[];
   /** The replay of a held event was held again. */
   heldAgain: boolean;
+  draining: boolean;
   /** One coded notice per unreadable-board episode, cleared by a successful run write. */
   boardUnread: boolean;
 }
@@ -264,7 +265,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     const state: RunState = {
       itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
-      revoked: new Set(), results: new Map(), held: [], heldAgain: false, boardUnread: false,
+      revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false,
     };
     runs.set(itemId, state);
     deps.holdItem(itemId);
@@ -408,6 +409,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   /** On the run's chain, once its class is live: its held events replay in order, each revalidated against the run as stored first; then a
    * stage the run file shows running with no child, launch or event of that attempt takes the lost path. */
   function drain(state: RunState): void {
+    if (state.draining) return;
+    state.draining = true;
     void enqueue(state, async () => {
       while (state.held.length > 0) {
         if (runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
@@ -442,7 +445,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         log.info("a running stage with nothing left to end it ends interrupted (id=%d, stage=%s)", state.itemId, run.stageId);
         post(state, { type: "stage_ended", stageId: run.stageId, attempt: run.attempt, ok: false, interrupted: true });
       }
-    }).catch(() => undefined);
+    }).finally(() => { state.draining = false; }).catch(() => undefined);
   }
 
   /** A permitted read, after the intents and markers: each run boot kept is adopted once its class is live, and each run's held events are
@@ -761,7 +764,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const stage = version.stages.find(candidate => candidate.id === effect.stageId);
           const result = state.results.get(effect.stageId);
           const verdict = stage?.gate.type === "auto" && result
-            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage, claimEffect: () => claimEffect(replay, key) })
+            ? await deps.passConditions.evaluate(stage.gate.pass, { result, stage, claimEffect: () => claimEffect(replay, key), effectConsumed: () => replay?.effects.has(key) ?? false })
             : { passed: false, evidence: "the stage result is not available to the host", judgedBy: "host" as const };
           claimEffect(replay, key);
           post(state, { type: "gate_evaluated", stageId: effect.stageId, attempt: effect.attempt, ...verdict });

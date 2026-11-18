@@ -440,3 +440,40 @@ it.each(["before", "before-evaluation", "after", "none"] as const)("a held repla
     expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(failure === "after" ? 0 : 1);
   }, undefined, "row-lost", conditions);
 });
+
+it.each(["before", "after", "none"] as const)("a registered gate retries only an unconsumed effect after %s failure", async failure => {
+  const conditions = createPassConditionRegistry();
+  let calls = 0;
+  let effects = 0;
+  conditions.register("stage_ok", { evaluate: facts => {
+    calls += 1;
+    if (failure === "before" && calls === 1) throw new Error("before registered effect");
+    if (facts.claimEffect?.() !== false) effects += 1;
+    if (failure === "after") throw new Error("after registered effect");
+    return { passed: true, evidence: "applied", judgedBy: "host" };
+  } });
+  await withRun(["a"], async run => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    const identity = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([identity]));
+    const warnings = vi.spyOn(console, "warn");
+    lose(false);
+    await permittedRead(h);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    await settle();
+    if (failure === "before") {
+      expect(effects).toBe(0);
+      expect(runsOnDisk(h).heldEvents).toEqual([identity]);
+    } else expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    if (failure !== "none") expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes(`${failure} registered effect`)))).toBe(true);
+    await permittedRead(h);
+    if (failure === "after") await h.untilStage(id, "a", "failed");
+    else expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "done" });
+    await permittedRead(h);
+    expect(calls).toBe(failure === "before" ? 2 : 1);
+    expect(effects).toBe(1);
+  }, undefined, "row-lost", conditions);
+});

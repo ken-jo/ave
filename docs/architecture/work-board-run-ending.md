@@ -287,7 +287,9 @@ superseded attempt is dropped before any new preparation.
   another attempt (retried) or out of the state the event was sent from
   (superseded), or whose join is no longer being collected, is dropped with a
   logged reason and never applied to the new attempt. A replay the class holds
-  again stops the release there, the rest kept in order.
+  again stops the release there, the rest kept in order. Concurrent readers
+  share the run's pending drain, so an unconsumed evaluator failure waits for a
+  later release rather than another queued copy retrying it immediately.
 - Lost path: once the class is `live`, a stage the run file shows `running`
   takes the existing lost path when that exact `{run, stage, attempt}` has no
   child, pending launch, pending scheduler event or held event. Each attempt

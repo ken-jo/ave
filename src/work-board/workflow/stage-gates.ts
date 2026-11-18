@@ -7,16 +7,18 @@ interface GateFacts {
   stage: TemplateStage;
   /** An evaluator checks this receipt immediately before applying its effect. False means it was already consumed. */
   claimEffect?: () => boolean;
+  effectConsumed?: () => boolean;
 }
 interface GateVerdict { passed: boolean; evidence: string; judgedBy: "host" | "model" }
 interface PassConditionEntry {
+  /** Evaluation must be pure or idempotent; claim immediately before any application boundary. */
   evaluate(facts: GateFacts, pass: PassCondition): GateVerdict | Promise<GateVerdict>;
   /** Host text added to the stage's instructions when its gate uses this kind. */
   promptSuffix?: string;
 }
 export interface PassConditionRegistry {
   register(kind: PassCondition["kind"], entry: PassConditionEntry): void;
-  /** A kind with no entry, or an entry that throws, fails: a gate that cannot be evaluated never passes. */
+  /** Missing kinds fail closed; evaluator exceptions propagate without manufacturing a verdict. */
   evaluate(pass: PassCondition, facts: GateFacts): Promise<GateVerdict>;
   promptSuffix(kind: PassCondition["kind"]): string | undefined;
 }
@@ -35,12 +37,10 @@ export function createPassConditionRegistry(): PassConditionRegistry {
     evaluate: async (pass, facts) => {
       const entry = entries.get(pass.kind);
       if (!entry) return { passed: false, evidence: `no evaluator for ${pass.kind}`, judgedBy: "host" };
-      if (facts.claimEffect?.() === false) return { passed: false, evidence: "the gate effect was already consumed", judgedBy: "host" };
-      try {
-        return await entry.evaluate(facts, pass);
-      } catch {
-        return { passed: false, evidence: `the ${pass.kind} evaluator failed`, judgedBy: "host" };
-      }
+      if (facts.effectConsumed?.() === true) return { passed: false, evidence: "the gate effect was already consumed", judgedBy: "host" };
+      const verdict = await entry.evaluate(facts, pass);
+      facts.claimEffect?.();
+      return verdict;
     },
     promptSuffix: kind => entries.get(kind)?.promptSuffix,
   };
