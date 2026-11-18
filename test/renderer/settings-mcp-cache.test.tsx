@@ -1,12 +1,12 @@
 import "./setup.js";
 import { afterEach, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { installSettingsEditor } from "../../src/__tests__/support/settings-editor-fixture.js";
 
 import { McpTab } from "../../src/ui/renderer/tabs/McpTab.js";
 import { t } from "../../src/i18n/runtime.js";
 
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 function installMcp() {
   const fixture = installSettingsEditor();
@@ -60,4 +60,25 @@ it("revalidates an already mounted search panel when its tab becomes active", as
   expect(Object.values(fixture.mcp).map((read) => read.mock.calls.length)).toEqual([2, 2, 2, 2]);
   view.rerender(fixture.content(<McpTab active={false} />));
   expect(Object.values(fixture.mcp).map((read) => read.mock.calls.length)).toEqual([2, 2, 2, 2]);
+});
+
+it("preserves unchanged polled state and invalidates a changed status before a search remount", async () => {
+  vi.useFakeTimers();
+  const fixture = installMcp();
+  Object.assign(fixture.mcp, { getConfigs: vi.fn(async () => [{ id: "local-notes", transport: "http", url: "https://notes.example.test/mcp", auth: "oauth" }]) });
+  const view = render(fixture.content(<McpTab active={false} />));
+  await act(() => Promise.resolve());
+  expect(view.getByRole("button", { name: t("mcpTab.killButton") })).toBeVisible();
+  await act(() => vi.advanceTimersByTimeAsync(3_000));
+  expect(fixture.mcp.servers).toHaveBeenCalledTimes(2);
+  view.rerender(fixture.content(null));
+  await act(async () => { view.rerender(fixture.content(<McpTab active={false} />)); });
+  expect(fixture.mcp.getConfigs).toHaveBeenCalledTimes(1);
+  fixture.disconnect();
+  await act(() => vi.advanceTimersByTimeAsync(3_000));
+  expect(view.getByRole("button", { name: t("mcpTab.reconnect") })).toBeVisible();
+  view.rerender(fixture.content(null));
+  await act(async () => { view.rerender(fixture.content(<McpTab active={false} />)); });
+  expect(view.getByRole("button", { name: t("mcpTab.reconnect") })).toBeVisible();
+  expect(fixture.mcp.getConfigs).toHaveBeenCalledTimes(2);
 });

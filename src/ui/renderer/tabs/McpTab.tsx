@@ -346,9 +346,15 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
     const timer = setInterval(() => {
       if (inFlight) return;
       inFlight = true;
+      const editorRevision = editorRevisionRef.current;
       const requestId = ++statesRequestRef.current;
       void window.ave.mcp.servers().then((nextStates) => {
-        if (active && requestId === statesRequestRef.current) setStates(nextStates);
+        if (active && requestId === statesRequestRef.current && editorRevision === editorRevisionRef.current) {
+          const held = editorCache?.peek<McpSnapshot>(MCP_SNAPSHOT_CACHE_KEY);
+          // A changed polled status must not leave an older tuple available to search mounts.
+          if (!held || JSON.stringify(held[0]) !== JSON.stringify(nextStates)) editorCache?.invalidate(MCP_SNAPSHOT_CACHE_KEY);
+          setStates(nextStates);
+        }
       }).catch(() => { /* Keep the last observed status until the next refresh. */ })
         .finally(() => { inFlight = false; });
     }, AUTH_STATUS_POLL_MS);
@@ -356,7 +362,7 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
       active = false;
       clearInterval(timer);
     };
-  }, [hasOAuthServer]);
+  }, [hasOAuthServer, editorCache]);
 
   // 킬 스위치
   const handleKill = useCallback(
