@@ -51,12 +51,16 @@ vi.mock("node:fs", async (original) => {
     },
     statSync: (path: Parameters<typeof actual.statSync>[0], options?: unknown) => {
       if (!isVirtual(path)) return actual.statSync(path, options as never);
-      const entry = filesystem.entries.get(lookup(path).toLowerCase())!;
+      const entry = filesystem.entries.get(lookup(path).toLowerCase());
+      if (entry === undefined) throw new Error("Virtual entry is missing");
       return { isDirectory: () => entry.directory, isFile: () => !entry.directory };
     },
-    readlinkSync: (path: Parameters<typeof actual.readlinkSync>[0], options?: unknown) => isVirtual(path)
-      ? filesystem.entries.get(win32.normalize(path).toLowerCase())!.target
-      : actual.readlinkSync(path, options as never),
+    readlinkSync: (path: Parameters<typeof actual.readlinkSync>[0], options?: unknown) => {
+      if (!isVirtual(path)) return actual.readlinkSync(path, options as never);
+      const target = filesystem.entries.get(win32.normalize(path).toLowerCase())?.target;
+      if (target === undefined) throw new Error("Virtual link is missing");
+      return target;
+    },
   };
 });
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
