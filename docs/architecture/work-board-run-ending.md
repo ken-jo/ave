@@ -190,7 +190,9 @@ fails the list itself, with its own reason, as before.
   after a board write, a run write and a reader, over every board state, with
   and without an open intent and an unknown marker, and in each failure window
   (an end write that fails, a run file that cannot be read). Its own oracle
-  gives the class; it checks each end against it, that each end comes through
-  `settleRun`, and that each consumer read the class from `classifyRun`.
+  gives the class; it checks each end's cause and status against it, that each
+  end comes through `settleRun`, and that each consumer read the class from
+  `classifyRun`. Separate cases cover one-shot unreadable writes and unreadable
+  or repeated individual records without manufacturing a second child event.
 - The delete failure windows, marker resolution, recovery and the notice have
   targeted tests beside the write guard's.

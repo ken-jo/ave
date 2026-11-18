@@ -3926,10 +3926,11 @@ with its own owner rule:
   file as it was is copied aside first, as above. The board has no undo. A
   row that names a project is deleted only while that project is
   authorized, as a listed row is.
-  A run whose row does not validate is never read as its row gone, and keeps
-  its record; while that row holds the only id in the file of a run that
-  is not over, its card's delete is refused (`work-board-run-id-held`), so
-  the run waits until the file is fixed by hand.
+  A run whose row does not validate is never read as its row gone and keeps
+  its record. The invalid card can be deleted through its own intent when
+  it holds the last string of the one open run bound to its id; an open
+  row-delete intent is reused. Release still waits for the evidence and
+  classification in [Work board run endings](./work-board-run-ending.md#failure-lifecycle).
   A board file that shows nothing proves nothing: the engine then settles,
   prunes and sweeps nothing and refuses template starts until a later start,
   decision, reader or boot reads it.

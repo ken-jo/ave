@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import type { RunEndCause } from "../../../main/workflow-run-store.js";
 import * as classification from "../../../main/run-classification.js";
 import * as homeTrust from "../../../shared/ave-home-trust.js";
 import { stageOf } from "./stage-fixtures.js";
@@ -20,7 +21,7 @@ const BOARDS = ["named", "gone", "moved", "unnamed", "held elsewhere", "same-id 
 type BoardState = (typeof BOARDS)[number];
 const WINDOWS = ["none", "settle write fails", "run file unreadable"] as const;
 type FailureWindow = (typeof WINDOWS)[number];
-interface Cell { consumer: Consumer; board: BoardState; intent: boolean; marker: boolean; window: FailureWindow }
+interface Cell { consumer: Consumer; board: BoardState; intent: boolean; marker: boolean; window: FailureWindow; record?: "unreadable" | "repeated" }
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -58,6 +59,7 @@ function oracle(cell: Cell): { cls: Class; intent: boolean; marker: boolean } {
     if (b.listed) intent = false;
     marker = false;
   }
+  if (cell.record) return { cls: "unreadable", intent: false, marker };
   if (!b.readable || marker) return { cls: "unreadable", intent, marker };
   if (intent) return { cls: b.held || b.listed || b.sameIdInvalid ? "waiting-delete" : "due-delete", intent, marker };
   if (b.listed) return { cls: b.names ? "live" : b.inHistory ? "orphan" : "lost", intent, marker };
@@ -88,16 +90,26 @@ function leave(h: Harness, cell: Cell, at: { id: number; runId: string; holder: 
   }
   writeFileSync(h.boardPath, cell.board === "corrupt" ? "{" : JSON.stringify(file));
   const runs = JSON.parse(readFileSync(runsPath(h), "utf8")) as Record<string, unknown>;
+  if (cell.record) {
+    const records = runs.runs as Record<string, unknown>[];
+    const record = records.find(run => run.runId === at.runId);
+    if (!record) throw new Error("Missing record");
+    if (cell.record === "unreadable") record.runStartedBy = null;
+    else records.push(structuredClone(record));
+  }
   if (cell.intent) runs.deleteIntents = [{ itemId: at.id, runId: at.runId }];
   if (cell.marker) runs.unknownDeletes = [{ itemId: at.id, runId: at.runId }];
   writeFileSync(runsPath(h), JSON.stringify(runs));
 }
 
 /** While held, the run file reads as awaiting review. */
-function holdRunFile(h: Harness): { release(): void } {
+function holdRunFile(h: Harness, io = false): { release(): void } {
   const read = homeTrust.readAveHomeInput;
-  const spy = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
-    path === runsPath(h) ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
+  const spy = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path => {
+    if (path !== runsPath(h)) return read(path);
+    if (io) throw Object.assign(new Error("run file unreadable"), { code: "EIO" });
+    return { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" };
+  });
   return { release: () => spy.mockRestore() };
 }
 
@@ -107,17 +119,22 @@ function watchSettles(h: Harness, failing: boolean) {
   const settle = runs.settleRun.bind(runs);
   let fail = failing;
   let failed = false;
-  const stored: { runId: string; status: string }[] = [];
+  const stored: { runId: string; status: string; cause: RunEndCause }[] = [];
   vi.spyOn(runs, "settleRun").mockImplementation(async (runId, step, allowed) => {
+    let cause: RunEndCause | undefined;
     const result = await settle(runId, run => {
       const next = step(run);
+      if (next !== null && "ends" in next) cause = next.ends;
       if (fail && next !== null && "ends" in next) {
         failed = true;
         throw new Error("settle write failed");
       }
       return next;
     }, allowed);
-    if (result.status === "stored" && result.run.settled !== undefined) stored.push({ runId, status: result.run.settled.status });
+    if (result.status === "stored" && result.run.settled !== undefined) {
+      expect(cause).toBeDefined();
+      stored.push({ runId, status: result.run.settled.status, cause: cause as RunEndCause });
+    }
     return result;
   });
   return { stored, failed: () => failed, release: () => { fail = false; } };
@@ -160,9 +177,9 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
     const resolved = oracle(cell);
     const { cls } = resolved;
     const ending = END[cell.consumer][cls];
-    // A run write happens once, so it is never repeated after the run file reads again; a settle that never comes cannot fail.
-    const window: FailureWindow = (cell.consumer === "run write" && cell.window === "run file unreadable") || (cell.window === "settle write fails" && ending === "open")
-      ? "none" : cell.window;
+    // A settle that never comes cannot fail. A one-shot write failure is recovered by a later permitted event.
+    const window: FailureWindow = (cell.consumer === "run write" && cell.window === "run file unreadable")
+      || (cell.window === "settle write fails" && ending === "open") ? "none" : cell.window;
     const pair = `${cell.consumer}:intent ${cell.intent} marker ${cell.marker}`;
     tally(`${cell.consumer}:${cls}`);
     tally(`${pair}:${cell.board}`);
@@ -191,7 +208,7 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
 
     // A run file that cannot be read holds every run: nothing ends, and the event is repeated once it reads.
     if (window === "run file unreadable" || cell.consumer === "live adoption") {
-      const held = holdRunFile(h);
+      const held = holdRunFile(h, cell.consumer === "run write");
       await event();
       await until(ended, 10);
       expect(ended(), context).toBe(false);
@@ -224,14 +241,15 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
     const asks = cell.board !== "corrupt" && (boot ? true
       : cell.consumer === "run write" ? !["named", "held elsewhere", "same-id invalid"].includes(cell.board)
       : cell.consumer === "board write" || resolved.intent);
-    if (asks) expect(classes, context).toContain(cls);
+    if (asks && !cell.record) expect(classes, context).toContain(cls);
     const ends = settles.stored.filter(end => end.runId === runId);
     if (ending === "open") {
       expect(ends, context).toEqual([]);
       const stored = await onDisk();
-      expect(stored?.status === "found" ? stored.run.settled : "absent", context).toBeUndefined();
+      if (cell.record) expect(stored?.status, context).toBe("invalid");
+      else expect(stored?.status === "found" ? stored.run.settled : "absent", context).toBeUndefined();
     } else {
-      expect(ends, context).toEqual([{ runId, status: STATUS[ending] }]);
+      expect(ends, context).toEqual([{ runId, status: STATUS[ending], cause: ending }]);
       // Whatever the run file holds of it now is that end (or nothing, once retention pruned it).
       const stored = await onDisk();
       if (stored?.status === "found") expect(stored.run.settled?.status, context).toBe(STATUS[ending]);
@@ -258,8 +276,8 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
   }
 }
 
-/** A run write happens once, so an unreadable run file is no window for it. */
-const windowsOf = (consumer: Consumer): FailureWindow[] => WINDOWS.filter(w => consumer !== "run write" || w !== "run file unreadable");
+// One-shot unreadable writes have their own preservation test below; held-event replay remains a separate lifecycle decision.
+const windowsOf = (consumer: Consumer): FailureWindow[] => WINDOWS.filter(window => consumer !== "run write" || window !== "run file unreadable");
 const HELD_WINDOWS = ["none", "run file unreadable"] as const;
 const ends = (cell: Omit<Cell, "window">): boolean => END[cell.consumer][oracle({ ...cell, window: "none" }).cls] !== "open";
 
@@ -294,5 +312,57 @@ it("every consumer ends a run as its class says, through settleRun, over every b
     for (const cls of ["live", "due-delete", "waiting-delete", "unreadable", "orphan", "lost"] as const) expect(counts[`${consumer}:${cls}`], `${consumer} ${cls}`).toBeGreaterThan(0);
     for (const window of windowsOf(consumer)) expect(counts[`${consumer}:${window}`], `${consumer} ${window}`).toBeGreaterThan(0);
     expect(counts[`${consumer}:unconfirmed kept`], `${consumer} unconfirmed`).toBeGreaterThan(0);
+  }
+});
+
+it("unreadable and repeated individual records stay unconfirmed under every consumer and delete-state pair", { timeout: 600_000 }, async () => {
+  for (const consumer of CONSUMERS) {
+    for (const record of ["unreadable", "repeated"] as const) {
+      for (const board of ["named", "gone"] as const) {
+        for (const intent of [false, true]) {
+          for (const marker of [false, true]) await runCell({ consumer, record, board, intent, marker, window: "none" }, () => undefined);
+        }
+      }
+    }
+  }
+});
+
+it("one-shot run-file I/O failures preserve every intent and marker pair without unsafe terminal causes", { timeout: 120_000 }, async () => {
+  for (const intent of [false, true]) {
+    for (const marker of [false, true]) {
+      const h = await stageRunHarness();
+      try {
+        const version = await h.confirm([stageOf("a")]);
+        const id = await h.addItem(version);
+        const running = h.start(id, h.local(version));
+        void running.catch(() => undefined);
+        const [child] = await h.untilLive(1);
+        await h.untilStage(id, "a", "running");
+        await new Promise(resolve => setTimeout(resolve, 50));
+        const runId = (await h.item(id)).runId ?? "";
+        leave(h, { consumer: "run write", board: "named", intent, marker, window: "none" }, { id, runId, holder: -1 });
+        const settles = watchSettles(h, false);
+        const update = vi.spyOn(h.board, "updateRun");
+        const held = holdRunFile(h, true);
+        child.finish();
+        await until(() => update.mock.calls.length > 0, 400);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(settles.stored).toEqual([]);
+        const raw = JSON.parse(readFileSync(runsPath(h), "utf8")) as { runs: { runId: string; settled?: unknown }[] };
+        expect(raw.runs.find(run => run.runId === runId)?.settled).toBeUndefined();
+        held.release();
+        await reader(h);
+        await h.engine.adoptParkedTemplateRuns();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        // A confirmed fault is allowed once live. A completion held before its write remains pending the held-event amendment.
+        expect(settles.stored.every(end => end.runId === runId && end.cause === "failed" && end.status === "error")).toBe(true);
+        await h.board.runs.prune(() => null);
+        expect((await h.board.runs.get(runId)).status).toBe("found");
+      } finally {
+        vi.restoreAllMocks();
+        for (const child of h.children) child.finish();
+        await h.cleanup();
+      }
+    }
   }
 });
