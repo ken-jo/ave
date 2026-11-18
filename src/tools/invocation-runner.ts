@@ -70,7 +70,7 @@ import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
 } from "../permissions/evaluation-context.js";
-import { canonicalizePathForMatch, caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators, resolvePathForPolicy } from "../permissions/sensitive-paths.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
   sanitizeAllowedDirectories,
@@ -2025,8 +2025,8 @@ async function runToolInvocationAttempt(
         }
 
         if (shellPathViolation.kind === "sandbox-boundary" && shellPathViolation.path) {
-          const realPath = canonicalizePathForMatch(shellPathViolation.path);
-          const canonicalPath = caseFoldForMatch(realPath);
+          const realPath = resolvePathForPolicy(shellPathViolation.path);
+          const canonicalPath = caseFoldForMatch(foldCanonicalPathSeparators(realPath));
           const dirLayerResult: PermissionCheckResult = {
             decision: "ask",
             reason: `out-of-allowed-dir: ${shellPathViolation.path} (not in additionalDirectories)`,
@@ -2155,9 +2155,8 @@ async function runToolInvocationAttempt(
     const targetFilePaths = brokeredFileRouteSelected
       ? []
       : extractTargetFilePaths(tool, finalInput, executionCwd);
-    // Frozen-canonical contract: canonicalize once here and reuse the same
-    // string for Layer 0 (sensitive-path) + Layer 1
-    // (allowed-directories) checks below. No layer re-resolves the path.
+    // Resolve once. Execution and approval retain native spelling; sensitive-path
+    // and allowed-directory matching share a key derived from that same snapshot.
     const unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
     for (const filePath of targetFilePaths) {
       let runtimePath: string;
@@ -2167,9 +2166,9 @@ async function runToolInvocationAttempt(
         if (unsealedRuleSubject?.kind === "edit") {
           const resolved = resolveShellFilesystemPath(filePath, executionCwd);
           if (process.platform !== "win32" && resolved.includes("\\")) throw new Error("Ambiguous write path");
-          runtimePath = foldCanonicalPathSeparators(resolved);
+          runtimePath = resolved;
         } else {
-          runtimePath = canonicalizePathForMatch(filePath);
+          runtimePath = resolvePathForPolicy(filePath);
         }
       } catch {
         const reason = "Cannot resolve write target";
@@ -2180,7 +2179,7 @@ async function runToolInvocationAttempt(
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
         return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
       }
-      canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(runtimePath), runtimePath });
+      canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath });
     }
     const declaredPaths = (tool.pathFields ?? []).flatMap((field) => selectDeclaredPathValues(finalInput, field)).filter((path): path is string => typeof path === "string");
     invocationPermissionContext.paths = canonicalTargets.flatMap((target) => {
