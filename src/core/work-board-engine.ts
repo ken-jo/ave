@@ -536,22 +536,28 @@ export function createWorkBoardEngine(
     opts: RunItemOptions = {},
   ): Promise<RunItemResult> {
     await recover();
+    // A template start reads the delete intents and markers again in `start`, so each start reads them once: every other start reads
+    // them here, and so does a template start refused before it gets there.
+    const template = opts.templateSource !== undefined;
+    if (!template) await stageRuns?.reconsider();
+    const refuse = async (result: RunItemResult): Promise<RunItemResult> => {
+      if (template) await stageRuns?.reconsider();
+      return result;
+    };
     const got = await store.get(itemId);
-    if (got.status !== "found") {
-      return { status: "not_found" };
-    }
+    if (got.status !== "found") return refuse({ status: "not_found" });
     const item = got.item;
-    if (item.status === "completed") return { status: "error", reason: "work-item-completed" };
+    if (item.status === "completed") return refuse({ status: "error", reason: "work-item-completed" });
 
     // A template run is busy as its run record says, read once boot adoption has run; its row's runStatus only shows it.
-    if (inFlight.has(itemId) || (opts.templateSource === undefined && ACTIVE_RUN_STATUSES.has(item.runStatus ?? "idle"))) {
-      return {
+    if (inFlight.has(itemId) || (!template && ACTIVE_RUN_STATUSES.has(item.runStatus ?? "idle"))) {
+      return refuse({
         status: "already_running",
         reason: `Work item #${itemId} is already running (runStatus=${item.runStatus ?? "idle"}).`,
-      };
+      });
     }
     // Shown as error only until the user clears it: nothing runs on the row before that.
-    if (item.templateRunError === "template-run-not-found") return { status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" };
+    if (item.templateRunError === "template-run-not-found") return refuse({ status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" });
     inFlight.add(itemId);
     // An item made from a template runs its pinned stages; it never takes the plan and execute path, and never the other way round.
     if (opts.templateSource !== undefined) {
@@ -853,6 +859,7 @@ export function createWorkBoardEngine(
     // it, so the recovery may close its row.
     inFlight.add(itemId);
     await recover(itemId);
+    await stageRuns?.reconsider();
     const status = DECISION_STATUS[input.decision];
     let decided: Awaited<ReturnType<WorkBoardStore["decidePlan"]>>;
     try {

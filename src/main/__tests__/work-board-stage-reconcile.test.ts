@@ -549,3 +549,76 @@ it("the recovery leaves an ordinary run in flight to end by its own write and re
     await h.cleanup();
   }
 });
+
+/** The run file as a hand edit leaves it: `edit` changes its top-level object. */
+function editRunFile(h: Harness, edit: (file: Record<string, unknown>) => void): void {
+  const runsPath = join(h.dir, "workflow-runs.json");
+  const file = JSON.parse(readFileSync(runsPath, "utf8")) as Record<string, unknown>;
+  edit(file);
+  writeFileSync(runsPath, JSON.stringify(file));
+}
+const runFileOnDisk = (h: Harness) => JSON.parse(readFileSync(join(h.dir, "workflow-runs.json"), "utf8")) as Record<string, unknown>;
+async function untilTrue(check: () => boolean | Promise<boolean>): Promise<boolean> {
+  for (let i = 0; i < 400; i += 1) {
+    if (await check()) return true;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  return false;
+}
+
+/** A parked run this engine holds, an ordinary row and a completed one, once the takeover ran and read every intent. */
+async function adoptedWithRows(h: Harness) {
+  await h.engine.adoptParkedTemplateRuns();
+  const parked = await parkedRun(h);
+  const created = await h.board.create({ title: "ordinary work" });
+  const done = await h.board.create({ title: "finished work", status: "completed" });
+  if (created.status !== "created" || done.status !== "created") throw new Error("no row");
+  await h.engine.adoptParkedTemplateRuns();
+  return { ...parked, plain: created.itemId, completed: done.itemId };
+}
+type Rows = Awaited<ReturnType<typeof adoptedWithRows>>;
+// Each start is refused before it writes the board, so no board write's row check reads the intent in its place.
+const PERMITTED_EVENTS: [string, (h: Harness, rows: Rows) => Promise<unknown>][] = [
+  ["reader", async h => { const listed = await h.board.list(); if (listed.status === "ok") await h.engine.projectTemplateRuns(listed.items); }],
+  ["template start", (h, rows) => h.engine.runItem(rows.id, { templateSource: h.local(rows.version) })],
+  ["ordinary start", (h, rows) => h.engine.runItem(rows.completed)],
+  ["stage decision", (h, rows) => h.engine.decideStageGate(rows.id, { runId: rows.runId, stageId: "a", attempt: rows.gate.attempt, resultHash: "c".repeat(64), decision: "approve" })],
+  ["plan decision", (h, rows) => h.engine.decidePlan(rows.plain, { runId: "other-run", planHash: "c".repeat(64), decision: "approve" })],
+  ["adoption", h => h.engine.adoptParkedTemplateRuns()],
+  ["missing run clear", (h, rows) => h.engine.clearMissingRun(rows.plain, { revision: "c".repeat(64), runId: "other-run" })],
+];
+
+it.each(PERMITTED_EVENTS)("after the takeover, each %s reads a delete intent written since and ends that deleted row's run as item-removed", async (_, event) => {
+  const h = await stageRunHarness();
+  try {
+    const rows = await adoptedWithRows(h);
+    deleteRowOffline(h, rows.id);
+    editRunFile(h, file => { file.deleteIntents = [{ itemId: rows.id, runId: rows.runId }]; });
+    await event(h, rows);
+    expect(await untilTrue(() => h.events.some(e => e.itemId === rows.id && e.phase === "cancelled" && e.message === "item-removed"))).toBe(true);
+    expect(await untilTrue(async () => (await h.runOf(rows.runId)) === null)).toBe(true);
+    expect(runFileOnDisk(h)).not.toHaveProperty("deleteIntents");
+  } finally {
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});
+
+it.each(PERMITTED_EVENTS)("after the takeover, each %s reads an unknown marker written since, and withdraws it with its intent while the board lists the row", async (_, event) => {
+  const h = await stageRunHarness();
+  try {
+    const rows = await adoptedWithRows(h);
+    editRunFile(h, file => {
+      file.deleteIntents = [{ itemId: rows.id, runId: rows.runId }];
+      file.unknownDeletes = [{ itemId: rows.id, runId: rows.runId }];
+    });
+    await event(h, rows);
+    expect(await untilTrue(() => !("deleteIntents" in runFileOnDisk(h)) && !("unknownDeletes" in runFileOnDisk(h)))).toBe(true);
+    expect((await h.runOf(rows.runId))?.settled).toBeUndefined();
+    expect(rowOnDisk(h, rows.id)).toMatchObject({ runId: rows.runId });
+    expect(h.events.some(e => e.itemId === rows.id && e.phase === "cancelled")).toBe(false);
+  } finally {
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});

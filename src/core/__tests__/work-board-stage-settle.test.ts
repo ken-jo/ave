@@ -1355,9 +1355,12 @@ it("a deleted row's parked run that an adoption takes over while the delete read
   const before = h.events.length;
   expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
   listGate.open();
-  await adopting;
+  // The adoption takes the run over, then reads the delete intents again behind the delete's own read.
+  const resumed = () => h.events.slice(before).some(event => event.itemId === id && event.phase === "executing" && event.message === "resumed");
+  for (let i = 0; i < 400 && !resumed(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
   expect(h.events.slice(before)).toContainEqual(expect.objectContaining({ itemId: id, phase: "executing", message: "resumed" }));
   viewGate.open();
+  await adopting;
   const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
   for (let i = 0; i < 400 && !ended(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
   expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
@@ -1411,9 +1414,13 @@ it("an adoption between a delete's board write and its takeover leaves the delet
   const before = h.events.length;
   expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
   for (let i = 0; i < 400 && reads.mock.calls.length === 0; i += 1) await tick();
-  await h.engine.adoptParkedTemplateRuns();
+  // The adoption takes the runs over and sweeps, then reads the delete intents again behind the takeover's own read.
+  const sweeps = h.sweeps.length;
+  const adopting = h.engine.adoptParkedTemplateRuns();
+  for (let i = 0; i < 400 && h.sweeps.length === sweeps; i += 1) await tick();
   expect(h.sweeps.at(-1)).toContain(runId);
   open();
+  await adopting;
   const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
   for (let i = 0; i < 400 && !ended(); i += 1) await tick();
   expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });

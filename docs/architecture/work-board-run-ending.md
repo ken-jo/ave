@@ -138,9 +138,10 @@ write is never a confirmation: a write is confirmed by reading the file back.
 ## Readers and recovery
 
 The permitted events are boot, a reader (list), a start, a decision, adoption
-and `clearMissingRun`. Each one reconsiders the open intents and markers;
-an adoption that already ran never suppresses this, and nothing waits on a
-timer or a restart.
+and `clearMissingRun`; an ordinary row's start and plan decision count too.
+Each one reads the delete intents and markers again (the stage engine's
+`adopted`); an adoption that already ran never suppresses this, and nothing
+waits on a timer or a restart.
 
 A board write refused because the run file cannot be read opens an unreadable
 episode (`WorkBoardStore.recoverRuns`). The first permitted event once the file
