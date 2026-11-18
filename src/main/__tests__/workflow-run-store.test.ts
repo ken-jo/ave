@@ -199,15 +199,43 @@ it("stores how a run ended only through settleRun, from its cause, once, and ref
 it.each([
   ["completed", "completed"], ["denied", "denied"], ["failed", "error"], ["stopped", "cancelled"], ["unstarted", "error"], ["item-removed", "cancelled"],
   ["orphan", "cancelled"], ["lost", "error"],
-] as const)("a run that ends %s is stored %s, and its delete intent goes in the same write", async (ends, status) => {
+] as const)("a run that ends %s is stored %s, and its delete intent and unknown marker go in the same write", async (ends, status) => {
   const store = new WorkflowRunStore(file);
+  const intent = { itemId: run().itemId, runId: "run-1" };
   expect(await store.put(run())).toMatchObject({ status: "stored" });
-  expect(await store.markDeleted({ itemId: run().itemId, runId: "run-1" })).toBe("marked");
-  expect(await store.deleteIntents()).toEqual([{ itemId: run().itemId, runId: "run-1" }]);
+  expect(await store.markDeleted(intent)).toBe("marked");
+  await store.markUnknown(intent);
+  expect(await store.deleteIntents()).toEqual([intent]);
+  expect(JSON.parse(await readFile(file, "utf8")).unknownDeletes).toEqual([intent]);
   expect(await store.settleRun("run-1", value => ({ run: value, ends, at: "2026-01-02T00:00:00.000Z" }), cause => cause === ends))
     .toMatchObject({ status: "stored", run: { settled: { status, at: "2026-01-02T00:00:00.000Z" } } });
   expect(await store.deleteIntents()).toEqual([]);
-  expect(JSON.parse(await readFile(file, "utf8")).deleteIntents ?? []).toEqual([]);
+  const stored = JSON.parse(await readFile(file, "utf8"));
+  expect([stored.deleteIntents, stored.unknownDeletes]).toEqual([undefined, undefined]);
+});
+
+it("reads a delete as unknown while the file holds its marker or the store holds it in memory, and resolves it only as told, confirmed by reading the file again", async () => {
+  const store = new WorkflowRunStore(file);
+  const intent = { itemId: run().itemId, runId: "run-1" };
+  expect(await store.put(run())).toMatchObject({ status: "stored" });
+  expect(await store.markDeleted(intent)).toBe("marked");
+  expect(await store.hasUnknown()).toBe(false);
+  await store.markUnknown(intent);
+  expect(await store.hasUnknown()).toBe(true);
+  expect((await store.runFacts())?.of(intent)).toEqual({ readable: true, intent: true, unknown: true });
+  // A new store reads the marker from the file.
+  const restarted = new WorkflowRunStore(file);
+  expect((await restarted.runFacts())?.of(intent)).toEqual({ readable: true, intent: true, unknown: true });
+  // Landed: only the marker goes, and the intent decides.
+  await restarted.resolveUnknown(() => true);
+  expect((await restarted.runFacts())?.of(intent)).toEqual({ readable: true, intent: true, unknown: false });
+  expect(await restarted.hasUnknown()).toBe(false);
+  // The first store still holds it in memory until it resolves it: not landed takes the intent back with it.
+  expect((await store.runFacts())?.of(intent)).toEqual({ readable: true, intent: true, unknown: true });
+  await store.resolveUnknown(() => false);
+  expect((await store.runFacts())?.of(intent)).toEqual({ readable: true, intent: false, unknown: false });
+  expect(await store.hasUnknown()).toBe(false);
+  expect(await store.withdrawIntent(intent)).toBe(true);
 });
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");

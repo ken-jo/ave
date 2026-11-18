@@ -769,6 +769,115 @@ describe("a delete intent", () => {
     }
   });
 
+  const runFile = (dir: string) => JSON.parse(readFileSync(join(dir, "workflow-runs.json"), "utf8")) as { deleteIntents?: unknown; unknownDeletes?: unknown };
+
+  it("whose publication lands and then fails is read back and taken back: the board is untouched and the run stays as it was", async () => {
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [naming] }), [live("run-a")]);
+    const write = namespace.writeFileAtomicAtPath;
+    let failed = false;
+    vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      await write(target, body);
+      if (target === join(dir, "workflow-runs.json") && !failed) {
+        failed = true;
+        throw new Error("run file sync failed");
+      }
+    });
+    try {
+      const before = readFileSync(path, "utf8");
+      await expect(store.remove(40)).rejects.toThrow("run file sync failed");
+      expect(readFileSync(path, "utf8")).toBe(before);
+      expect(runFile(dir)).toEqual({ version: 1, rowIdFloor: 50, runs: [live("run-a")] });
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it.each([["did not land", false], ["landed", true]] as const)("of a delete whose board readback fails is kept as a marker, and the next read of the board decides it %s", async (_, lands) => {
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [naming, row(41)] }), [live("run-a")]);
+    const write = namespace.writeFileAtomicAtPath;
+    const read = homeTrust.readAveHomeInput;
+    let failed = false;
+    vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (target !== path) return write(target, body);
+      if (lands) await write(target, body);
+      failed = true;
+      throw new Error("board write failed");
+    });
+    vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async (target) => {
+      if (target === path && failed) throw Object.assign(new Error("board read failed"), { code: "EACCES" });
+      return read(target);
+    });
+    try {
+      await expect(store.remove(40)).rejects.toThrow("board write failed");
+      expect(runFile(dir)).toMatchObject({ deleteIntents: [{ itemId: 40, runId: "run-a" }], unknownDeletes: [{ itemId: 40, runId: "run-a" }] });
+      vi.restoreAllMocks();
+      // A restart keeps it: the next process decides it from the board on disk.
+      const reopened = new WorkBoardStore(path, () => Date.parse(AT));
+      await reopened.load();
+      expect(await reopened.deleteIntentsOnDisk()).toEqual(lands ? { due: [{ itemId: 40, runId: "run-a" }], waiting: [] } : { due: [], waiting: [] });
+      expect(runFile(dir)).toEqual(lands
+        ? { version: 1, rowIdFloor: 50, runs: [live("run-a")], deleteIntents: [{ itemId: 40, runId: "run-a" }] }
+        : { version: 1, rowIdFloor: 50, runs: [live("run-a")] });
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("of a delete that did not land, while the run file cannot be written, is held in memory: the run reads unreadable and ends by no removal until a read takes it back", async () => {
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [naming] }), [live("run-a")]);
+    const write = namespace.writeFileAtomicAtPath;
+    let published = false;
+    const writes = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (target === path) throw new Error("board write failed");
+      if (target !== join(dir, "workflow-runs.json")) return write(target, body);
+      if (published) throw new Error("run file write failed");
+      published = true;
+      return write(target, body);
+    });
+    try {
+      await expect(store.remove(40)).rejects.toThrow("board write failed");
+      expect(runFile(dir)).toMatchObject({ deleteIntents: [{ itemId: 40, runId: "run-a" }] });
+      expect(runFile(dir).unknownDeletes).toBeUndefined();
+      const classOf = await store.runClasses();
+      expect(typeof classOf === "function" && classOf({ itemId: 40, runId: "run-a" })).toBe("unreadable");
+      expect(await store.settleRemovedRun(40, "run-a", "item-removed", run => ({ run, ends: "item-removed", at: AT }))).toEqual({ status: "cause-refused" });
+      writes.mockRestore();
+      const next = await store.runClasses();
+      expect(typeof next === "function" && next({ itemId: 40, runId: "run-a" })).toBe("live");
+      expect(runFile(dir)).toEqual({ version: 1, rowIdFloor: 50, runs: [live("run-a")] });
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
+  });
+
+  it("of an invalid card's own delete whose board write fails before it replaces the file is taken back while the file still holds the entry", async () => {
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [{ ...naming, title: 0 }] }), [live("run-a")]);
+    const write = namespace.writeFileAtomicAtPath;
+    const writes = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (target === path) throw new Error("board write failed");
+      return write(target, body);
+    });
+    try {
+      const shown = await store.list();
+      const card = shown.status === "ok" ? shown.unreadableRows?.[0] : undefined;
+      if (!card) throw new Error("no invalid card");
+      const before = readFileSync(path, "utf8");
+      await expect(store.removeUnreadable(card, () => true)).rejects.toThrow("board write failed");
+      expect(readFileSync(path, "utf8")).toBe(before);
+      expect(intents(dir)).toEqual([]);
+      writes.mockRestore();
+      expect(await store.removeUnreadable(card, () => true)).toEqual({ status: "deleted", itemId: 40 });
+      expect(readFileSync(path, "utf8")).not.toContain("run-a");
+      expect(await store.deletedRuns()).toEqual([{ itemId: 40, runId: "run-a" }]);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it.each<[string, (items: unknown[]) => Record<string, unknown>]>([
     ["its row that does not validate", items => ({ items: [{ ...naming, title: 0 }, ...items] })],
     ["its row and a twin", items => ({ items: [naming, { ...naming }, ...items] })],

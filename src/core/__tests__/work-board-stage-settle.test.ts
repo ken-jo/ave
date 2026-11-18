@@ -1153,15 +1153,29 @@ it.each((["renumber", "rename"] as const).flatMap(mode => HELD_UNDER.map(([field
   }),
 );
 
-it("deleting from its invalid card a live run's row that does not validate is refused while it holds the run's id: nothing is written and the run completes untouched", () => withHarness(async (h) => {
+it("deleting from its invalid card a live run's row that does not validate goes through its own intent: the run is stopped and ends cancelled as its row removed", () => withHarness(async (h) => {
   const live = await liveRun(h);
   h.editRow(live.id, row => ({ ...row, priority: 42 }));
+  expect(await h.board.removeUnreadable(await invalidCard(h, row => (row as { id?: unknown }).id === live.id), () => true)).toEqual({ status: "deleted", itemId: live.id });
+  expect(readFileSync(h.boardPath, "utf8")).not.toContain(live.runId);
+  expect(await live.run).toMatchObject({ status: "cancelled", reason: "item-removed" });
+  expect(h.interrupts).toEqual([live.child.sessionId]);
+  // Settled with no row left, the record goes with the next prune.
+  const left = await h.runOf(live.runId);
+  expect(left === null || left.settled?.status === "cancelled").toBe(true);
+  expect(await h.board.runs.deleteIntents()).toEqual([]);
+}));
+
+it("an invalid card's delete of a run's row whose id is not its own and holds that run's last string stays refused: nothing is written and the run completes untouched", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  h.editRow(live.id, row => ({ ...row, id: live.id + 50, priority: 42 }));
   const onDisk = readFileSync(h.boardPath, "utf8");
-  await expect(h.board.removeUnreadable(await invalidCard(h, row => (row as { id?: unknown }).id === live.id), () => true)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+  await expect(h.board.removeUnreadable(await invalidCard(h, row => (row as { id?: unknown }).id === live.id + 50), () => true)).rejects.toMatchObject({ code: "work-board-run-id-held" });
   expect(readFileSync(h.boardPath, "utf8")).toBe(onDisk);
   expect(h.interrupts).toEqual([]);
   expect(await h.runOf(live.runId)).toEqual(live.record);
-  h.editRow(live.id, row => ({ ...row, priority: "medium" }));
+  expect(await h.board.runs.deleteIntents()).toEqual([]);
+  h.editRow(live.id + 50, row => ({ ...row, id: live.id, priority: "medium" }));
   await completesUntouched(h, live);
 }));
 
@@ -1243,7 +1257,7 @@ it.each([
   expect(h.engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
 }));
 
-it("a user's delete of the listed row of a run a restart left parked waits while a twin with its id that does not validate is on the board: the run stays parked and its intent waits", () => withHarness(async (h) => {
+it("a user's delete of the listed row of a run a restart left parked waits while a twin with its id that does not validate is on the board, and ends it once that twin's card is deleted", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);
   const run = h.start(id, h.local(version));
@@ -1265,6 +1279,15 @@ it("a user's delete of the listed row of a run a restart left parked waits while
   await new Promise(resolve => setTimeout(resolve, 0));
   expect(h.events.slice(before).some(event => event.phase === "cancelled" || event.phase === "error")).toBe(false);
   expect((await h.runOf(runId))?.settled).toBeUndefined();
+
+  // Deleting the twin's invalid card goes through that intent: the run ends as its row removed, with no restart.
+  expect(await h.board.removeUnreadable(await invalidCard(h, entry => (entry as { title?: unknown }).title === 5), () => true)).toEqual({ status: "deleted", itemId: id });
+  const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
+  for (let i = 0; i < 400 && !ended(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
+  const left = await h.runOf(runId);
+  expect(left === null || left.settled?.status === "cancelled").toBe(true);
+  expect(await h.board.runs.deleteIntents()).toEqual([]);
 }));
 
 it("an adoption while a deleted row's parked run is being cancelled leaves that run to the cancel, which ends it as its row removed", () => withHarness(async (h) => {

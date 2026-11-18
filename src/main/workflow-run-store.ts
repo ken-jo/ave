@@ -14,9 +14,12 @@ import type { RunClass, RunFileFacts } from "./run-classification.js";
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
 // `legacyBoardCopy`: the copy of a legacy board, as stored; it is only read by the copy and the board writes that wait on it, and written
-// back as it is. `deleteIntents`: see markDeleted. `raw`, the file's top-level object as read: a write writes its other keys back as they
-// were, in their place; `unchanged`, the text a write writes for the file as read.
-interface RunsFile { version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown; deleteIntents?: unknown[]; raw?: Record<string, unknown>; unchanged?: string }
+// back as it is. `deleteIntents`: see markDeleted; `unknownDeletes`: see markUnknown. `raw`, the file's top-level object as read: a write
+// writes its other keys back as they were, in their place; `unchanged`, the text a write writes for the file as read.
+interface RunsFile {
+  version: 1; rowIdFloor: number; runs: unknown[]; legacyBoardCopy?: unknown; deleteIntents?: unknown[]; unknownDeletes?: unknown[]; raw?: Record<string, unknown>;
+  unchanged?: string;
+}
 /** A user's delete of row `itemId`, which named the unsettled run `runId` of that row. */
 export interface DeleteIntent { itemId: number; runId: string }
 /** An entry of the run file that get() refuses: `position`, its index among the file's runs; `hash`, the sha-256 of its JSON; `itemId`, the
@@ -99,19 +102,32 @@ function openIntent(file: RunsFile, intent: DeleteIntent): boolean {
 const openIntents = (file: RunsFile): DeleteIntent[] =>
   (file.deleteIntents ?? []).filter((entry): entry is DeleteIntent => isIntent(entry) && openIntent(file, entry));
 
-// What the file says of one run, for classifyRun (see runFacts).
-function factsIn(file: RunsFile, run: DeleteIntent, intents = openIntents(file)): RunFileFacts {
-  const { result } = lookup(file, run.runId);
-  if (result.status === "invalid" || (result.status === "found" && result.run.itemId !== run.itemId)) return { readable: false };
-  return { readable: true, intent: intents.some(intent => intent.itemId === run.itemId && intent.runId === run.runId), unknown: false };
+const sameIntent = (a: DeleteIntent) => (b: unknown): boolean => isIntent(b) && b.itemId === a.itemId && b.runId === a.runId;
+const markersIn = (file: RunsFile): DeleteIntent[] => (file.unknownDeletes ?? []).filter(isIntent);
+// Whether the file still holds the intent or a marker of that delete.
+const holdsDelete = (file: RunsFile, intent: DeleteIntent): boolean =>
+  (file.deleteIntents ?? []).some(sameIntent(intent)) || (file.unknownDeletes ?? []).some(sameIntent(intent));
+
+// What the file says of one run, for classifyRun (see runFacts): `unknown` for a marker in the file or one the store holds in memory.
+function factsIn(file: RunsFile, held: readonly DeleteIntent[]): (run: DeleteIntent) => RunFileFacts {
+  const intents = openIntents(file);
+  const unknown = [...markersIn(file), ...held];
+  return (run) => {
+    const { result } = lookup(file, run.runId);
+    if (result.status === "invalid" || (result.status === "found" && result.run.itemId !== run.itemId)) return { readable: false };
+    return { readable: true, intent: intents.some(sameIntent(run)), unknown: unknown.some(sameIntent(run)) };
+  };
 }
 
-// An intent goes with the write that ends its run, or once the file holds no such run; one whose run entry does not read, or that does
-// not read as an intent, stays as it is.
+// An intent or marker goes with the write that ends its run, or once the file holds no such run; one whose run entry does not read, or
+// that does not read as an intent, stays as it is.
 function keepOpenIntents(file: RunsFile): void {
-  if (file.deleteIntents === undefined) return;
-  const kept = file.deleteIntents.filter(entry => !isIntent(entry) || lookup(file, entry.runId).result.status === "invalid" || openIntent(file, entry));
-  file.deleteIntents = kept.length > 0 ? kept : undefined;
+  const keep = (entries: unknown[] | undefined): unknown[] | undefined => {
+    const kept = (entries ?? []).filter(entry => !isIntent(entry) || lookup(file, entry.runId).result.status === "invalid" || openIntent(file, entry));
+    return kept.length > 0 ? kept : undefined;
+  };
+  file.deleteIntents = keep(file.deleteIntents);
+  file.unknownDeletes = keep(file.unknownDeletes);
 }
 
 function fileText({ raw, unchanged: _, ...known }: RunsFile): string {
@@ -139,6 +155,9 @@ function bindingOf(run: WorkflowRunRecord): string {
 
 /** Template-run state in the covered `work-board/workflow-runs.json`, keyed by runId. */
 export class WorkflowRunStore {
+  // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
+  private unknown: DeleteIntent[] = [];
+
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "workflow-runs.json")) {}
 
   /** The file, or undefined while it awaits home content review. Any other read failure throws; a file that holds a key twice throws
@@ -159,11 +178,13 @@ export class WorkflowRunStore {
     try { raw = JSON.parse(text); } catch { throw new WorkflowTemplateError("invalid-template-run"); }
     if (repeatsKey(text)) throw new WorkBoardWriteRefusal("workflow-runs-duplicate-key", this.filePath);
     requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.runs) && (raw.rowIdFloor === undefined || isRowId(raw.rowIdFloor))
-      && (raw.deleteIntents === undefined || Array.isArray(raw.deleteIntents)), "invalid-template-run");
+      && (raw.deleteIntents === undefined || Array.isArray(raw.deleteIntents)) && (raw.unknownDeletes === undefined || Array.isArray(raw.unknownDeletes)),
+      "invalid-template-run");
     const runs: unknown[] = raw.runs;
     const copy = raw.legacyBoardCopy === undefined ? {} : { legacyBoardCopy: raw.legacyBoardCopy };
     const intents = raw.deleteIntents === undefined ? {} : { deleteIntents: raw.deleteIntents as unknown[] };
-    const file: RunsFile = { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy, ...intents, raw };
+    const markers = raw.unknownDeletes === undefined ? {} : { unknownDeletes: raw.unknownDeletes as unknown[] };
+    const file: RunsFile = { version: 1, rowIdFloor: floorOver(runs, (raw.rowIdFloor as number | undefined) ?? 0), runs, ...copy, ...intents, ...markers, raw };
     file.unchanged = fileText(file);
     return { file, bytes: input.bytes };
   }
@@ -281,18 +302,69 @@ export class WorkflowRunStore {
     });
   }
 
-  /** Take back the intent of a delete whose board write did not land. Nothing is written while the file awaits review or holds no such
-   * intent; a file that cannot be read throws. */
-  async withdrawIntent(intent: DeleteIntent): Promise<void> {
-    return withInProcessFileQueue(this.filePath, async () => {
+  /** Take back the intent of a delete that did not land, with its marker. It counts once a read of the file again holds neither, whatever
+   * the write reported: true then. Otherwise the delete stays unknown (see markUnknown), never read as not landed, and false. */
+  async withdrawIntent(intent: DeleteIntent): Promise<boolean> {
+    await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      const intents = file?.deleteIntents;
-      if (file === undefined || intents === undefined) return;
-      const kept = intents.filter(entry => !(isIntent(entry) && entry.itemId === intent.itemId && entry.runId === intent.runId));
-      if (kept.length === intents.length) return;
-      file.deleteIntents = kept.length > 0 ? kept : undefined;
+      if (file === undefined || !holdsDelete(file, intent)) return;
+      const drop = (entries: unknown[] | undefined) => {
+        const kept = (entries ?? []).filter(entry => !sameIntent(intent)(entry));
+        return kept.length > 0 ? kept : undefined;
+      };
+      file.deleteIntents = drop(file.deleteIntents);
+      file.unknownDeletes = drop(file.unknownDeletes);
       await this.commit(file);
-    });
+    }).catch(() => undefined);
+    const file = await this.read().catch(() => undefined);
+    if (file !== undefined && !holdsDelete(file, intent)) {
+      this.unknown = this.unknown.filter(entry => !sameIntent(entry)(intent));
+      return true;
+    }
+    await this.markUnknown(intent);
+    return false;
+  }
+
+  /** A delete whose outcome is not known: the store holds it in memory, and stores it as a marker beside the intents so it outlives a
+   * restart; while either holds it the run classifies as unreadable. It goes once resolveUnknown decides it. A marker that cannot be
+   * written stays in memory only. */
+  async markUnknown(intent: DeleteIntent): Promise<void> {
+    if (!this.unknown.some(sameIntent(intent))) this.unknown = [...this.unknown, { itemId: intent.itemId, runId: intent.runId }];
+    await withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file === undefined || (file.unknownDeletes ?? []).some(sameIntent(intent))) return;
+      file.unknownDeletes = [...(file.unknownDeletes ?? []), { itemId: intent.itemId, runId: intent.runId }];
+      await this.commit(file);
+    }).catch(() => undefined);
+  }
+
+  /** Whether a delete's outcome is unknown: a marker in the file, or one held in memory. False while the file cannot be read. */
+  async hasUnknown(): Promise<boolean> {
+    if (this.unknown.length > 0) return true;
+    const file = await this.read().catch(() => undefined);
+    return file !== undefined && markersIn(file).length > 0;
+  }
+
+  /** Decide every delete whose outcome is unknown: `landed` false takes back its intent with the marker, true only the marker. Each
+   * counts once a read of the file again holds no marker of it (and, not landed, no intent); the rest stay unknown. */
+  async resolveUnknown(landed: (intent: DeleteIntent) => boolean): Promise<void> {
+    let back: DeleteIntent[] = [];
+    await withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file === undefined) return;
+      const unknown = [...markersIn(file), ...this.unknown];
+      if (unknown.length === 0) return;
+      back = unknown.filter(intent => !landed(intent));
+      const kept = (file.deleteIntents ?? []).filter(entry => !back.some(intent => sameIntent(intent)(entry)));
+      file.deleteIntents = kept.length > 0 ? kept : undefined;
+      const left = (file.unknownDeletes ?? []).filter(entry => !isIntent(entry));
+      file.unknownDeletes = left.length > 0 ? left : undefined;
+      await this.commit(file);
+    }).catch(() => undefined);
+    const file = await this.read().catch(() => undefined);
+    if (file === undefined) return;
+    this.unknown = this.unknown.filter(intent => (file.unknownDeletes ?? []).some(sameIntent(intent))
+      || (back.some(sameIntent(intent)) && (file.deleteIntents ?? []).some(sameIntent(intent))));
   }
 
   /** The delete intents whose run is still to end. Undefined while the file awaits review or is past its read limit; a file that cannot
@@ -308,8 +380,7 @@ export class WorkflowRunStore {
   async runFacts(): Promise<{ intents: DeleteIntent[]; of: (run: DeleteIntent) => RunFileFacts } | undefined> {
     const file = await this.read();
     if (file === undefined) return undefined;
-    const intents = openIntents(file);
-    return { intents, of: run => factsIn(file, run, intents) };
+    return { intents: openIntents(file), of: factsIn(file, this.unknown) };
   }
 
   /** What a board write must keep: `held`, the run id of every entry that is not a settled run (an unsettled run, or an entry that does
@@ -408,7 +479,7 @@ export class WorkflowRunStore {
       if (end) {
         if (allowed === undefined) throw new WorkflowTemplateError("invalid-template-run");
         if (stored !== undefined) return { status: "refused" };
-        if (!allowed(end.ends, factsIn(file, run))) return { status: "cause-refused" };
+        if (!allowed(end.ends, factsIn(file, this.unknown)(run))) return { status: "cause-refused" };
         run = { ...run, settled: { status: SETTLED_AS[end.ends], at: end.at } };
         assertWorkflowRunRecord(run);
       }

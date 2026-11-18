@@ -128,6 +128,12 @@ write is never a confirmation: a write is confirmed by reading the file back.
   and marker are withdrawn together; a readable board without it means it
   landed, so only the marker goes and the classifier decides when the intent is
   due; a board that shows nothing keeps the marker.
+- An invalid card's delete takes the same steps through its own intent. For
+  the one open run bound to the entry's id, that is the intent of the row's
+  delete when one is open, or one the card's delete stores first when the entry
+  holds the last string of that run in the file; either way listeners are told.
+  Its readback counts it unlanded while the board still holds that entry. Any
+  other delete that would take out a run's id stays refused.
 
 ## Readers and recovery
 
