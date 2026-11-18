@@ -619,7 +619,7 @@ export class McpOAuthSession {
         },
         TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs, this.controller.signal, "MCP authentication",
       );
-      if (!opened.ok) throw new Error(AUTH_FAILED);
+      if (!opened.ok) throw new Error(AUTH_FAILED, { cause: opened.error });
       this.assertActive();
       const params = await callback;
       // Verify state and issuer before acting on any callback, including errors.
@@ -658,7 +658,7 @@ export class McpOAuthSession {
       }
       if (error instanceof DpopError) throw new McpOAuthError("mcp-auth-dpop-failed");
       if (error instanceof McpOAuthError && error.code !== "mcp-auth-required" && error.code !== "mcp-auth-failed") throw error;
-      throw new Error(AUTH_FAILED);
+      throw new Error(AUTH_FAILED, { cause: error });
     } finally {
       if (handle) this.dependencies.redirectCatchers.close(this.ownerKey, handle);
     }
