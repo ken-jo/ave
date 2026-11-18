@@ -878,6 +878,30 @@ describe("a delete intent", () => {
     }
   });
 
+  it.each([["fails before it replaces the file", false], ["is refused by the guard", true]] as const)("of a row's delete that landed stays when the delete of a twin's card holding its release %s", async (_, guard) => {
+    const twin = { id: 40, title: 5, ...(guard ? { note: "run-b" } : {}) };
+    const { dir, path, store } = await home(JSON.stringify({ version: 1, nextId: 51, items: [row(41), twin] }), [live("run-a"), live("run-b", 41)]);
+    const write = namespace.writeFileAtomicAtPath;
+    vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (target === path && !guard) throw new Error("board write failed");
+      return write(target, body);
+    });
+    try {
+      expect(await store.runs.markDeleted({ itemId: 40, runId: "run-a" })).toBe("marked");
+      const shown = await store.list();
+      const card = shown.status === "ok" ? shown.unreadableRows?.[0] : undefined;
+      if (!card) throw new Error("no invalid card");
+      const before = readFileSync(path, "utf8");
+      await expect(store.removeUnreadable(card, () => true)).rejects.toMatchObject(guard ? { code: "work-board-run-id-held" } : { message: "board write failed" });
+      expect(readFileSync(path, "utf8")).toBe(before);
+      expect(intents(dir)).toEqual([{ itemId: 40, runId: "run-a" }]);
+      expect(await store.deleteIntentsOnDisk()).toEqual({ due: [], waiting: [{ itemId: 40, runId: "run-a" }] });
+    } finally {
+      vi.restoreAllMocks();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it.each<[string, (items: unknown[]) => Record<string, unknown>]>([
     ["its row that does not validate", items => ({ items: [{ ...naming, title: 0 }, ...items] })],
     ["its row and a twin", items => ({ items: [naming, { ...naming }, ...items] })],
