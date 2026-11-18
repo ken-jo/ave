@@ -1681,6 +1681,56 @@ it("writing unconfirmed run ends again keeps going past one that still fails: th
   expect((await h.runOf(firstId))?.settled).toBeUndefined();
 }));
 
+it("a parked run whose end write throws once its row is taken out by hand keeps its record unconfirmed, and the next reader ends it cancelled as an orphan", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
+  const id = await h.addItem(version);
+  void h.start(id, h.local(version)).catch(() => undefined);
+  const [a] = await h.untilLive(1);
+  const runId = (await h.item(id)).runId ?? "";
+  a.finish();
+  await h.untilStage(id, "a", "awaiting_gate");
+  const file = JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: Record<string, unknown>[] };
+  writeFileSync(h.boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== id) }));
+  const settle = h.board.runs.settleRun.bind(h.board.runs);
+  let failing = true;
+  const stored: string[] = [];
+  vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (...args) => {
+    if (failing) throw new Error("the run file write failed");
+    const result = await settle(...args);
+    if (result.status === "stored" && result.run.settled !== undefined) stored.push(result.run.settled.status);
+    return result;
+  });
+  const ends = () => h.events.filter(event => event.itemId === id && (event.phase === "cancelled" || event.phase === "error"));
+  await h.board.create({ title: "Another row" });
+  for (let i = 0; i < 400 && ends().length === 0; i += 1) await tick();
+  expect(ends()).toEqual([expect.objectContaining({ phase: "cancelled", reasonCode: "run-end-unconfirmed" })]);
+  await h.board.pruneSettledRuns();
+  expect(await h.runOf(runId)).toMatchObject({ runId, settled: undefined });
+
+  failing = false;
+  await h.engine.projectTemplateRuns([]);
+  for (let i = 0; i < 400 && ends().at(-1)?.reasonCode !== "run-end-confirmed"; i += 1) await tick();
+  expect(ends().at(-1)).toMatchObject({ phase: "cancelled", reasonCode: "run-end-confirmed" });
+  expect(stored).toEqual(["cancelled"]);
+  expect(await h.runOf(runId)).toBeNull();
+}));
+
+it("a live run whose row stops naming it while its delete intent is open is held when its stage write is refused: no lost end, and the intent stays", () => withHarness(async (h) => {
+  const live = await liveRun(h);
+  void live.run.catch(() => undefined);
+  h.editRow(live.id, ({ runId: _, runHistory: __, ...row }) => row);
+  const runs = JSON.parse(readFileSync(runsFile(h), "utf8")) as Record<string, unknown>;
+  writeFileSync(runsFile(h), JSON.stringify({ ...runs, deleteIntents: [{ itemId: live.id, runId: live.runId }] }));
+  const update = vi.spyOn(h.board, "updateRun");
+  live.child.finish();
+  for (let i = 0; i < 400 && update.mock.results.length === 0; i += 1) await tick();
+  expect(await update.mock.results[0]?.value).toEqual({ status: "row-lost" });
+  for (let i = 0; i < 40; i += 1) await tick();
+  expect(h.events.filter(event => event.itemId === live.id && (event.phase === "cancelled" || event.phase === "error"))).toEqual([]);
+  expect((await h.runOf(live.runId))?.settled).toBeUndefined();
+  expect(intentsOf(h)).toEqual([{ itemId: live.id, runId: live.runId }]);
+}));
+
 it("a stopped run whose end the run file did not confirm reads as stopped, with a note that its end is not saved", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a")]);
   const id = await h.addItem(version);

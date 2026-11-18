@@ -521,24 +521,35 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     let ending: Settled | null = null;
     let before: readonly WorkItemStageRun[] = [];
     let effects: RunEffect[] = [];
-    const written = await writeRun(state, (current) => {
-      // Reduced from the run as stored now, inside the write: a field another write stored meanwhile is never lost.
-      refusal = current.settled !== undefined ? "run_mismatch" : precheck?.(current) ?? null;
-      if (refusal !== null) return null;
-      before = current.stageRuns;
-      const step = reduceRun({
-        graph: version, stageRuns: current.stageRuns, joins: current.stageJoins ?? [], stopping: state.stopping, refused: state.refused !== null,
-        faulted: state.faulted !== null, now,
-      }, event);
-      effects = step.effects;
-      // The write that ends the run says so: the final stage states and how it ended are one write.
-      const next = { ...current, stageRuns: step.stageRuns, stageJoins: step.joins };
-      ending = step.runStatus === "executing" ? null : step.runStatus;
-      return ending === null ? next : endOf(state, next, ending, now);
-    });
+    let written: Awaited<ReturnType<typeof writeRun>>;
+    try {
+      written = await writeRun(state, (current) => {
+        // Reduced from the run as stored now, inside the write: a field another write stored meanwhile is never lost.
+        refusal = current.settled !== undefined ? "run_mismatch" : precheck?.(current) ?? null;
+        if (refusal !== null) return null;
+        before = current.stageRuns;
+        const step = reduceRun({
+          graph: version, stageRuns: current.stageRuns, joins: current.stageJoins ?? [], stopping: state.stopping, refused: state.refused !== null,
+          faulted: state.faulted !== null, now,
+        }, event);
+        effects = step.effects;
+        // The write that ends the run says so: the final stage states and how it ended are one write.
+        const next = { ...current, stageRuns: step.stageRuns, stageJoins: step.joins };
+        ending = step.runStatus === "executing" ? null : step.runStatus;
+        return ending === null ? next : endOf(state, next, ending, now);
+      });
+    } catch (error) {
+      if (precheck) throw error;
+      // Whether the write landed is not known: the run ends as a fault, and an end its write does not confirm is written again by the next
+      // permitted event.
+      log.warn("stage run write threw (id=%d, event=%s): %s", state.itemId, event.type, errorMessage(error));
+      await unwind(state, event, "run-state-unavailable");
+      return null;
+    }
     if (written.run === null) {
       if (refusal !== null) return refusal;
-      if (written.reason === "row-gone") return "run_mismatch";
+      // The row does not name the run: writeRun read its class, which ends it as lost or removed, or holds it, and then the event goes.
+      if (written.reason === "row-gone" || (written.reason === "row-lost" && !state.lost)) return "run_mismatch";
       log.warn("stage run write failed (id=%d, event=%s): %s", state.itemId, event.type, written.reason);
       if (precheck) return "run_mismatch";
       // Its class holds the run: the end is not written, and the next permitted event writes it again first.
