@@ -71,7 +71,7 @@ it("writes how a run ended only in the run store's one settle write, which the s
   };
   expect(find(runModules, node => ts.isPropertyAssignment(node) && named(node))).toEqual(["main/workflow-run-store.ts#WorkflowRunStore>write"]);
   // A copy of the stored value, never a new one: retention refuses any change of it.
-  expect(find(runModules, node => ts.isShorthandPropertyAssignment(node) && named(node))).toEqual([`${STORE}#runSummary`]);
+  expect(find(runModules, node => ts.isShorthandPropertyAssignment(node) && named(node))).toEqual([`${STORE}#runSummary`, "main/workflow-run-store.ts#WorkflowRunStore>get"]);
   expect(find(runModules, node => (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken || ts.isDeleteExpression(node))
     && /\.settled\b/.test((ts.isBinaryExpression(node) ? node.left : node.expression).getText()))).toEqual([]);
   expect(callsOf("settleRun")).toEqual([`${STORE}#WorkBoardStore>settleRemovedRun`, `${STORE}#WorkBoardStore>settleUnstarted`, `${STORE}#WorkBoardStore>updateRun`]);

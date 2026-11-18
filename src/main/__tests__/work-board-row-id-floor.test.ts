@@ -280,6 +280,18 @@ it("drops the mark once the user discards the last entry of the run file that do
   expect(await store.list()).not.toHaveProperty("unreadableRuns");
 });
 
+it("discards nothing when asked without a check, and keeps the run file's bytes", async () => {
+  await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 6, unknownBelow: 5, items: [5].map(row) }));
+  const text = JSON.stringify({ version: 1, rowIdFloor: 5, runs: [null] });
+  await writeFile(runsPath, text);
+  const store = new WorkBoardStore(boardPath);
+  const listed = await store.list();
+  const [card] = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
+  expect(await store.discardUnreadableRun(card)).toEqual({ status: "not_found" });
+  expect(await readFile(runsPath, "utf8")).toBe(text);
+  expect(JSON.parse(await readFile(boardPath, "utf8")).unknownBelow).toBe(5);
+});
+
 it("drops only the mark it judged: one raised while the runs were read stays until a prune judges it", async () => {
   await writeFile(boardPath, JSON.stringify({ version: 1, nextId: 6, unknownBelow: 5, items: [5].map(row) }));
   await writeFile(runsPath, JSON.stringify({ version: 1, rowIdFloor: 5, runs: [] }));

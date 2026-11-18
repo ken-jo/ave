@@ -308,7 +308,8 @@ it("keeps the run record when the row write fails after the board was replaced",
   const reopened = new WorkBoardStore(boardPath);
   expect(await reopened.getRun(id)).toMatchObject({ status: "found", run: { runId: "run-landed" } });
   expect(await reopened.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "run-landed" }] });
-  expect((await reopened.runs.get("run-landed") as { run: object }).run).not.toHaveProperty("settled");
+  expect((await entries()).find(entry => entry.runId === "run-landed")).not.toHaveProperty("settled");
+  expect((await reopened.runs.get("run-landed") as { run: { settled?: unknown } }).run.settled).toBeUndefined();
 });
 
 it("keeps the run record unsettled when the board cannot be read back after a failed row write", async () => {
@@ -330,7 +331,8 @@ it("keeps the run record unsettled when the board cannot be read back after a fa
   vi.restoreAllMocks();
 
   expect(await store.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "run-unknown" }] });
-  expect((await store.runs.get("run-unknown") as { run: object }).run).not.toHaveProperty("settled");
+  expect((await entries()).find(entry => entry.runId === "run-unknown")).not.toHaveProperty("settled");
+  expect((await store.runs.get("run-unknown") as { run: { settled?: unknown } }).run.settled).toBeUndefined();
 });
 
 it("keeps a run record whose row write never happened until it is settled", async () => {

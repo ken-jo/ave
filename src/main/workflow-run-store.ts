@@ -282,8 +282,12 @@ export class WorkflowRunStore {
     });
   }
 
+  /** A found run always carries `settled`, undefined while it has not ended. */
   async get(runId: string): Promise<WorkflowRunReadResult> {
-    return (await this.view()).get(runId);
+    const read = (await this.view()).get(runId);
+    if (read.status !== "found") return read;
+    const { settled } = read.run;
+    return { ...read, run: { ...read.run, settled } };
   }
 
   /** Store, before the board write that deletes row `intent.itemId`, that the user deletes it: the engine ends its run as its row removed,

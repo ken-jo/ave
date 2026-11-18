@@ -1689,8 +1689,8 @@ export class WorkBoardStore {
    * id or could be the row it names: those with that id and those without a usable id; one naming a run or a row is refused while the
    * board file cannot be read. `allowed` answering `work-board-run-owner-unknown` refuses it as that. The run file as it was is copied
    * beside it first; there is no undo. Then the board's unknownBelow mark drops once nothing in the run file could be an unsettled run
-   * below it. */
-  async discardUnreadableRun(target: { position: number; hash: string }, allowed: (entry: unknown, rows: readonly unknown[]) => DiscardVerdict | Promise<DiscardVerdict>): Promise<WorkBoardEntryDeleteResult> {
+   * below it. Without `allowed`, nothing is discarded. */
+  async discardUnreadableRun(target: { position: number; hash: string }, allowed: (entry: unknown, rows: readonly unknown[]) => DiscardVerdict | Promise<DiscardVerdict> = () => false): Promise<WorkBoardEntryDeleteResult> {
     await this.ensureLoaded();
     let verdict = false as DiscardVerdict;
     const outcome = await this.runs.discardUnreadable(target, async (entry) => {

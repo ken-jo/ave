@@ -35,6 +35,15 @@ it("stores a run by runId and returns copies", async () => {
   expect((await stored()).runs).toHaveLength(2);
 });
 
+it("reads a found run with its settled key, undefined until the run ends", async () => {
+  const store = new WorkflowRunStore(file);
+  await store.put(run());
+  const read = await store.get("run-1");
+  expect(read.status === "found" && Object.hasOwn(read.run, "settled") && read.run.settled === undefined).toBe(true);
+  expect(await store.get("run-1")).toMatchObject({ status: "found", run: { runId: "run-1", settled: undefined } });
+  expect((await stored()).runs).toEqual([run()]);
+});
+
 it("carries the complete run state through a write", async () => {
   const store = new WorkflowRunStore(file);
   const full = run({
@@ -181,7 +190,8 @@ it("stores how a run ended only through settleRun, from its cause, once, and ref
     .toEqual({ status: "cause-refused" });
   expect(asked).toEqual([["orphan", { readable: true, intent: false, unknown: false }]]);
   expect(await store.get("run-1")).toMatchObject({ status: "found", run: { stageRuns: run().stageRuns } });
-  expect((await store.get("run-1") as { run: object }).run).not.toHaveProperty("settled");
+  expect((await stored()).runs.find(entry => (entry as { runId?: unknown }).runId === "run-1")).not.toHaveProperty("settled");
+  expect((await store.get("run-1") as { run: { settled?: unknown } }).run.settled).toBeUndefined();
   expect(await store.settleRun("run-1", value => ({ run: value, ends: "stopped", at: settled.at }), () => true)).toMatchObject({ status: "stored", run: { settled } });
   expect(await store.get("run-1")).toMatchObject({ status: "found", run: { settled } });
   // Once over, its end stays: another end is refused as the run already over, and a write that changes or drops it is refused.
