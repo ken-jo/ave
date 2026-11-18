@@ -77,7 +77,7 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { allowKeyMaterialInspectionUnder, caseFoldForMatch, createSensitivePathMatcher, isSensitivePath } from "../sensitive-paths.js";
-import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
+import { createFilePathPolicy, sensitiveFilePattern } from "../../tools/file-access-policy.js";
 
 const KEY_TEXT = ["-----BEGIN", "PRIVATE KEY-----\nFIXTURE\n-----END", "PRIVATE KEY-----\n"].join(" ");
 const ZIP = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]);
@@ -204,9 +204,11 @@ describe("a key-extension name in either Unicode normalization", () => {
   const composed = "caf\u00e9.pem";
 
   it.each([
-    ["named", "key"], ["named", "certificate"], ["named", "ambiguous"], ["named", "missing"], ["named", "unreadable"],
-    ["resolved", "key"], ["resolved", "certificate"], ["resolved", "ambiguous"], ["resolved", "missing"], ["resolved", "unreadable"],
-  ] as const)("preserves the file policy's %s spelling: %s", (form, kind) => {
+    ["single", "named", "key"], ["single", "named", "certificate"], ["single", "named", "ambiguous"], ["single", "named", "missing"], ["single", "named", "unreadable"],
+    ["reusable", "named", "key"], ["reusable", "named", "certificate"], ["reusable", "named", "ambiguous"], ["reusable", "named", "missing"], ["reusable", "named", "unreadable"],
+    ["single", "resolved", "key"], ["single", "resolved", "certificate"], ["single", "resolved", "ambiguous"], ["single", "resolved", "missing"], ["single", "resolved", "unreadable"],
+    ["reusable", "resolved", "key"], ["reusable", "resolved", "certificate"], ["reusable", "resolved", "ambiguous"], ["reusable", "resolved", "missing"], ["reusable", "resolved", "unreadable"],
+  ] as const)("preserves the %s file policy's %s spelling: %s", (policy, form, kind) => {
     const platform = process.platform;
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
     try {
@@ -217,7 +219,7 @@ describe("a key-extension name in either Unicode normalization", () => {
       fsCalls.storedAlias = { named, backing, canonical: join(project, "K.pem"), twin: kind === "ambiguous",
         requested,
         unavailable: kind === "missing" || kind === "unreadable" ? kind : undefined };
-      const match = sensitiveFilePattern;
+      const match = policy === "single" ? sensitiveFilePattern : createFilePathPolicy("read").sensitive;
       expect(match(requested)).toBe(kind === "certificate" ? null : "**/*.pem");
       expect(fsCalls.open).toEqual(kind === "certificate" && form === "named" ? [named, named]
         : kind === "key" || kind === "certificate" ? [named] : []);

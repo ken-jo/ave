@@ -439,7 +439,7 @@ export function isAdmissionDeniedPath(absPath: string, effect: PathEffect = "wri
   return absPath ? createAdmissionDeniedPathMatcher(effect, undefined, canonicalize)(absPath) : null;
 }
 
-function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
+export function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
   return createPathSensitivityMatcher(effect, spend, canonicalize, true);
 }
 
@@ -806,12 +806,13 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write", a
 }
 
 /**
- * The agent's read of exactly `bytes`, the whole content the caller read from the file at `absPath` and is about to hand
+ * The agent's read of exactly `bytes`, from the start of the file at `absPath` and about to be handed
  * on: the name rules as for `isSensitivePath(absPath, "read")`, and for a key-extension name the content rules applied to
- * these bytes instead of to whatever the path holds now, so the answer describes what leaves, not a later read.
+ * these bytes instead of to whatever the path holds now. `size` is the file's full size (by default these bytes are the
+ * whole file); a partial read cannot clear a key-extension name.
  */
-export function isSensitiveContent(absPath: string, bytes: Buffer): string | null {
-  return absPath ? createPathSensitivityMatcher("read", undefined, canonicalizePathForMatch, false, "agent", bytes)(absPath) : null;
+export function isSensitiveContent(absPath: string, bytes: Buffer, size = bytes.length): string | null {
+  return absPath ? createPathSensitivityMatcher("read", undefined, canonicalizePathForMatch, false, "agent", bytes, size)(absPath) : null;
 }
 
 // Snapshot policy roots and compiled globs once for one permission decision.
@@ -842,7 +843,7 @@ function isEnvironmentTemplatePath(path: string, insensitive: boolean): boolean 
 const KEY_MATERIAL_PATTERNS: ReadonlySet<string> = new Set(["**/*.pem", "**/*.key"]);
 // How much of a file is read to look for a key. A file larger than this is not shown to hold none.
 // It covers the certificate bundles systems ship, so those are read whole and seen to hold no key.
-const KEY_MATERIAL_SCAN_BYTES = 1024 * 1024;
+export const KEY_MATERIAL_SCAN_BYTES = 1024 * 1024;
 // Nothing about a file's format clears bytes that were not read: key readers find a private-key header anywhere in a
 // file, and an archive's stored entries hold plain text. A presentation document saved as one archive is read like any
 // other file, so a large one is not shown to hold no key.
@@ -1029,8 +1030,9 @@ function createPathSensitivityMatcher(
   canonicalize: (path: string) => string,
   admissionOnly: boolean,
   audience: KeyMaterialAudience = "agent",
-  // The whole content already read from the file being judged; its key evidence is taken from these bytes.
+  // Content already read from the file being judged; its key evidence is taken from these bytes and the full size.
   content?: Buffer,
+  contentSize = content?.length ?? 0,
 ): (absPath: string) => string | null {
   const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
   const index = sensitivePatternIndex(platformCaseInsensitive, admissionOnly);
@@ -1077,23 +1079,19 @@ function createPathSensitivityMatcher(
   // looked up for it (`onLocalFilesystem`). The file is looked at only at its canonical path, in its stored spelling
   // (`storedSpelling`), and only where a grant covers it; every other case is answered from the name, without touching
   // the file.
-  const keyEvidence = new Map<string, boolean>();
   const mayHoldPrivateKey = (spelled: string): boolean => {
     if (isWindowsNetworkOrDevicePath(spelled)) return true;
     // An ASCII spelling is stored as given; only another one is looked up.
     const local = onLocalFilesystem(spelled);
     const named = NON_ASCII.test(spelled) && local ? storedSpelling(pathResolve(spelled), true) : spelled;
     const canonical = canonicalize(named ?? spelled);
-    const known = keyEvidence.get(canonical);
-    if (known !== undefined) return known;
     const folded = caseFoldForMatch(canonical);
     const inspectable = [...keyMaterialInspectionGrants].some((grant) => grant(folded));
     const stored = !inspectable || content !== undefined || !local ? undefined : storedSpelling(canonical, false, NON_ASCII.test(spelled));
     const evidence = !inspectable ? "unknown"
-      : content !== undefined ? keyMaterialEvidenceOf(content, content.length)
+      : content !== undefined ? keyMaterialEvidenceOf(content, contentSize)
       : named === undefined || stored === undefined ? "unknown" : keyMaterialEvidence(stored);
     const result = !inspectable || evidence === "key" || (audience === "agent" && evidence === "unknown");
-    keyEvidence.set(canonical, result);
     return result;
   };
   type ApplicationPath = { entry: SensitiveEntry; base: string };

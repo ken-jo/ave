@@ -630,7 +630,12 @@ Three host-only stores sit behind these surfaces:
   host reads to the path they judged: a previewed file or document the agent
   then observes, and the agent's `read_file`, `read_document` and
   `view_image`, which read the real path they judged (`read_file` makes every
-  pass over the text through one handle). Reads that need no such binding: a
+  pass over the text through one handle), and `grep_files`. Ripgrep's search
+  of the tree only names the files that match; each is judged on its real
+  path, which must lie under the searched root's, read by the host through one
+  bound handle, and searched again by ripgrep on those bytes alone, decoded
+  and held back as binary as in a file it reads itself, so every line, count
+  and match shown comes from them. Reads that need no such binding: a
   windowed preview, which only the person sees; the edit tools, which return
   no file text and accept only bytes whose hash matches a bound `read_file`
   or the tool's own last write; the current side of a turn-change excerpt,
@@ -639,10 +644,8 @@ Three host-only stores sit behind these surfaces:
   mention, which sends only the path for the agent's own `read_file`. Not
   bound: the earlier side of a turn-change excerpt, captured by path just
   before the agent's write and checked afterwards only against the hash it
-  was stored with; `grep_files`, whose matched lines come from ripgrep
-  reading by name in its own process; and the names `list_files` and
-  `glob_files` find by walking folders, since Node cannot open a name
-  relative to an open folder. For an agent tool, the rules judged when it
+  was stored with; and the names `list_files` and `glob_files` find by
+  walking folders, since Node cannot open a name relative to an open folder. For an agent tool, the rules judged when it
   runs are the admission and directory ones; the other secret-file rules are
   decided before the call, by the permission tree.
 - **Clipboard images.** A pasted image is written to a per-profile private
