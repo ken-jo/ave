@@ -2,7 +2,7 @@ import { useConfigurationOwner } from "../../../__tests__/support/configuration-
 
 useConfigurationOwner();
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -244,6 +244,30 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
   return { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate };
 }
 
+/**
+ * A durable mode change also writes the reviewer settings store. The file's shared home is not owned by the test account on
+ * a Windows runner, so boot refuses it and every such write reports the refused-home notice. Give those tests a home the
+ * account owns, as the reviewer dispatch test does.
+ */
+function useOwnedAveHome(): string {
+  const oldHome = process.env.HOME;
+  const parent = mkdtempSync(join(tmpdir(), "ave-permissions-ipc-home-"));
+  setFixtureOwner(parent);
+  const home = join(parent, ".ave");
+  const privacy = ensureAveHomePrivate(home);
+  expect(privacy).not.toMatchObject({ enforcement: "none" });
+  vi.stubEnv("AVE_HOME", home);
+  process.env.HOME = parent;
+  migrateAveHomeConfiguration(home, privacy);
+  onTestFinished(async () => {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(parent);
+  });
+  return home;
+}
+
 beforeEach(() => {
   migrateAveHomeConfiguration(aveHome(), ensureAveHomePrivate(aveHome()));
   handlers.clear();
@@ -303,6 +327,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("setMode persists internal durable mode changes with audit but no approval prompt", async () => {
+    useOwnedAveHome();
     const { deps, permissionManager } = await setup({ approvalChoice: "allow-once" });
 
     const result = await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT });
@@ -322,6 +347,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("broadcasts successful durable mode changes to all app windows", async () => {
+    useOwnedAveHome();
     const { appWindows } = await setup({ approvalChoice: "allow-once" });
 
     await invoke(PERMISSIONS.setMode, { mode: "auto", intent: USER_INTENT });
@@ -332,6 +358,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("setMode ignores approval denial because built-in settings changes do not request approval", async () => {
+    useOwnedAveHome();
     const { permissionManager } = await setup({ approvalChoice: "deny-once" });
 
     const result = await invoke(PERMISSIONS.setMode, { mode: "strict", intent: USER_INTENT });
@@ -1273,6 +1300,7 @@ describe("state-mutating permission channels refuse non-host frames", () => {
   });
 
   it("still accepts the host renderer frame on the same channels", async () => {
+    useOwnedAveHome();
     const { permissionManager } = await setup();
 
     const result = await invokeRegisteredHandlerWithEvent(handlers,
