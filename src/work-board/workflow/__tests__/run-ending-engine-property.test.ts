@@ -163,6 +163,7 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
     const window: FailureWindow = (cell.consumer === "run write" && cell.window === "run file unreadable") || (cell.window === "settle write fails" && ending === "open")
       ? "none" : cell.window;
     tally(`${cell.consumer}:${cls}`);
+    tally(`${cell.consumer}:intent ${cell.intent} marker ${cell.marker}`);
     tally(`${cell.consumer}:${window}`);
     const boot = cell.consumer === "boot adoption" || cell.consumer === "live adoption";
     if (boot) h.makeEngine();
@@ -254,21 +255,27 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
   }
 }
 
-it("every consumer ends a run as its class says, through settleRun, over every board state, intent and failure window", { timeout: 300_000 }, async () => {
+it("every consumer ends a run as its class says, through settleRun, over every board state, intent, marker and failure window", { timeout: 400_000 }, async () => {
   const counts: Record<string, number> = {};
   const tally = (key: string) => { counts[key] = (counts[key] ?? 0) + 1; };
-  for (const [c, consumer] of CONSUMERS.entries()) {
+  // Every consumer meets every board state with and without an intent and a marker; the failure windows rotate over those cells.
+  for (const consumer of CONSUMERS) {
     let turn = 0;
     for (const board of BOARDS) {
       for (const intent of [false, true]) {
-        // Across the consumers, every board state meets each intent with and without a marker.
-        await runCell({ consumer, board, intent, marker: (turn + c) % 2 === 1, window: WINDOWS[turn % WINDOWS.length] }, tally);
-        turn += 1;
+        for (const marker of [false, true]) {
+          await runCell({ consumer, board, intent, marker, window: WINDOWS[turn % WINDOWS.length] }, tally);
+          turn += 1;
+        }
       }
     }
   }
-  // Every class and every failure window that applies was reached under every consumer, and a failed settle was kept unconfirmed.
+  // Every class, every intent and marker pair and every failure window that applies was reached under every consumer, and a failed settle
+  // was kept unconfirmed.
   for (const consumer of CONSUMERS) {
+    for (const intent of [false, true]) {
+      for (const marker of [false, true]) expect(counts[`${consumer}:intent ${intent} marker ${marker}`], `${consumer} ${intent} ${marker}`).toBe(BOARDS.length);
+    }
     for (const cls of ["live", "due-delete", "waiting-delete", "unreadable", "orphan", "lost"] as const) expect(counts[`${consumer}:${cls}`], `${consumer} ${cls}`).toBeGreaterThan(0);
     for (const window of WINDOWS.filter(w => consumer !== "run write" || w !== "run file unreadable")) expect(counts[`${consumer}:${window}`], `${consumer} ${window}`).toBeGreaterThan(0);
     expect(counts[`${consumer}:unconfirmed kept`], `${consumer} unconfirmed`).toBeGreaterThan(0);
