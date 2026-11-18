@@ -956,7 +956,7 @@ export class WorkBoardStore {
    * while the board file on disk shows the row naming the run, and the stored run belongs to that row. `not-found` when that board shows
    * the row gone or naming a newer run, `row-lost` when the row is there without naming or holding the run or is lost, `board-unread` while the
    * board file shows nothing or the row does not validate. A missing or unreadable board is never read as empty, and is left as it is.
-   * `mutate` may end the run only as completed, denied, failed or stopped (`cause-refused` otherwise). */
+   * `mutate` requests an end, which settleRun writes, only as completed, denied, failed or stopped (`cause-refused` otherwise). */
   async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | RunEnd | null): Promise<WorkflowRunWriteResult | { status: "board-unread" | "row-lost" | "cause-refused" }> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {

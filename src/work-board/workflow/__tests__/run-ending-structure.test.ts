@@ -1,6 +1,10 @@
 /** How a template run comes to end, read off the syntax of the non-test source (work-board-run-ending.md): one
  * classifier, which every consumer reads through the store. */
 import { readdirSync, readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { WorkflowRunStore } from "../../../main/workflow-run-store.js";
+import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript/unstable/ast";
@@ -69,15 +73,20 @@ it("writes how a run ended only in the run store's one settle write, which the s
   const runModules = (_: string, text: string): boolean => text.includes("RunRecord");
   const named = (node: ts.Node): boolean => {
     const name = ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node) ? node.name : undefined;
-    return name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteral(name)) && name.text === "settled";
+    if (name === undefined) return false;
+    const key = ts.isComputedPropertyName(name) ? name.expression : name;
+    return (ts.isIdentifier(key) || ts.isStringLiteral(key)) && key.text === "settled";
   };
   expect(find(runModules, node => ts.isPropertyAssignment(node) && named(node))).toEqual(["main/workflow-run-store.ts#WorkflowRunStore>write"]);
   // A copy of the stored value, never a new one: retention refuses any change of it.
   expect(find(runModules, node => ts.isShorthandPropertyAssignment(node) && named(node))).toEqual([`${STORE}#runSummary`, "main/workflow-run-store.ts#WorkflowRunStore>get"]);
+  const isSettledAccess = (node: ts.Node): boolean => ts.isPropertyAccessExpression(node) ? node.name.text === "settled"
+    : ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression) && node.argumentExpression.text === "settled";
   expect(find(runModules, node => (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken || ts.isDeleteExpression(node))
-    && /\.settled\b/.test((ts.isBinaryExpression(node) ? node.left : node.expression).getText()))).toEqual([]);
+    && isSettledAccess(ts.isBinaryExpression(node) ? node.left : node.expression))).toEqual([]);
   expect(callsOf("settleRun")).toEqual([`${STORE}#WorkBoardStore>settleRemovedRun`, `${STORE}#WorkBoardStore>settleUnstarted`, `${STORE}#WorkBoardStore>updateRun`]);
   expect(inFile(RUN_STATE, callsOf("settleRemovedRun"))).toEqual(["boardRunState>update"]);
+  for (const name of ["put", "update"]) expect(inFile(STORE, callsOf(name))).not.toContain("WorkBoardStore>updateRun");
 });
 
 it("ends a run with its row removed only from its class or a due intent", () => {
@@ -107,4 +116,47 @@ it("never adopts an unsettled named candidate without classifying it", async () 
   expect(adoption.removed.map(run => run.runId)).toEqual(["3"]);
   expect(adoption.orphans.map(run => run.runId)).toEqual(["4"]);
   expect(adoption.lost.map(run => run.runId)).toEqual(["5"]);
+});
+
+it("refuses computed terminal writes outside settlement and routes row end requests through it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "run-end-boundary-"));
+  const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+  const run: RunRecord = { runId: "run", itemId: 1, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z", stageRuns: [] };
+  const file = join(dir, "workflow-runs.json");
+  const runs = new WorkflowRunStore(file);
+  try {
+    await runs.put(run);
+    const before = await readFile(file, "utf8");
+    const key = ["sett", "led"].join("");
+    for (const status of ["completed", "denied", "error", "cancelled"] as const) {
+      const terminal = (value: RunRecord): RunRecord => Object.assign(value, { [key]: { status, at: "2026-01-02T00:00:00.000Z" } });
+      await expect(runs.put(terminal(structuredClone(run)))).rejects.toMatchObject({ code: "invalid-template-run" });
+      await expect(runs.put(terminal({ ...run, runId: "new-run" }))).rejects.toMatchObject({ code: "invalid-template-run" });
+      await expect(runs.update(run.runId, terminal)).rejects.toMatchObject({ code: "invalid-template-run" });
+      await expect(runs.prune(terminal)).rejects.toMatchObject({ code: "invalid-template-run" });
+      await expect(runs.put({ ...run, runId: "new-run" }, terminal)).rejects.toMatchObject({ code: "invalid-template-run" });
+      await expect(runs.update(run.runId, value => Object.assign(value, { [["sta", "tus"].join("")]: status }))).rejects.toMatchObject({ code: "invalid-template-run" });
+      expect(await readFile(file, "utf8")).toBe(before);
+    }
+    const board = new WorkBoardStore(join(dir, "board.json"));
+    const created = await board.create({ title: "work" });
+    if (created.status !== "created") throw new Error("Missing row");
+    await board.setRunResult(created.itemId, { runStatus: "executing" });
+    // A row end is requested as a cause; only the run store materializes its terminal fields.
+    const settle = vi.spyOn(board.runs, "settleRun");
+    const named = { ...run, runId: "named-run", itemId: created.itemId };
+    await board.runs.put(named);
+    const boardPath = join(dir, "board.json");
+    const contents = JSON.parse(await readFile(boardPath, "utf8")) as { items: Record<string, unknown>[] };
+    Object.assign(contents.items[0], { runId: named.runId, templateId: pin.templateId, runStatus: "executing" });
+    await writeFile(boardPath, JSON.stringify(contents));
+    await expect(board.updateRun(named.itemId, named.runId, value => Object.assign(value, { [key]: { status: "cancelled", at: run.startedAt } })))
+      .rejects.toMatchObject({ code: "invalid-template-run" });
+    expect(await board.updateRun(named.itemId, named.runId, value => ({ run: value, ends: "stopped", at: run.startedAt })))
+      .toMatchObject({ status: "stored", run: { settled: { status: "cancelled" } } });
+    expect(settle).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.restoreAllMocks();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

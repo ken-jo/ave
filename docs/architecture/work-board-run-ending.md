@@ -181,9 +181,10 @@ fails the list itself, with its own reason, as before.
 
 - `run-classification.test.ts`: the classifier table over every input
   combination.
-- `run-ending-structure.test.ts`: no module but the run store writes a terminal
-  status, and every listed consumer reads the class and ends runs through
-  `settleRun`.
+- `run-ending-structure.test.ts`: syntax checks for the settle write and
+  consumers, plus runtime rejection of terminal changes through `put`, `update`
+  and retention, including computed fields. Named adoption must classify every
+  unsettled candidate; a row end request must pass through `settleRun`.
 - `run-ending-engine-property.test.ts` (`src/work-board/workflow/__tests__`)
   drives the real engine through boot adoption, live adoption, `checkRows`
   after a board write, a run write and a reader, over every board state, with
