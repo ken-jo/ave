@@ -24,17 +24,18 @@ async function renderSettings(settings = DEFAULT_SETTINGS) {
     getUsageRange: vi.fn(async () => { throw new Error("Usage fixture unavailable"); }),
   });
   const { ns } = makeMockAveNamespace();
-  Object.assign(ns, { mcp: {
+  const mcp = {
     servers: vi.fn(async () => []),
     getConfigs: vi.fn(async () => []),
     getConfigPath: vi.fn(async () => "/synthetic/mcp/servers.json"),
     getManagementState: vi.fn(async () => ({ policyPath: "/synthetic/mcp/policy.json", userServersAllowed: true, managedServerIds: [], servers: {}, hasApiKey: {} })),
-  } });
+  };
+  Object.assign(ns, { mcp });
   window.ave = ns as never; window.aveApi = api as never;
   vi.stubGlobal("ave", ns); vi.stubGlobal("aveApi", api);
   const view = render(<ThemeProvider initialAppearance={DEFAULT_APPEARANCE}><TooltipProvider><SettingsContent api={api as never} onSaved={() => {}} initialTab="web" /></TooltipProvider></ThemeProvider>);
   await waitFor(() => expect(view.container.querySelector('[data-settings-section="web-search-engine"]')).toBeTruthy());
-  return { ...view, api, ns };
+  return { ...view, api, ns, mcp };
 }
 
 describe("settings in-place editor", () => {
@@ -120,7 +121,8 @@ describe("settings in-place editor", () => {
     expect(view.api.hasWebApiKey).toHaveBeenCalled();
     fireEvent.change(search, { target: { value: "" } });
     await waitFor(() => expect(view.container.querySelector('[data-settings-section="appearance-terminal"]')).toBeNull());
-    const before = { hasApiKey: view.api.hasApiKey.mock.calls.length, hasWebApiKey: view.api.hasWebApiKey.mock.calls.length, judgeGet: view.ns.permission.judgeGet.mock.calls.length };
+    const before = { hasApiKey: view.api.hasApiKey.mock.calls.length, hasWebApiKey: view.api.hasWebApiKey.mock.calls.length, judgeGet: view.ns.permission.judgeGet.mock.calls.length,
+      defaults: view.api.getSettingsDefaults.mock.calls.length, mcp: Object.values(view.mcp).map((read) => read.mock.calls.length) };
     settingsReaders.length = 0;
     let lockEngaged = false;
     const watch = new MutationObserver(() => { if (fieldset().disabled) lockEngaged = true; });
@@ -135,6 +137,8 @@ describe("settings in-place editor", () => {
     expect(view.api.hasApiKey.mock.calls.length).toBe(before.hasApiKey);
     expect(view.api.hasWebApiKey.mock.calls.length).toBe(before.hasWebApiKey);
     expect(view.ns.permission.judgeGet.mock.calls.length - before.judgeGet).toBe(0);
+    expect(view.api.getSettingsDefaults.mock.calls.length).toBe(before.defaults);
+    expect(Object.values(view.mcp).map((read) => read.mock.calls.length)).toEqual(before.mcp);
     expect(settingsReaders.filter((stack) => !/(PermissionsTab|RemoteSurfacesTab)\.tsx/.test(stack))).toEqual([]);
     expect(lockEngaged).toBe(false);
   });

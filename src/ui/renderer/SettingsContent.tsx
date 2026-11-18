@@ -668,7 +668,7 @@ export function SettingsContent({
             />
           </TabsContent>
           <TabsContent data-settings-panel="audit" forceMount={filterActive ? true : undefined} value="audit" className={tabContentCls}><AuditTab /></TabsContent>
-          <TabsContent data-settings-panel="mcp" forceMount={filterActive ? true : undefined} value="mcp" className={tabContentCls}><McpTab onNavigate={handleTabValueChange} /></TabsContent>
+          <TabsContent data-settings-panel="mcp" forceMount={filterActive ? true : undefined} value="mcp" className={tabContentCls}><McpTab active={tab === "mcp"} onNavigate={handleTabValueChange} /></TabsContent>
           <TabsContent data-settings-panel="plugin-config" forceMount={filterActive ? true : undefined} value="plugin-config" className={tabContentCls}><PluginConfigTab api={api} initialPluginId={pluginSettingsTarget} onNavigate={handleTabValueChange} /></TabsContent>
           <TabsContent data-settings-panel="marketplace" forceMount={filterActive ? true : undefined} value="marketplace" className={tabContentCls}>
             <GitMarketplaceTab

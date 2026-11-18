@@ -221,7 +221,7 @@ function parseKeyValueLines(input: string, delimiter: ":" | "="): Record<string,
 type McpSnapshot = [McpServerState[], McpServerConfigDto[], string, McpManagementState];
 const MCP_SNAPSHOT_CACHE_KEY = "mcp.snapshot";
 
-export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = {}) {
+export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: string) => void; active?: boolean } = {}) {
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
   const settingsEditor = useSettingsEditor();
@@ -244,8 +244,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     headers: `${formIdPrefix}-headers`,
   };
 
-  // The server snapshot the editor holds for this settings view, from this tab's last read; mounting the tab again (opening it,
-  // or a search that shows every panel) starts from it. Every explicit read, and the window-focus refresh, still asks again.
+  // Search mounts can reuse the last answer; entering the actual tab revalidates all independent server stores.
   const editorCache = settingsEditor?.cache;
   const [heldSnapshot] = useState(() => editorCache?.peek<McpSnapshot>(MCP_SNAPSHOT_CACHE_KEY));
   const [loading, setLoading] = useState(heldSnapshot === undefined);
@@ -280,11 +279,11 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
   const statesRequestRef = useRef(0);
   const managementRequestRef = useRef(0);
 
-  const fetchAll = useCallback(async () => {
+  const fetchAll = useCallback(async (background = false) => {
     const editorRevision = settingsEditor?.reloadEpoch;
     const requestId = ++statesRequestRef.current;
     const managementRequestId = ++managementRequestRef.current;
-    setLoading(true);
+    setLoading(!background);
     setError(null);
     try {
       const read = (): Promise<McpSnapshot> => Promise.all([
@@ -302,7 +301,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
       setConfigPath(configPathRes);
       setManagement(managementRes);
     } catch (e) {
-      if (managementRequestId !== managementRequestRef.current) return;
+      if (managementRequestId !== managementRequestRef.current || editorRevision !== editorRevisionRef.current) return;
       const message = errorMessage(e);
       setError(message.includes(`${MCP_CREDENTIAL_MIGRATION_FAILED}:`) ? t("mcpTab.credentialMigrationFailed") : (getMcpRecoveryError(e) ?? message) || t("mcpTab.fetchError"));
     } finally {
@@ -310,31 +309,33 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
     }
   }, [t, editorCache, settingsEditor?.reloadEpoch]);
 
-  const startedFromHeldSnapshotRef = useRef(heldSnapshot !== undefined);
+  const initialReadRef = useRef(true);
+  const previousReadRef = useRef(fetchAll);
   useEffect(() => {
-    if (startedFromHeldSnapshotRef.current) { startedFromHeldSnapshotRef.current = false; return; }
-    void fetchAll();
-  }, [fetchAll]);
+    const initial = initialReadRef.current;
+    const readChanged = previousReadRef.current !== fetchAll;
+    initialReadRef.current = false;
+    previousReadRef.current = fetchAll;
+    if (!active && !readChanged && (!initial || heldSnapshot !== undefined)) return;
+    void fetchAll(heldSnapshot !== undefined);
+  }, [active, fetchAll, heldSnapshot]);
 
   // There is no server-state event: a status that changes while the tab stays open (a contained server quarantined at
   // disconnect, a crash) is re-read when the user returns to the window, without polling.
   useEffect(() => {
-    let active = true;
+    let mounted = true;
     const refreshStates = (): void => {
-      if (document.visibilityState === "hidden") return;
-      const requestId = ++statesRequestRef.current;
-      void window.ave.mcp.servers().then((nextStates) => {
-        if (active && requestId === statesRequestRef.current) setStates(nextStates);
-      }).catch(() => { /* Keep the last observed status until the next refresh. */ });
+      if (!active || document.visibilityState === "hidden") return;
+      if (mounted) void fetchAll(true);
     };
     window.addEventListener("focus", refreshStates);
     document.addEventListener("visibilitychange", refreshStates);
     return () => {
-      active = false;
+      mounted = false;
       window.removeEventListener("focus", refreshStates);
       document.removeEventListener("visibilitychange", refreshStates);
     };
-  }, []);
+  }, [active, fetchAll]);
 
   const hasOAuthServer = configs.some((config) => config.transport === "http" && config.auth === "oauth")
     || states.some((state) => state.authStatus !== undefined);
