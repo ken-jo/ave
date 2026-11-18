@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { join, resolve } from "node:path";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
@@ -256,17 +256,17 @@ describe("handleChatSessions project filters", () => {
 
 describe("handleChatSessions legacy default-root metadata scrub", () => {
   // Legacy default tags must not create a separate named project in the sidebar.
-  const DEFAULT_ROOT = "C:\\Users\\example\\.ave\\workspace";
+  const defaultRoot = realpathSync.native(tmpdir());
 
   it("strips projectRoot/projectName from a legacy session tagged with the default workspace root", async () => {
-    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(DEFAULT_ROOT);
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(defaultRoot);
     try {
       const listSessionsPage = vi.fn(() => [{
         id: "legacy-session",
         modifiedAt: new Date("2026-01-01T00:00:00.000Z"),
         title: "Legacy chat",
         sessionKind: "main" as const,
-        projectRoot: DEFAULT_ROOT,
+        projectRoot: defaultRoot,
         projectName: "workspace",
       }]);
       const deps = {
@@ -285,7 +285,7 @@ describe("handleChatSessions legacy default-root metadata scrub", () => {
   });
 
   it("keeps projectRoot/projectName for a session scoped to an explicit (non-default) project", async () => {
-    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(DEFAULT_ROOT);
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(defaultRoot);
     try {
       const listSessionsPage = vi.fn(() => [{
         id: "explicit-session",
