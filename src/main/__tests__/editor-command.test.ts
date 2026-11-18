@@ -93,16 +93,16 @@ describe("resolveEditorProgram and launchEditor", () => {
   });
 
   it("gives the editor the environment without the app's own and the runtime's variables", () => {
-    expect(editorEnvironment({ PATH: "/usr/bin", HOME: "/home/alex", AVE_HOME: "/x", AVE_E2E: "1", ELECTRON_RUN_AS_NODE: "1", LANG: "ko_KR.UTF-8" }))
-      .toEqual({ PATH: "/usr/bin", HOME: "/home/alex", LANG: "ko_KR.UTF-8" });
+    expect(editorEnvironment({ PATH: "/usr/bin", HOME: "/home/alice", AVE_HOME: "/x", AVE_E2E: "1", ELECTRON_RUN_AS_NODE: "1", LANG: "ko_KR.UTF-8" }))
+      .toEqual({ PATH: "/usr/bin", HOME: "/home/alice", LANG: "ko_KR.UTF-8" });
   });
 });
 
 describe("the editor command's trust boundary", () => {
   it("keeps the settings file that stores it on the sensitive write and read floor at the default profile locations", () => {
     for (const path of [
-      "/Users/alex/Library/Application Support/Ave/ave-settings.json",
-      "/home/alex/.config/Ave/ave-settings.json",
+      "/Users/alice/Library/Application Support/Ave/ave-settings.json",
+      "/home/alice/.config/Ave/ave-settings.json",
     ]) {
       const key = caseFoldForMatch(canonicalizePathForMatch(path));
       expect(isSensitivePath(key, "write"), path).not.toBeNull();
