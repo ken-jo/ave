@@ -90,7 +90,7 @@ it("writes how a run ended only in the run store's one settle write, which the s
 });
 
 it("ends a run with its row removed only from its class or a due intent", () => {
-  expect(inFile(ENGINE, callsOf("classes")).sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>confirmSettles", "createStageRunEngine>writeRun"]);
+  expect(inFile(ENGINE, callsOf("classes")).sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>confirmSettles", "createStageRunEngine>drain", "createStageRunEngine>writeRun"]);
   expect(inFile(ENGINE, callsOf("deleted"))).toEqual(["createStageRunEngine>takeOverIntents"]);
   expect(inFile(ENGINE, callsOf("adoption"))).toEqual(["createStageRunEngine>adoptRuns"]);
   expect(inFile(ENGINE, callsOf("rowRemoved"))).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);

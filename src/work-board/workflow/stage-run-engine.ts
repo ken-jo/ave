@@ -129,6 +129,8 @@ interface RunState {
   chain: Promise<unknown>;
   /** Launches between the reducer's spawn effect and the child's end event. */
   busy: number;
+  /** Launches (through the child's end) and queued events, counted by stage and attempt within this run. */
+  pendingStages: Map<string, number>;
   waiters: Set<() => void>;
   stopping: boolean;
   /** No board row names the run any more. */
@@ -260,7 +262,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   function openState(itemId: number, runId: string, projectRoot: string | undefined, surface: WebContents | null): RunState {
     const state: RunState = {
-      itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, waiters: new Set(),
+      itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
       revoked: new Set(), results: new Map(), held: [], heldAgain: false, boardUnread: false,
     };
@@ -340,8 +342,20 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return next;
   }
 
-  function post(state: RunState, event: RunEvent): void {
-    void enqueue(state, () => handle(state, event)).catch(() => undefined);
+  function trackStageWork(state: RunState, stageId: string, attempt: number): () => void {
+    const key = `${stageId}#${attempt}`;
+    state.pendingStages.set(key, (state.pendingStages.get(key) ?? 0) + 1);
+    return () => {
+      const remaining = (state.pendingStages.get(key) ?? 1) - 1;
+      if (remaining > 0) state.pendingStages.set(key, remaining);
+      else state.pendingStages.delete(key);
+    };
+  }
+
+  function post(state: RunState, event: RunEvent, attempt?: number): void {
+    const eventAttempt = "attempt" in event ? event.attempt : attempt;
+    const done = "stageId" in event && eventAttempt !== undefined ? trackStageWork(state, event.stageId, eventAttempt) : () => undefined;
+    void enqueue(state, () => handle(state, event)).finally(done).catch(() => undefined);
   }
 
   /** The run's board row is gone: the run is cancelled as by Stop, and from here its record is written by run id alone and ends as `cause`. */
@@ -392,9 +406,8 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   /** On the run's chain, once its class is live: its held events replay in order, each revalidated against the run as stored first; then a
-   * stage the run file shows running with no child, none starting, no launch in flight and nothing queued behind takes the lost path. */
+   * stage the run file shows running with no child, launch or event of that attempt takes the lost path. */
   function drain(state: RunState): void {
-    let tail: Promise<unknown> | undefined;
     void enqueue(state, async () => {
       while (state.held.length > 0) {
         if (runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
@@ -409,9 +422,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
             await handle(state, first.event, undefined, first);
           } catch (error) {
             log.warn("held stage run event threw (id=%d, event=%s): %s", state.itemId, first.kind, errorMessage(error));
-            if (first.effects.size === 0) return;
+            if (first.effects.size === 0) break;
           }
-          if (state.heldAgain) return;
+          if (state.heldAgain) break;
         }
         state.held = state.held.filter(held => held !== first);
         const { stage, attempt, kind } = first;
@@ -419,15 +432,17 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           .catch((error: unknown) => log.warn("a replayed stage run event stays in the run file (id=%d): %s", state.itemId, errorMessage(error)));
       }
       const record = await records.get(state.itemId, state.runId);
-      if (!record || state.chain !== tail || runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
-      if (state.held.length > 0 || state.busy > 0 || state.live.size > 0 || state.starting.size > 0) return;
-      for (const run of record.stageRuns) {
-        if (run.status !== "running") continue;
+      if (!record || runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
+      const missing = record.stageRuns.filter(run => run.status === "running"
+        && !state.pendingStages.has(`${run.stageId}#${run.attempt}`) && !state.held.some(held => held.stage === run.stageId && held.attempt === run.attempt));
+      if (missing.length === 0) return;
+      const classOf = await records.classes();
+      if (typeof classOf !== "function" || classOf(state) !== "live") return;
+      for (const run of missing) {
         log.info("a running stage with nothing left to end it ends interrupted (id=%d, stage=%s)", state.itemId, run.stageId);
         post(state, { type: "stage_ended", stageId: run.stageId, attempt: run.attempt, ok: false, interrupted: true });
       }
     }).catch(() => undefined);
-    tail = state.chain;
   }
 
   /** A permitted read, after the intents and markers: each run boot kept is adopted once its class is live, and each run's held events are
@@ -756,7 +771,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
           const sealed = await workspace.seal(state.ref, effect.stageId).catch((): { ok: false } => ({ ok: false }));
           if (!sealed.ok) {
             sealFailed = true;
-            post(state, { type: "seal_failed", stageId: effect.stageId });
+            post(state, { type: "seal_failed", stageId: effect.stageId }, record.stageRuns.find(run => run.stageId === effect.stageId)?.attempt);
           } else if (sealed.sealCommit !== undefined) {
             const sealCommit = sealed.sealCommit;
             await writeRun(state, current => ({
@@ -909,7 +924,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               deps.runScope?.sessionLinked(runKey, childSessionId);
               if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
-              post(state, { type: "stage_linked", stageId, childSessionId });
+              post(state, { type: "stage_linked", stageId, childSessionId }, attempt);
             },
             onError: (message) => {
               if (!state.stopping && !state.interruptAsked.has(stageId)) emit({ itemId: state.itemId, phase: "stage_failed", stageId, attempt, message });
@@ -937,6 +952,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   }
 
   async function launch(state: RunState, stageId: string, attempt: number): Promise<void> {
+    const done = trackStageWork(state, stageId, attempt);
     let next: RunEvent | null = null;
     let faultCause: string | null = null;
     try {
@@ -984,6 +1000,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       // The stage of a faulted launch has no child: its end is reported so the run can unwind.
       if (faultCause !== null) post(state, { type: "stage_ended", stageId, attempt, ok: false, interrupted: true });
       else if (next !== null) post(state, next);
+      done();
       wake(state);
     }
   }

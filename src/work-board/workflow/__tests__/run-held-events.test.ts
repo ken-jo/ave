@@ -175,6 +175,59 @@ it("a running stage with no child, none starting, no launch and no held event en
     expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ attempt: 1, failure: "interrupted" });
   }));
 
+it.each(["sibling", "prior attempt"] as const)("a live child of a %s does not suppress a lost stage attempt", async live =>
+  withRun(["a", "b"], async (run) => {
+    const { h, id, runId, children: [first, second] } = run;
+    await linked(run);
+    if (live === "sibling") {
+      first.finish();
+      await h.untilStage(id, "a", "awaiting_gate");
+    }
+    const attempt = live === "sibling" ? 1 : 2;
+    editRuns(h, file => {
+      const stored = file.runs.find(candidate => candidate.runId === runId);
+      if (!stored) throw new Error("Run missing");
+      stored.stageRuns[0] = { stageId: "a", attempt, status: "running" };
+    });
+    await permittedRead(h);
+    expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ attempt, failure: "interrupted" });
+    expect(second.ended).toBe(false);
+    expect((await h.stageRun(id, "b")).status).toBe("running");
+    if (live === "prior attempt") expect(first.ended).toBe(false);
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+  }));
+
+it("a pending preparation protects its exact stage attempt at a permitted read", async () => {
+  let preparing = false;
+  let release: () => void = () => undefined;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const h = await stageRunHarness({
+    wiring: (_store, { workspace }) => ({
+      workspace: { ...workspace, prepare: async (...args) => { preparing = true; await pending; return workspace.prepare(...args); } },
+    }),
+  });
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const running = h.start(id, h.local(version));
+    await vi.waitFor(() => expect(preparing).toBe(true));
+    await permittedRead(h);
+    await settle();
+    expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 1, status: "running" });
+    expect(h.children).toHaveLength(0);
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    release();
+    const [child] = await h.untilLive(1);
+    child.finish();
+    await running;
+    expect((await h.stageRun(id, "a")).status).toBe("awaiting_gate");
+  } finally {
+    release();
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});
+
 it("a held event the run file cannot store is held in memory, keeps its stage off the lost path, and replays once live", async () =>
   withRun(["a"], async (run) => {
     const { h, id, children: [child], lose } = run;
