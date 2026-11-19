@@ -31,7 +31,12 @@ const hooks = vi.hoisted(() => ({
   searchEnded: undefined as Promise<void> | undefined,
   /** The search spawned last. */
   lastSearch: undefined as ChildProcess | undefined,
-  boundFailure: undefined as "exit" | "signal" | undefined,
+  boundFailure: undefined as "exit" | "signal" | "no-match" | undefined,
+  listingFailure: undefined as number | "signal" | undefined,
+  failureOutput: true,
+  reportedClose: undefined as { code: number | null; signal: NodeJS.Signals | null } | undefined,
+  failedSearch: undefined as ChildProcess | undefined,
+  killDelivered: undefined as boolean | undefined,
   holdListing: false,
   listingClosed: false,
   listingSearch: undefined as ChildProcess | undefined,
@@ -55,11 +60,37 @@ vi.mock("../../main/managed-child-processes.js", async (importOriginal) => {
       child.once("close", () => { hooks.listingClosed = true; });
       return child;
     }
-    const child = bound && hooks.boundFailure
-      ? scripted(hooks.boundFailure === "exit"
-        ? `process.stdout.write(${JSON.stringify(args[1]?.includes("--count") ? "1\n" : "1:needle\n")}); process.stderr.write("bound search failed\\n"); process.exitCode = 2;`
-        : 'process.kill(process.pid, "SIGKILL");')
+    const failure = bound ? hooks.boundFailure : hooks.listingFailure;
+    const output = hooks.failureOutput
+      ? (bound ? (args[1]?.includes("--count") ? "1\n" : "1:needle\n") : `${hooks.openTarget}\0${args[1]?.includes("--count") ? "1\n" : ""}`)
+      : "";
+    const child = failure !== undefined
+      ? scripted(`process.stdout.write(${JSON.stringify(output)}); ${failure === "signal"
+        ? "process.stdin.resume();"
+        : `process.stderr.write("bound search failed\\n"); process.exitCode = ${failure === "exit" ? 2 : failure === "no-match" ? 1 : failure};`}`)
       : actual.spawnManaged(...args);
+    if (failure !== undefined) hooks.failedSearch = child;
+    if (failure === "signal") {
+      const reported = hooks.reportedClose;
+      if (reported) {
+        const emit = child.emit.bind(child);
+        child.emit = ((event: string | symbol, ...values: unknown[]) => {
+          if (event === "close") {
+            Object.defineProperties(child, {
+              exitCode: { value: reported.code, writable: true, configurable: true },
+              signalCode: { value: reported.signal, writable: true, configurable: true },
+            });
+            return emit(event, reported.code, reported.signal);
+          }
+          return emit(event, ...values);
+        }) as typeof child.emit;
+      }
+      // The parent owns termination; self-signalling can become an ordinary no-match status on some hosts.
+      const kill = () => { hooks.killDelivered = child.kill("SIGKILL"); };
+      if (child.stdout === null) throw new Error("Search output pipe is missing");
+      if (output.length > 0) child.stdout.once("data", kill);
+      else child.once("spawn", kill);
+    }
     hooks.lastSearch = child;
     hooks.searchEnded = new Promise((resolveEnd) => child.once("close", () => resolveEnd()));
     if (around && child.stdout) {
@@ -155,6 +186,11 @@ beforeEach(() => {
   hooks.onCompletionRead = undefined;
   hooks.lastSearch = undefined;
   hooks.boundFailure = undefined;
+  hooks.listingFailure = undefined;
+  hooks.failureOutput = true;
+  hooks.reportedClose = undefined;
+  hooks.failedSearch = undefined;
+  hooks.killDelivered = undefined;
   hooks.holdListing = false;
   hooks.listingClosed = false;
   hooks.listingSearch = undefined;
@@ -336,6 +372,64 @@ describe("grep_files feeding a search of one file's bytes", () => {
     expect(result.isError, result.output).toBe(true);
     expect(result.output).not.toContain("No matches found.");
     if (failure === "exit") expect(result.output).toContain("bound search failed");
+    else {
+      expect(hooks.killDelivered).toBe(true);
+      expect(hooks.failedSearch?.killed).toBe(true);
+    }
+  });
+
+  describe.each([0, 1])("a killed search reporting status %s without a signal", (code) => {
+    it.each([
+      ["content", "listing", false], ["count", "listing", false], ["files_with_matches", "listing", false],
+      ["content", "listing", true], ["count", "listing", true], ["files_with_matches", "listing", true],
+      ["content", "bound", true], ["count", "bound", true], ["files_with_matches", "bound", true],
+    ] as const)("rejects an incomplete %s %s search with output=%s", async (outputMode, phase, output) => {
+      if (phase === "listing") hooks.listingFailure = "signal";
+      else hooks.boundFailure = "signal";
+      hooks.failureOutput = output;
+      hooks.reportedClose = { code, signal: null };
+      const result = await grep({ path: ".", outputMode });
+      expect(hooks.killDelivered).toBe(true);
+      expect(hooks.failedSearch?.killed).toBe(true);
+      expect(result.isError, result.output).toBe(true);
+      expect(result.output).not.toContain("No matches found.");
+    });
+  });
+
+  it.each([
+    ["content", "listing"], ["count", "listing"], ["files_with_matches", "listing"],
+    ["content", "bound"], ["count", "bound"],
+  ] as const)("rejects contradictory matches from a %s %s search with no-match status", async (outputMode, phase) => {
+    if (phase === "listing") hooks.listingFailure = 1;
+    else hooks.boundFailure = "no-match";
+    const result = await grep({ path: ".", outputMode });
+    expect(hooks.failedSearch?.killed).toBe(false);
+    expect(result.isError, result.output).toBe(true);
+    expect(result.output).not.toContain("No matches found.");
+  });
+
+  it.each(["content", "count", "files_with_matches"] as const)("rejects abnormal listing status after partial %s results", async (outputMode) => {
+    hooks.listingFailure = 137;
+    const result = await grep({ path: ".", outputMode });
+    expect(result.isError, result.output).toBe(true);
+    expect(result.output).not.toContain("No matches found.");
+  });
+
+  it.each(["content", "count", "files_with_matches"] as const)("retains diagnosed partial %s results after an ordinary listing error", async (outputMode) => {
+    hooks.listingFailure = 2;
+    const result = await grep({ path: ".", outputMode });
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain(file);
+    expect(hooks.failedSearch?.exitCode).toBe(2);
+    expect(result.output).toContain("Some paths could not be searched:");
+  });
+
+  it.each(["content", "count", "files_with_matches"] as const)("retains an ordinary %s no-match after the candidate changed", async (outputMode) => {
+    hooks.open = { swap: () => writeFileSync(file, "ordinary text\n"), restore: () => {} };
+    const result = await grep({ path: ".", outputMode });
+    expect(hooks.open).toBeUndefined();
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("No matches found.");
   });
   it("finishes when the search ends while the host is still reading the file", async () => {
     // The search of the file's bytes ends while the host's second read is under way.
@@ -344,11 +438,18 @@ describe("grep_files feeding a search of one file's bytes", () => {
     writeFileSync(long, `needle: buy milk\n${"filler line of text\n".repeat(20_000)}`);
     hooks.openTarget = long;
     hooks.holdSecondRead = true;
-    hooks.onSecondRead = () => hooks.lastSearch?.kill("SIGKILL");
+    let killed = false;
+    hooks.onSecondRead = () => {
+      const search = hooks.lastSearch;
+      if (search === undefined) throw new Error("Bound search was not started");
+      killed = search.kill("SIGKILL");
+    };
     const result = await grep({ path: "long", outputMode: "files_with_matches" });
     expect(hooks.onSecondRead).toBeUndefined();
+    expect(killed).toBe(true);
+    expect(hooks.lastSearch?.killed).toBe(true);
     expect(result.isError, result.output).toBe(true);
-    expect(result.output).toContain("SIGKILL");
+    expect(result.output).toContain("grep_files failed:");
   });
 
   it("finishes when the turn is aborted while the host is still reading the file", async () => {

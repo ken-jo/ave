@@ -128,6 +128,12 @@ describe("grep_files ripgrep engine", () => {
     expect(multi.output).toContain("3: three");
   });
 
+  it.each(["content", "count", "files_with_matches"] as const)("retains an ordinary completed %s no-match", async (outputMode) => {
+    const result = await grep({ pattern: "absent from every file", outputMode });
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("No matches found.");
+  });
+
   it("pages with limit and offset and says where to continue", async () => {
     const first = await grep({ pattern: "needle", caseSensitive: false, limit: 2 });
     expect(first.output).toContain("2: Needle alpha");

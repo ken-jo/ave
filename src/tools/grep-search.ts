@@ -343,6 +343,14 @@ interface ListingState {
   stderr: string;
 }
 
+function searchCompletedNormally(child: ChildProcess, code: number | null, endedBy: NodeJS.Signals | null, hasMatches: boolean): boolean {
+  return !child.killed && endedBy === null && (code === 0 || (code === 1 && !hasMatches));
+}
+
+function searchExitFailure(code: number | null, endedBy: NodeJS.Signals | null, diagnostics: string): Error {
+  return new Error(`grep_files failed: ${diagnostics.trim() || (endedBy ? `ripgrep ended by ${endedBy}` : `ripgrep exited with code ${String(code)}`)}`);
+}
+
 /**
  * The paths the tree search lists, in its order; with `counted`, each is followed by its count, which is dropped. Stopping
  * early stops the search; its exit code and errors land in `state`.
@@ -363,7 +371,9 @@ async function* matchingFiles(
   }, { label: "grep-files-ripgrep" });
   const { stdout, stderr } = pipedStreams(child);
   let startFailure: Error | undefined;
-  const closed = new Promise<number | null>((resolveClose) => child.once("close", resolveClose));
+  const closed = new Promise<{ code: number | null; endedBy: NodeJS.Signals | null }>((resolveClose) => {
+    child.once("close", (code, endedBy) => resolveClose({ code, endedBy }));
+  });
   child.once("error", (error) => {
     startFailure ??= new Error(`grep_files could not start ripgrep: ${error.message}`);
   });
@@ -379,6 +389,7 @@ async function* matchingFiles(
   const decoder = new TextDecoder("utf-8");
   let pending = "";
   let finished = false;
+  let hasMatches = false;
   try {
     for await (const chunk of stdout) {
       pending += decoder.decode(chunk as Buffer, { stream: true });
@@ -388,14 +399,23 @@ async function* matchingFiles(
         if (end === -1) break;
         const path = pending.slice(0, index);
         pending = pending.slice(end + 1);
-        if (path.length > 0) yield path;
+        if (path.length > 0) {
+          hasMatches = true;
+          yield path;
+        }
       }
       if (pending.length > MAX_PENDING_RECORD_BYTES) throw new Error("grep_files: ripgrep produced an unbounded output record.");
     }
     pending += decoder.decode();
-    state.exitCode = await closed;
+    const { code, endedBy } = await closed;
+    state.exitCode = code;
     if (aborted) throw aborted;
     if (startFailure) throw startFailure;
+    // An ordinary listing error can retain diagnosed partial results; termination cannot become a completed search.
+    const partial = code === 2 && endedBy === null && !child.killed;
+    if (!partial && !searchCompletedNormally(child, code, endedBy, hasMatches || pending.length > 0)) {
+      throw searchExitFailure(code, endedBy, state.stderr);
+    }
     finished = true;
     const last = counted && pending.includes("\0") ? pending.slice(0, pending.indexOf("\0")) : pending;
     if (last.length > 0) yield last;
@@ -532,7 +552,7 @@ function searchHandle(
       counted += 1;
       if (counted >= needed) {
         enough = true;
-        if (!closed) {
+        if (!closed && !child.killed && child.exitCode === null && child.signalCode === null) {
           limited = true;
           stop();
         }
@@ -596,8 +616,8 @@ function searchHandle(
       signal?.removeEventListener("abort", onAbort);
       consume(decoder.decode());
       if (pending.length > 0) accept(pending);
-      if (!limited && code !== 0 && code !== 1) {
-        failure ??= new Error(`grep_files failed: ${diagnostics.trim() || (endedBy ? `ripgrep ended by ${endedBy}` : `ripgrep exited with code ${String(code)}`)}`);
+      if (!limited && !searchCompletedNormally(child, code, endedBy, entries.some((entry) => entry.kind !== "gap"))) {
+        failure ??= searchExitFailure(code, endedBy, diagnostics);
       }
       if (failure) {
         reject(failure);
