@@ -2,6 +2,7 @@ import { getMainWindows, mainWindowForContents } from "./app-state.js";
 import { BrowserWindow, Menu, type MenuItemConstructorOptions, type Point, type View, type WebContents } from "electron";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 import { mainWindowUiOrigin } from "./main-window-host.js";
+import { browserPageMenuItems } from "./browser/browser-workspace-desktop.js";
 
 function contentsOrigin(view: View, contents: WebContents, origin: Point = { x: 0, y: 0 }): Point | null {
   if ("webContents" in view && view.webContents === contents) return origin;
@@ -14,11 +15,15 @@ function contentsOrigin(view: View, contents: WebContents, origin: Point = { x: 
 }
 
 // Install the OS-native editing menu for user editing in app, auxiliary and native page renderers. Domain-specific menus use the allow-listed UI IPC bridge instead; this
-// listener deliberately reacts only to editable controls or selected text.
+// listener deliberately reacts only to editable controls or selected text, except in the agent's own page view, which shows the browser's page menu.
 export function installNativeEditContextMenu(contents: WebContents): void {
   contents.on("context-menu", (event, params) => {
+    // A browser popup's menu is its own: the browser's page menu with the pause control.
+    if (browserTabRegistry.isPopupGuest(contents.id)) return;
+    const independent = browserTabRegistry.isIndependentGuest(contents.id);
     const hasSelection = params.selectionText.trim().length > 0;
-    if (!params.isEditable && !hasSelection) return;
+    // The agent's own page view shows the browser's page menu (which carries these items too) anywhere on the page.
+    if (!independent && !params.isEditable && !hasSelection) return;
     event.preventDefault();
 
     const mainWindow = mainWindowForContents(contents);
@@ -30,9 +35,10 @@ export function installNativeEditContextMenu(contents: WebContents): void {
       x += origin.x;
       y += origin.y;
     }
-    if (browserTabRegistry.isIndependentGuest(contents.id)) {
+    let windowId: number | null = null;
+    if (independent) {
       if (!browserTabRegistry.allowsNativeContextMenu(contents.id)) return;
-      const windowId = browserTabRegistry.guestWindowId(contents.id);
+      windowId = browserTabRegistry.guestWindowId(contents.id);
       const owner = getMainWindows().find(candidate => candidate.id === windowId);
       if (!owner?.isFocused() || !owner.isVisible() || owner.isMinimized() || !contents.isFocused()) return;
       const origin = contentsOrigin(owner.contentView, contents);
@@ -42,7 +48,7 @@ export function installNativeEditContextMenu(contents: WebContents): void {
       y += origin.y;
     }
 
-    const template: MenuItemConstructorOptions[] = params.isEditable
+    const template: MenuItemConstructorOptions[] = windowId !== null ? browserPageMenuItems(contents, windowId, params, true) : params.isEditable
       ? [
           { role: "cut", enabled: params.editFlags.canCut },
           { role: "copy", enabled: params.editFlags.canCopy },

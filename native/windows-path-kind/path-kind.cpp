@@ -6,6 +6,9 @@
 // namespace for this logon session. It opens nothing on the drive, so a
 // network drive's server is never contacted. The caller decides what the
 // mapping means. Separate read-only facts modes pin path components below.
+// The held directory modes (dir-ops.h) are the one exception to read-only:
+// they move, copy and remove a staged browser download relative to directory
+// handles held for the whole operation.
 //
 // Exit codes: 0 mapping printed; 1 the OS has no mapping for the drive (the
 // call failed, an unknown drive among them, or answered nothing), with the
@@ -25,6 +28,7 @@
 #include "deny-acl.h"
 #include "path-facts.h"
 #include "mxc-policy.h"
+#include "dir-ops.h"
 
 namespace {
 
@@ -81,6 +85,7 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (argc >= 2 && (std::wstring(argv[1]) == L"--pin" || std::wstring(argv[1]) == L"--dacl")) return print_path_facts(argc, argv);
   if (argc >= 2 && std::wstring(argv[1]) == L"--deny-acls") return print_deny_acls(argc, argv);
+  if (argc >= 2 && std::wstring(argv[1]).rfind(L"--dir-", 0) == 0) return dir_ops::run(argc, argv);
   if (argc != 2 || !is_drive(argv[1])) {
     std::fputs("usage: ave-path-kind.exe X:\n", stderr);
     return 2;

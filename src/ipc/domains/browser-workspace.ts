@@ -15,6 +15,15 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   service.onChanged((windowId, state) => {
     sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.changed, state, log);
   });
+  service.onPageShortcut((windowId, shortcut) => {
+    sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.pageShortcut, shortcut, log);
+  });
+  service.onFindResult((windowId, result) => {
+    sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.findResult, result, log);
+  });
+  service.onOpenTab((windowId, request) => {
+    sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.openTab, request, log);
+  });
   function register<K extends keyof BrowserWorkspaceRequests>(operation: K, execute: (windowId: number, request: BrowserWorkspaceRequests[K]) => unknown | Promise<unknown>): void {
     const channel = CHANNELS.browserWorkspace[operation];
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, payload: unknown): Promise<BrowserWorkspaceResult<unknown>> => {
@@ -41,4 +50,27 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   register("zoom", (windowId, request) => service.zoom(windowId, request));
   register("preview", (windowId, request) => service.preview(windowId, request));
   register("capture", (windowId, request) => service.capture(windowId, request));
+  register("retryLoad", (windowId, request) => service.retryLoad(windowId, request));
+  register("load", (windowId, request) => service.load(windowId, request));
+  register("userNavigation", (windowId, request) => service.userNavigation(windowId, request));
+  register("answerPrompt", (windowId, request) => service.answerPrompt(windowId, request));
+  register("setPageShortcuts", (windowId, request) => service.setPageShortcuts(windowId, request));
+  register("deleteHistory", (windowId, request) => service.deleteHistory(windowId, request));
+  // The agent's site access lives in the permission manager's session memory. These two only read it and take it back for
+  // the site a tab shows; granting stays with the approval card.
+  register("agentSiteGrant", (windowId, request) => {
+    const session = service.agentSessionForSite(windowId, request);
+    // Without a permission manager nothing was ever granted.
+    return { grant: session === null ? null : deps.conversationLoop.permissionManager?.browserSites.granted(session, request.origin) ?? null };
+  });
+  register("revokeAgentSiteGrant", (windowId, request) => {
+    const session = service.agentSessionForSite(windowId, request);
+    if (session !== null) deps.conversationLoop.permissionManager?.browserSites.revoke(session, request.origin);
+    return null;
+  });
+  register("clearData", (windowId, request) => service.clearData(windowId, request));
+  register("clearSiteData", (windowId, request) => service.clearSiteData(windowId, request));
+  register("showDownload", (windowId, request) => service.showDownload(windowId, request));
+  register("cancelDownload", (windowId, request) => service.cancelDownload(windowId, request));
+  register("stopLoad", (windowId, request) => service.stopLoad(windowId, request));
 }

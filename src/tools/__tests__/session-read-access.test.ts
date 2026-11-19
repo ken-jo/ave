@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep, resolve } from "node:path";
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -97,6 +97,35 @@ describe("configured saved-session access", () => {
       expect(result.output).toContain("private-store-fixture");
     }
     expect(isConfiguredSessionReadPath(canonical(target))).toBe(false);
+  });
+
+  it("refuses a staged browser download to every file tool, even with an encompassing directory grant", async () => {
+    const staging = join(profile, "browser-downloads");
+    const staged = join(staging, "0123456789abcdef0123456789abcdef");
+    mkdirSync(staging); writeFileSync(staged, "staged-download-fixture");
+    const broad = { ...context, extraAllowedDirectories: [root] };
+    const read = await new ReadFileTool().execute({ path: staged }, broad);
+    expect(read.output).toContain("Sensitive path:");
+    expect(read.output).not.toContain("staged-download-fixture");
+    const listed = await new ListFilesTool().execute({ path: staging }, broad);
+    expect(listed.isError, listed.output).toBe(true);
+    expect(listed.output).not.toContain("0123456789abcdef0123456789abcdef");
+    const searched = await new GrepFilesTool().execute({ path: root, pattern: "staged-download-fixture" }, broad);
+    expect(searched.output).not.toContain("0123456789abcdef0123456789abcdef");
+    const registry = new ToolRegistry();
+    for (const tool of [new WriteFileTool(), new DeleteFileTool(), new MoveFileTool()]) registry.register(tool);
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    const executor = new ToolExecutor(registry, undefined, manager);
+    const results = await executor.executeAll([
+      { id: "replace", name: "write_file", input: { path: staged, content: "changed" } },
+      { id: "new", name: "write_file", input: { path: join(staging, "planted"), content: "changed" } },
+      { id: "delete", name: "delete_file", input: { path: staged } },
+      { id: "move", name: "move_file", input: { sourcePath: staged, destinationPath: join(context.cwd, "moved") } },
+    ], { executionCwd: broad.cwd, sessionId: "staged-download", permissionContext: { trustOrigin: "user-keyboard", headless: true, additionalDirectories: broad.extraAllowedDirectories } });
+    for (const result of results) expect(result.is_error, result.content).toBe(true);
+    expect(readFileSync(staged, "utf8")).toBe("staged-download-fixture");
+    expect(readdirSync(staging)).toEqual(["0123456789abcdef0123456789abcdef"]);
   });
 
   it("does not extend the read grant to sibling, copied or isolated session roots", () => {

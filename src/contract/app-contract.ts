@@ -771,7 +771,24 @@ export const CHANNELS = {
     zoom: "ave:browser-workspace:zoom",
     preview: "ave:browser-workspace:preview",
     capture: "ave:browser-workspace:capture",
+    retryLoad: "ave:browser-workspace:retry-load",
+    stopLoad: "ave:browser-workspace:stop-load",
+    showDownload: "ave:browser-workspace:show-download",
+    clearData: "ave:browser-workspace:clear-data",
+    agentSiteGrant: "ave:browser-workspace:agent-site-grant",
+    revokeAgentSiteGrant: "ave:browser-workspace:revoke-agent-site-grant",
+    deleteHistory: "ave:browser-workspace:delete-history",
+    clearSiteData: "ave:browser-workspace:clear-site-data",
+    cancelDownload: "ave:browser-workspace:cancel-download",
+    load: "ave:browser-workspace:load",
+    answerPrompt: "ave:browser-workspace:answer-prompt",
+    userNavigation: "ave:browser-workspace:user-navigation",
     changed: "ave:browser-workspace:changed",
+    setPageShortcuts: "ave:browser-workspace:set-page-shortcuts",
+    pageShortcut: "ave:browser-workspace:page-shortcut", // event main→renderer  a browser key was pressed in a tab's page
+    findResult: "ave:browser-workspace:find-result", // event main→renderer  a find in a page finished counting
+    openTab: "ave:browser-workspace:open-tab", // event main→renderer  a page asked for a link in a new tab
+    attachBlocked: "ave:browser-workspace:attach-blocked", // event main→renderer  a page guest was refused before it attached
   },
   // ── Active workspace surface (a hint for agent tools) ─────────────────────
   // INTERNAL. The renderer reports which browser/terminal tab the user is

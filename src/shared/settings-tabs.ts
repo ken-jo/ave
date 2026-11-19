@@ -52,7 +52,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
     "chat-privacy",
   ],
   notifications: ["chat-signals", "notifications-delivery", "notifications-notices"],
-  web: ["web-search-engine", "web-api-key", "web-view-flow"],
+  web: ["web-search-engine", "web-api-key", "web-view-flow", "web-address-search"],
   startup: [
     "startup-shortcut",
     "startup-launch",

@@ -3,7 +3,7 @@ import { app, BaseWindow, ipcMain, nativeImage, type WebContents } from "electro
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { CHANNELS } from "../../../../src/contract/app-contract.js";
 import { registerMainWindow, unregisterMainWindow } from "../../../../src/main/app-state.js";
 import { createMainWindowHost, type MainWindow } from "../../../../src/main/main-window-host.js";
@@ -227,7 +227,8 @@ async function reset(): Promise<void> {
   });
   const opening = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
   const loading = win.loadURL(`${origin}/host?requestId=${encodeURIComponent(requestId)}`);
-  installSideBrowserPartitionPolicy();
+  // The checkout's resources folder: the fixture runs from the repository root, as the app does in development.
+  installSideBrowserPartitionPolicy(resolve("resources"));
   const surfaces = new BrowserNativeSurfaceHost({
     windowForId: id => id === win.id && !win.isDestroyed() ? win : undefined,
     authorizeCreate: (windowId, tabId, requestId) => browserTabRegistry.authorizeNativeSurface(windowId, tabId, requestId),

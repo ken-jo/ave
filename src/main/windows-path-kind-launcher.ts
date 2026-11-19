@@ -13,9 +13,13 @@ const EXIT_NO_MAPPING = 1;
 // What to do when the helper is broken: it ships with Ave, so the install is incomplete.
 const REPAIR = "Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.";
 
+/** Where the helper ships inside the host resources folder `resourcePath`; it may be missing from an incomplete install. */
+export function windowsPathKindHelperIn(resourcePath: string): string {
+  return join(resourcePath, "windows-path-kind", process.arch, "ave-path-kind.exe");
+}
+
 export function resolveWindowsPathKindHelper(): string {
-  const root = getHostResources().resourcePath;
-  const binary = join(root, "windows-path-kind", process.arch, "ave-path-kind.exe");
+  const binary = windowsPathKindHelperIn(getHostResources().resourcePath);
   if (!existsSync(binary)) {
     throw new Error(`Windows folder classifier is missing: ${binary}. Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. ${REPAIR}`);
   }

@@ -2,6 +2,12 @@ import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
   BROWSER_WORKSPACE_ERRORS,
+  parseBrowserAgentSiteGrant,
+  parseBrowserAttachBlocked,
+  parseBrowserFindResult,
+  parseBrowserPageShortcut,
+  type BrowserAgentSiteGrant,
+  parseBrowserOpenTab,
   parseBrowserWorkspacePreview,
   parseBrowserWorkspaceCapture,
   parseBrowserWorkspaceState,
@@ -52,6 +58,18 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
       (value): value is NonNullable<ReturnType<typeof parseBrowserWorkspacePreview>> => parseBrowserWorkspacePreview(value) !== null),
     capture: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.capture, request),
       (value): value is NonNullable<ReturnType<typeof parseBrowserWorkspaceCapture>> => parseBrowserWorkspaceCapture(value) !== null),
+    retryLoad: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.retryLoad, request), (value): value is null => value === null),
+    load: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.load, request), (value): value is null => value === null),
+    userNavigation: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.userNavigation, request), (value): value is null => value === null),
+    answerPrompt: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.answerPrompt, request), (value): value is null => value === null),
+    deleteHistory: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.deleteHistory, request), state),
+    agentSiteGrant: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.agentSiteGrant, request), (value): value is BrowserAgentSiteGrant => parseBrowserAgentSiteGrant(value) !== null),
+    revokeAgentSiteGrant: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.revokeAgentSiteGrant, request), (value): value is null => value === null),
+    clearData: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.clearData, request), state),
+    clearSiteData: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.clearSiteData, request), (value): value is null => value === null),
+    showDownload: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.showDownload, request), (value): value is null => value === null),
+    cancelDownload: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.cancelDownload, request), (value): value is null => value === null),
+    stopLoad: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.stopLoad, request), (value): value is null => value === null),
     onChanged: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {
         const parsed = parseBrowserWorkspaceState(payload);
@@ -60,6 +78,43 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
       };
       ipcRenderer.on(CHANNELS.browserWorkspace.changed, listener);
       return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.changed, listener);
+    },
+    setPageShortcuts: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.setPageShortcuts, request), (value): value is null => value === null),
+    onPageShortcut: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserPageShortcut(payload);
+        if (!parsed) throw new Error("invalid-browser-page-shortcut");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.pageShortcut, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.pageShortcut, listener);
+    },
+    onFindResult: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserFindResult(payload);
+        if (!parsed) throw new Error("invalid-browser-find-result");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.findResult, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.findResult, listener);
+    },
+    onOpenTab: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserOpenTab(payload);
+        if (!parsed) throw new Error("invalid-browser-open-tab");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.openTab, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.openTab, listener);
+    },
+    onAttachBlocked: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserAttachBlocked(payload);
+        if (!parsed) throw new Error("invalid-browser-attach-blocked");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.attachBlocked, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.attachBlocked, listener);
     },
   };
 }

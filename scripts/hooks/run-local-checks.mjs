@@ -279,6 +279,12 @@ function ensureWindowsJobLauncher(dir) {
   if (!isWindows) return;
   run(commands.node, [join(dir, "scripts/prepare-windows-job.mjs")], dir);
 }
+// The browser download suites run the git-ignored macOS download file helper and
+// its test builds; `test:prepare` builds them, and these tiers do the same here.
+function ensureMacosDirOps(dir) {
+  if (process.platform !== "darwin") return;
+  run(commands.node, [join(dir, "scripts/build-macos-dir-ops.mjs"), "--if-stale", "--test-builds"], dir);
+}
 function getProtectedBranchNames(repoRoot) {
   const names = new Set(["main", "master"]);
   const remotes = captureOptional(commands.git, ["remote"], repoRoot)
@@ -1000,6 +1006,7 @@ function runAppTargetedVitestChecks(dir, testFiles, supportTestFiles = []) {
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
   ensureWindowsJobLauncher(dir);
+  ensureMacosDirOps(dir);
   const vitestArgs = targetTestFiles.map((file) => `./${file}`);
   runVitestChunks(bun, dir, vitestArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);
 }
@@ -1076,6 +1083,7 @@ function runAppFastSourceChecksHoldingSlot(dir, bun, lockSuites, testFiles, rela
   run(bun, ["run", "check:test-duplicates", "--", "--fail-on-duplicates"], dir);
   ensureAppTestRuntimeAbi(dir);
   ensureWindowsJobLauncher(dir);
+  ensureMacosDirOps(dir);
   const direct = [...new Set([...lockSuites, ...testFiles])];
   const directArgs = direct.map((file) => `./${file}`);
   if (directArgs.length > 0) {

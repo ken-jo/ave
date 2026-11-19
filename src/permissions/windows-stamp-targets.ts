@@ -1,7 +1,7 @@
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { containsGlobCharsWin, expandTilde, expandWindowsEnvRefs, globPatternBaseDir, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
-import { join, parse, resolve, sep } from "node:path";
+import { win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets } from "../shared/ave-home-test-guard.js";
@@ -13,11 +13,11 @@ export function existingWindowsGrants(entries: readonly FilesystemPathEntry[]): 
 }
 
 function stampPathChain(path: string): string[] {
-  const absolute = resolve(path);
-  const { root } = parse(absolute);
+  const absolute = win32.resolve(path);
+  const { root } = win32.parse(absolute);
   const chain = [root];
-  for (const part of absolute.slice(root.length).split(sep).filter(Boolean)) {
-    chain.push(join(chain[chain.length - 1]!, part));
+  for (const part of absolute.slice(root.length).split(win32.sep).filter(Boolean)) {
+    chain.push(win32.join(chain[chain.length - 1]!, part));
   }
   return chain;
 }
@@ -110,7 +110,7 @@ export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> |
       const expanded = expandTilde(stripExtendedPathPrefix(expandWindowsEnvRefs(path))).replace(/\//g, "\\")
         .replace(/^[a-z]:/, drive => drive.toUpperCase());
       const prefix = containsGlobCharsWin(expanded) ? globPatternBaseDir(toForwardSlashes(expanded)).replace(/\//g, "\\") : expanded;
-      const absolute = resolve(prefix);
+      const absolute = win32.resolve(prefix);
       prefixes.push(absolute);
     }
   }

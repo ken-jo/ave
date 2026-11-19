@@ -191,6 +191,22 @@ inherit unrelated grants. Downloads still ask for a location in the native Save
 dialog, keep prompt-rate limits, and never open a
 saved file automatically.
 
+Until the user answers the Save dialog, a download waits in a host-only staging
+folder in the Ave home (`browser-downloads/`). The host-mediated file tools and
+every confined lane cannot reach it on any OS: confined plugin workers,
+sandboxed agent shells and children, and MCP servers or A2A agents while they
+run confined. A process the user has already given their own file authority
+can read it: an MCP server or plugin worker started with plugin worker
+confinement off, or a host command the user approved outside the sandbox. Such
+a process can read the saved file as soon as Save completes, so staging gives
+it nothing it lacks, and staging is not isolated from it.
+
+Moving a download into the chosen folder, and removing staged and temporary
+files, act on the staging folder and the chosen folder while holding them
+open, never on a path: a folder renamed or replaced by a link after it was
+checked is not written through. On macOS and Windows a helper that ships with
+Ave does this; if it is missing, every download is refused with a notice.
+
 Only visible cards in a visible window request previews. Hiding or unmounting
 the panel stops new scheduling. Late results after hide, navigation, or close
 are discarded without entering a cache. The renderer alone caches completed

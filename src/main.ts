@@ -11,7 +11,8 @@ import { isAuthOwned } from "./main/auth-window-registry.js";
 import { syncNativeThemeSource } from "./main/window-chrome.js";
 import { isLinkOwned } from "./main/link-window-registry.js";
 import { shouldBlockGlobalWebviewNavigation } from "./main/webview-navigation-policy.js";
-import { installSideBrowserPartitionPolicy } from "./main/side-browser-webview.js";
+import { installSideBrowserPartitionPolicy, SideBrowserPolicyInstallError } from "./main/side-browser-webview.js";
+import { desktopResourcePath } from "./main/desktop-resource-path.js";
 import { findAveProtocolUri } from "./main/ave-protocol.js";
 import {
   decideAveProtocolClientRegistration,
@@ -143,6 +144,12 @@ let resourceStartupPromise: Promise<void> | null = null;
 const resourceStartupController = new AbortController();
 
 async function main() {
+  try {
+    await installSideBrowserPartitionPolicy(desktopResourcePath(projectRoot));
+  } catch (error) {
+    if (!(error instanceof SideBrowserPolicyInstallError)) throw error;
+    log.error({ err: bootstrapErrorForLog(error.cause) }, "browser download staging could not be set up; downloads are refused");
+  }
   if (isAppQuitRequested()) return;
   // A malformed `--exec` / `--set-secret` command line is answered before a
   // window, a splash, or a service exists: there is nothing to boot for.
@@ -652,7 +659,6 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(() => {
     applyRuntimeAppIcon();
     installHtmlPreviewPartitionBlock();
-    installSideBrowserPartitionPolicy();
     void main().catch(async (error) => {
       if (isAppQuitRequested() && resourceStartupController.signal.aborted && error === resourceStartupController.signal.reason) return;
       log.error({ err: bootstrapErrorForLog(error) }, "bootstrap failed");

@@ -15,7 +15,7 @@ function hostDocument() {
   let hit: string | null = JSON.stringify(IDENTITY);
   const cursor = { style: { cursor: "default" }, getAttribute: () => JSON.stringify(IDENTITY) };
   const document = {
-    elementFromPoint: vi.fn(() => hit === null ? null : ({ closest: () => ({ getAttribute: () => hit }) })),
+    elementFromPoint: vi.fn(() => hit === null ? null : ({ closest: () => ({ getAttribute: () => hit, focus: vi.fn() }) })),
     documentElement: { clientHeight: 800 },
     querySelectorAll: () => [cursor],
     addEventListener: (name: string, handler: (event: MouseEvent | WheelEvent) => void) => handlers.set(name, handler),

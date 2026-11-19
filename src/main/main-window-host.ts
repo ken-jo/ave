@@ -1,5 +1,8 @@
 import { configureMainWindowWebviewAttach } from "./webview-attach.js";
 import { createLogger } from "../lib/logger.js";
+import { CHANNELS } from "../contract/app-contract.js";
+import { sendToWebContents } from "../ipc/safe-send.js";
+import { BROWSER_WORKSPACE_LIMITS } from "../shared/browser-workspace.js";
 import { preloadPreferences } from "./preload-bundles.js";
 import { computeMainWindowUiBounds } from "./main-window-bounds.js";
 import { BaseWindow, WebContentsView, type BaseWindowConstructorOptions, type View, type WebContents, type WebPreferences } from "electron";
@@ -43,6 +46,11 @@ export function createMainWindowHost(options: BaseWindowConstructorOptions, pref
     });
     if (attach.result === "blocked" || attach.result === "refused") {
       log.warn({ src: params.src, partition: params.partition, owner: attach.owner }, "blocked webview attach");
+    }
+    // A refused element never attaches again, so the document that mounted it must replace it; without this notice its tab
+    // stays dead for every later address.
+    if (attach.owner === "side-browser" && attach.result === "blocked") {
+      sendToWebContents(contents, CHANNELS.browserWorkspace.attachBlocked, { src: String(params.src ?? "").slice(0, BROWSER_WORKSPACE_LIMITS.urlLength) }, log);
     }
   });
   ui.setBackgroundColor("#00000000");

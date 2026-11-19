@@ -29,6 +29,7 @@ import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
 import { readablePageText } from "./browser-page-text.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
+import { dismissedPageDialogs } from "./browser-page-dialogs.js";
 import {
   browserRefs,
   findByFingerprint,
@@ -258,7 +259,9 @@ async function captureScreenshot(
 const WAIT_POLL_MS = 250;
 const WAIT_MAX_MS = 30_000;
 
+// Ends at `ms`, or at once when `signal` is aborted, including one aborted before the call.
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(done, ms);
     function done() {
@@ -274,9 +277,21 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 async function waitFor(
   target: ActionTarget,
   options: { text?: string; timeMs?: number },
+  downloadSettled?: (settled: () => void) => () => void,
 ): Promise<{ found: boolean; waitedMs: number }> {
   const started = Date.now();
   const limit = Math.min(options.timeMs ?? WAIT_MAX_MS, WAIT_MAX_MS);
+  if (downloadSettled) {
+    // Ends when the page reports that a download ended, or at the agent's own limit, whichever is first.
+    const ended = new AbortController();
+    const signal = AbortSignal.any([target.signal, ended.signal]);
+    let found = false;
+    const stop = downloadSettled(() => { found = true; ended.abort(); });
+    await sleep(limit, signal);
+    stop();
+    throwIfAborted(target.signal);
+    return { found, waitedMs: Date.now() - started };
+  }
   if (options.text === undefined) {
     await sleep(limit, target.signal);
     throwIfAborted(target.signal);
@@ -971,23 +986,76 @@ export interface ActionNavigation {
   stop(): void;
 }
 
-type NavigationEnd = { kind: "committed" | "stopped" } | { kind: "failed"; error: BrowserActionError };
+type NavigationEnd = { kind: "committed" | "stopped" | "download" } | { kind: "failed"; error: BrowserActionError };
+
+// Types a tab shows as a page; a response of any other type, or one marked as an attachment, is saved instead. A response with no content
+// (204, 205) leaves the page as it is and saves nothing.
+const SHOWN_RESPONSE_TYPE = /^(?:text\/|image\/|audio\/|video\/|multipart\/x-mixed-replace$|application\/(?:xhtml\+xml|xml|json|pdf|javascript|ecmascript|wasm)$)/u;
+function responseAsksToBeSaved(response: { status?: unknown; mimeType?: unknown; headers?: unknown }): boolean {
+  if (response.status === 204 || response.status === 205) return false;
+  const headers = response.headers !== null && typeof response.headers === "object" ? response.headers as Record<string, unknown> : {};
+  const disposition = Object.entries(headers).find(([name]) => name.toLowerCase() === "content-disposition")?.[1];
+  if (typeof disposition === "string" && /^\s*attachment\b/iu.test(disposition)) return true;
+  const type = typeof response.mimeType === "string" ? response.mimeType.toLowerCase() : "";
+  return type !== "" && !SHOWN_RESPONSE_TYPE.test(type);
+}
 
 // Watch the main frame for a navigation the action is about to start. A link activation reaches the page after its input is acknowledged, so the
 // browser learns of the navigation only after the action returns: the request (CDP Page.frameRequestedNavigation, renderer side) is the signal, and
 // commit (did-navigate / did-navigate-in-page) or its end (did-fail-load / did-stop-loading / tab gone) settles it. Electron 45 emits no
 // did-fail-load for a cancelled (ERR_ABORTED) navigation (electron_api_web_contents.cc DidFinishNavigation); did-stop-loading ends that one.
+// A navigation becomes a download when its own document request (the one CDP Page.frameStartedNavigating names) receives a response that
+// asks to be saved and then ends in an aborted load without committing; a link the page asks to download is one too. Its loading stops
+// before the download is recorded, so such a navigation ends when this page records a download whose URL chain holds that response's URL
+// (and the action's result can name it), not when loading stops. Any other download leaves the navigation to its own commit, failure or stop.
 export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSession): Promise<ActionNavigation> {
   const mainFrameId = (await frameTree(cdp)).frame.id;
+  // Only response headers are read here, so no response body is kept.
+  await cdp.send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 });
   let requested = false;
+  // The current navigation's download candidate: its document request, that request's response when it asked to be saved, and the URL of the
+  // download it became (or of the link the page asked to download). All three belong to one navigation: a newer request in the main frame, or
+  // a document request with another identity, starts a new navigation and clears them, so a download recorded for an earlier navigation
+  // never settles the current one.
+  let documentRequest: string | undefined;
+  let savedResponseUrl: string | undefined;
+  let downloadUrl: string | undefined;
+  const newNavigation = () => { documentRequest = undefined; savedResponseUrl = undefined; downloadUrl = undefined; };
   let ended: NavigationEnd | undefined;
   const end = (outcome: NavigationEnd) => {
     if (!requested || ended) return;
     ended = outcome;
   };
   const stopCdp = cdp.onEvent((method, params) => {
-    if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "currentTab") requested = true;
-    if (method === "Page.frameStartedNavigating" && params.frameId === mainFrameId) requested = true;
+    if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "currentTab") {
+      requested = true;
+      newNavigation();
+    }
+    if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "download" && typeof params.url === "string") {
+      requested = true;
+      newNavigation();
+      downloadUrl = params.url;
+    }
+    if (method === "Page.frameStartedNavigating" && params.frameId === mainFrameId) {
+      requested = true;
+      if (typeof params.loaderId === "string" && params.loaderId !== documentRequest) {
+        // The document request of a link the page asked to download is that same navigation; any other is a new one.
+        const askedDownload = documentRequest === undefined && downloadUrl !== undefined && params.url === downloadUrl ? downloadUrl : undefined;
+        newNavigation();
+        documentRequest = params.loaderId;
+        downloadUrl = askedDownload;
+      }
+    }
+    if (method === "Network.responseReceived" && params.requestId === documentRequest && params.frameId === mainFrameId) {
+      const response = params.response as { url?: unknown; status?: unknown; mimeType?: unknown; headers?: unknown } | undefined;
+      savedResponseUrl = response && typeof response.url === "string" && responseAsksToBeSaved(response) ? response.url : undefined;
+    }
+    if (method === "Network.loadingFailed" && params.requestId === documentRequest && params.canceled === true && savedResponseUrl !== undefined) {
+      downloadUrl = savedResponseUrl;
+    }
+  });
+  const stopDownloads = dismissedPageDialogs.onDownloadNoted(guest.id, (urlChain) => {
+    if (downloadUrl !== undefined && urlChain.includes(downloadUrl)) end({ kind: "download" });
   });
   const listeners: Array<[string, (...args: unknown[]) => void]> = [
     ["did-start-navigation", ((details: { isMainFrame?: boolean }) => { if (details.isMainFrame) requested = true; }) as never],
@@ -1002,7 +1070,7 @@ export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSess
         error: new BrowserActionError("load-failed", `the action started loading ${validatedURL.slice(0, 200)}, which failed: ${String(errorDescription).slice(0, 200)}`, true),
       });
     }) as never],
-    ["did-stop-loading", (() => end({ kind: "stopped" })) as never],
+    ["did-stop-loading", (() => { if (downloadUrl === undefined) end({ kind: "stopped" }); }) as never],
     ["render-process-gone", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab's page crashed while loading", true) })) as never],
   ];
   for (const [event, listener] of listeners) guest.on(event, listener);
@@ -1010,6 +1078,7 @@ export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSess
   const stop = () => {
     unsubscribe();
     stopCdp();
+    stopDownloads();
     for (const [event, listener] of listeners) guest.removeListener(event, listener);
   };
   return {
@@ -1703,8 +1772,14 @@ export function createBrowserPageActions(
       if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
       return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
     }),
-    waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
-      awake(live, async () => waitFor(await targetFor(live, attribution, hostContentOrigin), options)),
+    waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number; download?: boolean }) =>
+      awake(live, async () => {
+        const target = await targetFor(live, attribution, hostContentOrigin);
+        const guest = live.tab.guest;
+        if (options.download !== true || !guest) return waitFor(target, options);
+        const guestId = guest.id;
+        return waitFor(target, options, (settled) => dismissedPageDialogs.onceDownloadSettled(guestId, settled));
+      }),
     click: async (live: LiveTab, ref: string) =>
       tracked(live, async (session) => click(await targetFor(live, attribution, hostContentOrigin, true, session), ref, browserRefs, live.onObservationTarget)),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>

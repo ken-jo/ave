@@ -230,6 +230,7 @@ export function isUserActionInputType(type: string): boolean {
 
 export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number; parked?: boolean; kind?: "native-view" }>();
+  private readonly attachWaiters = new Map<number, Set<() => void>>();
   private readonly agentFocusScopes = new Map<number, number>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly leaseTurns = new WeakMap<BrowserControlLease, string>();
@@ -471,6 +472,18 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   // A browser guest attached to `windowId`. Call `guestDestroyed` when it goes.
   guestAttached(guest: G, windowId: number, host?: { readonly kind: "native-view" }): void {
     this.attached.set(guest.id, { guest, windowId, sequence: ++this.nextAttachment, ...(host ? { kind: host.kind, parked: true } : {}) });
+    const waiting = this.attachWaiters.get(guest.id);
+    this.attachWaiters.delete(guest.id);
+    for (const attached of waiting ?? []) attached();
+  }
+
+  /** Calls `attached` once main has registered this guest's attachment: now, when it already has. Returns a cancel. */
+  onceGuestAttached(guestId: number, attached: () => void): () => void {
+    if (this.attached.has(guestId)) { attached(); return () => {}; }
+    const waiting = this.attachWaiters.get(guestId) ?? new Set<() => void>();
+    this.attachWaiters.set(guestId, waiting);
+    waiting.add(attached);
+    return () => { waiting.delete(attached); if (waiting.size === 0 && this.attachWaiters.get(guestId) === waiting) this.attachWaiters.delete(guestId); };
   }
 
   guestWindowId(guestId: number): number | null {
@@ -478,8 +491,18 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return entry && !entry.guest.isDestroyed() ? entry.windowId : null;
   }
 
+  /** Whether an agent is the one acting on this guest's page right now. */
+  isAgentActiveGuest(guestId: number): boolean {
+    for (const tab of this.tabs.values()) if (tab.guest?.id === guestId && tab.controlMode === "agent-active") return true;
+    return false;
+  }
+
   isIndependentGuest(guestId: number): boolean {
     return this.attached.get(guestId)?.kind === "native-view";
+  }
+
+  isPopupGuest(guestId: number): boolean {
+    return [...this.tabs.values()].some((tab) => tab.targetKind === "popup" && tab.guest !== null && !tab.guest.isDestroyed() && tab.guest.id === guestId);
   }
 
   allowsNativeContextMenu(guestId: number): boolean {
@@ -1548,6 +1571,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const tab of this.tabs.values()) if (tab.guest) retireBrowserPopupNavigation(tab.guest);
     for (const pending of this.pendingFocus.values()) pending.settle(false);
     this.focusReceipts.clear();
+    this.attachWaiters.clear();
     this.scopedFocusLeases.clear();
     this.attached.clear();
     this.tabs.clear();
