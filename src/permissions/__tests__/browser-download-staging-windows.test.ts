@@ -121,27 +121,42 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
   const fs = await import("node:fs");
   const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
   const owner = "S-1-5-21-100-200-300-1001";
-  const facts = (path: string) => {
+  const component = (path: string): Omit<import("../../shared/windows-path-facts.js").WindowsPathFacts, "ancestors"> => {
     const info = fs.lstatSync(path, { throwIfNoEntry: false, bigint: true });
     if (info === undefined) {
       return { exists: false as const, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null, fileIndex: null,
-        fileSystemName: null, changeTime: null, attributes: 0, reparseTag: 0, directory: false, reparseTarget: null, ancestors: [] };
+        fileSystemName: null, changeTime: null, attributes: 0, reparseTag: 0, directory: false, reparseTarget: null };
     }
     return { exists: true as const, canonical: win32.normalize(path).replace(/(?<!:)[\\/]+$/, ""), volumeSerial: `0x${info.dev.toString(16)}`,
       fileId: `0x${info.ino.toString(16).padStart(32, "0")}`, volumeSerialNumber: `0x${info.dev.toString(16)}`, fileIndex: `0x${info.ino.toString(16)}`,
       fileSystemName: null, changeTime: "0x1", attributes: info.isDirectory() ? 16 : 0, reparseTag: 0, directory: info.isDirectory(),
-      reparseTarget: null, ancestors: [] };
+      reparseTarget: null };
+  };
+  const facts = (path: string): import("../../shared/windows-path-facts.js").WindowsPathFacts => {
+    const normalized = win32.normalize(path);
+    const ancestors: ReturnType<typeof component>[] = [];
+    for (let parent = win32.dirname(normalized); parent !== normalized;) {
+      ancestors.unshift(component(parent));
+      const above = win32.dirname(parent);
+      if (above === parent) break;
+      parent = above;
+    }
+    return { ...component(path), ancestors };
   };
   const readable = (path: string): boolean => [...drive.readable].some((entry) => win32.normalize(entry).replace(/[\\/]+$/, "").toLowerCase()
     === win32.normalize(path).replace(/[\\/]+$/, "").toLowerCase());
+  const descriptor = (path: string) => {
+    const entry = component(path);
+    const aces = [{ type: 0, flags: 3, mask: 0x1f01ff, sid: owner }, ...(readable(path) ? [{ type: 0, flags: 3, mask: 0x1200a9, sid: "S-1-5-32-545" }] : [])];
+    return entry.exists ? { identity: { volumeSerial: entry.volumeSerial, fileId: entry.fileId }, owner, protected: true, nullDacl: false, aces } : null;
+  };
   return {
     ...actual,
     pinWindowsPaths: (paths: readonly string[]) => paths.map(facts),
     readWindowsDacls: (paths: readonly string[], options?: { parent?: boolean }) => paths.map((path) => {
       const row = facts(path);
-      const aces = [{ type: 0, flags: 3, mask: 0x1f01ff, sid: owner }, ...(readable(path) ? [{ type: 0, flags: 3, mask: 0x1200a9, sid: "S-1-5-32-545" }] : [])];
-      const dacl = row.exists ? { identity: { volumeSerial: row.volumeSerial, fileId: row.fileId }, owner, protected: true, nullDacl: false, aces } : null;
-      return { ...row, currentUserSid: owner, elevated: false, principals: {}, dacl, ...(options?.parent ? { parent: dacl } : {}) };
+      return { ...row, currentUserSid: owner, elevated: false, principals: {}, dacl: descriptor(path),
+        ...(options?.parent ? { parent: descriptor(win32.dirname(path)) } : {}) };
     }),
   };
 });
@@ -224,6 +239,8 @@ const { openEgressInvocation } = await import("../egress-invocations.js");
 const { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } = await import("../../shared/ave-home.js");
 const { TEST_WORKER_EGRESS_OWNER } = await import("../../__tests__/support/egress-fixture.js");
 const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-policy.js");
+const { pinWindowsPaths } = await import("../../shared/windows-path-facts.js");
+const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
 const { prepareMxcShellLaunch } = await import("../../tools/mxc-shell-launch.js");
 const { existsSync, mkdirSync, mkdtempSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
@@ -435,6 +452,19 @@ async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }
 describe("the browser download staging folder in the srt-win session floor and worker wraps", () => {
   beforeEach(() => {
     runtime.initialize.mockResolvedValue(undefined);
+  });
+
+  it("proves missing grant targets through the drive's existing ancestor identities", () => {
+    useLayout(PROFILE_CHILD, { staged: false });
+    const missing = `${PROFILE_CHILD.home}\\plugins\\cache`;
+    const [row] = pinWindowsPaths([missing]);
+    expect(row?.exists).toBe(false);
+    expect(row?.ancestors.map((ancestor) => ancestor.canonical)).toEqual(["C:\\", "C:\\Users", PROFILE, PROFILE_CHILD.home, null]);
+    const parent = row?.ancestors.at(-2);
+    expect(parent).toMatchObject({ exists: true, canonical: PROFILE_CHILD.home, directory: true });
+    expect(parent?.volumeSerial).toMatch(/^0x[0-9a-f]+$/u);
+    expect(parent?.fileId).toMatch(/^0x[0-9a-f]+$/u);
+    expect(pinWindowsGrantTargets([missing], { allowMissing: true, validatePath: assertWindowsGrantGrammar })[0]?.canonical).toBe(missing);
   });
 
   it("keeps foreign drive projections outside a checkout's account home while refusing real home targets", async () => {
