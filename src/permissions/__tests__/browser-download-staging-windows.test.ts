@@ -363,6 +363,8 @@ const fixtureVendoredSrtWin = hostPath.join(hostPath.dirname(fixtureSandboxPacka
 const fixturePrivateSrtWin = hostPath.join(resourceRoot, "srt-win-private", "bin");
 const fixtureProgramData = hostPath.join(resourceRoot, "program-data");
 const fixtureExternalKey = hostPath.join(resourceRoot, "external-key");
+const fixtureGlobalGitConfig = hostPath.join(resourceRoot, "user.gitconfig");
+const fixtureSystemGitConfig = hostPath.join(resourceRoot, "system.gitconfig");
 const srtPath = hostPath.join(fixturePrivateSrtWin, "srt-win.exe");
 const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
 if (originalExecPath === undefined) throw new Error("The host runtime path descriptor is missing");
@@ -419,6 +421,8 @@ beforeAll(() => {
   hostFs.writeFileSync(fixtureSandboxPackage, "{}");
   hostFs.writeFileSync(fixtureRuntime, "runtime image fixture");
   hostFs.writeFileSync(fixtureExternalKey, "key path fixture");
+  hostFs.writeFileSync(fixtureGlobalGitConfig, "");
+  hostFs.writeFileSync(fixtureSystemGitConfig, "");
   if (hostPlatform === "win32") {
     const relative = hostPath.join("windows-path-kind", process.arch, "ave-path-kind.exe");
     const target = hostPath.join(fixtureResources.resourcePath, relative);
@@ -479,6 +483,9 @@ beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
   vi.stubEnv("ProgramData", fixtureProgramData);
   vi.stubEnv("AVE_SECRET_KEY_FILE", fixtureExternalKey);
+  vi.stubEnv("GIT_CONFIG_GLOBAL", fixtureGlobalGitConfig);
+  vi.stubEnv("GIT_CONFIG_SYSTEM", fixtureSystemGitConfig);
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", undefined);
   mkdirSync(profileRoot, { recursive: true });
 });
 
@@ -715,7 +722,10 @@ describe("the browser download staging folder in the srt-win session floor and w
     useLayout(PROFILE_CHILD, { staged: false });
     const filesystem = await sessionFloor();
     const writeDenies = spelledRows(filesystem.denyWrite).map(fold);
-    for (const target of [fixtureScripts, fixtureRuntime, fixtureVendoredSrtWin, fixturePrivateSrtWin, fixtureExternalKey]) {
+    for (const target of [
+      fixtureScripts, fixtureRuntime, fixtureVendoredSrtWin, fixturePrivateSrtWin, fixtureExternalKey,
+      fixtureGlobalGitConfig, fixtureSystemGitConfig,
+    ]) {
       expect(writeDenies).toContain(fold(target));
     }
   });
