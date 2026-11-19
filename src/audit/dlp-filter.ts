@@ -116,11 +116,11 @@ export function redactHomePathsInText(value: string): string {
     for (const [home, replacement] of homeForms) {
       if (!home) continue;
       const pattern = os.platform() === "win32"
-        ? home.split(/[\\/]/u).map(escapeRegExp).join("[\\\\/]")
+        ? home.split(/[\\/]/u).map(escapeRegExp).join(String.raw`(?:\\+|/)`)
         : escapeRegExp(home);
-      // Punctuation ends a home reference only when its entire run terminates the text or precedes whitespace.
+      // Only filename continuation text prevents redaction; punctuation fails closed and suffix bytes stay intact.
       out = out.replace(
-        new RegExp(String.raw`${pattern}(?=$|[\\/\s]|[.,;:!?)\]}"'>\x60]+(?=\s|$))`, os.platform() === "win32" ? "giu" : "gu"),
+        new RegExp(String.raw`${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`, os.platform() === "win32" ? "giu" : "gu"),
         replacement,
       );
     }

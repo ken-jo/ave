@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { win32 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { judgeInvocation, judgeRequest } from "../../permissions/judge/__tests__/judge-request-fixture.js";
 const fixture = vi.hoisted(() => ({ home: `D:/fixtures/${"long-root/".repeat(18)}home`, platform: "win32" as "win32" | "linux" }));
 const WINDOWS_HOME = fixture.home;
 vi.mock("node:os", async (importOriginal) => {
@@ -51,9 +52,10 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function loadHomeRedactor(platform: "win32" | "linux") {
+async function loadHomeRedactor(platform: "win32" | "linux", native = false) {
   fixture.platform = platform;
   fixture.home = platform === "win32" ? WINDOWS_HOME : "/srv/fixtures/habitat";
+  if (native && platform === "win32") fixture.home = win32.normalize(fixture.home);
   vi.resetModules();
   return import("../dlp-filter.js");
 }
@@ -79,16 +81,16 @@ describe.each(["win32", "linux"] as const)("home text component boundaries on %s
   });
   it("preserves complete sibling components", async () => {
     const dlp = await loadHomeRedactor(platform);
-    for (const suffix of ["2", ".bak", "-x"]) {
+    for (const suffix of ["2", ".bak", "-x", "_old", "한글", "é", "٢", ".é", "._old", ".-x"]) {
       const value = `Target ${fixture.home}${suffix}/Output`;
       expect(dlp.redactHomePathsInText(value)).toBe(value);
     }
   });
-  it("preserves punctuated sibling components", async () => {
+  it("intentionally over-redacts punctuated sibling components to fail closed", async () => {
     const dlp = await loadHomeRedactor(platform);
-    for (const suffix of [",backup", ";backup", "[copy]", "(old)"]) {
+    for (const suffix of [",backup", ";backup", "[copy]", "(old)", ";x", ", backup"]) {
       const value = `Target ${fixture.home}${suffix}/Output`;
-      expect(dlp.redactHomePathsInText(value)).toBe(value);
+      expect(dlp.redactHomePathsInText(value)).toBe(`Target [home]${suffix}/Output`);
     }
   });
   it("folds case and home separators only on Windows", async () => {
@@ -97,6 +99,55 @@ describe.each(["win32", "linux"] as const)("home text component boundaries on %s
     expect(dlp.redactHomePathsInText(`Target ${upper}/Mixed`)).toBe(`Target ${platform === "win32" ? "[home]" : upper}/Mixed`);
     const native = fixture.home.replaceAll("/", "\\");
     expect(dlp.redactHomePathsInText(`Target ${native}/Mixed`)).toBe(`Target ${platform === "win32" ? "[home]" : native}/Mixed`);
+  });
+});
+
+describe.each(["win32", "linux"] as const)("structured home text boundaries on %s", (platform) => {
+  it("redacts a home in compact JSON before the next field", async () => {
+    await loadHomeRedactor(platform);
+    const { redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+    expect(redactJudgeText(JSON.stringify({ path: fixture.home, other: 1 }))).toBe(JSON.stringify({ path: "[home]", other: 1 }));
+  });
+  it("redacts a quoted home before the next shell statement", async () => {
+    await loadHomeRedactor(platform, true);
+    const { redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+    expect(redactJudgeText(`cd "${fixture.home}";pwd`)).toBe('cd "[home]";pwd');
+  });
+  it("redacts a home in a Markdown link label", async () => {
+    await loadHomeRedactor(platform);
+    const { redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+    expect(redactJudgeText(`[${fixture.home}](target)`)).toBe("[[home]](target)");
+  });
+});
+
+describe("serialized native home paths", () => {
+  it.each([String.raw`D:\fixtures\habitat`, String.raw`\\server\share\habitat`, String.raw`\\?\D:\fixtures\habitat`, String.raw`\\?\UNC\server\share\habitat`])("keeps escaped separator suffix bytes for %s", async (home) => {
+    fixture.home = home;
+    vi.resetModules();
+    const { redactHomePathsInText } = await import("../dlp-filter.js");
+    for (const count of [1, 2, 4]) {
+      const escapedHome = home.replaceAll("\\", "\\".repeat(count));
+      const suffix = `${"\\".repeat(count)}Mixed/FiLe.TXT`;
+      expect(redactHomePathsInText(escapedHome.toUpperCase() + suffix)).toBe(`[home]${suffix}`);
+      for (const sibling of ["2", "_old", "-bak", ".bak"]) {
+        expect(redactHomePathsInText(escapedHome + sibling + suffix)).toBe(escapedHome + sibling + suffix);
+      }
+    }
+  });
+  it("redacts a serialized native descendant through judge text", async () => {
+    await loadHomeRedactor("win32", true);
+    const { redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+    for (const suffix of ["/file", "\\file"]) {
+      expect(redactJudgeText(JSON.stringify({ path: fixture.home + suffix }))).toBe(JSON.stringify({ path: `[home]${suffix}` }));
+    }
+  });
+  it("redacts a non-string argument after judge request serialization", async () => {
+    await loadHomeRedactor("win32", true);
+    const { redactJudgeRequest, redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+    const argument = { path: `${fixture.home}\\file`, other: 1 };
+    const expected = JSON.stringify({ path: "[home]\\file", other: 1 });
+    expect(redactJudgeRequest(judgeRequest({ invocation: judgeInvocation({ finalInput: { argument } }) })).tool.input.argument).toBe(expected);
+    expect(redactJudgeText(JSON.stringify(argument))).toBe(expected);
   });
 });
 
@@ -112,11 +163,12 @@ describe.each(["win32", "linux"] as const)("home text suffix matrix on %s", (pla
     ]);
     const punctuation = [".", ",", ";", ":", "!", "?", ")", "]", "}", '"', "'", ">", "`"];
     const terminalRuns = [...punctuation, punctuation.join(""), '"),', ".!?"];
-    const homeSuffixes = ["", "/", "\\", "/Mixed/FiLe.TXT", "\\Mixed/FiLe.TXT",
+    const punctuatedSuffixes = [",backup/x", ";backup/x", "[copy]/x", "(old)/x", ":stream", "<copy>/x", "{copy}/x",
+      ...terminalRuns.filter(run => run !== ".").map(run => `${run}backup/x`)];
+    const homeSuffixes = ["", "/", "\\", "/Mixed/FiLe.TXT", "\\Mixed/FiLe.TXT", ...punctuatedSuffixes,
       ...[" ", "\t", "\n", "\r\n"].map(space => `${space}rest`),
       ...terminalRuns.flatMap(run => [run, `${run} Next`, `${run}\tNext`, `${run}\nNext`])];
-    const filenameSuffixes = ["2/x", ".bak/x", "-x/x", ",backup/x", ";backup/x", "[copy]/x", "(old)/x", ":stream", "<copy>/x", "{copy}/x",
-      ...terminalRuns.map(run => `${run}backup/x`)];
+    const filenameSuffixes = ["2/x", ".bak/x", "-x/x", "_old/x", ".backup/x"];
     for (const form of forms) {
       for (const suffix of homeSuffixes) {
         const expected = form.matches ? form.replacement : form.text;

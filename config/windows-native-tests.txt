@@ -23,6 +23,7 @@ src/audit/__tests__/audit-logger-legacy-archive-replacement.test.ts
 src/audit/__tests__/audit-logger-permission-chain.test.ts
 src/audit/__tests__/audit-search.test.ts
 src/audit/__tests__/audit-writer.test.ts
+src/audit/__tests__/dlp-home-paths.test.ts
 src/audit/__tests__/dlp-stats.test.ts
 src/audit/__tests__/jsonl-reader.test.ts
 src/audit/__tests__/sandbox-audit-sink.test.ts
