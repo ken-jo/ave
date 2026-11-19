@@ -47,7 +47,20 @@ vi.mock("../../shared/ave-home-test-guard.js", async (original) => {
 });
 
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
-vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
+// Keep the production vendor path composition on both hosts. Only the package location is supplied by the fixture.
+vi.mock("node:module", async (original) => {
+  const actual = await original<typeof import("node:module")>();
+  const locator = new URL("../asrt-sandbox.ts", import.meta.url).href;
+  const createRequire: typeof actual.createRequire = (filename) => {
+    const require = actual.createRequire(filename);
+    if (String(filename) !== locator) return require;
+    const resolve = Object.assign((id: string, options?: { paths?: string[] }) =>
+      id === "@anthropic-ai/sandbox-runtime/package.json" ? fixtureSandboxPackage : require.resolve(id, options),
+    { paths: require.resolve.paths });
+    return Object.assign((id: string) => require(id), require, { resolve });
+  };
+  return { ...actual, default: { ...actual, createRequire }, createRequire };
+});
 vi.mock("../windows-stamp-targets.js", async (original) => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
   const simulated = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual);
@@ -305,6 +318,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", async (original) => {
 vi.mock("../srt-win-integrity.js", async (original) => ({
   ...await original<typeof import("../srt-win-integrity.js")>(),
   prepareSrtWinExecutable: () => srtPath,
+  srtWinPrivateDirectories: () => [fixturePrivateSrtWin],
 }));
 // The ACL grant holder is a pinned System32 process; a stand-in with a pid.
 vi.mock("node:child_process", async (original) => {
@@ -344,13 +358,18 @@ const resourceRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.m
 const fixtureResources = { resourcePath: hostPath.join(resourceRoot, "resources"), isPackaged: false };
 const fixtureScripts = hostPath.join(resourceRoot, "dist", "skill-scripts");
 const fixtureRuntime = hostPath.join(resourceRoot, "host-runtime.exe");
+const fixtureSandboxPackage = hostPath.join(resourceRoot, "sandbox-runtime", "package.json");
+const fixtureVendoredSrtWin = hostPath.join(hostPath.dirname(fixtureSandboxPackage), "vendor", "srt-win");
+const fixturePrivateSrtWin = hostPath.join(resourceRoot, "srt-win-private", "bin");
+const fixtureProgramData = hostPath.join(resourceRoot, "program-data");
+const fixtureExternalKey = hostPath.join(resourceRoot, "external-key");
+const srtPath = hostPath.join(fixturePrivateSrtWin, "srt-win.exe");
 const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
 if (originalExecPath === undefined) throw new Error("The host runtime path descriptor is missing");
 afterAll(async () => { await nativeDirectories.cleanup(); });
 const profileRoot = nativeRoot === null ? "C:\\Users\\alice" : hostPath.join(nativeRoot, "profile");
 const programRoot = nativeRoot === null ? "C:\\Program Files" : hostPath.join(nativeRoot, "programs");
 const launcherPath = `${programRoot}\\app\\resources\\mxc\\x64\\wxc-exec.exe`;
-const srtPath = `${programRoot}\\app\\resources\\srt-win\\srt-win.exe`;
 const nodePath = `${programRoot}\\nodejs\\node.exe`;
 
 function writeDriveFile(path: string): void {
@@ -394,7 +413,12 @@ beforeAll(() => {
   checkSandboxStampTargets([resourceRoot]);
   hostFs.mkdirSync(fixtureResources.resourcePath, { recursive: true });
   hostFs.mkdirSync(fixtureScripts, { recursive: true });
+  hostFs.mkdirSync(fixtureVendoredSrtWin, { recursive: true });
+  hostFs.mkdirSync(fixturePrivateSrtWin, { recursive: true });
+  hostFs.mkdirSync(fixtureProgramData, { recursive: true });
+  hostFs.writeFileSync(fixtureSandboxPackage, "{}");
   hostFs.writeFileSync(fixtureRuntime, "runtime image fixture");
+  hostFs.writeFileSync(fixtureExternalKey, "key path fixture");
   if (hostPlatform === "win32") {
     const relative = hostPath.join("windows-path-kind", process.arch, "ave-path-kind.exe");
     const target = hostPath.join(fixtureResources.resourcePath, relative);
@@ -453,6 +477,8 @@ beforeEach(() => {
   vi.stubEnv("USERPROFILE", profileRoot);
   vi.stubEnv("HOME", profileRoot);
   vi.stubEnv("SystemRoot", "C:\\Windows");
+  vi.stubEnv("ProgramData", fixtureProgramData);
+  vi.stubEnv("AVE_SECRET_KEY_FILE", fixtureExternalKey);
   mkdirSync(profileRoot, { recursive: true });
 });
 
@@ -688,7 +714,10 @@ describe("the browser download staging folder in the srt-win session floor and w
     expect(() => checkCheckoutStampTargets([checkoutScripts])).toThrow(/under the real/);
     useLayout(PROFILE_CHILD, { staged: false });
     const filesystem = await sessionFloor();
-    expect(spelledRows(filesystem.denyWrite)).toEqual(expect.arrayContaining([fixtureScripts, fixtureRuntime]));
+    const writeDenies = spelledRows(filesystem.denyWrite).map(fold);
+    for (const target of [fixtureScripts, fixtureRuntime, fixtureVendoredSrtWin, fixturePrivateSrtWin, fixtureExternalKey]) {
+      expect(writeDenies).toContain(fold(target));
+    }
   });
 
   it("proves missing grant targets through the drive's existing ancestor identities", () => {
