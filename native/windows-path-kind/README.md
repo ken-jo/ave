@@ -119,6 +119,17 @@ Invalid options or an empty request return 2. Open/read failures return 4
 without partial output; output failures return 3. Missing objects are data.
 Relative paths, device namespace paths and alternate streams are refused.
 
+`ave-path-kind.exe --dacl --parent --stdin` reads the parent DACL request
+from a binary stdin frame. A little-endian u32 payload size precedes a u32
+path count and one u32 byte length plus UTF-8 bytes per path. The helper
+requires EOF immediately after the frame and validates every length and
+UTF-8 operand before opening paths. It accepts up to 2,048 paths and a 1 MiB
+payload. NULs, unpaired surrogate encodings, extra operands and incomplete
+frames return 2. The 8 MiB JSON reply contains one ordered row per operand
+with its exact original spelling in `requestPath`. Exceeding the output
+budget returns 4 with no partial reply. The host checks the count and
+each echoed operand before using the facts.
+
 Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
 and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.
 

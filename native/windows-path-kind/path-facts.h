@@ -1,6 +1,46 @@
 #pragma once
 
+#include <fcntl.h>
+#include <io.h>
+
 namespace {
+
+constexpr DWORD MAX_DACL_FRAME_BYTES = 1024 * 1024;
+constexpr DWORD MAX_DACL_FRAME_PATHS = 2048;
+constexpr size_t MAX_PATH_FACTS_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+bool read_dacl_frame(std::vector<std::wstring>& paths) {
+  // Both supported Windows architectures store DWORD values little-endian.
+  DWORD size = 0;
+  if (_setmode(_fileno(stdin), _O_BINARY) == -1 || std::fread(&size, sizeof(size), 1, stdin) != 1
+      || size < sizeof(DWORD) || size > MAX_DACL_FRAME_BYTES) return false;
+  std::vector<char> bytes(size);
+  if (std::fread(bytes.data(), 1, size, stdin) != size || std::fgetc(stdin) != EOF
+      || std::ferror(stdin)) return false;
+
+  size_t offset = 0;
+  const auto read_length = [&](DWORD& length) {
+    if (bytes.size() - offset < sizeof(length)) return false;
+    std::memcpy(&length, bytes.data() + offset, sizeof(length));
+    offset += sizeof(length);
+    return true;
+  };
+  DWORD count = 0;
+  if (!read_length(count) || count == 0 || count > MAX_DACL_FRAME_PATHS) return false;
+  paths.reserve(count);
+  for (DWORD index = 0; index < count; ++index) {
+    DWORD length = 0;
+    if (!read_length(length) || length == 0 || length > bytes.size() - offset) return false;
+    const char* encoded = bytes.data() + offset;
+    if (std::memchr(encoded, '\0', length)) return false;
+    const int units = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, encoded, static_cast<int>(length), nullptr, 0);
+    if (units <= 0 || units >= 32768) return false;
+    auto& path = paths.emplace_back(static_cast<size_t>(units), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, encoded, static_cast<int>(length), path.data(), units) != units) return false;
+    offset += length;
+  }
+  return offset == bytes.size();
+}
 
 std::string json_string(const std::wstring& text) {
   const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
@@ -155,26 +195,36 @@ bool content_json(HANDLE handle, std::string& output) {
 
 int print_path_facts(int argc, wchar_t** argv) {
   const bool dacl = std::wstring(argv[1]) == L"--dacl";
-  bool parent = false, content = false;
+  bool parent = false, content = false, framed = false;
   int start = 2;
   while (start < argc && std::wstring(argv[start]).compare(0, 2, L"--") == 0) {
     const std::wstring flag(argv[start++]);
     if (dacl && flag == L"--parent") parent = true;
     else if (dacl && flag == L"--content") content = true;
+    else if (dacl && !framed && flag == L"--stdin") framed = true;
     else return 2;
   }
-  if (start == argc) return 2;
+  std::vector<std::wstring> paths;
+  if (framed) {
+    if (!parent || content || start != argc || !read_dacl_frame(paths)) return 2;
+  } else {
+    if (start == argc) return 2;
+    paths.assign(argv + start, argv + argc);
+  }
   std::string context;
   if (dacl && !token_json(context)) return 4;
   std::string output = "[";
-  for (int index = start; index < argc; ++index) {
+  for (size_t index = 0; index < paths.size(); ++index) {
+    const auto& path = paths[index];
+    const size_t punctuation = index == 0 ? 2 : 3;  // Comma, closing bracket and LF.
     PinnedPath pinned;
-    if (!pin_path(argv[index], pinned, content)) { std::fputs("could not read path facts\n", stderr); return 4; }
+    if (!pin_path(path.c_str(), pinned, content)) { std::fputs("could not read path facts\n", stderr); return 4; }
     std::string row = facts_json(pinned.facts.back()); row.pop_back();
     row += ",\"ancestors\":[";
     for (size_t ancestor = 0; ancestor + 1 < pinned.facts.size(); ++ancestor) {
       if (ancestor != 0) row += ",";
       row += facts_json(pinned.facts[ancestor]);
+      if (framed && output.size() + row.size() + punctuation > MAX_PATH_FACTS_OUTPUT_BYTES) return 4;
     }
     row += "]";
     if (dacl) {
@@ -195,8 +245,10 @@ int print_path_facts(int argc, wchar_t** argv) {
       if (content) row += ",\"contentHex\":" + bytes;
     }
     if (!verify_pinned_path(pinned)) return 4;
+    if (framed) row += ",\"requestPath\":" + json_string(path);
     row += "}";
-    if (index != start) output += ",";
+    if (framed && output.size() + row.size() + punctuation > MAX_PATH_FACTS_OUTPUT_BYTES) return 4;
+    if (index != 0) output += ",";
     output += row;
   }
   output += "]\n";
