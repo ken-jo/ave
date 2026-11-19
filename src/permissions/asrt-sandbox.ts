@@ -2412,14 +2412,17 @@ export async function wrapToolCommand(
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
   assertWindowsSession(session);
-  const wrapped = await SandboxManager.wrapWithSandboxArgv(
+  const pendingWrap = SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
     customConfig,
     options.abortSignal,
     undefined,
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
-  ).catch(error => { throw windowsAclBudgetError(error, hasConfiguredDenies(options.filesystem) || hasConfiguredDenies(_baseTrustedSettings)); });
+  );
+  const wrapped = await pendingWrap.catch(error => {
+    throw windowsAclBudgetError(error, hasConfiguredDenies(options.filesystem) || hasConfiguredDenies(_baseTrustedSettings));
+  });
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
@@ -2598,14 +2601,17 @@ async function wrapLongLivedCommand(
   // `wrapOptions` carries a tty only for the terminal.
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
   assertWindowsSession(session);
-  const wrapped = await SandboxManager.wrapWithSandboxArgv(
+  const pendingWrap = SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
     customConfig,
     options.abortSignal,
     undefined,
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
-  ).catch(error => { throw windowsAclBudgetError(error, hasConfiguredDenies(options.filesystem) || hasConfiguredDenies(_baseTrustedSettings)); });
+  );
+  const wrapped = await pendingWrap.catch(error => {
+    throw windowsAclBudgetError(error, hasConfiguredDenies(options.filesystem) || hasConfiguredDenies(_baseTrustedSettings));
+  });
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
