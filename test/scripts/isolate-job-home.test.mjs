@@ -107,47 +107,54 @@ describe("Windows job root cleanup diagnostics", () => {
     assert.ok(elapsed >= 4500 && elapsed < 6500, `elapsed=${elapsed}`);
     assert.match(output(seams), /Cleanup diagnostic failed or timed out/);
   });
-  it("never discloses target metadata when the root is replaced by a junction", async () => {
-    const fixture = mkdtempSync(join(tmpdir(), "ave-job-root-swap-"));
-    const root = join(fixture, "root"), saved = join(fixture, "saved"), target = join(fixture, "target");
-    const sentinel = join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt");
-    mkdirSync(root); mkdirSync(target); writeFileSync(sentinel, "preserve");
-    const snapshot = () => [target, sentinel].map(path => {
-      const facts = lstatSync(path);
-      const script = `(Get-Acl -LiteralPath '${path.replaceAll("'", "''")}').Sddl`;
-      const acl = process.platform === "win32" ? execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-        ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-        { encoding: "utf8", windowsHide: true }) : null;
-      return { mode: facts.mode, size: facts.size, mtime: facts.mtimeMs, acl };
-    });
-    let swapped = false;
-    try {
-      if (process.platform === "win32") hardenWindowsJobRoot(root);
-      assert.ok(lstatSync(root).isDirectory() && !lstatSync(root).isSymbolicLink());
-      assert.equal(realpathSync.native(root).toLowerCase(), root.toLowerCase());
-      const before = snapshot();
-      const error = Object.assign(blockedRemoval(), { path: join(root, "blocked-original.txt") });
-      const seams = cleanupSeams(error);
-      seams.run = mock.fn((command, args, options, done) => {
-        assert.deepEqual(options, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024 });
-        renameSync(root, saved); symlinkSync(target, root, "junction"); swapped = true;
-        return execFile(command, args, options, done);
+  for (const processQuery of ["native", "unavailable"]) {
+    it(`never discloses target metadata when the root is replaced by a junction (${processQuery} process query)`, async () => {
+      const fixture = mkdtempSync(join(tmpdir(), "ave-job-root-swap-"));
+      const root = join(fixture, "root"), saved = join(fixture, "saved"), target = join(fixture, "target");
+      const sentinel = join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt");
+      mkdirSync(root); mkdirSync(target); writeFileSync(sentinel, "preserve");
+      const snapshot = () => [target, sentinel].map(path => {
+        const facts = lstatSync(path);
+        const script = `(Get-Acl -LiteralPath '${path.replaceAll("'", "''")}').Sddl`;
+        const acl = process.platform === "win32" ? execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+          ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+          { encoding: "utf8", windowsHide: true }) : null;
+        return { mode: facts.mode, size: facts.size, mtime: facts.mtimeMs, acl };
       });
-      await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
-      assert.equal(swapped, true);
-      assert.equal(seams.remove.mock.callCount(), 1);
-      assert.equal(seams.run.mock.callCount(), 1);
-      const lines = output(seams);
-      assert.doesNotMatch(lines, /SYNTHETIC-OUTSIDE|entry |type=|read-only=|diagnostic failed|process query failed/);
-      assert.ok(lines.includes(`path=${JSON.stringify(error.path)}`), lines);
-      assert.deepEqual(readdirSync(target), ["SYNTHETIC-OUTSIDE-SENTINEL.txt"]);
-      assert.equal(readFileSync(sentinel, "utf8"), "preserve");
-      assert.deepEqual(snapshot(), before);
-    } finally {
-      if (swapped) unlinkSync(root);
-      rmSync(fixture, { recursive: true, force: true });
-    }
-  });
+      let swapped = false;
+      try {
+        if (process.platform === "win32") hardenWindowsJobRoot(root);
+        assert.ok(lstatSync(root).isDirectory() && !lstatSync(root).isSymbolicLink());
+        assert.equal(realpathSync.native(root).toLowerCase(), root.toLowerCase());
+        const before = snapshot();
+        const error = Object.assign(blockedRemoval(), { path: join(root, "blocked-original.txt") });
+        const seams = cleanupSeams(error);
+        seams.run = mock.fn((command, args, options, done) => {
+          assert.deepEqual(options, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024 });
+          renameSync(root, saved); symlinkSync(target, root, "junction"); swapped = true;
+          // Remove the query's executable location after child startup to model hosts without it.
+          const childArgs = processQuery === "unavailable"
+            ? ["--import", "data:text/javascript,delete%20process.env.SystemRoot", ...args] : args;
+          return execFile(command, childArgs, options, done);
+        });
+        await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+        assert.equal(swapped, true);
+        assert.equal(seams.remove.mock.callCount(), 1);
+        assert.equal(seams.run.mock.callCount(), 1);
+        const lines = output(seams);
+        assert.doesNotMatch(lines, /SYNTHETIC-OUTSIDE|entry |type=|read-only=|diagnostic failed/);
+        if (processQuery === "unavailable") assert.match(lines, /Cleanup process query failed/);
+        else if (process.platform === "win32") assert.doesNotMatch(lines, /process query failed/);
+        assert.ok(lines.includes(`path=${JSON.stringify(error.path)}`), lines);
+        assert.deepEqual(readdirSync(target), ["SYNTHETIC-OUTSIDE-SENTINEL.txt"]);
+        assert.equal(readFileSync(sentinel, "utf8"), "preserve");
+        assert.deepEqual(snapshot(), before);
+      } finally {
+        if (swapped) unlinkSync(root);
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    });
+  }
   it("discards overflowing child output and preserves the original removal error", async () => {
     const error = blockedRemoval();
     const seams = cleanupSeams(error);
