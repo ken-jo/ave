@@ -23,7 +23,7 @@ import {
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
-  foldCanonicalPathSeparators,
+  resolvePathForPolicy,
   isSensitivePath,
   allowKeyMaterialInspectionUnder,
 } from "../../permissions/sensitive-paths.js";
@@ -70,7 +70,7 @@ const pendingPicks = new Map<string, { path: string; expires: number; gesture: P
 function validateWorkspaceDirectoryAddition(rawPath: string): ReturnType<typeof validateDirectoryAddition> {
   const verdict = validateDirectoryAddition(rawPath);
   if (!verdict.ok) return verdict;
-  const sensitive = sensitiveFilePattern(expandLeadingTilde(rawPath), "write") ?? isSensitivePath(verdict.canonicalPath, "write");
+  const sensitive = sensitiveFilePattern(expandLeadingTilde(rawPath), "write");
   return sensitive ? { ok: false, reason: `path matches sensitive pattern '${sensitive}'`, adjacencyWarnings: verdict.adjacencyWarnings } : verdict;
 }
 
@@ -352,12 +352,13 @@ function computeRoots(): WorkspaceRoot[] {
   const defaultRoot = getDefaultWorkspaceRoot();
   const additional = readPermissionSettings().permissions.additionalDirectories;
   const canonicalAdds = sanitizeRuntimeAllowedDirectories(additional);
-  const seen = new Set<string>([defaultRoot]);
+  const seen = new Set<string>([matchKey(defaultRoot)]);
   const roots: WorkspaceRoot[] = [{ path: defaultRoot, isDefault: true }];
   for (const dir of canonicalAdds) {
-    if (seen.has(dir)) continue;
-    seen.add(dir);
-    roots.push({ path: dir, isDefault: false });
+    const key = matchKey(dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push({ path: resolvePathForPolicy(dir), isDefault: false });
   }
   return roots;
 }
@@ -1000,12 +1001,10 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           const full = join(dir, ent.name);
           // A link's own entry is judged by its spelling in the folder: canonicalizing it would resolve through the link.
           const link = ent.isSymbolicLink();
-          const sensitiveKey = link
-            ? caseFoldForMatch(foldCanonicalPathSeparators(join(realDir ?? dir, ent.name)))
-            : caseFoldForMatch(canonicalizePathForMatch(full));
+          const sensitivePath = link ? join(realDir ?? dir, ent.name) : full;
           // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
           // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
-          if (isSensitivePath(sensitiveKey, "write", "person")) {
+          if (isSensitivePath(sensitivePath, "write", "person")) {
             hidden += 1;
             continue;
           }

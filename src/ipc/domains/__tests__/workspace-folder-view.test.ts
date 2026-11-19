@@ -37,6 +37,7 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
 
 import { registerWorkspaceHandlers } from "../workspace.js";
 import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
+import * as sensitivePaths from "../../../permissions/sensitive-paths.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
@@ -239,6 +240,28 @@ describe("workspace.listDir folder-view entries", () => {
       expect(fileAccessPolicy.sensitiveFilePattern(join(dir, "Big deck.key"), "read")).toBe("**/*.key");
       expect(fileAccessPolicy.sensitiveFilePattern(join(dir, "Quarterly review.key"), "read")).toBeNull();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes each stored entry name unchanged to key inspection", async () => {
+    const dir = join(root, "stored-key-names");
+    mkdirSync(dir);
+    for (const name of ["Cafe\u0301.key", "\u212A.key", "MiXeD.key"]) {
+      writeFileSync(join(dir, name), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    }
+    const storedNames = await fsModule.promises.readdir(dir);
+    const sensitivity = vi.spyOn(sensitivePaths, "isSensitivePath");
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      expect(res).toMatchObject({ ok: true, hidden: 0 });
+      expect(res.entries?.map((entry) => entry.name).sort()).toEqual(storedNames.sort());
+      const inspectedPaths = sensitivity.mock.calls
+        .filter(([, effect, audience]) => effect === "write" && audience === "person")
+        .map(([path]) => path);
+      expect(inspectedPaths.sort()).toEqual(storedNames.map((name) => join(dir, name)).sort());
+    } finally {
+      sensitivity.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
   });
