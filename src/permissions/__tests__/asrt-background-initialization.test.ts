@@ -71,10 +71,14 @@ function denyPatterns(prefix: string, count: number): string[] {
 
 function pinWorkerRoot(root: string): void {
   const pin = facts.pinWindowsPaths;
-  vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path =>
-    path === root ? { exists: true, canonical: root, volumeSerial: "volume", fileId: "worker-root",
+  vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
+    if (path === root) return { exists: true, canonical: root, volumeSerial: "volume", fileId: "worker-root",
       volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: 16, reparseTag: 0,
-      directory: true, reparseTarget: null, ancestors: [] } : pin([path])[0]!));
+      directory: true, reparseTarget: null, ancestors: [] };
+    const [response] = pin([path]);
+    if (response === undefined) throw new Error("Missing path facts for the worker fixture");
+    return response;
+  }));
   vi.spyOn(stampTargets, "pinWindowsFilesystemConfig").mockImplementation(config => config);
 }
 
