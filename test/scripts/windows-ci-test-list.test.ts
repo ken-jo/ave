@@ -83,7 +83,7 @@ function sourceFiles(dir: string): string[] {
 
 const nativeInventory = new WeakMap<ReadonlyMap<string, string>, Map<string, string[]>>();
 function listProblems(sources: Map<string, string>, workflow: string): string[] {
-  const listed = windowsJobFiles(workflow);
+  const listed = new Set(windowsJobFiles(workflow));
   let native = nativeInventory.get(sources);
   if (native === undefined) {
     native = nativeBackedTestFiles(sources);
@@ -96,7 +96,7 @@ function listProblems(sources: Map<string, string>, workflow: string): string[] 
       .map((gate) => `${file}:${gate.line}: unclassifiable argument: ${gate.argument}`);
     const required = REQUIRED_SECURITY_SUITES.some((suite) => suite === file)
       || file.endsWith(".windows.test.ts") || gates.some((gate) => gate.classification === "win32-only") || native.has(file);
-    return [...unknown, ...(required && !listed.includes(file) ? [`${file}: missing from ${STEP_NAME}`] : [])];
+    return [...unknown, ...(required && !listed.has(file) ? [`${file}: missing from ${STEP_NAME}`] : [])];
   }).sort();
 }
 

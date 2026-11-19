@@ -1,5 +1,7 @@
 import { transformSync } from "esbuild";
 import { posix } from "node:path";
+import { createRequire } from "node:module";
+import { MessageChannel, receiveMessageOnPort, Worker } from "node:worker_threads";
 import { createScanner } from "typescript/unstable/ast/scanner";
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
@@ -10,11 +12,15 @@ export function isInventorySource(file: string): boolean {
     && !/^test\/(?:e2e|screenshots|smoke)\//.test(file);
 }
 
-function runtimeTokens(file: string, source: string): string[] {
-  const code = transformSync(source, {
+function runtimeTokens(file: string, source: string, transformed?: string): string[] {
+  const code = transformed ?? transformSync(source, {
     loader: file.endsWith("x") ? "tsx" : "ts",
     tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } },
   }).code;
+  // Without a factory, tokens after the final load statement cannot affect dependency discovery.
+  const lastLoad = code.includes("mock") ? code.length
+    : Math.max(...["import", "export", "require"].map(word => code.lastIndexOf(word)));
+  if (lastLoad < 0) return [];
   const scanner = createScanner(true, undefined, code);
   const tokens: string[] = [];
   const templates: number[] = [];
@@ -37,12 +43,13 @@ function runtimeTokens(file: string, source: string): string[] {
     if (text === "}") braces--;
     tokens.push(text);
     if (text === "{") braces++;
+    if (text === ";" && scanner.getTokenEnd() > lastLoad) break;
   }
   return tokens;
 }
 
 function literal(token: string | undefined): string | undefined {
-  return token !== undefined && (/^['"]/.test(token)
+  return token !== undefined && ((token[0] === '"' || token[0] === "'")
     || (token.startsWith("`") && token.endsWith("`") && !token.includes("${"))) ? token.slice(1, -1) : undefined;
 }
 
@@ -111,14 +118,16 @@ function isPossibleRequireLoad(tokens: readonly string[], index: number): boolea
   return false;
 }
 
-function runtimeImports(file: string, source: string): { imports: string[]; actualImports: string[]; mocks: string[] } {
-  const tokens = runtimeTokens(file, source);
+function runtimeImports(file: string, source: string, transformed?: string): { imports: string[]; actualImports: string[]; mocks: string[] } {
+  const tokens = runtimeTokens(file, source, transformed);
   const imports = new Set<string>();
   const actualImports = new Set<string>();
   const mocks = new Set<string>();
   const unmocks = new Set<string>();
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (token !== "import" && token !== "export" && token !== "vi" && token !== "require"
+      && token !== '"require"' && token !== "'require'" && token !== "`require`") continue;
     const next = tokens[i + 1];
     const nextLiteral = literal(next);
     const argument = literal(tokens[i + 2]);
@@ -157,6 +166,69 @@ function runtimeImports(file: string, source: string): { imports: string[]; actu
   return { imports: [...imports], actualImports: [...actualImports], mocks: [...mocks].filter(name => !unmocks.has(name)) };
 }
 
+const require = createRequire(import.meta.url);
+const TRANSFORM_BATCH_SIZE = 128;
+const TRANSFORM_WORKER = `
+const { workerData } = require("node:worker_threads");
+const { port, signal, sources, transformer, batchSize } = workerData;
+(async () => {
+  let compiler;
+  try {
+    compiler = require(transformer);
+    for (let i = 0; i < sources.length; i += batchSize) {
+      const results = await Promise.all(sources.slice(i, i + batchSize).map(async ([file, source]) => [file, (await compiler.transform(source, {
+        loader: file.endsWith("x") ? "tsx" : "ts",
+        tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } },
+      })).code]));
+      port.postMessage({ results });
+      Atomics.add(signal, 0, 1);
+      Atomics.notify(signal, 0);
+    }
+  } catch (error) {
+    port.postMessage({ error: error instanceof Error ? error.message : String(error) });
+  } finally {
+    compiler?.stop();
+    port.close();
+    Atomics.add(signal, 0, 1);
+    Atomics.notify(signal, 0);
+  }
+})();
+`;
+
+function* transformedSources(sources: ReadonlyMap<string, string>): Generator<[string, string, string | undefined]> {
+  const entries = [...sources].filter(([file]) => isInventorySource(file));
+  // Small fixture graphs avoid worker startup; large graphs overlap compilation and scanning.
+  if (entries.length < 32) {
+    for (const [file, source] of entries) yield [file, source, undefined];
+    return;
+  }
+  const { port1, port2 } = new MessageChannel();
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  const worker = new Worker(TRANSFORM_WORKER, {
+    eval: true,
+    workerData: { port: port2, signal, sources: entries, transformer: require.resolve("esbuild"), batchSize: TRANSFORM_BATCH_SIZE },
+    transferList: [port2],
+  });
+  try {
+    let consumed = 0;
+    while (consumed < entries.length) {
+      const version = Atomics.load(signal, 0);
+      const response = receiveMessageOnPort(port1)?.message as { results?: [string, string][]; error?: string } | undefined;
+      if (response === undefined) { Atomics.wait(signal, 0, version); continue; }
+      if (response.results === undefined) throw new Error(response.error ?? "Source transforms unavailable");
+      for (const [file, code] of response.results) {
+        const source = sources.get(file);
+        if (source === undefined) throw new Error("Source transform mismatch");
+        consumed++;
+        yield [file, source, code];
+      }
+    }
+  } finally {
+    port1.close();
+    void worker.terminate();
+  }
+}
+
 /** Conservative runtime reachability: lack of an observed native call is never an exclusion. */
 export function nativeBackedTestFiles(sources: ReadonlyMap<string, string>): Map<string, string[]> {
   const resolveImport = (file: string, specifier: string): string | undefined => {
@@ -167,9 +239,8 @@ export function nativeBackedTestFiles(sources: ReadonlyMap<string, string>): Map
   };
   const graph = new Map<string, { file: string; actual: boolean }[]>();
   const mockedModules = new Map<string, Set<string>>();
-  for (const [file, source] of sources) {
-    if (!isInventorySource(file)) continue;
-    const parsed = runtimeImports(file, source);
+  for (const [file, source, transformed] of transformedSources(sources)) {
+    const parsed = runtimeImports(file, source, transformed);
     graph.set(file, parsed.imports.flatMap(specifier => {
       const dependency = resolveImport(file, specifier);
       return dependency === undefined ? [] : [{ file: dependency, actual: parsed.actualImports.includes(specifier) }];
@@ -178,20 +249,45 @@ export function nativeBackedTestFiles(sources: ReadonlyMap<string, string>): Map
   }
   const boundary = (file: string) => file.startsWith("src/") && !file.includes("/__tests__/")
     && /\/(?:windows-|win32-)[^/]+\.[cm]?[jt]sx?$/.test(file);
+  // Reverse reachability is shared by every suite; mock cuts can only remove paths.
+  const importers = new Map<string, string[]>();
+  const reachable = new Set<string>();
+  for (const [file, dependencies] of graph) {
+    if (boundary(file)) reachable.add(file);
+    for (const dependency of dependencies) {
+      const parents = importers.get(dependency.file) ?? [];
+      parents.push(file);
+      importers.set(dependency.file, parents);
+      if (boundary(dependency.file)) reachable.add(dependency.file);
+    }
+  }
+  const pending = [...reachable];
+  for (const file of pending) {
+    for (const importer of importers.get(file) ?? []) {
+      if (reachable.has(importer)) continue;
+      reachable.add(importer);
+      pending.push(importer);
+    }
+  }
   const required = new Map<string, string[]>();
   for (const file of graph.keys()) {
-    if (!TEST_FILE.test(file)) continue;
+    if (!TEST_FILE.test(file) || !reachable.has(file)) continue;
     const blocked = mockedModules.get(file) ?? new Set<string>();
-    const queue = [[file]];
-    const seen = new Set<string>();
-    for (const chain of queue) {
-      const current = chain.at(-1);
-      if (current === undefined) continue;
-      if (seen.has(current)) continue;
-      seen.add(current);
-      if (boundary(current)) { required.set(file, chain); break; }
+    const queue = [file];
+    const parents = new Map<string, string | undefined>([[file, undefined]]);
+    for (const current of queue) {
+      if (boundary(current)) {
+        const chain = [current];
+        let parent = parents.get(current);
+        while (parent !== undefined) { chain.push(parent); parent = parents.get(parent); }
+        required.set(file, chain.reverse());
+        break;
+      }
       for (const dependency of graph.get(current) ?? []) {
-        if (!blocked.has(dependency.file) || dependency.actual) queue.push([...chain, dependency.file]);
+        if (!reachable.has(dependency.file) || parents.has(dependency.file)
+          || (blocked.has(dependency.file) && !dependency.actual)) continue;
+        parents.set(dependency.file, current);
+        queue.push(dependency.file);
       }
     }
   }

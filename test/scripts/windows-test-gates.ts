@@ -25,6 +25,7 @@ const FEATURE_CALLS = new Set([
 // Built-in value methods; any other member call is an unknown call.
 const VALUE_METHODS = new Set(["trim", "test", "includes", "startsWith", "endsWith", "filter", "some", "every", "getuid"]);
 export function conditionalGates(source: string): Gate[] {
+  if (!source.includes("runIf") && !source.includes("skipIf")) return [];
   const platformFunctions = [...source.matchAll(/import\s*\{([^}]+)\}\s*from\s*["'](?:node:)?os["']/g)]
     .flatMap((match) => match[1]!.split(",").flatMap((entry) => {
       const imported = /^\s*platform(?:\s+as\s+(\w+))?\s*$/.exec(entry);

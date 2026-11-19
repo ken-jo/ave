@@ -192,4 +192,27 @@ describe("Windows native test inventory", () => {
     modules.set("src/shared/windows-new-boundary.ts", "export const enabled = true;");
     expect(nativeBackedTestFiles(modules).get(SUITE)?.at(-1)).toBe("src/shared/windows-new-boundary.ts");
   });
+  it.each([0, 128])("keeps ordered shortest chains through cycles and suite mock cuts with %s extra modules", extra => {
+    const first = "src/data/__tests__/first.test.ts";
+    const second = "src/data/__tests__/second.test.ts";
+    const alternate = "src/data/alternate.ts";
+    const modules = new Map([
+      [first, 'vi.mock("../store.js", () => ({})); import "../store.js"; import "../alternate.js";'],
+      [second, 'import "../store.js"; import "../alternate.js";'],
+      [STORE, 'import "./alternate.js"; export { read } from "../shared/windows-native-host.js";'],
+      [alternate, 'import "./store.js"; export { read } from "../shared/windows-native-host.js";'],
+      [NATIVE, "export const read = () => {};"],
+    ]);
+    for (let i = 0; i < extra; i++) modules.set(`src/data/unused-${i}.ts`, `export const value = ${i};`);
+    expect([...nativeBackedTestFiles(modules)]).toEqual([
+      [first, [first, alternate, NATIVE]],
+      [second, [second, STORE, NATIVE]],
+    ]);
+  });
+
+  it.each([0, 128])("rejects malformed source with %s extra modules", extra => {
+    const modules = sources("const = ;");
+    for (let i = 0; i < extra; i++) modules.set(`src/data/unused-${i}.ts`, "");
+    expect(() => nativeBackedTestFiles(modules)).toThrow(/Expected/);
+  });
 });
