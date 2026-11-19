@@ -1,8 +1,8 @@
 // Isolate every job path from the account profile. Native Windows fixtures also
 // need the system volume's aliases and trusted volume-root ownership.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { posix, resolve, win32 } from "node:path";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { basename, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 function systemVolume(systemRoot) {
@@ -82,6 +82,82 @@ export function validateJobHomeRoot(root, systemRoot) {
   return root;
 }
 
+function listJobRootEntries(root, readDirectory, stat, diagnostic) {
+  const directories = [root];
+  let count = 0;
+  for (let index = 0; index < directories.length && count < 50; index++) {
+    const directory = directories[index];
+    // Check the current route again rather than trusting queued directory entries.
+    let current = root;
+    for (const part of ["", ...relative(root, directory).split(sep).filter(Boolean)]) {
+      current = join(current, part);
+      const facts = stat(current);
+      if (facts.isSymbolicLink() || !facts.isDirectory()) {
+        throw new Error("Cleanup entry route changed");
+      }
+    }
+    for (const entry of readDirectory(directory, { withFileTypes: true })) {
+      if (!entry.name || entry.name === "." || entry.name === ".." || /[\\/:]/.test(entry.name)) {
+        throw new Error("Invalid cleanup entry name");
+      }
+      const path = join(directory, entry.name);
+      const facts = stat(path);
+      // These fs interfaces identify links and junctions alike as symbolic links.
+      const link = facts.isSymbolicLink();
+      const type = link ? "symlink/junction" : facts.isDirectory() ? "dir" : "file";
+      diagnostic(`entry ${JSON.stringify(relative(root, path))} type=${type} read-only=${(facts.mode & 0o200) === 0}`);
+      if (!link && facts.isDirectory()) directories.push(path);
+      if (++count === 50) {
+        diagnostic("Entry listing limited to 50 entries");
+        return;
+      }
+    }
+  }
+}
+
+function listJobRootProcesses(root, run, diagnostic) {
+  const prefix = `${root.replace(/[\\/]+$/, "")}\\`.replaceAll("'", "''");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "ConvertTo-Json -Compress -InputObject @(Get-Process | Where-Object {",
+    `$_.Path -and $_.Path.StartsWith('${prefix}', [StringComparison]::OrdinalIgnoreCase)`,
+    "} | Select-Object -First 20 | ForEach-Object {",
+    "@{ pid = $_.Id; image = [IO.Path]::GetFileName($_.Path) }",
+    "})",
+  ].join("\n");
+  const processes = JSON.parse(run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")], {
+    encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 5000, maxBuffer: 64 * 1024,
+  }));
+  if (!Array.isArray(processes)) throw new Error("Invalid cleanup process listing");
+  for (const process of processes.slice(0, 20)) {
+    if (!Number.isSafeInteger(process.pid) || process.pid <= 0 || typeof process.image !== "string") {
+      throw new Error("Invalid cleanup process details");
+    }
+    diagnostic(`process pid=${process.pid} image=${JSON.stringify(basename(win32.basename(process.image)).slice(0, 256))}`);
+  }
+}
+
+export function cleanupWindowsJobRoot(root, {
+  remove = rmSync, readDirectory = readdirSync, stat = lstatSync,
+  run = runJobRootCommand, diagnostic = line => console.error(line),
+} = {}) {
+  try {
+    remove(root, { recursive: true, force: true });
+  } catch (error) {
+    try {
+      diagnostic(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)}`);
+      try { listJobRootEntries(root, readDirectory, stat, diagnostic); } catch {
+        diagnostic("Cleanup entry listing failed");
+      }
+      try { listJobRootProcesses(root, run, diagnostic); } catch {
+        diagnostic("Cleanup process query failed");
+      }
+    } catch { /* Reporting must never replace the original removal error. */ }
+    throw error;
+  }
+}
+
 function main() {
   if (process.argv.includes("--cleanup")) {
     const root = validateJobHomeRoot(process.env.AVE_CI_JOB_ROOT, process.env.SystemRoot);
@@ -89,7 +165,7 @@ function main() {
       || realpathSync.native(root).toLowerCase() !== root.toLowerCase()) {
       throw new Error("Cleanup requires an unchanged isolated job root");
     }
-    rmSync(root, { recursive: true, force: true });
+    cleanupWindowsJobRoot(root);
     return;
   }
   const { RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv, SystemRoot: systemRoot } = process.env;
