@@ -24,6 +24,7 @@ const drive = vi.hoisted(() => ({
 const runtime = vi.hoisted(() => ({
   initialize: vi.fn(), wrap: vi.fn(), update: vi.fn(), grant: vi.fn(), stamp: vi.fn(), revoke: vi.fn(), spawn: vi.fn(), nativeSpawn: vi.fn(),
   containerBackend: false,
+  policyFrames: [] as Buffer[],
 }));
 
 vi.mock("../../main/host-resources.js", async (original) => {
@@ -262,13 +263,30 @@ vi.mock("../srt-win-integrity.js", async (original) => ({
 // The ACL grant holder is a pinned System32 process; a stand-in with a pid.
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
-  return { ...actual, spawn: (...args: unknown[]) => runtime.spawn(...args) };
+  const { createPolicyPipeHelper } = await import("../../__tests__/support/policy-pipe-helper.js");
+  return { ...actual, spawn: (...args: unknown[]) => runtime.spawn(...args), default: { ...actual.default,
+    spawn: (command: string, args: readonly string[], options: import("node:child_process").SpawnOptions) => {
+      if (args[0] !== "--mxc-policy") return actual.spawn(command, args, options);
+      const helper = createPolicyPipeHelper(new actual.ChildProcess());
+      helper.stdin.once("data", (frame: Buffer) => {
+        expect(frame.readUInt32LE(0)).toBe(frame.length - 4);
+        runtime.policyFrames.push(frame.subarray(4));
+        queueMicrotask(() => helper.stdout.write("ready\n"));
+      });
+      return helper.child;
+    },
+  } };
 });
-vi.mock("../../main/managed-child-processes.js", async (original) => ({
-  ...await original<typeof import("../../main/managed-child-processes.js")>(),
-  trackManagedChildProcess: vi.fn(),
-  assertManagedChildProcessAdmissionOpen: vi.fn(),
-}));
+vi.mock("../../main/windows-path-kind-launcher.js", async (original) => {
+  const actual = await original<typeof import("../../main/windows-path-kind-launcher.js")>();
+  return { ...actual, resolveWindowsPathKindHelper: () => hostPlatform === "win32"
+    ? actual.resolveWindowsPathKindHelper() : `${programRoot}\\app\\resources\\windows-path-kind\\ave-path-kind.exe` };
+});
+vi.mock("../../main/managed-child-processes.js", async (original) => {
+  const actual = await original<typeof import("../../main/managed-child-processes.js")>();
+  const track: typeof actual.trackManagedChildProcess = () => vi.fn();
+  return { ...actual, trackManagedChildProcess: vi.fn(track), assertManagedChildProcessAdmissionOpen: vi.fn() };
+});
 
 const hostFs = await vi.importActual<typeof import("node:fs")>("node:fs");
 const hostPath = await vi.importActual<typeof import("node:path")>("node:path");
@@ -381,6 +399,7 @@ afterEach(async () => {
     drive.files.clear();
     drive.identities.clear();
     drive.readable.clear();
+    runtime.policyFrames.length = 0;
   }
 });
 
@@ -411,7 +430,7 @@ type ContainerFilesystem = { readwritePaths: string[]; readonlyPaths: string[]; 
 /** The filesystem a container shell command is launched with, composed as `spawnPowerShellInMxc` composes it (the shell read
  * policy, the write floor and the mandatory write policy), ranked and encoded by the real launch preparation, and decoded from the
  * launcher's own arguments. */
-async function containerShellRequest(input: { cwd: string; writePaths: readonly string[]; readPaths?: readonly string[] }): Promise<ContainerFilesystem> {
+async function containerShellRequest(input: { cwd: string; writePaths: readonly string[]; readPaths?: readonly string[]; policyPadding?: number }): Promise<ContainerFilesystem> {
   const sandboxHome = `${aveHome()}\\sandbox\\homes\\h1`;
   mkdirSync(sandboxHome, { recursive: true });
   const sandboxWritePaths = [...input.writePaths, sandboxHome];
@@ -427,13 +446,26 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
       denyWrite: [...new Set([...sensitiveDenyWrite, ...mandatory.denyWrite.map((entry) => (typeof entry === "string" ? entry : entry.path))])],
       floorPierces,
     },
-    env: { SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: `${profileRoot}\\AppData\\Local` },
+    env: { SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: `${profileRoot}\\AppData\\Local`, PAD: "x".repeat(input.policyPadding ?? 0) },
     timeoutMs: 5_000,
     exists: existsSync,
   });
   try {
-    expect(launch.argv[1]).toBe("--config-base64");
-    return (JSON.parse(Buffer.from(launch.argv[2] ?? "", "base64").toString("utf8")) as { filesystem: ContainerFilesystem }).filesystem;
+    expect(launch.argv).toHaveLength(3);
+    let bytes: Buffer;
+    if (launch.argv[1] === "--config") {
+      expect(launch.argv[2]).toMatch(/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/u);
+      expect(runtime.policyFrames).toHaveLength(1);
+      const frame = runtime.policyFrames.pop();
+      if (!frame) throw new Error("The policy helper received no frame");
+      bytes = frame;
+    } else {
+      expect(launch.argv[1]).toBe("--config-base64");
+      expect(runtime.policyFrames).toHaveLength(0);
+      bytes = Buffer.from(launch.argv[2] ?? "", "base64");
+    }
+    if (input.policyPadding) expect(launch.argv[1]).toBe("--config");
+    return (JSON.parse(bytes.toString("utf8")) as { filesystem: ContainerFilesystem }).filesystem;
   } finally {
     await launch.release();
   }
@@ -468,19 +500,19 @@ describe("the browser download staging folder in a container shell's launch requ
     for (const path of filesystem.readonlyPaths) expect(atOrUnder(path, staging()) || atOrUnder(path, `${aveHome()}\\secrets`), path).toBe(false);
   });
 
-  it("stays denied once created when the shell started before the folder existed, under a read grant above a profile-child Ave home", async () => {
+  it.each([0, 25_000])("stays denied once created when the shell started before the folder existed, under a read grant above a profile-child Ave home (policy padding %i)", async (policyPadding) => {
     useLayout(PROFILE_CHILD, { staged: false });
     materializeProfileRowParents();
     expect(existsSync(staging())).toBe(false);
     // The shell reads the whole profile; the Ave home is its direct child, which the boundary denies child by child.
-    const filesystem = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [profileRoot] });
+    const filesystem = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [profileRoot], policyPadding });
     expect(containerAccess(filesystem, `${profileRoot}\\Documents\\notes.txt`)).toBe("readonly");
     expect(containerAccess(filesystem, `${aveHome()}\\logs`)).toBe("denied");
     // The request was built without the folder; the browser then creates it and stages a download while the command runs.
     stage();
     for (const path of [staging(), stagedFile()]) expect(containerAccess(filesystem, path), path).toBe("denied");
     // A command started after the folder exists is held the same way.
-    const later = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [profileRoot] });
+    const later = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [profileRoot], policyPadding });
     for (const path of [staging(), stagedFile()]) expect(containerAccess(later, path), path).toBe("denied");
   });
 

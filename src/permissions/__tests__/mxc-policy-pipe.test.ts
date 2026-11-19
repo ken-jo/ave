@@ -1,5 +1,4 @@
 import childProcess from "node:child_process";
-import { PassThrough } from "node:stream";
 import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,20 +8,12 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { openMxcPolicyPipe } from "../mxc-policy-pipe.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { requireMxcPolicyPipeHelper } from "../../__tests__/support/mxc-capability.js";
+import { createPolicyPipeHelper } from "../../__tests__/support/policy-pipe-helper.js";
 
 const PIPE = String.raw`\\.\pipe\ave-mxc-0123456789abcdef0123456789abcdef`;
 
 function helperChild() {
-  const child = new childProcess.ChildProcess();
-  const stdin = new PassThrough();
-  const stdout = new PassThrough();
-  const stderr = new PassThrough();
-  Object.assign(child, { stdin, stdout, stderr });
-  const kill = vi.spyOn(child, "kill").mockImplementation(() => {
-    queueMicrotask(() => child.emit("close", null, "SIGTERM"));
-    return true;
-  });
-  return { child, stdin, stdout, stderr, kill };
+  return createPolicyPipeHelper(new childProcess.ChildProcess());
 }
 
 beforeEach(() => {
