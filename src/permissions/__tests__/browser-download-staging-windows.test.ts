@@ -6,7 +6,10 @@
  * path in it, the Ave home or a parent of it, under a relocated Ave home and the default profile-child one, including a process whose
  * projection was taken before the folder existed. */
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
+import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isolation-guard.js";
+import { withProvidedContext } from "../../__tests__/support/provided-context.js";
+import { useTempDirs } from "../../__tests__/test-helpers.js";
 
 const { PROFILE } = vi.hoisted(() => ({ PROFILE: "C:\\Users\\alice" }));
 const drive = vi.hoisted(() => ({
@@ -225,6 +228,8 @@ const { prepareMxcShellLaunch } = await import("../../tools/mxc-shell-launch.js"
 const { existsSync, mkdirSync } = await import("node:fs");
 
 const HOST_PLATFORM = process.platform;
+const originalCwd = process.cwd();
+const fixtureCwd = useTempDirs("browser-download-drive-");
 const STAGED = "0123456789abcdef0123456789abcdef";
 const RELOCATED = { name: "a relocated Ave home inside the project", project: `${PROFILE}\\work`, home: `${PROFILE}\\work\\ave` } as const;
 const PROFILE_CHILD = { name: "the default profile-child Ave home", project: `${PROFILE}\\work`, home: `${PROFILE}\\.ave` } as const;
@@ -260,6 +265,8 @@ function stage(): void {
 }
 
 beforeEach(() => {
+  // A foreign drive spelling is relative to the real host; keep that projection inside the validated test scratch.
+  if (HOST_PLATFORM !== "win32") process.chdir(fixtureCwd());
   setProcessPlatform("win32");
   vi.stubEnv("USERPROFILE", PROFILE);
   vi.stubEnv("HOME", PROFILE);
@@ -268,15 +275,19 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  if (isAsrtSandboxActive()) await resetAsrtSandbox();
-  _resetAveHomePrivacyForTest();
-  setProcessPlatform(HOST_PLATFORM);
-  vi.unstubAllEnvs();
-  vi.clearAllMocks();
-  drive.dirs.clear();
-  drive.files.clear();
-  drive.identities.clear();
-  drive.readable.clear();
+  try {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    _resetAveHomePrivacyForTest();
+  } finally {
+    process.chdir(originalCwd);
+    setProcessPlatform(HOST_PLATFORM);
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+    drive.dirs.clear();
+    drive.files.clear();
+    drive.identities.clear();
+    drive.readable.clear();
+  }
 });
 
 // The arguments of a stand-in's latest call; a stand-in the lane never reached fails the test here.
@@ -421,6 +432,16 @@ async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }
 describe("the browser download staging folder in the srt-win session floor and worker wraps", () => {
   beforeEach(() => {
     runtime.initialize.mockResolvedValue(undefined);
+  });
+
+  it("keeps foreign drive projections outside a checkout's account home while refusing real home targets", async () => {
+    const { join } = await vi.importActual<typeof import("node:path")>("node:path");
+    const targets = [OUTSIDE_PROFILE.home + "\\secrets\\", PROFILE_CHILD.home + "\\browser-downloads\\"];
+    withProvidedContext("realAccountHome", originalCwd, () => {
+      expect(() => checkSandboxStampTargets(targets)).not.toThrow();
+    });
+    expect(() => checkSandboxStampTargets([join(inject("realAccountHome"), "secrets")])).toThrow(/under the real/);
+    expect(runtime.stamp).not.toHaveBeenCalled();
   });
 
   it("denies reading and listing it, with a staged file, before and after it exists, and denies writing it once it does, for an Ave home outside the profile", async () => {
