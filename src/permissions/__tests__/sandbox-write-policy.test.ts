@@ -1204,12 +1204,25 @@ describe("mandatory sandbox control-file writes", () => {
       .toThrow(t("sandboxPolicy.tooLarge"));
   });
 
-  it.each([65_536, 65_537])("bounds the whole serialized policy at %i bytes independently of discovery", bytes => {
+  it.each([65_536, 65_537])("bounds the POSIX serialized policy at %i bytes independently of discovery", bytes => {
     const target = `/p/${"x".repeat(bytes - 7)}`;
     expect(Buffer.byteLength(JSON.stringify([target]))).toBe(bytes);
-    const check = () => assertSandboxWritePolicySize([target], new Set([target]));
+    const check = () => withPlatform("darwin", () => assertSandboxWritePolicySize([target], new Set([target])));
     if (bytes === 65_536) expect(check).not.toThrow();
     else expect(check).toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it("bounds Windows discovery independently of the ACL policy size", () => {
+    const mandatory = Array.from({ length: 160 }, (_, index) => `D:/fixed/${index}-`.padEnd(253, "x"));
+    const discovered = Array.from({ length: 128 }, (_, index) => `D:/discovered/${index}-`.padEnd(253, "x"));
+    const atLimit = discovered.map((path, index) => index === 0 ? path.slice(0, -1) : path);
+    const floor = new Set(mandatory);
+    expect(Buffer.byteLength(JSON.stringify(atLimit))).toBe(32_768);
+    expect(Buffer.byteLength(JSON.stringify(discovered))).toBe(32_769);
+    expect(Buffer.byteLength(JSON.stringify([...mandatory, ...atLimit]))).toBeGreaterThan(65_536);
+    const check = (entries: string[]) => withPlatform("win32", () => assertSandboxWritePolicySize([...mandatory, ...entries], floor));
+    expect(() => check(atLimit)).not.toThrow();
+    expect(() => check(discovered)).toThrow(t("sandboxPolicy.tooLarge"));
   });
 
   it("overflows discovery even with a two-character simulated temp root", () => {
@@ -1237,7 +1250,7 @@ describe("mandatory sandbox control-file writes", () => {
       const entries = Array.from({ length: 800 }, (_, index) => `/p/${index}-${"x".repeat(100)}`);
       expect(() => withPlatform("darwin", () => buildSandboxConfig({ denyWrite: entries })))
         .toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
-      expect(() => assertSandboxWritePolicySize(entries, undefined, entries.slice(0, 1)))
+      expect(() => withPlatform("darwin", () => assertSandboxWritePolicySize(entries, undefined, entries.slice(0, 1))))
         .toThrow(t("sandboxPolicy.tooLarge"));
     } finally { setLocale(previous); }
   });

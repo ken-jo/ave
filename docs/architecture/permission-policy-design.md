@@ -1123,14 +1123,20 @@ Containing ancestor grants are also removed so they cannot reopen a failed
 child; independently scanned narrower roots keep their grants when a broader
 root is removed. Required metadata denies remain explicit outside the roots
 and above retained child grants. Additional discovered entries have a 32 KiB
-serialized budget, excluding mandatory loader and application denies. The whole
-serialized write-deny policy, including that mandatory floor, has a separate
-64 KiB ceiling. Preparation fails closed with localized folder-narrowing guidance
-before backend initialization or wrapping if either limit is exceeded. The total
-ceiling reserves space for profile expansion, other rules and environment within
-the conservative 256 KiB exec argument baseline. The expanded macOS wrapper
-also has a 192 KiB ceiling before launch so deep ancestors and quoting cannot
-consume that reserve unnoticed.
+serialized budget, excluding mandatory loader and application denies. POSIX
+backends have a separate 64 KiB ceiling for the full write-deny array. This
+reserves space for profile expansion, mount arguments, other rules and
+environment within the conservative 256 KiB exec argument baseline. The
+expanded macOS wrapper also has a 192 KiB launch ceiling. Policy assembly fails
+closed with localized folder-narrowing guidance when a discovery or POSIX
+assembly budget is exceeded.
+
+On Windows, the native ACL helper reads session and worker stamps as JSON from
+stdin through EOF. Each row carries a complete path. Per-exec deny deltas use
+the helper's command line and share its argument budget with the shell command
+and environment overlay. The wrapper checks that complete argument list before
+launch. Container requests are checked separately as a whole and use an
+authenticated pipe when they exceed the inline argument budget.
 When discovery narrows write access, the existing tool result and terminal
 output identify the scan limit or failure, the removed roots and the actual
 retained write roots. A project too large to scan therefore produces an

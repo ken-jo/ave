@@ -35,16 +35,25 @@ const MAX_GIT_METADATA_BYTES = 65_536;
 const MAX_GIT_METADATA_TOTAL_BYTES = 1_048_576;
 const MAX_GIT_ROOT_POLICY_BYTES = 16_384;
 const MAX_GIT_DISCOVERY_POLICY_BYTES = 32_768;
-// Reserve most of a conservative 256 KiB execution budget for profile expansion, other rules and environment.
-const MAX_WRITE_DENY_POLICY_BYTES = 65_536;
+// Reserve space in the POSIX exec budget for profile expansion, mount arguments, other rules and environment.
+const MAX_POSIX_WRITE_DENY_POLICY_BYTES = 65_536;
 
 export function assertSandboxWritePolicySize(entries: readonly FilesystemPathEntry[], mandatoryPaths?: ReadonlySet<string>, configuredDenies: readonly FilesystemPathEntry[] = []): void {
-  const discovery = mandatoryPaths === undefined ? [] : entries.filter(entry => !mandatoryPaths.has(typeof entry === "string" ? entry : entry.path));
+  if (mandatoryPaths !== undefined) {
+    const discovery = entries.filter(entry => !mandatoryPaths.has(typeof entry === "string" ? entry : entry.path));
+    if (Buffer.byteLength(JSON.stringify(discovery)) > MAX_GIT_DISCOVERY_POLICY_BYTES) {
+      throw new Error(t("sandboxPolicy.tooLarge"));
+    }
+  }
+  // Windows ACL stamps stream JSON to EOF (cli.rs, AclCmd::Stamp).
+  // Per-exec deltas are checked with the command and env overlay at the
+  // CreateProcessW boundary (windows-sandbox-utils.js, wrapCommandWithSandboxWindows).
+  // Container requests have their own whole-request guard in mxc-windows.ts.
+  if (process.platform === "win32") return;
+
   const totalBytes = Buffer.byteLength(JSON.stringify(entries));
-  if (Buffer.byteLength(JSON.stringify(discovery)) > MAX_GIT_DISCOVERY_POLICY_BYTES
-    || totalBytes > MAX_WRITE_DENY_POLICY_BYTES) {
-    const configuredDominates = totalBytes > MAX_WRITE_DENY_POLICY_BYTES
-      && Buffer.byteLength(JSON.stringify(configuredDenies)) > totalBytes / 2;
+  if (totalBytes > MAX_POSIX_WRITE_DENY_POLICY_BYTES) {
+    const configuredDominates = Buffer.byteLength(JSON.stringify(configuredDenies)) > totalBytes / 2;
     throw new Error(t(configuredDominates ? "sandboxPolicy.configuredDeniesTooLarge" : "sandboxPolicy.tooLarge"));
   }
 }

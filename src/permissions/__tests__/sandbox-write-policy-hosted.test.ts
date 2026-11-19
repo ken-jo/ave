@@ -114,6 +114,7 @@ import { expandWindowsFsPaths, rankWindowsFsAccess } from "@anthropic-ai/sandbox
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
+import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
 const hostPlatform = process.platform;
 
@@ -141,7 +142,7 @@ describe("hosted write policy spellings", () => {
     const rootPrefix = hostPlatform === "win32"
       ? join(driveFixture.backing, ...tempSegments, "hosted-checkout-")
       : win32.join("D:\\", ...tempSegments, `native-hosted-runner-${"x".repeat(76)}`, "hosted-checkout-");
-    const rootBytes = prefix === "native-temp" ? 179 : 173;
+    const rootBytes = platform === "win32" ? 240 : prefix === "native-temp" ? 179 : 173;
     const paddingBytes = rootBytes - Buffer.byteLength(rootPrefix);
     expect(paddingBytes, `Native fixture prefix exceeds ${rootBytes} bytes: ${rootPrefix}`).toBeGreaterThanOrEqual(0);
     const root = rootPrefix + "x".repeat(paddingBytes);
@@ -200,6 +201,7 @@ describe("hosted write policy spellings", () => {
     }
     expect(writeDenies).toContainEqual({ path: join(literalRoot, ".vscode"), literal: true });
     if (platform === "win32") {
+      expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeGreaterThan(65_536);
       expect(realpathSync.native(workRoot)).toBe(join(root, "MiXeD", "work"));
       expect(writeDenies).toContain(join(root, "MiXeD", "work", ".bash_profile"));
       expect(writeDenies).toContain(deniedChild);
@@ -209,17 +211,21 @@ describe("hosted write policy spellings", () => {
         const relative = win32.relative(parent, path);
         return relative === "" || relative !== ".." && !relative.startsWith("..\\") && !win32.isAbsolute(relative);
       };
-      const currentGrants = [...protectedRoots, ...ordinaryRoots].map(driveFixture.toHost);
+      const scope = [...protectedRoots, ...ordinaryRoots];
+      const mandatory = buildMandatorySandboxWritePolicy(scope.map(path => ({ path: realpathSync.native(path), literal: true })), undefined, protectedDenies);
+      expect(Buffer.byteLength(JSON.stringify(mandatory.denyWrite))).toBeGreaterThan(65_536);
+      const currentGrants = scope.map(driveFixture.toHost);
       const ranked = rankWindowsFsAccess({
         allowRead: [], allowWrite: currentGrants, denyRead: [], denyWrite, credentialDeny: [],
         held: { grantRead: [], grantWrite: currentGrants },
       });
-      for (const target of [deniedChild, ...[...protectedRoots, ...ordinaryRoots].map(path => join(path, ".bash_profile"))]) {
+      for (const target of [deniedChild, ...scope.map(path => join(path, ".bash_profile"))]) {
         const physical = driveFixture.toHost(target);
         expect(ranked.denyWrite.some(deny => atOrUnder(deny, physical)), target).toBe(true);
       }
       expect(ranked.denyWrite).toContain(driveFixture.toHost(interveningGrant));
-      for (const target of [...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*")), externalControl]) {
+      const mandatoryTargets = mandatory.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
+      for (const target of [...mandatoryTargets, ...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*")), externalControl]) {
         const physical = driveFixture.toHost(target);
         if (currentGrants.some(grant => atOrUnder(grant, physical))) {
           expect(ranked.denyWrite.some(deny => atOrUnder(deny, physical)), target).toBe(true);
