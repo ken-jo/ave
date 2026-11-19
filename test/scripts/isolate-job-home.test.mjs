@@ -5,6 +5,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
+import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
 import { listJobRootProcesses } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { cleanupWindowsJobRoot, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
 
@@ -118,7 +119,7 @@ describe("Windows job root cleanup diagnostics", () => {
         const script = `(Get-Acl -LiteralPath '${path.replaceAll("'", "''")}').Sddl`;
         const acl = process.platform === "win32" ? execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
           ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-          { encoding: "utf8", windowsHide: true }) : null;
+          { encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv() }) : null;
         return { mode: facts.mode, size: facts.size, mtime: facts.mtimeMs, acl };
       });
       let swapped = false;
@@ -176,7 +177,7 @@ describe("Windows job root cleanup diagnostics", () => {
       const source = 'using System; using System.IO; public class Holder { public static void Main(string[] args) { using (new FileStream(args[0], FileMode.Open, FileAccess.Read, FileShare.Read)) { Console.WriteLine("ready"); Console.ReadLine(); } } }';
       const script = `Add-Type -TypeDefinition '${source}' -OutputAssembly '${image.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
       execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-        Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, stdio: "pipe" });
+        Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, stdio: "pipe", env: windowsPowerShellEnv() });
       holder = spawn(image, [file, "--token=SYNTHETIC", "FOO=bar"], { windowsHide: true, stdio: "pipe" });
       exited = once(holder, "exit");
       const [ready] = await Promise.race([once(holder.stdout, "data"), exited.then(() => { throw new Error("Holder exited before opening the file"); })]);
@@ -212,7 +213,11 @@ describe("Windows job root process query", () => {
     assert.equal(diagnostic.mock.callCount(), 20);
     assert.match(output({ diagnostic }), /process pid=4000 image="holder.exe"/);
     assert.doesNotMatch(output({ diagnostic }), /SYNTHETIC|secret|CommandLine|env/);
-    const [command, args] = run.mock.calls[0].arguments;
+    const [command, args, options] = run.mock.calls[0].arguments;
+    assert.deepEqual(options, {
+      encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 5000, maxBuffer: 64 * 1024,
+      env: windowsPowerShellEnv(),
+    });
     assert.equal(command, "powershell.exe");
     const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
     assert.match(script, /Get-Process/);
@@ -231,6 +236,34 @@ function commandRunner(acl = privateDacl(), sid = CURRENT_SID) {
     ? `"example\\runner","${sid}"\n` : command === "powershell.exe" ? JSON.stringify(acl) : "");
 }
 describe("Windows job root hardening", () => {
+  it("rebuilds the child module path without changing other environment entries", () => {
+    const originalEnv = process.env;
+    const expectedEnv = { ...originalEnv, AVE_JOB_ENV_SENTINEL: "preserved", AVE_JOB_ENV_EMPTY: "" };
+    for (const key of Object.keys(expectedEnv)) if (/^psmodulepath$/i.test(key)) delete expectedEnv[key];
+    const injectedEnv = {
+      ...expectedEnv,
+      PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules",
+      psmodulepath: "C:\\Program Files\\PowerShell\\7\\Modules",
+      PsMoDuLePaTh: "C:\\Program Files\\PowerShell\\7\\Modules",
+    };
+    process.env = injectedEnv;
+    try {
+      const harden = commandRunner(), query = mock.fn(() => "[]");
+      hardenWindowsJobRoot("C:\\ave-ci-abc123", harden);
+      listJobRootProcesses("C:\\ave-ci-abc123", query, mock.fn());
+      for (const run of [harden, query]) {
+        const calls = run.mock.calls.filter(call => call.arguments[0] === "powershell.exe");
+        assert.equal(calls.length, 1);
+        const options = calls[0].arguments[2];
+        assert.ok(options.env);
+        assert.deepEqual(options.env, expectedEnv);
+        assert.equal(Object.keys(options.env).some(key => /^psmodulepath$/i.test(key)), false);
+      }
+      assert.equal(process.env, injectedEnv);
+      assert.equal(process.env.PSModulePath, "C:\\Program Files\\PowerShell\\7\\Modules");
+    } finally { process.env = originalEnv; }
+  });
+
   it("removes existing grants and inheritance, then grants only SID-based full control", () => {
     const run = commandRunner();
     hardenWindowsJobRoot("C:\\ave-ci-abc123", run);
@@ -241,6 +274,9 @@ describe("Windows job root hardening", () => {
         ...PRINCIPALS.map(sid => `*${sid}:(OI)(CI)F`)]],
     ]);
     assert.equal(run.mock.calls[3].arguments[0], "powershell.exe");
+    const options = { encoding: "utf8", windowsHide: true, stdio: "pipe" };
+    for (const call of run.mock.calls.slice(0, 3)) assert.deepEqual(call.arguments[2], options);
+    assert.deepEqual(run.mock.calls[3].arguments[2], { ...options, env: windowsPowerShellEnv() });
   });
   for (const [name, alter] of [
     ["a foreign ACE", acl => acl.rules.push({ ...acl.rules[0], sid: "S-1-5-11" })],
@@ -296,7 +332,7 @@ describe("Windows job root hardening", () => {
     const readAcl = path => {
       const script = `$acl = Get-Acl -LiteralPath '${path.replaceAll("'", "''")}'; @{ protected = $acl.AreAccessRulesProtected; sids = @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }); inherited = @($acl.Access | ForEach-Object { $_.IsInherited }) } | ConvertTo-Json -Compress`;
       return JSON.parse(execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-        Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true }));
+        Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv() }));
     };
     try {
       execFileSync(join(process.env.SystemRoot, "System32", "icacls.exe"), [root, "/grant", "*S-1-5-11:(OI)(CI)M"], { stdio: "pipe", windowsHide: true });

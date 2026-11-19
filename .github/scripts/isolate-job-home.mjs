@@ -4,6 +4,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
+import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
 
 function systemVolume(systemRoot) {
   const root = typeof systemRoot === "string" ? win32.parse(systemRoot).root : "";
@@ -39,7 +40,7 @@ export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
     "}) } | ConvertTo-Json -Depth 4 -Compress",
   ].join("\n");
   const acl = JSON.parse(run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-    Buffer.from(script, "utf16le").toString("base64")], options));
+    Buffer.from(script, "utf16le").toString("base64")], { ...options, env: windowsPowerShellEnv() }));
   if (acl.protected !== true || !Array.isArray(acl.rules) || acl.rules.length !== principals.length
     || new Set(acl.rules.map(rule => rule.sid)).size !== principals.length
     || acl.rules.some(rule => !principals.includes(rule.sid) || rule.rights !== 0x1f01ff
