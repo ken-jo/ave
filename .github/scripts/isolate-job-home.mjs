@@ -89,7 +89,7 @@ export async function cleanupWindowsJobRoot(root, {
     remove(root, { recursive: true, force: true });
   } catch (error) {
     try {
-      diagnostic(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)}`);
+      diagnostic(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)} path=${JSON.stringify(error.path)}`);
       const stdout = await new Promise((resolve, reject) => {
         run(process.execPath, [fileURLToPath(new URL("./job-root-diagnostic.mjs", import.meta.url)), root], {
           encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024,

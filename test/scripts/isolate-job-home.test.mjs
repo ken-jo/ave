@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
-import { listJobRootEntries, listJobRootProcesses } from "../../.github/scripts/job-root-diagnostic.mjs";
+import { listJobRootProcesses } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { cleanupWindowsJobRoot, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
 
 describe("job home isolation", () => {
@@ -52,12 +52,6 @@ describe("job home isolation", () => {
 function blockedRemoval() {
   return Object.assign(new Error("Removal blocked"), { code: "EPERM", syscall: "unlink" });
 }
-function entryFacts(type = "file", readOnly = false) {
-  return {
-    mode: readOnly ? 0o444 : 0o666,
-    isDirectory: () => type === "dir", isSymbolicLink: () => type === "link",
-  };
-}
 function cleanupSeams(error = blockedRemoval()) {
   return {
     remove: mock.fn(() => { throw error; }),
@@ -84,12 +78,12 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.match(args[0], /job-root-diagnostic\.mjs$/);
       assert.equal(args[1], root);
       assert.deepEqual(options, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024 });
-      done(null, 'entry "held.txt" type=file read-only=true\n');
+      done(null, 'process pid=4000 image="holder.exe"\n');
     });
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     assert.equal(seams.run.mock.callCount(), 1);
     assert.equal(seams.remove.mock.callCount(), 1);
-    assert.match(output(seams), /entry "held.txt"/);
+    assert.match(output(seams), /process pid=4000 image="holder.exe"/);
     assert.doesNotMatch(output(seams), /diagnostic failed/);
   });
   for (const failure of ["child", "output"]) {
@@ -113,7 +107,57 @@ describe("Windows job root cleanup diagnostics", () => {
     assert.ok(elapsed >= 4500 && elapsed < 6500, `elapsed=${elapsed}`);
     assert.match(output(seams), /Cleanup diagnostic failed or timed out/);
   });
-  it("reports a real file held without delete sharing and its process, then cleans up after exit", { skip: process.platform !== "win32" }, async () => {
+  it("never discloses target metadata when the root is replaced by a junction", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "ave-job-root-swap-"));
+    const root = join(fixture, "root"), saved = join(fixture, "saved"), target = join(fixture, "target");
+    const sentinel = join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt");
+    mkdirSync(root); mkdirSync(target); writeFileSync(sentinel, "preserve");
+    const snapshot = () => [target, sentinel].map(path => {
+      const facts = lstatSync(path);
+      const script = `(Get-Acl -LiteralPath '${path.replaceAll("'", "''")}').Sddl`;
+      const acl = process.platform === "win32" ? execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+        ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+        { encoding: "utf8", windowsHide: true }) : null;
+      return { mode: facts.mode, size: facts.size, mtime: facts.mtimeMs, acl };
+    });
+    let swapped = false;
+    try {
+      if (process.platform === "win32") hardenWindowsJobRoot(root);
+      assert.ok(lstatSync(root).isDirectory() && !lstatSync(root).isSymbolicLink());
+      assert.equal(realpathSync.native(root).toLowerCase(), root.toLowerCase());
+      const before = snapshot();
+      const error = Object.assign(blockedRemoval(), { path: join(root, "blocked-original.txt") });
+      const seams = cleanupSeams(error);
+      seams.run = mock.fn((command, args, options, done) => {
+        assert.deepEqual(options, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024 });
+        renameSync(root, saved); symlinkSync(target, root, "junction"); swapped = true;
+        return execFile(command, args, options, done);
+      });
+      await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+      assert.equal(swapped, true);
+      assert.equal(seams.remove.mock.callCount(), 1);
+      assert.equal(seams.run.mock.callCount(), 1);
+      const lines = output(seams);
+      assert.doesNotMatch(lines, /SYNTHETIC-OUTSIDE|entry |type=|read-only=|diagnostic failed|process query failed/);
+      assert.ok(lines.includes(`path=${JSON.stringify(error.path)}`), lines);
+      assert.deepEqual(readdirSync(target), ["SYNTHETIC-OUTSIDE-SENTINEL.txt"]);
+      assert.equal(readFileSync(sentinel, "utf8"), "preserve");
+      assert.deepEqual(snapshot(), before);
+    } finally {
+      if (swapped) unlinkSync(root);
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+  it("discards overflowing child output and preserves the original removal error", async () => {
+    const error = blockedRemoval();
+    const seams = cleanupSeams(error);
+    seams.run = (command, _args, options, done) => execFile(command,
+      ["-e", "process.stdout.write('SYNTHETIC'.repeat(20000))"], options, done);
+    await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+    assert.doesNotMatch(output(seams), /SYNTHETIC/);
+    assert.equal(output(seams).split("\n").filter(line => line === "Cleanup diagnostic failed or timed out").length, 1);
+  });
+  it("reports the process holding a real file without delete sharing, then cleans up after exit", { skip: process.platform !== "win32" }, async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-job-held-"));
     let holder;
     let exited;
@@ -133,7 +177,7 @@ describe("Windows job root cleanup diagnostics", () => {
       const diagnostic = mock.fn();
       await assert.rejects(cleanupWindowsJobRoot(root, { diagnostic }), error => error.code === "EPERM" || error.code === "EBUSY" || error.code === "EACCES");
       const lines = output({ diagnostic });
-      assert.match(lines, /entry "held.txt" type=file read-only=false/);
+      assert.doesNotMatch(lines, /entry |type=|read-only=/);
       assert.ok(lines.includes(`process pid=${holder.pid} image="holder.exe"`), lines);
       assert.doesNotMatch(lines, /Cleanup process query failed|SYNTHETIC|FOO|--token/);
       holder.stdin.end("\n");
@@ -152,64 +196,7 @@ describe("Windows job root cleanup diagnostics", () => {
 });
 
 
-describe("Windows job root metadata listing", () => {
-  it("reads at most 50 direct entries incrementally and closes the directory", () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-job-wide-"));
-    try {
-      for (let i = 0; i < 160; i++) writeFileSync(join(root, `file-${i}`), "fixture");
-      let reads = 0, closed = false;
-      const lines = [];
-      listJobRootEntries(root, line => lines.push(line), { openDirectory(path, options) {
-        assert.deepEqual(options, { bufferSize: 1 });
-        assert.equal(path, root);
-        const directory = opendirSync(path, options);
-        return { readSync() { reads++; return directory.readSync(); }, closeSync() { closed = true; directory.closeSync(); } };
-      } });
-      assert.equal(reads, 50);
-      assert.equal(closed, true);
-      assert.equal(lines.filter(line => line.startsWith("entry ")).length, 50);
-      assert.match(lines.at(-1), /limited to 50/);
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-  it("never reads a child swapped to a junction after its last stat", () => {
-    const fixture = mkdtempSync(join(tmpdir(), "ave-job-swap-"));
-    const root = join(fixture, "root"), child = join(root, "child"), target = join(fixture, "target");
-    mkdirSync(root); mkdirSync(child); mkdirSync(target);
-    writeFileSync(join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt"), "preserve");
-    let swapped = false;
-    const reads = [], lines = [];
-    try {
-      listJobRootEntries(root, line => lines.push(line), {
-        openDirectory(path, options) { reads.push(path); return opendirSync(path, options); },
-        stat(path) {
-          const facts = lstatSync(path);
-          if (path === child) {
-            renameSync(child, join(fixture, "saved")); symlinkSync(target, child, "junction"); swapped = true;
-          }
-          return facts;
-        },
-      });
-      assert.equal(swapped, true);
-      assert.deepEqual(reads, [root]);
-      assert.doesNotMatch(lines.join("\n"), /SYNTHETIC-OUTSIDE/);
-      assert.equal(existsSync(join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt")), true);
-    } finally { if (swapped) unlinkSync(child); rmSync(fixture, { recursive: true, force: true }); }
-  });
-  it("prints link types without descending and closes on stat failure", () => {
-    const close = mock.fn();
-    const read = mock.fn(() => ({ name: "junction" }));
-    const lines = [];
-    assert.throws(() => listJobRootEntries("root", line => lines.push(line), {
-      openDirectory: () => ({ readSync: read, closeSync: close }),
-      stat: () => { throw new Error("unavailable"); },
-    }), /unavailable/);
-    assert.equal(close.mock.callCount(), 1);
-    const entries = [{ name: "junction" }, null];
-    listJobRootEntries("root", line => lines.push(line), {
-      openDirectory: () => ({ readSync: () => entries.shift(), closeSync() {} }), stat: () => entryFacts("link", true),
-    });
-    assert.deepEqual(lines, ['entry "junction" type=symlink/junction read-only=true']);
-  });
+describe("Windows job root process query", () => {
   it("prints only bounded PID and image projections", () => {
     const diagnostic = mock.fn(), run = mock.fn(() => JSON.stringify(Array.from({ length: 25 }, (_, i) => ({
       pid: 4000 + i, image: "C:\\fixture\\holder.exe", CommandLine: "SYNTHETIC", env: { secret: "SYNTHETIC" },
@@ -222,7 +209,7 @@ describe("Windows job root metadata listing", () => {
     assert.equal(command, "powershell.exe");
     const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
     assert.match(script, /Get-Process/);
-    assert.doesNotMatch(script, /icacls|takeown|attrib|Get-Acl|Set-Acl|Stop-Process|CommandLine|Environment/i);
+    assert.doesNotMatch(script, /icacls|takeown|attrib|Get-Acl|Set-Acl|Stop-Process|Get-ChildItem|Get-Item|Test-Path|CommandLine|Environment/i);
   });
 });
 const CURRENT_SID = "S-1-5-21-100-200-300-1001";

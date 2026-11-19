@@ -1,27 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, opendirSync } from "node:fs";
-import { basename, join, resolve, win32 } from "node:path";
+import { basename, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 function runProcessQuery(command, args, options) {
   return execFileSync(win32.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command), args, options);
-}
-
-export function listJobRootEntries(root, diagnostic, { openDirectory = opendirSync, stat = lstatSync } = {}) {
-  const directory = openDirectory(root, { bufferSize: 1 });
-  try {
-    for (let count = 0; count < 50; count++) {
-      const entry = directory.readSync();
-      if (entry === null) return;
-      if (!entry.name || entry.name === "." || entry.name === ".." || /[\\/:]/.test(entry.name)) {
-        throw new Error("Invalid cleanup entry name");
-      }
-      const facts = stat(join(root, entry.name));
-      const type = facts.isSymbolicLink() ? "symlink/junction" : facts.isDirectory() ? "dir" : "file";
-      diagnostic(`entry ${JSON.stringify(entry.name)} type=${type} read-only=${(facts.mode & 0o200) === 0}`);
-    }
-    diagnostic("Entry listing limited to 50 entries");
-  } finally { directory.closeSync(); }
 }
 
 export function listJobRootProcesses(root, run, diagnostic) {
@@ -49,7 +31,6 @@ export function listJobRootProcesses(root, run, diagnostic) {
 
 
 export function diagnoseJobRoot(root, diagnostic = line => console.log(line), run = runProcessQuery) {
-  try { listJobRootEntries(root, diagnostic); } catch { diagnostic("Cleanup entry listing failed"); }
   try { listJobRootProcesses(root, run, diagnostic); } catch { diagnostic("Cleanup process query failed"); }
 }
 
