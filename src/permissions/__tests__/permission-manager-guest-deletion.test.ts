@@ -7,14 +7,14 @@ import { PermissionTestResources } from "./test-resources.js";
 
 vi.mock("../../workload/runtime.js", async original => ({
   ...await original<typeof import("../../workload/runtime.js")>(),
-  getActiveWorkloadBrokerProjection: () => ({ workload: { id: "a".repeat(64), home: "/home/guest" } }),
+  getActiveWorkloadBrokerProjection: () => ({ workload: { id: "a".repeat(64), home: "/home/alice" } }),
 }));
 
 const resources = new PermissionTestResources();
 afterEach(async () => { vi.restoreAllMocks(); await resources.cleanup(); });
 
 describe("guest deletion roots", () => {
-  it.each([".", "/app", "/home/guest", "/"])("forces consent for deletion of an issued guest root: %s", operand => {
+  it.each([".", "/app", "/home/alice", "/"])("forces consent for deletion of an issued guest root: %s", operand => {
     const controller = realpathSync.native(resources.makeTmpDir("ave-guest-delete-"));
     const manager = new PermissionManager(join(controller, "permissions.json"));
     manager.setMode("allow");

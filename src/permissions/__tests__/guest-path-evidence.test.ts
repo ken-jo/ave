@@ -17,10 +17,10 @@ it.each([
   ["cd certs && printf x > result.pem", "/app/certs/result.pem"],
   ["cd certs && bash -c 'printf x > result.key'", "/app/certs/result.key"],
   ["env -C certs bash -c 'printf x > result.pem'", "/app/certs/result.pem"],
-  ["cd && printf x > result.pem", "/home/guest/result.pem"],
+  ["cd && printf x > result.pem", "/home/alice/result.pem"],
 ])("uses the issued guest cwd without controller probes: %s", (command, expected) => {
   const realpaths = vi.spyOn(realpathSync, "native");
-  const result = inspectShellPermissionPaths(command, process.cwd(), { dialect: "bash", environment: { HOME: "/home/guest" }, guestPosixPaths: true, guestCwd: "/app" });
+  const result = inspectShellPermissionPaths(command, process.cwd(), { dialect: "bash", environment: { HOME: "/home/alice" }, guestPosixPaths: true, guestCwd: "/app" });
   expect(result.paths).toContainEqual(expect.objectContaining({ canonical: expected, effect: "write" }));
   expect([...realpaths.mock.calls, ...vi.mocked(lstatSync).mock.calls, ...vi.mocked(statSync).mock.calls, ...vi.mocked(accessSync).mock.calls]).toEqual([]);
 });
