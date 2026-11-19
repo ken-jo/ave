@@ -45,6 +45,11 @@ function literal(token: string | undefined): string | undefined {
   return token !== undefined && /^['"]/.test(token) ? token.slice(1, -1) : undefined;
 }
 
+function isRequireCall(tokens: readonly string[], index: number): boolean {
+  return tokens[index] === "require" && tokens[index + 1] === "("
+    && ![".", "?."].includes(tokens[index - 1] ?? "");
+}
+
 function runtimeImports(file: string, source: string): { imports: string[]; actualImports: string[]; mocks: string[] } {
   const tokens = runtimeTokens(file, source);
   const imports = new Set<string>();
@@ -57,14 +62,14 @@ function runtimeImports(file: string, source: string): { imports: string[]; actu
     const nextLiteral = literal(next);
     const argument = literal(tokens[i + 2]);
     if (token === "import" && nextLiteral !== undefined) imports.add(nextLiteral);
-    else if ((token === "import" || token === "require") && next === "(" && argument !== undefined) imports.add(argument);
+    else if (((token === "import" && next === "(") || isRequireCall(tokens, i)) && argument !== undefined) imports.add(argument);
     else if ((token === "import" && next !== "." && next !== "(") || (token === "export" && (next === "{" || next === "*"))) {
       for (let j = i + 1; j < tokens.length && ![";", "="].includes(tokens[j] ?? ""); j++) {
         const specifier = literal(tokens[j + 1]);
         if (tokens[j] === "from" && specifier !== undefined) { imports.add(specifier); break; }
       }
     }
-    if (token === "require" && next === "(" && argument !== undefined) actualImports.add(argument);
+    if (isRequireCall(tokens, i) && argument !== undefined) actualImports.add(argument);
     if (token !== "vi" || next !== "." || tokens[i + 3] !== "(") continue;
     const name = literal(tokens[i + 4]);
     if (name === undefined) continue;
@@ -82,7 +87,8 @@ function runtimeImports(file: string, source: string): { imports: string[]; actu
       if (tokens[end] === "(") depth++;
       if (tokens[end] === ")") depth--;
     }
-    if (!tokens.slice(factory, end).some(text => ["importActual", "importOriginal", "import", "require"].includes(text))) mocks.add(name);
+    if (!tokens.slice(factory, end).some((text, index) =>
+      ["importActual", "importOriginal", "import"].includes(text) || isRequireCall(tokens, factory + index))) mocks.add(name);
   }
   return { imports: [...imports], actualImports: [...actualImports], mocks: [...mocks].filter(name => !unmocks.has(name)) };
 }

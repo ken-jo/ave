@@ -25,9 +25,22 @@ describe("Windows native test inventory", () => {
     expect([...nativeBackedTestFiles(sources(source))]).toEqual([]);
   });
   it.each([
+    '() => ({ read: vi.fn(), require: vi.fn() })',
+    '() => { const require = vi.fn(); return { read: vi.fn(), require }; }',
+    '() => ({ read: vi.fn(), value: loader.require })',
+    '() => ({ read: vi.fn(), value: loader.require("../../shared/windows-native-host.js") })',
+    '() => ({ read: vi.fn(), value: loader?.require("../../shared/windows-native-host.js") })',
+    '() => ({ read: vi.fn(), value: "require" /* require("../../shared/windows-native-host.js") */ })',
+  ])("excludes a complete factory whose require token is not a module load: %s", factory => {
+    const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(false);
+  });
+  it.each([
     'vi.mock("../../shared/windows-native-host.js");',
     'vi.mock("../../shared/windows-native-host.js", async original => ({ ...await original() }));',
     'vi.mock("../../shared/windows-native-host.js", async () => ({ ...await vi.importActual("../../shared/windows-native-host.js") }));',
+    'vi.mock("../../shared/windows-native-host.js", () => require("../../shared/windows-native-host.js"));',
+    'vi.mock("../../shared/windows-native-host.js", () => ({ read: () => require(moduleName).read() }));',
     'vi.mock("../../shared/windows-native-host.js", () => ({})); vi.unmock("../../shared/windows-native-host.js");',
     'vi.doMock("../../shared/windows-native-host.js", () => ({}));',
   ])("retains native coverage when a mock does not replace every runtime path: %s", mock => {
