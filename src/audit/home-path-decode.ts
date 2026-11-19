@@ -123,12 +123,13 @@ function readHomeEscape(text: string, index: number, output: EscapeValue): numbe
 }
 
 
-export type HomeEscapeFamily = "full" | "backslash" | "percent-entity";
+export type HomeEscapeFamily = "full" | "backslash" | "percent-entity" | "percent" | "entity";
 
 /** Apply one faithful decoding layer. Escape output is never scanned again in this layer. */
 export function decodeHomeEscapes(text: string, family: HomeEscapeFamily): string {
-  const backslashes = family !== "percent-entity";
-  const percentEntities = family !== "backslash";
+  const backslashes = family === "full" || family === "backslash";
+  const percent = family !== "backslash" && family !== "entity";
+  const entity = family !== "backslash" && family !== "percent";
   const output: EscapeValue = { value: 0 };
   let units: Uint16Array | undefined;
   let prefix = 0;
@@ -151,7 +152,7 @@ export function decodeHomeEscapes(text: string, family: HomeEscapeFamily): strin
       index += pairs * 2;
       continue;
     }
-    const width = (backslashes && code === 92 || percentEntities && (code === 37 || code === 38))
+    const width = (backslashes && code === 92 || percent && code === 37 || entity && code === 38)
       ? readHomeEscape(text, index, output) : -1;
     if (width < 0) {
       if (units) units[length++] = code;

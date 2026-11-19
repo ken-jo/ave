@@ -178,7 +178,10 @@ const GENERIC_HOME_FORMS: readonly HomeForm[] = [
 
 const HOME_DECODE_LAYERS = 3;
 const HOME_TOKEN_MARKER = "[home-token]";
-const DECODE_FAMILIES: readonly HomeEscapeFamily[] = ["full", "backslash", "percent-entity"];
+const SINGLE_DECODE_FAMILY = ["full"] as const;
+const BACKSLASH_AND_URI_FAMILIES = ["full", "backslash", "percent-entity"] as const;
+const DECODE_FAMILIES: readonly HomeEscapeFamily[] = [...BACKSLASH_AND_URI_FAMILIES, "percent", "entity"];
+const URI_AND_ENTITY_FAMILIES: readonly HomeEscapeFamily[] = ["full", "percent", "entity"];
 const INTRODUCER = /[\\%&]/u;
 const BOUNDARY_CHARACTERS = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\"'`<>()[]{},|";
 
@@ -233,26 +236,38 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
   return text;
 }
 
-function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): boolean {
+function escapeFamilies(view: string): readonly HomeEscapeFamily[] {
+  const backslashes = view.includes("\\");
+  const percent = view.includes("%");
+  const entities = view.includes("&");
+  // One encoder can leave syntax from another family literal in a home.
+  if (percent && entities) return backslashes ? DECODE_FAMILIES : URI_AND_ENTITY_FAMILIES;
+  return backslashes && (percent || entities) ? BACKSLASH_AND_URI_FAMILIES : SINGLE_DECODE_FAMILY;
+}
+
+function someDecodedHomeView(token: string, layers: number, match: (view: string, depth: number) => boolean): boolean {
   const seen = new Set([token]);
   let layer = [token];
   // Breadth first keeps the shortest route to each view, including when
   // different escape families reach the same spelling at different depths.
-  for (let depth = 0; depth < HOME_DECODE_LAYERS && layer.length; depth++) {
+  for (let depth = 1; depth <= layers && layer.length; depth++) {
     const next: string[] = [];
     for (const view of layer) {
-      const families: readonly HomeEscapeFamily[] = view.includes("\\") && /[%&]/u.test(view) ? DECODE_FAMILIES : ["full"];
-      for (const family of families) {
+      for (const family of escapeFamilies(view)) {
         const decoded = decodeHomeEscapes(view, family);
         if (seen.has(decoded)) continue;
-        if (forms.some(({ detector }) => detector.test(decoded))) return true;
+        if (match(decoded, depth)) return true;
         seen.add(decoded);
-        if (depth + 1 < HOME_DECODE_LAYERS && INTRODUCER.test(decoded)) next.push(decoded);
+        if (depth < layers && INTRODUCER.test(decoded)) next.push(decoded);
       }
     }
     layer = next;
   }
   return false;
+}
+
+function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): boolean {
+  return someDecodedHomeView(token, HOME_DECODE_LAYERS, view => forms.some(({ detector }) => detector.test(view)));
 }
 
 /** Delimiters and their preceding slash runs belong to the original text. */

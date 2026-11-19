@@ -67,9 +67,40 @@ it.each(homes)("redacts chained encoder output on %s for %s", async (platform, h
     }
   }
   expect(count).toBe(1222);
-  // These sequences merge a native Windows separator with a unicode escape
-  // when percent and entity syntax are peeled together.
-  const expected = home === String.raw`C:\Users\김철수` || home === String.raw`D:\fixtures\a𐐀b`
-    ? ["htmlSpecial>jsonAscii>uri sentence", "htmlNamed>jsonAscii>uri sentence"] : [];
-  expect(retained).toEqual(expected);
+  expect(retained).toEqual([]);
+});
+
+it.each([
+  ["linux", "/srv/fixtures/é&sol;x"],
+  ["win32", "D:/fixtures/é&sol;x"],
+  ["win32", "D:\\fixtures\\é&sol;x"],
+] as const)("keeps literal entity syntax while detecting a URI-encoded home on %s for %s", async (platform, home) => {
+  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, platform);
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const path = `${home}/file`;
+  let input = path;
+  for (let layers = 1; layers <= 3; layers++) {
+    input = encodeURI(input);
+    let recovered = input;
+    for (let count = 0; count < layers; count++) recovered = decodeURI(recovered);
+    expect(recovered).toBe(path);
+    expect(redactHomePathsInText(input)).toBe("[home-token]");
+    expect(redactJudgeText(input)).toBe("[home-token]");
+    expect(serializeRuntimeAuditData({ p: input })).toBe('{"p":"[home-token]"}');
+  }
+  expect(redactHomePathsInText(encodeURI(input))).toBe(encodeURI(input));
+});
+
+it("keeps literal percent syntax while detecting an entity-encoded home", async () => {
+  const home = "/srv/fixtures/é%41";
+  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home);
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  let input = "/srv/fixtures/&#233;%41/file";
+  for (let layers = 1; layers <= 3; layers++) {
+    expect(redactHomePathsInText(input)).toBe("[home-token]");
+    expect(redactJudgeText(input)).toBe("[home-token]");
+    expect(serializeRuntimeAuditData({ p: input })).toBe('{"p":"[home-token]"}');
+    input = input.replaceAll("&", "&amp;");
+  }
+  expect(redactHomePathsInText(input)).toBe(input);
 });
