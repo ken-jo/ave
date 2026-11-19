@@ -1287,7 +1287,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Remove isolated system-volume job directory
-        if: always() && env.AVE_CI_JOB_ROOT != ''
+        if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         shell: powershell
         run: node ave/.github/scripts/isolate-job-home.mjs --cleanup
 
