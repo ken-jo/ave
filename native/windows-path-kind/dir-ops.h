@@ -4,7 +4,7 @@
 // the one above it and without delete sharing, so neither a held directory nor a folder above it can be renamed or removed while
 // the mode runs, and a link, junction or mount point at any component is refused. The last handle's identity must be the one the
 // caller checked. Every file is then created, renamed and removed relative to those handles (NtCreateFile with a root directory,
-// FILE_RENAME_INFO.RootDirectory, FILE_DISPOSITION_INFO on the file's own handle), never by a path. README.md, "Held directory
+// native FileRenameInformation with RootDirectory, FILE_DISPOSITION_INFO on the file's own handle), never by a path. README.md, "Held directory
 // operations", has the protocol; native/macos-dir-ops implements the same modes with directory descriptors.
 #include <climits>
 #include <cstdint>
@@ -242,6 +242,12 @@ inline int check_replaceable(HANDLE directory, const std::wstring& name) {
 
 // Rename the open file `file` to `name` in the held directory `directory`, replacing an ordinary file there.
 inline bool rename_into(HANDLE file, HANDLE directory, const std::wstring& name) {
+  using SetInformation = NTSTATUS(NTAPI*)(HANDLE, IO_STATUS_BLOCK*, void*, ULONG, FILE_INFORMATION_CLASS);
+  const auto set_information = ntdll_function<SetInformation>("NtSetInformationFile");
+  if (set_information == nullptr) {
+    SetLastError(ERROR_INVALID_FUNCTION);
+    return false;
+  }
   const DWORD name_bytes = static_cast<DWORD>(name.size() * sizeof(wchar_t));
   std::vector<BYTE> bytes(sizeof(FILE_RENAME_INFO) + name_bytes);
   auto info = reinterpret_cast<FILE_RENAME_INFO*>(bytes.data());
@@ -249,7 +255,15 @@ inline bool rename_into(HANDLE file, HANDLE directory, const std::wstring& name)
   info->RootDirectory = directory;
   info->FileNameLength = name_bytes;
   std::memcpy(info->FileName, name.data(), name_bytes);
-  return SetFileInformationByHandle(file, FileRenameInfo, info, static_cast<DWORD>(bytes.size())) != FALSE;
+  // Preserve the relative name and its directory handle at the native boundary; the path wrapper normalizes the name.
+  // FileRenameInformation is native class 10, distinct from the path wrapper's FileRenameInfo class 3.
+  IO_STATUS_BLOCK io{};
+  const NTSTATUS status = set_information(file, &io, info, static_cast<ULONG>(bytes.size()), static_cast<FILE_INFORMATION_CLASS>(10));
+  if (status < 0) {
+    SetLastError(status_error(status));
+    return false;
+  }
+  return true;
 }
 
 // Delete the file this handle is open on, once the handle closes.
