@@ -482,3 +482,35 @@ it("preserves each structured judge argument value when keys redact to the same 
   const result = redactJudgeRequest(judgeRequest({ invocation: judgeInvocation({ finalInput: { argument } }) }));
   expect(JSON.parse(result.tool.input.argument)).toEqual({ "[home]#2": "[home]/file", "[home]": 2, encoded: "[home-token]" });
 });
+describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (platform) => {
+  it("redacts equivalent URL encodings and decodes descendants in the fallback", async () => {
+    fixture.platform = platform;
+    fixture.home = platform === "win32" ? "D:/fixtures/habitat" : "/srv/fixtures/habitat";
+    vi.resetModules();
+    const { redactFsPath } = await import("../dlp-filter.js");
+    const home = pathToFileURL(fixture.home).toString();
+    for (const encoded of [home.replace("fixtures", "%66ixtures"), home.replaceAll("/", "%2f").replace("file:%2f%2f", "file://")]) {
+      expect(redactFsPath(`${encoded}/Mixed%20File`)).toBe("file://<home>/Mixed File");
+      expect(redactFsPath(`${encoded}%2FMixed%20File`)).toBe("file://<home>/Mixed File");
+      expect(redactFsPath(`${encoded}%32/other`)).toBe(`${encoded}%32/other`);
+    }
+  });
+  it("recognizes UTF-8 escapes and literal spaces in URL homes", async () => {
+    fixture.platform = platform;
+    fixture.home = platform === "win32" ? "D:/fixtures/김 test%root" : "/srv/fixtures/김 test%root";
+    vi.resetModules();
+    const { redactFsPath } = await import("../dlp-filter.js");
+    const home = pathToFileURL(fixture.home).toString();
+    expect(redactFsPath(`${home.replaceAll("%20", " ").replaceAll("%EA", "%ea")}/x`)).toBe("file://<home>/x");
+    expect(redactFsPath(`${home}?view=1`)).toBe("file://<home>?view=1");
+    expect(redactFsPath(`${home}#page`)).toBe("file://<home>#page");
+  });
+});
+
+it("redacts URL descendants when the home already ends in a separator", async () => {
+  fixture.platform = "linux";
+  fixture.home = "/";
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  expect(redactFsPath("file:///etc/config")).toBe("file://<home>etc/config");
+});

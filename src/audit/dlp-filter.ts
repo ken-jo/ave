@@ -98,31 +98,55 @@ function homePattern(home: string, windows: boolean, fileUrl = false): string {
     : escapeRegExp(home);
 }
 
-/** Replace home prefixes in paths and file URLs and cap each field before JSON serialization; non-path strings still receive the cap. */
-export function redactFsPath(p: string): string {
-  if (!p) return p;
-  let out = p;
-  if (_homeDir) {
-    const standardFileUrlHome = pathToFileURL(_homeDir).toString();
-    const legacyFileUrlHome = "file://" + _homeDir;
-    const windows = os.platform() === "win32";
-    const comparable = (value: string): string => windows ? value.replace(/\\/gu, "/").toLowerCase() : value;
-    const startsAtHome = (home: string): boolean => {
-      const path = comparable(out);
-      const prefix = comparable(home);
-      return path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "\\");
+interface HomePrefix {
+  pattern: RegExp;
+  marker: string;
+  slashSuffix: boolean;
+}
+
+function compileHomePrefixes(home: string): { literal: HomePrefix[]; decoded: HomePrefix[] } {
+  if (!home) return { literal: [], decoded: [] };
+  const windows = homePlatform === "win32";
+  const flags = windows || homePlatform === "darwin" ? "iu" : "u";
+  const standard = pathToFileURL(home).href;
+  const legacy = `file://${home}`;
+  const compile = (prefix: string, url: boolean, slashSuffix = false, nativeUrl = false): HomePrefix => {
+    const tail = /[\\/]$/u.test(prefix) ? "" : url
+      ? nativeUrl ? String.raw`(?=$|[\\/?#]|%5[cC])` : String.raw`(?=$|[\\/?#])`
+      : String.raw`(?=$|[\\/])`;
+    return {
+      pattern: new RegExp(`^${homePattern(prefix, windows, nativeUrl)}${tail}`, flags),
+      marker: url ? "file://<home>" : "<home>",
+      slashSuffix,
     };
-    const standardMatch = windows
-      ? new RegExp(`^${homePattern(standardFileUrlHome, true, true)}(?=$|[/\\\\]|%5[cC])`, "iu").exec(out)
-      : null;
-    if (standardMatch || startsAtHome(standardFileUrlHome)) {
-      out = "file://<home>" + out.slice(standardMatch?.[0].length ?? standardFileUrlHome.length);
-    } else if (startsAtHome(legacyFileUrlHome)) {
-      out = "file://<home>" + out.slice(legacyFileUrlHome.length).replace(/\\/g, "/");
-    } else if (startsAtHome(_homeDir)) {
-      out = "<home>" + out.slice(_homeDir.length);
-    }
+  };
+  const bare = compile(home, false);
+  const native = compile(legacy, true, true);
+  return {
+    literal: [compile(standard, true, false, windows), native, bare],
+    decoded: [compile(decodeHomeEscapes(standard, "percent-entity"), true), native, bare],
+  };
+}
+
+const homePrefixes = compileHomePrefixes(_homeDir);
+
+function replaceHomePrefix(path: string, prefixes: readonly HomePrefix[]): string | undefined {
+  const value = path.replace(/^file:/iu, "file:");
+  for (const { pattern, marker, slashSuffix } of prefixes) {
+    const match = pattern.exec(value);
+    if (!match) continue;
+    const suffix = path.slice(match[0].length);
+    return marker + (slashSuffix ? suffix.replace(/\\/gu, "/") : suffix);
   }
+  return undefined;
+}
+
+/** Prefer the literal prefix. An encoded prefix is replaced in a decoded path value. */
+export function redactFsPath(path: string): string {
+  if (!path) return path;
+  const out = replaceHomePrefix(path, homePrefixes.literal)
+    ?? replaceHomePrefix(decodeHomeEscapes(path, "percent-entity"), homePrefixes.decoded)
+    ?? path;
   // Iterate code points so truncation cannot split surrogate pairs.
   const codePoints = [...out];
   return codePoints.length > MAX_AUDIT_PATH ? codePoints.slice(0, MAX_AUDIT_PATH).join("") + "…" : out;
