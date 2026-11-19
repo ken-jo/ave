@@ -71,6 +71,81 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("native policy pipe lifecycle", () => {
+  it.each(["throws", "missing disposer"])("refuses tracking that %s and terminates the helper", async (fault) => {
+    const helper = helperChild();
+    helper.kill.mockReturnValue(true);
+    vi.spyOn(childProcess, "spawn").mockReturnValue(helper.child as ReturnType<typeof childProcess.spawn>);
+    vi.mocked(managedChildren.trackManagedChildProcess).mockImplementation(() => {
+      if (fault === "throws") throw new Error("tracking failed");
+      // Deliberately violate the runtime contract at this boundary.
+      return undefined as unknown as ReturnType<typeof managedChildren.trackManagedChildProcess>;
+    });
+    const settlements: string[] = [];
+    const pending = openMxcPolicyPipe(Buffer.from("policy"), PIPE).then(
+      () => { settlements.push("ready"); },
+      () => { settlements.push("rejected"); },
+    );
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    let closeError: unknown;
+    try { helper.child.emit("close", 0, null); } catch (error) { closeError = error; }
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    expect({ closeError, settlements }).toEqual({ closeError: undefined, settlements: ["rejected"] });
+    expect(helper.kill).toHaveBeenCalledOnce();
+    expect(helper.stdin.destroyed).toBe(true);
+    await pending;
+  });
+
+  it.each([false, true])("settles when tracking disposal throws, after readiness: %s", async (afterReady) => {
+    const helper = helperChild();
+    helper.kill.mockReturnValue(true);
+    vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      if (afterReady) queueMicrotask(() => helper.stdout.write("ready\n"));
+      return helper.child as ReturnType<typeof childProcess.spawn>;
+    });
+    vi.mocked(managedChildren.trackManagedChildProcess).mockReturnValue(() => { throw new Error("tracking disposal failed"); });
+    const opening = openMxcPolicyPipe(Buffer.from("policy"), PIPE);
+    const operation = afterReady ? (await opening).release() : opening;
+    const settlements: string[] = [];
+    const pending = operation.then(
+      () => { settlements.push("ready"); },
+      (error: Error) => { settlements.push(error.message); },
+    );
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    let closeError: unknown;
+    try { helper.child.emit("close", 0, null); } catch (error) { closeError = error; }
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    expect({ closeError, settlements }).toEqual({ closeError: undefined, settlements: ["tracking disposal failed"] });
+    await pending;
+  });
+
+  it("still terminates the helper when closing its input throws", async () => {
+    const helper = helperChild();
+    vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      queueMicrotask(() => helper.stdout.write("ready\n"));
+      return helper.child as ReturnType<typeof childProcess.spawn>;
+    });
+    const transport = await openMxcPolicyPipe(Buffer.from("policy"), PIPE);
+    vi.spyOn(helper.stdin, "destroy").mockImplementation(() => { throw new Error("input close failed"); });
+    await expect(transport.release()).rejects.toThrow("input close failed");
+    expect(helper.kill).toHaveBeenCalledOnce();
+  });
+
+  it("bounds failed termination and reports the cleanup failure", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const helper = helperChild();
+    helper.kill.mockImplementation(() => { throw new Error("termination failed"); });
+    vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      queueMicrotask(() => helper.stdout.write("ready\n"));
+      return helper.child as ReturnType<typeof childProcess.spawn>;
+    });
+    const transport = await openMxcPolicyPipe(Buffer.from("policy"), PIPE);
+    const pending = expect(transport.release()).rejects.toThrow("termination failed");
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
+    await pending;
+    expect(helper.kill).toHaveBeenLastCalledWith("SIGKILL");
+    expect(helper.stdin.destroyed).toBe(true);
+  });
+
   it("sends policy and launcher PID only over private helper stdin", async () => {
     const helper = helperChild();
     const spawn = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
@@ -130,7 +205,7 @@ describe("native policy pipe lifecycle", () => {
     Object.assign(client, { pid });
     const kill = vi.spyOn(client, "kill").mockReturnValue(true);
     transport.bindChild(client);
-    await transport.release();
+    await expect(transport.release()).rejects.toThrow("client did not start");
     expect(helper.stdin.read()).toBeNull();
     expect(helper.kill).toHaveBeenCalledOnce();
     expect(kill).toHaveBeenCalledOnce();
@@ -184,7 +259,7 @@ describe("native policy pipe lifecycle", () => {
     const client = new childProcess.ChildProcess();
     transport.bindChild(client);
     client.emit("error", new Error("spawn ENOENT"));
-    await transport.release();
+    await expect(transport.release()).rejects.toThrow("client did not start");
     expect(helper.kill).toHaveBeenCalledOnce();
     expect(helper.stdin.destroyed).toBe(true);
   });
@@ -228,6 +303,6 @@ describe("native policy pipe lifecycle", () => {
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs);
     expect(kill).toHaveBeenCalled();
     expect(helper.kill).toHaveBeenCalledOnce();
-    await transport.release();
+    await expect(transport.release()).rejects.toThrow("delivery timed out");
   });
 });
