@@ -667,7 +667,7 @@ describe("the browser download staging folder in the srt-win session floor and w
 
   it.each([
     { checkout: "/private/tmp/ave", scratch: "/private/tmp/ave-test-1000/t-run/resource" },
-    { checkout: "C:\\ave", scratch: "C:\\Users\\fixture\\.ave-test-tmp\\t-run\\resource" },
+    { checkout: "C:\\ave", scratch: "C:\\Users\\alice\\.ave-test-tmp\\t-run\\resource" },
   ])("accepts default scratch beside $checkout and refuses its scripts", ({ checkout, scratch }) => {
     // Preserve each layout's ancestry inside the run's scratch on either host.
     const project = (path: string) => hostPath.join(
