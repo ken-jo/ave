@@ -1577,8 +1577,21 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("buildSandboxConfig unions the sensitive write deny-list into filesystem.denyWrite", () => {
     const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
     const sensitive = getDefaultSensitiveWriteDenyPaths();
+    const literalDenies = bare(config.filesystem.denyWrite.filter(entry => typeof entry !== "string" || !/[*?[\]]/u.test(entry)));
     for (const p of sensitive) {
-      if (reachesAsrt(p)) expect(bare(config.filesystem.denyWrite)).toContain(bare([p])[0]);
+      if (!reachesAsrt(p)) continue;
+      const target = bare([p])[0];
+      if (target === undefined) throw new Error("Sensitive write deny is missing");
+      if (process.platform === "darwin") {
+        expect(literalDenies.some(parent => target === parent || target.startsWith(`${parent}${sep}`)), target).toBe(true);
+      } else {
+        expect(literalDenies, target).toContain(target);
+      }
+      if (process.platform === "win32") {
+        const ranked = rankWindowsFsAccess({ allowRead: [], allowWrite: [target], denyRead: [], denyWrite: literalDenies, credentialDeny: [] });
+        expect(ranked.grantWrite, target).toEqual([]);
+        expect(ranked.grantRead, target).toContain(target);
+      }
     }
     if (reachesAsrt(join(homedir(), ".config"))) {
       expect(bare(config.filesystem.denyWrite)).toContain(join(homedir(), ".config"));
@@ -1777,6 +1790,29 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it("retains a linked child deny after its disjoint machine parent is filtered", () => {
+    const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "sandbox-machine-deny-")));
+    const machine = join(fixture, "machine");
+    const target = join(fixture, "outside");
+    mkdirSync(machine);
+    mkdirSync(target);
+    const alias = join(machine, "linked");
+    symlinkSync(target, alias, ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32" ? "junction" : "dir");
+    const child = join(alias, "locked");
+    writeFileSync(child, "fixture");
+    vi.stubEnv("ProgramData", machine);
+    setProcessPlatform("win32");
+    try {
+      const config = buildSandboxConfig({ allowWrite: [target], denyWrite: [machine, child] });
+      expect(bare(config.filesystem.denyWrite)).not.toContain(machine);
+      expect(bare(config.filesystem.denyWrite)).toContain(child);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      vi.unstubAllEnvs();
+      rmSync(fixture, { recursive: true, force: true });
     }
   });
 

@@ -4,6 +4,7 @@ import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbo
 import { settingsFilePath } from "../data/settings-store.js";
 import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 import { permissionSettingsPath } from "./permission-settings-store.js";
 import { egressGrantFilePath } from "./egress-grants.js";
 import { userApprovalFilePath } from "./user-approval-store.js";
@@ -152,8 +153,8 @@ function resolvePolicyDenyPath(path: string): string {
   }
 }
 
-function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly string[]): string[] {
-  const keyFor = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
+function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly string[], caseInsensitive = process.platform === "win32"): string[] {
+  const keyFor = (path: string) => caseInsensitive ? path.toLowerCase() : path;
   const inheritedKeys = new Set(inherited.map(path => {
     while (path.endsWith(sep) && dirname(path) !== path) path = path.slice(0, -1);
     return keyFor(path);
@@ -171,6 +172,32 @@ function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly s
     const key = keyFor(path);
     if (inheritedKeys.has(key) || !retained.has(key) || emitted.has(key)) return false;
     emitted.add(key);
+    return true;
+  });
+}
+
+/** Remove literal descendants already denied by the final union without folding filesystem spellings or changing patterns. */
+export function compactSandboxWriteDenies<T extends FilesystemPathEntry>(entries: readonly T[]): T[] {
+  // Only the declarative subtree profile proves this reduction. Native ACLs
+  // and mount rules keep every explicit row for their own enforcement logic.
+  if (process.platform !== "darwin") return [...entries];
+  const isLiteral = (entry: FilesystemPathEntry): boolean => typeof entry !== "string" || !/[*?[\]]/u.test(entry);
+  const literalPaths = entries.filter(isLiteral).map(entry => typeof entry === "string" ? entry : entry.path);
+  const retained = new Set(minimalLiteralDenyPaths(literalPaths, [], false));
+  const emitted = new Set<string>();
+  return entries.filter(entry => {
+    if (!isLiteral(entry)) return true;
+    const path = typeof entry === "string" ? entry : entry.path;
+    if (emitted.has(path)) return false;
+    if (!retained.has(path)) {
+      if (isWindowsNetworkOrDevicePath(path, "win32")) return true;
+      // A lexical child link can target outside its denied parent. Only the
+      // unchanged physical spelling proves that the parent's deny covers it.
+      // Resolution uncertainty keeps the explicit row.
+      try { if (resolvePolicyDenyPath(path) === path) return false; }
+      catch { /* Keep the existing deny when coverage cannot be proved. */ }
+    }
+    emitted.add(path);
     return true;
   });
 }

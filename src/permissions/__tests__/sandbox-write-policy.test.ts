@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
 import { getLocale, setLocale, t } from "../../i18n/index.js";
 import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
 import { buildPerCommandSandboxCustomConfig, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
@@ -72,6 +72,15 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
+
+  it.each(["win32", "linux"] as const)("keeps explicit descendant write denies for %s enforcement", platform => {
+    const parent = join(root, "protected");
+    const child = join(parent, "nested", "control");
+    mkdirSync(join(parent, "nested"), { recursive: true });
+    const entries = [parent, { path: child, literal: true as const }];
+    expect(withPlatform(platform, () => compactSandboxWriteDenies(entries))).toEqual(entries);
+    expect(withPlatform("darwin", () => compactSandboxWriteDenies(entries))).toEqual([parent]);
+  });
 
   it.each([".claude", ".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
   ("retains $entry protection after a regular placeholder with native missing-child reporting=$reportsMissingChild", async ({ entry, reportsMissingChild }) => {

@@ -41,7 +41,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
@@ -598,6 +598,9 @@ function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead
 }
 
 function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted: object, configuredDenies: readonly FilesystemPathEntry[]): Partial<FilesystemConfig> {
+  const denyWrite = compactSandboxWriteDenies(filesystem.denyWrite ?? []);
+  if (Object.isFrozen(filesystem.denyWrite)) Object.freeze(denyWrite);
+  filesystem = { ...filesystem, denyWrite };
   assertSandboxWritePolicySize(filesystem.denyWrite ?? [], undefined, configuredDenies);
   if (process.platform !== "win32") return filesystem;
   const pinned = admittedWindowsPolicies.get(admitted);
