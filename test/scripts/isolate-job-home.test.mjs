@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, opendirSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
+import { listJobRootEntries, listJobRootProcesses } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { cleanupWindowsJobRoot, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
 
 describe("job home isolation", () => {
@@ -60,127 +61,57 @@ function entryFacts(type = "file", readOnly = false) {
 function cleanupSeams(error = blockedRemoval()) {
   return {
     remove: mock.fn(() => { throw error; }),
-    readDirectory: mock.fn(() => []), stat: mock.fn(() => entryFacts("dir")),
-    run: mock.fn(() => "[]"), diagnostic: mock.fn(),
+    run: mock.fn((_command, _args, _options, done) => done(null, "")), diagnostic: mock.fn(),
   };
 }
 function output(seams) {
   return seams.diagnostic.mock.calls.map(call => call.arguments[0]).join("\n");
 }
-function assertReadOnlyCommands(seams) {
-  for (const call of seams.run.mock.calls) {
-    const [command, args] = call.arguments;
-    assert.equal(command, "powershell.exe");
-    const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
-    assert.doesNotMatch(`${command}\n${script}`, /icacls|takeown|attrib|Get-Acl|Set-Acl|Stop-Process|CommandLine|Environment/i);
-    assert.match(script, /Get-Process/);
-  }
-}
-
 describe("Windows job root cleanup diagnostics", () => {
   const root = join(tmpdir(), "ave-job-diagnostic");
-  it("removes once without diagnostics on first-try success", () => {
+  it("removes once without diagnostics on first-try success", async () => {
     const seams = cleanupSeams();
     seams.remove = mock.fn();
-    cleanupWindowsJobRoot(root, seams);
+    await cleanupWindowsJobRoot(root, seams);
     assert.deepEqual(seams.remove.mock.calls.map(call => call.arguments), [[root, { recursive: true, force: true }]]);
-    for (const seam of [seams.readDirectory, seams.stat, seams.run, seams.diagnostic]) assert.equal(seam.mock.callCount(), 0);
+    for (const seam of [seams.run, seams.diagnostic]) assert.equal(seam.mock.callCount(), 0);
   });
-  it("lists remaining entries breadth-first with types and read-only bits and rethrows the original error", () => {
+  it("runs the entire diagnostic with exact time and output bounds and preserves the removal error", async () => {
     const error = blockedRemoval();
     const seams = cleanupSeams(error);
-    seams.readDirectory = mock.fn(path => (path === root ? ["child", "held.txt"] : ["nested.txt"]).map(name => ({ name })));
-    seams.stat = mock.fn(path => entryFacts(path === root || path === join(root, "child") ? "dir" : "file", path.endsWith("held.txt")));
-    assert.throws(() => cleanupWindowsJobRoot(root, seams), caught => caught === error);
-    const lines = output(seams).split("\n");
-    assert.deepEqual(lines, [
-      'Job root cleanup failed: code="EPERM" syscall="unlink"',
-      'entry "child" type=dir read-only=false',
-      'entry "held.txt" type=file read-only=true',
-      `entry ${JSON.stringify(join("child", "nested.txt"))} type=file read-only=false`,
-    ]);
+    seams.run = mock.fn((command, args, options, done) => {
+      assert.equal(command, process.execPath);
+      assert.match(args[0], /job-root-diagnostic\.mjs$/);
+      assert.equal(args[1], root);
+      assert.deepEqual(options, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024 });
+      done(null, 'entry "held.txt" type=file read-only=true\n');
+    });
+    await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+    assert.equal(seams.run.mock.callCount(), 1);
     assert.equal(seams.remove.mock.callCount(), 1);
-    assertReadOnlyCommands(seams);
+    assert.match(output(seams), /entry "held.txt"/);
+    assert.doesNotMatch(output(seams), /diagnostic failed/);
   });
-  it("bounds a wide listing at 50 and does not enumerate queued children after the limit", () => {
-    const seams = cleanupSeams();
-    seams.readDirectory = mock.fn(() => Array.from({ length: 80 }, (_, index) => ({ name: `child-${index}` })));
-    assert.throws(() => cleanupWindowsJobRoot(root, seams));
-    assert.equal(output(seams).split("\n").filter(line => line.startsWith("entry ")).length, 50);
-    assert.match(output(seams), /limited to 50/);
-    assert.equal(seams.readDirectory.mock.callCount(), 1);
-    assertReadOnlyCommands(seams);
-  });
-  for (const name of ["symlink", "junction"]) {
-    it(`does not descend into a ${name} even with stale directory information`, () => {
-      const seams = cleanupSeams();
-      seams.readDirectory = mock.fn(() => [{ name, isDirectory: () => true, isSymbolicLink: () => false }]);
-      seams.stat = mock.fn(path => entryFacts(path === root ? "dir" : "link"));
-      assert.throws(() => cleanupWindowsJobRoot(root, seams));
-      assert.match(output(seams), /type=symlink\/junction/);
-      assert.equal(seams.readDirectory.mock.callCount(), 1);
-      assertReadOnlyCommands(seams);
-    });
-  }
-  it("rechecks queued routes before enumeration after a directory becomes a junction", () => {
-    const seams = cleanupSeams();
-    let childChecks = 0;
-    seams.readDirectory = mock.fn(path => { assert.equal(path, root); return [{ name: "child" }]; });
-    seams.stat = mock.fn(path => entryFacts(path === root || ++childChecks === 1 ? "dir" : "link"));
-    assert.throws(() => cleanupWindowsJobRoot(root, seams));
-    assert.match(output(seams), /Cleanup entry listing failed/);
-    assert.equal(seams.readDirectory.mock.callCount(), 1);
-  });
-  it("prints only PID and image name for at most 20 processes without arguments or environment", () => {
-    const seams = cleanupSeams();
-    seams.run = mock.fn(() => JSON.stringify(Array.from({ length: 25 }, (_, index) => ({
-      pid: 4000 + index, image: join(root, "holder.exe"),
-      CommandLine: "holder.exe --token=SYNTHETIC FOO=bar", env: { FOO: "bar" },
-    }))));
-    assert.throws(() => cleanupWindowsJobRoot(root, seams));
-    const lines = output(seams);
-    assert.match(lines, /process pid=4000 image="holder.exe"/);
-    assert.equal(lines.split("\n").filter(line => line.startsWith("process ")).length, 20);
-    assert.doesNotMatch(lines, /--token|SYNTHETIC|FOO|bar|CommandLine|env/);
-    assertReadOnlyCommands(seams);
-  });
-  for (const failure of ["query", "parse", "listing", "output"]) {
-    it(`preserves the original removal error after a ${failure} failure`, () => {
+  for (const failure of ["child", "output"]) {
+    it(`preserves the original removal error after a ${failure} failure`, async () => {
       const error = blockedRemoval();
       const seams = cleanupSeams(error);
-      if (failure === "query") seams.run = mock.fn(() => { throw new Error("query unavailable"); });
-      if (failure === "parse") seams.run = mock.fn(() => "invalid JSON");
-      if (failure === "listing") seams.readDirectory = mock.fn(() => { throw new Error("access denied"); });
+      if (failure === "child") seams.run = mock.fn((_command, _args, _options, done) => done(new Error("SYNTHETIC PRIVATE DETAILS")));
       if (failure === "output") seams.diagnostic = mock.fn(() => { throw new Error("closed stderr"); });
-      assert.throws(() => cleanupWindowsJobRoot(root, seams), caught => caught === error);
-      if (failure !== "output") assert.match(output(seams), failure === "listing" ? /Cleanup entry listing failed/ : /Cleanup process query failed/);
-      assertReadOnlyCommands(seams);
+      await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+      assert.doesNotMatch(output(seams), /SYNTHETIC PRIVATE/);
+      if (failure === "child") assert.equal(output(seams).split("\n").filter(line => line === "Cleanup diagnostic failed or timed out").length, 1);
     });
   }
-  it("does not enumerate a real Windows junction target", { skip: process.platform !== "win32" }, () => {
-    const fixture = mkdtempSync(join(tmpdir(), "ave-job-junction-"));
-    const root = join(fixture, "root");
-    const target = join(fixture, "target");
-    const junction = join(root, "junction");
-    mkdirSync(root);
-    mkdirSync(target);
-    writeFileSync(join(target, "outside-sentinel.txt"), "preserve");
-    symlinkSync(target, junction, "junction");
-    try {
-      const error = blockedRemoval();
-      const seams = cleanupSeams(error);
-      seams.stat = lstatSync;
-      seams.readDirectory = mock.fn((...args) => readdirSync(...args));
-      assert.throws(() => cleanupWindowsJobRoot(root, seams), caught => caught === error);
-      assert.match(output(seams), /junction.*type=symlink\/junction/);
-      assert.doesNotMatch(output(seams), /outside-sentinel/);
-      assert.deepEqual(seams.readDirectory.mock.calls.map(call => call.arguments[0]), [root]);
-      assert.equal(existsSync(join(target, "outside-sentinel.txt")), true);
-      assertReadOnlyCommands(seams);
-    } finally {
-      unlinkSync(junction);
-      rmSync(fixture, { recursive: true, force: true });
-    }
+  it("bounds a stalled diagnostic child and still throws the original removal error", async () => {
+    const error = blockedRemoval();
+    const seams = cleanupSeams(error);
+    seams.run = (command, _args, options, done) => execFile(command, ["-e", "setInterval(() => {}, 1000)"], options, done);
+    const start = performance.now();
+    await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+    const elapsed = performance.now() - start;
+    assert.ok(elapsed >= 4500 && elapsed < 6500, `elapsed=${elapsed}`);
+    assert.match(output(seams), /Cleanup diagnostic failed or timed out/);
   });
   it("reports a real file held without delete sharing and its process, then cleans up after exit", { skip: process.platform !== "win32" }, async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-job-held-"));
@@ -200,7 +131,7 @@ describe("Windows job root cleanup diagnostics", () => {
       const [ready] = await Promise.race([once(holder.stdout, "data"), exited.then(() => { throw new Error("Holder exited before opening the file"); })]);
       assert.equal(ready.toString().trim(), "ready");
       const diagnostic = mock.fn();
-      assert.throws(() => cleanupWindowsJobRoot(root, { diagnostic }), error => error.code === "EPERM" || error.code === "EBUSY" || error.code === "EACCES");
+      await assert.rejects(cleanupWindowsJobRoot(root, { diagnostic }), error => error.code === "EPERM" || error.code === "EBUSY" || error.code === "EACCES");
       const lines = output({ diagnostic });
       assert.match(lines, /entry "held.txt" type=file read-only=false/);
       assert.ok(lines.includes(`process pid=${holder.pid} image="holder.exe"`), lines);
@@ -208,7 +139,7 @@ describe("Windows job root cleanup diagnostics", () => {
       holder.stdin.end("\n");
       const [code] = await exited;
       assert.equal(code, 0);
-      cleanupWindowsJobRoot(root);
+      await cleanupWindowsJobRoot(root);
       assert.equal(existsSync(root), false);
     } finally {
       if (holder && holder.exitCode === null) {
@@ -221,6 +152,79 @@ describe("Windows job root cleanup diagnostics", () => {
 });
 
 
+describe("Windows job root metadata listing", () => {
+  it("reads at most 50 direct entries incrementally and closes the directory", () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-job-wide-"));
+    try {
+      for (let i = 0; i < 160; i++) writeFileSync(join(root, `file-${i}`), "fixture");
+      let reads = 0, closed = false;
+      const lines = [];
+      listJobRootEntries(root, line => lines.push(line), { openDirectory(path, options) {
+        assert.deepEqual(options, { bufferSize: 1 });
+        assert.equal(path, root);
+        const directory = opendirSync(path, options);
+        return { readSync() { reads++; return directory.readSync(); }, closeSync() { closed = true; directory.closeSync(); } };
+      } });
+      assert.equal(reads, 50);
+      assert.equal(closed, true);
+      assert.equal(lines.filter(line => line.startsWith("entry ")).length, 50);
+      assert.match(lines.at(-1), /limited to 50/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("never reads a child swapped to a junction after its last stat", () => {
+    const fixture = mkdtempSync(join(tmpdir(), "ave-job-swap-"));
+    const root = join(fixture, "root"), child = join(root, "child"), target = join(fixture, "target");
+    mkdirSync(root); mkdirSync(child); mkdirSync(target);
+    writeFileSync(join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt"), "preserve");
+    let swapped = false;
+    const reads = [], lines = [];
+    try {
+      listJobRootEntries(root, line => lines.push(line), {
+        openDirectory(path, options) { reads.push(path); return opendirSync(path, options); },
+        stat(path) {
+          const facts = lstatSync(path);
+          if (path === child) {
+            renameSync(child, join(fixture, "saved")); symlinkSync(target, child, "junction"); swapped = true;
+          }
+          return facts;
+        },
+      });
+      assert.equal(swapped, true);
+      assert.deepEqual(reads, [root]);
+      assert.doesNotMatch(lines.join("\n"), /SYNTHETIC-OUTSIDE/);
+      assert.equal(existsSync(join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt")), true);
+    } finally { if (swapped) unlinkSync(child); rmSync(fixture, { recursive: true, force: true }); }
+  });
+  it("prints link types without descending and closes on stat failure", () => {
+    const close = mock.fn();
+    const read = mock.fn(() => ({ name: "junction" }));
+    const lines = [];
+    assert.throws(() => listJobRootEntries("root", line => lines.push(line), {
+      openDirectory: () => ({ readSync: read, closeSync: close }),
+      stat: () => { throw new Error("unavailable"); },
+    }), /unavailable/);
+    assert.equal(close.mock.callCount(), 1);
+    const entries = [{ name: "junction" }, null];
+    listJobRootEntries("root", line => lines.push(line), {
+      openDirectory: () => ({ readSync: () => entries.shift(), closeSync() {} }), stat: () => entryFacts("link", true),
+    });
+    assert.deepEqual(lines, ['entry "junction" type=symlink/junction read-only=true']);
+  });
+  it("prints only bounded PID and image projections", () => {
+    const diagnostic = mock.fn(), run = mock.fn(() => JSON.stringify(Array.from({ length: 25 }, (_, i) => ({
+      pid: 4000 + i, image: "C:\\fixture\\holder.exe", CommandLine: "SYNTHETIC", env: { secret: "SYNTHETIC" },
+    }))));
+    listJobRootProcesses("C:\\fixture", run, diagnostic);
+    assert.equal(diagnostic.mock.callCount(), 20);
+    assert.match(output({ diagnostic }), /process pid=4000 image="holder.exe"/);
+    assert.doesNotMatch(output({ diagnostic }), /SYNTHETIC|secret|CommandLine|env/);
+    const [command, args] = run.mock.calls[0].arguments;
+    assert.equal(command, "powershell.exe");
+    const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
+    assert.match(script, /Get-Process/);
+    assert.doesNotMatch(script, /icacls|takeown|attrib|Get-Acl|Set-Acl|Stop-Process|CommandLine|Environment/i);
+  });
+});
 const CURRENT_SID = "S-1-5-21-100-200-300-1001";
 const PRINCIPALS = [CURRENT_SID, "S-1-5-18", "S-1-5-32-544"];
 function privateDacl() {
