@@ -1,5 +1,5 @@
 import { buildSync } from "esbuild";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { platform, tmpdir } from "node:os";
@@ -231,15 +231,20 @@ describe("Windows native test inventory", () => {
     { fault: "stall" },
     { fault: "construction" },
     { fault: "preload" },
-  ])("bounds worker $fault and releases its resources", ({ fault, replyTimeoutMs }) => {
+  ])("bounds worker $fault and releases its resources", async ({ fault, replyTimeoutMs }) => {
     const root = mkdtempSync(join(tmpdir(), "inventory-worker-"));
     try {
       const entry = join(root, "inventory.cjs");
       const preload = join(root, "preload.cjs");
-      writeFileSync(preload, 'if (!require("node:worker_threads").isMainThread) throw new Error("Unexpected worker preload");');
+      writeFileSync(preload, [
+        'if (!require("node:worker_threads").isMainThread) throw new Error("Unexpected worker preload");',
+        "globalThis.inventoryPreloadLoaded = true;",
+      ].join("\n"));
       const inventoryPath = fileURLToPath(new URL("./windows-native-test-inventory.ts", import.meta.url));
       const source = readFileSync(inventoryPath, "utf8");
       const productionReplyTimeoutMs = 5000;
+      const cleanupGraceMs = 1000;
+      const preloadBatchCount = 3;
       const scan = replyTimeoutMs === undefined
         ? "nativeBackedTestFiles(modules)"
         : `scanNativeBackedTestFiles(modules, ${replyTimeoutMs})`;
@@ -258,22 +263,33 @@ describe("Windows native test inventory", () => {
         external: ["esbuild", "typescript/unstable/ast/scanner"],
         define: { "import.meta.url": JSON.stringify(import.meta.url) },
         banner: { js: `
+require = require("node:module").createRequire(${JSON.stringify(inventoryPath)});
 const threads = require("node:worker_threads");
 const fault = ${JSON.stringify(fault)};
 const workers = [], exits = [], closures = [], flags = [], observedErrors = [], observedExits = [];
+const terminations = [];
 let batches = 0;
+let closedPorts = 0;
+let stallLiveAtTermination = false;
 let armedAt;
+const ready = ${replyTimeoutMs !== undefined || fault === "stall"} ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
 const receive = threads.receiveMessageOnPort;
 threads.receiveMessageOnPort = port => {
   const response = receive(port);
-  if (response?.message.results) batches++;
+  if (response?.message.results) {
+    batches++;
+    if (fault === "preload") process.send(batches);
+  }
   return response;
 };
 const BaseWorker = threads.Worker, BaseChannel = threads.MessageChannel;
 threads.MessageChannel = class extends BaseChannel {
   constructor() {
     super();
-    for (const port of [this.port1, this.port2]) closures.push(new Promise(resolve => port.once("close", resolve)));
+    for (const port of [this.port1, this.port2]) closures.push(new Promise(resolve => port.once("close", () => {
+      closedPorts++;
+      resolve();
+    })));
   }
 };
 threads.Worker = class extends BaseWorker {
@@ -281,46 +297,65 @@ threads.Worker = class extends BaseWorker {
     flags.push(options.execArgv);
     if (fault === "construction") throw new Error("Controlled worker construction failure");
     if (fault === "startup") code = "const = ;";
-    if (fault === "exit") code = "process.exit(0);";
-    if (fault === "stall") code = "setInterval(() => {}, 1000);";
+    if (fault === "exit") {
+      // Install the interceptor only in the evaluated payload, where the explicit exit originates.
+      code = [
+        'const exit = process.exit.bind(process);',
+        'process.exit = code => {',
+        '  if (code !== 0) return exit(code);',
+        '  const onExit = status => { if (status === 0) arm(); };',
+        '  process.once("exit", onExit);',
+        '  try { return exit(code); } catch (error) { process.removeListener("exit", onExit); throw error; }',
+        '};',
+        "process.exit(0);",
+      ].join("\\n");
+    }
+    if (fault === "stall") code = "setInterval(() => {}, 1000); arm();";
     if (fault === "crash") code = code.replace("port.postMessage({ results });", "port.postMessage({ results }); if (i === 0) process.exit(23);");
-    const ready = ${replyTimeoutMs !== undefined} ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
     if (ready) {
       options.workerData.ready = ready;
-      let armOnFault;
-      if (fault === "startup") {
-        armOnFault = 'process.once("uncaughtExceptionMonitor", error => { if (error.name === "SyntaxError") arm(); });';
-      } else if (fault === "exit") {
-        // Install the listener only from the explicit exit call so a natural drain cannot arm.
-        armOnFault = [
-          'const exit = process.exit.bind(process);',
-          'process.exit = code => {',
-          '  process.once("exit", status => { if (status === 0) arm(); });',
-          '  exit(code);',
-          '};',
-        ].join("\\n");
-      } else {
-        armOnFault = 'process.once("exit", code => { if (code === 23) arm(); });';
-      }
-      code = [
+      const setup = [
         'const { ready } = require("node:worker_threads").workerData;',
         'const arm = () => { Atomics.store(ready, 0, 1); Atomics.notify(ready, 0); };',
-        armOnFault,
+      ];
+      if (fault === "startup") {
+        setup.push('process.once("uncaughtExceptionMonitor", error => { if (error.name === "SyntaxError") arm(); });');
+      } else if (fault === "crash") {
+        setup.push('process.once("exit", code => { if (code === 23) arm(); });');
+      } else if (fault === "stall") {
+        setup.push('process.once("exit", () => Atomics.store(ready, 0, 2));');
+      }
+      code = [
+        ...setup,
         'eval(' + JSON.stringify(code) + ');',
       ].join("\\n");
     }
     super(code, options);
     workers.push(this);
     this.on("error", error => observedErrors.push(error.name));
-    exits.push(new Promise(resolve => this.once("exit", code => {
+    this.exited = new Promise(resolve => this.once("exit", code => {
       observedExits.push(code);
       resolve();
-    })));
+    }));
+    exits.push(this.exited);
     // The scanner starts its short clock when this constructor returns. For a crash, the
     // real first reply is already queued when the worker reaches its exit handler.
-    if (ready && Atomics.wait(ready, 0, 0, ${productionReplyTimeoutMs}) !== "timed-out") {
+    if (ready && fault !== "stall" && Atomics.wait(ready, 0, 0, ${productionReplyTimeoutMs}) !== "timed-out") {
       armedAt = performance.now();
     }
+  }
+
+  terminate() {
+    if (fault === "stall") {
+      stallLiveAtTermination = this.threadId !== -1 && Atomics.load(ready, 0) === 1;
+    }
+    // Armed failure hooks are already exiting. Let Node deliver their real events before forcing cleanup.
+    const termination = armedAt === undefined ? super.terminate() : Promise.race([
+      this.exited,
+      new Promise(resolve => setTimeout(resolve, ${cleanupGraceMs}).unref()),
+    ]).then(() => super.terminate());
+    terminations.push(termination);
+    return termination;
   }
 };` },
         footer: { js: `
@@ -331,39 +366,87 @@ let error, result;
 try { result = [...module.exports.${scan}]; } catch (caught) { error = caught.message; }
 const elapsedMs = performance.now() - (armedAt ?? started);
 (async () => {
+  await Promise.all(terminations);
   const closed = await Promise.race([
     Promise.all([...exits, ...closures]).then(() => true),
-    new Promise(resolve => setTimeout(() => resolve(false), 1000).unref()),
+    new Promise(resolve => setTimeout(() => resolve(false), ${cleanupGraceMs}).unref()),
   ]);
   console.log(JSON.stringify({
     error, result, elapsedMs, closed, liveWorkers: workers.filter(worker => worker.threadId !== -1).length,
-    armed: armedAt !== undefined, observedErrors, observedExits, flags, batches }));
+    armed: armedAt !== undefined, observedErrors, observedExits, flags, batches,
+    closedPorts, terminationRequests: terminations.length, stallLiveAtTermination,
+    stallExitedOnItsOwn: fault === "stall" && Atomics.load(ready, 0) === 2,
+    preloadLoaded: globalThis.inventoryPreloadLoaded === true }));
 })();` },
       });
       writeFileSync(entry, bundled.outputFiles[0].text);
-      // The watchdog lives outside the synchronous caller, so a regressed wait cannot hang the suite.
-      const child = spawnSync(process.execPath, [...(fault === "preload" ? ["--require", preload] : []), entry], {
-        encoding: "utf8",
-        timeout: 8000,
+      const child = spawn(process.execPath, [...(fault === "preload" ? ["--require", preload] : []), entry], {
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
         windowsHide: true,
-        env: { ...process.env, NODE_PATH: fileURLToPath(new URL("../../node_modules", import.meta.url)) },
+        env: { ...process.env, NODE_PATH: undefined },
       });
-      expect(child.error, child.stderr).toBeUndefined();
-      expect(child.status, child.stderr).toBe(0);
-      const receipt = JSON.parse(child.stdout.trim());
+      const watchdogMs = fault === "preload" ? productionReplyTimeoutMs + cleanupGraceMs : 8000;
+      const outcome = await new Promise<{
+        status: number | null; signal: NodeJS.Signals | null; timedOut: boolean; stdout: string; stderr: string; progress: number;
+      }>((resolve, reject) => {
+        let stdout = "", stderr = "";
+        let progress = 0;
+        let timedOut = false;
+        let watchdog: NodeJS.Timeout;
+        const resetWatchdog = () => {
+          clearTimeout(watchdog);
+          watchdog = setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGKILL");
+          }, watchdogMs);
+        };
+        resetWatchdog();
+        // Only the expected batch sequence extends the watchdog, outside the synchronous scanner.
+        child.on("message", message => {
+          if (fault === "preload" && progress < preloadBatchCount && message === progress + 1) {
+            progress++;
+            resetWatchdog();
+          }
+        });
+        child.stdout?.setEncoding("utf8").on("data", data => { stdout += data; });
+        child.stderr?.setEncoding("utf8").on("data", data => { stderr += data; });
+        child.once("error", error => {
+          clearTimeout(watchdog);
+          reject(error);
+        });
+        child.once("close", (status, signal) => {
+          clearTimeout(watchdog);
+          resolve({ status, signal, timedOut, stdout, stderr, progress });
+        });
+      });
+      expect(outcome.timedOut, `Child watchdog expired at batch count ${outcome.progress}`).toBe(false);
+      expect(outcome.signal, outcome.stderr).toBeNull();
+      expect(outcome.status, outcome.stderr).toBe(0);
+      const receipt = JSON.parse(outcome.stdout.trim());
       expect(receipt.flags).toEqual([[]]);
       expect(receipt.closed).toBe(true);
+      expect(receipt.closedPorts).toBe(2);
       expect(receipt.liveWorkers).toBe(0);
+      expect(receipt.terminationRequests).toBe(fault === "construction" ? 0 : 1);
+      expect(receipt.observedErrors).toEqual(fault === "startup" ? ["SyntaxError"] : []);
       if (fault === "preload") {
+        expect(receipt.preloadLoaded).toBe(true);
         expect(receipt.error).toBeUndefined();
         expect(receipt.result).toEqual([["src/demo.test.ts", ["src/demo.test.ts", "src/windows-boundary.ts"]]]);
-        expect(receipt.batches).toBe(3);
+        expect(receipt.batches).toBe(preloadBatchCount);
+        expect(outcome.progress).toBe(preloadBatchCount);
       } else if (fault === "construction") {
         expect(receipt.error).toBe("Controlled worker construction failure");
+        expect(receipt.observedExits).toEqual([]);
       } else {
-        if (fault === "startup") expect(receipt.observedErrors).toEqual(["SyntaxError"]);
+        if (fault === "startup") expect(receipt.observedExits).toEqual([1]);
         if (fault === "exit") expect(receipt.observedExits).toEqual([0]);
         if (fault === "crash") expect(receipt.observedExits).toEqual([23]);
+        if (fault === "stall") {
+          expect(receipt.stallLiveAtTermination).toBe(true);
+          expect(receipt.stallExitedOnItsOwn).toBe(false);
+          expect(receipt.observedExits).toEqual([1]);
+        }
         if (replyTimeoutMs !== undefined) expect(receipt.armed).toBe(true);
         const expectedTimeoutMs = replyTimeoutMs ?? productionReplyTimeoutMs;
         expect(receipt.error).toBe(`Source transform worker stalled or exited before replying within ${expectedTimeoutMs}ms`);
