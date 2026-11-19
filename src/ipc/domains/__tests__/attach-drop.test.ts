@@ -1,9 +1,10 @@
 // Registration binds a drop token; only single-use, sender-bound redemption grants authority.
-import { isSensitivePath } from "../../../permissions/sensitive-paths.js";
+import { isSensitiveContent, isSensitivePath } from "../../../permissions/sensitive-paths.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { shell } from "electron";
+import * as nodeFs from "node:fs";
 import {
-  constants, linkSync, mkdirSync, mkdtempSync, promises as fsPromises, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync,
+  constants, linkSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,12 @@ const { handlers, defaultSession } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   defaultSession: {},
 }));
+
+vi.mock("node:fs", async (importOriginal) => ({ ...await importOriginal<typeof import("node:fs")>() }));
+vi.mock("../../../permissions/sensitive-paths.js", async original => {
+  const actual = await original<typeof import("../../../permissions/sensitive-paths.js")>();
+  return { ...actual, isSensitivePath: vi.fn(actual.isSensitivePath), isSensitiveContent: vi.fn(actual.isSensitiveContent) };
+});
 
 vi.mock("electron", () => ({
   session: { defaultSession },
@@ -92,6 +99,25 @@ async function register(senderId: number, paths: unknown) {
 }
 
 describe("composer drop token", () => {
+  it("keeps the chosen native spelling as the content inspection operand", async () => {
+    const target = join(root, "Cafe\u0301-Mixed.png");
+    writeFileSync(target, PNG);
+    vi.mocked(isSensitivePath).mockClear();
+    expect(await register(7, [target])).toMatchObject({ ok: true, rejected: [] });
+    expect(isSensitivePath).toHaveBeenCalledWith(target, "read", "person");
+  });
+
+  it("keeps the native handle target when judging an attached key-extension image buffer", async () => {
+    const target = join(root, "Cafe\u0301-Mixed.key");
+    writeFileSync(target, PNG);
+    const registered = await register(7, [target]);
+    expect(registered).toMatchObject({ ok: true, rejected: [] });
+    expect(await call(CHANNELS.attach.redeemDrop, 7, registered.token)).toMatchObject({ ok: true });
+    vi.mocked(isSensitiveContent).mockClear();
+    expect(await call(CHANNELS.attach.readImage, 7, target)).toMatchObject({ ok: true });
+    expect(isSensitiveContent).toHaveBeenCalledWith(realpathSync.native(target), PNG);
+  });
+
   it("authorizes the dropped files only when the token is redeemed", async () => {
     const reg = await register(7, [imagePath, notesPath]);
     expect(reg).toMatchObject({ ok: true, rejected: [] });
@@ -227,24 +253,39 @@ describe("composer drop token", () => {
       expect(await call(CHANNELS.attach.readImage, 7, small)).toMatchObject({ ok: true });
       const refused = await call(CHANNELS.attach.readImage, 7, hidden) as { ok: boolean; error?: string; dataUrl?: string };
       expect(refused).toEqual({ ok: false, error: "sensitive-path" });
-      // The image holds the key only while it is being read: it is opened with the key inside, and the harmless image is
-      // back under its name before anything could look at the path again. The bytes that would leave are what is judged.
-      const harmless = join(root, "harmless.png");
-      writeFileSync(harmless, PNG);
+      // The real read returns key-bearing bytes, then the same file is rewritten before the content judgment. Replacing
+      // an open destination by renaming a different file over it is not supported by every filesystem.
+      const realRename = nodeFs.renameSync;
+      const replace = vi.spyOn(nodeFs, "renameSync").mockImplementation((from, to) => {
+        if (to === small) throw Object.assign(new Error("open destination cannot be replaced"), { code: "EPERM" });
+        realRename(from, to);
+      });
       const realOpen = fsPromises.open.bind(fsPromises);
       // The image sniffer opens the file by name first; the read that fills the buffer is the next open.
       let opens = 0;
+      let readBytes: Buffer | undefined;
       const opened = vi.spyOn(fsPromises, "open").mockImplementation((async (target: string, flags: number | string) => {
         if (++opens !== 2) return realOpen(target, flags);
+        expect(target).toBe(realpathSync(small));
         writeFileSync(small, Buffer.concat([PNG, Buffer.alloc(window, "x"), header]));
         const handle = await realOpen(target, flags);
-        renameSync(harmless, small);
+        const realReadFile = handle.readFile.bind(handle);
+        vi.spyOn(handle, "readFile").mockImplementationOnce(async () => {
+          const bytes = await realReadFile();
+          readBytes = bytes;
+          writeFileSync(small, PNG);
+          return bytes;
+        });
         return handle;
       }) as typeof fsPromises.open);
       const swapped = await call(CHANNELS.attach.readImage, 7, small) as { ok: boolean; error?: string; dataUrl?: string };
       expect(swapped).toEqual({ ok: false, error: "sensitive-path" });
       expect(opens).toBe(2);
+      expect(readBytes?.includes(header)).toBe(true);
+      expect(readFileSync(small).equals(PNG)).toBe(true);
+      expect(replace).not.toHaveBeenCalled();
       opened.mockRestore();
+      replace.mockRestore();
       // The path holds the harmless image again, and it is read as one.
       expect(await call(CHANNELS.attach.readImage, 7, small)).toMatchObject({ ok: true });
       await call(CHANNELS.attach.release, 7, [small, hidden]);
