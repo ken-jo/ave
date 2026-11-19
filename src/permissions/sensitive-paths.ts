@@ -1162,7 +1162,7 @@ function createPathSensitivityMatcher(
     const foldedPath = caseFoldForMatch(normalizedPath);
     const canReadSession = sessionRoot !== undefined
       && (foldedPath === sessionRoot || foldedPath.startsWith(`${sessionRoot}/`))
-      && !policyMatchPaths(pathRelative(sessionRoot, normalizedPath)).some((candidate) =>
+      && !policyMatchPaths(posix.relative(sessionRoot, foldedPath)).some((candidate) =>
         candidatesFor(candidate).some((ordinal) => patterns[ordinal]!.readOnly && patterns[ordinal]!.test(candidate)));
     if (roots.keys.includes(foldedPath)) return "runtime-secret-key";
     for (const candidate of candidates) {
