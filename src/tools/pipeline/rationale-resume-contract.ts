@@ -111,7 +111,7 @@ const PROJECTION_TERMINAL_REASONS: readonly RationaleTerminalReason[] = [
 function sanitizeProjectionDisplayText(value: string, maxLength: number): string {
   // Reject angle brackets and normalize controls before and after redaction so valid projections always convert to display.
   // Forged projections must fail closed before a stranded user_pending ticket can remain.
-  const sanitized = sanitizeDisplayText(value, 4_096)
+  const sanitized = sanitizeDisplayText(redactHomePathsInText(value), 4_096)
     .replace(/[<>]/gu, " ");
   return normalizeRationaleApprovalDisplayText(
     redactHomePathsInText(sanitized),
