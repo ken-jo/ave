@@ -258,8 +258,7 @@ export async function initPluginRuntime(
         sessionId: "plugin-runtime",
         type: level === "error" ? "error" : "tool_call",
         input: `[${level.toUpperCase()}] ${message}`,
-        output:
-          data === undefined ? undefined : JSON.stringify(data).slice(0, 500),
+        output: serializeRuntimeAuditData(data),
       });
     } catch (error) {
       log.error({ err: error }, "plugin runtime audit sink failed");
@@ -398,3 +397,4 @@ export async function initPluginRuntime(
 }
 
 export type { MainWindow };
+import { serializeRuntimeAuditData } from "../../audit/runtime-audit-json.js";

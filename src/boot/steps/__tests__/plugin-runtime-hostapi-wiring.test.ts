@@ -419,10 +419,10 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
   it("routes a symlink escape through the shared plugin-runtime audit sink", async () => {
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
     const dataDir = pluginDataDirIn(tmpDirs.track(
-      mkdtempSync(join(tmpdir(), "ave-storage-audit-boot-")),
+      mkdtempSync(join(tmpdir(), `ave-storage-audit-boot-${"x".repeat(64)}-`)),
     ));
     const outsideDir = tmpDirs.track(
-      mkdtempSync(join(tmpdir(), "ave-storage-audit-boot-out-")),
+      mkdtempSync(join(tmpdir(), `ave-storage-audit-boot-out-${"x".repeat(64)}-`)),
     );
     writeFileSync(join(outsideDir, "secret.txt"), "shhh", "utf-8");
     symlinkSync(outsideDir, join(resolvePluginHostStorageDir(dataDir), "escape"), dirLinkType);
@@ -450,13 +450,41 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
     expect(refusals[0]!.type).toBe("error");
     expect(refusals[0]!.sessionId).toBe("plugin-runtime");
     expect(refusals[0]!.input).toBe("[ERROR] plugin_storage_path_rejected");
-    const payload = JSON.parse(refusals[0]!.output!) as Record<string, unknown>;
+    const serializedOutput = refusals[0]?.output ?? "";
+    expect(serializedOutput.length).toBeLessThanOrEqual(500);
+    const payload = JSON.parse(serializedOutput) as Record<string, unknown>;
     expect(payload).toMatchObject({
-      pluginId: "plugin-a",
-      reason: "storage: rejected symlink escape",
+      truncated: true,
+      originalLength: expect.any(Number),
+      preview: expect.any(String),
     });
+    expect(payload.originalLength).toBeGreaterThan(500);
+  });
+  it("preserves short runtime audit metadata", async () => {
+    await initAndGetFactory(makeSettingsService(new Map()));
+    const auditLog = runtimeTestState.capturedRuntimeOptions?.auditLog as (level: string, message: string, data: unknown) => void;
+    const data = { pluginId: "plugin-a", reason: "fixture refusal" };
+    auditLog("error", "fixture_refusal", data);
+    const entry = lastBootAuditLogger.log.mock.calls.at(-1)?.[0] as { output?: string } | undefined;
+    const output = entry?.output ?? "";
+    expect(JSON.parse(output)).toEqual(data);
   });
 
+  it.each([
+    { name: "long path", detail: `D:\\fixtures\\${"long-root\\".repeat(40)}output` },
+    { name: "escaped text", detail: '"\\\r\n😀'.repeat(150) },
+  ])("keeps oversized audit payloads parseable: $name", async ({ detail }) => {
+    await initAndGetFactory(makeSettingsService(new Map()));
+    const auditLog = runtimeTestState.capturedRuntimeOptions?.auditLog as (level: string, message: string, data: unknown) => void;
+    const data = { pluginId: "plugin-a", reason: "fixture refusal", detail };
+    auditLog("error", "fixture_refusal", data);
+    const entry = lastBootAuditLogger.log.mock.calls.at(-1)?.[0] as { output?: string } | undefined;
+    const output = entry?.output ?? "";
+    const payload = JSON.parse(output) as { truncated: boolean; originalLength: number; preview: string };
+    expect(output.length).toBeLessThanOrEqual(500);
+    expect(payload).toMatchObject({ truncated: true, originalLength: JSON.stringify(data).length });
+    expect(JSON.stringify(data).startsWith(payload.preview)).toBe(true);
+  });
   it("stays silent for an in-sandbox write", async () => {
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()));
     const dataDir = pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-storage-audit-ok-"))));
