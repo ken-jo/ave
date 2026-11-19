@@ -474,3 +474,11 @@ it("folds home case on macOS while retaining POSIX separators", async () => {
   expect(redactHomePathsInText("/SRV/FIXTURES/a%F0%90%90%A8b/end")).toBe("[home-token]");
   expect(redactHomePathsInText(String.raw`\SRV\FIXTURES\a𐐨b/end`)).toBe(String.raw`\SRV\FIXTURES\a𐐨b/end`);
 });
+
+it("preserves each structured judge argument value when keys redact to the same name", async () => {
+  await loadHomeRedactor("linux");
+  const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");
+  const argument = { [fixture.home]: `${fixture.home}/file`, "[home]": 2, encoded: encodeURIComponent(fixture.home) };
+  const result = redactJudgeRequest(judgeRequest({ invocation: judgeInvocation({ finalInput: { argument } }) }));
+  expect(JSON.parse(result.tool.input.argument)).toEqual({ "[home]#2": "[home]/file", "[home]": 2, encoded: "[home-token]" });
+});

@@ -1,6 +1,7 @@
 // Only DLP-masked requests with redacted home paths may reach external judges or audit disk.
 import { createHash } from "node:crypto";
 import { maskSensitiveData, redactHomePathsInText } from "../../audit/dlp-filter.js";
+import { stringifyHomeRedacted } from "../../audit/home-path-json.js";
 import { formatSandboxCapabilityForPrompt } from "../sandbox-capability.js";
 import type { JudgeRequest, RedactedJudgeRequest } from "./judge-contract.js";
 
@@ -20,8 +21,11 @@ export function redactJudgeRequest(request: JudgeRequest): RedactedJudgeRequest 
   const inv = request.invocation;
   const input: Record<string, string> = {};
   for (const [key, value] of Object.entries(inv.finalInput)) {
-    const raw = typeof value === "string" ? value : JSON.stringify(value ?? null);
-    input[key] = redactJudgeText(raw);
+    if (typeof value === "string") input[key] = redactJudgeText(value);
+    else {
+      const serialized = stringifyHomeRedacted(value ?? null) ?? "";
+      input[key] = cap(maskSensitiveData(serialized).masked, MAX_VALUE_CHARS);
+    }
   }
   return {
     sessionId: request.sessionId,
