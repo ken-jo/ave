@@ -173,8 +173,8 @@ vi.mock("node:fs/promises", async (original) => {
   }]));
   return { ...actual, ...guarded, default: { ...actual, ...guarded } };
 });
-// Native identity pins on win32, injected facts on a foreign host. This fixture owns every filesystem mutation; reuse a pin only
-// while the leaf and every ancestor's metadata still match. DACLs stay modeled: `drive.readable` also grants Users read.
+// Native identity pins on win32, injected facts on a foreign host. Only suite-owned paths and ancestors participate in the
+// fixture cache. DACLs stay modeled: `drive.readable` also grants Users read.
 vi.mock("../../shared/windows-path-facts.js", async (original) => {
   const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
   const { getHostResources } = await import("../../main/host-resources.js");
@@ -192,10 +192,11 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     const normalized = paths.normalize(path);
     const canonical = normalized === paths.parse(normalized).root ? normalized : normalized.replace(/[\\/]+$/, "");
     const changeTime = `0x${(info.ctimeNs / 100n + 116444736000000000n).toString(16).padStart(16, "0")}`;
+    const link = info.isSymbolicLink();
     return { exists: true as const, canonical, volumeSerial: `0x${info.dev.toString(16)}`,
       fileId: `0x${info.ino.toString(16).padStart(32, "0")}`, volumeSerialNumber: `0x${info.dev.toString(16)}`, fileIndex: `0x${info.ino.toString(16)}`,
-      fileSystemName: null, changeTime, attributes: info.isDirectory() ? 16 : 0, reparseTag: 0, directory: info.isDirectory(),
-      reparseTarget: null };
+      fileSystemName: null, changeTime, attributes: link ? 0x400 : info.isDirectory() ? 16 : 0,
+      reparseTag: link ? 0xa000000c : 0, directory: info.isDirectory(), reparseTarget: link ? fs.readlinkSync(path) : null };
   };
   const facts = (path: string): import("../../shared/windows-path-facts.js").WindowsPathFacts => {
     const paths = pathFor(path);
@@ -209,14 +210,20 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     }
     return { ...component(path), ancestors };
   };
-  const stamp = (path: string): string => {
+  const stamp = (path: string): string | undefined => {
     const paths = pathFor(path);
+    if (!paths.isAbsolute(path)) return undefined;
+    const root = hostPlatform !== "win32" && paths === win32 && /^[a-z]:[\\/]/iu.test(path)
+      ? win32.parse(path).root
+      : [pinRoot, resourceRoot].find((directory) => {
+        const relative = paths.relative(directory, path);
+        return relative !== ".." && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
+      });
+    if (root === undefined) return undefined;
     const chain: string[] = [];
-    for (let entry = paths.normalize(path);;) {
+    for (let entry = path;; entry = paths.dirname(entry)) {
       chain.unshift(entry);
-      const parent = paths.dirname(entry);
-      if (parent === entry) break;
-      entry = parent;
+      if (paths.relative(root, entry) === "") break;
     }
     return JSON.stringify(chain.map(entry => {
       const info = fs.lstatSync(entry, { throwIfNoEntry: false, bigint: true });
@@ -229,7 +236,7 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     if (!resourceLifecycle.events.includes("identity")) resourceLifecycle.events.push("identity");
     const keys = paths.map(path => pathFor(path).normalize(path));
     const stamps = new Map([...new Set(keys)].map(path => [path, stamp(path)]));
-    const pending = [...stamps].filter(([path, current]) => drive.pins.get(path)?.stamp !== current);
+    const pending = [...stamps].filter(([path, current]) => current === undefined || drive.pins.get(path)?.stamp !== current);
     const fresh = new Map<string, import("../../shared/windows-path-facts.js").WindowsPathFacts>();
     if (pending.length > 0) {
       const requested = pending.map(([path]) => path);
@@ -241,7 +248,7 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
         fresh.set(path, row);
         // A changing tree cannot populate the cache, even if the native request itself succeeded.
         drive.pins.delete(path);
-        if (current === stamp(path)) drive.pins.set(path, { stamp: current, facts: row });
+        if (current !== undefined && current === stamp(path)) drive.pins.set(path, { stamp: current, facts: row });
       });
     }
     return keys.map(path => {
@@ -601,13 +608,19 @@ it("composes host resources before the first native identity request", () => {
   expect(resourceLifecycle.events.indexOf("identity")).toBeGreaterThan(configuredAt);
 });
 
+function writeSharedPinNeighbors(): void {
+  for (const parent of [runTmp, hostPath.dirname(runTmp)]) {
+    nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(parent, "pin-cache-neighbor-")));
+  }
+}
+
 it("pins unchanged fixture paths once instead of starting a helper for each grant read", () => {
   const path = hostPath.join(pinRoot, "present");
   hostFs.mkdirSync(path);
   const first = pinWindowsPaths([path]);
   expect(first[0]).toMatchObject({ exists: true, directory: true });
   const queries = runtime.identityQuery.mock.calls.length;
-  nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "pin-cache-neighbor-")));
+  writeSharedPinNeighbors();
   expect(pinWindowsPaths([path])).toEqual(first);
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
 });
@@ -616,7 +629,7 @@ it("refreshes fixture pins when a missing target is created or an existing targe
   const path = hostPath.join(pinRoot, "changing");
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
   const queries = runtime.identityQuery.mock.calls.length;
-  nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "pin-cache-neighbor-")));
+  writeSharedPinNeighbors();
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
   mkdirSync(path);
@@ -624,6 +637,25 @@ it("refreshes fixture pins when a missing target is created or an existing targe
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 1);
   rmdirSync(path);
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 2);
+});
+
+it("refreshes an owned path on identity replacement and on substitution with a link", () => {
+  const path = hostPath.join(pinRoot, "replaceable");
+  const original = hostPath.join(pinRoot, "original");
+  hostFs.mkdirSync(path);
+  const [first] = pinWindowsPaths([path]);
+  expect(first).toMatchObject({ exists: true, directory: true, reparseTag: 0 });
+  const queries = runtime.identityQuery.mock.calls.length;
+  hostFs.renameSync(path, original);
+  hostFs.mkdirSync(path);
+  const [replacement] = pinWindowsPaths([path]);
+  expect(replacement).toMatchObject({ exists: true, directory: true, reparseTag: 0 });
+  expect(replacement?.fileId).not.toBe(first?.fileId);
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 1);
+  hostFs.renameSync(path, hostPath.join(pinRoot, "replacement"));
+  hostFs.symlinkSync(original, path, hostPlatform === "win32" ? "junction" : "dir");
+  expect(pinWindowsPaths([path])[0]?.reparseTag).toBeGreaterThan(0);
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 2);
 });
 
