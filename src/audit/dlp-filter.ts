@@ -74,6 +74,15 @@ const _homeDir = (() => { try { return os.homedir(); } catch { return ""; } })()
 
 const MAX_AUDIT_PATH = 256;
 
+/** File URLs can encode native separators even when generated on a different platform. */
+function homePattern(home: string, windows: boolean, fileUrl = false): string {
+  return windows
+    ? home.split(/([\\/]+)/u).map(part => /^[\\/]/u.test(part)
+      ? (fileUrl ? String.raw`(?:[\\/]|%5[cC]){${part.length},}` : String.raw`[\\/]{${part.length},}`)
+      : escapeRegExp(part)).join("")
+    : escapeRegExp(home);
+}
+
 /** Replace home prefixes in paths and file URLs and cap each field before JSON serialization; non-path strings still receive the cap. */
 export function redactFsPath(p: string): string {
   if (!p) return p;
@@ -88,8 +97,11 @@ export function redactFsPath(p: string): string {
       const prefix = comparable(home);
       return path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "\\");
     };
-    if (startsAtHome(standardFileUrlHome)) {
-      out = "file://<home>" + out.slice(standardFileUrlHome.length);
+    const standardMatch = windows
+      ? new RegExp(`^${homePattern(standardFileUrlHome, true, true)}(?=$|[/\\\\]|%5[cC])`, "iu").exec(out)
+      : null;
+    if (standardMatch || startsAtHome(standardFileUrlHome)) {
+      out = "file://<home>" + out.slice(standardMatch?.[0].length ?? standardFileUrlHome.length);
     } else if (startsAtHome(legacyFileUrlHome)) {
       out = "file://<home>" + out.slice(legacyFileUrlHome.length).replace(/\\/g, "/");
     } else if (startsAtHome(_homeDir)) {
@@ -116,11 +128,7 @@ export function redactHomePathsInText(value: string): string {
     for (const [home, replacement] of homeForms) {
       if (!home) continue;
       const windows = os.platform() === "win32";
-      const pattern = windows
-        ? home.split(/([\\/]+)/u).map(part => /^[\\/]/u.test(part)
-          ? String.raw`[\\/]{${part.length},}`
-          : escapeRegExp(part)).join("")
-        : escapeRegExp(home);
+      const pattern = homePattern(home, windows, home === standardFileUrlHome);
       // Consume each separator run together and never retry from inside a leading run.
       const start = windows && /^[\\/]/u.test(home) ? String.raw`(?<![\\/])` : "";
       // Only filename continuation text prevents redaction; punctuation fails closed and suffix bytes stay intact.

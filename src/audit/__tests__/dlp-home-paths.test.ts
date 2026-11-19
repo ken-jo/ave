@@ -35,7 +35,8 @@ describe("home paths with mixed Windows spellings", () => {
     `${home}${suffix}\\Output`, `${home}${suffix}/Output`, `file://${home}${suffix}\\Output`, `${pathToFileURL(home + suffix)}/Output`,
   ])))];
   it.each(siblings)("preserves a sibling component in both redactors: %s", (sibling) => {
-    expect(redactFsPath(sibling)).toBe(sibling);
+    const bounded = [...sibling];
+    expect(redactFsPath(sibling)).toBe(bounded.length > 256 ? `${bounded.slice(0, 256).join("")}…` : sibling);
     expect(redactHomePathsInText(`Target ${sibling}`)).toBe(`Target ${sibling}`);
   });
   it.each(spellings)("redacts the bare home and preserves descendant spelling: %s", (home) => {
