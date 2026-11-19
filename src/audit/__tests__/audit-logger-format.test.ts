@@ -240,3 +240,17 @@ describe("AuditLogger.logTurn() — helper correctness", () => {
     expect(ts).toBeLessThanOrEqual(after + 100);
   });
 });
+describe("runtime audit output home redaction", () => {
+  it("writes bounded valid output with literal and encoded homes removed", async () => {
+    const { homedir } = await import("node:os");
+    const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+    const home = homedir();
+    const logger = new AuditLogger();
+    const output = serializeRuntimeAuditData({ literal: `${home}/literal`, encoded: `${encodeURIComponent(home)}/encoded` });
+    logger.log({ timestamp: new Date().toISOString(), sessionId: "runtime-home", type: "info", output });
+    await logger.flush();
+    const persisted = readLogLines().find(entry => entry.sessionId === "runtime-home")?.output ?? "";
+    expect(JSON.parse(persisted)).toEqual({ literal: "[home]/literal", encoded: "[home-token]" });
+    expect(persisted.length).toBeLessThanOrEqual(500);
+  });
+});
