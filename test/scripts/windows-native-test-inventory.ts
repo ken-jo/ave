@@ -197,7 +197,7 @@ const { port, signal, sources, transformer, batchSize } = workerData;
 })();
 `;
 
-function* transformedSources(sources: ReadonlyMap<string, string>): Generator<[string, string, string | undefined]> {
+function* transformedSources(sources: ReadonlyMap<string, string>, replyTimeoutMs: number): Generator<[string, string, string | undefined]> {
   const entries = [...sources].filter(([file]) => isInventorySource(file));
   // Small fixture graphs avoid worker startup; large graphs overlap compilation and scanning.
   if (entries.length < 32) {
@@ -219,14 +219,14 @@ function* transformedSources(sources: ReadonlyMap<string, string>): Generator<[s
     worker.on("error", error => { failure = error instanceof Error ? error : new Error(String(error)); });
     worker.on("exit", code => { failure ??= new Error(`Source transform worker exited with code ${code}`); });
     let consumed = 0;
-    let deadline = performance.now() + TRANSFORM_REPLY_TIMEOUT_MS;
+    let deadline = performance.now() + replyTimeoutMs;
     while (consumed < entries.length) {
       if (failure) throw new Error("Source transform worker failed", { cause: failure });
       const version = Atomics.load(signal, 0);
       const response = receiveMessageOnPort(port1)?.message as { results?: [string, string][]; error?: string } | undefined;
       if (response === undefined) {
         const remaining = deadline - performance.now();
-        if (remaining <= 0) throw new Error(`Source transform worker stalled or exited before replying within ${TRANSFORM_REPLY_TIMEOUT_MS}ms`);
+        if (remaining <= 0) throw new Error(`Source transform worker stalled or exited before replying within ${replyTimeoutMs}ms`);
         Atomics.wait(signal, 0, version, Math.min(remaining, TRANSFORM_POLL_INTERVAL_MS));
         continue;
       }
@@ -237,7 +237,7 @@ function* transformedSources(sources: ReadonlyMap<string, string>): Generator<[s
         consumed++;
         yield [file, source, code];
       }
-      deadline = performance.now() + TRANSFORM_REPLY_TIMEOUT_MS;
+      deadline = performance.now() + replyTimeoutMs;
     }
   } finally {
     port1.close();
@@ -248,6 +248,10 @@ function* transformedSources(sources: ReadonlyMap<string, string>): Generator<[s
 
 /** Conservative runtime reachability: lack of an observed native call is never an exclusion. */
 export function nativeBackedTestFiles(sources: ReadonlyMap<string, string>): Map<string, string[]> {
+  return scanNativeBackedTestFiles(sources, TRANSFORM_REPLY_TIMEOUT_MS);
+}
+
+function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTimeoutMs: number): Map<string, string[]> {
   const resolveImport = (file: string, specifier: string): string | undefined => {
     if (!specifier.startsWith(".")) return undefined;
     const path = posix.normalize(posix.join(posix.dirname(file), specifier));
@@ -256,7 +260,7 @@ export function nativeBackedTestFiles(sources: ReadonlyMap<string, string>): Map
   };
   const graph = new Map<string, { file: string; actual: boolean }[]>();
   const mockedModules = new Map<string, Set<string>>();
-  for (const [file, source, transformed] of transformedSources(sources)) {
+  for (const [file, source, transformed] of transformedSources(sources, replyTimeoutMs)) {
     const parsed = runtimeImports(file, source, transformed);
     graph.set(file, parsed.imports.flatMap(specifier => {
       const dependency = resolveImport(file, specifier);

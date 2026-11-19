@@ -1,9 +1,9 @@
 import { buildSync } from "esbuild";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { platform, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { nativeBackedTestFiles } from "./windows-native-test-inventory.js";
@@ -224,14 +224,33 @@ describe("Windows native test inventory", () => {
     expect(() => nativeBackedTestFiles(modules)).toThrow(/Expected/);
   });
 
-  it.each(["startup", "crash", "exit", "stall", "construction", "preload"])("bounds worker %s and releases its resources", fault => {
+  it.each<{ fault: string; replyTimeoutMs?: number }>([
+    { fault: "startup", replyTimeoutMs: 100 },
+    // The first real batch must arrive before the crash can exercise the next reply deadline.
+    { fault: "crash", replyTimeoutMs: 250 },
+    { fault: "exit", replyTimeoutMs: 100 },
+    { fault: "stall" },
+    { fault: "construction" },
+    { fault: "preload" },
+  ])("bounds worker $fault and releases its resources", ({ fault, replyTimeoutMs }) => {
     const root = mkdtempSync(join(tmpdir(), "inventory-worker-"));
     try {
       const entry = join(root, "inventory.cjs");
       const preload = join(root, "preload.cjs");
       writeFileSync(preload, 'if (!require("node:worker_threads").isMainThread) throw new Error("Unexpected worker preload");');
+      const inventoryPath = fileURLToPath(new URL("./windows-native-test-inventory.ts", import.meta.url));
+      const source = readFileSync(inventoryPath, "utf8");
+      const scan = replyTimeoutMs === undefined
+        ? "nativeBackedTestFiles(modules)"
+        : `scanNativeBackedTestFiles(modules, ${replyTimeoutMs})`;
       const bundled = buildSync({
-        entryPoints: [fileURLToPath(new URL("./windows-native-test-inventory.ts", import.meta.url))],
+        stdin: {
+          // Only the fault subprocess bundle can call the private scanner with a shorter deadline.
+          contents: replyTimeoutMs === undefined ? source : `${source}\nexport { scanNativeBackedTestFiles };\n`,
+          loader: "ts",
+          resolveDir: dirname(inventoryPath),
+          sourcefile: inventoryPath,
+        },
         bundle: true,
         platform: "node",
         format: "cjs",
@@ -273,7 +292,7 @@ const modules = new Map([["src/demo.test.ts", 'import "./windows-boundary";'], [
 for (let i = 2; i < 260; i++) modules.set("src/pad" + i + ".ts", "");
 const started = performance.now();
 let error, result;
-try { result = [...module.exports.nativeBackedTestFiles(modules)]; } catch (caught) { error = caught.message; }
+try { result = [...module.exports.${scan}]; } catch (caught) { error = caught.message; }
 const elapsedMs = performance.now() - started;
 (async () => {
   const closed = await Promise.race([
@@ -304,8 +323,10 @@ const elapsedMs = performance.now() - started;
       } else if (fault === "construction") {
         expect(receipt.error).toBe("Controlled worker construction failure");
       } else {
-        expect(receipt.error).toMatch(/Source transform worker.*5000ms/);
-        expect(receipt.elapsedMs).toBeLessThan(6500);
+        const expectedTimeoutMs = replyTimeoutMs ?? 5000;
+        expect(receipt.error).toBe(`Source transform worker stalled or exited before replying within ${expectedTimeoutMs}ms`);
+        expect(receipt.elapsedMs).toBeGreaterThanOrEqual(expectedTimeoutMs);
+        expect(receipt.elapsedMs).toBeLessThan(replyTimeoutMs === undefined ? 6500 : 2500);
         expect(receipt.batches).toBe(fault === "crash" ? 1 : 0);
       }
     } finally {
