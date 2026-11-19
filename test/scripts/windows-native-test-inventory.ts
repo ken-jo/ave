@@ -49,7 +49,7 @@ function literal(token: string | undefined): string | undefined {
 function isComputedRequireMember(tokens: readonly string[], index: number): boolean {
   if (literal(tokens[index]) !== "require" || tokens[index - 1] !== "[" || tokens[index + 1] !== "]") return false;
   const receiver = tokens[index - 2] ?? "";
-  return ["?.", ")", "]", "}"].includes(receiver) || literal(receiver) !== undefined
+  return ["?.", ")", "]", "}"].includes(receiver) || literal(receiver) !== undefined || /^(?:\d|\.\d)/.test(receiver)
     || (/^[$A-Z_a-z][$\w]*$/.test(receiver)
       && !["return", "throw", "yield", "await", "new", "delete", "void", "typeof", "in", "instanceof", "case", "else", "do"].includes(receiver));
 }
@@ -89,7 +89,7 @@ function isPossibleRequireLoad(tokens: readonly string[], index: number): boolea
       if (tokens[closing] === delimiter) depth++;
       if (tokens[closing] === closingDelimiter) depth--;
     }
-    if (delimiter !== "(" && tokens[closing] === "=") return true;
+    if (delimiter !== "(" && ["=", "of", "in"].includes(tokens[closing] ?? "")) return true;
     if (delimiter === "(" && (tokens[closing] === "=>" || tokens[closing] === "{" || previous === "catch")
       && !["if", "while", "switch", "with"].includes(previous ?? "")) return true;
     if (delimiter === "(") return false;

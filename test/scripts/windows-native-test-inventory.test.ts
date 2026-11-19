@@ -133,6 +133,39 @@ describe("Windows native test inventory", () => {
     expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
   });
   it.each([
+    '() => { for ({ require: x } of xs) consume(x); return {}; }',
+    '() => { for ({ require: x } in xs) consume(x); return {}; }',
+    '() => ({ read: async () => { for await ({ require: x } of xs) consume(x); } })',
+    '() => { for ({ require: x } of xs) { consume(x); } return {}; }',
+    '() => { for ([{ require: x }] of xs) consume(x); return {}; }',
+    '() => { let load; for ({ require: load } of [module]) consume(load); return { read: () => load.call(module, moduleName).read() }; }',
+    '() => { for ({ require: x } in xs) { consume(x); } return {}; }',
+    '() => ({ read: async () => { for await ([{ require: x }] of xs) { consume(x); } } })',
+    '() => { let x; ({ require: x } = module); return { read: x }; }',
+    '() => { let x; ([{ require: x }] = modules); return { read: x }; }',
+  ])("retains destructuring targets regardless of loop body punctuation: %s", factory => {
+    const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
+  });
+  it.each([
+    '1["require"]',
+    '1["require"]?.',
+    "1['require']",
+    "1['require']?.",
+    '1[`require`]',
+    '1[`require`]?.',
+    '0x1["require"]',
+    '.5["require"]',
+    '1e2["require"]',
+    '1n["require"]',
+    '1_000["require"]',
+  ])("retains numeric computed loaders and records their literal edges: %s", loader => {
+    const factory = `vi.mock("../../shared/windows-native-host.js", () => ({ read: () => ${loader}(moduleName).read() })); import { read } from "../store.js"; read();`;
+    expect(nativeBackedTestFiles(sources(factory)).has(SUITE)).toBe(true);
+    const call = `${loader}("../../shared/windows-native-host.js").read();`;
+    expect(nativeBackedTestFiles(sources(call)).get(SUITE)).toEqual([SUITE, NATIVE]);
+  });
+  it.each([
     'vi.mock("../../shared/windows-native-host.js");',
     'vi.mock("../../shared/windows-native-host.js", async original => ({ ...await original() }));',
     'vi.mock("../../shared/windows-native-host.js", async () => ({ ...await vi.importActual("../../shared/windows-native-host.js") }));',
