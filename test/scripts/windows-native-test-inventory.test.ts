@@ -1,10 +1,18 @@
+import { buildSync } from "esbuild";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { platform } from "node:os";
+import { platform, tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { nativeBackedTestFiles } from "./windows-native-test-inventory.js";
 
 const require = createRequire(import.meta.url);
-vi.mock("node:os", () => ({ platform: () => Reflect.apply({ require }.require, null, ["node:os"]).platform() }));
+vi.mock("node:os", () => ({
+  platform: () => Reflect.apply({ require }.require, null, ["node:os"]).platform(),
+  tmpdir: () => Reflect.apply({ require }.require, null, ["node:os"]).tmpdir(),
+}));
 
 const SUITE = "src/data/__tests__/store.test.ts";
 const STORE = "src/data/store.ts";
@@ -214,5 +222,94 @@ describe("Windows native test inventory", () => {
     const modules = sources("const = ;");
     for (let i = 0; i < extra; i++) modules.set(`src/data/unused-${i}.ts`, "");
     expect(() => nativeBackedTestFiles(modules)).toThrow(/Expected/);
+  });
+
+  it.each(["startup", "crash", "exit", "stall", "construction", "preload"])("bounds worker %s and releases its resources", fault => {
+    const root = mkdtempSync(join(tmpdir(), "inventory-worker-"));
+    try {
+      const entry = join(root, "inventory.cjs");
+      const preload = join(root, "preload.cjs");
+      writeFileSync(preload, 'if (!require("node:worker_threads").isMainThread) throw new Error("Unexpected worker preload");');
+      const bundled = buildSync({
+        entryPoints: [fileURLToPath(new URL("./windows-native-test-inventory.ts", import.meta.url))],
+        bundle: true,
+        platform: "node",
+        format: "cjs",
+        write: false,
+        external: ["esbuild", "typescript/unstable/ast/scanner"],
+        define: { "import.meta.url": JSON.stringify(import.meta.url) },
+        banner: { js: `
+const threads = require("node:worker_threads");
+const workers = [], exits = [], closures = [], flags = [];
+let batches = 0;
+const receive = threads.receiveMessageOnPort;
+threads.receiveMessageOnPort = port => {
+  const response = receive(port);
+  if (response?.message.results) batches++;
+  return response;
+};
+const BaseWorker = threads.Worker, BaseChannel = threads.MessageChannel;
+threads.MessageChannel = class extends BaseChannel {
+  constructor() {
+    super();
+    for (const port of [this.port1, this.port2]) closures.push(new Promise(resolve => port.once("close", resolve)));
+  }
+};
+threads.Worker = class extends BaseWorker {
+  constructor(code, options) {
+    flags.push(options.execArgv);
+    if (${JSON.stringify(fault)} === "construction") throw new Error("Controlled worker construction failure");
+    if (${JSON.stringify(fault)} === "startup") code = "const = ;";
+    if (${JSON.stringify(fault)} === "exit") code = "process.exit(0);";
+    if (${JSON.stringify(fault)} === "stall") code = "setInterval(() => {}, 1000);";
+    if (${JSON.stringify(fault)} === "crash") code = code.replace("port.postMessage({ results });", "port.postMessage({ results }); if (i === 0) process.exit(23);");
+    super(code, options);
+    workers.push(this);
+    exits.push(new Promise(resolve => this.once("exit", resolve)));
+  }
+};` },
+        footer: { js: `
+const modules = new Map([["src/demo.test.ts", 'import "./windows-boundary";'], ["src/windows-boundary.ts", ""]]);
+for (let i = 2; i < 260; i++) modules.set("src/pad" + i + ".ts", "");
+const started = performance.now();
+let error, result;
+try { result = [...module.exports.nativeBackedTestFiles(modules)]; } catch (caught) { error = caught.message; }
+const elapsedMs = performance.now() - started;
+(async () => {
+  const closed = await Promise.race([
+    Promise.all([...exits, ...closures]).then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 1000).unref()),
+  ]);
+  console.log(JSON.stringify({ error, result, elapsedMs, closed, liveWorkers: workers.filter(worker => worker.threadId !== -1).length, flags, batches }));
+})();` },
+      });
+      writeFileSync(entry, bundled.outputFiles[0].text);
+      // The watchdog lives outside the synchronous caller, so a regressed wait cannot hang the suite.
+      const child = spawnSync(process.execPath, [...(fault === "preload" ? ["--require", preload] : []), entry], {
+        encoding: "utf8",
+        timeout: 8000,
+        windowsHide: true,
+        env: { ...process.env, NODE_PATH: fileURLToPath(new URL("../../node_modules", import.meta.url)) },
+      });
+      expect(child.error, child.stderr).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
+      const receipt = JSON.parse(child.stdout.trim());
+      expect(receipt.flags).toEqual([[]]);
+      expect(receipt.closed).toBe(true);
+      expect(receipt.liveWorkers).toBe(0);
+      if (fault === "preload") {
+        expect(receipt.error).toBeUndefined();
+        expect(receipt.result).toEqual([["src/demo.test.ts", ["src/demo.test.ts", "src/windows-boundary.ts"]]]);
+        expect(receipt.batches).toBe(3);
+      } else if (fault === "construction") {
+        expect(receipt.error).toBe("Controlled worker construction failure");
+      } else {
+        expect(receipt.error).toMatch(/Source transform worker.*5000ms/);
+        expect(receipt.elapsedMs).toBeLessThan(6500);
+        expect(receipt.batches).toBe(fault === "crash" ? 1 : 0);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

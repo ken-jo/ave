@@ -168,6 +168,8 @@ function runtimeImports(file: string, source: string, transformed?: string): { i
 
 const require = createRequire(import.meta.url);
 const TRANSFORM_BATCH_SIZE = 128;
+const TRANSFORM_REPLY_TIMEOUT_MS = 5000;
+const TRANSFORM_POLL_INTERVAL_MS = 50;
 const TRANSFORM_WORKER = `
 const { workerData } = require("node:worker_threads");
 const { port, signal, sources, transformer, batchSize } = workerData;
@@ -203,18 +205,31 @@ function* transformedSources(sources: ReadonlyMap<string, string>): Generator<[s
     return;
   }
   const { port1, port2 } = new MessageChannel();
-  const signal = new Int32Array(new SharedArrayBuffer(4));
-  const worker = new Worker(TRANSFORM_WORKER, {
-    eval: true,
-    workerData: { port: port2, signal, sources: entries, transformer: require.resolve("esbuild"), batchSize: TRANSFORM_BATCH_SIZE },
-    transferList: [port2],
-  });
+  let worker: Worker | undefined;
   try {
+    const signal = new Int32Array(new SharedArrayBuffer(4));
+    worker = new Worker(TRANSFORM_WORKER, {
+      eval: true,
+      execArgv: [],
+      workerData: { port: port2, signal, sources: entries, transformer: require.resolve("esbuild"), batchSize: TRANSFORM_BATCH_SIZE },
+      transferList: [port2],
+    });
+    let failure: Error | undefined;
+    // Events cannot run during the synchronous scan; the reply deadline also covers startup and abrupt exits.
+    worker.on("error", error => { failure = error instanceof Error ? error : new Error(String(error)); });
+    worker.on("exit", code => { failure ??= new Error(`Source transform worker exited with code ${code}`); });
     let consumed = 0;
+    let deadline = performance.now() + TRANSFORM_REPLY_TIMEOUT_MS;
     while (consumed < entries.length) {
+      if (failure) throw new Error("Source transform worker failed", { cause: failure });
       const version = Atomics.load(signal, 0);
       const response = receiveMessageOnPort(port1)?.message as { results?: [string, string][]; error?: string } | undefined;
-      if (response === undefined) { Atomics.wait(signal, 0, version); continue; }
+      if (response === undefined) {
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) throw new Error(`Source transform worker stalled or exited before replying within ${TRANSFORM_REPLY_TIMEOUT_MS}ms`);
+        Atomics.wait(signal, 0, version, Math.min(remaining, TRANSFORM_POLL_INTERVAL_MS));
+        continue;
+      }
       if (response.results === undefined) throw new Error(response.error ?? "Source transforms unavailable");
       for (const [file, code] of response.results) {
         const source = sources.get(file);
@@ -222,10 +237,12 @@ function* transformedSources(sources: ReadonlyMap<string, string>): Generator<[s
         consumed++;
         yield [file, source, code];
       }
+      deadline = performance.now() + TRANSFORM_REPLY_TIMEOUT_MS;
     }
   } finally {
     port1.close();
-    void worker.terminate();
+    port2.close();
+    void worker?.terminate();
   }
 }
 
