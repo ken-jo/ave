@@ -18,6 +18,8 @@ interface ManagedChildProcess {
   disposeTimer?: NodeJS.Timeout;
   disposalStartedAt?: number;
   retentionWarningEmitted?: boolean;
+  retainedUntilExit?: boolean;
+  exitObserved?: boolean;
   dispose: () => void;
   onSettled: () => void;
   onError: () => void;
@@ -86,15 +88,9 @@ export function trackManagedChildProcess(
   // Only a process this host spawned goes to the reaper (below): a pid on any other object names nothing the host owns. `spawnfile` is set by
   // node:child_process on every process it starts.
   const reaperHeldGroup = typeof child.spawnfile === "string" ? entry.processGroupId : undefined;
-  const dispose = (): void => {
-    const wasTracked = managedChildren.delete(entry);
-    if (entry.disposeTimer) clearTimeout(entry.disposeTimer);
-    child.off("exit", entry.onSettled);
-    child.off("close", entry.onSettled);
-    child.off("error", entry.onError);
-    if (wasTracked && reaperHeldGroup !== undefined) hostDeathReaper().release(reaperHeldGroup);
-  };
+  const dispose = (): void => disposeManagedChildProcess(entry, reaperHeldGroup);
   const onSettled = (): void => {
+    entry.exitObserved = true;
     if (pendingTreeKills.has(child)) return;
     if (entry.processGroupId !== undefined && processExists(-entry.processGroupId)) {
       scheduleProcessGroupDisposal(entry);
@@ -155,6 +151,38 @@ export function trackManagedChildProcess(
     }
   }
   return dispose;
+}
+
+// Failed admission still leaves a host-owned process. Keep it in cancellation/shutdown sweeps until death, independently of registration.
+export function retainUnterminatedChildProcess(child: ChildProcess, label: string): void {
+  if (child.exitCode != null || child.signalCode != null) return;
+  const existing = [...managedChildren].find((entry) => entry.child === child);
+  if (existing) {
+    existing.retainedUntilExit = true;
+    return;
+  }
+  const entry: ManagedChildProcess = {
+    child, label, killProcessGroup: false, retainedUntilExit: true,
+    dispose: () => disposeManagedChildProcess(entry),
+    onSettled: () => { entry.exitObserved = true; entry.dispose(); },
+    // A signal-delivery error is not death; the transport reports the error while this registration retains ownership.
+    onError: () => {},
+  };
+  managedChildren.add(entry);
+  child.once("exit", entry.onSettled);
+  child.once("close", entry.onSettled);
+  child.on("error", entry.onError);
+}
+
+function disposeManagedChildProcess(entry: ManagedChildProcess, reaperHeldGroup?: number): void {
+  const { child } = entry;
+  if (entry.retainedUntilExit && !entry.exitObserved && child.exitCode == null && child.signalCode == null) return;
+  const wasTracked = managedChildren.delete(entry);
+  if (entry.disposeTimer) clearTimeout(entry.disposeTimer);
+  child.off("exit", entry.onSettled);
+  child.off("close", entry.onSettled);
+  child.off("error", entry.onError);
+  if (wasTracked && reaperHeldGroup !== undefined) hostDeathReaper().release(reaperHeldGroup);
 }
 
 export function getManagedChildProcessCount(): number {

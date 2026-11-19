@@ -68,9 +68,60 @@ describe.skipIf(process.platform !== "win32")("native policy pipe EOF", () => {
     } finally { await transport.release(); }
   });
 });
-afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("native policy pipe lifecycle", () => {
+  for (const platform of ["darwin", "win32"]) it.each(["kill throws", "late exit", "no exit"])(
+    `retains failed registration until observed death on ${platform}: %s`, async (ending) => {
+      vi.stubGlobal("process", { ...process, platform });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const bound = platform === "win32" ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs;
+      const helper = helperChild();
+      const trackFault = new Error("tracking failed");
+      vi.mocked(managedChildren.trackManagedChildProcess).mockImplementation(() => { throw trackFault; });
+      vi.spyOn(childProcess, "spawn").mockReturnValue(helper.child as ReturnType<typeof childProcess.spawn>);
+      const write = vi.spyOn(helper.stdin, "write");
+      vi.spyOn(helper.stdin, "destroy").mockImplementation(() => { throw new Error("input close failed"); });
+      helper.kill.mockImplementation(() => {
+        if (ending === "kill throws") throw new Error("termination failed");
+        return true;
+      });
+      const failures: unknown[] = [];
+      const opening = openMxcPolicyPipe(Buffer.from("policy"), PIPE).then(
+        () => { throw new Error("Failed tracking admitted a launch"); },
+        (error: unknown) => { failures.push(error); },
+      );
+      try {
+        await vi.advanceTimersByTimeAsync(bound - 1);
+        expect(write).not.toHaveBeenCalled();
+        const beforeDeadline = { settlements: failures.length, owners: managedChildren.getManagedChildProcessCount() };
+        if (ending === "late exit") {
+          helper.child.emit("exit", 0, null);
+          await vi.advanceTimersByTimeAsync(1);
+          await opening;
+          expect(failures).toEqual([trackFault]);
+          expect(beforeDeadline).toEqual({ settlements: 0, owners: 1 });
+        } else {
+          await vi.advanceTimersByTimeAsync(1);
+          await opening;
+          expect({ beforeDeadline, failures, owners: managedChildren.getManagedChildProcessCount() }).toMatchObject({
+            beforeDeadline: { settlements: 0, owners: 1 }, failures: [{ outcome: "left", cause: trackFault }], owners: 1,
+          });
+          managedChildren.forceKillManagedChildProcesses("policy helper cleanup");
+          expect(managedChildren.getManagedChildProcessCount()).toBe(1);
+          await managedChildren.forceKillManagedChildProcess(helper.child, "policy helper cleanup");
+          helper.child.emit("error", new Error("late termination error"));
+          helper.child.emit("error", new Error("repeated termination error"));
+          expect(managedChildren.getManagedChildProcessCount()).toBe(1);
+          helper.child.emit("close", 0, null);
+        }
+        expect(managedChildren.getManagedChildProcessCount()).toBe(0);
+      } finally {
+        helper.child.emit("close", 0, null);
+      }
+    },
+  );
+
   it.each(["throws", "missing disposer"])("refuses tracking that %s and terminates the helper", async (fault) => {
     const helper = helperChild();
     helper.kill.mockReturnValue(true);
@@ -139,11 +190,15 @@ describe("native policy pipe lifecycle", () => {
       return helper.child as ReturnType<typeof childProcess.spawn>;
     });
     const transport = await openMxcPolicyPipe(Buffer.from("policy"), PIPE);
-    const pending = expect(transport.release()).rejects.toThrow("termination failed");
-    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
-    await pending;
-    expect(helper.kill).toHaveBeenLastCalledWith("SIGKILL");
-    expect(helper.stdin.destroyed).toBe(true);
+    try {
+      const pending = expect(transport.release()).rejects.toThrow("termination failed");
+      await vi.advanceTimersByTimeAsync(process.platform === "win32" ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      await pending;
+      expect(helper.kill).toHaveBeenLastCalledWith("SIGKILL");
+      expect(helper.stdin.destroyed).toBe(true);
+      expect(managedChildren.getManagedChildProcessCount()).toBe(1);
+    } finally { helper.child.emit("close", 0, null); }
+    expect(managedChildren.getManagedChildProcessCount()).toBe(0);
   });
 
   it("sends policy and launcher PID only over private helper stdin", async () => {

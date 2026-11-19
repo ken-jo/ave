@@ -1,10 +1,17 @@
 import childProcess from "node:child_process";
 import { dirname } from "node:path";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
-import { assertManagedChildProcessAdmissionOpen, trackManagedChildProcess } from "../main/managed-child-processes.js";
+import { assertManagedChildProcessAdmissionOpen, retainUnterminatedChildProcess, trackManagedChildProcess } from "../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 const MAX_POLICY_BYTES = 4 * 1024 * 1024;
+
+class PolicyHelperTerminationError extends Error {
+  readonly outcome = "left";
+  constructor(cause: Error | undefined) {
+    super(`Windows sandbox policy helper was left; termination was not confirmed${cause ? `: ${cause.message}` : ""}`, { cause });
+  }
+}
 
 export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   bindChild(child: childProcess.ChildProcess): void;
@@ -20,6 +27,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   let stopTracking: ReturnType<typeof trackManagedChildProcess> | undefined;
   let bound: childProcess.ChildProcess | undefined;
   let closed = false;
+  let exited = false;
   let released = false;
   let ready = false;
   let failing = false;
@@ -37,20 +45,23 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
     released = true;
     clearTimeout(timer);
     releasePromise = Promise.resolve().then(async () => {
-      cleanup(() => server.stdin.destroy());
+      let stopped: Promise<void> | undefined;
       if (!closed) {
-        const stopped = new Promise<void>((resolve) => {
+        stopped = new Promise<void>((resolve) => {
           const deadline = setTimeout(() => {
-            recordFailure(new Error("Windows sandbox policy helper termination was not confirmed"));
-            cleanup(() => server.kill("SIGKILL"));
+            if (!exited && !closed && server.exitCode == null && server.signalCode == null) {
+              cleanup(() => retainUnterminatedChildProcess(server, "mxc:policy"));
+              failure = new PolicyHelperTerminationError(failure);
+            }
             resolve();
-          }, TOOL_TIMEOUT_POLICY.processTreeKillMs);
+          }, process.platform === "win32" ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs);
           deadline.unref();
           void completion.then(() => { clearTimeout(deadline); resolve(); });
         });
-        cleanup(() => server.kill());
-        await stopped;
       }
+      cleanup(() => server.stdin.destroy());
+      if (!closed && !exited && server.exitCode == null && server.signalCode == null) cleanup(() => server.kill("SIGKILL"));
+      await stopped;
       if (failure) throw failure;
     });
     return releasePromise;
@@ -66,6 +77,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   timer.unref();
   server.on("error", (error) => { void fail(error); });
   server.stdin.on("error", (error) => { void fail(error); });
+  server.once("exit", () => { exited = true; });
   server.once("close", (code) => {
     closed = true;
     clearTimeout(timer);
@@ -95,7 +107,11 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
         const header = Buffer.alloc(4);
         header.writeUInt32LE(bytes.length);
         server.stdin.write(Buffer.concat([header, bytes]));
-      } catch (error) { fail(error); }
+      } catch (error) {
+        recordFailure(error);
+        cleanup(() => retainUnterminatedChildProcess(server, "mxc:policy"));
+        fail(error);
+      }
     });
     if (failure) throw failure;
     return {
