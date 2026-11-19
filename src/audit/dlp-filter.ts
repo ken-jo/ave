@@ -184,6 +184,7 @@ const BACKSLASH_AND_URI_FAMILIES = ["full", "backslash", "percent-entity"] as co
 const DECODE_FAMILIES: readonly HomeEscapeFamily[] = [...BACKSLASH_AND_URI_FAMILIES, "percent", "entity"];
 const URI_AND_ENTITY_FAMILIES: readonly HomeEscapeFamily[] = ["full", "percent", "entity"];
 const INTRODUCER = /[\\%&]/u;
+const FILENAME_CONTINUATION = /^(?:[\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])/u;
 const BOUNDARY_CHARACTERS = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\"'`<>()[]{},|";
 
 function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeRedaction {
@@ -207,7 +208,7 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
   const forms = spellings.map(([spelling, marker]) => {
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
     const pattern = homePattern(spelling, windows, spelling === standard);
-    const end = windowsRoot ? "" : String.raw`(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
+    const end = windowsRoot ? "" : `(?!${FILENAME_CONTINUATION.source.slice(1)})`;
     const source = `${start}${pattern}${end}`;
     return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker, windowsRoot };
   });
@@ -233,11 +234,14 @@ function literalRootEnd(text: string, start: number, end: number): number {
   return last === 92 || last === 47 ? end - 1 : start;
 }
 
-function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
+function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveSiblings = false): string {
   for (const { literal, marker, windowsRoot } of forms) {
     let copied = 0;
     let pieces: string[] | undefined;
-    for (const match of text.matchAll(literal)) {
+    const matches = preserveSiblings && !windowsRoot
+      ? homeComponentMatches(text, literal, HOME_DECODE_LAYERS)
+      : text.matchAll(literal);
+    for (const match of matches) {
       let start = match.index;
       let end = start + match[0].length;
       if (windowsRoot) end = literalRootEnd(text, start, end);
@@ -284,8 +288,36 @@ function someDecodedHomeView(token: string, layers: number, match: (view: string
   return false;
 }
 
+function hasEncodedFilenameContinuation(text: string, start: number, limit: number, layers: number): boolean {
+  if (!layers || start >= limit) return false;
+  const introducer = text.charCodeAt(start + (text.charCodeAt(start) === 46 ? 1 : 0));
+  if (introducer !== 37 && introducer !== 38 && introducer !== 92) return false;
+  const suffix = text.slice(start, limit);
+  const boundary = suffix.search(/[/:"'\s]/u);
+  const candidate = boundary < 0 ? suffix : suffix.slice(0, boundary);
+  return someDecodedHomeView(candidate, layers, view => FILENAME_CONTINUATION.test(view));
+}
+
+/** Check continuation without using a decoded offset as a replacement boundary. */
+function* homeComponentMatches(text: string, pattern: RegExp, layers: number): Generator<RegExpExecArray> {
+  const matches = text.matchAll(pattern);
+  let next = matches.next();
+  while (!next.done) {
+    const match = next.value;
+    next = matches.next();
+    // Check only the gap to the next match so nearby matches cannot make the
+    // suffix search revisit the rest of the input for every literal occurrence.
+    const limit = next.done ? text.length : next.value.index;
+    if (!hasEncodedFilenameContinuation(text, match.index + match[0].length, limit, layers)) yield match;
+  }
+}
+
 function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): boolean {
-  return someDecodedHomeView(token, HOME_DECODE_LAYERS, view => forms.some(({ detector }) => detector.test(view)));
+  return someDecodedHomeView(token, HOME_DECODE_LAYERS, (view, depth) => forms.some(form => {
+    if (!form.detector.test(view)) return false;
+    const remaining = HOME_DECODE_LAYERS - depth;
+    return form.windowsRoot || !remaining || !homeComponentMatches(view, form.literal, remaining).next().done;
+  }));
 }
 
 /** Delimiters and their preceding slash runs belong to the original text. */
@@ -331,7 +363,7 @@ function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedac
 /** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
 export function redactHomePathsInText(value: string): string {
   if (!value || !mayContainHomePath(value)) return value;
-  let text = replaceLiteralHomes(value, homeRedaction.forms);
+  let text = replaceLiteralHomes(value, homeRedaction.forms, true);
   if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
   return replaceLiteralHomes(text, GENERIC_HOME_FORMS);
 }

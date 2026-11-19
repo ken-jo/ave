@@ -1,3 +1,5 @@
+import { pathToFileURL } from "node:url";
+
 import { afterEach, expect, it } from "vitest";
 import { loadHomeRedactors, resetHomeRedactors } from "../../__tests__/support/home-redaction-fixture.js";
 
@@ -193,4 +195,25 @@ it("retains all colliding entries and raw numeric values in serialized audit JSO
   });
   expect(serializeRuntimeAuditData({ n: rawJSON("1e400") })).toBe('{"n":1e400}');
   expect(serializeRuntimeAuditData({ n: rawJSON("9223372036854775807") })).toBe('{"n":9223372036854775807}');
+});
+
+it.each([
+  ["linux", POSIX_HOME],
+  ["win32", WINDOWS_HOME],
+  ["win32", UNC_HOME],
+] as const)("keeps encoded sibling continuations after a literal prefix on %s for %s", async (platform, home) => {
+  const { redactHomePathsInText, redactJudgeText, redactFsPath } = await loadHomeRedactors(home, platform);
+  const url = pathToFileURL(`${home}.é/file`, { windows: platform === "win32" }).href;
+  expect(redactFsPath(url)).toBe(url);
+  const unicode = `{"p":${JSON.stringify(home).slice(0, -1)}\\u0032/file","other":1}`;
+  expect(JSON.parse(unicode).p).toBe(`${home}2/file`);
+  const siblings = [
+    url, unicode, `${home}%32/file`, `${home}%5Fold/file`, `${home}%2Eext/file`,
+    `${home}%2532/file`, `${home}.&#00000000000233;/file`, `${encodeURIComponent(home)}%2532/file`,
+  ];
+  for (const input of siblings) {
+    expect(redactHomePathsInText(input), input).toBe(input);
+    expect(redactJudgeText(input), input).toBe(input);
+  }
+  expect(redactHomePathsInText(`${home}%2Ffile`)).toBe("[home]%2Ffile");
 });
