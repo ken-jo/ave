@@ -118,8 +118,9 @@ export function redactHomePathsInText(value: string): string {
       const pattern = os.platform() === "win32"
         ? home.split(/[\\/]/u).map(escapeRegExp).join("[\\\\/]")
         : escapeRegExp(home);
+      // Punctuation ends a home reference only when its entire run terminates the text or precedes whitespace.
       out = out.replace(
-        new RegExp(String.raw`${pattern}(?=$|[\\/\s"'\[\]{},;()<>])`, os.platform() === "win32" ? "giu" : "gu"),
+        new RegExp(String.raw`${pattern}(?=$|[\\/\s]|[.,;:!?)\]}"'>\x60]+(?=\s|$))`, os.platform() === "win32" ? "giu" : "gu"),
         replacement,
       );
     }
