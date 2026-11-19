@@ -6,12 +6,14 @@
  * path in it, the Ave home or a parent of it, under a relocated Ave home and the default profile-child one, including a process whose
  * projection was taken before the folder existed. */
 import { PassThrough } from "node:stream";
-import { afterAll, afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isolation-guard.js";
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
+import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 
 const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
+const resourceLifecycle = vi.hoisted(() => ({ events: [] as ("configured" | "identity")[] }));
 const drive = vi.hoisted(() => ({
   dirs: new Set<string>(),
   files: new Set<string>(),
@@ -23,6 +25,14 @@ const runtime = vi.hoisted(() => ({
   initialize: vi.fn(), wrap: vi.fn(), update: vi.fn(), grant: vi.fn(), stamp: vi.fn(), revoke: vi.fn(), spawn: vi.fn(), nativeSpawn: vi.fn(),
   containerBackend: false,
 }));
+
+vi.mock("../../main/host-resources.js", async (original) => {
+  const actual = await original<typeof import("../../main/host-resources.js")>();
+  return { ...actual, configureHostResources: (input: Parameters<typeof actual.configureHostResources>[0]) => {
+    actual.configureHostResources(input);
+    resourceLifecycle.events.push("configured");
+  } };
+});
 
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
@@ -140,6 +150,7 @@ vi.mock("node:fs/promises", async (original) => {
 // `drive.readable` also grants Users read, which makes its read deny "readable" evidence.
 vi.mock("../../shared/windows-path-facts.js", async (original) => {
   const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
+  const { getHostResources } = await import("../../main/host-resources.js");
   const fs = await import("node:fs");
   const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
   const owner = "S-1-5-21-100-200-300-1001";
@@ -165,7 +176,11 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     }
     return { ...component(path), ancestors };
   };
-  const pin = (paths: readonly string[]) => hostPlatform === "win32" ? actual.pinWindowsPaths(paths) : paths.map(facts);
+  const pin = (paths: readonly string[]) => {
+    expect(getHostResources()).toEqual({ resourcePath: hostPath.resolve(originalCwd, "resources"), isPackaged: false });
+    if (!resourceLifecycle.events.includes("identity")) resourceLifecycle.events.push("identity");
+    return hostPlatform === "win32" ? actual.pinWindowsPaths(paths) : paths.map(facts);
+  };
   const readable = (path: string): boolean => [...drive.readable].some((entry) => actual.windowsPathKey(entry) === actual.windowsPathKey(path));
   const descriptor = (path: string, entry: import("../../shared/windows-path-facts.js").WindowsPathFacts) => {
     const aces = [{ type: 0, flags: 3, mask: 0x1f01ff, sid: owner }, ...(readable(path) ? [{ type: 0, flags: 3, mask: 0x1200a9, sid: "S-1-5-32-545" }] : [])];
@@ -300,6 +315,7 @@ const { tmpdir } = await import("node:os");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
 const originalCwd = process.cwd();
+beforeAll(() => configureHostResources({ resourcePath: hostPath.resolve(originalCwd, "resources"), isPackaged: false }));
 const cwdDirectories = createTmpDirTracker();
 afterAll(async () => { await cwdDirectories.cleanup(); });
 const STAGED = "0123456789abcdef0123456789abcdef";
@@ -429,6 +445,15 @@ function expectNoGrantInside(filesystem: ContainerFilesystem): void {
     expect(atOrUnder(grant, staging()) || fold(grant) === fold(aveHome()), grant).toBe(false);
   }
 }
+
+it("composes host resources before the first native identity request", () => {
+  const [profile] = pinWindowsPaths([profileRoot]);
+  expect(profile).toMatchObject({ exists: true, directory: true });
+  expect(getHostResources()).toEqual({ resourcePath: hostPath.resolve(originalCwd, "resources"), isPackaged: false });
+  const configuredAt = resourceLifecycle.events.indexOf("configured");
+  expect(configuredAt).toBeGreaterThanOrEqual(0);
+  expect(resourceLifecycle.events.indexOf("identity")).toBeGreaterThan(configuredAt);
+});
 
 describe("the browser download staging folder in a container shell's launch request", () => {
   it("is denied for read, list and write with its staged file when the writable project encloses a relocated Ave home", async () => {
