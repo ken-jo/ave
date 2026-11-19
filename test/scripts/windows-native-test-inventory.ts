@@ -51,9 +51,18 @@ function requireCallArgumentIndex(tokens: readonly string[], index: number): num
   return tokens[opening] === "(" ? opening + 1 : undefined;
 }
 
-function isPossibleRequireInvocation(tokens: readonly string[], index: number): boolean {
-  return requireCallArgumentIndex(tokens, index) !== undefined
-    || (tokens[index] === "require" && (tokens[index + 1]?.startsWith("`") ?? false));
+function isPossibleRequireLoad(tokens: readonly string[], index: number): boolean {
+  if (tokens[index] !== "require") return false;
+  const previous = tokens[index - 1];
+  const next = tokens[index + 1];
+  // A local empty mock binding does not refer to the loader; other uses are checked separately.
+  if (["const", "let", "var"].includes(previous ?? "")
+    && tokens.slice(index + 1, index + 8).join(" ") === "= vi . fn ( ) ;") return false;
+  // Keys and shorthand values cannot invoke the loader.
+  if ((previous === "{" || previous === ",") && [":", ",", "}"].includes(next ?? "")) return false;
+  // A property read is harmless; calls and unrecognized continuations retain coverage.
+  if ((previous === "." || previous === "?.") && [",", "}", ")", ";", "]"].includes(next ?? "")) return false;
+  return true;
 }
 
 function runtimeImports(file: string, source: string): { imports: string[]; actualImports: string[]; mocks: string[] } {
@@ -97,7 +106,7 @@ function runtimeImports(file: string, source: string): { imports: string[]; actu
       if (tokens[end] === ")") depth--;
     }
     if (!tokens.slice(factory, end).some((text, index) =>
-      ["importActual", "importOriginal", "import"].includes(text) || isPossibleRequireInvocation(tokens, factory + index))) mocks.add(name);
+      ["importActual", "importOriginal", "import"].includes(text) || isPossibleRequireLoad(tokens, factory + index))) mocks.add(name);
   }
   return { imports: [...imports], actualImports: [...actualImports], mocks: [...mocks].filter(name => !unmocks.has(name)) };
 }

@@ -45,6 +45,12 @@ describe("Windows native test inventory", () => {
     expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(false);
   });
   it.each([
+    'require.call(null, moduleName)',
+    'require.apply(null, [moduleName])',
+    'require.bind(null)(moduleName)',
+    '(0, require)(moduleName)',
+    'consume(require)',
+    'require.resolve(moduleName)',
     'require?.("../../shared/windows-native-host.js")',
     'module.require("../../shared/windows-native-host.js")',
     'module.require?.(moduleName)',
