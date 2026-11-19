@@ -81,11 +81,18 @@ export function redactFsPath(p: string): string {
   if (_homeDir) {
     const standardFileUrlHome = pathToFileURL(_homeDir).toString();
     const legacyFileUrlHome = "file://" + _homeDir;
-    if (out === standardFileUrlHome || out.startsWith(standardFileUrlHome + "/")) {
+    const windows = os.platform() === "win32";
+    const comparable = (value: string): string => windows ? value.replace(/\\/gu, "/").toLowerCase() : value;
+    const startsAtHome = (home: string): boolean => {
+      const path = comparable(out);
+      const prefix = comparable(home);
+      return path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "\\");
+    };
+    if (startsAtHome(standardFileUrlHome)) {
       out = "file://<home>" + out.slice(standardFileUrlHome.length);
-    } else if (out === legacyFileUrlHome || out.startsWith(legacyFileUrlHome + "/") || out.startsWith(legacyFileUrlHome + "\\")) {
+    } else if (startsAtHome(legacyFileUrlHome)) {
       out = "file://<home>" + out.slice(legacyFileUrlHome.length).replace(/\\/g, "/");
-    } else if (out === _homeDir || out.startsWith(_homeDir + "/") || out.startsWith(_homeDir + "\\")) {
+    } else if (startsAtHome(_homeDir)) {
       out = "<home>" + out.slice(_homeDir.length);
     }
   }
@@ -108,8 +115,11 @@ export function redactHomePathsInText(value: string): string {
     ] as const;
     for (const [home, replacement] of homeForms) {
       if (!home) continue;
+      const pattern = os.platform() === "win32"
+        ? home.split(/[\\/]/u).map(escapeRegExp).join("[\\\\/]")
+        : escapeRegExp(home);
       out = out.replace(
-        new RegExp(escapeRegExp(home), os.platform() === "win32" ? "giu" : "gu"),
+        new RegExp(pattern, os.platform() === "win32" ? "giu" : "gu"),
         replacement,
       );
     }
