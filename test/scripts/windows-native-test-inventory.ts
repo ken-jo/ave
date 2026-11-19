@@ -53,15 +53,24 @@ function requireCallArgumentIndex(tokens: readonly string[], index: number): num
 
 function isPossibleRequireLoad(tokens: readonly string[], index: number): boolean {
   if (tokens[index] !== "require") return false;
-  const previous = tokens[index - 1];
-  const next = tokens[index + 1];
-  // A local empty mock binding does not refer to the loader; other uses are checked separately.
-  if (["const", "let", "var"].includes(previous ?? "")
-    && tokens.slice(index + 1, index + 8).join(" ") === "= vi . fn ( ) ;") return false;
-  // Keys and shorthand values cannot invoke the loader.
-  if ((previous === "{" || previous === ",") && [":", ",", "}"].includes(next ?? "")) return false;
-  // A property read is harmless; calls and unrecognized continuations retain coverage.
-  if ((previous === "." || previous === "?.") && [",", "}", ")", ";", "]"].includes(next ?? "")) return false;
+  if (tokens[index + 1] !== ":" || !["{", ","].includes(tokens[index - 1] ?? "")) return true;
+  // Only recognizable object-literal keys are harmless; binding patterns and ambiguous contexts retain coverage.
+  let depth = 0;
+  for (let opening = index - 1; opening >= 0; opening--) {
+    if (tokens[opening] === "}") depth++;
+    if (tokens[opening] !== "{") continue;
+    if (depth-- > 0) continue;
+    const previous = tokens[opening - 1];
+    if (previous !== "return" && previous !== "="
+      && !(previous === "(" && tokens[opening - 2] === "=>")) return true;
+    let closing = opening;
+    depth = 1;
+    while (++closing < tokens.length && depth > 0) {
+      if (tokens[closing] === "{") depth++;
+      if (tokens[closing] === "}") depth--;
+    }
+    return tokens[closing] === "=";
+  }
   return true;
 }
 

@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { platform } from "node:os";
+import { describe, expect, it, vi } from "vitest";
 import { nativeBackedTestFiles } from "./windows-native-test-inventory.js";
+
+const require = createRequire(import.meta.url);
+vi.mock("node:os", () => ({ platform: () => Reflect.apply({ require }.require, null, ["node:os"]).platform() }));
 
 const SUITE = "src/data/__tests__/store.test.ts";
 const STORE = "src/data/store.ts";
@@ -9,6 +14,12 @@ function sources(test: string, store = 'export { read } from "../shared/windows-
 }
 
 describe("Windows native test inventory", () => {
+  it("selects a mock flow that reaches the actual module through a loader property value", () => {
+    expect(platform()).toBe(process.platform);
+    const source = 'vi.mock("../../shared/windows-native-host.js", () => ({ read: () => Reflect.apply({ require }.require, null, ["../../shared/windows-native-host.js"]).read() })); import { read } from "../store.js"; read();';
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
+  });
+
   it.each([
     'import { read } from "../store.js"; read();',
     'const { read } = await import("../store.js"); read();',
@@ -36,13 +47,33 @@ describe("Windows native test inventory", () => {
     expect([...nativeBackedTestFiles(sources(source))]).toEqual([]);
   });
   it.each([
+    '() => ({ require: vi.fn(), read: vi.fn() })',
     '() => ({ read: vi.fn(), require: vi.fn() })',
-    '() => { const require = vi.fn(); return { read: vi.fn(), require }; }',
-    '() => ({ read: vi.fn(), value: loader.require })',
+    '() => { return { require: vi.fn(), read: vi.fn() }; }',
+    '() => { const mock = { require: vi.fn(), read: vi.fn() }; return mock; }',
+    '() => ({ read: vi.fn(), value: `require` })',
     '() => ({ read: vi.fn(), value: "require" /* require("../../shared/windows-native-host.js") */ })',
-  ])("excludes a complete factory whose require token is not a module load: %s", factory => {
+  ])("excludes a complete factory with only object keys or require text: %s", factory => {
     const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
     expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(false);
+  });
+  it.each([
+    '() => ({ read: vi.fn(), require })',
+    '() => ({ require: load } = module)',
+    '() => ({ read: ({ require: load }) => load(moduleName) })',
+    `() => ({ read: () => \`value: \${require}\` })`,
+    '() => { const require = vi.fn(); return { read: vi.fn(), require }; }',
+    '() => { const require = vi.fn(); return { read: vi.fn() }; }',
+    '() => ({ read: vi.fn(), value: loader.require })',
+    '() => ({ read: vi.fn(), value: loader?.require })',
+    '() => ({ read: () => Reflect.apply(module.require, module, [moduleName]).read() })',
+    '() => ({ read: () => Reflect.apply({ require }.require, null, [moduleName]).read() })',
+    '() => ({ read: () => [module.require][0].call(module, moduleName).read() })',
+    '() => { const load = module.require; return { read: () => load.call(module, moduleName).read() }; }',
+    '() => { const { require: load } = module; return { read: () => load.call(module, moduleName).read() }; }',
+  ])("selects shorthand, member, binding and loader values with accepted over-selection: %s", factory => {
+    const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
   });
   it.each([
     'require.call(null, moduleName)',
