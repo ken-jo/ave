@@ -264,7 +264,7 @@ vi.mock("../srt-win-integrity.js", async (original) => ({
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   const { createPolicyPipeHelper } = await import("../../__tests__/support/policy-pipe-helper.js");
-  return { ...actual, spawn: (...args: unknown[]) => runtime.spawn(...args), default: { ...actual.default,
+  return { ...actual, spawn: (...args: unknown[]) => runtime.spawn(...args), default: { ...actual,
     spawn: (command: string, args: readonly string[], options: import("node:child_process").SpawnOptions) => {
       if (args[0] !== "--mxc-policy") return actual.spawn(command, args, options);
       const helper = createPolicyPipeHelper(new actual.ChildProcess());
