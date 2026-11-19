@@ -35,6 +35,9 @@ describe("Windows native test inventory", () => {
     'module.require?.("../shared/windows-native-host.js")',
     'globalThis.require("../shared/windows-native-host.js")',
     'loader?.require("../shared/windows-native-host.js")',
+    'module["require"]("../shared/windows-native-host.js")',
+    "module['require']?.('../shared/windows-native-host.js')",
+    'module?.[`require`]("../shared/windows-native-host.js")',
   ])("follows a transitive module-loading helper: %s", invocation => {
     const source = 'const { read } = require("../store.js"); read();';
     expect(nativeBackedTestFiles(sources(source, `exports.read = () => ${invocation}.read();`)).get(SUITE)).toEqual([SUITE, STORE, NATIVE]);
@@ -51,6 +54,16 @@ describe("Windows native test inventory", () => {
     '() => ({ read: vi.fn(), require: vi.fn() })',
     '() => { return { require: vi.fn(), read: vi.fn() }; }',
     '() => { const mock = { require: vi.fn(), read: vi.fn() }; return mock; }',
+    '() => ({ read: vi.fn(), value: { require: x } })',
+    '() => ({ read: wrap({ require: x }) })',
+    '() => ([{ require: x }])',
+    '() => ({ read: flag ? { require: x } : { require: y } })',
+    '() => ({ read: [{ value: x }, { require: y }] })',
+    '() => ({ read: vi.fn(), values: ["require", `require`] })',
+    '() => { if ({ require: x }) consume(); return { read: vi.fn() }; }',
+    '() => ({ read: ({ value = { require: x } }) => value })',
+    '() => { return flag ? fallback : { require: x }; }',
+    '() => { return wrap({ nested: { require: x } }); }',
     '() => ({ read: vi.fn(), value: `require` })',
     '() => ({ read: vi.fn(), value: "require" /* require("../../shared/windows-native-host.js") */ })',
   ])("excludes a complete factory with only object keys or require text: %s", factory => {
@@ -71,6 +84,26 @@ describe("Windows native test inventory", () => {
     '() => ({ read: () => [module.require][0].call(module, moduleName).read() })',
     '() => { const load = module.require; return { read: () => load.call(module, moduleName).read() }; }',
     '() => { const { require: load } = module; return { read: () => load.call(module, moduleName).read() }; }',
+    '() => ({ read: ({ require: load }, value) => load(value) })',
+    '() => ({ read({ require: load }) { return load(moduleName); } })',
+    '() => ({ read: function ({ require: load }) { return load(moduleName); } })',
+    '() => { const { nested: { require: load } } = module; return { read: load }; }',
+    '() => { const [{ require: load }] = modules; return { read: load }; }',
+    '() => ({ read: ({ nested: { require: load } }) => load(moduleName) })',
+    '() => ({ read: ([{ require: load }]) => load(moduleName) })',
+    '() => { label: { require: consume(); } return { read: vi.fn() }; }',
+    '() => { switch (value) { case flag ? a : b: { require: consume(); } } return { read: vi.fn() }; }',
+    '() => ({ read: flag ? require : fallback })',
+    '() => { require: consume(); return { read: vi.fn() }; }',
+    '() => ({ read: () => { require: consume(); } })',
+    '() => { if (flag) { require: consume(); } return { read: vi.fn() }; }',
+    '() => { try { require: consume(); } finally {} return { read: vi.fn() }; }',
+    '() => { do { require: consume(); } while (flag); return { read: vi.fn() }; }',
+    '() => { if (flag) {} else { require: consume(); } return { read: vi.fn() }; }',
+    '() => { try {} finally { require: consume(); } return { read: vi.fn() }; }',
+    '() => { consume(); { require: consume(); } return { read: vi.fn() }; }',
+    '() => { { require: consume(); } return { read: vi.fn() }; }',
+    '() => { {} { require: consume(); } return { read: vi.fn() }; }',
   ])("selects shorthand, member, binding and loader values with accepted over-selection: %s", factory => {
     const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
     expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
@@ -91,6 +124,10 @@ describe("Windows native test inventory", () => {
     'require (moduleName)',
     '(require)("../../shared/windows-native-host.js")',
     'require`../../shared/windows-native-host.js`',
+    'module["require"](moduleName)',
+    "x['require']",
+    'x[`require`]',
+    'module?.["require"]?.(moduleName)',
   ])("retains a factory with a possible module-load invocation: %s", invocation => {
     const source = `vi.mock("../../shared/windows-native-host.js", () => ({ read: () => ${invocation}.read() })); import { read } from "../store.js"; read();`;
     expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);

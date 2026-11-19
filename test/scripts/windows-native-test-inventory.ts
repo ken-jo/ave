@@ -42,36 +42,73 @@ function runtimeTokens(file: string, source: string): string[] {
 }
 
 function literal(token: string | undefined): string | undefined {
-  return token !== undefined && /^['"]/.test(token) ? token.slice(1, -1) : undefined;
+  return token !== undefined && (/^['"]/.test(token)
+    || (token.startsWith("`") && token.endsWith("`") && !token.includes("${"))) ? token.slice(1, -1) : undefined;
+}
+
+function isComputedRequireMember(tokens: readonly string[], index: number): boolean {
+  if (literal(tokens[index]) !== "require" || tokens[index - 1] !== "[" || tokens[index + 1] !== "]") return false;
+  const receiver = tokens[index - 2] ?? "";
+  return ["?.", ")", "]", "}"].includes(receiver) || literal(receiver) !== undefined
+    || (/^[$A-Z_a-z][$\w]*$/.test(receiver)
+      && !["return", "throw", "yield", "await", "new", "delete", "void", "typeof", "in", "instanceof", "case", "else", "do"].includes(receiver));
 }
 
 function requireCallArgumentIndex(tokens: readonly string[], index: number): number | undefined {
-  if (tokens[index] !== "require") return undefined;
-  const opening = index + (tokens[index + 1] === "?." ? 2 : 1);
+  const member = isComputedRequireMember(tokens, index);
+  if (tokens[index] !== "require" && !member) return undefined;
+  const end = index + (member ? 2 : 1);
+  const opening = end + (tokens[end] === "?." ? 1 : 0);
   return tokens[opening] === "(" ? opening + 1 : undefined;
 }
 
 function isPossibleRequireLoad(tokens: readonly string[], index: number): boolean {
+  if (isComputedRequireMember(tokens, index)) return true;
   if (tokens[index] !== "require") return false;
   if (tokens[index + 1] !== ":" || !["{", ","].includes(tokens[index - 1] ?? "")) return true;
   // Only recognizable object-literal keys are harmless; binding patterns and ambiguous contexts retain coverage.
-  let depth = 0;
-  for (let opening = index - 1; opening >= 0; opening--) {
-    if (tokens[opening] === "}") depth++;
-    if (tokens[opening] !== "{") continue;
-    if (depth-- > 0) continue;
-    const previous = tokens[opening - 1];
-    if (previous !== "return" && previous !== "="
-      && !(previous === "(" && tokens[opening - 2] === "=>")) return true;
-    let closing = opening;
-    depth = 1;
-    while (++closing < tokens.length && depth > 0) {
-      if (tokens[closing] === "{") depth++;
-      if (tokens[closing] === "}") depth--;
-    }
-    return tokens[closing] === "=";
+  const containers: number[] = [];
+  for (let position = 0; position < index; position++) {
+    if (["{", "[", "("].includes(tokens[position] ?? "")) containers.push(position);
+    if (["}", "]", ")"].includes(tokens[position] ?? "")) containers.pop();
   }
-  return true;
+  if (tokens[containers.at(-1) ?? -1] !== "{") return true;
+  let possibleLabel = false;
+  for (let container = containers.length - 1; container >= 0; container--) {
+    const opening = containers[container] ?? -1;
+    const delimiter = tokens[opening];
+    const previous = tokens[opening - 1];
+    if (["const", "let", "var"].includes(previous ?? "")) return true;
+    if (delimiter === "{" && [undefined, ")", "=>", ";", "{", "}", "else", "do", "try", "finally"].includes(previous)) {
+      return container === containers.length - 1 || possibleLabel;
+    }
+    let closing = opening;
+    let depth = 1;
+    const closingDelimiter = delimiter === "{" ? "}" : delimiter === "[" ? "]" : ")";
+    while (++closing < tokens.length && depth > 0) {
+      if (tokens[closing] === delimiter) depth++;
+      if (tokens[closing] === closingDelimiter) depth--;
+    }
+    if (delimiter !== "(" && tokens[closing] === "=") return true;
+    if (delimiter === "(" && (tokens[closing] === "=>" || tokens[closing] === "{" || previous === "catch")
+      && !["if", "while", "switch", "with"].includes(previous ?? "")) return true;
+    if (delimiter === "(") return false;
+    if (["=", "return", "?", "=>"].includes(previous ?? "")) return false;
+    if (delimiter === "{" && previous === ":") {
+      possibleLabel = true;
+      let nested = 0;
+      let conditionals = 0;
+      for (let position = opening - 2; position > (containers[container - 1] ?? -1); position--) {
+        const token = tokens[position];
+        if (["}", "]", ")"].includes(token ?? "")) nested++;
+        if (["{", "[", "("].includes(token ?? "")) nested--;
+        if (nested !== 0) continue;
+        if (token === ":") conditionals++;
+        if (token === "?" && conditionals-- === 0) { possibleLabel = false; break; }
+      }
+    }
+  }
+  return false;
 }
 
 function runtimeImports(file: string, source: string): { imports: string[]; actualImports: string[]; mocks: string[] } {
