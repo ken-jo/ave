@@ -6,10 +6,10 @@
  * path in it, the Ave home or a parent of it, under a relocated Ave home and the default profile-child one, including a process whose
  * projection was taken before the folder existed. */
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isolation-guard.js";
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
-import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const { PROFILE } = vi.hoisted(() => ({ PROFILE: "C:\\Users\\alice" }));
 const drive = vi.hoisted(() => ({
@@ -225,11 +225,14 @@ const { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } = await 
 const { TEST_WORKER_EGRESS_OWNER } = await import("../../__tests__/support/egress-fixture.js");
 const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-policy.js");
 const { prepareMxcShellLaunch } = await import("../../tools/mxc-shell-launch.js");
-const { existsSync, mkdirSync } = await import("node:fs");
+const { existsSync, mkdirSync, mkdtempSync } = await import("node:fs");
+const { tmpdir } = await import("node:os");
+const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
 const HOST_PLATFORM = process.platform;
 const originalCwd = process.cwd();
-const fixtureCwd = useTempDirs("browser-download-drive-");
+const cwdDirectories = createTmpDirTracker();
+afterAll(async () => { await cwdDirectories.cleanup(); });
 const STAGED = "0123456789abcdef0123456789abcdef";
 const RELOCATED = { name: "a relocated Ave home inside the project", project: `${PROFILE}\\work`, home: `${PROFILE}\\work\\ave` } as const;
 const PROFILE_CHILD = { name: "the default profile-child Ave home", project: `${PROFILE}\\work`, home: `${PROFILE}\\.ave` } as const;
@@ -266,7 +269,7 @@ function stage(): void {
 
 beforeEach(() => {
   // A foreign drive spelling is relative to the real host; keep that projection inside the validated test scratch.
-  if (HOST_PLATFORM !== "win32") process.chdir(fixtureCwd());
+  if (HOST_PLATFORM !== "win32") process.chdir(cwdDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
   setProcessPlatform("win32");
   vi.stubEnv("USERPROFILE", PROFILE);
   vi.stubEnv("HOME", PROFILE);
@@ -436,7 +439,7 @@ describe("the browser download staging folder in the srt-win session floor and w
 
   it("keeps foreign drive projections outside a checkout's account home while refusing real home targets", async () => {
     const { join } = await vi.importActual<typeof import("node:path")>("node:path");
-    const targets = [OUTSIDE_PROFILE.home + "\\secrets\\", PROFILE_CHILD.home + "\\browser-downloads\\"];
+    const targets = [`${OUTSIDE_PROFILE.home}\\secrets\\`, `${PROFILE_CHILD.home}\\browser-downloads\\`];
     withProvidedContext("realAccountHome", originalCwd, () => {
       expect(() => checkSandboxStampTargets(targets)).not.toThrow();
     });
