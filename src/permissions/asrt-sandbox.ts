@@ -341,6 +341,7 @@ interface WindowsLiveGrantCounts {
 interface AsrtSandboxSession {
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
   windowsLiveGrantCount: number;
+  windowsLiveGrantRevision: number;
   readonly windowsWrapDenyRead: Set<string>;
   readonly windowsWrapDenyWrite: Set<string>;
   windowsDenyRevision: number;
@@ -377,23 +378,52 @@ function snapshotWindowsLiveGrants(session: AsrtSandboxSession | undefined): Win
   };
 }
 
-// Deny ACEs affect the shared principal, including earlier wraps; retain their raw policy until session teardown.
-function rememberWindowsWrapDenies(filesystem: PerCommandFilesystem | undefined): void {
-  if (process.platform !== "win32" || sandboxSession === undefined || filesystem === undefined || !hasConfiguredDenies(filesystem)) return;
+function checkWindowsWrapDenyUnion(session: AsrtSandboxSession | undefined, filesystem: PerCommandFilesystem | undefined): {
+  read: string[]; write: string[];
+} | undefined {
+  if (process.platform !== "win32" || session === undefined || filesystem === undefined || !hasConfiguredDenies(filesystem)) return;
   assertWindowsPolicyBudget(filesystem, true);
-  const { windowsWrapDenyRead, windowsWrapDenyWrite } = sandboxSession;
+  const { windowsWrapDenyRead, windowsWrapDenyWrite } = session;
   const knownRead = new Set([...(_baseTrustedSettings?.denyRead ?? []), ...windowsWrapDenyRead]);
   const knownWrite = new Set([...(_baseTrustedSettings?.denyWrite ?? []), ...windowsWrapDenyWrite]);
-  const newRead = [...new Set(filesystem.denyRead)].filter(path => !knownRead.has(path));
-  const newWrite = [...new Set(filesystem.denyWrite)].filter(path => !knownWrite.has(path));
-  if (newRead.length === 0 && newWrite.length === 0) return;
+  const read = [...new Set(filesystem.denyRead)].filter(path => !knownRead.has(path));
+  const write = [...new Set(filesystem.denyWrite)].filter(path => !knownWrite.has(path));
+  if (read.length === 0 && write.length === 0) return;
   assertWindowsPolicyBudget({
-    denyRead: [...knownRead, ...newRead],
-    denyWrite: [...knownWrite, ...newWrite],
+    denyRead: [...knownRead, ...read],
+    denyWrite: [...knownWrite, ...write],
   }, true);
-  for (const path of newRead) windowsWrapDenyRead.add(path);
-  for (const path of newWrite) windowsWrapDenyWrite.add(path);
-  sandboxSession.windowsDenyRevision += newRead.length + newWrite.length;
+  return { read, write };
+}
+
+function prepareWindowsWrapFilesystem(session: AsrtSandboxSession | undefined, filesystem: PerCommandFilesystem | undefined): PerCommandFilesystem | undefined {
+  checkWindowsWrapDenyUnion(session, filesystem);
+  if (process.platform !== "win32" || filesystem === undefined) return filesystem;
+  // Use the same raw deny inputs for policy assembly and later retention.
+  return {
+    ...filesystem,
+    ...(filesystem.denyRead === undefined ? {} : { denyRead: [...filesystem.denyRead] }),
+    ...(filesystem.denyWrite === undefined ? {} : { denyWrite: [...filesystem.denyWrite] }),
+  };
+}
+
+// Retain accepted raw obligations for the shared principal until session teardown.
+// The Windows runtime prepares a descriptor. ACL changes begin only when it is run.
+function commitWindowsWrapDenies(
+  session: AsrtSandboxSession | undefined, grantRevision: number | undefined, filesystem: PerCommandFilesystem | undefined,
+): void {
+  if (process.platform !== "win32") return;
+  assertWindowsSession(session);
+  // A worker grant can make additional deny targets reachable while the wrap awaits the runtime.
+  if (session === undefined || session.windowsLiveGrantRevision !== grantRevision) {
+    throw new Error("Windows sandbox grants changed while preparing the command");
+  }
+  // Another wrap may have joined the retained union while this policy was being prepared.
+  const additions = checkWindowsWrapDenyUnion(session, filesystem);
+  if (additions === undefined) return;
+  for (const path of additions.read) session.windowsWrapDenyRead.add(path);
+  for (const path of additions.write) session.windowsWrapDenyWrite.add(path);
+  session.windowsDenyRevision += additions.read.length + additions.write.length;
 }
 
 // Refcount shared socket directories across overlapping generations; one release must not remove another holder's allowance. Resolve registration only after config update and pair every successful register with unregister; Linux socket permission is path-blind.
@@ -2301,7 +2331,7 @@ async function initializeSandboxRuntime(
     : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = initialSettings;
-  sandboxSession = { windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
+  sandboxSession = { windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
   const session = sandboxSession;
   let fullConfig: SandboxRuntimeConfig;
   windowsProfileReadDenyWarnings.clear();
@@ -2396,17 +2426,19 @@ export async function wrapToolCommand(
   // Publish before wrapping: the runtime sets TMPDIR inside the command, ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
-  rememberWindowsWrapDenies(options.filesystem);
   const session = sandboxSession;
+  const filesystem = prepareWindowsWrapFilesystem(session, options.filesystem);
   assertCommandId("wrapToolCommand", options.commandId);
   const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
+  let grantRevision: number | undefined;
   const customConfig = await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
-    const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
-      : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
-    return buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+    const readDenyEvidence = filesystem?.denyRead === undefined ? undefined
+      : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, filesystem.denyRead, _baseReadDenyEvidence);
+    grantRevision = session?.windowsLiveGrantRevision;
+    return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(session));
   });
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
@@ -2421,10 +2453,11 @@ export async function wrapToolCommand(
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const wrapped = await pendingWrap.catch(error => {
-    throw windowsAclBudgetError(error, hasConfiguredDenies(options.filesystem) || hasConfiguredDenies(_baseTrustedSettings));
+    throw windowsAclBudgetError(error, hasConfiguredDenies(filesystem) || hasConfiguredDenies(_baseTrustedSettings));
   });
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  commitWindowsWrapDenies(session, grantRevision, filesystem);
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
@@ -2584,17 +2617,19 @@ async function wrapLongLivedCommand(
   // Publish before wrapping: the runtime sets TMPDIR inside the command, ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, caller);
-  rememberWindowsWrapDenies(options.filesystem);
   const session = sandboxSession;
+  const filesystem = prepareWindowsWrapFilesystem(session, options.filesystem);
   assertCommandId(caller, options.commandId);
   const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, caller, options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
+  let grantRevision: number | undefined;
   const customConfig = await inAveHomeBoundarySnapshot(options.boundarySnapshot, async () => {
-    const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
-      : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
-    return buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+    const readDenyEvidence = filesystem?.denyRead === undefined ? undefined
+      : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, filesystem.denyRead, _baseReadDenyEvidence);
+    grantRevision = session?.windowsLiveGrantRevision;
+    return buildPerCommandSandboxCustomConfig(filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(session));
   });
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
@@ -2610,10 +2645,11 @@ async function wrapLongLivedCommand(
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const wrapped = await pendingWrap.catch(error => {
-    throw windowsAclBudgetError(error, hasConfiguredDenies(options.filesystem) || hasConfiguredDenies(_baseTrustedSettings));
+    throw windowsAclBudgetError(error, hasConfiguredDenies(filesystem) || hasConfiguredDenies(_baseTrustedSettings));
   });
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  commitWindowsWrapDenies(session, grantRevision, filesystem);
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
@@ -2978,6 +3014,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 
   const writable = new Set(allowWrite);
   session.windowsLiveGrantCount += 1;
+  if (allowRead.length > 0) session.windowsLiveGrantRevision += 1;
   for (const path of allowRead) {
     const counts = session.windowsLiveGrants.get(path) ?? { read: 0, write: 0 };
     counts.read += 1;
@@ -3020,6 +3057,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     allowWrite,
     release: () => releaseWithTiming(() => {
       session.windowsLiveGrantCount -= 1;
+      if (allowRead.length > 0) session.windowsLiveGrantRevision += 1;
       for (const path of allowRead) {
         const counts = session.windowsLiveGrants.get(path);
         if (counts === undefined) continue;
