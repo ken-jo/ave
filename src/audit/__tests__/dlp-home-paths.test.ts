@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { judgeInvocation, judgeRequest } from "../../permissions/judge/__tests__/judge-request-fixture.js";
@@ -176,11 +176,15 @@ describe.each(["win32", "linux"] as const)("home text suffix matrix on %s", (pla
     const dlp = await loadHomeRedactor(platform);
     const home = fixture.home;
     const spellings = [...new Set([home, home.toUpperCase(), home.replaceAll("/", "\\"), home.replace("fixtures/", "fixtures\\")])];
-    const forms = spellings.flatMap(spelling => [
-      { text: spelling, replacement: "[home]", matches: platform === "win32" || spelling === home },
-      { text: `file://${spelling}`, replacement: "file://[home]", matches: platform === "win32" || spelling === home },
-      { text: pathToFileURL(spelling).toString(), replacement: "file://[home]", matches: platform === "win32" || pathToFileURL(spelling).toString() === pathToFileURL(home).toString() },
-    ]);
+    const forms = spellings.flatMap(spelling => {
+      // Root POSIX spellings before URL conversion so literal backslashes never introduce the process directory.
+      const url = pathToFileURL(platform === "linux" ? posix.resolve("/", spelling) : spelling).toString();
+      return [
+        { text: spelling, replacement: "[home]", matches: platform === "win32" || spelling === home },
+        { text: `file://${spelling}`, replacement: "file://[home]", matches: platform === "win32" || spelling === home },
+        { text: url, replacement: "file://[home]", matches: platform === "win32" || url === pathToFileURL(home).toString() },
+      ];
+    });
     const punctuation = [".", ",", ";", ":", "!", "?", ")", "]", "}", '"', "'", ">", "`"];
     const terminalRuns = [...punctuation, punctuation.join(""), '"),', ".!?"];
     const punctuatedSuffixes = [",backup/x", ";backup/x", "[copy]/x", "(old)/x", ":stream", "<copy>/x", "{copy}/x",
