@@ -3320,6 +3320,19 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Home path redaction
+
+Literal home paths in audit and display text are replaced in place. If a home
+is visible only after up to three layers of supported string, percent, byte or
+entity escaping, the redactor replaces its whole original token. Malformed
+escapes and deeper encodings are outside this contract. On Windows and macOS
+the home matcher uses Unicode case folding.
+
+Home spellings containing a double quote, a control character or a filename
+backslash on POSIX are unsupported. Trailing separators are normalized except
+for filesystem roots. This lets text redaction preserve the delimiters and
+escape runs that hold serialized values together.
+
 ### Windows object ownership
 
 An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)

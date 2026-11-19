@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
+import { decodeHomeEscapes, type HomeEscapeFamily } from "./home-path-decode.js";
 
 export {
   initPiiRedactionPolicy,
@@ -132,9 +133,14 @@ interface HomeForm {
   marker: string;
 }
 
+interface HomeDetector extends HomeForm {
+  detector: RegExp;
+}
+
 interface HomeRedaction {
-  forms: readonly HomeForm[];
+  forms: readonly HomeDetector[];
   trigger: RegExp;
+  boundaries: ReadonlySet<number>;
 }
 
 const GENERIC_HOME_FORMS: readonly HomeForm[] = [
@@ -146,13 +152,22 @@ const GENERIC_HOME_FORMS: readonly HomeForm[] = [
   { literal: /\/home\/[a-z0-9._-]+/giu, marker: "[home]" },
 ];
 
+const HOME_DECODE_LAYERS = 3;
+const HOME_TOKEN_MARKER = "[home-token]";
+const DECODE_FAMILIES: readonly HomeEscapeFamily[] = ["full", "backslash", "percent-entity"];
+const INTRODUCER = /[\\%&]/u;
+const BOUNDARY_CHARACTERS = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\"'`<>()[]{},|";
+
 function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeRedaction {
   const windows = platform === "win32";
+  const flags = windows || platform === "darwin" ? "iu" : "u";
   const standard = home ? pathToFileURL(home).toString().replace(/\/$/u, "") : "";
   const slashHome = home.replace(/\\/gu, "/");
   const anchor = home.split(/[\\/]/u).filter(Boolean).at(-1);
   const trigger = new RegExp(String.raw`[\\%&]|users|home` + (anchor ? "|" + escapeRegExp(anchor) : ""), "iu");
-  if (!home) return { forms: [], trigger };
+  const boundaries = new Set([...BOUNDARY_CHARACTERS].map(character => character.charCodeAt(0)));
+  for (const character of home) if (character !== '"') boundaries.delete(character.charCodeAt(0));
+  if (!home) return { forms: [], trigger, boundaries };
   const spellings = [
     [`file://${slashHome}`, "file://[home]"],
     [standard, "file://[home]"],
@@ -163,9 +178,9 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
     const pattern = homePattern(spelling, windows, spelling === standard);
     const source = String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
-    return { literal: new RegExp(source, windows ? "giu" : "gu"), marker };
+    return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker };
   });
-  return { forms, trigger };
+  return { forms, trigger, boundaries };
 }
 
 const homeRedaction = compileHomeRedaction(_homeDir, homePlatform);
@@ -190,10 +205,74 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
   return text;
 }
 
+function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): boolean {
+  const seen = new Set([token]);
+  let layer = [token];
+  // Breadth first keeps the shortest route to each view, including when
+  // different escape families reach the same spelling at different depths.
+  for (let depth = 0; depth < HOME_DECODE_LAYERS && layer.length; depth++) {
+    const next: string[] = [];
+    for (const view of layer) {
+      const families: readonly HomeEscapeFamily[] = view.includes("\\") && /[%&]/u.test(view) ? DECODE_FAMILIES : ["full"];
+      for (const family of families) {
+        const decoded = decodeHomeEscapes(view, family);
+        if (seen.has(decoded)) continue;
+        if (forms.some(({ detector }) => detector.test(decoded))) return true;
+        seen.add(decoded);
+        if (depth + 1 < HOME_DECODE_LAYERS && INTRODUCER.test(decoded)) next.push(decoded);
+      }
+    }
+    layer = next;
+  }
+  return false;
+}
+
+/** Delimiters and their preceding slash runs belong to the original text. */
+function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedaction): string {
+  let pieces: string[] | undefined;
+  let copied = 0;
+  let start = 0;
+  let introduced = false;
+  const finish = (end: number): void => {
+    if (introduced && start < end && detectsEncodedHome(text.slice(start, end), forms)) {
+      pieces ??= [];
+      pieces.push(text.slice(copied, start), HOME_TOKEN_MARKER);
+      copied = end;
+    }
+    introduced = false;
+  };
+  for (let index = 0; index < text.length;) {
+    const code = text.charCodeAt(index);
+    if (code === 92) {
+      let end = index + 1;
+      while (text.charCodeAt(end) === 92) end++;
+      if (boundaries.has(text.charCodeAt(end))) {
+        finish(index);
+        index = end + 1;
+        start = index;
+      } else {
+        introduced = true;
+        index = end;
+      }
+    } else if (boundaries.has(code)) {
+      finish(index);
+      index++;
+      start = index;
+    } else {
+      if (code === 37 || code === 38) introduced = true;
+      index++;
+    }
+  }
+  finish(text.length);
+  return pieces ? pieces.join("") + text.slice(copied) : text;
+}
+
 /** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
 export function redactHomePathsInText(value: string): string {
   if (!value || !homeRedaction.trigger.test(value)) return value;
-  return replaceLiteralHomes(replaceLiteralHomes(value, homeRedaction.forms), GENERIC_HOME_FORMS);
+  let text = replaceLiteralHomes(value, homeRedaction.forms);
+  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
+  return replaceLiteralHomes(text, GENERIC_HOME_FORMS);
 }
 
 /** Only listed top-level path fields are redacted; nested objects are not traversed. */
