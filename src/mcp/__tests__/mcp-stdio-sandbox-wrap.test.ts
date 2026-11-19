@@ -119,10 +119,10 @@ import type { McpStdioServerConfig } from "../types.js";
 
 const REAL_PLATFORM = process.platform;
 
-const trim = (path: string) => path.replace(/[\\/]+$/, "");
+const coveragePath = (path: string) => path.replace(/[\\/]+$/, "").replace(/\\/g, "/");
 const covers = (row: string, path: string) => {
-  const parent = trim(row).replace(/\\/g, "/");
-  const child = trim(path).replace(/\\/g, "/");
+  const parent = coveragePath(row);
+  const child = coveragePath(path);
   return child === parent || child.startsWith(`${parent}/`);
 };
 
@@ -386,9 +386,9 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     const staged = join(staging, "0123456789abcdef0123456789abcdef");
     // A deny row at the folder or above it covers it; no grant may name the folder, a path in it, or a directory holding it.
     expect(options.filesystem.denyRead.some((row) => covers(row, staged))).toBe(true);
-    expect(options.filesystem.denyWrite.map(trim)).toContain(staging);
+    expect(options.filesystem.denyWrite.map(coveragePath)).toContain(coveragePath(staging));
     for (const grant of [...options.filesystem.allowRead, ...options.filesystem.allowWrite]) {
-      expect(covers(grant, staged) || covers(staging, trim(grant)), grant).toBe(false);
+      expect(covers(grant, staged) || covers(staging, grant), grant).toBe(false);
     }
     await client.disconnect();
   });
