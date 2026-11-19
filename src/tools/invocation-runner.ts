@@ -1404,6 +1404,7 @@ async function runToolInvocationAttempt(
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       approvalMemory,
       disposableSubstrate,
+      guestCwd: isBrokerGuestRoutePlan(executionRoutePlan) ? executionRoutePlan.cwd : undefined,
       ...(permissionStoreError === undefined ? {} : { permissionStoreError }),
     };
     const approvalPurpose = buildApprovalPurposeSuggestion(finalInput, invocationPermissionContext);

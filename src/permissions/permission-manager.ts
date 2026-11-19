@@ -34,10 +34,11 @@ import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rule
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { parseShellFloorCommand } from "./rules/shell-exfiltration.js";
 import { inspectShellCommand } from "./rules/literal-shell-inspection.js";
-import { shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
+import { ShellFloorContext, shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
 import { inspectPowerShellCommand, inspectPowerShellPermissionPaths, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { isActiveBrokerGuestSubstrate, type DisposablePathPolicyRelaxation } from "./execution-router.js";
+import { getActiveWorkloadBrokerProjection } from "../workload/runtime.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -224,6 +225,8 @@ export interface PermissionCheckContext {
   // Host-derived native file facts; never accepted from tool arguments.
   fileWritePolicy?: { insideProject: boolean; checkpointAvailable?: boolean; directoryApproved: boolean };
   disposableSubstrate?: DisposableSubstrate;
+  // Effective guest cwd sealed by the executor; usable only with a live confirmed broker route.
+  guestCwd?: string;
   // Host-only bound native execution; JSON and terminal callers cannot issue it.
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   // Host-issued per-invocation substrate, sealed before permission evaluation.
@@ -1580,7 +1583,15 @@ export class PermissionManager {
       if (evidence.protectedControl) pathFacts.protectedEntry ??= evidence.protectedControl;
       if (evidence.effect === "read" && evidence.secret !== null) pathFacts.secretPattern ??= evidence.secret;
     };
-    const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd());
+    const shellExecution = context.shellExecution ?? { runsSandboxed: false };
+    const activeBrokerGuest = isActiveBrokerGuestSubstrate(context.disposableSubstrate);
+    const brokerGuestRoute = category === "shell" && source === "builtin" && shellExecution.runsSandboxed && activeBrokerGuest;
+    if (brokerGuestRoute && (typeof context.guestCwd !== "string" || !/^\/(?!\/)/u.test(context.guestCwd))) {
+      admissionDenial ??= { code: "invalid-rule-target", reason: "Guest working directory is unavailable" };
+    }
+    const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd(), undefined, {
+      inspectHostFiles: !activeBrokerGuest,
+    });
     for (const path of context.paths ?? []) {
       const evidence = evidenceForPath(path);
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
@@ -1604,7 +1615,6 @@ export class PermissionManager {
     if (scopedRules?.exfiltration) exfiltration ??= scopedRules.exfiltration;
     const networkScreen = scopedSubject?.kind === "webfetch" ? screenEgressRequest({ url: scopedSubject.url, allowPrivateNetwork: scopedSubject.privateNetwork }) : undefined;
     if (networkScreen?.outcome === "screened") exfiltration ??= { reason: `Network request carries an exfiltration signal: ${networkScreen.signal}` };
-    const shellExecution = context.shellExecution ?? { runsSandboxed: false };
     const command = ruleSubject?.command;
     let floorInput: ShellFloorInput | null | undefined;
     const ruleProofLimited = command !== undefined && command.length > MAX_LITERAL_COMMAND_LENGTH;
@@ -1620,20 +1630,23 @@ export class PermissionManager {
     const parsedPowerShell = command !== undefined && ruleSubject?.dialect === "powershell" && !analysisLimited
       ? bound && "syntax" in bound ? bound : parsePowerShellCommand(command) : undefined;
     analysisLimited ||= parsed !== undefined && !parsed.analysis.ok && shellFloorParserBudgetExceeded(parsed.analysis.reason) || parsedPowerShell?.analysisLimited === true;
-    const shellSignals = !analysisLimited && parsed ? inspectShellCommand(parsed, ruleSubject?.cwd)
-      : !analysisLimited && parsedPowerShell ? inspectPowerShellCommand(parsedPowerShell, ruleSubject?.cwd, undefined, context.hostShellExecutionPlan) : undefined;
+    const analysisCwd = brokerGuestRoute ? context.guestCwd : ruleSubject?.cwd;
+    const shellSignals = !analysisLimited && parsed ? inspectShellCommand(parsed, analysisCwd,
+      brokerGuestRoute ? new ShellFloorContext("bash", { inspectHostFiles: false }) : undefined)
+      : !analysisLimited && parsedPowerShell ? inspectPowerShellCommand(parsedPowerShell, analysisCwd, undefined, context.hostShellExecutionPlan,
+        brokerGuestRoute ? new ShellFloorContext("powershell", { inspectHostFiles: false }) : undefined) : undefined;
     const shellInspectionExhausted = analysisLimited || shellSignals?.analysisLimited === true;
     analysisLimited ||= shellInspectionExhausted;
     if (shellInspectionExhausted) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
     if (shellSignals?.exfiltration) exfiltration ??= { reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited && !ruleProofLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
     // A confirmed broker guest route resolves drive-less operands as guest (Linux) paths. Host routes, and any substrate the live broker does not confirm, keep host semantics and the unchanged floor.
-    const brokerGuestRoute = category === "shell" && source === "builtin" && shellExecution.runsSandboxed && isActiveBrokerGuestSubstrate(context.disposableSubstrate);
-    const shellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.cwd !== undefined && ruleSubject.dialect === "bash"
-      ? inspectShellPermissionPaths(command, ruleSubject.cwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {},
-          ...(brokerGuestRoute ? { guestPosixPaths: true as const } : {}) }, parsed) : undefined;
-    const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && ruleSubject.cwd !== undefined
-      ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, ruleSubject.cwd, shellExecution.environmentSnapshot ?? {}) : undefined;
+    const shellPaths = !shellInspectionExhausted && command !== undefined && analysisCwd !== undefined && ruleSubject?.dialect === "bash"
+      ? inspectShellPermissionPaths(command, analysisCwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {},
+          ...(brokerGuestRoute ? { guestPosixPaths: true as const, guestCwd: analysisCwd } : {}) }, parsed) : undefined;
+    const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && analysisCwd !== undefined
+      ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, analysisCwd, shellExecution.environmentSnapshot ?? {}, undefined,
+        { inspectHostFiles: !brokerGuestRoute }) : undefined;
     if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
     const credentialStore = powerShellPaths?.credentialStore;
     if (credentialStore) admissionDenial ??= { code: "credential-store", reason: credentialStore };
@@ -1642,7 +1655,10 @@ export class PermissionManager {
     const hostBoundWriteTargets = shellExecution.environmentSnapshot !== undefined && shellPaths?.resolvedWriteTargetsOnly === true;
     for (const evidence of [...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])]) {
       if (evidence.admissionDenial) admissionDenial ??= { code: "credential-store", reason: evidence.admissionDenial };
-      const criticalDelete = evidence.deleteIntent ? criticalDeleteTargetFor(evidence, [projectRulesCwd ?? ruleSubject?.cwd ?? process.cwd()]) : undefined;
+      const deleteRoots = brokerGuestRoute
+        ? [analysisCwd, getActiveWorkloadBrokerProjection()?.workload.home].filter((path): path is string => typeof path === "string" && /^\/(?!\/)/u.test(path) && !path.includes("\0"))
+        : [projectRulesCwd ?? ruleSubject?.cwd ?? process.cwd()];
+      const criticalDelete = evidence.deleteIntent ? criticalDeleteTargetFor(evidence, deleteRoots, { inspectHostFiles: !brokerGuestRoute }) : undefined;
       if (criticalDelete) floor ??= { code: "critical-delete", reason: criticalDelete };
       if (evidence.projectEscape) floor ??= { code: "project-escape", reason: "The shell target escapes the project boundary." };
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };

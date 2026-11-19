@@ -116,6 +116,8 @@ export interface ToolPermissionContext {
   remoteControllerAuthority?: RemoteControllerAuthority;
   // Host-selected guest for grading process and filesystem effects; never supplied by tools or wire data.
   disposableSubstrate?: DisposableSubstrate;
+  /** Effective cwd from the issued guest route; never supplied by tools or wire data. */
+  guestCwd?: string;
   /** Host-derived app identity and optional opaque one-shot grant. Never copied into tool metadata. */
   pluginOperation?: PluginOperationInvocationContext;
   /** Host-owned stale-card binding checked against the final resolved registry Tool. */
