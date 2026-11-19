@@ -119,6 +119,21 @@ import type { McpStdioServerConfig } from "../types.js";
 
 const REAL_PLATFORM = process.platform;
 
+const trim = (path: string) => path.replace(/[\\/]+$/, "");
+const covers = (row: string, path: string) => {
+  const parent = trim(row).replace(/\\/g, "/");
+  const child = trim(path).replace(/\\/g, "/");
+  return child === parent || child.startsWith(`${parent}/`);
+};
+
+it.each(["/", "\\"])("checks staged path coverage with %s separators", (separator) => {
+  const staging = ["C:", "fixture", "browser-downloads"].join(separator);
+  const staged = `${staging}${separator}0123456789abcdef0123456789abcdef`;
+  expect(covers(`${staging}${separator}`, staged)).toBe(true);
+  expect(covers(`${staging}-other`, staged)).toBe(false);
+  expect(covers(staging, `${staging}-other${separator}file`)).toBe(false);
+});
+
 function handshakeResponses(serverName: string): FakeChildProcess["responses"] {
   return {
     "server/discover": (id) => ({
@@ -369,9 +384,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead: string[]; denyWrite: string[] } }];
     const staging = join(aveHome(), "browser-downloads");
     const staged = join(staging, "0123456789abcdef0123456789abcdef");
-    const trim = (path: string) => path.replace(/[\\/]+$/, "");
     // A deny row at the folder or above it covers it; no grant may name the folder, a path in it, or a directory holding it.
-    const covers = (row: string, path: string) => path === trim(row) || path.startsWith(`${trim(row)}/`);
     expect(options.filesystem.denyRead.some((row) => covers(row, staged))).toBe(true);
     expect(options.filesystem.denyWrite.map(trim)).toContain(staging);
     for (const grant of [...options.filesystem.allowRead, ...options.filesystem.allowWrite]) {
