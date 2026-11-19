@@ -20,9 +20,11 @@ const drive = vi.hoisted(() => ({
   identities: new Map<string, number>(),
   // Paths whose DACL also grants Users read: their read deny is "readable" evidence and stays a deny row.
   readable: new Set<string>(),
+  pins: new Map<string, { stamp: string; facts: import("../../shared/windows-path-facts.js").WindowsPathFacts }>(),
 }));
 const runtime = vi.hoisted(() => ({
   initialize: vi.fn(), wrap: vi.fn(), update: vi.fn(), grant: vi.fn(), stamp: vi.fn(), revoke: vi.fn(), spawn: vi.fn(), nativeSpawn: vi.fn(),
+  identityQuery: vi.fn(),
   containerBackend: false,
   policyFrames: [] as Buffer[],
 }));
@@ -147,8 +149,8 @@ vi.mock("node:fs/promises", async (original) => {
   }]));
   return { ...actual, ...guarded, default: { ...actual, ...guarded } };
 });
-// Native identity pins on win32, injected facts on a foreign host. The Ave home is private to its owner, as boot verifies; a path in
-// `drive.readable` also grants Users read, which makes its read deny "readable" evidence.
+// Native identity pins on win32, injected facts on a foreign host. This fixture owns every filesystem mutation; reuse a pin only
+// while the leaf and every ancestor's metadata still match. DACLs stay modeled: `drive.readable` also grants Users read.
 vi.mock("../../shared/windows-path-facts.js", async (original) => {
   const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
   const { getHostResources } = await import("../../main/host-resources.js");
@@ -177,10 +179,40 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     }
     return { ...component(path), ancestors };
   };
+  const stamp = (path: string): string => {
+    const chain: string[] = [];
+    for (let entry = win32.normalize(path);;) {
+      chain.unshift(entry);
+      const parent = win32.dirname(entry);
+      if (parent === entry) break;
+      entry = parent;
+    }
+    return JSON.stringify(chain.map(entry => {
+      const info = fs.lstatSync(entry, { throwIfNoEntry: false, bigint: true });
+      return info === undefined ? null : [info.dev, info.ino, info.ctimeNs, info.mtimeNs, info.size, info.mode,
+        info.isSymbolicLink(), info.isDirectory()].map(String);
+    }));
+  };
   const pin = (paths: readonly string[]) => {
     expect(getHostResources()).toEqual({ resourcePath: hostPath.resolve(originalCwd, "resources"), isPackaged: false });
     if (!resourceLifecycle.events.includes("identity")) resourceLifecycle.events.push("identity");
-    return hostPlatform === "win32" ? actual.pinWindowsPaths(paths) : paths.map(facts);
+    const keys = paths.map(path => win32.normalize(path));
+    const stamps = new Map([...new Set(keys)].map(path => [path, stamp(path)]));
+    const pending = [...stamps.keys()].filter(path => drive.pins.get(path)?.stamp !== stamps.get(path));
+    const fresh = new Map<string, import("../../shared/windows-path-facts.js").WindowsPathFacts>();
+    if (pending.length > 0) {
+      runtime.identityQuery(pending);
+      const rows = hostPlatform === "win32" ? actual.pinWindowsPaths(pending) : pending.map(facts);
+      pending.forEach((path, index) => {
+        const row = rows[index];
+        if (row === undefined) throw new Error("The drive fixture returned an incomplete pin");
+        fresh.set(path, row);
+        // A changing tree cannot populate the cache, even if the native request itself succeeded.
+        drive.pins.delete(path);
+        if (stamps.get(path) === stamp(path)) drive.pins.set(path, { stamp: stamps.get(path)!, facts: row });
+      });
+    }
+    return keys.map(path => fresh.get(path) ?? drive.pins.get(path)!.facts);
   };
   const readable = (path: string): boolean => [...drive.readable].some((entry) => actual.windowsPathKey(entry) === actual.windowsPathKey(path));
   const descriptor = (path: string, entry: import("../../shared/windows-path-facts.js").WindowsPathFacts) => {
@@ -328,7 +360,7 @@ const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-poli
 const { pinWindowsPaths, windowsPathKey } = await import("../../shared/windows-path-facts.js");
 const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
 const { prepareMxcShellLaunch } = await import("../../tools/mxc-shell-launch.js");
-const { existsSync, mkdirSync, mkdtempSync } = await import("node:fs");
+const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
@@ -399,6 +431,7 @@ afterEach(async () => {
     drive.files.clear();
     drive.identities.clear();
     drive.readable.clear();
+    drive.pins.clear();
     runtime.policyFrames.length = 0;
   }
 });
@@ -485,6 +518,30 @@ it("composes host resources before the first native identity request", () => {
   const configuredAt = resourceLifecycle.events.indexOf("configured");
   expect(configuredAt).toBeGreaterThanOrEqual(0);
   expect(resourceLifecycle.events.indexOf("identity")).toBeGreaterThan(configuredAt);
+});
+
+it("pins unchanged fixture paths once instead of starting a helper for each grant read", () => {
+  useLayout(PROFILE_CHILD, { staged: true });
+  const first = pinWindowsPaths([staging()]);
+  expect(first[0]).toMatchObject({ exists: true, directory: true });
+  const queries = runtime.identityQuery.mock.calls.length;
+  expect(pinWindowsPaths([staging()])).toEqual(first);
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
+});
+
+it("refreshes fixture pins when a missing target is created or an existing target is removed", () => {
+  useLayout(PROFILE_CHILD, { staged: false });
+  const path = staging();
+  expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
+  const queries = runtime.identityQuery.mock.calls.length;
+  expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
+  mkdirSync(path);
+  expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: true, directory: true });
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 1);
+  rmdirSync(path);
+  expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 2);
 });
 
 describe("the browser download staging folder in a container shell's launch request", () => {
