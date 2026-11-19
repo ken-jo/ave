@@ -115,12 +115,17 @@ export function redactHomePathsInText(value: string): string {
     ] as const;
     for (const [home, replacement] of homeForms) {
       if (!home) continue;
-      const pattern = os.platform() === "win32"
-        ? home.split(/[\\/]/u).map(escapeRegExp).join(String.raw`(?:\\+|/)`)
+      const windows = os.platform() === "win32";
+      const pattern = windows
+        ? home.split(/([\\/]+)/u).map(part => /^[\\/]/u.test(part)
+          ? String.raw`[\\/]{${part.length},}`
+          : escapeRegExp(part)).join("")
         : escapeRegExp(home);
+      // Consume each separator run together and never retry from inside a leading run.
+      const start = windows && /^[\\/]/u.test(home) ? String.raw`(?<![\\/])` : "";
       // Only filename continuation text prevents redaction; punctuation fails closed and suffix bytes stay intact.
       out = out.replace(
-        new RegExp(String.raw`${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`, os.platform() === "win32" ? "giu" : "gu"),
+        new RegExp(String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`, windows ? "giu" : "gu"),
         replacement,
       );
     }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { win32 } from "node:path";
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { judgeInvocation, judgeRequest } from "../../permissions/judge/__tests__/judge-request-fixture.js";
 const fixture = vi.hoisted(() => ({ home: `D:/fixtures/${"long-root/".repeat(18)}home`, platform: "win32" as "win32" | "linux" }));
@@ -183,5 +184,79 @@ describe.each(["win32", "linux"] as const)("home text suffix matrix on %s", (pla
       expect(dlp.redactHomePathsInText(`"${form.text}",`)).toBe(`"${expected}",`);
       expect(dlp.redactHomePathsInText(`(${form.text})`)).toBe(`(${expected})`);
     }
+  });
+});
+
+
+describe.each([
+  { shape: "UNC", home: String.raw`\\server\share\alice` },
+  { shape: "extended drive", home: String.raw`\\?\D:\fixtures\alice` },
+  { shape: "extended UNC", home: String.raw`\\?\UNC\server\share\alice` },
+  { shape: "drive", home: String.raw`D:\fixtures\alice` },
+])("Windows separator runs for $shape homes", ({ home }) => {
+  it("redacts native, doubled, slash and case variants while retaining suffix bytes", async () => {
+    fixture.home = home;
+    vi.resetModules();
+    const { redactHomePathsInText } = await import("../dlp-filter.js");
+    const spellings = [home, home.replaceAll("\\", "\\\\"), home.replaceAll("\\", "/"), home.toUpperCase()];
+    for (const spelling of spellings) {
+      for (const suffix of ["", String.raw`\Mixed/FiLe.TXT`, String.raw`\\Mixed/FiLe.TXT`, "/Mixed/FiLe.TXT", '","other":1}', ";x", ". Next"]) {
+        expect(redactHomePathsInText(spelling + suffix)).toBe(`[home]${suffix}`);
+      }
+      for (const suffix of ["2", "_old", "-bak", ".bak", "é", "٢"]) {
+        expect(redactHomePathsInText(spelling + suffix)).toBe(spelling + suffix);
+      }
+    }
+  });
+  if (home.startsWith("\\")) {
+    it("redacts the whole leading separator run with extra backslashes or a slash", async () => {
+      fixture.home = home;
+      vi.resetModules();
+      const { redactHomePathsInText } = await import("../dlp-filter.js");
+      for (const prefix of ["\\".repeat(3), "/"]) {
+        const suffix = String.raw`\\Mixed/FiLe.TXT`;
+        expect(redactHomePathsInText(prefix + home + suffix)).toBe(`[home]${suffix}`);
+      }
+    });
+  }
+});
+
+describe.each([
+  { shape: "UNC", home: String.raw`\\server\share\alice` },
+  { shape: "extended", home: String.raw`\\?\D:\fixtures\alice` },
+  { shape: "drive", home: String.raw`D:\fixtures\alice` },
+])("home redaction scaling for $shape paths", ({ home, shape }) => {
+  it("scans long separator runs and near-miss names with linear scaling", async () => {
+    fixture.home = home;
+    vi.resetModules();
+    const { redactHomePathsInText } = await import("../dlp-filter.js");
+    const firstSeparator = home.indexOf("\\");
+    const prefix = home.slice(0, firstSeparator);
+    const nearMiss = `${home.slice(firstSeparator).replace(/^\\+/u, "").slice(0, -1)}X`;
+    const inputs = (size: number): string[] => [
+      `${"\\".repeat(size - 9)}near-miss`,
+      prefix + "\\".repeat(size - prefix.length - nearMiss.length) + nearMiss,
+    ];
+    const measure = (value: string): number => {
+      const start = performance.now();
+      const result = redactHomePathsInText(value);
+      const elapsed = performance.now() - start;
+      expect(result).toBe(value);
+      expect(elapsed).toBeLessThan(2_000);
+      return elapsed;
+    };
+    // Reject slow small inputs before attempting the large scaling samples.
+    for (const value of inputs(2 * 1024)) measure(value);
+    const timings = [100, 200, 400].map(kib => {
+      const values = inputs(kib * 1024);
+      const samples = Array.from({ length: 5 }, () => values.reduce((total, value) => total + measure(value), 0));
+      samples.sort((a, b) => a - b);
+      return samples[2];
+    });
+    // A timer-resolution floor keeps scheduling noise from magnifying sub-millisecond samples.
+    expect(timings[1]).toBeLessThan(Math.max(timings[0], 1) * 4);
+    expect(timings[2]).toBeLessThan(Math.max(timings[1], 1) * 4);
+    expect(timings[2]).toBeLessThan(Math.max(timings[0], 1) * 8);
+    console.info("home redaction scaling", { shape, kib: [100, 200, 400], milliseconds: timings });
   });
 });
