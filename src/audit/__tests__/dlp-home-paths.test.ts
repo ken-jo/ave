@@ -514,3 +514,13 @@ it("redacts URL descendants when the home already ends in a separator", async ()
   const { redactFsPath } = await import("../dlp-filter.js");
   expect(redactFsPath("file:///etc/config")).toBe("file://<home>etc/config");
 });
+
+it("keeps encoded descendant bytes for a canonical UNC file URL", async () => {
+  fixture.platform = "win32";
+  fixture.home = String.raw`\\server\share\habitat`;
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  const url = pathToFileURL(fixture.home).href;
+  expect(url).toBe("file://server/share/habitat");
+  expect(redactFsPath(`${url}/Mixed%20File`)).toBe("file://<home>/Mixed%20File");
+});
