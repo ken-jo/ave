@@ -226,7 +226,6 @@ describe("Windows native test inventory", () => {
 
   it.each<{ fault: string; replyTimeoutMs?: number }>([
     { fault: "startup", replyTimeoutMs: 100 },
-    // The first real batch must arrive before the crash can exercise the next reply deadline.
     { fault: "crash", replyTimeoutMs: 250 },
     { fault: "exit", replyTimeoutMs: 100 },
     { fault: "stall" },
@@ -240,6 +239,7 @@ describe("Windows native test inventory", () => {
       writeFileSync(preload, 'if (!require("node:worker_threads").isMainThread) throw new Error("Unexpected worker preload");');
       const inventoryPath = fileURLToPath(new URL("./windows-native-test-inventory.ts", import.meta.url));
       const source = readFileSync(inventoryPath, "utf8");
+      const productionReplyTimeoutMs = 5000;
       const scan = replyTimeoutMs === undefined
         ? "nativeBackedTestFiles(modules)"
         : `scanNativeBackedTestFiles(modules, ${replyTimeoutMs})`;
@@ -259,8 +259,10 @@ describe("Windows native test inventory", () => {
         define: { "import.meta.url": JSON.stringify(import.meta.url) },
         banner: { js: `
 const threads = require("node:worker_threads");
-const workers = [], exits = [], closures = [], flags = [];
+const fault = ${JSON.stringify(fault)};
+const workers = [], exits = [], closures = [], flags = [], observedErrors = [], observedExits = [];
 let batches = 0;
+let armedAt;
 const receive = threads.receiveMessageOnPort;
 threads.receiveMessageOnPort = port => {
   const response = receive(port);
@@ -277,14 +279,36 @@ threads.MessageChannel = class extends BaseChannel {
 threads.Worker = class extends BaseWorker {
   constructor(code, options) {
     flags.push(options.execArgv);
-    if (${JSON.stringify(fault)} === "construction") throw new Error("Controlled worker construction failure");
-    if (${JSON.stringify(fault)} === "startup") code = "const = ;";
-    if (${JSON.stringify(fault)} === "exit") code = "process.exit(0);";
-    if (${JSON.stringify(fault)} === "stall") code = "setInterval(() => {}, 1000);";
-    if (${JSON.stringify(fault)} === "crash") code = code.replace("port.postMessage({ results });", "port.postMessage({ results }); if (i === 0) process.exit(23);");
+    if (fault === "construction") throw new Error("Controlled worker construction failure");
+    if (fault === "startup") code = "const = ;";
+    if (fault === "exit") code = "process.exit(0);";
+    if (fault === "stall") code = "setInterval(() => {}, 1000);";
+    if (fault === "crash") code = code.replace("port.postMessage({ results });", "port.postMessage({ results }); if (i === 0) process.exit(23);");
+    const ready = ${replyTimeoutMs !== undefined} ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
+    if (ready) {
+      options.workerData.ready = ready;
+      const armOnFault = fault === "startup"
+        ? 'process.once("uncaughtExceptionMonitor", error => { if (error.name === "SyntaxError") arm(); });'
+        : 'process.once("exit", code => { if (code === ' + (fault === "crash" ? 23 : 0) + ') arm(); });';
+      code = [
+        'const { ready } = require("node:worker_threads").workerData;',
+        'const arm = () => { Atomics.store(ready, 0, 1); Atomics.notify(ready, 0); };',
+        armOnFault,
+        'eval(' + JSON.stringify(code) + ');',
+      ].join("\\n");
+    }
     super(code, options);
     workers.push(this);
-    exits.push(new Promise(resolve => this.once("exit", resolve)));
+    this.on("error", error => observedErrors.push(error.name));
+    exits.push(new Promise(resolve => this.once("exit", code => {
+      observedExits.push(code);
+      resolve();
+    })));
+    // The scanner starts its short clock when this constructor returns. For a crash, the
+    // real first reply is already queued when the worker reaches its exit handler.
+    if (ready && Atomics.wait(ready, 0, 0, ${productionReplyTimeoutMs}) !== "timed-out") {
+      armedAt = performance.now();
+    }
   }
 };` },
         footer: { js: `
@@ -293,13 +317,15 @@ for (let i = 2; i < 260; i++) modules.set("src/pad" + i + ".ts", "");
 const started = performance.now();
 let error, result;
 try { result = [...module.exports.${scan}]; } catch (caught) { error = caught.message; }
-const elapsedMs = performance.now() - started;
+const elapsedMs = performance.now() - (armedAt ?? started);
 (async () => {
   const closed = await Promise.race([
     Promise.all([...exits, ...closures]).then(() => true),
     new Promise(resolve => setTimeout(() => resolve(false), 1000).unref()),
   ]);
-  console.log(JSON.stringify({ error, result, elapsedMs, closed, liveWorkers: workers.filter(worker => worker.threadId !== -1).length, flags, batches }));
+  console.log(JSON.stringify({
+    error, result, elapsedMs, closed, liveWorkers: workers.filter(worker => worker.threadId !== -1).length,
+    armed: armedAt !== undefined, observedErrors, observedExits, flags, batches }));
 })();` },
       });
       writeFileSync(entry, bundled.outputFiles[0].text);
@@ -323,7 +349,11 @@ const elapsedMs = performance.now() - started;
       } else if (fault === "construction") {
         expect(receipt.error).toBe("Controlled worker construction failure");
       } else {
-        const expectedTimeoutMs = replyTimeoutMs ?? 5000;
+        if (fault === "startup") expect(receipt.observedErrors).toEqual(["SyntaxError"]);
+        if (fault === "exit") expect(receipt.observedExits).toEqual([0]);
+        if (fault === "crash") expect(receipt.observedExits).toEqual([23]);
+        if (replyTimeoutMs !== undefined) expect(receipt.armed).toBe(true);
+        const expectedTimeoutMs = replyTimeoutMs ?? productionReplyTimeoutMs;
         expect(receipt.error).toBe(`Source transform worker stalled or exited before replying within ${expectedTimeoutMs}ms`);
         expect(receipt.elapsedMs).toBeGreaterThanOrEqual(expectedTimeoutMs);
         expect(receipt.elapsedMs).toBeLessThan(replyTimeoutMs === undefined ? 6500 : 2500);
