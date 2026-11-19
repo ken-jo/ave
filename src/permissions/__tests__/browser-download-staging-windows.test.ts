@@ -37,6 +37,15 @@ vi.mock("../../main/host-resources.js", async (original) => {
   } };
 });
 
+// Also enforce the account-home boundary when the checkout itself is below it.
+vi.mock("../../shared/ave-home-test-guard.js", async (original) => {
+  const actual = await original<typeof import("../../shared/ave-home-test-guard.js")>();
+  return { ...actual, checkSandboxStampTargets: (paths: readonly string[]) => {
+    actual.checkSandboxStampTargets(paths);
+    withProvidedContext("realAccountHome", hostPath.dirname(originalCwd), () => actual.checkSandboxStampTargets(paths));
+  } };
+});
+
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
 vi.mock("../windows-stamp-targets.js", async (original) => {
@@ -194,7 +203,7 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     }));
   };
   const pin = (paths: readonly string[]) => {
-    expect(getHostResources()).toEqual({ resourcePath: hostPath.resolve(originalCwd, "resources"), isPackaged: false });
+    expect(getHostResources()).toEqual(fixtureResources);
     if (!resourceLifecycle.events.includes("identity")) resourceLifecycle.events.push("identity");
     const keys = paths.map(path => win32.normalize(path));
     const stamps = new Map([...new Set(keys)].map(path => [path, stamp(path)]));
@@ -331,6 +340,12 @@ const hostOs = await vi.importActual<typeof import("node:os")>("node:os");
 const nativeDirectories = createTmpDirTracker();
 const nativeRoot = hostPlatform === "win32"
   ? hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-drive-")))) : null;
+const resourceRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-resources-"))));
+const fixtureResources = { resourcePath: hostPath.join(resourceRoot, "resources"), isPackaged: false };
+const fixtureScripts = hostPath.join(resourceRoot, "dist", "skill-scripts");
+const fixtureRuntime = hostPath.join(resourceRoot, "host-runtime.exe");
+const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
+if (originalExecPath === undefined) throw new Error("The host runtime path descriptor is missing");
 afterAll(async () => { await nativeDirectories.cleanup(); });
 const profileRoot = nativeRoot === null ? "C:\\Users\\alice" : hostPath.join(nativeRoot, "profile");
 const programRoot = nativeRoot === null ? "C:\\Program Files" : hostPath.join(nativeRoot, "programs");
@@ -370,7 +385,19 @@ const { tmpdir } = await import("node:os");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
 const originalCwd = process.cwd();
-beforeAll(() => configureHostResources({ resourcePath: hostPath.resolve(originalCwd, "resources"), isPackaged: false }));
+beforeAll(() => {
+  checkSandboxStampTargets([resourceRoot]);
+  hostFs.mkdirSync(fixtureResources.resourcePath, { recursive: true });
+  hostFs.mkdirSync(fixtureScripts, { recursive: true });
+  hostFs.writeFileSync(fixtureRuntime, "runtime image fixture");
+  if (hostPlatform === "win32") {
+    const relative = hostPath.join("windows-path-kind", process.arch, "ave-path-kind.exe");
+    const target = hostPath.join(fixtureResources.resourcePath, relative);
+    hostFs.mkdirSync(hostPath.dirname(target), { recursive: true });
+    hostFs.copyFileSync(hostPath.join(originalCwd, "resources", relative), target);
+  }
+  configureHostResources(fixtureResources);
+});
 const cwdDirectories = createTmpDirTracker();
 afterAll(async () => { await cwdDirectories.cleanup(); });
 const STAGED = "0123456789abcdef0123456789abcdef";
@@ -417,6 +444,7 @@ beforeEach(() => {
   // A foreign drive spelling is relative to the real host; keep that projection inside the validated test scratch.
   if (hostPlatform !== "win32") process.chdir(cwdDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
   setProcessPlatform("win32");
+  Object.defineProperty(process, "execPath", { ...originalExecPath, value: fixtureRuntime });
   vi.stubEnv("USERPROFILE", profileRoot);
   vi.stubEnv("HOME", profileRoot);
   vi.stubEnv("SystemRoot", "C:\\Windows");
@@ -430,6 +458,7 @@ afterEach(async () => {
   } finally {
     process.chdir(originalCwd);
     setProcessPlatform(hostPlatform);
+    Object.defineProperty(process, "execPath", originalExecPath);
     vi.unstubAllEnvs();
     vi.clearAllMocks();
     drive.dirs.clear();
@@ -519,7 +548,7 @@ function expectNoGrantInside(filesystem: ContainerFilesystem): void {
 it("composes host resources before the first native identity request", () => {
   const [profile] = pinWindowsPaths([profileRoot]);
   expect(profile).toMatchObject({ exists: true, directory: true });
-  expect(getHostResources()).toEqual({ resourcePath: hostPath.resolve(originalCwd, "resources"), isPackaged: false });
+  expect(getHostResources()).toEqual(fixtureResources);
   const configuredAt = resourceLifecycle.events.indexOf("configured");
   expect(configuredAt).toBeGreaterThanOrEqual(0);
   expect(resourceLifecycle.events.indexOf("identity")).toBeGreaterThan(configuredAt);
@@ -629,6 +658,16 @@ async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }
 describe("the browser download staging folder in the srt-win session floor and worker wraps", () => {
   beforeEach(() => {
     runtime.initialize.mockResolvedValue(undefined);
+  });
+
+  it("keeps application write-deny targets isolated when the checkout lies under the account home", async () => {
+    const checkoutScripts = hostPath.join(originalCwd, "dist", "skill-scripts");
+    withProvidedContext("realAccountHome", hostPath.dirname(originalCwd), () => {
+      expect(() => checkSandboxStampTargets([checkoutScripts])).toThrow(/under the real/);
+    });
+    useLayout(PROFILE_CHILD, { staged: false });
+    const filesystem = await sessionFloor();
+    expect(spelledRows(filesystem.denyWrite)).toEqual(expect.arrayContaining([fixtureScripts, fixtureRuntime]));
   });
 
   it("proves missing grant targets through the drive's existing ancestor identities", () => {
