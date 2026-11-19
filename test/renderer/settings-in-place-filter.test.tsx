@@ -1,6 +1,6 @@
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import { getLocale, setLocale } from "../../src/i18n/index.js";
@@ -8,7 +8,7 @@ import { ThemeProvider } from "../../src/ui/renderer/theme/ThemeProvider.js";
 import { TooltipProvider } from "../../src/components/ui/tooltip.js";
 import { _unregisteredSettingsControlsForTest } from "../../src/ui/renderer/context/SettingsEditorContext.js";
 import { SettingsContent } from "../../src/ui/renderer/SettingsContent.js";
-import { clickSettingsTab } from "./helpers.js";
+import { clickSettingsTab, deferred } from "./helpers.js";
 import { makeMockAveApi, makeMockAveNamespace } from "./mock-ave-api.js";
 import { requiredFixture } from "../../src/__tests__/support/required-fixture.js";
 const previousLocale = getLocale();
@@ -33,7 +33,19 @@ async function renderSettings(settings = DEFAULT_SETTINGS) {
   Object.assign(ns, { mcp });
   window.ave = ns as never; window.aveApi = api as never;
   vi.stubGlobal("ave", ns); vi.stubGlobal("aveApi", api);
+  const readSettings = requiredFixture(api.getSettings.getMockImplementation());
+  const readDefaults = requiredFixture(api.getSettingsDefaults.getMockImplementation());
+  const settingsRead = deferred<Awaited<ReturnType<typeof api.getSettings>>>();
+  const defaultsRead = deferred<Awaited<ReturnType<typeof api.getSettingsDefaults>>>();
+  api.getSettings.mockReturnValueOnce(settingsRead.promise);
+  api.getSettingsDefaults.mockReturnValueOnce(defaultsRead.promise);
   const view = render(<ThemeProvider initialAppearance={DEFAULT_APPEARANCE}><TooltipProvider><SettingsContent api={api as never} onSaved={() => {}} initialTab="web" /></TooltipProvider></ThemeProvider>);
+  expect(view.container.querySelector("fieldset.contents")).toBeDisabled();
+  await act(async () => {
+    settingsRead.resolve(await readSettings());
+    defaultsRead.resolve(await readDefaults());
+  });
+  expect(view.container.querySelector("fieldset.contents")).not.toBeDisabled();
   await waitFor(() => expect(view.container.querySelector('[data-settings-section="web-search-engine"]')).toBeTruthy());
   return { ...view, api, ns, mcp };
 }
@@ -71,8 +83,12 @@ describe("settings in-place editor", () => {
       });
     }
     fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
-    fireEvent.click(view.getByRole("button", { name: "Modified settings" }));
+    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Modified settings" })); });
     const row = (id: string) => requiredFixture(terminal().querySelector<HTMLElement>(`[data-setting-id="${id}"]:not([data-setting-registered])`));
+    expect(view.container.querySelector("fieldset.contents")).not.toBeDisabled();
+    expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]);
+    // Remounted controls register asynchronously; their DOM mutations share one filter rescan in the next frame.
+    await act(async () => { await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); }); });
     await waitFor(() => {
       expect(row("appearance.terminal.scrollback").hidden).toBe(false);
       expect(row("appearance.terminal.cursorStyle").hidden).toBe(true);
