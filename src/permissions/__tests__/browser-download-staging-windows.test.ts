@@ -198,21 +198,26 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     if (!resourceLifecycle.events.includes("identity")) resourceLifecycle.events.push("identity");
     const keys = paths.map(path => win32.normalize(path));
     const stamps = new Map([...new Set(keys)].map(path => [path, stamp(path)]));
-    const pending = [...stamps.keys()].filter(path => drive.pins.get(path)?.stamp !== stamps.get(path));
+    const pending = [...stamps].filter(([path, current]) => drive.pins.get(path)?.stamp !== current);
     const fresh = new Map<string, import("../../shared/windows-path-facts.js").WindowsPathFacts>();
     if (pending.length > 0) {
-      runtime.identityQuery(pending);
-      const rows = hostPlatform === "win32" ? actual.pinWindowsPaths(pending) : pending.map(facts);
-      pending.forEach((path, index) => {
+      const requested = pending.map(([path]) => path);
+      runtime.identityQuery(requested);
+      const rows = hostPlatform === "win32" ? actual.pinWindowsPaths(requested) : requested.map(facts);
+      pending.forEach(([path, current], index) => {
         const row = rows[index];
         if (row === undefined) throw new Error("The drive fixture returned an incomplete pin");
         fresh.set(path, row);
         // A changing tree cannot populate the cache, even if the native request itself succeeded.
         drive.pins.delete(path);
-        if (stamps.get(path) === stamp(path)) drive.pins.set(path, { stamp: stamps.get(path)!, facts: row });
+        if (current === stamp(path)) drive.pins.set(path, { stamp: current, facts: row });
       });
     }
-    return keys.map(path => fresh.get(path) ?? drive.pins.get(path)!.facts);
+    return keys.map(path => {
+      const row = fresh.get(path) ?? drive.pins.get(path)?.facts;
+      if (row === undefined) throw new Error("The drive fixture returned an incomplete pin");
+      return row;
+    });
   };
   const readable = (path: string): boolean => [...drive.readable].some((entry) => actual.windowsPathKey(entry) === actual.windowsPathKey(path));
   const descriptor = (path: string, entry: import("../../shared/windows-path-facts.js").WindowsPathFacts) => {
