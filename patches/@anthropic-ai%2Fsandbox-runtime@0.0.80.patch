@@ -4658,7 +4658,7 @@ index 65b8eef..40dec6d 100644
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c566..35dd224 100644
+index 540c566..337dca5 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -4980,6 +4980,52 @@ index 540c566..35dd224 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
          }
+@@ -1298,6 +1524,25 @@ export function revokeWindowsAcl(opts) {
+ // ────────────────────────────────────────────────────────────────────
+ // Wrap
+ // ────────────────────────────────────────────────────────────────────
++// Length of one argument after the default libuv/MSVCRT spawn quoting.
++function quotedWindowsArgumentLength(arg) {
++    if (arg.length === 0)
++        return 2;
++    if (!/[ \t"]/.test(arg))
++        return arg.length;
++    let units = arg.length + 2;
++    let backslashes = 0;
++    for (const c of arg) {
++        if (c === '\\') {
++            backslashes++;
++            continue;
++        }
++        if (c === '"')
++            units += backslashes + 1;
++        backslashes = 0;
++    }
++    return units + backslashes;
++}
+ /**
+  * Build the spawn descriptor for running `command` inside the Windows
+  * sandbox: an `argv` array plus the `env` to spawn it with.
+@@ -1393,14 +1638,11 @@ export function wrapCommandWithSandboxWindows(p) {
+     // cmd /s) so the inner shell receives it intact. See launch.rs.
+     const sh = p.binShell ?? parseWindowsBinShell(undefined);
+     argv.push(sh.exe, ...sh.args, p.command);
+-    // CreateProcessW's lpCommandLine is capped at 32 767 WCHARs.
+-    // Node's `shell:false` spawn builds it by MSVCRT-quoting each
+-    // argv element and joining with spaces; ~30 000 leaves headroom
+-    // for the quote overhead the estimate doesn't model.
+-    const cmdlineEstimate = argv.reduce((n, a) => n + a.length + 3, 0);
+-    if (cmdlineEstimate > 30000) {
+-        throw new WindowsSandboxError('argv_too_long', `Windows sandbox argv is ~${cmdlineEstimate} chars ` +
+-            `(CreateProcessW limit is 32 767).`);
++    // CreateProcessW caps the quoted command line at 32,767 UTF-16 units.
++    // Each argument contributes one space or the terminating NUL.
++    const cmdlineUnits = argv.reduce((n, arg) => n + quotedWindowsArgumentLength(arg) + 1, 0);
++    if (cmdlineUnits > 32767) {
++        throw new WindowsSandboxError('argv_too_long', `Windows sandbox argv is ${cmdlineUnits} UTF-16 units (CreateProcessW limit is 32767).`);
+     }
+     // The two-hop runner starts with a FRESH `srt-sandbox` profile
+     // env (`lpEnvironment = NULL` + `LOGON_WITH_PROFILE`), so the
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
 index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16c263bc57

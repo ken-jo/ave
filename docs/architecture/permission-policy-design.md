@@ -1139,10 +1139,10 @@ request before writing stdin. The shared glob scan checks at most 16,384 visits
 across matching and nonmatching entries. Narrow a configured glob that exhausts
 that allowance. The session also checks the cumulative retained wrap denies
 before adding more. An over-limit policy refuses the operation in full.
-Per-exec deny deltas use
-the helper's command line and share its argument budget with the shell command
-and environment overlay. The wrapper checks that complete argument list before
-launch. Container requests are checked separately as a whole and use an
+Per-exec deny deltas share the helper's command line with the shell command and
+environment overlay. Before launch, the wrapper checks the fully quoted line,
+including the terminating NUL, against the 32,767 UTF-16-unit limit. Container
+requests are checked separately as a whole and use an
 authenticated pipe when they exceed the inline argument budget.
 When discovery narrows write access, the existing tool result and terminal
 output identify the scan limit or failure, the removed roots and the actual
