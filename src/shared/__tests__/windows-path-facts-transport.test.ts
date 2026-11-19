@@ -4,8 +4,10 @@ import { windowsCommandLineLength, WINDOWS_COMMAND_LINE_LIMIT } from "../windows
 import * as nativeHost from "../windows-native-host.js";
 import { readWindowsDacls } from "../windows-path-facts.js";
 
+type OutputEncoding = BufferEncoding | "buffer" | null | undefined;
+
 const { execute, helper } = vi.hoisted(() => ({
-  execute: vi.fn<(file: string, args: string[], options: { input?: Buffer }) => string>(),
+  execute: vi.fn<(file: string, args: string[], options: { input?: Buffer; encoding?: OutputEncoding }) => string | Buffer>(),
   helper: "C:\\path kind\\helper.exe",
 }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFileSync: execute }));
@@ -16,6 +18,14 @@ const MISSING = {
   changeTime: null, attributes: 0, reparseTag: 0, reparseTarget: null, directory: false, ancestors: [],
   currentUserSid: "S-1-5-21-1-2-3-1001", elevated: false, principals: {}, identity: null, parent: null,
 };
+
+function stdoutWithEncoding(bytes: Buffer, encoding: OutputEncoding): string | Buffer {
+  return encoding && encoding !== "buffer" ? bytes.toString(encoding) : bytes;
+}
+
+function replyOnce(bytes: Buffer): void {
+  execute.mockImplementationOnce((_file, _args, { encoding }) => stdoutWithEncoding(bytes, encoding));
+}
 
 describe("Windows parent DACL transport", () => {
   beforeEach(() => {
@@ -45,7 +55,8 @@ describe("Windows parent DACL transport", () => {
       });
       expect(offset).toBe(input.length);
       expect(requests).toEqual(paths);
-      return JSON.stringify(requests.map(requestPath => ({ ...MISSING, requestPath })));
+      const reply = Buffer.from(JSON.stringify(requests.map(requestPath => ({ ...MISSING, requestPath }))));
+      return stdoutWithEncoding(reply, options.encoding);
     });
 
     const rows = readWindowsDacls(paths, { parent: true });
@@ -69,11 +80,26 @@ describe("Windows parent DACL transport", () => {
   it("refuses the entire verification reply if a later row is missing, substituted or malformed", () => {
     const paths = [resolve("parent first"), resolve("parent second")];
     const rows = paths.map(requestPath => ({ ...MISSING, requestPath }));
-    execute.mockReturnValueOnce(JSON.stringify([rows[0], rows[0]]));
+    replyOnce(Buffer.from(JSON.stringify([rows[0], rows[0]])));
     expect(() => readWindowsDacls(paths, { parent: true })).toThrow(/request path mismatch/);
-    execute.mockReturnValueOnce(JSON.stringify(rows.slice(0, 1)));
+    replyOnce(Buffer.from(JSON.stringify(rows.slice(0, 1))));
     expect(() => readWindowsDacls(paths, { parent: true })).toThrow(/response/);
-    execute.mockReturnValueOnce(JSON.stringify([rows[0], { ...rows[1], parent: true }]));
+    replyOnce(Buffer.from(JSON.stringify([rows[0], { ...rows[1], parent: true }])));
     expect(() => readWindowsDacls(paths, { parent: true })).toThrow(/parent DACL/);
+  });
+
+  it("rejects malformed UTF-8 that could decode to the exact request path", () => {
+    const path = resolve("target-\ufffd");
+    const valid = Buffer.from(JSON.stringify([{ ...MISSING, requestPath: path }]));
+    const replacement = Buffer.from("\ufffd");
+    const offset = valid.lastIndexOf(replacement);
+    expect(offset).toBeGreaterThanOrEqual(0);
+    const malformed = Buffer.concat([valid.subarray(0, offset), Buffer.from([0xff]), valid.subarray(offset + replacement.length)]);
+    expect(malformed.toString("utf8")).toBe(valid.toString("utf8"));
+
+    replyOnce(valid);
+    expect(readWindowsDacls([path], { parent: true })).toMatchObject([{ exists: false, parent: null }]);
+    replyOnce(malformed);
+    expect(() => readWindowsDacls([path], { parent: true })).toThrow(/encoding utf-8/i);
   });
 });
