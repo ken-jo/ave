@@ -1,6 +1,6 @@
 import "../../../../test/renderer/setup.js";
-import { it, expect } from "vitest";
-import { waitFor, fireEvent, screen, within } from "@testing-library/react";
+import { it, expect, vi } from "vitest";
+import { act, waitFor, fireEvent, screen, within } from "@testing-library/react";
 import { t } from "../../../i18n/runtime.js";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 
@@ -52,17 +52,40 @@ it("Show more reveals the first latest file in the existing Files tab with the C
 it("summary row reveal selects that file and its detail hunk references the active composer", async () => {
   const { container, api } = await summaryApp();
   await settledSummary(api);
-  const rows = screen.getAllByTestId("latest-turn-summary-file");
-  fireEvent.click(rows[2]!);
-  // The reveal refreshes the review, and a hunk becomes referenceable only from that fresh answer.
-  const detail = await screen.findByTestId("turn-change-detail", undefined, SUMMARY_SETTLE);
-  await waitFor(() => expect(screen.getByRole("treeitem", { name: /source-2.ts/ })).toHaveAttribute("aria-selected", "true"));
-  const hunk = () => within(detail).getByRole("button", { name: /Reference hunk|변경 부분 1 참조/ });
-  await waitFor(() => expect(hunk()).toBeEnabled(), SUMMARY_SETTLE);
-  fireEvent.click(hunk());
-  const composer = container.querySelector('[data-testid="composer-textarea"][data-composer-surface="main"]') as HTMLTextAreaElement;
-  expect(composer.value).toContain("[File #1]");
-  expect(screen.getByText("@src/source-2.ts:1-1")).toBeVisible();
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  const requestFrame = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    frames.set(++frameId, callback);
+    return frameId;
+  });
+  const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const advanceFrame = async () => {
+    const scheduled = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of scheduled) callback(performance.now()); });
+  };
+  try {
+    const rows = screen.getAllByTestId("latest-turn-summary-file");
+    fireEvent.click(rows[2]!);
+    // The reveal refreshes the review, and a hunk becomes referenceable only from that fresh answer.
+    const detail = await screen.findByTestId("turn-change-detail", undefined, SUMMARY_SETTLE);
+    expect(screen.getByTestId("chat-side-panel-motion")).toHaveAttribute("aria-hidden", "true");
+    // The detail mounts while the opening panel is inert; complete its scheduled frames before querying accessible rows.
+    await advanceFrame();
+    expect(screen.getByTestId("chat-side-panel-motion")).toHaveAttribute("aria-hidden", "true");
+    await advanceFrame();
+    expect(screen.getByTestId("chat-side-panel-motion")).toHaveAttribute("aria-hidden", "false");
+    await waitFor(() => expect(screen.getByRole("treeitem", { name: /source-2.ts/ })).toHaveAttribute("aria-selected", "true"));
+    const hunk = () => within(detail).getByRole("button", { name: /Reference hunk|변경 부분 1 참조/ });
+    await waitFor(() => expect(hunk()).toBeEnabled(), SUMMARY_SETTLE);
+    fireEvent.click(hunk());
+    const composer = container.querySelector('[data-testid="composer-textarea"][data-composer-surface="main"]') as HTMLTextAreaElement;
+    expect(composer.value).toContain("[File #1]");
+    expect(screen.getByText("@src/source-2.ts:1-1")).toBeVisible();
+  } finally {
+    requestFrame.mockRestore();
+    cancelFrame.mockRestore();
+  }
 });
 
 it("reveals Files visibly over a narrow chat tile instead of hiding the requested panel", async () => {
