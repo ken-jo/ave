@@ -3,7 +3,7 @@ import { isAbsolute, win32 } from "node:path";
 import { toUSVString } from "node:util";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
-import { runWindowsNative } from "./windows-native-host.js";
+import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 /** Match native ledger output to requests; this spelling key is never object identity. */
@@ -152,15 +152,12 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
     if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
       throw new Error("Windows path facts command line exceeds the process limit");
     }
-    const options = {
+    return execFileSync(helper, args, {
       windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
       maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
-    };
-    if (!framed) return execFileSync(helper, args, { ...options, encoding: "utf8" });
-    // Validate the wire bytes before comparing the echoed path.
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(execFileSync(helper, args, options));
+    });
   });
-  return decodeWindowsPathFacts(output, paths.length, mode, flags, framed ? paths : undefined);
+  return decodeWindowsPathFacts(decodeWindowsNativeReply(output), paths.length, mode, flags, framed ? paths : undefined);
 }
 
 export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = [], expectedPaths?: readonly string[]): WindowsPathFacts[] {

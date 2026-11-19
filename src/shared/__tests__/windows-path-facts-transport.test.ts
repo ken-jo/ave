@@ -2,7 +2,7 @@ import { resolve, sep } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { windowsCommandLineLength, WINDOWS_COMMAND_LINE_LIMIT } from "../windows-command-line.js";
 import * as nativeHost from "../windows-native-host.js";
-import { readWindowsDacls } from "../windows-path-facts.js";
+import { pinWindowsPaths, readWindowsDacls } from "../windows-path-facts.js";
 
 type OutputEncoding = BufferEncoding | "buffer" | null | undefined;
 
@@ -27,7 +27,7 @@ function replyOnce(bytes: Buffer): void {
   execute.mockImplementationOnce((_file, _args, { encoding }) => stdoutWithEncoding(bytes, encoding));
 }
 
-describe("Windows parent DACL transport", () => {
+describe("Windows path facts transport", () => {
   beforeEach(() => {
     execute.mockReset();
     vi.spyOn(nativeHost, "runWindowsNative").mockImplementation(operation => operation());
@@ -101,5 +101,31 @@ describe("Windows parent DACL transport", () => {
     expect(readWindowsDacls([path], { parent: true })).toMatchObject([{ exists: false, parent: null }]);
     replyOnce(malformed);
     expect(() => readWindowsDacls([path], { parent: true })).toThrow(/encoding utf-8/i);
+  });
+
+  it.each([
+    ["path pin", pinWindowsPaths],
+    ["DACL", readWindowsDacls],
+    ["DACL with content", (paths: readonly string[]) => readWindowsDacls(paths, { content: true })],
+    ["parent DACL with content", (paths: readonly string[]) => readWindowsDacls(paths, { parent: true, content: true })],
+  ] as const)("rejects malformed UTF-8 in a %s reply", (_mode, request) => {
+    const path = resolve("target-\ufffd");
+    const volumeSerial = "0x0000000000000001";
+    const fileId = "0x00000000000000000000000000000001";
+    const valid = Buffer.from(JSON.stringify([{
+      ...MISSING, exists: true, canonical: path, volumeSerial, fileId,
+      volumeSerialNumber: volumeSerial, fileIndex: volumeSerial, changeTime: volumeSerial,
+      identity: { volumeSerial, fileId }, owner: MISSING.currentUserSid, protected: true, nullDacl: false, aces: [], contentHex: "41",
+    }]));
+    const replacement = Buffer.from("\ufffd");
+    const offset = valid.lastIndexOf(replacement);
+    expect(offset).toBeGreaterThanOrEqual(0);
+    const malformed = Buffer.concat([valid.subarray(0, offset), Buffer.from([0xff]), valid.subarray(offset + replacement.length)]);
+    expect(malformed.toString("utf8")).toBe(valid.toString("utf8"));
+
+    replyOnce(valid);
+    expect(request([path])).toMatchObject([{ exists: true, canonical: path }]);
+    replyOnce(malformed);
+    expect(() => request([path])).toThrow(/encoding utf-8/i);
   });
 });
