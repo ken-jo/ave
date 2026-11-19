@@ -119,7 +119,7 @@ export function redactHomePathsInText(value: string): string {
         ? home.split(/[\\/]/u).map(escapeRegExp).join("[\\\\/]")
         : escapeRegExp(home);
       out = out.replace(
-        new RegExp(pattern, os.platform() === "win32" ? "giu" : "gu"),
+        new RegExp(String.raw`${pattern}(?=$|[\\/\s"'\[\]{},;()<>])`, os.platform() === "win32" ? "giu" : "gu"),
         replacement,
       );
     }
