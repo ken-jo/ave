@@ -240,3 +240,36 @@ it("reads getters once when renaming an object key", () => {
   expect(read).toHaveBeenCalledTimes(1);
   expect(convert).toHaveBeenCalledTimes(1);
 });
+
+it.each(["users", "homepage"])("does not read the getter for unchanged trigger key %s twice", key => {
+  let calls = 0;
+  const data = { get [key]() { return ++calls; } };
+  expect(JSON.parse(serializeRuntimeAuditData(data) ?? "")).toEqual({ [key]: 1 });
+  expect(calls).toBe(1);
+});
+
+it("keeps the original toJSON key and native getter order across a renamed property", () => {
+  const home = fixture.home;
+  let state = 0;
+  const calls: string[] = [];
+  const child = {
+    toJSON(key: string) {
+      calls.push(key);
+      state = 1;
+      return key === home;
+    },
+  };
+  const data = {
+    [home]: child,
+    get flag() {
+      calls.push("flag");
+      return state;
+    },
+    ignored: undefined,
+    nested: [{ [home]: 3, "[home]": 4 }],
+  };
+  expect(JSON.parse(serializeRuntimeAuditData(data) ?? "")).toEqual({
+    "[home]": true, flag: 1, nested: [{ "[home]#2": 3, "[home]": 4 }],
+  });
+  expect(calls).toEqual([home, "flag"]);
+});
