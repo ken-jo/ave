@@ -1,7 +1,7 @@
 /** The browser's download staging folder through the Windows launch projections of every confined lane: the container shell request
  * handed to its launcher, the srt-win session floor and worker wrap handed to the runtime, the ACL holder's grant turn, and the
- * container holder's request handed to its native entry. Only the OS edge is a stand-in (an in-memory Windows drive, native path
- * facts and DACLs, the runtime's native calls, the launcher and the native process entry); every projection composer runs for real.
+ * container holder's request handed to its native entry. A foreign host uses an in-memory drive; win32 uses real scratch directories
+ * and native identity pins. DACLs, runtime calls, the launcher and the native process entry remain OS stand-ins; projection composers run for real.
  * Each lane is checked for the folder and a staged file inside it, for read, list and write, against grants that name the folder, a
  * path in it, the Ave home or a parent of it, under a relocated Ave home and the default profile-child one, including a process whose
  * projection was taken before the folder existed. */
@@ -11,7 +11,7 @@ import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isola
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 
-const { PROFILE } = vi.hoisted(() => ({ PROFILE: "C:\\Users\\alice" }));
+const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
 const drive = vi.hoisted(() => ({
   dirs: new Set<string>(),
   files: new Set<string>(),
@@ -26,11 +26,32 @@ const runtime = vi.hoisted(() => ({
 
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
-vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
+vi.mock("../windows-stamp-targets.js", async (original) => {
+  const actual = await original<typeof import("../windows-stamp-targets.js")>();
+  const simulated = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(actual);
+  return { ...actual, pinWindowsFilesystemConfig: <T extends Parameters<typeof actual.pinWindowsFilesystemConfig>[0]>(filesystem: T): T =>
+    runtime.containerBackend ? actual.pinWindowsFilesystemConfig(filesystem) : simulated.pinWindowsFilesystemConfig(filesystem) };
+});
+// A foreign host's literal expansion must use drive paths; pinning and missing-grant admission still run for real.
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async (original) => {
+  const actual = await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
+  if (hostPlatform === "win32") return actual;
+  const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
+  return { ...actual, expandWindowsFsPaths: (entries: Parameters<typeof actual.expandWindowsFsPaths>[0], options: Parameters<typeof actual.expandWindowsFsPaths>[1]) => {
+    if (process.platform !== "win32" || !runtime.containerBackend) return actual.expandWindowsFsPaths(entries, options);
+    if (options?.mode !== "deny") throw new Error("The drive fixture requires literal deny-mode expansion");
+    return entries.map((entry) => {
+      const path = typeof entry === "string" ? entry : entry.path;
+      if (!/^[a-z]:[\\/]/iu.test(path) || /[*?]/u.test(path)) throw new Error("The drive fixture requires an absolute literal path");
+      return win32.normalize(path);
+    });
+  } };
+});
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original(), "linux"));
-// An in-memory Windows drive: drive-letter paths exist only once a test creates them; every other path reaches the real filesystem.
+// A foreign host's drive-letter paths exist only once the fixture creates them; win32 uses its real scratch filesystem.
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
+  if (hostPlatform === "win32") return actual;
   const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
   const isDrive = (path: unknown): path is string => typeof path === "string" && /^[a-z]:[\\/]/iu.test(path);
   const key = (path: string): string => {
@@ -108,13 +129,14 @@ vi.mock("node:fs", async (original) => {
 });
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>();
+  if (hostPlatform === "win32") return actual;
   const guarded = Object.fromEntries(Object.entries(actual).filter(([, value]) => typeof value === "function").map(([name, value]) => [name, async (...args: unknown[]) => {
     if (typeof args[0] === "string" && /^[a-z]:[\\/]/iu.test(args[0])) throw Object.assign(new Error(`ENOENT: the simulated drive does not model ${name}`), { code: "ENOENT" });
     return Reflect.apply(value as (...values: unknown[]) => unknown, actual, args);
   }]));
   return { ...actual, ...guarded, default: { ...actual, ...guarded } };
 });
-// Native path facts and DACLs of the in-memory drive. The Ave home is private to its owner, as boot verifies; a path in
+// Native identity pins on win32, injected facts on a foreign host. The Ave home is private to its owner, as boot verifies; a path in
 // `drive.readable` also grants Users read, which makes its read deny "readable" evidence.
 vi.mock("../../shared/windows-path-facts.js", async (original) => {
   const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
@@ -143,30 +165,35 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
     }
     return { ...component(path), ancestors };
   };
-  const readable = (path: string): boolean => [...drive.readable].some((entry) => win32.normalize(entry).replace(/[\\/]+$/, "").toLowerCase()
-    === win32.normalize(path).replace(/[\\/]+$/, "").toLowerCase());
-  const descriptor = (path: string) => {
-    const entry = component(path);
+  const pin = (paths: readonly string[]) => hostPlatform === "win32" ? actual.pinWindowsPaths(paths) : paths.map(facts);
+  const readable = (path: string): boolean => [...drive.readable].some((entry) => actual.windowsPathKey(entry) === actual.windowsPathKey(path));
+  const descriptor = (path: string, entry: import("../../shared/windows-path-facts.js").WindowsPathFacts) => {
     const aces = [{ type: 0, flags: 3, mask: 0x1f01ff, sid: owner }, ...(readable(path) ? [{ type: 0, flags: 3, mask: 0x1200a9, sid: "S-1-5-32-545" }] : [])];
     return entry.exists ? { identity: { volumeSerial: entry.volumeSerial, fileId: entry.fileId }, owner, protected: true, nullDacl: false, aces } : null;
   };
   return {
     ...actual,
-    pinWindowsPaths: (paths: readonly string[]) => paths.map(facts),
-    readWindowsDacls: (paths: readonly string[], options?: { parent?: boolean }) => paths.map((path) => {
-      const row = facts(path);
-      return { ...row, currentUserSid: owner, elevated: false, principals: {}, dacl: descriptor(path),
-        ...(options?.parent ? { parent: descriptor(win32.dirname(path)) } : {}) };
-    }),
+    pinWindowsPaths: pin,
+    readWindowsDacls: (paths: readonly string[], options?: { parent?: boolean }) => {
+      const rows = pin(paths);
+      const parents = options?.parent ? pin(paths.map(path => win32.dirname(path))) : [];
+      return paths.map((path, index) => {
+        const row = rows[index];
+        const parent = parents[index];
+        if (row === undefined || options?.parent && parent === undefined) throw new Error("The drive fixture returned an incomplete pin");
+        return { ...row, currentUserSid: owner, elevated: false, principals: {}, dacl: descriptor(path, row),
+          ...(parent === undefined ? {} : { parent: descriptor(win32.dirname(path), parent) }) };
+      });
+    },
   };
 });
 vi.mock("../../shared/policy-home.js", async (original) => ({
   ...await original<typeof import("../../shared/policy-home.js")>(),
-  policyHomeAnchors: () => [PROFILE],
+  policyHomeAnchors: () => [profileRoot],
 }));
 vi.mock("node:os", async (original) => {
   const actual = await original<typeof import("node:os")>();
-  return { ...actual, homedir: () => (process.platform === "win32" ? PROFILE : actual.homedir()) };
+  return { ...actual, homedir: () => (process.platform === "win32" ? profileRoot : actual.homedir()) };
 });
 // The container shell's OS edge: the host relay its listener forwards to, and the installed launcher.
 vi.mock("../egress-host-listener.js", async (original) => ({
@@ -184,7 +211,7 @@ vi.mock("../sandbox-capability.js", async (original) => {
 });
 vi.mock("../mxc-windows.js", async (original) => ({
   ...await original<typeof import("../mxc-windows.js")>(),
-  resolveHostWxcExecPath: async () => "C:\\Program Files\\Ave\\resources\\mxc\\x64\\wxc-exec.exe",
+  resolveHostWxcExecPath: async () => launcherPath,
 }));
 
 // The srt-win runtime's native edge: what it is initialized with, what each wrap hands it, and its ACL grant, stamp and revoke calls.
@@ -206,7 +233,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", async (original) => {
       getProxyPort: () => undefined,
       getSocksProxyPort: () => undefined,
     },
-    resolveSrtWin: () => ({ path: "C:\\Program Files\\Ave\\resources\\srt-win\\srt-win.exe" }),
+    resolveSrtWin: () => ({ path: srtPath }),
     getWindowsSandboxUserStatus: () => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-100-200-300-2002" }),
     grantWindowsAcl: runtime.grant,
     stampWindowsAcl: runtime.stamp,
@@ -215,7 +242,7 @@ vi.mock("@anthropic-ai/sandbox-runtime", async (original) => {
 });
 vi.mock("../srt-win-integrity.js", async (original) => ({
   ...await original<typeof import("../srt-win-integrity.js")>(),
-  prepareSrtWinExecutable: () => "C:\\Program Files\\Ave\\resources\\srt-win\\srt-win.exe",
+  prepareSrtWinExecutable: () => srtPath,
 }));
 // The ACL grant holder is a pinned System32 process; a stand-in with a pid.
 vi.mock("node:child_process", async (original) => {
@@ -228,6 +255,32 @@ vi.mock("../../main/managed-child-processes.js", async (original) => ({
   assertManagedChildProcessAdmissionOpen: vi.fn(),
 }));
 
+const hostFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+const hostPath = await vi.importActual<typeof import("node:path")>("node:path");
+const hostOs = await vi.importActual<typeof import("node:os")>("node:os");
+const nativeDirectories = createTmpDirTracker();
+const nativeRoot = hostPlatform === "win32"
+  ? hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-drive-")))) : null;
+afterAll(async () => { await nativeDirectories.cleanup(); });
+const profileRoot = nativeRoot === null ? "C:\\Users\\alice" : hostPath.join(nativeRoot, "profile");
+const programRoot = nativeRoot === null ? "C:\\Program Files" : hostPath.join(nativeRoot, "programs");
+const launcherPath = `${programRoot}\\app\\resources\\mxc\\x64\\wxc-exec.exe`;
+const srtPath = `${programRoot}\\app\\resources\\srt-win\\srt-win.exe`;
+const nodePath = `${programRoot}\\nodejs\\node.exe`;
+
+function writeDriveFile(path: string): void {
+  if (nativeRoot === null) {
+    mkdirSync(hostPath.win32.dirname(path), { recursive: true });
+    drive.files.add(path);
+  }
+  else {
+    const relative = hostPath.relative(nativeRoot, path);
+    if (relative === ".." || relative.startsWith(`..${hostPath.sep}`) || hostPath.isAbsolute(relative)) throw new Error("The drive fixture must stay under its scratch root");
+    hostFs.mkdirSync(hostPath.dirname(path), { recursive: true });
+    hostFs.writeFileSync(path, "fixture");
+  }
+}
+
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 const {
   getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, initializeAsrtSandbox, isAsrtSandboxActive,
@@ -239,21 +292,22 @@ const { openEgressInvocation } = await import("../egress-invocations.js");
 const { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } = await import("../../shared/ave-home.js");
 const { TEST_WORKER_EGRESS_OWNER } = await import("../../__tests__/support/egress-fixture.js");
 const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-policy.js");
-const { pinWindowsPaths } = await import("../../shared/windows-path-facts.js");
+const { pinWindowsPaths, windowsPathKey } = await import("../../shared/windows-path-facts.js");
 const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
 const { prepareMxcShellLaunch } = await import("../../tools/mxc-shell-launch.js");
 const { existsSync, mkdirSync, mkdtempSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
-const HOST_PLATFORM = process.platform;
 const originalCwd = process.cwd();
 const cwdDirectories = createTmpDirTracker();
 afterAll(async () => { await cwdDirectories.cleanup(); });
 const STAGED = "0123456789abcdef0123456789abcdef";
-const RELOCATED = { name: "a relocated Ave home inside the project", project: `${PROFILE}\\work`, home: `${PROFILE}\\work\\ave` } as const;
-const PROFILE_CHILD = { name: "the default profile-child Ave home", project: `${PROFILE}\\work`, home: `${PROFILE}\\.ave` } as const;
-const OUTSIDE_PROFILE = { name: "a relocated Ave home outside the profile", project: "D:\\work", home: "D:\\Data\\Ave\\home" } as const;
+const RELOCATED = { name: "a relocated Ave home inside the project", project: `${profileRoot}\\work`, home: `${profileRoot}\\work\\ave` } as const;
+const PROFILE_CHILD = { name: "the default profile-child Ave home", project: `${profileRoot}\\work`, home: `${profileRoot}\\.ave` } as const;
+const OUTSIDE_PROFILE = { name: "a relocated Ave home outside the profile",
+  project: nativeRoot === null ? "D:\\work" : hostPath.join(nativeRoot, "work"),
+  home: nativeRoot === null ? "D:\\Data\\Ave\\home" : hostPath.join(nativeRoot, "relocated", "home") } as const;
 type Layout = typeof RELOCATED | typeof PROFILE_CHILD | typeof OUTSIDE_PROFILE;
 
 const staging = (): string => `${aveHome()}\\browser-downloads`;
@@ -262,9 +316,9 @@ const stagedFile = (): string => `${staging()}\\${STAGED}`;
 function useLayout(layout: Layout, options: { staged: boolean }): void {
   vi.stubEnv("AVE_HOME", layout.home);
   for (const path of [`${layout.project}\\src`, `${layout.home}\\sessions`, `${layout.home}\\logs`, `${layout.home}\\secrets`, `${layout.home}\\workspace`,
-    "C:\\Program Files\\Ave\\resources\\mxc\\x64"]) mkdirSync(path);
-  drive.files.add(`${layout.project}\\src\\main.ts`);
-  drive.files.add("C:\\Program Files\\Ave\\resources\\mxc\\x64\\wxc-exec.exe");
+    hostPath.win32.dirname(launcherPath)]) mkdirSync(path, { recursive: true });
+  writeDriveFile(`${layout.project}\\src\\main.ts`);
+  writeDriveFile(launcherPath);
   if (options.staged) stage();
 }
 
@@ -272,26 +326,30 @@ function useLayout(layout: Layout, options: { staged: boolean }): void {
 // read), so a grant of the whole profile is launched only where every row's parent exists, as on an installed profile. Create them;
 // the staging row's parent is the Ave home itself, so the folder stays absent.
 function materializeProfileRowParents(): void {
-  for (const row of getBuiltinShellReadPolicy([PROFILE], PROFILE).denyRead) {
-    if (!/^[A-Z]:\\/i.test(row) || /[*?]/.test(row) || !atOrUnder(row, PROFILE)) continue;
-    mkdirSync(row.replace(/[\\/]+$/, "").replace(/\\[^\\]+$/, ""));
+  for (const row of getBuiltinShellReadPolicy([profileRoot], profileRoot).denyRead) {
+    if (!/^[A-Z]:\\/i.test(row) || /[*?]/.test(row) || !atOrUnder(row, profileRoot)) continue;
+    mkdirSync(row.replace(/[\\/]+$/, "").replace(/\\[^\\]+$/, ""), { recursive: true });
   }
 }
 
 // What the browser's staging does at start and on a download: create the folder, then stage a file in it.
 function stage(): void {
-  mkdirSync(staging());
-  drive.files.add(stagedFile());
+  mkdirSync(staging(), { recursive: true });
+  writeDriveFile(stagedFile());
 }
 
 beforeEach(() => {
+  if (nativeRoot !== null) {
+    hostFs.rmSync(nativeRoot, { recursive: true, force: true });
+    hostFs.mkdirSync(nativeRoot, { recursive: true });
+  }
   // A foreign drive spelling is relative to the real host; keep that projection inside the validated test scratch.
-  if (HOST_PLATFORM !== "win32") process.chdir(cwdDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
+  if (hostPlatform !== "win32") process.chdir(cwdDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
   setProcessPlatform("win32");
-  vi.stubEnv("USERPROFILE", PROFILE);
-  vi.stubEnv("HOME", PROFILE);
+  vi.stubEnv("USERPROFILE", profileRoot);
+  vi.stubEnv("HOME", profileRoot);
   vi.stubEnv("SystemRoot", "C:\\Windows");
-  mkdirSync(PROFILE);
+  mkdirSync(profileRoot, { recursive: true });
 });
 
 afterEach(async () => {
@@ -300,7 +358,7 @@ afterEach(async () => {
     _resetAveHomePrivacyForTest();
   } finally {
     process.chdir(originalCwd);
-    setProcessPlatform(HOST_PLATFORM);
+    setProcessPlatform(hostPlatform);
     vi.unstubAllEnvs();
     vi.clearAllMocks();
     drive.dirs.clear();
@@ -339,9 +397,9 @@ type ContainerFilesystem = { readwritePaths: string[]; readonlyPaths: string[]; 
  * launcher's own arguments. */
 async function containerShellRequest(input: { cwd: string; writePaths: readonly string[]; readPaths?: readonly string[] }): Promise<ContainerFilesystem> {
   const sandboxHome = `${aveHome()}\\sandbox\\homes\\h1`;
-  mkdirSync(sandboxHome);
+  mkdirSync(sandboxHome, { recursive: true });
   const sandboxWritePaths = [...input.writePaths, sandboxHome];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([input.cwd, ...sandboxWritePaths, ...(input.readPaths ?? [])], PROFILE, sandboxHome);
+  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([input.cwd, ...sandboxWritePaths, ...(input.readPaths ?? [])], profileRoot, sandboxHome);
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths();
   const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
   const launch = await prepareMxcShellLaunch({
@@ -353,7 +411,7 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
       denyWrite: [...new Set([...sensitiveDenyWrite, ...mandatory.denyWrite.map((entry) => (typeof entry === "string" ? entry : entry.path))])],
       floorPierces,
     },
-    env: { SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: `${PROFILE}\\AppData\\Local` },
+    env: { SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: `${profileRoot}\\AppData\\Local` },
     timeoutMs: 5_000,
     exists: existsSync,
   });
@@ -390,14 +448,14 @@ describe("the browser download staging folder in a container shell's launch requ
     materializeProfileRowParents();
     expect(existsSync(staging())).toBe(false);
     // The shell reads the whole profile; the Ave home is its direct child, which the boundary denies child by child.
-    const filesystem = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [PROFILE] });
-    expect(containerAccess(filesystem, `${PROFILE}\\Documents\\notes.txt`)).toBe("readonly");
+    const filesystem = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [profileRoot] });
+    expect(containerAccess(filesystem, `${profileRoot}\\Documents\\notes.txt`)).toBe("readonly");
     expect(containerAccess(filesystem, `${aveHome()}\\logs`)).toBe("denied");
     // The request was built without the folder; the browser then creates it and stages a download while the command runs.
     stage();
     for (const path of [staging(), stagedFile()]) expect(containerAccess(filesystem, path), path).toBe("denied");
     // A command started after the folder exists is held the same way.
-    const later = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [PROFILE] });
+    const later = await containerShellRequest({ cwd: PROFILE_CHILD.project, writePaths: [PROFILE_CHILD.project], readPaths: [profileRoot] });
     for (const path of [staging(), stagedFile()]) expect(containerAccess(later, path), path).toBe("denied");
   });
 
@@ -438,7 +496,7 @@ async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }
   const egress = openEgressInvocation(TEST_WORKER_EGRESS_OWNER);
   try {
     const boundarySnapshot = createAveHomeBoundarySnapshot();
-    runtime.wrap.mockResolvedValueOnce({ argv: ["C:\\Program Files\\Ave\\resources\\srt-win\\srt-win.exe", "node", "server.js"], env: {} });
+    runtime.wrap.mockResolvedValueOnce({ argv: [srtPath, "node", "server.js"], env: {} });
     await wrapWorkerCommand("node server.js", {
       commandId: egress.token, boundarySnapshot,
       filesystem: boundarySnapshot.run(() => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths() })),
@@ -459,12 +517,19 @@ describe("the browser download staging folder in the srt-win session floor and w
     const missing = `${PROFILE_CHILD.home}\\plugins\\cache`;
     const [row] = pinWindowsPaths([missing]);
     expect(row?.exists).toBe(false);
-    expect(row?.ancestors.map((ancestor) => ancestor.canonical)).toEqual(["C:\\", "C:\\Users", PROFILE, PROFILE_CHILD.home, null]);
+    const { root } = hostPath.win32.parse(PROFILE_CHILD.home);
+    const parts = PROFILE_CHILD.home.slice(root.length).split("\\");
+    const chain = [root, ...parts.map((_part, index) => hostPath.win32.join(root, ...parts.slice(0, index + 1)))];
+    expect(row?.ancestors.map((ancestor) => ancestor.canonical === null ? null : windowsPathKey(ancestor.canonical)))
+      .toEqual([...chain.map(windowsPathKey), null]);
     const parent = row?.ancestors.at(-2);
-    expect(parent).toMatchObject({ exists: true, canonical: PROFILE_CHILD.home, directory: true });
+    const [home] = pinWindowsPaths([PROFILE_CHILD.home]);
+    expect(parent).toMatchObject({ exists: true, directory: true, volumeSerial: home?.volumeSerial, fileId: home?.fileId });
+    expect(windowsPathKey(parent?.canonical ?? "")).toBe(windowsPathKey(PROFILE_CHILD.home));
     expect(parent?.volumeSerial).toMatch(/^0x[0-9a-f]+$/u);
     expect(parent?.fileId).toMatch(/^0x[0-9a-f]+$/u);
-    expect(pinWindowsGrantTargets([missing], { allowMissing: true, validatePath: assertWindowsGrantGrammar })[0]?.canonical).toBe(missing);
+    const granted = pinWindowsGrantTargets([missing], { allowMissing: true, validatePath: assertWindowsGrantGrammar })[0]?.canonical;
+    expect(windowsPathKey(granted ?? "")).toBe(windowsPathKey(missing));
   });
 
   it("keeps foreign drive projections outside a checkout's account home while refusing real home targets", async () => {
@@ -508,7 +573,7 @@ describe("the browser download staging folder in the srt-win session floor and w
       expect(row).toBeDefined();
       for (const path of [staging(), stagedFile()]) expect(deniedBy(floor.denyRead, path), path).toBe(row);
       // No profile-root or home-root row: a stamp there would walk the whole profile.
-      for (const row of spelledRows(floor.denyRead)) expect([fold(PROFILE), fold(aveHome())]).not.toContain(fold(row));
+      for (const row of spelledRows(floor.denyRead)) expect([fold(profileRoot), fold(aveHome())]).not.toContain(fold(row));
     }
   });
 });
@@ -549,7 +614,7 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
     expect(runtime.grant).not.toHaveBeenCalled();
     // The control: a server's own sandbox root, a re-allowed child, is granted.
     const own = `${aveHome()}\\mcp\\fs\\sandbox`;
-    mkdirSync(own);
+    mkdirSync(own, { recursive: true });
     const held = await holdWindowsFilesystemGrant({ label: "mcp:fs", allowRead: [own], allowWrite: [] });
     try {
       expect(runtime.grant).toHaveBeenCalledTimes(1);
@@ -570,17 +635,21 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
 });
 
 describe("the browser download staging folder in a container holder's native request", () => {
-  const NODE = "C:\\Program Files\\nodejs\\node.exe";
   let unregister: (() => void) | undefined;
   beforeEach(async () => {
     runtime.containerBackend = true;
-    drive.dirs.add("C:\\Program Files\\nodejs");
-    drive.files.add(NODE);
+    writeDriveFile(nodePath);
     const { registerMxcHolderReadinessProbe } = await import("../../sandbox/wrap-bundled-command.js");
     unregister = registerMxcHolderReadinessProbe(async () => ({ installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
       uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true, standardStreamsRoundTrip: true, cleanTermination: true, ownProxySucceeded: true,
       otherListenerRefused: true, directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true }));
-    runtime.nativeSpawn.mockImplementation(async (_request: unknown, options: { onOwned: (child: unknown) => void; beforeSpawn: () => void }) => {
+    runtime.nativeSpawn.mockImplementation(async (request: { filesystem: ContainerFilesystem }, options: { onOwned: (child: unknown) => void; beforeSpawn: () => void }) => {
+      for (const row of pinWindowsPaths([...request.filesystem.readonlyPaths, ...request.filesystem.readwritePaths])) {
+        expect(row).toMatchObject({ exists: true, directory: true });
+        expect(row.canonical).not.toBeNull();
+        expect(row.volumeSerial).not.toBeNull();
+        expect(row.fileId).not.toBeNull();
+      }
       const child = { id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), completion: new Promise(() => {}),
         dispose: vi.fn(async () => undefined), diagnostics: {} };
       options.onOwned(child);
@@ -600,9 +669,9 @@ describe("the browser download staging folder in a container holder's native req
   async function containedServer(request: { allowRead?: string[]; allowWrite?: string[]; ownedReadRoots?: string[] } = {}): Promise<ContainerFilesystem> {
     const { spawnMxcBundledHolder } = await import("../../sandbox/wrap-bundled-command.js");
     const sandboxRoot = `${aveHome()}\\mcp\\fs\\sandbox`;
-    mkdirSync(sandboxRoot);
+    mkdirSync(sandboxRoot, { recursive: true });
     const holder = await spawnMxcBundledHolder({
-      label: "mcp:fs", command: NODE, args: ["server.js"], baseEnv: { SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: `${PROFILE}\\AppData\\Local` }, holderEnv: {},
+      label: "mcp:fs", command: nodePath, args: ["server.js"], baseEnv: { SYSTEMROOT: "C:\\Windows", LOCALAPPDATA: `${profileRoot}\\AppData\\Local` }, holderEnv: {},
       cwd: sandboxRoot, allowRead: request.allowRead ?? [], allowWrite: [sandboxRoot, ...(request.allowWrite ?? [])], ownedReadRoots: request.ownedReadRoots ?? [],
       egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "fs" },
     });
@@ -616,10 +685,25 @@ describe("the browser download staging folder in a container holder's native req
     }
   }
 
-  it.each([PROFILE_CHILD, OUTSIDE_PROFILE])("reaches neither the folder nor a staged file under $name, for a server that asked for the folder before it existed or after", async (layout) => {
+  it.each(["read", "write"])("refuses a missing %s holder grant before the native entry", async (kind) => {
+    useLayout(PROFILE_CHILD, { staged: false });
+    const missing = `${aveHome()}\\mcp\\fs\\sandbox\\missing`;
+    expect(existsSync(missing)).toBe(false);
+    const request = kind === "read" ? { allowRead: [missing], ownedReadRoots: [missing] } : { allowWrite: [missing] };
+    await expect(containedServer(request)).rejects.toThrow("Container filesystem grant target is missing");
+    expect(runtime.nativeSpawn).not.toHaveBeenCalled();
+  });
+
+  it.each([PROFILE_CHILD, OUTSIDE_PROFILE])("reaches neither the folder nor a staged file under $name, before and after a file is staged", async (layout) => {
     useLayout(layout, { staged: false });
-    // A server configured with the folder as one of its roots, started before the browser creates it and again after.
     const asked = () => ({ allowRead: [staging()], ownedReadRoots: [staging()], allowWrite: [staging()] });
+    expect(existsSync(staging())).toBe(false);
+    await expect(containedServer(asked())).rejects.toThrow("Container filesystem grant target is missing");
+    expect(runtime.nativeSpawn).not.toHaveBeenCalled();
+    // A container grant must name an existing directory, even when the protected floor withholds it at handoff.
+    mkdirSync(staging(), { recursive: true });
+    expect(pinWindowsPaths([staging()])[0]).toMatchObject({ exists: true, directory: true });
+    expect(existsSync(stagedFile())).toBe(false);
     const before = await containedServer(asked());
     stage();
     const after = await containedServer(asked());
