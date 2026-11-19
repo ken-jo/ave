@@ -54,3 +54,20 @@ it.each(homes)("preserves nested JSON syntax and idempotence on %s for %s", asyn
     }
   }
 });
+
+it.each([
+  { home: "D:\\", stem: "D:" },
+  { home: "\\\\server\\share\\", stem: "\\\\server\\share" },
+])("preserves quote escapes and redacts descendants of a Windows root $home", async ({ home, stem }) => {
+  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, "win32");
+  for (const redact of [redactHomePathsInText, redactJudgeText]) {
+    const outside = JSON.stringify({ p: `${stem}"`, other: 1 });
+    expect(redact(outside)).toBe(outside);
+    const inside = JSON.stringify({ p: `${home}"`, other: 1 });
+    expect(JSON.parse(redact(inside))).toEqual({ p: '[home]"', other: 1 });
+    for (const spelling of [home, home.replaceAll("\\", "/")]) {
+      expect(redact(`${spelling}descendant`)).toBe("[home]descendant");
+      expect(JSON.parse(redact(JSON.stringify({ p: `${spelling}descendant` })))).toEqual({ p: "[home]descendant" });
+    }
+  }
+});

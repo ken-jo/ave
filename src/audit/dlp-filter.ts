@@ -155,6 +155,7 @@ export function redactFsPath(path: string): string {
 interface HomeForm {
   literal: RegExp;
   marker: string;
+  windowsRoot?: boolean;
 }
 
 interface HomeDetector extends HomeForm {
@@ -187,8 +188,10 @@ const BOUNDARY_CHARACTERS = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u20
 
 function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeRedaction {
   const windows = platform === "win32";
+  const windowsRoot = windows && /[\\/]$/u.test(home);
   const flags = windows || platform === "darwin" ? "iu" : "u";
-  const standard = home ? pathToFileURL(home).toString().replace(/\/$/u, "") : "";
+  const url = home ? pathToFileURL(home).href : "";
+  const standard = windowsRoot ? url : url.replace(/\/$/u, "");
   const slashHome = home.replace(/\\/gu, "/");
   const anchor = home.split(/[\\/]/u).filter(Boolean).at(-1);
   const trigger = new RegExp(String.raw`[\\%&]|users|home` + (anchor ? "|" + escapeRegExp(anchor) : ""), "iu");
@@ -204,8 +207,9 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
   const forms = spellings.map(([spelling, marker]) => {
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
     const pattern = homePattern(spelling, windows, spelling === standard);
-    const source = String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
-    return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker };
+    const end = windowsRoot ? "" : String.raw`(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
+    const source = `${start}${pattern}${end}`;
+    return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker, windowsRoot };
   });
   return { forms, trigger, boundaries };
 }
@@ -218,18 +222,32 @@ export function mayContainHomePath(value: string): boolean {
 
 const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
 
+function literalRootEnd(text: string, start: number, end: number): number {
+  // An odd final slash belongs to the quote escape. The remaining match
+  // must still contain the root separator to be a literal home.
+  if (text.charCodeAt(end) !== 34) return end;
+  let run = end;
+  while (run > start && text.charCodeAt(run - 1) === 92) run--;
+  if ((end - run) % 2 === 0) return end;
+  const last = text.charCodeAt(end - 2);
+  return last === 92 || last === 47 ? end - 1 : start;
+}
+
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
-  for (const { literal, marker } of forms) {
+  for (const { literal, marker, windowsRoot } of forms) {
     let copied = 0;
     let pieces: string[] | undefined;
     for (const match of text.matchAll(literal)) {
       let start = match.index;
+      let end = start + match[0].length;
+      if (windowsRoot) end = literalRootEnd(text, start, end);
+      if (end === start) continue;
       if (ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
         while (start > copied && text.charCodeAt(start - 1) === 92) start--;
       }
       pieces ??= [];
       pieces.push(text.slice(copied, start), marker);
-      copied = match.index + match[0].length;
+      copied = end;
     }
     if (pieces) text = pieces.join("") + text.slice(copied);
   }
