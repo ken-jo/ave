@@ -113,38 +113,58 @@ export function redactFsPath(p: string): string {
   return codePoints.length > MAX_AUDIT_PATH ? codePoints.slice(0, MAX_AUDIT_PATH).join("") + "…" : out;
 }
 
+interface HomeForm {
+  literal: RegExp;
+  marker: string;
+}
+
+interface HomeRedaction {
+  forms: readonly HomeForm[];
+  trigger: RegExp;
+}
+
+const GENERIC_HOME_FORMS: readonly HomeForm[] = [
+  { literal: /file:\/\/\/[a-z]:\/users\/[a-z0-9._-]+/giu, marker: "file://[home]" },
+  { literal: /file:\/\/\/users\/[a-z0-9._-]+/giu, marker: "file://[home]" },
+  { literal: /file:\/\/\/home\/[a-z0-9._-]+/giu, marker: "file://[home]" },
+  { literal: /[a-z]:[\\/]+users[\\/]+[a-z0-9._-]+/giu, marker: "[home]" },
+  { literal: /\/users\/[a-z0-9._-]+/giu, marker: "[home]" },
+  { literal: /\/home\/[a-z0-9._-]+/giu, marker: "[home]" },
+];
+
+function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeRedaction {
+  const windows = platform === "win32";
+  const standard = home ? pathToFileURL(home).toString().replace(/\/$/u, "") : "";
+  const slashHome = home.replace(/\\/gu, "/");
+  const anchor = home.split(/[\\/]/u).filter(Boolean).at(-1);
+  const trigger = new RegExp(String.raw`[\\%&]|users|home` + (anchor ? "|" + escapeRegExp(anchor) : ""), "iu");
+  if (!home) return { forms: [], trigger };
+  const spellings = [
+    [`file://${slashHome}`, "file://[home]"],
+    [standard, "file://[home]"],
+    [slashHome, "[home]"],
+    [home, "[home]"],
+  ] as const;
+  const forms = spellings.map(([spelling, marker]) => {
+    const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
+    const pattern = homePattern(spelling, windows, spelling === standard);
+    const source = String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
+    return { literal: new RegExp(source, windows ? "giu" : "gu"), marker };
+  });
+  return { forms, trigger };
+}
+
+const homeRedaction = compileHomeRedaction(_homeDir, os.platform());
+
+function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
+  for (const { literal, marker } of forms) text = text.replace(literal, marker);
+  return text;
+}
+
 /** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
 export function redactHomePathsInText(value: string): string {
-  if (!value) return value;
-  let out = value;
-  if (_homeDir) {
-    const standardFileUrlHome = pathToFileURL(_homeDir).toString().replace(/\/$/u, "");
-    const homeForms = [
-      ["file://" + _homeDir.replace(/\\/g, "/"), "file://[home]"],
-      [standardFileUrlHome, "file://[home]"],
-      [_homeDir.replace(/\\/g, "/"), "[home]"],
-      [_homeDir, "[home]"],
-    ] as const;
-    for (const [home, replacement] of homeForms) {
-      if (!home) continue;
-      const windows = os.platform() === "win32";
-      const pattern = homePattern(home, windows, home === standardFileUrlHome);
-      // Consume each separator run together and never retry from inside a leading run.
-      const start = windows && /^[\\/]/u.test(home) ? String.raw`(?<![\\/])` : "";
-      // Only filename continuation text prevents redaction; punctuation fails closed and suffix bytes stay intact.
-      out = out.replace(
-        new RegExp(String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`, windows ? "giu" : "gu"),
-        replacement,
-      );
-    }
-  }
-  return out
-    .replace(/file:\/\/\/[a-z]:\/users\/[a-z0-9._-]+/giu, "file://[home]")
-    .replace(/file:\/\/\/users\/[a-z0-9._-]+/giu, "file://[home]")
-    .replace(/file:\/\/\/home\/[a-z0-9._-]+/giu, "file://[home]")
-    .replace(/[a-z]:[\\/]+users[\\/]+[a-z0-9._-]+/giu, "[home]")
-    .replace(/\/users\/[a-z0-9._-]+/giu, "[home]")
-    .replace(/\/home\/[a-z0-9._-]+/giu, "[home]");
+  if (!value || !homeRedaction.trigger.test(value)) return value;
+  return replaceLiteralHomes(replaceLiteralHomes(value, homeRedaction.forms), GENERIC_HOME_FORMS);
 }
 
 /** Only listed top-level path fields are redacted; nested objects are not traversed. */
