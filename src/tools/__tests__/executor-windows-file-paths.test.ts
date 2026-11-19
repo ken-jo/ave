@@ -79,11 +79,12 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators } from "../../permissions/sensitive-paths.js";
+import { evaluateScopedRules } from "../../permissions/rules/scoped-rule-matcher.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool, type ToolExecutionContext } from "../base.js";
-import { ApplyPatchTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
+import { ApplyPatchTool, ReadFileTool, WriteFileTool, createFileTools } from "../file-tools.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const PROJECT = String.raw`D:\Fixture\Project`;
@@ -143,6 +144,58 @@ async function run(tool: Tool, input: Record<string, unknown>, cwd = PROJECT, ad
 }
 
 describe("native Windows file permission targets", () => {
+  it.each((["allow", "always-allow"] as const).flatMap(mode => [
+    { name: "delete_file", input: { path: "src/secret/keep.txt" } },
+    { name: "move_file", input: { sourcePath: "src/public.txt", destinationPath: "src/secret/moved.txt" } },
+    { name: "move_file", input: { sourcePath: "src/secret/keep.txt", destinationPath: "src/moved.txt" } },
+    { name: "copy_path", input: { sourcePath: "src/public.txt", destinationPath: "src/secret/copied.txt" } },
+    { name: "copy_path", input: { sourcePath: "src/secret/keep.txt", destinationPath: "src/copied.txt" } },
+    { name: "extract_archive", input: { archivePath: "src/public.txt", destinationPath: "src/secret/extracted" } },
+  ].map(call => ({ mode, ...call }))))("denies scoped $name $input with native targets in $mode mode", async ({ mode, name, input }) => {
+    entry(PROJECT + String.raw`\Src`, true);
+    entry(PROJECT + String.raw`\Src\SeCrEt`, true);
+    const targets = new Map([
+      ["src/public.txt", PROJECT + String.raw`\Src\Public.txt`],
+      ["src/secret/keep.txt", PROJECT + String.raw`\Src\SeCrEt\Keep.txt`],
+      ["src/secret/moved.txt", PROJECT + String.raw`\Src\SeCrEt\Moved.txt`],
+      ["src/moved.txt", PROJECT + String.raw`\Src\Moved.txt`],
+      ["src/secret/copied.txt", PROJECT + String.raw`\Src\SeCrEt\Copied.txt`],
+      ["src/copied.txt", PROJECT + String.raw`\Src\Copied.txt`],
+      ["src/secret/extracted", PROJECT + String.raw`\Src\SeCrEt\Extracted`],
+    ]);
+    for (const target of targets.values()) entry(target, false);
+    const tool = createFileTools().find(candidate => candidate.name === name);
+    if (tool === undefined) throw new Error("File tool is missing");
+    if (mode === "allow") manager.setMode("allow");
+    else await manager.addAlwaysAllowedPersist(name);
+    await manager.loadRulesFromFile();
+    const rule = { pattern: "Edit(src/secret/**)", action: "deny" as const };
+    await manager.addRulePersist(rule, { kind: "user" });
+    const execute = vi.spyOn(tool, "execute");
+    const check = vi.spyOn(manager, "checkDetailed");
+    const result = await run(tool, input);
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(rule.pattern) });
+    expect(execute).not.toHaveBeenCalled();
+    expect(requests).toEqual([]);
+    const subject = check.mock.lastCall?.[4]?.ruleSubject;
+    if (subject?.kind !== "edit") throw new Error("Edit subject is missing");
+    expect(subject.targets).toEqual(Object.values(input).map(path => ({
+      filePath: `${PROJECT}\\${path.replaceAll("/", "\\")}`,
+      canonicalPath: `d:/fixture/project/${path}`,
+      runtimePath: targets.get(path),
+    })));
+    // Only the sealed resolved targets reach the deny; every lexical operand is public.
+    const publicPaths = subject.paths.map((_, index) => `src/public-${index}.txt`);
+    const readRuntimePath = vi.fn(() => String.raw`Z:\Public\Unrelated.txt`);
+    const matchingTargets = subject.targets?.map((target, index) => Object.defineProperty({
+      filePath: `${PROJECT}\\src\\public-${index}.txt`, canonicalPath: target.canonicalPath,
+    }, "runtimePath", {
+      get: readRuntimePath,
+    }));
+    expect(evaluateScopedRules({ ...subject, paths: publicPaths, targets: matchingTargets }, PROJECT, [rule])).toMatchObject({ decision: "deny", pattern: rule.pattern });
+    expect(readRuntimePath).not.toHaveBeenCalled();
+  });
+
   it.each(["file", "directory"])("keeps the native spelling of a %s directory suggestion", async (kind) => {
     const directory = String.raw`D:\Fixture\Café-Folder`;
     const target = kind === "directory" ? directory : directory + String.raw`\Leaf.txt`;
