@@ -67,7 +67,7 @@ import { registerPreviewHandlers } from "../preview.js";
 import { registerWorkspaceHandlers } from "../workspace.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { getWorkspaceRootLifecycle } from "../../../permissions/workspace-root-lifecycle.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../../../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, resolvePathForPolicy } from "../../../permissions/sensitive-paths.js";
 import { ReadFileTool } from "../../../tools/file-tools.js";
 import * as previewInput from "../../../tools/preview-document-input.js";
 
@@ -877,7 +877,7 @@ describe("workspace handlers", () => {
       };
       expect(res.ok).toBe(true);
       expect(additionalDirectories.value).toEqual([childRoot]);
-      expect(res.roots?.some((entry) => entry.path === canonicalChild)).toBe(true);
+      expect(res.roots?.some((entry) => entry.path === resolvePathForPolicy(childRoot))).toBe(true);
       expect(prunePathGrants).toHaveBeenCalledWith(canonicalParent, pruneOptions);
       expect(pruneRoutineScopes).toHaveBeenCalledWith(canonicalParent, pruneOptions);
       expect(revokeWorkspaceRoot).toHaveBeenCalledWith(canonicalParent, liveOptions);

@@ -20,6 +20,9 @@ const fixture = vi.hoisted(() => {
     cwd,
     nativePath,
     additionalDirectories: [] as string[],
+    pendingRemovals: [] as Array<{ operationId: string; storedPath: string; runtimePath: string; requestedAt: string; source: string }>,
+    beginRemoval: vi.fn(),
+    completeRemoval: vi.fn(),
     handlers: new Map<string, (...args: unknown[]) => unknown>(),
     collectFiles: vi.fn(async (path: string) => ({
       ok: true,
@@ -48,8 +51,10 @@ vi.mock("electron", () => ({
 vi.mock("../../gated.js", () => ({ validateHostRendererSender: () => true, auditUnauthorized: vi.fn() }));
 vi.mock("../../../main/default-workspace-root.js", () => ({ getDefaultWorkspaceRoot: () => fixture.cwd }));
 vi.mock("../../../permissions/permission-settings-store.js", () => ({
-  readPermissionSettings: () => ({ permissions: { additionalDirectories: fixture.additionalDirectories, pendingWorkspaceRootRemovals: [] } }),
+  readPermissionSettings: () => ({ permissions: { additionalDirectories: fixture.additionalDirectories, pendingWorkspaceRootRemovals: fixture.pendingRemovals } }),
   addAllowedDirectoryPersist: vi.fn(),
+  beginWorkspaceRootRemovalPersist: fixture.beginRemoval,
+  completeWorkspaceRootRemovalPersist: fixture.completeRemoval,
   PermissionSettingsUnreadableError: class PermissionSettingsUnreadableError extends Error {},
 }));
 vi.mock("../../../permissions/allowed-directories.js", async original => ({
@@ -71,6 +76,7 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 import { registerWorkspaceHandlers } from "../workspace.js";
 import { clearWorkspaceFileSearchCache, searchWorkspaceFiles } from "../workspace-file-search.js";
 import { canonicalizePathForMatch, caseFoldForMatch, resolvePathForPolicy } from "../../../permissions/sensitive-paths.js";
+import { createWorkspaceRootRevocationFilter } from "../../../permissions/workspace-root-lifecycle.js";
 
 const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, "platform");
 if (ORIGINAL_PLATFORM === undefined) throw new Error("Process platform descriptor is missing");
@@ -83,6 +89,22 @@ const SIBLING_ROOTS = [
 beforeEach(() => {
   Object.defineProperty(process, "platform", { ...ORIGINAL_PLATFORM, value: "win32" });
   fixture.additionalDirectories = [fixture.root];
+  fixture.pendingRemovals = [];
+  fixture.beginRemoval.mockReset();
+  fixture.completeRemoval.mockReset();
+  const key = (path: string) => caseFoldForMatch(canonicalizePathForMatch(path));
+  fixture.beginRemoval.mockImplementation(async (target: string, source: string) => {
+    const storedPath = fixture.additionalDirectories.find(path => key(path) === key(target));
+    if (!storedPath) return null;
+    const intent = { operationId: "root-removal", storedPath, runtimePath: canonicalizePathForMatch(storedPath), requestedAt: new Date(0).toISOString(), source };
+    fixture.additionalDirectories = fixture.additionalDirectories.filter(path => key(path) !== key(target));
+    fixture.pendingRemovals.push(intent);
+    return { intent, activeDirectories: fixture.additionalDirectories, created: true };
+  });
+  fixture.completeRemoval.mockImplementation(async (operationId: string) => {
+    fixture.pendingRemovals = fixture.pendingRemovals.filter(intent => intent.operationId !== operationId);
+    return true;
+  });
   fixture.collectFiles.mockClear();
   fixture.assertReadableFilePath.mockClear();
   clearWorkspaceFileSearchCache();
@@ -96,7 +118,7 @@ afterEach(() => {
 async function invoke(channel: string, ...args: unknown[]) {
   const handler = fixture.handlers.get(channel);
   if (!handler) throw new Error(`No handler registered for: ${channel}`);
-  return handler({}, ...args);
+  return handler({ sender: { id: 1 } }, ...args);
 }
 
 describe("workspace roots with native drive spelling", () => {
@@ -122,6 +144,47 @@ describe("workspace roots with native drive spelling", () => {
       path: `${fixture.root}\\notes.md`, relativePath: "notes.md", root: fixture.root, bytes: 1,
     }] });
     expect(fixture.collectFiles.mock.calls.map(([path]) => path)).toEqual([fixture.cwd, fixture.root]);
+  });
+
+  it("removes a parent using a match spelling while preserving the native child and its scopes", async () => {
+    const parent = fixture.root;
+    const child = `${parent}\\Child`;
+    const canonicalParent = canonicalizePathForMatch(parent);
+    const canonicalChild = canonicalizePathForMatch(child);
+    fixture.additionalDirectories = [parent, child, "d:/projects/MIXED/CHILD"];
+    const grants = [String.raw`D:\Projects\MiXeD\parent.txt`, `${child}\\notes.md`, String.raw`D:\Projects\MiXeD\Childish\notes.md`, String.raw`D:\Elsewhere\notes.md`];
+    const routines = [...grants];
+    const prune = (paths: string[], root: string, options?: { preserveRoots?: readonly string[] }) => {
+      const shouldRemove = createWorkspaceRootRevocationFilter(root, options?.preserveRoots);
+      const removed = paths.filter(shouldRemove);
+      paths.splice(0, paths.length, ...paths.filter(path => !shouldRemove(path)));
+      return removed;
+    };
+    const pruneGrants = vi.fn(async (root: string, options?: { preserveRoots?: readonly string[] }) => prune(grants, root, options).map(path => ({ path, toolName: "write_file", tier: "write" })));
+    const pruneRoutines = vi.fn(async (root: string, options?: { preserveRoots?: readonly string[] }) => ({ routinesUpdated: prune(routines, root, options).length, directoriesRemoved: 0 }));
+    const revoke = vi.fn(() => ({ sessionDirectoriesRemoved: 0, turnDirectoriesRemoved: 0 }));
+    const detach = vi.fn(async () => 1);
+    registerWorkspaceHandlers({
+      auditLogger: { log: vi.fn() },
+      pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
+      memoryManager: { sessions: { detachSessionsFromProject: detach } },
+      conversationLoop: { permissionManager: { prunePathGrantsUnderRoot: pruneGrants }, revokeWorkspaceRoot: revoke },
+      routinesStore: { revokeWorkspaceRoot: pruneRoutines },
+    } as never);
+
+    const result = await invoke(CHANNELS.workspace.removeRoot, "d:/PROJECTS/mixed") as { ok: boolean; roots?: Array<{ path: string; isDefault: boolean }> };
+    expect(result.ok).toBe(true);
+    expect(result.roots).toEqual([{ path: fixture.cwd, isDefault: true }, { path: child, isDefault: false }]);
+    expect(fixture.additionalDirectories).toEqual([child, "d:/projects/MIXED/CHILD"]);
+    expect(fixture.pendingRemovals).toEqual([]);
+    const preserveOptions = { preserveRoots: [canonicalChild] };
+    expect(pruneGrants).toHaveBeenCalledWith(canonicalParent, preserveOptions);
+    expect(pruneRoutines).toHaveBeenCalledWith(canonicalParent, preserveOptions);
+    expect(revoke).toHaveBeenCalledWith(canonicalParent, { ...preserveOptions, globalScopeWasAuthorized: true });
+    expect(detach).toHaveBeenCalledWith(canonicalParent);
+    expect(detach).not.toHaveBeenCalledWith(canonicalChild);
+    expect(grants).toEqual([`${child}\\notes.md`, String.raw`D:\Elsewhere\notes.md`]);
+    expect(routines).toEqual(grants);
   });
 });
 
