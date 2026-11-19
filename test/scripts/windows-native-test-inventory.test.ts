@@ -287,9 +287,21 @@ threads.Worker = class extends BaseWorker {
     const ready = ${replyTimeoutMs !== undefined} ? new Int32Array(new SharedArrayBuffer(4)) : undefined;
     if (ready) {
       options.workerData.ready = ready;
-      const armOnFault = fault === "startup"
-        ? 'process.once("uncaughtExceptionMonitor", error => { if (error.name === "SyntaxError") arm(); });'
-        : 'process.once("exit", code => { if (code === ' + (fault === "crash" ? 23 : 0) + ') arm(); });';
+      let armOnFault;
+      if (fault === "startup") {
+        armOnFault = 'process.once("uncaughtExceptionMonitor", error => { if (error.name === "SyntaxError") arm(); });';
+      } else if (fault === "exit") {
+        // Install the listener only from the explicit exit call so a natural drain cannot arm.
+        armOnFault = [
+          'const exit = process.exit.bind(process);',
+          'process.exit = code => {',
+          '  process.once("exit", status => { if (status === 0) arm(); });',
+          '  exit(code);',
+          '};',
+        ].join("\\n");
+      } else {
+        armOnFault = 'process.once("exit", code => { if (code === 23) arm(); });';
+      }
       code = [
         'const { ready } = require("node:worker_threads").workerData;',
         'const arm = () => { Atomics.store(ready, 0, 1); Atomics.notify(ready, 0); };',
