@@ -37,12 +37,12 @@ vi.mock("../../main/host-resources.js", async (original) => {
   } };
 });
 
-// Also enforce the account-home boundary when the checkout itself is below it.
+// Model the checkout as the account home without including neighboring scratch roots.
 vi.mock("../../shared/ave-home-test-guard.js", async (original) => {
   const actual = await original<typeof import("../../shared/ave-home-test-guard.js")>();
   return { ...actual, checkSandboxStampTargets: (paths: readonly string[]) => {
     actual.checkSandboxStampTargets(paths);
-    withProvidedContext("realAccountHome", hostPath.dirname(originalCwd), () => actual.checkSandboxStampTargets(paths));
+    checkCheckoutStampTargets(paths);
   } };
 });
 
@@ -385,6 +385,11 @@ const { tmpdir } = await import("node:os");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
 const originalCwd = process.cwd();
+
+function checkCheckoutStampTargets(paths: readonly string[], checkout = originalCwd): void {
+  withProvidedContext("realAccountHome", checkout, () => checkSandboxStampTargets(paths));
+}
+
 beforeAll(() => {
   checkSandboxStampTargets([resourceRoot]);
   hostFs.mkdirSync(fixtureResources.resourcePath, { recursive: true });
@@ -660,11 +665,27 @@ describe("the browser download staging folder in the srt-win session floor and w
     runtime.initialize.mockResolvedValue(undefined);
   });
 
+  it.each([
+    { checkout: "/private/tmp/ave", scratch: "/private/tmp/ave-test-1000/t-run/resource" },
+    { checkout: "C:\\ave", scratch: "C:\\Users\\fixture\\.ave-test-tmp\\t-run\\resource" },
+  ])("accepts default scratch beside $checkout and refuses its scripts", ({ checkout, scratch }) => {
+    // Preserve each layout's ancestry inside the run's scratch on either host.
+    const project = (path: string) => hostPath.join(
+      resourceRoot, ...path.slice(hostPath.win32.parse(path).root.length).split(/[\\/]/u),
+    );
+    const checkoutPath = project(checkout);
+    const scratchPath = project(scratch);
+    const checkoutScripts = hostPath.join(checkoutPath, "dist", "skill-scripts");
+    // The modeled layouts use default scratch, with no explicit root allowance.
+    withProvidedContext("explicitTestTmpRoot", null, () => {
+      expect(() => checkCheckoutStampTargets([scratchPath], checkoutPath)).not.toThrow();
+      expect(() => checkCheckoutStampTargets([checkoutScripts], checkoutPath)).toThrow(/under the real/);
+    });
+  });
+
   it("keeps application write-deny targets isolated when the checkout lies under the account home", async () => {
     const checkoutScripts = hostPath.join(originalCwd, "dist", "skill-scripts");
-    withProvidedContext("realAccountHome", hostPath.dirname(originalCwd), () => {
-      expect(() => checkSandboxStampTargets([checkoutScripts])).toThrow(/under the real/);
-    });
+    expect(() => checkCheckoutStampTargets([checkoutScripts])).toThrow(/under the real/);
     useLayout(PROFILE_CHILD, { staged: false });
     const filesystem = await sessionFloor();
     expect(spelledRows(filesystem.denyWrite)).toEqual(expect.arrayContaining([fixtureScripts, fixtureRuntime]));
