@@ -1,4 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import childProcess from "node:child_process";
+import fs, { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,27 +14,20 @@ let root: string;
 let releasePath: string;
 let callsPath: string;
 let pending: Promise<void> | undefined;
-const watchers: Array<() => void> = [];
+let stampReady: Promise<void>;
 const ORIGINAL_PLATFORM = process.platform;
+const STAMP_READY = "stamp-ready\n";
 
 function calls(): string[] {
   return existsSync(callsPath) ? readFileSync(callsPath, "utf8").trim().split("\n") : [];
 }
 
 async function waitForStamp(): Promise<void> {
-  if (calls().includes("stamp")) return;
-  await new Promise<void>(resolve => {
-    const watcher = watch(root, () => {
-      if (!calls().includes("stamp")) return;
-      watcher.close();
-      resolve();
-    });
-    watchers.push(() => watcher.close());
-    if (calls().includes("stamp")) {
-      watcher.close();
-      resolve();
-    }
-  });
+  if (pending === undefined) throw new Error("Windows isolation has not started");
+  await Promise.race([
+    stampReady,
+    pending.then(() => { throw new Error("Windows isolation completed before stamp readiness"); }),
+  ]);
 }
 
 function fullConfig(): SandboxRuntimeConfig {
@@ -54,6 +49,7 @@ beforeEach(async () => {
     `const step = process.argv[3];`,
     `if (process.argv[2] === "acl") appendFileSync(${JSON.stringify(callsPath)}, step + "\\n");`,
     `if (step === "stamp") {`,
+    `  process.stdout.write(${JSON.stringify(STAMP_READY)});`,
     `  const timer = setInterval(() => {`,
     `    if (!existsSync(${JSON.stringify(releasePath)})) return;`,
     `    clearInterval(timer);`,
@@ -69,8 +65,42 @@ beforeEach(async () => {
     `  process.stdout.write("[]");`,
     `}`,
   ].join("\n"));
+  const exe = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+  const spawn = childProcess.spawn;
+  stampReady = new Promise<void>((resolveReady, rejectReady) => {
+    vi.spyOn(childProcess, "spawn").mockImplementation((...args) => {
+      const child = spawn(...args);
+      const [command, argv] = args;
+      if (command !== exe || !Array.isArray(argv) || argv[0] !== script || argv[1] !== "acl" || argv[2] !== "stamp") return child;
+      let output = "";
+      const detach = (): void => {
+        child.stdout?.off("data", handleData);
+        child.off("error", handleError);
+        child.off("close", handleClose);
+      };
+      const handleData = (chunk: Buffer | string): void => {
+        output += chunk.toString();
+        if (!output.includes(STAMP_READY)) return;
+        detach();
+        resolveReady();
+      };
+      const handleError = (error: Error): void => {
+        detach();
+        rejectReady(error);
+      };
+      const handleClose = (code: number | null, signal: NodeJS.Signals | null): void => {
+        detach();
+        rejectReady(new Error(`Stamp helper exited before readiness (code=${code}, signal=${signal})`));
+      };
+      child.stdout?.on("data", handleData);
+      child.once("error", handleError);
+      child.once("close", handleClose);
+      return child;
+    });
+  });
+  syncBuiltinESMExports();
   setWindowsIsolationForTesting({
-    exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath,
+    exe,
     prependArgs: [script],
   });
   const config = fullConfig();
@@ -79,18 +109,23 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers();
-  for (const close of watchers.splice(0)) close();
   writeFileSync(releasePath, "0");
   await pending?.catch(() => {});
   pending = undefined;
   await SandboxManager.reset();
   setWindowsIsolationForTesting(undefined);
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   setProcessPlatform(ORIGINAL_PLATFORM);
   rmSync(root, { recursive: true, force: true });
 });
 
 describe("Windows isolation after proxy startup", () => {
   it("keeps proxy startup and the event loop independent of a pending stamp, then upgrades without rebinding", async () => {
+    const watchFiles = vi.spyOn(fs, "watch").mockImplementation(() => {
+      throw Object.assign(new Error("Filesystem watches are unavailable"), { code: "EMFILE" });
+    });
+    syncBuiltinESMExports();
     const proxyPort = SandboxManager.getProxyPort();
     pending = SandboxManager.initializeWindowsIsolation(fullConfig());
     await waitForStamp();
@@ -109,6 +144,7 @@ describe("Windows isolation after proxy startup", () => {
     expect(SandboxManager.getConfig()?.network.allowedDomains).toEqual(["updated.example.invalid"]);
     expect(SandboxManager.getProxyPort()).toBe(proxyPort);
     expect(calls()).toEqual(["recover", "stamp"]);
+    expect(watchFiles).not.toHaveBeenCalled();
   });
 
   it("retains the proxy and its wrap refusal after a late stamp failure", async () => {
