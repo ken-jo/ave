@@ -1,6 +1,7 @@
 import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
+import { normalizeCaseForComparison, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
@@ -189,11 +190,17 @@ function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly s
   });
 }
 
-export function nativeWriteDenyPath(path: string): string {
+function nativeWriteDenyPath(path: string): string {
   // Ordinary drive operands accept either separator. Extended and network
   // namespaces keep their own grammar; names and directory hints stay intact.
   return (process.platform === "win32" || process.platform === "darwin" && sep === "\\") && /^[A-Za-z]:[\\/][^:]*$/u.test(path)
     ? path.replaceAll("\\", "/") : path;
+}
+
+export function windowsDenyOperandKey(path: string): string {
+  // A drive letter is a case-insensitive namespace. Keep the exact name and
+  // directory hint because the caller uses this key to combine stamp targets.
+  return nativeWriteDenyPath(stripExtendedPathPrefix(path)).replace(/^[A-Za-z]:(?=[\\/])/u, normalizeCaseForComparison);
 }
 
 function nativeWriteDenyEntries(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {

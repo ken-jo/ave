@@ -26,6 +26,7 @@ import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBoo
 import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
 import * as stampTargets from "../windows-stamp-targets.js";
+import { windowsDenyOperandKey } from "../sandbox-write-policy.js";
 import { grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
@@ -101,6 +102,36 @@ afterEach(async () => {
 });
 
 describe("background session isolation", () => {
+  it("keeps UNC names and directory hints exact after removing the extended prefix", () => {
+    const share = String.raw`\\server\Share\Case`;
+    const extended = String.raw`\\?\unc\server\Share\Case`;
+    expect(windowsDenyOperandKey(`${extended}\\`)).toBe(`${share}\\`);
+    expect(windowsDenyOperandKey(extended)).toBe(share);
+    expect(windowsDenyOperandKey(share.toLowerCase())).not.toBe(share);
+  });
+
+  it("admits a read-deny stamp with equivalent drive spellings", async () => {
+    const root = win32.join(FIXTURE_DRIVE.toUpperCase(), "fixture", "worker");
+    const directory = win32.join(root, "absent-dir");
+    const paths = Array.from({ length: 253 }, (_, index) => win32.join(root, `denied-${index}`));
+    paths.push(win32.join(root, "Case"), win32.join(root, "case"), directory, `${directory}\\`);
+    const denies = paths.flatMap((path, index) => {
+      const alias = path.slice(0, 1).toLowerCase() + path.slice(1);
+      return [path, index % 2 === 0 ? alias.replaceAll("\\", "/") : `\\\\?\\${alias}`];
+    });
+    await initializeAsrtSandbox({ denyRead: denies, windows: { externalConfinement: true } });
+    pinWorkerRoot(root);
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
+      denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+    })));
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] });
+    try {
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual([paths, paths]);
+      expect(nativeWorker.stampWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyRead: paths, denyWrite: paths }));
+      expect(nativeWorker.grantWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ write: [root] }));
+    } finally { grant.release(); }
+  });
+
   it("verifies and stamps a valid worker policy once per distinct target", async () => {
     const root = win32.join(FIXTURE_DRIVE, "fixture", "worker");
     const paths = Array.from({ length: 510 }, (_, index) => win32.join(root, `denied-${index}`));

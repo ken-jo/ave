@@ -41,7 +41,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, nativeWriteDenyPath, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
@@ -2922,15 +2922,15 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     for (const kind of ["denyRead", "denyWrite"] as const) {
       // Raw rows include omitted targets and unmatched patterns from initialization and every earlier wrap.
       for (const entry of [...(settings[kind] ?? []), ...pending.filesystem[kind]]) {
-        const path = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path)));
+        const expanded = expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path));
+        const path = stripExtendedPathPrefix(expanded);
         const glob = (typeof entry === "string" || !entry.literal) && containsGlobCharsWin(path);
         const boundary = glob ? globPatternBaseDir(toForwardSlashes(path)) : path;
         if (!allowWrite.some(grant => isGrantPathWithin(grant, boundary) || isGrantPathWithin(boundary, grant)
           || lexicalWindowsOverlap(grant, boundary))) continue;
         if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
-        // Use the backend spelling key. Preserve case and directory markers,
-        // and retain the first row so that a read deny keeps its stronger mask.
-        const key = nativeWriteDenyPath(path);
+        // Retain the first operand so a read deny keeps its stronger mask.
+        const key = windowsDenyOperandKey(expanded);
         if (!distinct.has(key)) distinct.set(key, { path, read: kind === "denyRead" });
       }
     }
