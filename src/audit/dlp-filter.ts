@@ -185,6 +185,10 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
 
 const homeRedaction = compileHomeRedaction(_homeDir, homePlatform);
 
+export function mayContainHomePath(value: string): boolean {
+  return homeRedaction.trigger.test(value);
+}
+
 const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
@@ -269,7 +273,7 @@ function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedac
 
 /** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
 export function redactHomePathsInText(value: string): string {
-  if (!value || !homeRedaction.trigger.test(value)) return value;
+  if (!value || !mayContainHomePath(value)) return value;
   let text = replaceLiteralHomes(value, homeRedaction.forms);
   if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
   return replaceLiteralHomes(text, GENERIC_HOME_FORMS);
