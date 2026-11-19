@@ -1,10 +1,11 @@
 // Isolate every job path from the account profile. Native Windows fixtures also
 // need the system volume's aliases and trusted volume-root ownership.
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
+import { diagnoseJobRoot } from "./job-root-diagnostic.mjs";
 
 function systemVolume(systemRoot) {
   const root = typeof systemRoot === "string" ? win32.parse(systemRoot).root : "";
@@ -84,19 +85,14 @@ export function validateJobHomeRoot(root, systemRoot) {
 }
 
 export async function cleanupWindowsJobRoot(root, {
-  remove = rmSync, run = execFile, diagnostic = line => console.error(line),
+  remove = rmSync, run, diagnostic = line => console.error(line),
 } = {}) {
   try {
     remove(root, { recursive: true, force: true });
   } catch (error) {
     try {
       diagnostic(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)} path=${JSON.stringify(error.path)}`);
-      const stdout = await new Promise((resolve, reject) => {
-        run(process.execPath, [fileURLToPath(new URL("./job-root-diagnostic.mjs", import.meta.url)), root], {
-          encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024,
-        }, (failure, output) => failure ? reject(failure) : resolve(output));
-      });
-      for (const line of stdout.trim().split(/\r?\n/).filter(Boolean)) diagnostic(line);
+      await diagnoseJobRoot(root, diagnostic, run);
     } catch { diagnosticSafely(); }
     throw error;
     function diagnosticSafely() {
