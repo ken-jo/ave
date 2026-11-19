@@ -1,5 +1,5 @@
 import childProcess from "node:child_process";
-import fs, { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -121,6 +121,47 @@ afterEach(async () => {
 });
 
 describe("Windows isolation after proxy startup", () => {
+  it("refuses a small deny pattern that expands past the session stamp budget", async () => {
+    const matched = join(root, "matches");
+    mkdirSync(matched);
+    for (let index = 0; index < 1_025; index += 1) writeFileSync(join(matched, `${index}.deny`), "");
+    const config = fullConfig();
+    config.filesystem.denyWrite = [join(matched, "*.deny")];
+    writeFileSync(releasePath, "0");
+    pending = SandboxManager.initializeWindowsIsolation(config);
+    await expect(pending).rejects.toMatchObject({ code: "acl_policy_too_large" });
+    expect(calls()).not.toContain("stamp");
+    expect(SandboxManager.getConfig()?.windows).toMatchObject({ externalConfinement: "embedder" });
+  });
+
+  it("bounds directory work even when no entry matches a session deny pattern", async () => {
+    const directory = join(root, "nonmatches");
+    mkdirSync(directory);
+    const physical = realpathSync(directory);
+    writeFileSync(join(physical, "ordinary.txt"), "");
+    const [entry] = fs.readdirSync(physical, { withFileTypes: true });
+    if (entry === undefined) throw new Error("Missing directory fixture entry");
+    const isFixture = (path: unknown) => String(path) === physical || String(path) === directory;
+    const open = fs.opendirSync;
+    const list = fs.readdirSync;
+    let visits = 0;
+    vi.spyOn(fs, "opendirSync").mockImplementation((path, opts) => {
+      const opened = open(path, opts);
+      if (isFixture(path)) vi.spyOn(opened, "readSync").mockImplementation(() => ++visits <= 16_385 ? entry : null);
+      return opened;
+    });
+    vi.spyOn(fs, "readdirSync").mockImplementation(((path, ...args) => isFixture(path)
+      ? Array.from({ length: 16_385 }, () => entry) : Reflect.apply(list, fs, [path, ...args])) as typeof list);
+    syncBuiltinESMExports();
+    const config = fullConfig();
+    config.filesystem.denyWrite = [join(physical, "*.deny")];
+    writeFileSync(releasePath, "0");
+    pending = SandboxManager.initializeWindowsIsolation(config);
+    await expect(pending).rejects.toMatchObject({ code: "acl_policy_too_large" });
+    expect(visits).toBe(16_384);
+    expect(calls()).not.toContain("stamp");
+  });
+
   it("keeps proxy startup and the event loop independent of a pending stamp, then upgrades without rebinding", async () => {
     const watchFiles = vi.spyOn(fs, "watch").mockImplementation(() => {
       throw Object.assign(new Error("Filesystem watches are unavailable"), { code: "EMFILE" });

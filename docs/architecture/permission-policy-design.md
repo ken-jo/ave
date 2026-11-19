@@ -1132,7 +1132,14 @@ closed with localized folder-narrowing guidance when a discovery or POSIX
 assembly budget is exceeded.
 
 On Windows, the native ACL helper reads session and worker stamps as JSON from
-stdin through EOF. Each row carries a complete path. Per-exec deny deltas use
+stdin through EOF. Each row carries a complete path. The host bounds the read
+and write deny lists together to 1,024 rows and 256 KiB of UTF-8 JSON, including
+the envelope. It checks admission before expansion and checks the expanded
+request before writing stdin. The shared glob scan checks at most 16,384 visits
+across matching and nonmatching entries. Narrow a configured glob that exhausts
+that allowance. The session also checks the cumulative retained wrap denies
+before adding more. An over-limit policy refuses the operation in full.
+Per-exec deny deltas use
 the helper's command line and share its argument budget with the shell command
 and environment overlay. The wrapper checks that complete argument list before
 launch. Container requests are checked separately as a whole and use an

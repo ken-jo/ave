@@ -45,7 +45,8 @@ export function assertSandboxWritePolicySize(entries: readonly FilesystemPathEnt
       throw new Error(t("sandboxPolicy.tooLarge"));
     }
   }
-  // Windows ACL stamps stream JSON to EOF (cli.rs, AclCmd::Stamp).
+  // The Windows ACL admission and stamp senders bound their shared stdin frame
+  // independently of this POSIX assembly allowance (windows-sandbox-utils.js).
   // Per-exec deltas are checked with the command and env overlay at the
   // CreateProcessW boundary (windows-sandbox-utils.js, wrapCommandWithSandboxWindows).
   // Container requests have their own whole-request guard in mxc-windows.ts.
