@@ -10,6 +10,14 @@ vi.mock("node:os", async (importOriginal) => {
   const overrides = { homedir: () => fixture.home, platform: () => fixture.platform };
   return { ...actual, ...overrides, default: { ...actual, ...overrides } };
 });
+vi.mock("node:url", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:url")>();
+  return {
+    ...actual,
+    // URL construction must follow the same platform as the mocked home, including inside the redactors.
+    pathToFileURL: (path: string) => actual.pathToFileURL(path, { windows: fixture.platform === "win32" }),
+  };
+});
 import { redactFsPath, redactHomePathsInText } from "../dlp-filter.js";
 describe("home paths with mixed Windows spellings", () => {
   const nativeHome = win32.normalize(fixture.home);
@@ -62,6 +70,17 @@ async function loadHomeRedactor(platform: "win32" | "linux", native = false) {
 }
 
 describe.each(["win32", "linux"] as const)("home text component boundaries on %s", (platform) => {
+  it("redacts the native home in standard file URLs and preserves siblings", async () => {
+    const dlp = await loadHomeRedactor(platform);
+    const url = pathToFileURL(fixture.home).href;
+    expect(dlp.redactFsPath(url)).toBe("file://<home>");
+    expect(dlp.redactFsPath(`${url}/Mixed/File`)).toBe("file://<home>/Mixed/File");
+    expect(dlp.redactHomePathsInText(url)).toBe("file://[home]");
+    expect(dlp.redactHomePathsInText(`${url}/Mixed/File`)).toBe("file://[home]/Mixed/File");
+    const sibling = pathToFileURL(`${fixture.home}2`).href;
+    expect(dlp.redactFsPath(sibling)).toBe(sibling);
+    expect(dlp.redactHomePathsInText(sibling)).toBe(sibling);
+  });
   it("redacts a colon terminator", async () => {
     const dlp = await loadHomeRedactor(platform);
     expect(dlp.redactHomePathsInText(`Target ${fixture.home}:`)).toBe("Target [home]:");
