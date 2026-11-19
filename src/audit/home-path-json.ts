@@ -1,3 +1,4 @@
+import { isStringObject } from "node:util/types";
 import { mayContainHomePath, redactHomePathsInText } from "./dlp-filter.js";
 
 interface RenamedKey {
@@ -96,7 +97,10 @@ export function stringifyHomeRedacted(value: unknown): string | undefined {
       }
       property++;
     }
-    return typeof current === "string" ? redactHomePathsInText(current) : current;
+    if (typeof current === "string") return redactHomePathsInText(current);
+    // Native serialization unboxes these after calling the replacer.
+    if (isStringObject(current)) return redactHomePathsInText(String(current));
+    return current;
   });
   // Renaming before serialization would change both getter order and the key
   // passed to child toJSON hooks. Raw JSON and value bytes stay native here.

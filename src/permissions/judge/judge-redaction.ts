@@ -24,7 +24,8 @@ export function redactJudgeRequest(request: JudgeRequest): RedactedJudgeRequest 
     if (typeof value === "string") input[key] = redactJudgeText(value);
     else {
       const serialized = stringifyHomeRedacted(value ?? null) ?? "";
-      input[key] = cap(maskSensitiveData(serialized).masked, MAX_VALUE_CHARS);
+      // Keep the text boundary for keys on non-plain objects and raw JSON.
+      input[key] = redactJudgeText(serialized);
     }
   }
   return {

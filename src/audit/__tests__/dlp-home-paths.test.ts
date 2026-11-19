@@ -524,3 +524,27 @@ it("keeps encoded descendant bytes for a canonical UNC file URL", async () => {
   expect(url).toBe("file://server/share/habitat");
   expect(redactFsPath(`${url}/Mixed%20File`)).toBe("file://<home>/Mixed%20File");
 });
+
+it("scrubs boxed strings and non-plain serialized keys before sending judge arguments", async () => {
+  const { redactHomePathsInText } = await loadHomeRedactor("linux");
+  const { redactJudgeRequest, redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const home = fixture.home;
+  class Argument {
+    constructor() {
+      Object.defineProperty(this, home, { enumerable: true, value: `${home}/file` });
+    }
+  }
+  const boxed = Object(`${home}/file`);
+  const { rawJSON } = JSON as typeof JSON & { rawJSON(value: string): object };
+  const raw = rawJSON(JSON.stringify(`${home}/file`));
+  const finalInput = { boxed, nested: [new Argument(), raw], raw };
+  const request = judgeRequest({ invocation: judgeInvocation({ finalInput }) });
+  const inputs = redactJudgeRequest(request).tool.input;
+  for (const [key, value] of Object.entries(finalInput)) {
+    expect(inputs[key]).toBe(redactJudgeText(JSON.stringify(value)));
+    expect(inputs[key]).not.toContain(home);
+  }
+  expect(serializeRuntimeAuditData(boxed)).toBe(JSON.stringify(redactHomePathsInText(`${home}/file`)));
+  expect(serializeRuntimeAuditData(raw)).toBe(JSON.stringify(`${home}/file`));
+});
