@@ -3,6 +3,7 @@
 
 
 import os from "node:os";
+import { win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
@@ -69,8 +70,21 @@ export function redactForLLM(text: string, turnId?: string): RedactResult {
   return { redacted: out, counts, totalCount };
 }
 
-// Resolve home once; tolerate throwing or invalid test homedir values.
-const _homeDir = (() => { try { return os.homedir(); } catch { return ""; } })();
+const homePlatform = os.platform();
+
+function configuredHome(): string {
+  let raw: string;
+  try { raw = os.homedir(); } catch { return ""; }
+  const windows = homePlatform === "win32";
+  const root = windows ? win32.parse(raw).root : raw.startsWith("/") ? "/" : "";
+  const home = root + raw.slice(root.length).replace(/[\\/]+$/u, "");
+  // Quotes and controls can coincide with syntax in serialized text. POSIX
+  // filename backslashes can also change the meaning of a following quote.
+  // These home spellings are unsupported. Trailing separators are normalized.
+  return /["\p{Cc}]/u.test(home) || !windows && home.includes("\\") ? "" : home;
+}
+
+const _homeDir = configuredHome();
 
 const MAX_AUDIT_PATH = 256;
 
@@ -154,10 +168,25 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
   return { forms, trigger };
 }
 
-const homeRedaction = compileHomeRedaction(_homeDir, os.platform());
+const homeRedaction = compileHomeRedaction(_homeDir, homePlatform);
+
+const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
-  for (const { literal, marker } of forms) text = text.replace(literal, marker);
+  for (const { literal, marker } of forms) {
+    let copied = 0;
+    let pieces: string[] | undefined;
+    for (const match of text.matchAll(literal)) {
+      let start = match.index;
+      if (ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
+        while (start > copied && text.charCodeAt(start - 1) === 92) start--;
+      }
+      pieces ??= [];
+      pieces.push(text.slice(copied, start), marker);
+      copied = match.index + match[0].length;
+    }
+    if (pieces) text = pieces.join("") + text.slice(copied);
+  }
   return text;
 }
 
