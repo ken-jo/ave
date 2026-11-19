@@ -41,7 +41,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, nativeWriteDenyPath, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
@@ -2882,7 +2882,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     });
   });
   const rows = timeStep("preflightMs", () => {
-    const rows: { path: string; read: boolean }[] = [];
+    const distinct = new Map<string, { path: string; read: boolean }>();
     for (const kind of ["denyRead", "denyWrite"] as const) {
       // Raw rows include omitted targets and unmatched patterns from initialization and every earlier wrap.
       for (const entry of [...(settings[kind] ?? []), ...pending.filesystem[kind]]) {
@@ -2892,11 +2892,13 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         if (!allowWrite.some(grant => isGrantPathWithin(grant, boundary) || isGrantPathWithin(boundary, grant)
           || lexicalWindowsOverlap(grant, boundary))) continue;
         if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
-        // Preserve each obligation: folded spellings can name different objects.
-        rows.push({ path, read: kind === "denyRead" });
+        // Use the backend spelling key. Preserve case and directory markers,
+        // and retain the first row so that a read deny keeps its stronger mask.
+        const key = nativeWriteDenyPath(path);
+        if (!distinct.has(key)) distinct.set(key, { path, read: kind === "denyRead" });
       }
     }
-    return rows;
+    return [...distinct.values()];
   });
   const targets = rows.map(row => row.path);
   timing.rows = rows.length;
