@@ -80,7 +80,17 @@ export function createTmpDirTracker(): TmpDirTracker {
     async cleanup() {
       const pending = [...dirs];
       dirs.clear();
-      for (const dir of pending) await cleanupTmpDir(dir);
+      const failures: unknown[] = [];
+      for (const dir of pending) {
+        try {
+          await cleanupTmpDir(dir);
+        } catch (error) {
+          dirs.add(dir);
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Tracked temporary directory cleanup failed");
     },
   };
 }

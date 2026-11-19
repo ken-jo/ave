@@ -1,7 +1,7 @@
 /** The browser's download staging folder through the Windows launch projections of every confined lane: the container shell request
  * handed to its launcher, the srt-win session floor and worker wrap handed to the runtime, the ACL holder's grant turn, and the
  * container holder's request handed to its native entry. A foreign host uses an in-memory drive; win32 uses real scratch directories
- * and native identity pins. DACLs, runtime calls, the launcher and the native process entry remain OS stand-ins; projection composers run for real.
+ * and native identity pins. Projection composers run against OS stand-ins; the cleanup regression uses a real scratch-file DACL on Windows.
  * Each lane is checked for the folder and a staged file inside it, for read, list and write, against grants that name the folder, a
  * path in it, the Ave home or a parent of it, under a relocated Ave home and the default profile-child one, including a process whose
  * projection was taken before the folder existed. */
@@ -11,6 +11,8 @@ import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isola
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 
 const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
 const resourceLifecycle = vi.hoisted(() => ({ events: [] as ("configured" | "identity")[] }));
@@ -336,8 +338,7 @@ vi.mock("node:child_process", async (original) => {
       if (args[0] !== "--mxc-policy") return actual.spawn(command, args, options);
       const helper = createPolicyPipeHelper(new actual.ChildProcess());
       helper.stdin.once("data", (frame: Buffer) => {
-        expect(frame.readUInt32LE(0)).toBe(frame.length - 4);
-        runtime.policyFrames.push(frame.subarray(4));
+        runtime.policyFrames.push(frame);
         queueMicrotask(() => helper.stdout.write("ready\n"));
       });
       return helper.child;
@@ -359,6 +360,7 @@ const hostFs = await vi.importActual<typeof import("node:fs")>("node:fs");
 const hostPath = await vi.importActual<typeof import("node:path")>("node:path");
 const hostOs = await vi.importActual<typeof import("node:os")>("node:os");
 const nativeDirectories = createTmpDirTracker();
+afterAll(async () => { await nativeDirectories.cleanup(); });
 const runTmp = hostFs.realpathSync.native(hostOs.tmpdir());
 // Workers create and remove siblings under the run temp directory. Keep that directory out of the pinned ancestor chain.
 const pinRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostPath.dirname(runTmp), "browser-download-drive-"))));
@@ -377,7 +379,6 @@ const fixtureSystemGitConfig = hostPath.join(resourceRoot, "system.gitconfig");
 const srtPath = hostPath.join(fixturePrivateSrtWin, "srt-win.exe");
 const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
 if (originalExecPath === undefined) throw new Error("The host runtime path descriptor is missing");
-afterAll(async () => { await nativeDirectories.cleanup(); });
 const profileRoot = nativeRoot === null ? "C:\\Users\\alice" : hostPath.join(nativeRoot, "profile");
 const programRoot = nativeRoot === null ? "C:\\Program Files" : hostPath.join(nativeRoot, "programs");
 const launcherPath = `${programRoot}\\app\\resources\\mxc\\x64\\wxc-exec.exe`;
@@ -398,8 +399,8 @@ function writeDriveFile(path: string): void {
 
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 const {
-  getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, initializeAsrtSandbox, isAsrtSandboxActive,
-  resetAsrtSandbox, wrapWorkerCommand,
+  cleanupAsrtSandboxAfterCommand, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths,
+  initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapWorkerCommand,
 } = await import("../asrt-sandbox.js");
 const { holdWindowsFilesystemGrant } = await import("../windows-acl-grant-holder.js");
 const { createAveHomeBoundarySnapshot } = await import("../ave-home-boundary-snapshot.js");
@@ -440,8 +441,6 @@ beforeAll(() => {
   }
   configureHostResources(fixtureResources);
 });
-const cwdDirectories = createTmpDirTracker();
-afterAll(async () => { await cwdDirectories.cleanup(); });
 const STAGED = "0123456789abcdef0123456789abcdef";
 const RELOCATED = { name: "a relocated Ave home inside the project", project: `${profileRoot}\\work`, home: `${profileRoot}\\work\\ave` } as const;
 const PROFILE_CHILD = { name: "the default profile-child Ave home", project: `${profileRoot}\\work`, home: `${profileRoot}\\.ave` } as const;
@@ -484,7 +483,7 @@ beforeEach(() => {
     hostFs.mkdirSync(nativeRoot, { recursive: true });
   }
   // A foreign drive spelling is relative to the real host; keep that projection inside the validated test scratch.
-  if (hostPlatform !== "win32") process.chdir(cwdDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
+  if (hostPlatform !== "win32") process.chdir(nativeDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
   setProcessPlatform("win32");
   Object.defineProperty(process, "execPath", { ...originalExecPath, value: fixtureRuntime });
   vi.stubEnv("USERPROFILE", profileRoot);
@@ -501,8 +500,8 @@ beforeEach(() => {
 afterEach(async () => {
   try {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
-    _resetAveHomePrivacyForTest();
   } finally {
+    _resetAveHomePrivacyForTest();
     process.chdir(originalCwd);
     setProcessPlatform(hostPlatform);
     Object.defineProperty(process, "execPath", originalExecPath);
@@ -572,7 +571,8 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
       expect(runtime.policyFrames).toHaveLength(1);
       const frame = runtime.policyFrames.pop();
       if (!frame) throw new Error("The policy helper received no frame");
-      bytes = frame;
+      expect(frame.readUInt32LE(0)).toBe(frame.length - 4);
+      bytes = frame.subarray(4);
     } else {
       expect(launch.argv[1]).toBe("--config-base64");
       expect(runtime.policyFrames).toHaveLength(0);
@@ -700,7 +700,11 @@ async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }
     });
     return (lastCall(runtime.wrap)[2] as { filesystem: { denyRead: DenyList; denyWrite: DenyList } }).filesystem;
   } finally {
-    egress.release();
+    try {
+      await cleanupAsrtSandboxAfterCommand();
+    } finally {
+      egress.release();
+    }
   }
 }
 
@@ -811,7 +815,18 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
   beforeEach(() => {
     runtime.initialize.mockResolvedValue(undefined);
     // The holder: a pinned System32 process that only has to stay alive.
-    runtime.spawn.mockImplementation(() => Object.assign(new PassThrough(), { pid: 4321, exitCode: null, signalCode: null, stdin: new PassThrough(), kill: () => true }));
+    runtime.spawn.mockImplementation(() => {
+      const child = Object.assign(new PassThrough(), { pid: 4321, exitCode: null, signalCode: null as NodeJS.Signals | null, stdin: new PassThrough() });
+      return Object.assign(child, { kill: (signal: NodeJS.Signals) => {
+        queueMicrotask(() => {
+          child.signalCode = signal;
+          child.stdin.destroy();
+          child.destroy();
+          child.emit("exit", null, signal);
+        });
+        return true;
+      } });
+    });
     runtime.revoke.mockImplementation(() => runtime.grant.mock.calls.flatMap(([request]) => (request as { read: string[] }).read.map((path) => ({ path, status: "revoked" }))));
   });
 
@@ -824,11 +839,98 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
     ["a write to the Ave home's parent", { allowRead: [], allowWrite: [aveHome().replace(/\\[^\\]+$/, "")] }, /ancestor of the workspace or Ave home/],
   ];
 
+  async function expectGrantRefused(request: Parameters<typeof holdWindowsFilesystemGrant>[0], reason: RegExp, label?: string): Promise<void> {
+    let held: Awaited<ReturnType<typeof holdWindowsFilesystemGrant>> | undefined;
+    try {
+      await expect(async () => { held = await holdWindowsFilesystemGrant(request); }, label).rejects.toThrow(reason);
+    } finally {
+      held?.release();
+    }
+  }
+
+  it("revokes and closes a grant when an assertion fails after acquisition", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: false });
+    await sessionFloor();
+    const own = `${aveHome()}\\mcp\\fs\\sandbox`;
+    mkdirSync(own, { recursive: true });
+    const directory = nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "grant-cleanup-")));
+    const marker = hostPath.join(directory, "held");
+    const sid = "S-1-5-21-100-200-300-2002";
+    const { execFileSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const { readWindowsDacls } = await vi.importActual<typeof import("../../shared/windows-path-facts.js")>("../../shared/windows-path-facts.js");
+    let modeledDeny = false;
+    let denyPending = false;
+    let descriptor: number | undefined;
+    let opened: number | undefined;
+    const hasDeny = (): boolean => {
+      if (hostPlatform !== "win32") return modeledDeny;
+      const dacl = readWindowsDacls([marker])[0]?.dacl;
+      if (!dacl) throw new Error("The fixture's DACL could not be read");
+      return dacl.aces.some(ace => ace.type === 1 && ace.sid === sid);
+    };
+    const setDeny = (present: boolean): void => {
+      if (hostPlatform === "win32") {
+        execFileSync(win32SystemBinary("icacls"), [marker, ...(present ? ["/deny", `*${sid}:(DE)`] : ["/remove:d", `*${sid}`]), "/L", "/Q"],
+          { windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
+      } else {
+        modeledDeny = present;
+      }
+    };
+    const restore = (): void => {
+      try {
+        if (denyPending) {
+          setDeny(false);
+          denyPending = false;
+        }
+      } finally {
+        if (descriptor !== undefined) {
+          hostFs.closeSync(descriptor);
+          descriptor = undefined;
+        }
+      }
+    };
+    try {
+      checkSandboxStampTargets([marker]);
+      hostFs.writeFileSync(marker, "fixture");
+      expect(hasDeny()).toBe(false);
+      runtime.grant.mockImplementationOnce(() => {
+        opened = descriptor = hostFs.openSync(marker, "r");
+        denyPending = true;
+        setDeny(true);
+        expect(hasDeny()).toBe(true);
+        expect(hostFs.fstatSync(descriptor).isFile()).toBe(true);
+      });
+      runtime.revoke.mockImplementationOnce(() => {
+        restore();
+        return [{ path: own, status: "revoked" }];
+      });
+      // The allowed grant makes the inner refusal assertion fail after acquisition.
+      await expect(expectGrantRefused({ label: "mcp:fs", allowRead: [own], allowWrite: [] }, /protected sensitive target/))
+        .rejects.toThrow(/resolved.*instead of rejecting/s);
+      const closed = opened;
+      if (closed === undefined) throw new Error("The fixture did not open a descriptor");
+      expect(hasDeny()).toBe(false);
+      expect(() => hostFs.fstatSync(closed)).toThrow(expect.objectContaining({ code: "EBADF" }));
+      const child = runtime.spawn.mock.results[0]?.value;
+      expect(child?.signalCode).toBe("SIGTERM");
+      expect(child?.stdin.destroyed).toBe(true);
+      hostFs.rmSync(directory, { recursive: true });
+      expect(hostFs.existsSync(directory)).toBe(false);
+    } finally {
+      try {
+        restore();
+      } finally {
+        runtime.grant.mockReset();
+        runtime.revoke.mockReset();
+      }
+    }
+  });
+
   it.each([PROFILE_CHILD, OUTSIDE_PROFILE])("refuses every grant that would open the folder, a staged file, the Ave home or its parent under $name, before any native grant or stamp", async (layout) => {
     useLayout(layout, { staged: true });
     await sessionFloor();
     for (const [label, request, refusal] of requests()) {
-      await expect(holdWindowsFilesystemGrant({ label: `mcp:fs:${label}`, ...request }), label).rejects.toThrow(refusal);
+      await expectGrantRefused({ label: `mcp:fs:${label}`, ...request }, refusal, label);
     }
     expect(runtime.grant).not.toHaveBeenCalled();
     expect(runtime.stamp).not.toHaveBeenCalled();
@@ -839,7 +941,7 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
   it("refuses a grant on the folder while it does not exist yet, and leaves it denied in the session floor a re-allowed child's grant updates", async () => {
     useLayout(OUTSIDE_PROFILE, { staged: false });
     await sessionFloor();
-    await expect(holdWindowsFilesystemGrant({ label: "mcp:fs:absent", allowRead: [staging()], allowWrite: [] })).rejects.toThrow(/protected sensitive target|identity is unproven/);
+    await expectGrantRefused({ label: "mcp:fs:absent", allowRead: [staging()], allowWrite: [] }, /protected sensitive target|identity is unproven/);
     expect(runtime.grant).not.toHaveBeenCalled();
     // The control: a server's own sandbox root, a re-allowed child, is granted.
     const own = `${aveHome()}\\mcp\\fs\\sandbox`;
@@ -858,7 +960,7 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
       held.release();
     }
     // Once the browser has created it, the same grant is refused as a protected target, not only for having no identity to pin.
-    await expect(holdWindowsFilesystemGrant({ label: "mcp:fs:created", allowRead: [staging()], allowWrite: [] })).rejects.toThrow(/protected sensitive target/);
+    await expectGrantRefused({ label: "mcp:fs:created", allowRead: [staging()], allowWrite: [] }, /protected sensitive target/);
     expect(runtime.grant).toHaveBeenCalledTimes(1);
   });
 });
