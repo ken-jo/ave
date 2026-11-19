@@ -60,7 +60,7 @@ function cleanupSeams(error = blockedRemoval()) {
 }
 function queryResult(result = {}) {
   return mock.fn((_command, _args, _options, done) => done(null, JSON.stringify({
-    processes: [], entries: [], failed: false, limited: false, ...result,
+    processes: [], entries: [], failed: false, changed: false, limited: false, ...result,
   })));
 }
 function output(seams) {
@@ -74,6 +74,33 @@ function runFixturePowerShell(script) {
   return execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
     ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")],
     { encoding: "utf8", windowsHide: true, stdio: "pipe", env: windowsPowerShellEnv() }).trim();
+}
+function fixtureAcl(path) {
+  return `Get-Acl -LiteralPath ${powerShellLiteral(path)}`;
+}
+function applyFixtureDenies(rules, savedAcls) {
+  const sid = runFixturePowerShell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
+  const sddl = JSON.parse(runFixturePowerShell("ConvertTo-Json -Compress -InputObject @(" +
+    rules.map(([path]) => `(${fixtureAcl(path)}).Sddl`).join("; ") + ")"));
+  for (const [i, [path]] of rules.entries()) savedAcls.set(path, sddl[i]);
+  runFixturePowerShell(rules.map(([path, rights]) => [
+    `$acl = ${fixtureAcl(path)}`,
+    "$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(" +
+      "[Security.Principal.SecurityIdentifier]::new('" + sid + "'), '" + rights + "', 'Deny'))",
+    `Set-Acl -LiteralPath ${powerShellLiteral(path)} -AclObject $acl`,
+  ].join("\n")).join("\n"));
+  return sid;
+}
+function restoreFixtureAcls(savedAcls) {
+  if (savedAcls.size === 0) return;
+  const restore = [...savedAcls].filter(([path]) => existsSync(path)).map(([path, sddl]) => [
+    "try {",
+    `  $acl = ${fixtureAcl(path)}`,
+    `  $acl.SetSecurityDescriptorSddlForm(${powerShellLiteral(sddl)}, 'Access')`,
+    `  Set-Acl -LiteralPath ${powerShellLiteral(path)} -AclObject $acl`,
+    "} catch { $restoreError = $_ }",
+  ].join("\n"));
+  runFixturePowerShell(["$restoreError = $null", ...restore, "if ($restoreError) { throw $restoreError }"].join("\n"));
 }
 describe("Windows job root cleanup diagnostics", () => {
   const root = join(tmpdir(), "ave-job-diagnostic");
@@ -177,6 +204,80 @@ describe("Windows job root cleanup diagnostics", () => {
     assert.doesNotMatch(output(seams), /SYNTHETIC/);
     assert.equal(output(seams).split("\n").filter(line => line === "Cleanup diagnostic failed or timed out").length, 1);
   });
+  it("reports an empty surviving Windows root and its parent delete deny", { skip: process.platform !== "win32" }, async () => {
+    const parent = mkdtempSync(join(tmpdir(), "ave-job-root-deny-"));
+    const root = join(parent, "root");
+    const savedAcls = new Map();
+    try {
+      mkdirSync(root);
+      const owner = runFixturePowerShell(`(${fixtureAcl(root)}).GetOwner([Security.Principal.SecurityIdentifier]).Value`);
+      const sid = applyFixtureDenies([[parent, "DeleteSubdirectoriesAndFiles"], [root, "Delete"]], savedAcls);
+      const deniedAcls = runFixturePowerShell(`(${fixtureAcl(parent)}).Sddl; (${fixtureAcl(root)}).Sddl`);
+      const diagnostic = mock.fn();
+      let removalError;
+      const remove = (...args) => {
+        try { rmSync(...args); }
+        catch (error) { removalError = error; throw error; }
+      };
+      await assert.rejects(cleanupWindowsJobRoot(root, { diagnostic, remove }), caught => caught === removalError && caught.code === "EPERM");
+      assert.deepEqual(readdirSync(root), []);
+      assert.equal(runFixturePowerShell(`(${fixtureAcl(parent)}).Sddl; (${fixtureAcl(root)}).Sddl`), deniedAcls);
+      const lines = output({ diagnostic });
+      const candidates = lines.split("\n").filter(line => line.startsWith("candidate path="));
+      assert.deepEqual(candidates, [
+        `candidate path=${JSON.stringify(root)} owner=${JSON.stringify(owner)} deny=[{"sid":"${sid}","rights":"Delete"}]` +
+        ` parent-deny=[{"sid":"${sid}","rights":"DeleteSubdirectoriesAndFiles"}] attributes="Directory" handle="not determined"`,
+      ], lines);
+      assert.doesNotMatch(lines, /found no surviving entries|Cleanup diagnostic failed or timed out/);
+    } finally {
+      try { restoreFixtureAcls(savedAcls); }
+      finally {
+        rmSync(parent, { recursive: true, force: true });
+        assert.equal(existsSync(parent), false);
+      }
+    }
+  });
+  it("skips a Windows descendant replaced by a junction after the directory entry was read", { skip: process.platform !== "win32" }, async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "ave-job-descendant-swap-"));
+    const root = join(fixture, "root"), child = join(root, "child"), saved = join(fixture, "saved");
+    const target = join(fixture, "target"), staged = join(fixture, "staged");
+    const sentinel = join(target, "OUTSIDE-SWAP-SENTINEL.txt");
+    const error = blockedRemoval();
+    const seams = cleanupSeams(error);
+    try {
+      mkdirSync(child, { recursive: true });
+      mkdirSync(target);
+      writeFileSync(sentinel, "preserve");
+      symlinkSync(target, staged, "junction");
+      seams.run = (command, args, options, done) => {
+        const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
+        const beforeOpen = "    $handle = if ($canList)";
+        assert.ok(script.includes(beforeOpen));
+        const swap = [
+          `    if ($next.path -eq ${powerShellLiteral(child)}) {`,
+          `      [IO.Directory]::Move(${powerShellLiteral(child)}, ${powerShellLiteral(saved)})`,
+          `      [IO.Directory]::Move(${powerShellLiteral(staged)}, ${powerShellLiteral(child)})`,
+          "    }",
+        ].join("\n");
+        const injected = Buffer.from(script.replace(beforeOpen, `${swap}\n${beforeOpen}`), "utf16le").toString("base64");
+        return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
+          [...args.slice(0, -1), injected], options, done);
+      };
+      await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+      assert.ok(lstatSync(saved).isDirectory());
+      assert.ok(lstatSync(child).isSymbolicLink());
+      const lines = output(seams);
+      assert.doesNotMatch(lines, /OUTSIDE-SWAP-SENTINEL/);
+      assert.match(lines, /Cleanup path scan skipped an entry whose directory or reparse attributes changed/);
+      assert.match(lines, /Cleanup diagnostic failed or timed out/);
+      assert.equal(readFileSync(sentinel, "utf8"), "preserve");
+    } finally {
+      for (const path of [child, staged]) {
+        if (existsSync(path) && lstatSync(path).isSymbolicLink()) unlinkSync(path);
+      }
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
   it("reports surviving Windows paths with delete denies, read-only attributes and junctions", { skip: process.platform !== "win32" }, async () => {
     const fixture = mkdtempSync(join(tmpdir(), "ave-job-survivors-"));
     const root = join(fixture, "root's [job]"), target = join(fixture, "target");
@@ -189,31 +290,20 @@ describe("Windows job root cleanup diagnostics", () => {
       [junction, "Delete"],
     ];
     const savedAcls = new Map();
-    const aclFor = path => `Get-Acl -LiteralPath ${powerShellLiteral(path)}`;
     try {
       mkdirSync(blocked, { recursive: true });
       mkdirSync(target);
       writeFileSync(sentinel, "preserve");
       writeFileSync(readOnly, "fixture");
       symlinkSync(target, junction, "junction");
-      const sid = runFixturePowerShell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
-      const owner = runFixturePowerShell(`(${aclFor(blocked)}).GetOwner([Security.Principal.SecurityIdentifier]).Value`);
-      const sddl = JSON.parse(runFixturePowerShell("ConvertTo-Json -Compress -InputObject @(" +
-        rules.map(([path]) => `(${aclFor(path)}).Sddl`).join("; ") + ")"));
-      for (const [i, [path]] of rules.entries()) savedAcls.set(path, sddl[i]);
-      runFixturePowerShell([
-        `[IO.File]::SetAttributes(${powerShellLiteral(readOnly)}, 'ReadOnly, Hidden, System')`,
-        ...rules.map(([path, rights]) => [
-          `$acl = ${aclFor(path)}`,
-          "$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(" +
-            "[Security.Principal.SecurityIdentifier]::new('" + sid + "'), '" + rights + "', 'Deny'))",
-          `Set-Acl -LiteralPath ${powerShellLiteral(path)} -AclObject $acl`,
-        ].join("\n")),
-      ].join("\n"));
+      const owner = runFixturePowerShell(`(${fixtureAcl(blocked)}).GetOwner([Security.Principal.SecurityIdentifier]).Value`);
+      runFixturePowerShell(`[IO.File]::SetAttributes(${powerShellLiteral(readOnly)}, 'ReadOnly, Hidden, System')`);
+      const sid = applyFixtureDenies(rules, savedAcls);
 
       const diagnostic = mock.fn();
       await assert.rejects(cleanupWindowsJobRoot(root, { diagnostic }), error => ["EPERM", "EBUSY", "EACCES"].includes(error.code));
       const lines = output({ diagnostic });
+      assert.ok(lines.split("\n").find(line => line.startsWith("candidate path="))?.startsWith(`candidate path=${JSON.stringify(root)} `), lines);
       const candidate = path => {
         const line = lines.split("\n").find(line => line.startsWith(`candidate path=${JSON.stringify(path)} `));
         assert.ok(line, lines);
@@ -231,16 +321,8 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.doesNotMatch(lines, /OUTSIDE-JUNCTION-TARGET|Cleanup diagnostic failed or timed out/);
       assert.equal(readFileSync(sentinel, "utf8"), "preserve");
     } finally {
-      try {
-        const restore = [...savedAcls].filter(([path]) => existsSync(path)).map(([path, sddl]) => [
-          "try {",
-          `  $acl = ${aclFor(path)}`,
-          `  $acl.SetSecurityDescriptorSddlForm(${powerShellLiteral(sddl)}, 'Access')`,
-          `  Set-Acl -LiteralPath ${powerShellLiteral(path)} -AclObject $acl`,
-          "} catch { $restoreError = $_ }",
-        ].join("\n"));
-        runFixturePowerShell(["$restoreError = $null", ...restore, "if ($restoreError) { throw $restoreError }"].join("\n"));
-      } finally {
+      try { restoreFixtureAcls(savedAcls); }
+      finally {
         if (existsSync(readOnly)) runFixturePowerShell(`[IO.File]::SetAttributes(${powerShellLiteral(readOnly)}, 'Normal')`);
         if (existsSync(junction)) unlinkSync(junction);
         rmSync(fixture, { recursive: true, force: true });
@@ -311,9 +393,9 @@ describe("Windows job root query", () => {
     const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
     assert.ok(script.includes("$root = 'C:\\fixture''s'"));
     assert.match(script, /Get-Process/);
-    assert.match(script, /Get-ChildItem -Force -LiteralPath/);
-    assert.match(script, /Get-Acl -LiteralPath/);
-    assert.doesNotMatch(script, /icacls|takeown|SetAttributes|Set-Acl|Stop-Process|Remove-Item|-Recurse|CommandLine|Environment/i);
+    assert.match(script, /NtQueryDirectoryFile\(\$handle,/);
+    assert.match(script, /NtQuerySecurityObject\(\$handle,/);
+    assert.doesNotMatch(script, /Get-ChildItem|Set-Acl|SetAttributes|icacls|takeown|Stop-Process|Remove-Item|-Recurse|CommandLine|Environment/i);
   });
 });
 const CURRENT_SID = "S-1-5-21-100-200-300-1001";
