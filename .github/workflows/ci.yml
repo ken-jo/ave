@@ -645,11 +645,9 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
-      # Every later step (install scripts, the Windows helper checks, the
-      # tests and the post-job cache saves) sees a home and a temp directory
-      # under RUNNER_TEMP, which the runner empties around every job, instead
-      # of the runner user's profile and %LOCALAPPDATA%\Temp.
-      - name: Isolate home and temp directories in the runner temp
+      # Native fixtures need system-volume aliases and trusted root ownership.
+      # The unique job directory remains outside the account profile.
+      - name: Isolate home and temp directories on the system volume
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
@@ -1287,6 +1285,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Remove isolated system-volume job directory
+        if: always() && env.AVE_CI_JOB_ROOT != ''
+        shell: powershell
+        run: node ave/.github/scripts/isolate-job-home.mjs --cleanup
 
   macos-permission-tests:
     name: macOS permission path tests
