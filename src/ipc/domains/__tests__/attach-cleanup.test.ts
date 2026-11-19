@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import * as nodeFs from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, promises as fsPromises, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { invokeAppIpcHandler, makeAppIpcFrameInvoker } from "./test-helpers.js";
-import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupTmpDir, removeLinkOnly } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 const { handlers, showOpenDialogMock, profile } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -11,6 +12,8 @@ const { handlers, showOpenDialogMock, profile } = vi.hoisted(() => ({
   // A profile path no other test run shares, so this file's clipboard image directory is its own.
   profile: { userData: `attach-cleanup-profile-${process.pid}-${Date.now()}` },
 }));
+
+vi.mock("node:fs", async (importOriginal) => ({ ...await importOriginal<typeof import("node:fs")>() }));
 
 vi.mock("electron", () => ({
   app: { getPath: () => profile.userData },
@@ -155,7 +158,7 @@ describe("ave:attach:release", () => {
     rmSync(dirname(filePath), { recursive: true, force: true });
   });
 
-  it("deletes nothing elsewhere when the image directory becomes a link after it was read", async () => {
+  it.each([null, "EPERM", "EISDIR"] as const)("deletes nothing elsewhere when the image directory becomes a link after it was read (unlink refusal: %s)", async (unlinkRefusal) => {
     const filePath = await saveOwnedClipboardImage();
     const directory = dirname(filePath);
     const elsewhere = join(root, `elsewhere-${readdirSync(root).length}`);
@@ -168,11 +171,45 @@ describe("ave:attach:release", () => {
       symlinkSync(elsewhere, directory, "junction");
       return names;
     }) as never);
-
-    expect(await invoke(CHANNELS.attach.release, [filePath])).toEqual({ ok: true });
-    expect(readFileSync(join(elsewhere, basename(filePath)), "utf8")).toBe("the person's own file");
-    expect(readdirSync(elsewhere)).toEqual([basename(filePath)]);
-    rmSync(directory, { force: true });
+    const realRm = nodeFs.rmSync;
+    const realUnlink = nodeFs.unlinkSync;
+    const realRmdir = nodeFs.rmdirSync;
+    const remove = vi.spyOn(nodeFs, "rmSync").mockImplementation((target, options) => {
+      if (unlinkRefusal && target === directory && !options?.recursive) {
+        throw Object.assign(new Error("directory link requires a directory removal operation"), { code: "EPERM" });
+      }
+      realRm(target, options);
+    });
+    const unlink = vi.spyOn(nodeFs, "unlinkSync").mockImplementation((target) => {
+      if (unlinkRefusal && target === directory) {
+        throw Object.assign(new Error("directory link requires a directory removal operation"), { code: unlinkRefusal });
+      }
+      realUnlink(target);
+    });
+    const removeDirectory = vi.spyOn(nodeFs, "rmdirSync").mockImplementation((target) => {
+      if (unlinkRefusal && target === directory && process.platform !== "win32") realUnlink(target);
+      else realRmdir(target);
+    });
+    try {
+      expect(await invoke(CHANNELS.attach.release, [filePath])).toEqual({ ok: true });
+      expect(lstatSync(directory).isSymbolicLink()).toBe(true);
+      expect(readFileSync(join(elsewhere, basename(filePath)), "utf8")).toBe("the person's own file");
+      expect(readdirSync(elsewhere)).toEqual([basename(filePath)]);
+      removeLinkOnly(directory);
+      expect(existsSync(directory)).toBe(false);
+      expect(readFileSync(join(elsewhere, basename(filePath)), "utf8")).toBe("the person's own file");
+      expect(readdirSync(elsewhere)).toEqual([basename(filePath)]);
+      expect(remove).not.toHaveBeenCalled();
+      expect(unlink).toHaveBeenCalledWith(directory);
+      if (unlinkRefusal) expect(removeDirectory).toHaveBeenCalledWith(directory);
+      for (const args of removeDirectory.mock.calls) expect(args).toEqual([directory]);
+    } finally {
+      remove.mockRestore();
+      unlink.mockRestore();
+      removeDirectory.mockRestore();
+      readdir.mockRestore();
+      if (lstatSync(directory, { throwIfNoEntry: false })?.isSymbolicLink()) removeLinkOnly(directory);
+    }
   });
 
   it("gives back a picked file's authorization and never deletes the person's file", async () => {
