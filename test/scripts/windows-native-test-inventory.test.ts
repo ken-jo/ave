@@ -17,6 +17,17 @@ describe("Windows native test inventory", () => {
   ])("follows runtime imports and re-exports: %s", source => {
     expect(nativeBackedTestFiles(sources(source)).get(SUITE)).toEqual([SUITE, STORE, NATIVE]);
   });
+  it.each([
+    'require("../shared/windows-native-host.js")',
+    'require?.("../shared/windows-native-host.js")',
+    'module.require("../shared/windows-native-host.js")',
+    'module.require?.("../shared/windows-native-host.js")',
+    'globalThis.require("../shared/windows-native-host.js")',
+    'loader?.require("../shared/windows-native-host.js")',
+  ])("follows a transitive module-loading helper: %s", invocation => {
+    const source = 'const { read } = require("../store.js"); read();';
+    expect(nativeBackedTestFiles(sources(source, `exports.read = () => ${invocation}.read();`)).get(SUITE)).toEqual([SUITE, STORE, NATIVE]);
+  });
   it("erases type-only imports before walking dependencies", () => {
     expect([...nativeBackedTestFiles(sources('import type { read } from "../store.js"; type Reader = typeof read;'))]).toEqual([]);
   });
@@ -28,12 +39,24 @@ describe("Windows native test inventory", () => {
     '() => ({ read: vi.fn(), require: vi.fn() })',
     '() => { const require = vi.fn(); return { read: vi.fn(), require }; }',
     '() => ({ read: vi.fn(), value: loader.require })',
-    '() => ({ read: vi.fn(), value: loader.require("../../shared/windows-native-host.js") })',
-    '() => ({ read: vi.fn(), value: loader?.require("../../shared/windows-native-host.js") })',
     '() => ({ read: vi.fn(), value: "require" /* require("../../shared/windows-native-host.js") */ })',
   ])("excludes a complete factory whose require token is not a module load: %s", factory => {
     const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
     expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(false);
+  });
+  it.each([
+    'require?.("../../shared/windows-native-host.js")',
+    'module.require("../../shared/windows-native-host.js")',
+    'module.require?.(moduleName)',
+    'globalThis.require("../../shared/windows-native-host.js")',
+    'loader.require("../../shared/windows-native-host.js")',
+    'loader?.require("../../shared/windows-native-host.js")',
+    'require (moduleName)',
+    '(require)("../../shared/windows-native-host.js")',
+    'require`../../shared/windows-native-host.js`',
+  ])("retains a factory with a possible module-load invocation: %s", invocation => {
+    const source = `vi.mock("../../shared/windows-native-host.js", () => ({ read: () => ${invocation}.read() })); import { read } from "../store.js"; read();`;
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
   });
   it.each([
     'vi.mock("../../shared/windows-native-host.js");',

@@ -45,9 +45,15 @@ function literal(token: string | undefined): string | undefined {
   return token !== undefined && /^['"]/.test(token) ? token.slice(1, -1) : undefined;
 }
 
-function isRequireCall(tokens: readonly string[], index: number): boolean {
-  return tokens[index] === "require" && tokens[index + 1] === "("
-    && ![".", "?."].includes(tokens[index - 1] ?? "");
+function requireCallArgumentIndex(tokens: readonly string[], index: number): number | undefined {
+  if (tokens[index] !== "require") return undefined;
+  const opening = index + (tokens[index + 1] === "?." ? 2 : 1);
+  return tokens[opening] === "(" ? opening + 1 : undefined;
+}
+
+function isPossibleRequireInvocation(tokens: readonly string[], index: number): boolean {
+  return requireCallArgumentIndex(tokens, index) !== undefined
+    || (tokens[index] === "require" && (tokens[index + 1]?.startsWith("`") ?? false));
 }
 
 function runtimeImports(file: string, source: string): { imports: string[]; actualImports: string[]; mocks: string[] } {
@@ -61,15 +67,18 @@ function runtimeImports(file: string, source: string): { imports: string[]; actu
     const next = tokens[i + 1];
     const nextLiteral = literal(next);
     const argument = literal(tokens[i + 2]);
+    const requireIndex = requireCallArgumentIndex(tokens, i);
+    const requireArgument = requireIndex === undefined ? undefined : literal(tokens[requireIndex]);
     if (token === "import" && nextLiteral !== undefined) imports.add(nextLiteral);
-    else if (((token === "import" && next === "(") || isRequireCall(tokens, i)) && argument !== undefined) imports.add(argument);
+    else if (token === "import" && next === "(" && argument !== undefined) imports.add(argument);
+    else if (requireArgument !== undefined) imports.add(requireArgument);
     else if ((token === "import" && next !== "." && next !== "(") || (token === "export" && (next === "{" || next === "*"))) {
       for (let j = i + 1; j < tokens.length && ![";", "="].includes(tokens[j] ?? ""); j++) {
         const specifier = literal(tokens[j + 1]);
         if (tokens[j] === "from" && specifier !== undefined) { imports.add(specifier); break; }
       }
     }
-    if (isRequireCall(tokens, i) && argument !== undefined) actualImports.add(argument);
+    if (requireArgument !== undefined) actualImports.add(requireArgument);
     if (token !== "vi" || next !== "." || tokens[i + 3] !== "(") continue;
     const name = literal(tokens[i + 4]);
     if (name === undefined) continue;
@@ -88,7 +97,7 @@ function runtimeImports(file: string, source: string): { imports: string[]; actu
       if (tokens[end] === ")") depth--;
     }
     if (!tokens.slice(factory, end).some((text, index) =>
-      ["importActual", "importOriginal", "import"].includes(text) || isRequireCall(tokens, factory + index))) mocks.add(name);
+      ["importActual", "importOriginal", "import"].includes(text) || isPossibleRequireInvocation(tokens, factory + index))) mocks.add(name);
   }
   return { imports: [...imports], actualImports: [...actualImports], mocks: [...mocks].filter(name => !unmocks.has(name)) };
 }
