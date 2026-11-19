@@ -222,9 +222,13 @@ afterEach(async () => {
   }
 });
 
-// Strip the directory marker only for comparisons with the literal floor.
+function nativeDenySpelling(path: string): string {
+  return /^[A-Za-z]:[\\/]/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
+}
+
+// Compare drive-path separators and strip the directory marker for the literal floor.
 function bare(paths: readonly FilesystemPathEntry[]): string[] {
-  return paths.map(path => (typeof path === "string" ? path : path.path).replace(/[\\/]$/, ""));
+  return paths.map(path => nativeDenySpelling(typeof path === "string" ? path : path.path).replace(/[\\/]$/, ""));
 }
 
 // On macOS an exactly spelled root (a sandbox private root or an Ave home boundary root) reaches ASRT canonical, its last character a glob class.
@@ -1620,8 +1624,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     setProcessPlatform("win32");
     try {
       const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
-      const denyWrite = config.filesystem.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
-      // A missing target is created by `srt-win acl stamp`: a trailing separator makes it a directory instead of a 0-byte file. The floor appends the host separator (a backslash on a real Windows host).
+      const denyWrite = config.filesystem.denyWrite.map(entry => nativeDenySpelling(typeof entry === "string" ? entry : entry.path));
+      // A missing target is created by `srt-win acl stamp`: a trailing separator makes it a directory instead of a 0-byte file.
       expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}${sep}`);
       expect(denyWrite).toContain(join(FAKE_AVE_HOME, "settings.json"));
       // `/etc/shadow` would become `<drive>:\etc\shadow`.
@@ -1779,7 +1783,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         allowWrite: [work],
         denyWrite: [join(work, "locked")],
       });
-      const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(entry => typeof entry === "string" ? entry : entry.path);
+      const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(entry => nativeDenySpelling(typeof entry === "string" ? entry : entry.path));
       // Under the grant: kept, the sandbox user could otherwise reach it.
       expect(denies).toContain(join(work, "locked"));
       // Missing disjoint rows would create placeholders and stamp the profile itself as the parent.

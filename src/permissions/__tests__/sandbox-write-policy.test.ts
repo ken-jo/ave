@@ -35,13 +35,24 @@ function withPlatform<T>(platform: "darwin" | "linux" | "win32", action: () => T
   }
 }
 
+// Compare accepted drive separators without changing names, entry kinds or directory hints.
+function nativeDenyRows(entries: readonly FilesystemPathEntry[] | undefined): FilesystemPathEntry[] | undefined {
+  return entries?.map(entry => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    const native = /^[A-Za-z]:[\\/]/u.test(path) ? path.replaceAll("/", "\\") : path;
+    return typeof entry === "string" ? native : { ...entry, path: native };
+  });
+}
+
 function expectLiteralDenyCovers(entries: readonly FilesystemPathEntry[] | undefined, path: string): void {
-  const target = process.platform === "win32" ? path.toLowerCase() : path;
-  expect(entries?.some(entry => {
+  const drive = /^[A-Za-z]:[\\/]/u.test(path);
+  const native = drive ? path.replaceAll("/", "\\") : path;
+  const target = process.platform === "win32" ? native.toLowerCase() : native;
+  expect(nativeDenyRows(entries)?.some(entry => {
     if (typeof entry === "string" && /[*?\[\]]/.test(entry)) return false;
     const value = typeof entry === "string" ? entry : entry.path;
     const base = process.platform === "win32" ? value.toLowerCase() : value;
-    return target === base || target.startsWith(base + sep);
+    return target === base || target.startsWith(base + (drive ? "\\" : sep));
   }), path).toBe(true);
 }
 
@@ -78,8 +89,32 @@ describe("mandatory sandbox control-file writes", () => {
     const child = join(parent, "nested", "control");
     mkdirSync(join(parent, "nested"), { recursive: true });
     const entries = [parent, { path: child, literal: true as const }];
-    expect(withPlatform(platform, () => compactSandboxWriteDenies(entries))).toEqual(entries);
-    expect(withPlatform("darwin", () => compactSandboxWriteDenies(entries))).toEqual([parent]);
+    const driveOperands = entries.map(entry => typeof entry === "string"
+      ? entry.replaceAll("\\", "/") : { ...entry, path: entry.path.replaceAll("\\", "/") });
+    expect(withPlatform(platform, () => compactSandboxWriteDenies(entries))).toEqual(platform === "win32" ? driveOperands : entries);
+    expect(withPlatform("darwin", () => compactSandboxWriteDenies(entries))).toEqual([sep === "\\" ? parent.replaceAll("\\", "/") : parent]);
+  });
+
+  it("emits equivalent drive literals once while retaining explicit child denies and directory intent", () => {
+    const entries: FilesystemPathEntry[] = ["D:\\MiXeD\\private\\",
+      "D:/MiXeD/private/", String.raw`D:\MiXeD\private\allowed\control`,
+      String.raw`D:\MiXeD\café`, String.raw`D:\MiXeD\café`];
+    expect(withPlatform("win32", () => compactSandboxWriteDenies(entries))).toEqual([
+      "D:/MiXeD/private/", "D:/MiXeD/private/allowed/control", "D:/MiXeD/café", "D:/MiXeD/café",
+    ]);
+  });
+
+  it("preserves pattern readings and opaque namespaces beside marked drive literals", () => {
+    const pattern = String.raw`D:\MiXeD\[key]\control`;
+    const literal = Object.freeze({ path: pattern, literal: true as const });
+    const extended = String.raw`\\?\D:\MiXeD\control`;
+    const network = String.raw`\\server\share\control`;
+    const entries = withPlatform("win32", () => compactSandboxWriteDenies([
+      pattern, literal, extended, network, "D:relative", String.raw`D:\file:stream`,
+    ]));
+    expect(entries).toEqual([pattern, { path: "D:/MiXeD/[key]/control", literal: true }, extended, network, "D:relative", String.raw`D:\file:stream`]);
+    expect(Object.isFrozen(entries[1])).toBe(true);
+    expect(literal.path).toBe(pattern);
   });
 
   it.each([".claude", ".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
@@ -94,8 +129,8 @@ describe("mandatory sandbox control-file writes", () => {
       const child = join(placeholder, entry === ".claude" ? "settings.json" : "workspace.xml");
       const repeated = buildMandatorySandboxWritePolicy([project], undefined, [child]);
       expect(repeated.allowWrite).toEqual(initial.allowWrite);
-      expect(repeated.denyWrite).toContain(placeholder);
-      expect(repeated.denyWrite).toEqual(initial.denyWrite);
+      expect(nativeDenyRows(repeated.denyWrite)).toContain(placeholder);
+      expect(nativeDenyRows(repeated.denyWrite)).toEqual(nativeDenyRows(initial.denyWrite));
       expectLiteralDenyCovers(repeated.denyWrite, child);
     });
   });
@@ -111,7 +146,7 @@ describe("mandatory sandbox control-file writes", () => {
     const policy = withPlatform("linux", () => buildMandatorySandboxWritePolicy([project, work]));
     expect(policy.allowWrite).toEqual([work]);
     expect(policy.narrowedWriteRoots).toEqual([{ root: project, reason: "routing-link" }]);
-    expect(policy.denyWrite).toEqual(expect.arrayContaining([link, target]));
+    expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining([link, target]));
   });
 
   it.each([false, true])("refuses an unprotected regular ancestor when native missing-child reporting is %s", async reportsMissingChild => {
@@ -165,8 +200,8 @@ describe("mandatory sandbox control-file writes", () => {
     vi.stubEnv("XDG_CONFIG_HOME", blocker);
     const policy = withPlatform(platform, () => buildMandatorySandboxWritePolicy([project]));
     expect(policy.allowWrite).toEqual([project]);
-    expect(policy.denyWrite).not.toContain(blocker);
-    expect(policy.denyWrite).not.toContain(join(blocker, "git", "config"));
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(blocker);
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(blocker, "git", "config"));
     expectLiteralDenyCovers(policy.denyWrite, join(project, ".config", "git"));
     expect(filesystem.readFileSync(blocker, "utf8")).toBe("ordinary file");
   });
@@ -201,7 +236,7 @@ describe("mandatory sandbox control-file writes", () => {
     const policy = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([missing]));
     expect(policy.allowWrite).toEqual([missing]);
     expect(policy.narrowedWriteRoots).toEqual([]);
-    expect(policy.denyWrite).toContain(join(missing, ".bash_profile"));
+    expect(nativeDenyRows(policy.denyWrite)).toContain(join(missing, ".bash_profile"));
     expectLiteralDenyCovers(policy.denyWrite, join(missing, ".claude", "settings.json"));
     expect(filesystem.existsSync(missing)).toBe(false);
   });
@@ -225,7 +260,7 @@ describe("mandatory sandbox control-file writes", () => {
       const policy = buildMandatorySandboxWritePolicy([root, project]);
       expectLiteralDenyCovers(policy.denyWrite, configuration);
       expectLiteralDenyCovers(policy.denyWrite, join(configuration, "future-control", "policy.json"));
-      expect(policy.denyWrite).not.toContain(join(root, "ave"));
+      expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(root, "ave"));
     });
   });
 
@@ -258,8 +293,8 @@ describe("mandatory sandbox control-file writes", () => {
         writeFileSync(join(marker, "config"), '[core]\n hooksPath = "custom-hooks"\n');
         if (existing) { mkdirSync(hooks); writeFileSync(join(hooks, "pre-commit"), "hook fixture"); }
         const policy = buildMandatorySandboxWritePolicy([project]);
-        expect(policy.denyWrite).toContain(hooks);
-        expect(policy.denyWrite).toContain(join(marker, "custom-hooks"));
+        expect(nativeDenyRows(policy.denyWrite)).toContain(hooks);
+        expect(nativeDenyRows(policy.denyWrite)).toContain(join(marker, "custom-hooks"));
       }
     });
   });
@@ -278,8 +313,8 @@ describe("mandatory sandbox control-file writes", () => {
       writeFileSync(loader, "loader fixture");
       symlinkSync(loader, join(project, "mise.toml"));
       const policy = buildMandatorySandboxWritePolicy([project]);
-      expect(policy.denyWrite).toContain(target);
-      expect(policy.denyWrite).toContain(loader);
+      expect(nativeDenyRows(policy.denyWrite)).toContain(target);
+      expect(nativeDenyRows(policy.denyWrite)).toContain(loader);
       if (platform === "linux") expect(policy.allowWrite).not.toContain(project);
     });
   });
@@ -303,7 +338,7 @@ describe("mandatory sandbox control-file writes", () => {
       const policy = buildMandatorySandboxWritePolicy([project, storage, work]);
       expectLiteralDenyCovers(policy.denyWrite, hookLink);
       expectLiteralDenyCovers(policy.denyWrite, workspaceLink);
-      expect(policy.denyWrite).toEqual(expect.arrayContaining([hooks, workspace]));
+      expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining([hooks, workspace]));
       if (platform === "linux") expect(policy.allowWrite).toEqual([storage, work]);
       else expect(policy.allowWrite).toEqual([project, storage, work]);
     });
@@ -326,8 +361,8 @@ describe("mandatory sandbox control-file writes", () => {
         if (typeof entry === "string" && /[*?\[\]]/.test(entry)) expect(final).toContain(entry);
         else expectLiteralDenyCovers(final, typeof entry === "string" ? entry : entry.path);
       }
-      expect(compact.denyWrite).toContain(external);
-      if (platform === "win32") expect(compact.denyWrite).toEqual(original.denyWrite);
+      expect(nativeDenyRows(compact.denyWrite)).toContain(external);
+      if (platform === "win32") expect(nativeDenyRows(compact.denyWrite)).toEqual(nativeDenyRows(original.denyWrite));
       else expect(Buffer.byteLength(JSON.stringify(compact.denyWrite))).toBeLessThan(Buffer.byteLength(JSON.stringify(original.denyWrite)));
       expect(Buffer.byteLength(JSON.stringify(compact.denyWrite))).toBeLessThan(32_768);
     });
@@ -353,9 +388,9 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(root, ".gitconfig"), '[core]\n hooksPath = "global-hooks"\n[includeIf "gitdir:never-matches"]\n path = "included-config"\n');
     writeFileSync(included, '[core]\n hooksPath = "~/included-hooks"\n');
     const policy = buildMandatorySandboxWritePolicy([project]);
-    for (const name of ["global-hooks", "worktree-hooks", "common-hooks"]) expect(policy.denyWrite).toContain(join(project, name));
-    expect(policy.denyWrite).toContain(join(root, "included-hooks"));
-    expect(policy.denyWrite).toContain(included);
+    for (const name of ["global-hooks", "worktree-hooks", "common-hooks"]) expect(nativeDenyRows(policy.denyWrite)).toContain(join(project, name));
+    expect(nativeDenyRows(policy.denyWrite)).toContain(join(root, "included-hooks"));
+    expect(nativeDenyRows(policy.denyWrite)).toContain(included);
   });
 
   it("decodes quoted hook paths and preserves pattern characters as literal targets", () => {
@@ -363,14 +398,14 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(join(project, ".git"), { recursive: true });
     writeFileSync(join(project, ".git", "config"), '[CORE] hooksPath = "hooks [local] \\"quoted\\"" # trailing comment\n');
     const target = join(project, 'hooks [local] "quoted"');
-    expect(buildMandatorySandboxWritePolicy([project]).denyWrite).toContainEqual({ path: target, literal: true });
+    expect(nativeDenyRows(buildMandatorySandboxWritePolicy([project]).denyWrite)).toContainEqual({ path: target, literal: true });
   });
 
   it("does not write-deny the POSIX null device used to disable hooks", () => {
     const project = join(root, "project");
     mkdirSync(join(project, ".git"), { recursive: true });
     writeFileSync(join(project, ".git", "config"), '[core]\n hooksPath = /dev/null\n');
-    expect(withPlatform("linux", () => buildMandatorySandboxWritePolicy([project])).denyWrite).not.toContain("/dev/null");
+    expect(nativeDenyRows(withPlatform("linux", () => buildMandatorySandboxWritePolicy([project])).denyWrite)).not.toContain("/dev/null");
   });
 
   it.each(["darwin", "linux", "win32"] as const)("applies inherited relative hooks to every discovered nested repository on %s", platform => {
@@ -382,8 +417,8 @@ describe("mandatory sandbox control-file writes", () => {
       writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
       writeFileSync(join(root, ".gitconfig"), '[core]\n hooksPath = "custom-hooks"\n');
       const policy = buildMandatorySandboxWritePolicy([workspace]);
-      expect(policy.denyWrite).toContain(join(repository, "custom-hooks"));
-      expect(policy.denyWrite).toContain(join(marker, "custom-hooks"));
+      expect(nativeDenyRows(policy.denyWrite)).toContain(join(repository, "custom-hooks"));
+      expect(nativeDenyRows(policy.denyWrite)).toContain(join(marker, "custom-hooks"));
     });
   });
 
@@ -393,7 +428,7 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(join(project, "child"));
     writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(project, ".git", "config"), '[core]\n hooksPath = "child/hooks"\n');
-    expect(buildMandatorySandboxWritePolicy([join(project, "child")]).denyWrite).toContain(join(project, "child", "hooks"));
+    expect(nativeDenyRows(buildMandatorySandboxWritePolicy([join(project, "child")]).denyWrite)).toContain(join(project, "child", "hooks"));
   });
 
   it("refuses ambiguous hook path interpolation instead of leaving its target writable", () => {
@@ -408,8 +443,8 @@ describe("mandatory sandbox control-file writes", () => {
     const roots = [join(root, "project"), join(root, "temp")];
     const denies = buildMandatorySandboxWritePolicy(roots).denyWrite;
     for (const base of roots) {
-      if (entry === ".git" && process.platform === "linux") expect(denies).not.toContain(join(base, entry));
-      else expect(denies).toContain(join(base, entry));
+      if (entry === ".git" && process.platform === "linux") expect(nativeDenyRows(denies)).not.toContain(join(base, entry));
+      else expect(nativeDenyRows(denies)).toContain(join(base, entry));
     }
   });
 
@@ -422,8 +457,8 @@ describe("mandatory sandbox control-file writes", () => {
       ];
       for (const policy of policies) {
         expect(policy.allowWrite).toEqual([project]);
-        expect(policy.denyWrite).toContain(join(project, ".bashrc"));
-        expect(policy.denyWrite).not.toContain(join("~", "project", ".bashrc"));
+        expect(nativeDenyRows(policy.denyWrite)).toContain(join(project, ".bashrc"));
+        expect(nativeDenyRows(policy.denyWrite)).not.toContain(join("~", "project", ".bashrc"));
       }
     });
   });
@@ -447,15 +482,15 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(marker, "modules", "inner", "config"), "existing control");
     const denies = buildMandatorySandboxWritePolicy([project]).denyWrite;
     for (const entry of [".gitconfig", ".githooks", ".husky", ".claude", ".claude/hooks"]) expectLiteralDenyCovers(denies, join(project, entry));
-    for (const path of [marker, join(marker, "modules"), join(marker, "modules", "inner")]) expect(denies).not.toContain(path);
+    for (const path of [marker, join(marker, "modules"), join(marker, "modules", "inner")]) expect(nativeDenyRows(denies)).not.toContain(path);
     for (const path of [join(marker, "hooks"), join(marker, "config"), join(marker, "modules", "inner", "hooks"), join(marker, "modules", "inner", "config")]) {
-      expect(denies).toContain(path);
+      expect(nativeDenyRows(denies)).toContain(path);
     }
   });
 
   it.each([".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"])("keeps the host-home %s in the existing sensitive floor only", (entry) => {
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(root, entry));
-    expect(buildMandatorySandboxWritePolicy([join(root, "project")]).denyWrite).not.toContain(join(root, entry));
+    expect(nativeDenyRows(buildMandatorySandboxWritePolicy([join(root, "project")]).denyWrite)).not.toContain(join(root, entry));
   });
 
   it("takes settings, rules, approvals and policy locations from their stores", () => {
@@ -473,8 +508,8 @@ describe("mandatory sandbox control-file writes", () => {
     const link = join(root, "linked");
     symlinkSync(target, link, "dir");
     const denies = buildMandatorySandboxWritePolicy([link]).denyWrite;
-    if (process.platform === "linux") expect(denies).not.toContain(join(target, ".git"));
-    else expect(denies).toContain(join(target, ".git"));
+    if (process.platform === "linux") expect(nativeDenyRows(denies)).not.toContain(join(target, ".git"));
+    else expect(nativeDenyRows(denies)).toContain(join(target, ".git"));
     expect(new Set(denies).size).toBe(denies.length);
   });
 
@@ -490,12 +525,12 @@ describe("mandatory sandbox control-file writes", () => {
     const policy = buildMandatorySandboxWritePolicy([root]);
     expect(policy.allowWrite).toEqual([root]);
     for (const entry of ["", "objects", "refs", "index", "HEAD", "logs", "COMMIT_EDITMSG", "info/attributes", "info/grafts"]) {
-      expect(policy.denyWrite).not.toContain(join(marker, entry));
+      expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(marker, entry));
     }
     for (const entry of ["hooks", "config", "config.worktree", "commondir", "gitdir", "objects/info/alternates", "objects/info/http-alternates", "branches", "remotes"]) {
-      expect(policy.denyWrite).toContain(join(marker, entry));
+      expect(nativeDenyRows(policy.denyWrite)).toContain(join(marker, entry));
     }
-    expect(policy.denyWrite).not.toContain("/**/.[gG][iI][tT]");
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain("/**/.[gG][iI][tT]");
   });
 
   it("protects existing module and worktree controls without freezing metadata directories", () => {
@@ -512,9 +547,9 @@ describe("mandatory sandbox control-file writes", () => {
     }
     const policy = buildMandatorySandboxWritePolicy([root]);
     for (const directory of [marker, module, worktree]) {
-      expect(policy.denyWrite).not.toContain(directory);
+      expect(nativeDenyRows(policy.denyWrite)).not.toContain(directory);
       for (const entry of ["hooks", "config", "config.worktree", "commondir", "gitdir"]) {
-        expect(policy.denyWrite).toContain(join(directory, entry));
+        expect(nativeDenyRows(policy.denyWrite)).toContain(join(directory, entry));
       }
     }
   });
@@ -522,11 +557,11 @@ describe("mandatory sandbox control-file writes", () => {
   it("discovers new Linux repositories on each policy build using HEAD markers", () => {
     const nested = join(root, "new", ".git");
     mkdirSync(nested, { recursive: true });
-    expect(withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite)
+    expect(nativeDenyRows(withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite))
       .not.toContain(join(nested, "hooks"));
     writeFileSync(join(nested, "HEAD"), "ref: refs/heads/main\n");
     mkdirSync(join(nested, "hooks"));
-    expect(withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite)
+    expect(nativeDenyRows(withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite))
       .toContain(join(nested, "hooks"));
   });
 
@@ -536,13 +571,13 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(marker, "config"), "existing control");
     const policy = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root]));
-    expect(policy.denyWrite).toContain(join(marker, "config"));
+    expect(nativeDenyRows(policy.denyWrite)).toContain(join(marker, "config"));
     for (const entry of ["commondir", "gitdir", "hooks", "config.worktree", "info/attributes", "modules", "worktrees"]) {
-      expect(policy.denyWrite).not.toContain(join(marker, entry));
+      expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(marker, entry));
       expect(filesystem.existsSync(join(marker, entry))).toBe(false);
     }
-    expect(policy.denyWrite).toContain(join(root, ".bashrc"));
-    expect(policy.denyWrite).toContain(permissionSettingsPath());
+    expect(nativeDenyRows(policy.denyWrite)).toContain(join(root, ".bashrc"));
+    expect(nativeDenyRows(policy.denyWrite)).toContain(permissionSettingsPath());
   });
 
   it("discovers existing controls in Linux partial markers while preserving macOS attributes policy", () => {
@@ -551,10 +586,10 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(join(marker, "info"));
     writeFileSync(join(marker, "info", "attributes"), "existing attributes");
     const linux = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root]));
-    expect(linux.denyWrite).toContain(join(marker, "hooks"));
-    expect(linux.denyWrite).toContain(join(marker, "info", "attributes"));
+    expect(nativeDenyRows(linux.denyWrite)).toContain(join(marker, "hooks"));
+    expect(nativeDenyRows(linux.denyWrite)).toContain(join(marker, "info", "attributes"));
     const mac = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root]));
-    expect(mac.denyWrite).not.toContain(join(marker, "info", "attributes"));
+    expect(nativeDenyRows(mac.denyWrite)).not.toContain(join(marker, "info", "attributes"));
   });
 
   it("fails a post-command snapshot visibly when bounded discovery cannot finish", () => {
@@ -573,7 +608,7 @@ describe("mandatory sandbox control-file writes", () => {
     });
     const policy = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root]));
     expect(filesystem.existsSync(join(root, "config"))).toBe(true);
-    expect(policy.denyWrite).not.toContain(join(root, "config"));
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(root, "config"));
     expect(policy.gitControlSnapshot?.entries.get(join(root, "config"))).toBeUndefined();
   });
 
@@ -622,12 +657,12 @@ describe("mandatory sandbox control-file writes", () => {
     const mac = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root]));
     const linux = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root]));
     for (const entry of ["HEAD", "objects", "refs", "config"]) {
-      expect(mac.denyWrite).toContain(join(root, entry));
-      expect(linux.denyWrite).not.toContain(join(root, entry));
+      expect(nativeDenyRows(mac.denyWrite)).toContain(join(root, entry));
+      expect(nativeDenyRows(linux.denyWrite)).not.toContain(join(root, entry));
     }
     writeFileSync(join(root, "HEAD"), "ref: refs/heads/main\n");
-    expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite).toContain(join(root, "hooks"));
-    expect(withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite).not.toContain(join(root, "hooks"));
+    expect(nativeDenyRows(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite)).toContain(join(root, "hooks"));
+    expect(nativeDenyRows(withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite)).not.toContain(join(root, "hooks"));
   });
 
   it.runIf(process.platform !== "win32")(
@@ -653,8 +688,8 @@ describe("mandatory sandbox control-file writes", () => {
       const linux = withPlatform("linux", () => buildMandatorySandboxWritePolicy(writeRoots));
       expect(linux.allowWrite).toEqual([child, sibling]);
       for (const { link, target } of controls) {
-        expect(linux.denyWrite).toEqual(expect.arrayContaining([link, target]));
-        expect(linux.denyWrite).not.toContainEqual({ path: link, literal: true });
+        expect(nativeDenyRows(linux.denyWrite)).toEqual(expect.arrayContaining([link, target]));
+        expect(nativeDenyRows(linux.denyWrite)).not.toContainEqual({ path: link, literal: true });
       }
     },
   );
@@ -675,9 +710,9 @@ describe("mandatory sandbox control-file writes", () => {
       const policy = withPlatform("linux", () =>
         buildMandatorySandboxWritePolicy([ancestor, grant, child, sibling], undefined, [floor]));
       expect(policy.allowWrite).toEqual([child, sibling]);
-      expect(policy.denyWrite).not.toContainEqual({ path: floor, literal: true });
-      expect(policy.denyWrite).not.toContain(floor);
-      expect(policy.denyWrite).not.toContain(target);
+      expect(nativeDenyRows(policy.denyWrite)).not.toContainEqual({ path: floor, literal: true });
+      expect(nativeDenyRows(policy.denyWrite)).not.toContain(floor);
+      expect(nativeDenyRows(policy.denyWrite)).not.toContain(target);
     },
   );
 
@@ -688,7 +723,7 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(nfd);
     const nfdPolicy = buildMandatorySandboxWritePolicy([nfd]);
     expect(nfdPolicy.allowWrite).toEqual([nfd]);
-    expect(nfdPolicy.denyWrite).not.toContain(join(nfc, ".git"));
+    expect(nativeDenyRows(nfdPolicy.denyWrite)).not.toContain(join(nfc, ".git"));
     expect(buildMandatorySandboxWritePolicy([nfd, nfc]).allowWrite).toEqual([nfd, nfc]);
     const openDirectory = vi.mocked(filesystem.opendirSync).getMockImplementation()!;
     vi.mocked(filesystem.opendirSync).mockImplementation((...args) => {
@@ -705,9 +740,9 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(slash, { recursive: true });
     const backslashPolicy = buildMandatorySandboxWritePolicy([backslash]);
     expect(backslashPolicy.allowWrite).toEqual([backslash]);
-    if (process.platform === "linux") expect(backslashPolicy.denyWrite).not.toContain(join(backslash, ".git"));
-    else expect(backslashPolicy.denyWrite).toContain(join(backslash, ".git"));
-    expect(backslashPolicy.denyWrite).not.toContain(join(slash, ".git"));
+    if (process.platform === "linux") expect(nativeDenyRows(backslashPolicy.denyWrite)).not.toContain(join(backslash, ".git"));
+    else expect(nativeDenyRows(backslashPolicy.denyWrite)).toContain(join(backslash, ".git"));
+    expect(nativeDenyRows(backslashPolicy.denyWrite)).not.toContain(join(slash, ".git"));
     expect(buildMandatorySandboxWritePolicy([backslash, slash]).allowWrite).toEqual([backslash, slash]);
   });
 
@@ -748,8 +783,8 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(gitDir, "commondir"), "../../common\n");
     const denies = buildMandatorySandboxWritePolicy([checkout]).denyWrite;
     for (const directory of [gitDir, common]) {
-      expect(denies).not.toContain(directory);
-      expect(denies).toContain(join(directory, "config"));
+      expect(nativeDenyRows(denies)).not.toContain(directory);
+      expect(nativeDenyRows(denies)).toContain(join(directory, "config"));
     }
   });
 
@@ -773,19 +808,19 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(gitDir, "commondir"), "common-link/../common\n");
     const policy = buildMandatorySandboxWritePolicy([root, checkout, external, independent]);
     const denies = policy.denyWrite;
-    expect(denies).not.toContain(gitDir);
-    expect(denies).not.toContain(commonDir);
+    expect(nativeDenyRows(denies)).not.toContain(gitDir);
+    expect(nativeDenyRows(denies)).not.toContain(commonDir);
     if (process.platform !== "linux") {
-      expect(denies).toContain(join(gitDir, "config"));
-      expect(denies).toContain(join(commonDir, "config"));
+      expect(nativeDenyRows(denies)).toContain(join(gitDir, "config"));
+      expect(nativeDenyRows(denies)).toContain(join(commonDir, "config"));
     }
     const routingPins = [metadataLink, join(gitDir, "common-link")]
       .map(path => ({ path, literal: true } as const));
     for (const routingPin of routingPins) {
-      if (process.platform === "linux") expect(denies).not.toContainEqual(routingPin);
-      else expect(denies).toContainEqual(routingPin);
+      if (process.platform === "linux") expect(nativeDenyRows(denies)).not.toContainEqual(routingPin);
+      else expect(nativeDenyRows(denies)).toContainEqual(routingPin);
     }
-    expect(denies).not.toContain(join(checkout, "metadata"));
+    expect(nativeDenyRows(denies)).not.toContain(join(checkout, "metadata"));
     const linuxGrants = [checkout, independent];
     expect(policy.allowWrite).toEqual(process.platform === "linux"
       ? linuxGrants
@@ -796,9 +831,9 @@ describe("mandatory sandbox control-file writes", () => {
     // These targets are outside every retained writable grant, so the default read-only filesystem protects them without a deny mount.
     for (const directory of [gitDir, commonDir]) {
       expect(linuxGrants.some(grant => isGrantPathWithin(grant, directory))).toBe(false);
-      expect(linuxPolicy.denyWrite).not.toContain(join(directory, "config"));
+      expect(nativeDenyRows(linuxPolicy.denyWrite)).not.toContain(join(directory, "config"));
     }
-    for (const routingPin of routingPins) expect(linuxPolicy.denyWrite).not.toContainEqual(routingPin);
+    for (const routingPin of routingPins) expect(nativeDenyRows(linuxPolicy.denyWrite)).not.toContainEqual(routingPin);
   });
 
   it.each(["gitdir", "commondir"])("rejects non-roundtrippable UTF-8 in %s metadata", (kind) => {
@@ -823,9 +858,9 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(below, ".git", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(below, ".git", "config"), "existing control");
     const denies = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite;
-    expect(denies).toContain(join(deepest, ".git", "config"));
-    expect(denies).not.toContain(join(deepest, ".git"));
-    expect(denies).not.toContain(join(below, ".git", "config"));
+    expect(nativeDenyRows(denies)).toContain(join(deepest, ".git", "config"));
+    expect(nativeDenyRows(denies)).not.toContain(join(deepest, ".git"));
+    expect(nativeDenyRows(denies)).not.toContain(join(below, ".git", "config"));
   });
 
   it("does not traverse Linux dependency or build trees or directory-link cycles", () => {
@@ -838,8 +873,8 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(nested, ".git", "config"), "existing control");
     symlinkSync(root, join(nested, "cycle"), "dir");
     const denies = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).denyWrite;
-    expect(denies).toContain(join(nested, ".git", "config"));
-    expect(denies).not.toContain(join(root, "node_modules", "inner", ".git", "config"));
+    expect(nativeDenyRows(denies)).toContain(join(nested, ".git", "config"));
+    expect(nativeDenyRows(denies)).not.toContain(join(root, "node_modules", "inner", ".git", "config"));
   });
 
   it.each(["source", "node_modules", "build", ".git/objects"])(
@@ -854,10 +889,10 @@ describe("mandatory sandbox control-file writes", () => {
       writeFileSync(join(nested, ".git"), `gitdir: ${metadata}\n`);
       const policy = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([checkout, metadata]));
       expect(policy.allowWrite).toEqual([checkout, metadata]);
-      expect(policy.denyWrite).toContain(join(nested, ".git"));
-      expect(policy.denyWrite).toContain(join(metadata, "config"));
-      expect(policy.denyWrite).toContain(join(metadata, "hooks"));
-      expect(policy.denyWrite).not.toContain(metadata);
+      expect(nativeDenyRows(policy.denyWrite)).toContain(join(nested, ".git"));
+      expect(nativeDenyRows(policy.denyWrite)).toContain(join(metadata, "config"));
+      expect(nativeDenyRows(policy.denyWrite)).toContain(join(metadata, "hooks"));
+      expect(nativeDenyRows(policy.denyWrite)).not.toContain(metadata);
     },
   );
 
@@ -896,8 +931,8 @@ describe("mandatory sandbox control-file writes", () => {
     const policy = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root, child]));
     expect(policy.allowWrite).toEqual([child]);
     expect(reads).toBeLessThanOrEqual(16_385);
-    expect(policy.denyWrite).not.toContain(root);
-    expect(policy.denyWrite).not.toContain(child);
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(root);
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(child);
   });
 
   it("rejects oversized or linked common-directory metadata instead of omitting its target", () => {
@@ -983,9 +1018,9 @@ describe("mandatory sandbox control-file writes", () => {
     expect(reads).toBeLessThanOrEqual(16_385);
     expect(policy.allowWrite).toEqual([second]);
     expect(policy.narrowedWriteRoots).toEqual([{ root, reason: "entry-budget" }]);
-    expect(denies).not.toContain(root);
-    expect(denies).not.toContain(queued);
-    expect(denies).not.toContain(second);
+    expect(nativeDenyRows(denies)).not.toContain(root);
+    expect(nativeDenyRows(denies)).not.toContain(queued);
+    expect(nativeDenyRows(denies)).not.toContain(second);
     expect(Buffer.byteLength(JSON.stringify(denies))).toBeLessThan(32_768);
   });
 
@@ -1007,7 +1042,7 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(common);
     writeFileSync(join(common, "config"), "existing control");
     writeFileSync(join(gitDir, "commondir"), " common\n");
-    expect(buildMandatorySandboxWritePolicy([root]).denyWrite).toContain(join(common, "config"));
+    expect(nativeDenyRows(buildMandatorySandboxWritePolicy([root]).denyWrite)).toContain(join(common, "config"));
     rmSync(gitDir, { recursive: true });
     writeFileSync(gitDir, "gitdir: planted\nother\n");
     expect(() => buildMandatorySandboxWritePolicy([root]).denyWrite).toThrow("directory pointer");
@@ -1028,18 +1063,18 @@ describe("mandatory sandbox control-file writes", () => {
       mkdirSync(marker);
       writeFileSync(join(marker, "commondir"), `${target}\r\n`);
     }
-    expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite).toContain(target);
+    expect(nativeDenyRows(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite)).toContain(target);
   });
 
   it("treats absent gitdir and common targets with pattern characters as literal entries", () => {
     const marker = join(root, ".git");
     const target = join(root, "metadata-[*?]-absent");
     writeFileSync(marker, `gitdir: ${target}\n`);
-    expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite).toContainEqual({ path: target, literal: true });
+    expect(nativeDenyRows(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite)).toContainEqual({ path: target, literal: true });
     rmSync(marker);
     mkdirSync(marker);
     writeFileSync(join(marker, "commondir"), `${target}\n`);
-    expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite).toContainEqual({ path: target, literal: true });
+    expect(nativeDenyRows(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite)).toContainEqual({ path: target, literal: true });
   });
 
   it.each(["gitdir", "commondir"] as const)("denies the first missing component of an absent %s target", (kind) => {
@@ -1055,9 +1090,9 @@ describe("mandatory sandbox control-file writes", () => {
       writeFileSync(join(marker, "commondir"), `${target}\n`);
     }
     const denies = withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite;
-    expect(denies).toContain(firstMissing);
+    expect(nativeDenyRows(denies)).toContain(firstMissing);
     expectLiteralDenyCovers(denies, target);
-    expect(denies).not.toContain(storage);
+    expect(nativeDenyRows(denies)).not.toContain(storage);
     const snapshot = withPlatform("linux", () => buildMandatorySandboxWritePolicy([root])).gitControlSnapshot;
     expect(snapshot?.storeMissingAncestors.get(target)).toBe(firstMissing);
   });
@@ -1105,7 +1140,7 @@ describe("mandatory sandbox control-file writes", () => {
       }
       return directory;
     });
-    expect(buildMandatorySandboxWritePolicy([root]).denyWrite).toContain(join(nested, ".git", "config"));
+    expect(nativeDenyRows(buildMandatorySandboxWritePolicy([root]).denyWrite)).toContain(join(nested, ".git", "config"));
   });
 
   it("does not enumerate directory links outside the admitted root or read linked marker files", () => {
@@ -1114,7 +1149,7 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(project);
     mkdirSync(join(external, ".git"), { recursive: true });
     symlinkSync(external, join(project, "outside"), "dir");
-    expect(buildMandatorySandboxWritePolicy([project]).denyWrite).not.toContain(join(external, ".git", "config"));
+    expect(nativeDenyRows(buildMandatorySandboxWritePolicy([project]).denyWrite)).not.toContain(join(external, ".git", "config"));
     expect(vi.mocked(filesystem.opendirSync).mock.calls.map(args => String(args[0]))).not.toContain(join(project, "outside"));
     writeFileSync(join(external, "pointer"), "gitdir: metadata\n");
     symlinkSync(join(external, "pointer"), join(project, ".git"));
@@ -1137,7 +1172,7 @@ describe("mandatory sandbox control-file writes", () => {
     const { readSync: read } = await vi.importActual<typeof import("node:fs")>("node:fs");
     vi.mocked(filesystem.readSync).mockImplementation(((fd, buffer, offset, length, position) =>
       read(fd, buffer, offset, Math.min(length, 3), position)) as typeof filesystem.readSync);
-    expect(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite).toContain(target);
+    expect(nativeDenyRows(withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite)).toContain(target);
     expect(vi.mocked(filesystem.readSync).mock.calls.length).toBeGreaterThan(2);
     let calls = 0;
     vi.mocked(filesystem.readSync).mockImplementation(((fd, buffer, offset, length, position) =>
@@ -1154,8 +1189,8 @@ describe("mandatory sandbox control-file writes", () => {
     }
     const policy = buildMandatorySandboxWritePolicy([root, child]);
     expect(policy.allowWrite).toEqual([]);
-    expect(policy.denyWrite).not.toContain(root);
-    expect(policy.denyWrite).not.toContain(child);
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(root);
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(child);
     expect(Buffer.byteLength(JSON.stringify(policy.denyWrite))).toBeLessThan(32_768);
   });
 
@@ -1229,7 +1264,7 @@ describe("mandatory sandbox control-file writes", () => {
     });
     const policy = buildMandatorySandboxWritePolicy([broad, checkout, hooks]);
     expect(policy.allowWrite).toEqual([checkout, hooks]);
-    expect(policy.denyWrite).toContain(join(metadata, "hooks"));
+    expect(nativeDenyRows(policy.denyWrite)).toContain(join(metadata, "hooks"));
   });
 
   it.each([false, true])("keeps canonical grant identity when an alias retargets during discovery (exhausted=%s)", (exhausted) => {
@@ -1252,7 +1287,7 @@ describe("mandatory sandbox control-file writes", () => {
     const policy = buildMandatorySandboxWritePolicy([alias]);
     expect(realpathSync(alias)).toBe(replacement);
     expect(policy.allowWrite).toEqual(exhausted ? [] : [original]);
-    if (!exhausted && process.platform !== "linux") expect(policy.denyWrite).toContain(join(original, ".git"));
-    expect(policy.denyWrite).not.toContain(join(replacement, ".git"));
+    if (!exhausted && process.platform !== "linux") expect(nativeDenyRows(policy.denyWrite)).toContain(join(original, ".git"));
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(replacement, ".git"));
   });
 });

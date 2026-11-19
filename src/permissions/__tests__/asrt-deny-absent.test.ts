@@ -138,8 +138,12 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     return vi.spyOn(manager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["echo"], env: {} });
   }
 
+  function nativeDenySpelling(path: string): string {
+    return /^[A-Za-z]:[\\/]/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
+  }
+
   function paths(entries: readonly runtime.FilesystemPathEntry[] | undefined): string[] {
-    return (entries ?? []).map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
+    return (entries ?? []).map(entry => nativeDenySpelling(typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
   }
 
   it("rejects runtime helpers that omit the fixture or resolve a bundled executable", async () => {
@@ -558,7 +562,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       const read = buildSandboxConfig({ denyRead: [target] });
       const write = buildSandboxConfig({ allowRead: [join(machine, "Ave")], denyWrite: [target] });
       expect(read.filesystem.denyRead).toContain(target);
-      expect(write.filesystem.denyWrite).toContain(target);
+      expect(paths(write.filesystem.denyWrite)).toContain(target);
     }
   });
 
@@ -663,9 +667,11 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const absent = join(workspace, ".git", "modules");
     const next = buildSandboxConfig({ allowWrite: [workspace], denyRead: [link + sep], denyWrite: [link + sep] });
     expect(paths(next.filesystem.denyRead)).toContain(link);
-    expect(next.filesystem.denyWrite).toContainEqual({ path: present, literal: true });
+    const denyWrite = next.filesystem.denyWrite.map(entry => typeof entry === "string"
+      ? nativeDenySpelling(entry) : { ...entry, path: nativeDenySpelling(entry.path) });
+    expect(denyWrite).toContainEqual({ path: present, literal: true });
     expect(paths(next.filesystem.denyWrite)).toContain(link);
-    expect(next.filesystem.denyWrite).toContainEqual({ path: absent, literal: true });
+    expect(denyWrite).toContainEqual({ path: absent, literal: true });
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 

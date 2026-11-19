@@ -601,7 +601,7 @@ function finishFilesystemPolicy(filesystem: Partial<FilesystemConfig>, admitted:
   const denyWrite = compactSandboxWriteDenies(filesystem.denyWrite ?? []);
   if (Object.isFrozen(filesystem.denyWrite)) Object.freeze(denyWrite);
   filesystem = { ...filesystem, denyWrite };
-  assertSandboxWritePolicySize(filesystem.denyWrite ?? [], undefined, configuredDenies);
+  assertSandboxWritePolicySize(filesystem.denyWrite ?? [], undefined, compactSandboxWriteDenies(configuredDenies));
   if (process.platform !== "win32") return filesystem;
   const pinned = admittedWindowsPolicies.get(admitted);
   if (pinned === undefined) throw new Error("Filesystem policy was not admitted");
@@ -1628,7 +1628,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
       ...electronUserDataDirs(userDataDir, homes).map((path) => path.replace(/[\\/]+$/, "")),
       ...aveHomeReadBoundaryRoots().map((path) => path.replace(/[\\/]+$/, "")), ...aveHomeReadBoundaryMasks(),
       ...writePersistenceDirectories(homes),
-    ].map(caseFoldForMatch),
+    ].map(path => caseFoldForMatch(path.replaceAll("\\", "/"))),
   );
   const posixRooted = posixOnlyDenyPaths();
   const checkedReadEvidence = kind === "read" && readDenyEvidence !== undefined
@@ -1654,7 +1654,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
       }
     })
     .filter(path => retainedMachineRows.has(path) || keepWindowsDenyTarget(path, expandedPaths.get(path)!, expandedWriteGrants, grantWithin))
-    .map((path): T | string => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path))
+    .map((path): T | string => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path.replaceAll("\\", "/"))) ? `${path}\\` : path))
     .concat(literals);
 }
 

@@ -154,7 +154,10 @@ function resolvePolicyDenyPath(path: string): string {
 }
 
 function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly string[], caseInsensitive = process.platform === "win32"): string[] {
-  const keyFor = (path: string) => caseInsensitive ? path.toLowerCase() : path;
+  const keyFor = (path: string) => {
+    const native = sep === "\\" ? path.replaceAll("/", "\\") : path;
+    return caseInsensitive ? native.toLowerCase() : native;
+  };
   const inheritedKeys = new Set(inherited.map(path => {
     while (path.endsWith(sep) && dirname(path) !== path) path = path.slice(0, -1);
     return keyFor(path);
@@ -176,16 +179,44 @@ function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly s
   });
 }
 
-/** Remove literal descendants already denied by the final union without folding filesystem spellings or changing patterns. */
-export function compactSandboxWriteDenies<T extends FilesystemPathEntry>(entries: readonly T[]): T[] {
+function nativeWriteDenyPath(path: string): string {
+  // Ordinary drive operands accept either separator. Extended and network
+  // namespaces keep their own grammar; names and directory hints stay intact.
+  return (process.platform === "win32" || process.platform === "darwin" && sep === "\\") && /^[A-Za-z]:[\\/][^:]*$/u.test(path)
+    ? path.replaceAll("\\", "/") : path;
+}
+
+function nativeWriteDenyEntries(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {
+  if (process.platform !== "win32" && (process.platform !== "darwin" || sep !== "\\")) return [...entries];
+  const seen = new Set<string>();
+  const result: FilesystemPathEntry[] = [];
+  for (const entry of entries) {
+    const path = typeof entry === "string" ? entry : entry.path;
+    const literal = typeof entry !== "string" || !/[*?[\]]/u.test(entry);
+    const native = literal ? nativeWriteDenyPath(path) : path;
+    const key = `${typeof entry === "string" ? "spelling" : "literal"}:${native}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (native === path) result.push(entry);
+    else if (typeof entry === "string") result.push(native);
+    else {
+      const literalEntry = { ...entry, path: native };
+      result.push(Object.isFrozen(entry) ? Object.freeze(literalEntry) : literalEntry);
+    }
+  }
+  return result;
+}
+
+/** Remove only backend-equivalent rows without folding filesystem names or changing patterns. */
+export function compactSandboxWriteDenies(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {
   // Only the declarative subtree profile proves this reduction. Native ACLs
   // and mount rules keep every explicit row for their own enforcement logic.
-  if (process.platform !== "darwin") return [...entries];
+  if (process.platform !== "darwin") return nativeWriteDenyEntries(entries);
   const isLiteral = (entry: FilesystemPathEntry): boolean => typeof entry !== "string" || !/[*?[\]]/u.test(entry);
   const literalPaths = entries.filter(isLiteral).map(entry => typeof entry === "string" ? entry : entry.path);
   const retained = new Set(minimalLiteralDenyPaths(literalPaths, [], false));
   const emitted = new Set<string>();
-  return entries.filter(entry => {
+  const compacted = entries.filter(entry => {
     if (!isLiteral(entry)) return true;
     const path = typeof entry === "string" ? entry : entry.path;
     if (emitted.has(path)) return false;
@@ -194,12 +225,13 @@ export function compactSandboxWriteDenies<T extends FilesystemPathEntry>(entries
       // A lexical child link can target outside its denied parent. Only the
       // unchanged physical spelling proves that the parent's deny covers it.
       // Resolution uncertainty keeps the explicit row.
-      try { if (resolvePolicyDenyPath(path) === path) return false; }
+      try { if (nativeWriteDenyPath(resolvePolicyDenyPath(path)) === nativeWriteDenyPath(path)) return false; }
       catch { /* Keep the existing deny when coverage cannot be proved. */ }
     }
     emitted.add(path);
     return true;
   });
+  return nativeWriteDenyEntries(compacted);
 }
 
 function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, routingPins: Set<string>, discovery?: GitControlDiscovery): string {
@@ -1044,9 +1076,11 @@ export function buildMandatorySandboxWritePolicy(
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
   if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
   // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
-  assertSandboxWritePolicySize(entries, mandatoryPaths);
+  const backendEntries = nativeWriteDenyEntries(entries);
+  const backendMandatoryPaths = new Set([...mandatoryPaths].map(nativeWriteDenyPath));
+  assertSandboxWritePolicySize(backendEntries, backendMandatoryPaths);
   return {
-    allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: entries,
+    allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: backendEntries,
     narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
     ...(gitDiscovery ? { gitControlSnapshot: finishGitControlSnapshot(
       new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),
