@@ -1,5 +1,6 @@
 // Isolate every job path from the account profile. Native Windows fixtures also
 // need the system volume's aliases and trusted volume-root ownership.
+import { execFileSync } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,9 +11,52 @@ function systemVolume(systemRoot) {
   return root;
 }
 
-export function isolationAssignments({ platform, runnerTemp, systemRoot }, create = mkdtempSync) {
+function runJobRootCommand(command, args, options) {
+  const executable = command === "powershell.exe" ? "WindowsPowerShell\\v1.0\\powershell.exe" : command;
+  return execFileSync(win32.join(process.env.SystemRoot, "System32", executable), args, options);
+}
+
+export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
+  const options = { encoding: "utf8", windowsHide: true, stdio: "pipe" };
+  const identity = run("whoami.exe", ["/user", "/fo", "csv", "/nh"], options);
+  const sids = identity.trim().split(",").map(field => field.trim().replace(/^"|"$/g, ""))
+    .filter(field => /^S-/.test(field));
+  if (sids.length !== 1 || !/^S-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+$/.test(sids[0])) {
+    throw new Error("Job isolation requires a valid current account SID");
+  }
+  const principals = [sids[0], "S-1-5-18", "S-1-5-32-544"];
+  // Reset explicit grants too: removing inheritance alone leaves foreign explicit rules.
+  run("icacls.exe", [root, "/reset"], options);
+  run("icacls.exe", [root, "/inheritance:r", "/grant:r",
+    ...principals.map(sid => `*${sid}:(OI)(CI)F`)], options);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$acl = Get-Acl -LiteralPath '${root.replaceAll("'", "''")}'`,
+    "@{ protected = $acl.AreAccessRulesProtected; rules = @($acl.Access | ForEach-Object {",
+    "@{ sid = $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value;",
+    "rights = [int]$_.FileSystemRights; type = [int]$_.AccessControlType; inherited = $_.IsInherited;",
+    "inheritance = [int]$_.InheritanceFlags; propagation = [int]$_.PropagationFlags }",
+    "}) } | ConvertTo-Json -Depth 4 -Compress",
+  ].join("\n");
+  const acl = JSON.parse(run("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")], options));
+  if (acl.protected !== true || !Array.isArray(acl.rules) || acl.rules.length !== principals.length
+    || new Set(acl.rules.map(rule => rule.sid)).size !== principals.length
+    || acl.rules.some(rule => !principals.includes(rule.sid) || rule.rights !== 0x1f01ff
+      || rule.type !== 0 || rule.inherited !== false || rule.inheritance !== 3 || rule.propagation !== 0)) {
+    throw new Error("Job isolation requires a protected DACL with only the current account, system and administrators");
+  }
+}
+
+export function isolationAssignments({ platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot) {
   const paths = platform === "win32" ? win32 : posix;
   const root = platform === "win32" ? create(paths.join(systemVolume(systemRoot), "ave-ci-")) : runnerTemp;
+  if (platform === "win32") {
+    try { harden(root); } catch (error) {
+      rmSync(root, { recursive: true, force: true });
+      throw error;
+    }
+  }
   const home = paths.join(root, "home");
   const temp = paths.join(root, "tmp");
   // Leave room for confined-process socket names and their terminators.
