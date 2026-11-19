@@ -54,7 +54,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
               failure = new PolicyHelperTerminationError(failure);
             }
             resolve();
-          }, process.platform === "win32" ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs);
+          }, TOOL_TIMEOUT_POLICY.processTreeKillMs);
           deadline.unref();
           void completion.then(() => { clearTimeout(deadline); resolve(); });
         });

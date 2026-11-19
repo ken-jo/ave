@@ -75,7 +75,7 @@ describe("native policy pipe lifecycle", () => {
     `retains failed registration until observed death on ${platform}: %s`, async (ending) => {
       vi.stubGlobal("process", { ...process, platform });
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const bound = platform === "win32" ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs;
+      const bound = TOOL_TIMEOUT_POLICY.processTreeKillMs;
       const helper = helperChild();
       const trackFault = new Error("tracking failed");
       vi.mocked(managedChildren.trackManagedChildProcess).mockImplementation(() => { throw trackFault; });
@@ -98,15 +98,15 @@ describe("native policy pipe lifecycle", () => {
         if (ending === "late exit") {
           helper.child.emit("exit", 0, null);
           await vi.advanceTimersByTimeAsync(1);
-          await opening;
           expect(failures).toEqual([trackFault]);
+          await opening;
           expect(beforeDeadline).toEqual({ settlements: 0, owners: 1 });
         } else {
           await vi.advanceTimersByTimeAsync(1);
-          await opening;
           expect({ beforeDeadline, failures, owners: managedChildren.getManagedChildProcessCount() }).toMatchObject({
             beforeDeadline: { settlements: 0, owners: 1 }, failures: [{ outcome: "left", cause: trackFault }], owners: 1,
           });
+          await opening;
           managedChildren.forceKillManagedChildProcesses("policy helper cleanup");
           expect(managedChildren.getManagedChildProcessCount()).toBe(1);
           await managedChildren.forceKillManagedChildProcess(helper.child, "policy helper cleanup");
@@ -181,7 +181,9 @@ describe("native policy pipe lifecycle", () => {
     expect(helper.kill).toHaveBeenCalledOnce();
   });
 
-  it("bounds failed termination and reports the cleanup failure", async () => {
+  it.each(["darwin", "win32"])("bounds failed termination and reports the cleanup failure on %s", async (platform) => {
+    vi.stubGlobal("process", { ...process, platform });
+    expect(TOOL_TIMEOUT_POLICY.processTreeKillMs).toBe(1_000);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const helper = helperChild();
     helper.kill.mockImplementation(() => { throw new Error("termination failed"); });
@@ -191,8 +193,15 @@ describe("native policy pipe lifecycle", () => {
     });
     const transport = await openMxcPolicyPipe(Buffer.from("policy"), PIPE);
     try {
-      const pending = expect(transport.release()).rejects.toThrow("termination failed");
-      await vi.advanceTimersByTimeAsync(process.platform === "win32" ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      const failures: unknown[] = [];
+      const pending = transport.release().then(
+        () => { throw new Error("Failed termination was accepted"); },
+        (error: unknown) => { failures.push(error); },
+      );
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs - 1);
+      expect(failures).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(failures).toEqual([expect.objectContaining({ outcome: "left", message: expect.stringContaining("termination failed") })]);
       await pending;
       expect(helper.kill).toHaveBeenLastCalledWith("SIGKILL");
       expect(helper.stdin.destroyed).toBe(true);
