@@ -219,7 +219,8 @@ describe("hosted write policy spellings", () => {
         allowRead: [], allowWrite: currentGrants, denyRead: [], denyWrite, credentialDeny: [],
         held: { grantRead: [], grantWrite: currentGrants },
       });
-      for (const target of [deniedChild, ...scope.map(path => join(path, ".bash_profile"))]) {
+      expect(ranked.denyWrite).toContain(driveFixture.toHost(deniedChild));
+      for (const target of scope.map(path => join(path, ".bash_profile"))) {
         const physical = driveFixture.toHost(target);
         expect(ranked.denyWrite.some(deny => atOrUnder(deny, physical)), target).toBe(true);
       }
