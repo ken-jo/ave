@@ -177,6 +177,11 @@ describe("native Windows file permission targets", () => {
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(rule.pattern) });
     expect(execute).not.toHaveBeenCalled();
     expect(requests).toEqual([]);
+    for (const path of Object.values(input)) {
+      expect(check.mock.lastCall?.[4]?.paths).toContainEqual(expect.objectContaining({
+        canonical: `d:/fixture/project/${path}`, runtimePath: targets.get(path),
+      }));
+    }
     const subject = check.mock.lastCall?.[4]?.ruleSubject;
     if (subject?.kind !== "edit") throw new Error("Edit subject is missing");
     expect(subject.targets).toEqual(Object.values(input).map(path => ({

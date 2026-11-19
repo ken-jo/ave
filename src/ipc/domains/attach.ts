@@ -331,7 +331,7 @@ function sensitiveForRead(p: string): boolean {
   if (added) BEING_CHOSEN.add(key);
   try {
     // The person's own drop: a key-extension file is refused only when it holds a key.
-    return isSensitivePath(key, "read", "person") !== null;
+    return isSensitivePath(p, "read", "person") !== null;
   } finally {
     if (added) BEING_CHOSEN.delete(key);
   }
@@ -612,7 +612,7 @@ export function registerAttachHandlers(deps: IpcDeps): void {
           imageFormat = sniffed;
           // The bytes that become the image part are judged themselves, as the agent's read: what the path holds by now,
           // or held when it was checked above, says nothing about a buffer read in between.
-          if (isSensitiveContent(caseFoldForMatch(canonicalizePathForMatch(target.real)), buf) !== null) {
+          if (isSensitiveContent(target.real, buf) !== null) {
             return { ok: false, error: "sensitive-path" };
           }
           // The name and location rules were judged on `target.real`. They hold for these bytes only if that path, looked

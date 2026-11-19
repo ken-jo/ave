@@ -4,7 +4,7 @@ import { shell } from "electron";
 import { promises as fs } from "node:fs";
 import { basename, parse, resolve } from "node:path";
 import { DENY_EXTENSIONS as DENY_LIST } from "../shared/attachments-deny-list.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, type KeyMaterialAudience } from "../permissions/sensitive-paths.js";
+import { isSensitivePath, type KeyMaterialAudience } from "../permissions/sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 import { canOpenInDefaultApp } from "../shared/preview-external-open.js";
 
@@ -34,7 +34,7 @@ function isDeniedExternalOpenExtension(path: string): boolean {
 }
 
 function sensitiveForRead(path: string, audience: KeyMaterialAudience): boolean {
-  return isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(path)), "read", audience) !== null;
+  return isSensitivePath(path, "read", audience) !== null;
 }
 
 /**

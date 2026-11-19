@@ -2186,7 +2186,7 @@ async function runToolInvocationAttempt(
       const operands = declaredPaths.filter((path) => resolveToolPathForPermission(path, executionCwd) === target.filePath);
       return (operands.length > 0 ? operands : [target.filePath]).map((path) => {
         const expanded = expandLeadingTilde(path);
-        return { lexical: isAbsolute(expanded) ? expanded : executionCwd + "/" + expanded, canonical: target.canonicalPath,
+        return { lexical: isAbsolute(expanded) ? expanded : executionCwd + "/" + expanded, canonical: target.canonicalPath, runtimePath: target.runtimePath,
           effect: canonicalFileTool !== undefined ? canonicalFilePathEffect(tool, finalInput, target.filePath, executionCwd) : requiredTier(invocationCategory) };
       });
     });

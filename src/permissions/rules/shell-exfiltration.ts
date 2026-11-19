@@ -3,14 +3,15 @@ import { literalShellBodies, literalShellFlow, recordLiteralShellFlow, type Lite
 import { homedir } from "node:os";
 import { posix, sep } from "node:path";
 import { modelShellPath } from "../../shared/shell-native-path.js";
-import { physicalParentReading } from "../../shared/shell-filesystem-path.js";
+import { physicalParentReading, resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
 import { analyzeShell, staticShellWord, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord } from "../../shared/shell-analysis.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
+import { caseFoldForMatch, foldCanonicalPathSeparators, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { literalRuleWord } from "./rule-specifier.js";
 import { verifiedArgvProof } from "./verified-argv-authority.js";
+import type { HostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { proveStaticArgv } from "./shell-argument-grammar.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import { SHELL_FLOOR_BUDGET_REASON, ShellFloorContext, ShellFloorLimitError, isShellFloorLiteralData, shellFloorBudgetSignals, shellFloorFallbackInputExceeded, shellFloorInputExceeded, shellFloorParserBudgetExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
@@ -119,25 +120,35 @@ function lexicalFloorPaths(native: string, normalizedPath: string, floorPaths: r
   return paths;
 }
 function nativePathProbe(candidate: string, cwd: string | undefined, context: ShellFloorContext): { hit: string | null; sessionRead: boolean } {
+  if (!context.inspectHostFiles) return { hit: context.matchName(candidate, true), sessionRead: false };
   const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() });
   let sessionRead = false;
   const native = modeled.nativePath;
   if (native !== undefined) {
     // Canonicalize before folding "..": a link's parent is its target's parent.
     const canonical = caseFoldForMatch(context.canonicalize(native, true));
-    const hit = context.matchPath(canonical);
+    let hit: string | null;
+    if (context.requiresContentInspection(native) || context.requiresContentInspection(canonical)) {
+      hit = context.matchPath(native);
+      if (hit === null) {
+        try {
+          const resolved = resolvePhysicalFilesystemPath(native, cwd ?? process.cwd(), MAX_WALK_UP);
+          if (resolved !== native) hit = context.matchPath(resolved);
+        } catch { context.unresolvedPath = true; }
+      }
+    } else hit = context.matchPath(canonical);
     if (hit) return { hit, sessionRead: false };
     sessionRead = context.isSessionReadPath(canonical);
     if (sep === "\\" && /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(native)) {
       let physical: string | undefined;
       try { physical = physicalParentReading(native); } catch { context.unresolvedPath = true; }
-      const physicalHit = physical === undefined ? null : context.matchPath(caseFoldForMatch(context.canonicalize(physical, true)));
+      const physicalHit = physical === undefined ? null : context.matchPath(physical);
       if (physicalHit) return { hit: physicalHit, sessionRead: false };
     }
   } else context.unresolvedPath = true;
   // Canonical containment and all its exclusions precede any extra floor view.
   if (!sessionRead) for (const path of lexicalFloorPaths(native ?? modeled.normalizedPath, modeled.normalizedPath, modeled.floorPaths)) {
-    const hit = context.matchPath(caseFoldForMatch(path));
+    const hit = context.matchName(path, native === undefined);
     if (hit) return { hit, sessionRead };
   }
   return { hit: null, sessionRead };
@@ -150,12 +161,12 @@ function globPathFloor(segments: readonly string[], sessionRead: boolean, contex
     let literalPrefix = segments.slice(0, firstGlob).join("/");
     if (/^[A-Za-z]:$/.test(literalPrefix)) literalPrefix += "/";
     const prefixes = [literalPrefix || "/"];
-    if (sep === "\\" && segments.slice(0, firstGlob).includes("..")) {
+    if (context.inspectHostFiles && sep === "\\" && segments.slice(0, firstGlob).includes("..")) {
       try { prefixes.push(physicalParentReading(literalPrefix)); } catch { context.unresolvedPath = true; }
     }
     for (const literal of prefixes) {
       const prefix = context.canonicalize(literal, true);
-      const hit = context.matchPath(caseFoldForMatch(prefix)); if (hit) return hit;
+      const hit = context.matchName(prefix); if (hit) return hit;
       anchored.push([...prefix.replace(/\/$/, "").split("/"), ...segments.slice(firstGlob)]);
     }
   }
@@ -171,8 +182,8 @@ function globPathFloor(segments: readonly string[], sessionRead: boolean, contex
         const prefix = sourceSegments.slice(0, start);
         const namespaceMatches = entry.anchor === "ave-home" && prefix.length > 0
           && segmentCouldMatch(caseFoldForMatch(prefix.at(-1)!), ".ave");
-        const root = entry.anchor === "ave-home" ? caseFoldForMatch(context.canonicalize(aveHome())).split("/") : [];
-        const rootMatches = entry.anchor === "ave-home" && prefix.length === root.length
+        const root = entry.anchor === "ave-home" && context.inspectHostFiles ? caseFoldForMatch(context.canonicalize(aveHome())).split("/") : [];
+        const rootMatches = context.inspectHostFiles && entry.anchor === "ave-home" && prefix.length === root.length
           && prefix.every((segment, index) => segmentCouldMatch(caseFoldForMatch(segment), root[index]!));
         if (entry.anchor === "ave-home" && !namespaceMatches && !rootMatches) continue;
         let matches = true;
@@ -207,8 +218,9 @@ export function sensitivePathInArgumentText(text: string, cwd: string | undefine
       const { hit } = nativePathProbe(candidate, cwd, context); if (hit) return hit;
       continue;
     }
-    const modeled = modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() });
-    if (modeled.nativePath === undefined) context.unresolvedPath = true;
+    const modeled = context.inspectHostFiles ? modelShellPath(candidate, { dialect: context.pathDialect, location: cwd ?? process.cwd() })
+      : { nativePath: undefined, normalizedPath: posix.normalize(candidate), floorPaths: [] };
+    if (context.inspectHostFiles && modeled.nativePath === undefined) context.unresolvedPath = true;
     // Anchor on the unfolded absolute operand so a link prefix resolves before its "..".
     const absolute = modeled.nativePath ?? modeled.normalizedPath;
     const originalSegments = foldCanonicalPathSeparators(globSource).split("/"), first = originalSegments.findIndex((segment) => /[*?[\]]/.test(segment));
@@ -475,7 +487,8 @@ function inspectCommand(command: ShellCommand, cwd: string | undefined, context:
   const inputProgram = input?.data ? staticShellWord(input.data) : undefined;
   for (const body of literalShellBodies(bodyArgv, "bash", bodyRaw, inputProgram)) {
     const child = body.dialect === "powershell"
-      ? inspectPowerShellBody(body.text, cwd, { tokens: budget.tokens, depth: budget.depth + 1 })
+      ? inspectPowerShellBody(body.text, cwd, { tokens: budget.tokens, depth: budget.depth + 1 }, undefined,
+        context.createChild("powershell"))
       : inspectPosixShellCommand(body.text, cwd, context, { tokens: budget.tokens, depth: budget.depth + 1 }, inspectPowerShellBody);
     pass.sensitive ??= child.sensitive;
     pass.exfiltration ??= child.exfiltration;
@@ -553,7 +566,7 @@ function parsedWithContext(input: ShellCommandInput, context: ShellFloorContext)
   if (!parsed) { context.visits.lexes += 1; parsed = parseShellFloorCommand(input); context.facts.set(key, parsed); }
   floorContexts.set(parsed, context); return parsed;
 }
-type PowerShellBodyInspector = (command: string, cwd: string | undefined, budget: LiteralBodyBudget) => ShellFloorSignals;
+type PowerShellBodyInspector = (command: string, cwd: string | undefined, budget: LiteralBodyBudget, executionPlan?: HostShellExecutionPlan, context?: ShellFloorContext) => ShellFloorSignals;
 
 export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string | undefined, supplied: ShellFloorContext | undefined, budget: LiteralBodyBudget, inspectPowerShellBody: PowerShellBodyInspector): ShellFloorSignals {
   if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
@@ -563,7 +576,9 @@ export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string |
     const parsed = parsedWithContext(input, context);
     if (parsed.analysis.ok) budget.tokens.count += parsed.analysis.totalTokens ?? 0;
     if (budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
-    return shellFact(parsed, `static-floor\0${cwd ?? ""}`, () => {
+    const factKey = `static-floor\0${cwd ?? ""}\0${context.inspectHostFiles}`;
+    const contentInspections = context.contentInspectionCount;
+    const result = shellFact<ShellFloorSignals>(parsed, factKey, () => {
       if (!parsed.analysis.ok) {
         const limited = shellFloorParserBudgetExceeded(parsed.analysis.reason);
         let sensitive: string | null = null;
@@ -587,5 +602,7 @@ export function inspectPosixShellCommand(input: ShellCommandInput, cwd: string |
       const visible = pass.sensitive !== null || pass.exfiltration !== null;
       return recordLiteralShellFlow({ outcome: visible ? "visible-floor" as const : pass.unproven ? "unproven" as const : "static-complete" as const, sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) }, { network: pass.network, readsPath: pass.readsPath });
     });
+    if (context.contentInspectionCount !== contentInspections) parsed.facts.delete(factKey);
+    return result;
   } catch (error) { if (error instanceof ShellFloorLimitError) return shellFloorBudgetSignals(); throw error; }
 }

@@ -10,50 +10,51 @@ const fsCalls = vi.hoisted(() => ({
   afterOpen: undefined as (() => void) | undefined,
   // Called before each lstat that asks for exact identifiers, which is how the classifier looks at a name.
   beforeIdentityLstat: undefined as ((path: string) => void) | undefined,
-  // Like a normalization-sensitive filesystem (Linux), find a name only in the decomposed form it is stored in.
+  // Find a name only in the decomposed form it is stored in.
   decomposedNamesOnly: false,
-  // A folder listing also shows the composed twin of each decomposed name, as a Linux folder can hold both.
-  composedTwins: false,
-  storedAlias: undefined as { named: string; backing: string; canonical: string; twin: boolean; requested?: string; unavailable?: "missing" | "unreadable" } | undefined,
+  storedAlias: undefined as { named: string; backing: string; requested?: string; unavailable?: "missing" | "unreadable" } | undefined,
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  const missing = (path: unknown): boolean => path === fsCalls.storedAlias?.canonical
-    || (fsCalls.decomposedNamesOnly && typeof path === "string" && path !== path.normalize("NFD"));
+  const missing = (path: unknown): boolean => {
+    const alias = fsCalls.storedAlias;
+    return (alias !== undefined && path === alias.named && alias.unavailable === "missing")
+      || (fsCalls.decomposedNamesOnly && typeof path === "string" && path !== path.normalize("NFD"));
+  };
   const backing = (path: unknown) => {
     const alias = fsCalls.storedAlias;
     return alias && path === alias.named ? alias.backing : path;
   };
   const notFound = (path: unknown): Error => Object.assign(new Error(`ENOENT: no such file or directory, '${String(path)}'`), { code: "ENOENT" });
-  const existsSync = ((path: Parameters<typeof actual.existsSync>[0]) => !missing(path) && actual.existsSync(path)) as typeof actual.existsSync;
+  const existsSync = ((path: Parameters<typeof actual.existsSync>[0]) => !missing(path) && actual.existsSync(backing(path) as string)) as typeof actual.existsSync;
   const realpathSync = Object.assign(((path: string, options?: unknown) => {
     if (missing(path)) throw notFound(path);
     const alias = fsCalls.storedAlias;
-    if (alias && path === alias.requested) return alias.named;
+    if (alias && path === alias.requested) {
+      if (missing(alias.named)) throw notFound(path);
+      return alias.named;
+    }
     if (path === fsCalls.storedAlias?.named) return path;
     return actual.realpathSync(path, options as never);
   }) as typeof actual.realpathSync, {
     native: ((path: string, options?: unknown) => {
       if (missing(path)) throw notFound(path);
       const alias = fsCalls.storedAlias;
-      if (alias && path === alias.requested) return alias.named;
+      if (alias && path === alias.requested) {
+        if (missing(alias.named)) throw notFound(path);
+        return alias.named;
+      }
       if (path === fsCalls.storedAlias?.named) return path;
       return actual.realpathSync.native(path, options as never);
     }) as typeof actual.realpathSync.native,
   });
-  const readdirSync = ((path: string, options?: unknown) => {
-    const names = actual.readdirSync(path, options as never) as unknown as string[];
-    const alias = fsCalls.storedAlias;
-    if (alias && path === project) {
-      if (alias.unavailable === "unreadable") throw Object.assign(new Error("Directory cannot be read"), { code: "EACCES" });
-      if (alias.unavailable === "missing") return [];
-      return ["K.pem", ...(alias.twin ? ["K.pem"] : [])];
-    }
-    return fsCalls.composedTwins ? [...names, ...names.filter((name) => name !== name.normalize("NFC")).map((name) => name.normalize("NFC"))] : names;
-  }) as typeof actual.readdirSync;
   const openSync = ((...args: Parameters<typeof actual.openSync>) => {
     if (missing(args[0])) throw notFound(args[0]);
     fsCalls.open.push(String(args[0]));
+    const alias = fsCalls.storedAlias;
+    if (alias !== undefined && args[0] === alias.named && alias.unavailable === "unreadable") {
+      throw Object.assign(new Error("File cannot be read"), { code: "EACCES" });
+    }
     fsCalls.beforeOpen?.();
     const descriptor = actual.openSync(backing(args[0]) as string, args[1], args[2]);
     fsCalls.afterOpen?.();
@@ -72,11 +73,11 @@ vi.mock("node:fs", async (importOriginal) => {
     // A read may return fewer bytes than asked for; with `shortReads` each one returns at most 7.
     return actual.readSync(fd, buffer, offset, fsCalls.shortReads ? Math.min(length, 7) : length, position);
   }) as typeof actual.readSync;
-  const replaced = { existsSync, lstatSync, openSync, readdirSync, readSync, realpathSync };
+  const replaced = { existsSync, lstatSync, openSync, readSync, realpathSync };
   return { ...actual, default: { ...actual, ...replaced }, ...replaced };
 });
 
-import { allowKeyMaterialInspectionUnder, caseFoldForMatch, createSensitivePathMatcher, isSensitivePath } from "../sensitive-paths.js";
+import { allowKeyMaterialInspectionUnder, createSensitivePathMatcher, isSensitivePath } from "../sensitive-paths.js";
 import { createFilePathPolicy, sensitiveFilePattern } from "../../tools/file-access-policy.js";
 
 const KEY_TEXT = ["-----BEGIN", "PRIVATE KEY-----\nFIXTURE\n-----END", "PRIVATE KEY-----\n"].join(" ");
@@ -101,7 +102,6 @@ beforeEach(() => {
   fsCalls.afterOpen = undefined;
   fsCalls.beforeIdentityLstat = undefined;
   fsCalls.decomposedNamesOnly = false;
-  fsCalls.composedTwins = false;
   fsCalls.storedAlias = undefined;
 });
 
@@ -204,10 +204,10 @@ describe("a key-extension name in either Unicode normalization", () => {
   const composed = "caf\u00e9.pem";
 
   it.each([
-    ["single", "named", "key"], ["single", "named", "certificate"], ["single", "named", "ambiguous"], ["single", "named", "missing"], ["single", "named", "unreadable"],
-    ["reusable", "named", "key"], ["reusable", "named", "certificate"], ["reusable", "named", "ambiguous"], ["reusable", "named", "missing"], ["reusable", "named", "unreadable"],
-    ["single", "resolved", "key"], ["single", "resolved", "certificate"], ["single", "resolved", "ambiguous"], ["single", "resolved", "missing"], ["single", "resolved", "unreadable"],
-    ["reusable", "resolved", "key"], ["reusable", "resolved", "certificate"], ["reusable", "resolved", "ambiguous"], ["reusable", "resolved", "missing"], ["reusable", "resolved", "unreadable"],
+    ["single", "named", "key"], ["single", "named", "certificate"], ["single", "named", "sibling"], ["single", "named", "missing"], ["single", "named", "unreadable"],
+    ["reusable", "named", "key"], ["reusable", "named", "certificate"], ["reusable", "named", "sibling"], ["reusable", "named", "missing"], ["reusable", "named", "unreadable"],
+    ["single", "resolved", "key"], ["single", "resolved", "certificate"], ["single", "resolved", "sibling"], ["single", "resolved", "missing"], ["single", "resolved", "unreadable"],
+    ["reusable", "resolved", "key"], ["reusable", "resolved", "certificate"], ["reusable", "resolved", "sibling"], ["reusable", "resolved", "missing"], ["reusable", "resolved", "unreadable"],
   ] as const)("preserves the %s file policy's %s spelling: %s", (policy, form, kind) => {
     const platform = process.platform;
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
@@ -216,25 +216,27 @@ describe("a key-extension name in either Unicode normalization", () => {
       writeFileSync(backing, kind === "key" ? KEY_TEXT : "certificate\n");
       const named = join(project, "K.pem");
       const requested = form === "named" ? named : join(project, "linked.txt");
-      fsCalls.storedAlias = { named, backing, canonical: join(project, "K.pem"), twin: kind === "ambiguous",
+      if (kind === "sibling") writeFileSync(join(project, "K.pem"), KEY_TEXT);
+      fsCalls.storedAlias = { named, backing,
         requested,
         unavailable: kind === "missing" || kind === "unreadable" ? kind : undefined };
       const match = policy === "single" ? sensitiveFilePattern : createFilePathPolicy("read").sensitive;
-      expect(match(requested)).toBe(kind === "certificate" ? null : "**/*.pem");
-      expect(fsCalls.open).toEqual(kind === "certificate" && form === "named" ? [named, named]
-        : kind === "key" || kind === "certificate" ? [named] : []);
+      expect(match(requested)).toBe(kind === "key" || kind === "unreadable" ? "**/*.pem" : null);
+      expect(fsCalls.open).toEqual(kind === "missing" ? []
+        : (kind === "certificate" || kind === "sibling") && form === "named" ? [named, named] : [named]);
     } finally { Object.defineProperty(process, "platform", { value: platform, configurable: true }); }
   });
 
-  it.each(["key", "certificate", "ambiguous", "missing", "unreadable"] as const)("recovers a name normalized entirely to ASCII: %s", (kind) => {
+  it.each(["key", "certificate", "sibling", "missing", "unreadable"] as const)("retains a name normalized entirely to ASCII for matching: %s", (kind) => {
     const backing = join(project, "stored-bytes");
     writeFileSync(backing, kind === "key" ? KEY_TEXT : "certificate\n");
     const named = join(project, "K.pem");
-    fsCalls.storedAlias = { named, backing, canonical: join(project, "K.pem"), twin: kind === "ambiguous",
+    if (kind === "sibling") writeFileSync(join(project, "K.pem"), KEY_TEXT);
+    fsCalls.storedAlias = { named, backing,
       unavailable: kind === "missing" || kind === "unreadable" ? kind : undefined };
     const match = createSensitivePathMatcher("read", undefined, path => path.normalize("NFC"));
-    expect(match(named)).toBe(kind === "certificate" ? null : "**/*.pem");
-    expect(fsCalls.open).toEqual(kind === "key" || kind === "certificate" ? [named] : []);
+    expect(match(named)).toBe(kind === "key" || kind === "unreadable" ? "**/*.pem" : null);
+    expect(fsCalls.open).toEqual(kind === "missing" ? [] : [named]);
   });
 
   it("judges the name the same in either normalization, without looking at any file", () => {
@@ -249,51 +251,47 @@ describe("a key-extension name in either Unicode normalization", () => {
     fsCalls.decomposedNamesOnly = true;
     const stored = join(project, decomposed);
     writeFileSync(stored, KEY_TEXT);
-    // The judged path is spelled composed; the classifier must still find the stored file and read its key.
-    expect(isSensitivePath(join(project, composed), "read")).toBe("**/*.pem");
     expect(isSensitivePath(stored, "read")).toBe("**/*.pem");
-    expect(fsCalls.open).toContain(stored);
+    expect(fsCalls.open).toEqual([stored]);
   });
 
-  it("finds a key stored under a decomposed name from the case-folded spelling the file tools judge", () => {
+  it("retains a mixed-case decomposed operand while matching its folded identity", () => {
     fsCalls.decomposedNamesOnly = true;
     const stored = join(project, "Cafe\u0301.pem");
     writeFileSync(stored, KEY_TEXT);
-    // Where names are matched without case (macOS, Windows), the judged spelling is also folded to lower case.
-    expect(isSensitivePath(caseFoldForMatch(join(project, "Caf\u00e9.pem")), "read")).toBe("**/*.pem");
+    expect(isSensitivePath(stored, "read")).toBe("**/*.pem");
+    expect(fsCalls.open).toEqual([stored]);
   });
 
   it("reads a harmless file stored under a decomposed name and finds no key in it", () => {
     fsCalls.decomposedNamesOnly = true;
     const stored = join(project, decomposed);
     writeFileSync(stored, "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
-    expect(isSensitivePath(join(project, composed), "read")).toBe(null);
+    expect(isSensitivePath(stored, "read")).toBe(null);
     expect(fsCalls.open).toEqual([stored]);
   });
 
-  it("treats the name as a key when its folder holds it in both normalizations", () => {
+  it("does not read a decomposed sibling when the composed operand is absent", () => {
     fsCalls.decomposedNamesOnly = true;
-    fsCalls.composedTwins = true;
     writeFileSync(join(project, decomposed), "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
-    expect(isSensitivePath(join(project, composed), "read")).toBe("**/*.pem");
+    expect(isSensitivePath(join(project, composed), "read")).toBeNull();
     expect(fsCalls.open).toEqual([]);
   });
 
-  it("treats the name as a key when its folder lists it in both normalizations, however names are looked up", () => {
-    fsCalls.composedTwins = true;
-    writeFileSync(join(project, decomposed), "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
-    // The judged path is composed, so it cannot say which of the two names the caller read.
-    expect(isSensitivePath(join(project, composed), "read")).toBe("**/*.pem");
-    expect(fsCalls.open).toEqual([]);
+  it("still refuses an unreadable exact stored file", () => {
+    const named = join(project, decomposed);
+    const backing = join(project, "stored-bytes");
+    writeFileSync(backing, "certificate\n");
+    fsCalls.storedAlias = { named, backing, unavailable: "unreadable" };
+    expect(isSensitivePath(named, "read")).toBe("**/*.pem");
+    expect(fsCalls.open).toEqual([named]);
   });
 
   it("follows a link beneath a folder stored under a decomposed name, and opens nothing it leads to outside the project", () => {
     fsCalls.decomposedNamesOnly = true;
     writeFileSync(join(outside, "server.pem"), "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
     symlinkSync(outside, join(project, "dossié"), "junction");
-    for (const folder of ["dossié", "dossié"]) {
-      expect(isSensitivePath(join(project, folder, "server.pem"), "read")).toBe("**/*.pem");
-    }
+    expect(isSensitivePath(join(project, "dossié", "server.pem"), "read")).toBe("**/*.pem");
     expect(fsCalls.open).toEqual([]);
   });
 });

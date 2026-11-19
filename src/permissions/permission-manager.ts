@@ -218,7 +218,7 @@ export interface PermissionCheckContext {
   floor?: PermissionDecisionRequest["floor"];
   exfiltration?: PermissionDecisionRequest["exfiltration"];
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
-  paths?: PermissionDecisionRequest["paths"];
+  paths?: readonly (NonNullable<PermissionDecisionRequest["paths"]>[number] & { runtimePath?: string })[];
   shellReadOnlyProven?: boolean;
   shellEscalated?: boolean;
   // Host-derived native file facts; never accepted from tool arguments.

@@ -9,7 +9,6 @@ import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import {
   canonicalizePathForMatch,
-  caseFoldForMatch,
   isSensitivePath,
   isConfiguredSessionReadPath,
   type KeyMaterialAudience,
@@ -77,8 +76,8 @@ export function assertReadableFilePath(
     resolved = lexical;
   }
   const canonical = canonicalizePathForMatch(resolved);
-  const sensitive = isSensitivePath(caseFoldForMatch(lexical), "read", audience)
-    ?? isSensitivePath(caseFoldForMatch(canonical), "read", audience);
+  const sensitive = isSensitivePath(lexical, "read", audience)
+    ?? isSensitivePath(resolved, "read", audience);
   if (sensitive) return { ok: false, error: "sensitive-path" };
   if (isConfiguredSessionReadPath(canonical)) return { ok: true, resolved };
   const check = validateSandboxPath(resolved, cwd, [...extraAllowed]);

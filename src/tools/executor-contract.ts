@@ -1,5 +1,6 @@
 import type { ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import type { PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
+import type { PermissionCheckContext } from "../permissions/permission-manager.js";
 import type { A2AAgentCausalContext } from "../engine/a2a-agent-message-envelope.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import type {
@@ -90,7 +91,7 @@ export interface ToolPermissionContext {
   otherPrincipal?: boolean;
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
   floor?: PermissionDecisionRequest["floor"];
-  paths?: PermissionDecisionRequest["paths"];
+  paths?: PermissionCheckContext["paths"];
   secretRead?: boolean;
   headless?: boolean;
   // Native --exec uses headless review but honors the local owner's explicit rules and durable grants first.
