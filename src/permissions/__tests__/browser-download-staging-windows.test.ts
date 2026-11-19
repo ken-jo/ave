@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isolation-guard.js";
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
+import { claimRunDir, STALE_RUN_DIR_AGE_MS, sweepStaleRunDirs } from "../../__tests__/support/test-run-dirs.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -369,8 +370,10 @@ const hostOs = await vi.importActual<typeof import("node:os")>("node:os");
 const nativeDirectories = createTmpDirTracker();
 afterAll(async () => { await nativeDirectories.cleanup(); });
 const runTmp = hostFs.realpathSync.native(hostOs.tmpdir());
-// Workers create and remove siblings under the run temp directory. Keep that directory out of the pinned ancestor chain.
-const pinRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostPath.dirname(runTmp), "browser-download-drive-"))));
+function createPinRoot(runRoot: string): string {
+  return hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runRoot, "browser-download-drive-"))));
+}
+const pinRoot = createPinRoot(runTmp);
 const nativeRoot = hostPlatform === "win32" ? pinRoot : null;
 const resourceRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-resources-"))));
 const fixtureResources = { resourcePath: hostPath.join(resourceRoot, "resources"), isPackaged: false };
@@ -599,6 +602,20 @@ function expectNoGrantInside(filesystem: ContainerFilesystem): void {
   }
 }
 
+it("reclaims a pin fixture when its run owner is dead and suite teardown never ran", async () => {
+  const scratch = nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "abandoned-pin-run-")));
+  const run = hostFs.mkdtempSync(hostPath.join(scratch, "t-"));
+  const deadOwner = { exists: () => false, startedAt: () => "ps:1", host: () => "fixture-host" };
+  claimRunDir(run, deadOwner);
+  const abandoned = createPinRoot(run);
+  hostFs.writeFileSync(hostPath.join(abandoned, "held-fixture"), "fixture");
+  const swept = await sweepStaleRunDirs(scratch, async path => {
+    hostFs.rmSync(path, { recursive: true });
+  }, { probe: deadOwner, now: Date.now() + 2 * STALE_RUN_DIR_AGE_MS });
+  expect(swept).toEqual({ removed: [run], stranded: [], leftAside: [] });
+  expect(hostFs.existsSync(abandoned)).toBe(false);
+});
+
 it("composes host resources before the first native identity request", () => {
   const [profile] = pinWindowsPaths([profileRoot]);
   expect(profile).toMatchObject({ exists: true, directory: true });
@@ -608,10 +625,12 @@ it("composes host resources before the first native identity request", () => {
   expect(resourceLifecycle.events.indexOf("identity")).toBeGreaterThan(configuredAt);
 });
 
-function writeSharedPinNeighbors(): void {
-  for (const parent of [runTmp, hostPath.dirname(runTmp)]) {
-    nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(parent, "pin-cache-neighbor-")));
-  }
+function changeSharedPinAncestors(): void {
+  nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "pin-cache-neighbor-")));
+  // Model churn from another run without leaving an unowned entry in the shared scratch base.
+  const scratchBase = hostPath.dirname(runTmp);
+  const { atime, mtimeMs } = hostFs.statSync(scratchBase);
+  hostFs.utimesSync(scratchBase, atime, new Date(mtimeMs - 1_000));
 }
 
 it("pins unchanged fixture paths once instead of starting a helper for each grant read", () => {
@@ -620,7 +639,7 @@ it("pins unchanged fixture paths once instead of starting a helper for each gran
   const first = pinWindowsPaths([path]);
   expect(first[0]).toMatchObject({ exists: true, directory: true });
   const queries = runtime.identityQuery.mock.calls.length;
-  writeSharedPinNeighbors();
+  changeSharedPinAncestors();
   expect(pinWindowsPaths([path])).toEqual(first);
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
 });
@@ -629,7 +648,7 @@ it("refreshes fixture pins when a missing target is created or an existing targe
   const path = hostPath.join(pinRoot, "changing");
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
   const queries = runtime.identityQuery.mock.calls.length;
-  writeSharedPinNeighbors();
+  changeSharedPinAncestors();
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
   mkdirSync(path);
