@@ -271,7 +271,7 @@ const EXIT_REFUSED = 3;
 const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
-const FAILURE_DIAGNOSTIC = /^Windows error \d+\r?\n$/u;
+const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 
 /** How long a helper may say nothing (`stallMs`), and how long its exit may take to be seen once it is killed (`killMs`). */
 interface HelperBounds { readonly stallMs: number; readonly killMs: number }

@@ -313,8 +313,30 @@ describe("a helper that does not keep to its protocol", () => {
     expect(helpers()).toHaveLength(8);
   });
 
+  it.each(["NtCreateFile", "NtSetInformationFile"])("preserves a captured %s failure status in either pipe order", async (operation) => {
+    script((helper) => helper.say("ready"));
+    for (const stderrFirst of [true, false]) {
+      const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+      await flush();
+      const helper = helpers().at(-1);
+      if (!stderrFirst) helper?.say("failed EUNKNOWN");
+      helper?.stderr.write("Windows error 87 (NTSTATUS 0xC000");
+      await flush();
+      helper?.stderr.write(`000D, ${operation})\r\n`);
+      if (stderrFirst) helper?.say("failed EUNKNOWN");
+      helper?.exit(4);
+      await flush();
+      expect(helper?.killed).toBe(0);
+      expect(run.error).toMatchObject({ code: "EUNKNOWN" });
+      expect(run.error).not.toBeInstanceOf(HeldFileHelperUnavailableError);
+      expect(run.value).toBeUndefined();
+    }
+  });
+
   it("rejects invalid diagnostics independently of pipe order, and never accepts them as successful outcomes", async () => {
-    for (const diagnostic of ["x", "Windows error 32\n\n", "Windows error 32\nextra", "Windows error 32"]) {
+    for (const diagnostic of ["x", "Windows error 32\n\n", "Windows error 32\nextra", "Windows error 32",
+      "Windows error 87 (NTSTATUS 0xC00000D, NtCreateFile)\n", "Windows error 87 (NTSTATUS 0xC000000D, other)\n",
+      "Windows error 87 (NTSTATUS 0xC000000D, NtCreateFile)\nextra"]) {
       for (const stderrFirst of [true, false]) {
         script((helper) => {
           helper.say("ready");

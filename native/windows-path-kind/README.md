@@ -60,8 +60,10 @@ can be renamed or removed until the mode ends; attribute-only handles would not
 block that. Every file is opened, created exclusively and removed relative to
 those handles, a rename names its target folder by handle
 (`NtSetInformationFile`, native `FileRenameInformation` class 10 with
-`RootDirectory` and a single relative name), and a removal sets the disposition on the
-file's own handle. A copy reports `progress <bytes copied>` after each chunk
+`RootDirectory` and a single relative name), and a removal uses native
+`FileDispositionInformation` class 13 on the file's own handle. A failure keeps
+the captured `NTSTATUS` with its translated error code, including through partial
+copy cleanup, and prints both in its one stderr diagnostic. A copy reports `progress <bytes copied>` after each chunk
 and flushes `part` every 16 MiB. `src/main/browser/browser-download-files.ts`
 runs the modes under the same stall bound and kill path as on macOS, removing a
 killed copy's `part` the same way, and `scripts/test-windows-path-kind.mjs`

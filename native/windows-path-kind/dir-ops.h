@@ -4,7 +4,7 @@
 // the one above it and without delete sharing, so neither a held directory nor a folder above it can be renamed or removed while
 // the mode runs, and a link, junction or mount point at any component is refused. The last handle's identity must be the one the
 // caller checked. Every file is then created, renamed and removed relative to those handles (NtCreateFile with a root directory,
-// native FileRenameInformation with RootDirectory, FILE_DISPOSITION_INFO on the file's own handle), never by a path. README.md, "Held directory
+// native FileRenameInformation with RootDirectory and FileDispositionInformation on the file's own handle), never by a path. README.md, "Held directory
 // operations", has the protocol; native/macos-dir-ops implements the same modes with directory descriptors.
 #include <climits>
 #include <cstdint>
@@ -77,6 +77,16 @@ inline DWORD status_error(NTSTATUS status) {
   return translate == nullptr ? ERROR_INVALID_FUNCTION : static_cast<DWORD>(translate(status));
 }
 
+struct FileFailure {
+  DWORD error = ERROR_SUCCESS;
+  NTSTATUS status = 0;
+  const char* operation = nullptr;
+};
+
+inline FileFailure native_failure(NTSTATUS status, const char* operation) {
+  return {status_error(status), status, operation};
+}
+
 inline void say(const char* line) {
   std::fputs(line, stdout);
   std::fputc('\n', stdout);
@@ -88,12 +98,19 @@ inline int done(const char* outcome) {
   return kExitDone;
 }
 
-inline int failed(DWORD error) {
-  std::printf("failed %s\n", error_name(error));
+inline int failed(FileFailure failure) {
+  std::printf("failed %s\n", error_name(failure.error));
   std::fflush(stdout);
-  std::fprintf(stderr, "Windows error %lu\n", static_cast<unsigned long>(error));
+  if (failure.operation == nullptr) {
+    std::fprintf(stderr, "Windows error %lu\n", static_cast<unsigned long>(failure.error));
+  } else {
+    std::fprintf(stderr, "Windows error %lu (NTSTATUS 0x%08lX, %s)\n", static_cast<unsigned long>(failure.error),
+      static_cast<unsigned long>(static_cast<ULONG>(failure.status)), failure.operation);
+  }
   return kExitFailed;
 }
+
+inline int failed(DWORD error) { return failed(FileFailure{error}); }
 
 inline int refused(const char* what) {
   std::printf("refused %s\n", what);
@@ -193,7 +210,7 @@ inline int hold_directory(const wchar_t* path, const wchar_t* volume, const wcha
         kOpenExisting, kDirectoryFile | kBackupIntent | kOpenReparsePoint, opened);
       if (status < 0) {
         const DWORD error = status_error(status);
-        return unverifiable(error) ? refused(what) : failed(error);
+        return unverifiable(error) ? refused(what) : failed(native_failure(status, "NtCreateFile"));
       }
     }
     held.components.emplace_back(opened);
@@ -214,40 +231,45 @@ inline int hold_directory(const wchar_t* path, const wchar_t* volume, const wcha
 // What a name in a held directory is: nothing, an ordinary file, or something else (a directory, a link or another reparse point).
 enum class Entry { kAbsent, kOrdinary, kOther };
 
-inline DWORD classify(HANDLE directory, const std::wstring& name, Entry& entry) {
+inline FileFailure classify(HANDLE directory, const std::wstring& name, Entry& entry) {
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS status = open_relative(directory, name, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     kOpenExisting, kOpenReparsePoint, opened);
   if (status < 0) {
     const DWORD error = status_error(status);
-    if (error != ERROR_FILE_NOT_FOUND) return error;
+    if (error != ERROR_FILE_NOT_FOUND) return native_failure(status, "NtCreateFile");
     entry = Entry::kAbsent;
-    return ERROR_SUCCESS;
+    return {};
   }
   const PinnedHandle closer(opened);
   FILE_ATTRIBUTE_TAG_INFO tag{};
-  if (!GetFileInformationByHandleEx(opened, FileAttributeTagInfo, &tag, sizeof(tag))) return GetLastError();
+  if (!GetFileInformationByHandleEx(opened, FileAttributeTagInfo, &tag, sizeof(tag))) return {GetLastError()};
   entry = (tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0 ? Entry::kOrdinary : Entry::kOther;
-  return ERROR_SUCCESS;
+  return {};
 }
 
 // The chosen name may hold nothing yet, or an ordinary file the user agreed to replace; never a link or anything else.
 // Returns 0 or the exit code to end with.
 inline int check_replaceable(HANDLE directory, const std::wstring& name) {
   Entry entry = Entry::kAbsent;
-  const DWORD error = classify(directory, name, entry);
-  if (error != ERROR_SUCCESS) return failed(error);
+  const FileFailure failure = classify(directory, name, entry);
+  if (failure.error != ERROR_SUCCESS) return failed(failure);
   return entry == Entry::kOther ? refused("target") : 0;
 }
 
-// Rename the open file `file` to `name` in the held directory `directory`, replacing an ordinary file there.
-inline bool rename_into(HANDLE file, HANDLE directory, const std::wstring& name) {
+inline FileFailure set_file_information(HANDLE file, void* information, ULONG length, FILE_INFORMATION_CLASS kind) {
   using SetInformation = NTSTATUS(NTAPI*)(HANDLE, IO_STATUS_BLOCK*, void*, ULONG, FILE_INFORMATION_CLASS);
   const auto set_information = ntdll_function<SetInformation>("NtSetInformationFile");
   if (set_information == nullptr) {
-    SetLastError(ERROR_INVALID_FUNCTION);
-    return false;
+    return {ERROR_INVALID_FUNCTION};
   }
+  IO_STATUS_BLOCK io{};
+  const NTSTATUS status = set_information(file, &io, information, length, kind);
+  return status < 0 ? native_failure(status, "NtSetInformationFile") : FileFailure{};
+}
+
+// Rename the open file `file` to `name` in the held directory `directory`, replacing an ordinary file there.
+inline FileFailure rename_into(HANDLE file, HANDLE directory, const std::wstring& name) {
   const DWORD name_bytes = static_cast<DWORD>(name.size() * sizeof(wchar_t));
   std::vector<BYTE> bytes(sizeof(FILE_RENAME_INFO) + name_bytes);
   auto info = reinterpret_cast<FILE_RENAME_INFO*>(bytes.data());
@@ -257,32 +279,27 @@ inline bool rename_into(HANDLE file, HANDLE directory, const std::wstring& name)
   std::memcpy(info->FileName, name.data(), name_bytes);
   // Preserve the relative name and its directory handle at the native boundary; the path wrapper normalizes the name.
   // FileRenameInformation is native class 10, distinct from the path wrapper's FileRenameInfo class 3.
-  IO_STATUS_BLOCK io{};
-  const NTSTATUS status = set_information(file, &io, info, static_cast<ULONG>(bytes.size()), static_cast<FILE_INFORMATION_CLASS>(10));
-  if (status < 0) {
-    SetLastError(status_error(status));
-    return false;
-  }
-  return true;
+  return set_file_information(file, info, static_cast<ULONG>(bytes.size()), static_cast<FILE_INFORMATION_CLASS>(10));
 }
 
 // Delete the file this handle is open on, once the handle closes.
-inline bool delete_on_close(HANDLE file) {
-  FILE_DISPOSITION_INFO disposition{};
-  disposition.DeleteFile = TRUE;
-  return SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
+inline FileFailure delete_on_close(HANDLE file) {
+  // Native FileDispositionInformation (class 13) contains one BOOLEAN and names only the open file.
+  BOOLEAN disposition = TRUE;
+  return set_file_information(file, &disposition, static_cast<ULONG>(sizeof(disposition)), static_cast<FILE_INFORMATION_CLASS>(13));
 }
 
 // Remove the partial copy through its own handle. Then report `failure`, or `cancelled` when there is none; a partial copy that
 // cannot be removed is itself the failure reported.
-inline int abandon(PinnedHandle& part, DWORD failure) {
-  const bool removed = delete_on_close(part.value);
-  const DWORD removal = removed ? ERROR_SUCCESS : GetLastError();
+inline int abandon(PinnedHandle& part, FileFailure failure) {
+  const FileFailure removal = delete_on_close(part.value);
   CloseHandle(part.value);
   part.value = INVALID_HANDLE_VALUE;
-  if (!removed) return failed(removal);
-  return failure != ERROR_SUCCESS ? failed(failure) : done("cancelled");
+  if (removal.error != ERROR_SUCCESS) return failed(removal);
+  return failure.error != ERROR_SUCCESS ? failed(failure) : done("cancelled");
 }
+
+inline int abandon(PinnedHandle& part, DWORD error) { return abandon(part, FileFailure{error}); }
 
 // Write all of `length` bytes, however many each write takes; a write that makes no progress fails the copy.
 inline DWORD write_all(HANDLE target, const BYTE* bytes, DWORD length) {
@@ -311,7 +328,7 @@ inline int run_rename(wchar_t** argv) {
     kOpenReparsePoint, opened);
   if (opening < 0) {
     const DWORD error = status_error(opening);
-    return error == ERROR_FILE_NOT_FOUND ? refused("source") : failed(error);
+    return error == ERROR_FILE_NOT_FOUND ? refused("source") : failed(native_failure(opening, "NtCreateFile"));
   }
   const PinnedHandle source(opened);
   FILE_ATTRIBUTE_TAG_INFO tag{};
@@ -319,9 +336,9 @@ inline int run_rename(wchar_t** argv) {
   if ((tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) return refused("source");
   status = check_replaceable(to.handle(), target);
   if (status != 0) return status;
-  if (!rename_into(source.value, to.handle(), target)) {
-    const DWORD error = GetLastError();
-    return error == ERROR_NOT_SAME_DEVICE ? done("cross-volume") : failed(error);
+  const FileFailure renamed = rename_into(source.value, to.handle(), target);
+  if (renamed.error != ERROR_SUCCESS) {
+    return renamed.error == ERROR_NOT_SAME_DEVICE ? done("cross-volume") : failed(renamed);
   }
   return done("committed");
 }
@@ -342,7 +359,7 @@ inline int run_copy(wchar_t** argv) {
     kOpenReparsePoint | kSequentialOnly, opened);
   if (opening < 0) {
     const DWORD error = status_error(opening);
-    return error == ERROR_FILE_NOT_FOUND ? refused("source") : failed(error);
+    return error == ERROR_FILE_NOT_FOUND ? refused("source") : failed(native_failure(opening, "NtCreateFile"));
   }
   const PinnedHandle source(opened);
   FILE_ATTRIBUTE_TAG_INFO tag{};
@@ -355,7 +372,7 @@ inline int run_copy(wchar_t** argv) {
   HANDLE created = INVALID_HANDLE_VALUE;
   const NTSTATUS creating = open_relative(to.handle(), part_name, FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE, 0, kCreateNew,
     kNonDirectoryFile | kSequentialOnly, created);
-  if (creating < 0) return failed(status_error(creating));
+  if (creating < 0) return failed(native_failure(creating, "NtCreateFile"));
   PinnedHandle part(created);
   std::vector<BYTE> buffer(kCopyChunk);
   ULONGLONG copied = 0;
@@ -381,13 +398,15 @@ inline int run_copy(wchar_t** argv) {
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon(part, ERROR_SUCCESS);
   Entry entry = Entry::kAbsent;
-  const DWORD checking = classify(to.handle(), target, entry);
-  if (checking != ERROR_SUCCESS) return abandon(part, checking);
+  const FileFailure checking = classify(to.handle(), target, entry);
+  if (checking.error != ERROR_SUCCESS) return abandon(part, checking);
   if (entry == Entry::kOther) {
-    if (!delete_on_close(part.value)) return failed(GetLastError());
+    const FileFailure removal = delete_on_close(part.value);
+    if (removal.error != ERROR_SUCCESS) return failed(removal);
     return refused("target");
   }
-  if (!rename_into(part.value, to.handle(), target)) return abandon(part, GetLastError());
+  const FileFailure renamed = rename_into(part.value, to.handle(), target);
+  if (renamed.error != ERROR_SUCCESS) return abandon(part, renamed);
   return done("committed");
 }
 
@@ -399,13 +418,14 @@ inline int remove_entry(HANDLE directory, const std::wstring& name, bool& remove
     kOpenExisting, kOpenReparsePoint, opened);
   if (status < 0) {
     const DWORD error = status_error(status);
-    return error == ERROR_FILE_NOT_FOUND ? 0 : failed(error);
+    return error == ERROR_FILE_NOT_FOUND ? 0 : failed(native_failure(status, "NtCreateFile"));
   }
   const PinnedHandle entry(opened);
   FILE_ATTRIBUTE_TAG_INFO tag{};
   if (!GetFileInformationByHandleEx(entry.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
   if ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return failed(kIsADirectory);
-  if (!delete_on_close(entry.value)) return failed(GetLastError());
+  const FileFailure removal = delete_on_close(entry.value);
+  if (removal.error != ERROR_SUCCESS) return failed(removal);
   removed = true;
   return 0;
 }
