@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
@@ -60,9 +60,15 @@ function cleanupSeams(error = blockedRemoval()) {
 }
 function queryResult(result = {}) {
   return mock.fn((_command, _args, _options, done) => done(null, JSON.stringify({
-    processes: [], entries: [], failed: false, changed: false, limited: false, ...result,
+    processes: [], entries: [], failed: false, changed: false, limited: false,
+    processScanFailed: false, processLimited: false, ...result,
   })));
 }
+const QUERY_VARIABLE = "AVE_CI_JOB_ROOT_QUERY";
+const PROCESS_DETAILS = {
+  pid: 4000, parentPid: 2000, image: "C:\\fixture\\holder.exe", commandPaths: ["C:\\fixture\\held.txt"],
+  cwd: null, created: "2026-01-02T03:04:05.0000000Z",
+};
 function output(seams) {
   return seams.diagnostic.mock.calls.map(call => call.arguments[0]).join("\n");
 }
@@ -114,16 +120,18 @@ describe("Windows job root cleanup diagnostics", () => {
   it("runs the entire diagnostic with exact time and output bounds and preserves the removal error", async () => {
     const error = blockedRemoval();
     const seams = cleanupSeams(error);
-    seams.run = queryResult({ processes: [{ pid: 4000, image: "holder.exe" }] });
+    seams.run = queryResult({ processes: [PROCESS_DETAILS] });
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     assert.equal(seams.run.mock.callCount(), 1);
     assert.equal(seams.remove.mock.callCount(), 1);
     const [command, args, options] = seams.run.mock.calls[0].arguments;
     assert.equal(command, "powershell.exe");
     assert.deepEqual(args.slice(0, -1), ["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
-    assert.ok(Buffer.from(args.at(-1), "base64").toString("utf16le").includes(root));
-    assert.deepEqual(options, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024, env: windowsPowerShellEnv() });
-    assert.match(output(seams), /process pid=4000 image="holder.exe"/);
+    assert.ok(Buffer.from(args.at(-1), "base64").toString("utf16le").includes(QUERY_VARIABLE));
+    const { [QUERY_VARIABLE]: script, ...env } = options.env;
+    assert.ok(script.includes(root));
+    assert.deepEqual({ ...options, env }, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024, env: windowsPowerShellEnv() });
+    assert.match(output(seams), /process pid=4000 parent-pid=2000 image=.*holder\.exe.*command-line-paths=.*held\.txt.*created="2026-01-02T03:04:05.0000000Z"/);
     assert.doesNotMatch(output(seams), /diagnostic failed/);
   });
   for (const failure of ["child", "malformed JSON", "invalid entries", "incomplete scan", "output"]) {
@@ -133,14 +141,25 @@ describe("Windows job root cleanup diagnostics", () => {
       if (failure === "child") seams.run = mock.fn((_command, _args, _options, done) => done(new Error("SYNTHETIC PRIVATE DETAILS")));
       if (failure === "malformed JSON") seams.run = mock.fn((_command, _args, _options, done) => done(null, "{SYNTHETIC PRIVATE"));
       if (failure === "invalid entries") seams.run = queryResult({ entries: [{ path: "SYNTHETIC PRIVATE" }] });
-      if (failure === "incomplete scan") seams.run = queryResult({ failed: true, processes: [{ pid: 4000, image: "holder.exe" }] });
+      if (failure === "incomplete scan") seams.run = queryResult({ failed: true, processes: [PROCESS_DETAILS] });
       if (failure === "output") seams.diagnostic = mock.fn(() => { throw new Error("closed stderr"); });
       await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
       assert.doesNotMatch(output(seams), /SYNTHETIC PRIVATE/);
       if (failure !== "output") assert.equal(output(seams).split("\n").filter(line => line === "Cleanup diagnostic failed or timed out").length, 1);
-      if (failure === "incomplete scan") assert.match(output(seams), /process pid=4000 image="holder.exe"/);
+      if (failure === "incomplete scan") assert.match(output(seams), /process pid=4000 parent-pid=2000/);
     });
   }
+  it("reports remaining file evidence when process enumeration fails", async () => {
+    const error = blockedRemoval();
+    const seams = cleanupSeams(error);
+    seams.run = queryResult({
+      processScanFailed: true,
+      entries: [{ path: root, attributes: "Directory", owner: null, deny: null, parentDeny: null, created: null, lastWrite: null }],
+    });
+    await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
+    assert.match(output(seams), /candidate path=.*created="not determined" last-write="not determined"/);
+    assert.match(output(seams), /Cleanup process scan was incomplete/);
+  });
   it("bounds a stalled diagnostic child and still throws the original removal error", async () => {
     const error = blockedRemoval();
     const seams = cleanupSeams(error);
@@ -224,10 +243,12 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.equal(runFixturePowerShell(`(${fixtureAcl(parent)}).Sddl; (${fixtureAcl(root)}).Sddl`), deniedAcls);
       const lines = output({ diagnostic });
       const candidates = lines.split("\n").filter(line => line.startsWith("candidate path="));
-      assert.deepEqual(candidates, [
+      assert.equal(candidates.length, 1, lines);
+      assert.ok(candidates[0].startsWith(
         `candidate path=${JSON.stringify(root)} owner=${JSON.stringify(owner)} deny=[{"sid":"${sid}","rights":"Delete"}]` +
         ` parent-deny=[{"sid":"${sid}","rights":"DeleteSubdirectoriesAndFiles"}] attributes="Directory" handle="not determined"`,
-      ], lines);
+      ), lines);
+      assert.match(candidates[0], /created="[\d:T.-]+Z" last-write="[\d:T.-]+Z"$/);
       assert.doesNotMatch(lines, /found no surviving entries|Cleanup diagnostic failed or timed out/);
     } finally {
       try { restoreFixtureAcls(savedAcls); }
@@ -250,7 +271,7 @@ describe("Windows job root cleanup diagnostics", () => {
       writeFileSync(sentinel, "preserve");
       symlinkSync(target, staged, "junction");
       seams.run = (command, args, options, done) => {
-        const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
+        const script = options.env[QUERY_VARIABLE];
         const beforeOpen = "    $handle = if ($canList)";
         assert.ok(script.includes(beforeOpen));
         const swap = [
@@ -259,9 +280,9 @@ describe("Windows job root cleanup diagnostics", () => {
           `      [IO.Directory]::Move(${powerShellLiteral(staged)}, ${powerShellLiteral(child)})`,
           "    }",
         ].join("\n");
-        const injected = Buffer.from(script.replace(beforeOpen, `${swap}\n${beforeOpen}`), "utf16le").toString("base64");
+        const env = { ...options.env, [QUERY_VARIABLE]: script.replace(beforeOpen, `${swap}\n${beforeOpen}`) };
         return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
-          [...args.slice(0, -1), injected], options, done);
+          args, { ...options, env }, done);
       };
       await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
       assert.ok(lstatSync(saved).isDirectory());
@@ -339,6 +360,9 @@ describe("Windows job root cleanup diagnostics", () => {
       const image = join(root, "holder.exe");
       const file = join(root, "held.txt");
       writeFileSync(file, "held fixture");
+      const lastWrite = new Date("2026-01-02T03:04:05Z");
+      utimesSync(file, lastWrite, lastWrite);
+      const { birthtimeMs } = statSync(file);
       const source = 'using System; using System.IO; public class Holder { public static void Main(string[] args) { using (new FileStream(args[0], FileMode.Open, FileAccess.Read, FileShare.Read)) { Console.WriteLine("ready"); Console.ReadLine(); } } }';
       const script = `Add-Type -TypeDefinition '${source}' -OutputAssembly '${image.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
       execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
@@ -350,8 +374,12 @@ describe("Windows job root cleanup diagnostics", () => {
       const diagnostic = mock.fn();
       await assert.rejects(cleanupWindowsJobRoot(root, { diagnostic }), error => error.code === "EPERM" || error.code === "EBUSY" || error.code === "EACCES");
       const lines = output({ diagnostic });
-      assert.ok(lines.includes(`candidate path=${JSON.stringify(file)}`), lines);
-      assert.ok(lines.includes(`process pid=${holder.pid} image="holder.exe"`), lines);
+      const candidate = lines.split("\n").find(line => line.startsWith(`candidate path=${JSON.stringify(file)}`));
+      assert.ok(candidate, lines);
+      assert.equal(Date.parse(candidate.match(/created="([^"]+)"/)?.[1]), Math.trunc(birthtimeMs));
+      assert.equal(Date.parse(candidate.match(/last-write="([^"]+)"/)?.[1]), +lastWrite);
+      assert.ok(lines.includes(`process pid=${holder.pid} parent-pid=${process.pid} image=${JSON.stringify(image)}`), lines);
+      assert.ok(lines.includes(JSON.stringify(file)), lines);
       assert.doesNotMatch(lines, /Cleanup diagnostic failed or timed out|SYNTHETIC|FOO|--token/);
       holder.stdin.end("\n");
       const [code] = await exited;
@@ -366,6 +394,37 @@ describe("Windows job root cleanup diagnostics", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it("matches current directories and command arguments independently of the image path", { skip: process.platform !== "win32" }, async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-job-process-"));
+    const fixtureCommand = "console.log('ready'); process.stdin.resume();";
+    const children = [];
+    async function start(cwd, ...args) {
+      const child = spawn(process.execPath, ["-e", fixtureCommand, "--", ...args], { cwd, windowsHide: true, stdio: "pipe" });
+      const exited = once(child, "exit");
+      children.push({ child, exited });
+      await Promise.race([once(child.stdout, "data"), exited.then(() => { throw new Error("Process fixture exited early"); })]);
+      return child.pid;
+    }
+    try {
+      const fromCwd = await start(root);
+      const argument = join(root, "from-argument.txt");
+      const fromArg = await start(tmpdir(), argument, "--token=SYNTHETIC");
+      const nearMiss = await start(tmpdir(), `${root}-other\\outside.txt`, `${root}\\..\\outside.txt`);
+      const diagnostic = mock.fn();
+      await diagnoseJobRoot(root, diagnostic);
+      const lines = output({ diagnostic }).split("\n");
+      const lineFor = pid => lines.find(line => line.startsWith(`process pid=${pid} `));
+      assert.ok(lineFor(fromCwd)?.includes(`command-line-paths=[] cwd=${JSON.stringify(`${root}\\`)}`) ||
+        lineFor(fromCwd)?.includes(`command-line-paths=[] cwd=${JSON.stringify(root)}`), lines.join("\n"));
+      assert.ok(lineFor(fromArg)?.includes(`command-line-paths=${JSON.stringify([argument])} cwd="not determined"`), lines.join("\n"));
+      assert.equal(lineFor(nearMiss), undefined, lines.join("\n"));
+      assert.doesNotMatch(lines.join("\n"), /SYNTHETIC|--token|Cleanup process scan was incomplete/);
+    } finally {
+      for (const { child } of children) child.stdin.end();
+      await Promise.all(children.map(({ exited }) => exited));
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 
@@ -374,28 +433,30 @@ describe("Windows job root query", () => {
     const diagnostic = mock.fn();
     const run = queryResult({
       processes: Array.from({ length: 25 }, (_, i) => ({
-        pid: 4000 + i, image: "C:\\fixture\\holder.exe", CommandLine: "SYNTHETIC", env: { secret: "SYNTHETIC" },
+        ...PROCESS_DETAILS, pid: 4000 + i, CommandLine: "SYNTHETIC", env: { secret: "SYNTHETIC" },
       })),
       entries: Array.from({ length: 25 }, (_, i) => ({
         path: `C:\\fixture\\entry-${i}`, attributes: "ReadOnly, Hidden", owner: CURRENT_SID,
+        created: "2026-01-02T03:04:05.0000000Z", lastWrite: "2026-01-02T03:04:06.0000000Z",
         deny: [{ sid: CURRENT_SID, rights: "Delete", note: "SYNTHETIC" }], denyOmitted: 2,
         parentDeny: [], parentDenyOmitted: 0, data: "SYNTHETIC",
       })),
-      limited: true,
+      limited: true, processLimited: true,
     });
     await diagnoseJobRoot("C:\\fixture's", diagnostic, run);
-    assert.equal(diagnostic.mock.callCount(), 41);
-    assert.match(output({ diagnostic }), /process pid=4000 image="holder.exe"/);
+    assert.equal(diagnostic.mock.callCount(), 42);
+    assert.match(output({ diagnostic }), /process pid=4000 parent-pid=2000 image=.*holder\.exe/);
     assert.match(output({ diagnostic }), /candidate path=.*entry-19.*Delete.*\(\+2 more\).*parent-deny=\[\].*ReadOnly, Hidden.*handle="not determined"/);
     assert.match(output({ diagnostic }), /Cleanup path scan reached its inspection or reporting limit/);
+    assert.match(output({ diagnostic }), /Cleanup process scan reached its inspection or reporting limit/);
     assert.doesNotMatch(output({ diagnostic }), /SYNTHETIC|secret|CommandLine|env|entry-20|pid=4020/);
-    const [, args] = run.mock.calls[0].arguments;
-    const script = Buffer.from(args.at(-1), "base64").toString("utf16le");
+    const [, , options] = run.mock.calls[0].arguments;
+    const script = options.env[QUERY_VARIABLE];
     assert.ok(script.includes("$root = 'C:\\fixture''s'"));
-    assert.match(script, /Get-Process/);
+    assert.match(script, /Get-CimInstance Win32_Process/);
     assert.match(script, /NtQueryDirectoryFile\(\$handle,/);
     assert.match(script, /NtQuerySecurityObject\(\$handle,/);
-    assert.doesNotMatch(script, /Get-ChildItem|Set-Acl|SetAttributes|icacls|takeown|Stop-Process|Remove-Item|-Recurse|CommandLine|Environment/i);
+    assert.doesNotMatch(script, /Get-ChildItem|Set-Acl|SetAttributes|icacls|takeown|Stop-Process|Remove-Item|-Recurse|Environment/i);
   });
 });
 const CURRENT_SID = "S-1-5-21-100-200-300-1001";
@@ -430,7 +491,9 @@ describe("Windows job root hardening", () => {
         assert.equal(calls.length, 1);
         const options = calls[0].arguments[2];
         assert.ok(options.env);
-        assert.deepEqual(options.env, expectedEnv);
+        const { [QUERY_VARIABLE]: script, ...env } = options.env;
+        assert.equal(typeof script, run === query ? "string" : "undefined");
+        assert.deepEqual(env, expectedEnv);
         assert.equal(Object.keys(options.env).some(key => /^psmodulepath$/i.test(key)), false);
       }
       assert.equal(process.env, injectedEnv);
