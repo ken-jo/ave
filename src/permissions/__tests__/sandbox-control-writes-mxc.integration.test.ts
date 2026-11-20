@@ -77,13 +77,13 @@ describe.runIf(process.platform === "win32")("container control-file write bound
       }
       for (const target of targets) {
         const original = readFileSync(target, "utf8");
-        const result = await run('$ErrorActionPreference="Stop"; [IO.File]::AppendAllText($env:CONTROL_TARGET,"changed")', target);
+        const result = await run('$ErrorActionPreference="Stop"; Add-Content -LiteralPath $env:CONTROL_TARGET -Value "changed" -NoNewline', target);
         expect(result.status, result.output).not.toBeNull();
         expect(result.status, result.output).not.toBe(0);
         expect(readFileSync(target, "utf8")).toBe(original);
       }
       const ordinary = join(project, "opaque-result.txt");
-      const ordinaryResult = await run('$ErrorActionPreference="Stop"; [IO.File]::AppendAllText($env:CONTROL_TARGET,"changed")', ordinary);
+      const ordinaryResult = await run('$ErrorActionPreference="Stop"; Add-Content -LiteralPath $env:CONTROL_TARGET -Value "changed" -NoNewline', ordinary);
       expect(ordinaryResult.status, ordinaryResult.output).toBe(0);
       expect(readFileSync(ordinary, "utf8")).toBe("changed");
       rmSync(join(project, ".git", "hooks", "pre-commit"));

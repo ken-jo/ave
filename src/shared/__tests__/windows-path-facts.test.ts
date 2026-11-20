@@ -222,4 +222,16 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(readWindowsDacls([])).toEqual([]);
     expect(() => pinWindowsPaths(["relative"])).toThrow(/absolute/);
   });
+  it.each([1048576, 1048577])("bounds pinned content reads of %i bytes with a distinct size error", (size) => {
+    const file = join(fixture, `content-${size}`);
+    writeFileSync(file, Buffer.alloc(size, 120));
+    if (size === 1048576) {
+      const [row] = readWindowsDacls([file], { content: true });
+      expect(row?.contentHex).toBe(Buffer.alloc(size, 120).toString("hex"));
+    } else {
+      expect(() => readWindowsDacls([file], { content: true })).toThrowError(expect.objectContaining({
+        code: "EFBIG", cause: expect.objectContaining({ status: 5 }),
+      }));
+    }
+  });
 });

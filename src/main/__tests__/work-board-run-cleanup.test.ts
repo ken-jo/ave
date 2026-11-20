@@ -31,7 +31,7 @@ const over = { status: "completed", at: "2026-01-02T00:00:00.000Z" } as const;
 async function settled(store: WorkBoardStore, id: number, runId: string, templateId?: string): Promise<void> {
   await begin(store, id, runId, templateId);
   expect(await store.setRunResult(id, { runStatus: "completed" })).toMatchObject({ status: "updated" });
-  expect(await store.updateRun(id, runId, run => ({ ...run, settled: over }))).toMatchObject({ status: "stored" });
+  expect(await store.updateRun(id, runId, run => ({ run, ends: "completed", at: over.at }))).toMatchObject({ status: "stored" });
 }
 const entries = async (): Promise<{ runId: string }[]> => JSON.parse(await readFile(runsPath, "utf8")).runs;
 const runIds = async (): Promise<string[]> => (await entries()).map(entry => entry.runId);
@@ -50,6 +50,25 @@ it("removes a deleted row's settled runs and leaves every other row's runs", asy
   expect(await store.getRun(kept)).toMatchObject({ status: "found", run: { runId: "kept-2" } });
 });
 
+it("tells a user's delete of a listed row, with the run that row named, before the board changed, and only while the row is as its revision says", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  const plain = await templateItem(store);
+  await begin(store, id, "run-1");
+  const seen: unknown[] = [];
+  store.rowDeleted.subscribe(change => seen.push(change));
+  store.boardChanged.subscribe(() => seen.push("changed"));
+  const before = await store.get(id);
+  if (before.status !== "found") throw new Error("Missing item");
+  expect(await store.remove(id, "0".repeat(64))).toEqual({ status: "invalid", itemId: id, reason: "work-item-changed" });
+  expect(seen).toEqual([]);
+  expect(await store.remove(id, before.item.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId: "run-1" });
+  expect(seen).toEqual([{ itemId: id, runId: "run-1" }, "changed"]);
+  seen.length = 0;
+  expect(await store.remove(plain)).toEqual({ status: "deleted", itemId: plain });
+  expect(seen).toEqual(["changed"]);
+});
+
 it("keeps the unsettled run of a deleted row until its record says it is over", async () => {
   const store = new WorkBoardStore(boardPath);
   const gone = await templateItem(store);
@@ -62,9 +81,95 @@ it("keeps the unsettled run of a deleted row until its record says it is over", 
   await settled(store, other, "other-1");
   expect(await runIds()).toEqual(["gone-live", "other-1"]);
 
-  expect(await store.runs.update("gone-live", run => ({ ...run, settled: { status: "cancelled", at: over.at } }))).toMatchObject({ status: "stored" });
+  expect(await store.runs.settleRun("gone-live", run => ({ run, ends: "item-removed", at: over.at }), () => true)).toMatchObject({ status: "stored" });
   await store.pruneSettledRuns();
   expect(await runIds()).toEqual(["other-1"]);
+});
+
+it("shows where a run's row stands on the readable board on disk, and nothing while that file shows nothing", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const deleted = await templateItem(store);
+  const listed = await templateItem(store);
+  await begin(store, listed, "run-listed");
+  await begin(store, listed, "run-newer");
+  expect(await store.remove(deleted)).toMatchObject({ status: "deleted" });
+  const standing = await store.runRowsOnDisk();
+  expect(standing?.({ itemId: deleted, runId: "run-deleted" })).toBe("gone");
+  expect(standing?.({ itemId: listed, runId: "run-newer" })).toBe("named");
+  expect(standing?.({ itemId: listed, runId: "run-listed" })).toBe("moved");
+  expect(standing?.({ itemId: listed, runId: "run-other" })).toBe("unnamed");
+  const file = JSON.parse(await readFile(boardPath, "utf8"));
+  file.items.push({ id: deleted, title: "", status: "planned" });
+  await writeFile(boardPath, JSON.stringify(file));
+  expect((await store.runRowsOnDisk())?.({ itemId: deleted, runId: "run-deleted" })).toBe("unreadable");
+  await writeFile(boardPath, "{");
+  expect(await store.runRowsOnDisk()).toBeUndefined();
+});
+
+it("never reads a run's row gone or lost while an entry of the file could still be that row: one that names the run anywhere, or one without a usable id", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const deleted = await templateItem(store);
+  const listed = await templateItem(store);
+  const swapped = await templateItem(store);
+  await begin(store, deleted, "run-deleted");
+  await begin(store, listed, "run-listed");
+  await begin(store, swapped, "run-swapped");
+  expect(await store.remove(deleted)).toMatchObject({ status: "deleted" });
+  const file = JSON.parse(await readFile(boardPath, "utf8")) as { items: { id: number }[] };
+  const standing = async (items: unknown[], itemId: number, runId: string, unknownBelow?: number) => {
+    await writeFile(boardPath, JSON.stringify({ ...file, ...(unknownBelow ? { unknownBelow } : {}), items }));
+    return (await store.runRowsOnDisk())?.({ itemId, runId });
+  };
+  expect(await standing(file.items, deleted, "run-deleted")).toBe("gone");
+  expect(await standing(file.items, deleted, "run-deleted", 100)).toBe("lost");
+  const unsafe = { id: 2 ** 53, title: "valid past the safe-integer limit", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+  for (const entry of [null, "text", 7, [], { id: "9" }, { id: 1.5 }, { id: -2 }, { id: 0 }, { title: "no id" }, unsafe]) {
+    expect(await standing([...file.items, entry], deleted, "run-deleted")).toBe("unreadable");
+    expect(await standing([...file.items, entry], deleted, "run-deleted", 100)).toBe("unreadable");
+  }
+  // Named under another id, valid or not, however deep: never gone. Only the id itself names it, not text around it.
+  expect(await standing([...file.items, { id: 50, note: { nested: ["run-deleted"] } }], deleted, "run-deleted")).toBe("unreadable");
+  expect(await standing([...file.items, { id: 50, note: "see run-deleted" }], deleted, "run-deleted")).toBe("gone");
+  expect(await standing(file.items.map(row => row.id === listed ? { ...row, detail: "run-deleted" } : row), deleted, "run-deleted")).toBe("unreadable");
+  // Held only under a field the read drops from a valid row (run fields, a plan approval that does not read): the file still holds it.
+  for (const held of [{ stageRuns: [{ runId: "run-deleted" }] }, { pin: { runId: "run-deleted" } }, { runStartedBy: "run-deleted" }, { id: 50, planApproval: { runId: "run-deleted" } }]) {
+    expect(await standing(file.items.map(row => row.id === listed ? { ...row, ...held } : row), deleted, "run-deleted")).toBe("unreadable");
+  }
+  // Two rows whose ids were swapped by hand: each run's id holds a row that neither names nor holds it, and the other row names it.
+  const swap = file.items.map(row => row.id === listed ? { ...row, id: swapped } : row.id === swapped ? { ...row, id: listed } : row);
+  expect(await standing(swap, listed, "run-listed")).toBe("unreadable");
+  expect(await standing(swap, swapped, "run-swapped")).toBe("unreadable");
+  expect(await standing(file.items, listed, "run-other")).toBe("unnamed");
+  // Moved out of the items list under another top-level key of the file: still there, never gone.
+  const moved = (key: string, value: unknown) => ({ ...file, items: file.items.filter(row => row.id !== listed), [key]: value });
+  for (const [key, value] of [["archive", file.items.filter(row => row.id === listed)], ["old", { rows: { kept: file.items.find(row => row.id === listed) } }]] as const) {
+    await writeFile(boardPath, JSON.stringify(moved(key, value)));
+    expect((await store.runRowsOnDisk())?.({ itemId: listed, runId: "run-listed" })).toBe("unreadable");
+  }
+  await writeFile(boardPath, JSON.stringify(moved("archive", [])));
+  expect((await store.runRowsOnDisk())?.({ itemId: listed, runId: "run-listed" })).toBe("gone");
+});
+
+it("keeps a settled run's record while an entry of the file names the run under another id, and prunes it once none does", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const gone = await templateItem(store);
+  await settled(store, gone, "gone-1");
+  const file = JSON.parse(await readFile(boardPath, "utf8")) as { items: { id: number }[] };
+  await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.map(row => row.id === gone ? { ...row, id: 50 } : row) }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["gone-1"]);
+  await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== gone), archive: file.items.filter(row => row.id === gone) }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["gone-1"]);
+  // Renumbered by hand with a plan approval that does not read, which alone holds the run's id: the read drops it, the file does not.
+  const renumbered = file.items.map(({ runId: _runId, runHistory: _history, ...row }: { id: number; runId?: string; runHistory?: unknown }) =>
+    row.id === gone ? { ...row, id: 50, planApproval: { runId: "gone-1" } } : row);
+  await writeFile(boardPath, JSON.stringify({ ...file, items: renumbered }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["gone-1"]);
+  await writeFile(boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== gone) }));
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual([]);
 });
 
 it("prunes on a later write what an earlier cleanup could not remove", async () => {
@@ -72,9 +177,7 @@ it("prunes on a later write what an earlier cleanup could not remove", async () 
   const gone = await templateItem(store);
   const other = await templateItem(store);
   await settled(store, gone, "gone-1");
-  const read = homeTrust.readAveHomeInput;
-  vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
-    path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
+  vi.spyOn(store.runs, "prune").mockRejectedValueOnce(Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" }));
   const before = await readFile(runsPath, "utf8");
   expect(await store.remove(gone)).toMatchObject({ status: "deleted" });
   expect(await readFile(runsPath, "utf8")).toBe(before);
@@ -109,15 +212,15 @@ it("never removes or rewrites an entry it cannot read", async () => {
   const file = JSON.parse(await readFile(runsPath, "utf8"));
   file.runs[0].stageRuns[0].attempt = 4;
   file.runs.push({ ...file.runs[1], startedAt: "2026-02-02T00:00:00.000Z" });
-  const quarantined = [file.runs[0], file.runs[1], file.runs[3]];
   await writeFile(runsPath, JSON.stringify(file));
 
   const restarted = new WorkBoardStore(boardPath);
-  expect(await restarted.remove(gone)).toMatchObject({ status: "deleted" });
-  expect(await entries()).toEqual(quarantined);
+  // The row holds the only ids in board.json of the entries that do not read, any of which could be a run that is not over.
+  await expect(restarted.remove(gone)).rejects.toMatchObject({ code: "work-board-run-id-held" });
+  expect(await entries()).toEqual(file.runs);
   await begin(restarted, other, "other-1");
-  expect((await entries()).slice(0, 3)).toEqual(quarantined);
-  expect(await runIds()).toEqual(["gone-broken", "gone-twice", "gone-twice", "other-1"]);
+  expect((await entries()).slice(0, 4)).toEqual(file.runs);
+  expect(await runIds()).toEqual(["gone-broken", "gone-twice", "gone-1", "gone-twice", "other-1"]);
 });
 
 it("keeps the runs a row lists in its history and drops the ones it no longer lists", async () => {
@@ -131,7 +234,21 @@ it("keeps the runs a row lists in its history and drops the ones it no longer li
   expect(await runIds()).toEqual(listed);
 });
 
-it("keeps every run when the board file was emptied, since no row id was issued by it", async () => {
+it("keeps a settled run whose row does not validate, and that row, through another row's delete", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  const other = await templateItem(store);
+  await settled(store, id, "run-1");
+  const file = JSON.parse(await readFile(boardPath, "utf8"));
+  const edited = { ...file.items.find((row: { id: number }) => row.id === id), priority: 42 };
+  file.items = file.items.map((row: { id: number }) => row.id === id ? edited : row);
+  await writeFile(boardPath, JSON.stringify(file));
+  expect(await store.remove(other)).toMatchObject({ status: "deleted" });
+  expect(await runIds()).toEqual(["run-1"]);
+  expect(JSON.parse(await readFile(boardPath, "utf8")).items).toEqual([edited]);
+});
+
+it("keeps every run while the board file cannot be read", async () => {
   const store = new WorkBoardStore(boardPath);
   await settled(store, await templateItem(store), "run-1");
   await settled(store, await templateItem(store), "run-2");
@@ -191,7 +308,8 @@ it("keeps the run record when the row write fails after the board was replaced",
   const reopened = new WorkBoardStore(boardPath);
   expect(await reopened.getRun(id)).toMatchObject({ status: "found", run: { runId: "run-landed" } });
   expect(await reopened.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "run-landed" }] });
-  expect((await reopened.runs.get("run-landed") as { run: object }).run).not.toHaveProperty("settled");
+  expect((await entries()).find(entry => entry.runId === "run-landed")).not.toHaveProperty("settled");
+  expect((await reopened.runs.get("run-landed") as { run: { settled?: unknown } }).run.settled).toBeUndefined();
 });
 
 it("keeps the run record unsettled when the board cannot be read back after a failed row write", async () => {
@@ -213,7 +331,8 @@ it("keeps the run record unsettled when the board cannot be read back after a fa
   vi.restoreAllMocks();
 
   expect(await store.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "run-unknown" }] });
-  expect((await store.runs.get("run-unknown") as { run: object }).run).not.toHaveProperty("settled");
+  expect((await entries()).find(entry => entry.runId === "run-unknown")).not.toHaveProperty("settled");
+  expect((await store.runs.get("run-unknown") as { run: { settled?: unknown } }).run.settled).toBeUndefined();
 });
 
 it("keeps a run record whose row write never happened until it is settled", async () => {
@@ -227,7 +346,7 @@ it("keeps a run record whose row write never happened until it is settled", asyn
   expect(await restarted.getRun(id)).toEqual({ status: "not-found" });
   await begin(restarted, id, "run-retry");
   expect(await runIds()).toEqual(["run-orphan", "run-retry"]);
-  expect(await restarted.runs.update("run-orphan", run => ({ ...run, settled: { status: "error", at: over.at } }))).toMatchObject({ status: "stored" });
+  expect(await restarted.runs.settleRun("run-orphan", run => ({ run, ends: "unstarted", at: over.at }), () => true)).toMatchObject({ status: "stored" });
   await restarted.pruneSettledRuns();
   expect(await runIds()).toEqual(["run-retry"]);
 });
@@ -243,7 +362,7 @@ it("keeps the full record only for each row's current run and a summary for its 
   const stageRuns = stageRunsOf("x");
   for (let run = 1; run <= 20; run++) {
     await begin(store, id, `run-${run}`);
-    expect(await store.updateRun(id, `run-${run}`, value => ({ ...value, stageRuns, settled: over }))).toMatchObject({ status: "stored" });
+    expect(await store.updateRun(id, `run-${run}`, value => ({ run: { ...value, stageRuns }, ends: "completed", at: over.at }))).toMatchObject({ status: "stored" });
     expect(await store.setRunResult(id, { runStatus: "completed" })).toMatchObject({ status: "updated" });
   }
   expect((await store.get(id) as { item: { runHistory: unknown[] } }).item.runHistory).toHaveLength(20);
@@ -318,7 +437,8 @@ it("leaves a run file pending review as it is on an engine prune", async () => {
   const read = homeTrust.readAveHomeInput;
   vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
     path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
-  expect(await store.remove(gone)).toMatchObject({ status: "deleted" });
+  // A delete stores its intent first, so it waits for the review too.
+  expect(await store.remove(gone)).toEqual({ status: "invalid", itemId: gone, reason: "template-runs-pending-review" });
   await expect(store.pruneSettledRuns()).resolves.toBeUndefined();
   vi.restoreAllMocks();
   expect(await readFile(runsPath, "utf8")).toBe(before);

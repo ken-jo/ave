@@ -108,12 +108,23 @@ function isDescriptor(value: unknown): value is WindowsDacl {
       && (ace.account === undefined || typeof ace.account === "string"));
 }
 
+const CONTENT_TOO_LARGE_EXIT_CODE = 5;
 function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
   if (paths.length === 0) return [];
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const output = runWindowsNative(() => execFileSync(resolveWindowsPathKindHelper(), [mode, ...flags, ...paths], {
-    encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 8 * 1024 * 1024,
-  }));
+  let output: string;
+  try {
+    output = runWindowsNative(() => execFileSync(resolveWindowsPathKindHelper(), [mode, ...flags, ...paths], {
+      encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 8 * 1024 * 1024,
+    }));
+  } catch (error) {
+    if (flags.includes("--content") && typeof error === "object" && error !== null && "status" in error && error.status === CONTENT_TOO_LARGE_EXIT_CODE) {
+      const oversized: NodeJS.ErrnoException = new Error("Windows file content exceeds the native read limit", { cause: error });
+      oversized.code = "EFBIG";
+      throw oversized;
+    }
+    throw error;
+  }
   return decodeWindowsPathFacts(output, paths.length, mode, flags);
 }
 

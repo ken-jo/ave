@@ -762,10 +762,11 @@ describe("McpManager encrypted user credentials", () => {
   it("preserves legacy bytes when the scrub write fails after storing the secret", async () => {
     const content = JSON.stringify({ servers: [{ ...server, apiKey: "throwaway-legacy-key" }] });
     await writeFile(testConfigPath, content);
-    const renameSpy = vi.spyOn(fileSystem, "rename").mockRejectedValueOnce(Object.assign(new Error("File write refused"), { code: "EACCES" }));
+    const renameSpy = vi.spyOn(fileSystem, "rename").mockRejectedValue(Object.assign(new Error("File write refused"), { code: "EACCES" }));
     try {
       const manager = await makeManager();
       await expect(manager.loadFromConfig()).rejects.toMatchObject({ code: "mcp-credential-migration-failed" });
+      expect(renameSpy).toHaveBeenCalled();
       expect(await readFile(testConfigPath, "utf-8")).toBe(content);
       expect(storedSecrets.get("mcp.server.apiKey.private-server")).toBe("throwaway-legacy-key");
       expect(mockConnect).not.toHaveBeenCalled();

@@ -293,6 +293,17 @@ describe("Work Board — live step panel", () => {
     expect(within(panel).queryByTestId("live-step-composer")).toBeNull();
   });
 
+  it("shows a stopped run whose end is not saved yet as stopped, with that note, never the error style", async () => {
+    const { emit } = await mountBoard();
+    await emit({ itemId: 4, phase: "executing", runSessionId: CHILD });
+    await emit({ itemId: 4, phase: "executing", turn: 3, text: "Working" });
+    const panel = await openSteps();
+    await emit({ itemId: 4, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+    expect(screen.getByTestId("work-board-run-cancelled")).toBeTruthy();
+    expect(screen.queryByTestId("work-board-run-error")).toBeNull();
+    expect(within(panel).getByTestId("live-step-end-unconfirmed").textContent).toBe(t("reasonCodes.run-end-unconfirmed"));
+  });
+
   it("says the run is already finishing when the stop arrives too late", async () => {
     const { emit, cancel } = await mountBoard();
     cancel.mockResolvedValueOnce({ ok: false, reason: "not-running" });

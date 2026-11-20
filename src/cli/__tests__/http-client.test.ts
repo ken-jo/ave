@@ -19,7 +19,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { tmpdir } from "node:os";
 import {
   startLocalApiHttpServer,
@@ -61,6 +62,9 @@ function channelSwitchedApi(): LocalApi {
 }
 
 let liveServers: LocalApiHttpServer[] = [];
+beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+});
 
 /** Boot a tracked loopback server over `api`, resolving its bound connection. */
 async function bootServer(api: LocalApi, secret = TRANSPORT_SECRET): Promise<CliConnection> {

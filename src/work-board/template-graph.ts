@@ -109,7 +109,9 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
     else {
       requireTemplate(g.type === "auto" && hasTemplateKeys(g, ["type", "pass"]) && isRecord(g.pass));
       const p = g.pass;
-      requireTemplate(((p.kind === "stage_ok" || p.kind === "model_verdict") && hasTemplateKeys(p, ["kind"])) || (p.kind === "check_exit_zero" && text(p.command, 2000) && hasTemplateKeys(p, ["kind", "command"])));
+      // The host runs no command and a child's recorded steps carry no exit status: this gate could never pass, so it is refused here.
+      requireTemplate(p.kind !== "check_exit_zero", "gate-check-unsupported");
+      requireTemplate((p.kind === "stage_ok" || p.kind === "model_verdict") && hasTemplateKeys(p, ["kind"]));
     }
     if (s.inputFiles !== undefined) {
       requireTemplate(Array.isArray(s.inputFiles)); requireTemplate(s.inputFiles.length <= 64, "too-many-entries");

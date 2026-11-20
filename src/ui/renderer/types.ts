@@ -1030,10 +1030,22 @@ export type AvePreloadApi = {
     | import("../../shared/work-board-types.js").WorkItemReopenResult
     | { ok: false; error: string }
   >;
+  /** `target.revision`: delete the listed row `id` only while it is as its card showed it. `target.invalidRow`, with a null id: delete the
+   * one entry of the board file that does not validate that its invalid card shows. */
   removeWorkBoardItem: (
-    id: number,
+    id: number | null,
+    target?: import("../../shared/work-board-types.js").WorkItemDeleteTarget,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemDeleteResult
+    | import("../../shared/work-board-types.js").WorkBoardEntryDeleteResult
+    | { ok: false; error: string }
+  >;
+  /** Clear the row `id` shown `template-run-not-found`, only while it is as its card showed it (`revision`) and names `runId`. */
+  clearWorkBoardRun: (
+    id: number,
+    target: { revision: string; runId: string },
+  ) => Promise<
+    | import("../../shared/work-board-types.js").WorkItemUpdateResult
     | { ok: false; error: string }
   >;
   // Board view live refresh: emitted after any successful board mutation so the
@@ -1047,7 +1059,7 @@ export type AvePreloadApi = {
   // named agent profile (drives the child model for both phases).
   runWorkBoardItem: (
     id: number,
-    opts?: { agentName?: string },
+    opts?: { agentName?: string; template?: import("../../shared/work-board-types.js").TemplateRunRequest },
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemRunResult
     | { ok: false; error: string }
@@ -1113,6 +1125,7 @@ export type AvePreloadApi = {
     itemId: number,
     text: string,
     userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
+    stageId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult
     | { ok: false; error: string }
@@ -1122,6 +1135,27 @@ export type AvePreloadApi = {
     input: import("../../shared/work-board-types.js").WorkPlanDecideInput,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkPlanDecideIpcResult
+    | { ok: false; error: string }
+  >;
+  decideWorkStage: (
+    itemId: number,
+    input: import("../../shared/work-board-types.js").StageGateDecideInput,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").StageGateDecideIpcResult
+    | { ok: false; error: string }
+  >;
+  decideWorkJoin: (
+    itemId: number,
+    input: import("../../shared/work-board-types.js").StageJoinDecideInput,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").StageJoinDecideIpcResult
+    | { ok: false; error: string }
+  >;
+  retryWorkStage: (
+    itemId: number,
+    input: import("../../shared/work-board-types.js").StageRetryInput,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").StageRetryIpcResult
     | { ok: false; error: string }
   >;
   cancelWorkBoardRun?: (

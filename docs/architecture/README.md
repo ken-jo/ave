@@ -27,6 +27,9 @@ IPC; they never reach host internals directly. The code entry points are
   it alongside the [permission policy](./permission-policy-design.md).
 - [File identity](./file-identity.md): identifying a file exactly by device and
   inode, and why those identifiers are persisted as decimal strings.
+- [Work board run endings](./work-board-run-ending.md): which stored state ends
+  a template run, the one classifier and settle point, the delete failure
+  lifecycle and recovery after the run file reads again.
 
 ## Surfaces and runtime
 

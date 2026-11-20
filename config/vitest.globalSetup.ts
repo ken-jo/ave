@@ -110,6 +110,12 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   // os.tmpdir() reads TMPDIR on POSIX and TEMP, then TMP, on Windows.
   for (const name of TMP_ENV) process.env[name] = tmpBase;
   if (process.platform === "win32") {
+    const localAppData = join(tmpBase, "local-app-data");
+    const appData = join(tmpBase, "app-data");
+    mkdirSync(join(localAppData, "Temp"), { recursive: true });
+    mkdirSync(appData, { recursive: true });
+    process.env.LOCALAPPDATA = localAppData;
+    process.env.APPDATA = appData;
     const programData = join(tmpBase, "program-data");
     mkdirSync(join(programData, "Ave"), { recursive: true });
     for (const name of ["ProgramData", "PROGRAMDATA", "ALLUSERSPROFILE"]) process.env[name] = programData;
@@ -197,7 +203,7 @@ const TMP_ENV = ["TMPDIR", "TEMP", "TMP"] as const;
 function leftInTmpBase(tmpBase: string): string {
   const counts = new Map<string, number>();
   for (const name of readdirSync(tmpBase)) {
-    if (name === RUN_OWNER_FILE || (process.platform === "win32" && name === "program-data")) continue;
+    if (name === RUN_OWNER_FILE || (process.platform === "win32" && ["program-data", "local-app-data", "app-data"].includes(name))) continue;
     const key = name.replace(/^(.*[-_.])[A-Za-z0-9]{6}$/, "$1*");
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }

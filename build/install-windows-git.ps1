@@ -18,7 +18,30 @@ $Assets = @{
   ARM64 = @{ Name = 'MinGit-2.56.0.4-arm64.zip'; Size = 37980967; Sha256 = '70f7649f78088c1db1d2f3571ca46a04d5bef06e4e9d56d8ed7f9829e8c6c4db'; Prefix = 'clangarm64' }
 }
 
-$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+# Query the native machine so an emulated process selects the host's asset.
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class AveGitArchitecture {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWow64Process2(IntPtr process, out ushort processMachine, out ushort nativeMachine);
+    public static ushort NativeMachine() {
+        ushort processMachine, nativeMachine;
+        if (!IsWow64Process2(new IntPtr(-1), out processMachine, out nativeMachine)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        return nativeMachine;
+    }
+}
+'@
+$machine = [AveGitArchitecture]::NativeMachine()
+$arch = switch ($machine) {
+    0x8664 { 'AMD64' }
+    0xAA64 { 'ARM64' }
+    default { '0x{0:X4}' -f $machine }
+}
 $asset = $Assets[$arch]
 if (-not $asset) { Write-Output "Ave git: no pinned MinGit for $arch"; exit 5 }
 
