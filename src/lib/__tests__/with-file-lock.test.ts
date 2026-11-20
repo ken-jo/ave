@@ -1,17 +1,14 @@
 /** Locks serialize writes; plain reads may still observe the pre-write value. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, realpath, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
-import * as fsPromises from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import lockfile from "proper-lockfile";
 import { FileLockReleaseError, createSerialQueue, withFileLock, withInProcessFileQueue } from "../with-file-lock.js";
 
 import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-
-vi.mock("node:fs/promises", { spy: true });
 
 let tmpDir: string;
 let testFile: string;
@@ -46,9 +43,18 @@ describe("withFileLock", () => {
     expect(readCounter()).toBe(N);
   });
 
-  it("keeps a same-process waiter out of a stale-looking lock until the holder releases", async () => {
-    // The fixture directory already exists. Complete the preflight mkdir at a known microtask boundary.
-    const mkdir = vi.mocked(fsPromises.mkdir).mockResolvedValue(undefined);
+  it.each([
+    ["a spelling alias", () => [testFile, `${dirname(testFile)}/./${basename(testFile)}`] as const],
+    ["a parent directory alias", () => {
+      const parent = join(tmpDir, "sessions");
+      const alias = join(tmpDir, "alias");
+      mkdirSync(parent);
+      symlinkSync(parent, alias, process.platform === "win32" ? "junction" : "dir");
+      return [join(parent, "session.jsonl"), join(alias, "session.jsonl")] as const;
+    }],
+  ] as const)("keeps a same-process waiter using %s out of a stale-looking lock until release", async (_kind, targets) => {
+    const [target, alias] = targets();
+    const realLock = lockfile.lock.bind(lockfile);
     const lock = vi.spyOn(lockfile, "lock");
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
@@ -56,7 +62,7 @@ describe("withFileLock", () => {
       const secondEntered = deferred<void>();
       const finishFirst = deferred<void>();
       const finishSecond = deferred<void>();
-      const first = withFileLock(testFile, async () => {
+      const first = withFileLock(target, async () => {
         firstEntered.resolve();
         await finishFirst.promise;
         return "first";
@@ -65,16 +71,28 @@ describe("withFileLock", () => {
       await Promise.race([firstEntered.promise, first]);
 
       vi.setSystemTime(Date.now() + 30_000);
-      const alias = `${dirname(testFile)}/./${basename(testFile)}`;
+      const preflightFinished = deferred<void>();
+      const realpathNative = realpath.native;
+      vi.spyOn(realpath, "native").mockImplementationOnce((path, callback) => {
+        realpathNative(path, (error, canonicalPath) => {
+          callback(error, canonicalPath);
+          preflightFinished.resolve();
+        });
+      });
+      lock.mockImplementationOnce((...args) => {
+        preflightFinished.resolve();
+        return realLock(...args);
+      });
       const second = withFileLock(alias, async () => {
         secondEntered.resolve();
         await finishSecond.promise;
         return "second";
       });
       const results = Promise.allSettled([first, second]);
-      await Promise.resolve();
-      const attemptedWhileHeld = lock.mock.calls.length > 1;
+      let attemptedWhileHeld: boolean;
       try {
+        await Promise.race([preflightFinished.promise, second]);
+        attemptedWhileHeld = lock.mock.calls.length > 1;
         if (attemptedWhileHeld) await Promise.race([secondEntered.promise, second]);
       } finally {
         finishFirst.resolve();
@@ -88,18 +106,26 @@ describe("withFileLock", () => {
         { status: "fulfilled", value: "second" },
       ]);
       expect(attemptedWhileHeld).toBe(false);
+      expect(lock.mock.calls.map(([path]) => path)).toEqual([target, resolve(alias)]);
     } finally {
-      mkdir.mockReset();
       vi.useRealTimers();
     }
   });
 
-  it("creates target file if it does not exist", async () => {
-    const newFile = join(tmpDir, "nonexistent.json");
+  it("creates a missing target and its parent", async () => {
+    const newFile = join(tmpDir, "missing", "nonexistent.json");
     await withFileLock(newFile, async () => {
       writeFileSync(newFile, JSON.stringify({ created: true }), "utf-8");
     });
     expect(existsSync(newFile)).toBe(true);
+  });
+
+  it("rejects if the parent cannot be canonicalized", async () => {
+    const failure = new Error("parent unavailable");
+    vi.spyOn(realpath, "native").mockImplementationOnce((_path, callback) => callback(failure, ""));
+    const lock = vi.spyOn(lockfile, "lock");
+    await expect(withFileLock(testFile, async () => undefined)).rejects.toBe(failure);
+    expect(lock).not.toHaveBeenCalled();
   });
 
   it("a waiting caller does not open the target before it holds the lock", async () => {

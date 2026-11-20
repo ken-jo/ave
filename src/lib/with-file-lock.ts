@@ -1,7 +1,8 @@
 /** Serialize local holders and acquire the sibling cross-process lock. */
 import lockfile from "proper-lockfile";
+import { realpath } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { errorMessage } from "../shared/error-message.js";
 
 interface FileQueue {
@@ -79,7 +80,16 @@ export async function withFileLock<T>(
   opts: FileLockOptions = {},
 ): Promise<T> {
   const lockPath = resolve(targetPath);
-  const key = process.platform === "win32" ? lockPath.toLowerCase() : lockPath;
+  const parent = dirname(lockPath);
+  await mkdir(parent, { recursive: true });
+  const canonicalParent = await new Promise<string>((resolve, reject) => {
+    realpath.native(parent, (error, canonicalPath) => {
+      if (error) reject(error);
+      else resolve(canonicalPath);
+    });
+  });
+  const lockNamespace = join(canonicalParent, basename(lockPath));
+  const key = process.platform === "win32" ? lockNamespace.toLowerCase() : lockNamespace;
   return withQueuedFileWork(fileLockQueues, key, () => withCrossProcessFileLock(lockPath, fn, opts));
 }
 
@@ -89,8 +99,6 @@ async function withCrossProcessFileLock<T>(
   opts: FileLockOptions,
 ): Promise<T> {
   const { stale = 10_000, retries = 5 } = opts;
-
-  await mkdir(dirname(targetPath), { recursive: true });
 
   // Ignore compromise only after release starts; loss of exclusion during the callback must reject its caller, never crash from a filesystem callback.
   let releasing = false;
