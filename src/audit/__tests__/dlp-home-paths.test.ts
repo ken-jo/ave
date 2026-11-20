@@ -537,6 +537,15 @@ describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (pla
   });
 });
 
+it("keeps the plain-text fast path when a configured home ends in a dot segment", async () => {
+  fixture.platform = "linux";
+  fixture.home = "/srv/fixtures/habitat/.";
+  vi.resetModules();
+  const { mayContainHomePath, redactHomePathsInText } = await import("../dlp-filter.js");
+  expect(mayContainHomePath("Sentence without a path. Another sentence.")).toBe(false);
+  expect(redactHomePathsInText(`${fixture.home}/file`)).toBe("[home]/file");
+});
+
 it.each([
   ["linux", "/srv//fixtures/habitat", "/srv/fixtures/habitat"],
   ["linux", "/srv/fixtures/x/../habitat", "/srv/fixtures/habitat"],

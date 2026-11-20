@@ -200,6 +200,7 @@ interface HomeRedaction {
   trigger: RegExp;
   boundaries: ReadonlySet<number>;
   componentCharacters: ReadonlySet<number>;
+  minimumHomeLength: number;
   requiredPathCharacter: string;
 }
 
@@ -227,7 +228,10 @@ function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform
   const flags = windows || platform === "darwin" ? "iu" : "u";
   const standard = nativeUrl.replace(/\/$/u, "");
   const slashHomes = spellings.map(spelling => spelling.replaceAll("\\", "/"));
-  const anchors = new Set(slashHomes.map(spelling => spelling.slice(spelling.lastIndexOf("/") + 1)));
+  const anchors = new Set(slashHomes.map(spelling => {
+    const components = spelling.split("/");
+    return components.findLast(component => component && component !== "." && component !== "..") ?? components.at(-1) ?? "";
+  }));
   const trigger = new RegExp([String.raw`[\\%&]|users|home`, ...[...anchors].map(escapeRegExp)].join("|"), "iu");
   const boundaries = new Set([...BOUNDARY_CHARACTERS].map(character => character.charCodeAt(0)));
   const componentCharacters = new Set<number>();
@@ -250,7 +254,8 @@ function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform
     ...[...urls].map(spelling => compile(spelling, "file://[home]")),
     ...slashHomes.map(spelling => compile(spelling, "[home]")),
   ];
-  return { forms, trigger, boundaries, componentCharacters, requiredPathCharacter };
+  const minimumHomeLength = Math.min(...[...slashHomes, ...urls].map(spelling => [...spelling].length));
+  return { forms, trigger, boundaries, componentCharacters, minimumHomeLength, requiredPathCharacter };
 }
 
 const homeRedaction = compileHomeRedaction(home, homePlatform);
@@ -422,7 +427,8 @@ function separateHomeTokens(
 
 /** Delimiters and their preceding slash runs belong to the original text. */
 function replaceEncodedHomeTokens(
-  text: string, { forms, boundaries, componentCharacters, requiredPathCharacter }: HomeRedaction, markers: readonly LiteralMarker[],
+  text: string, { forms, boundaries, componentCharacters, minimumHomeLength, requiredPathCharacter }: HomeRedaction,
+  markers: readonly LiteralMarker[],
 ): string {
   let pieces: string[] | undefined;
   let copied = 0;
@@ -432,6 +438,8 @@ function replaceEncodedHomeTokens(
   let markerStart = markers[0]?.start ?? Infinity;
   let literalSuffix = false;
   const containsEncodedHome = (token: string): boolean => {
+    // A decode cannot increase the number of characters in a candidate.
+    if (token.length < minimumHomeLength || !INTRODUCER.test(token)) return false;
     if (requiredPathCharacter && token.length >= LARGE_ESCAPE_TOKEN && !token.includes(requiredPathCharacter)
       && !mayDecodeHomeCharacter(token, requiredPathCharacter.charCodeAt(0), HOME_DECODE_LAYERS)) return false;
     return detectsEncodedHome(token, forms);
