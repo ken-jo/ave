@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
-import { createPrivateDirectories } from "../codex-executable-location.js";
+import { createPrivateDirectories, createPrivateObjects } from "../codex-executable-location.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
@@ -73,7 +73,11 @@ describe("private executable artifacts", () => {
     writeFileSync(source, script);
     const open = vi.spyOn(fs, "open");
     const destination = join(runtime, "module.js");
-    const artifact = await copyExecutableFile(source, destination);
+    const artifact = await createPrivateObjects(async (created) => {
+    const copy = await copyExecutableFile(source, destination);
+    created.push(copy.executable);
+    return copy;
+  });
     expect(artifact).toEqual({
       executable: destination,
       contentHash: createHash("sha256").update(script).digest("hex"),
@@ -138,9 +142,14 @@ describe("private executable artifacts", () => {
   it("refuses a replaced private ancestor before launch", async () => {
     const { runtime, source } = await fixture();
     const artifact = await copyCodexExecutableArtifact(source, runtime);
-    renameSync(dirname(artifact.executable), `${dirname(artifact.executable)}-old`);
-    mkdirSync(dirname(artifact.executable), { mode: 0o700 });
-    writeFileSync(artifact.executable, "#!/bin/sh\necho replacement\n", { mode: 0o500 });
+    const directory = dirname(artifact.executable);
+    renameSync(directory, `${directory}-old`);
+    await createPrivateObjects(async (created) => {
+      await fs.mkdir(directory, { mode: 0o700 });
+      created.push(directory);
+      await fs.writeFile(artifact.executable, "#!/bin/sh\necho replacement\n", { flag: "wx", mode: 0o500 });
+      created.push(artifact.executable);
+    });
     await expect(verifyCodexExecutableArtifact(artifact)).rejects.toThrow("Executable artifact changed");
   });
 
