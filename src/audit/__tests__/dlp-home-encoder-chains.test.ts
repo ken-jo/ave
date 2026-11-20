@@ -172,6 +172,42 @@ const separatorChains: SeparatorEncoder[][] = [[], ...separatorNames.flatMap(a =
 ])];
 const uriChains = separatorChains.filter(chain => chain.includes("uri"));
 
+it.each([
+  [String.raw`D:\data\Café`, String.raw`\ucafe\a.txt`],
+  [String.raw`\\srv\share\Café`, String.raw`\docs\a.txt`],
+  [String.raw`D:\fixtures\Café`, String.raw`\docs\a.txt`],
+  [String.raw`E:\temp\tëd`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\françois`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\tomás`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\renée`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\núñez`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\björn`, String.raw`\docs\a.txt`],
+] as const)("redacts hexadecimal UTF-8 without decoding native separators in %s", async (home, suffix) => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+  const path = `${home}${suffix}`;
+  const bytes = separatorMatrixEncoders.hexUtf8.encode(path);
+  expect(decoders.hexBytes(bytes)).toBe(path);
+  const lower = bytes.replace(/\\x[\dA-F]{2}/gu, escape => escape.toLowerCase());
+  const value = `open ${bytes} now`;
+  for (const [input, expected] of [
+    [`open ${lower} now`, "open [home-token] now"],
+    [encodeURI(value), "[home-token]"],
+    [encodeURIComponent(value), "[home-token]"],
+    [JSON.stringify({ p: value, retained: 1 }), '{"p":"open [home-token] now","retained":1}'],
+    [JSON.stringify({ p: encodeURI(value), retained: 1 }), '{"p":"[home-token]","retained":1}'],
+    [encodeURI(JSON.stringify(value)), "[home-token]"],
+  ] as const) expect(redactHomePathsInText(input), input).toBe(expected);
+});
+
+it.each([String.raw`\\srv\share\Café`, String.raw`D:\fixtures\Café`, String.raw`E:\temp\tëd`, String.raw`\\srv\share\CafÃ©`])(
+  "redacts hexadecimal code units without decoding native separators in %s", async home => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    const units = home.replace(/[\u0080-\u00ff]/gu, character => `\\x${hex2(character.charCodeAt(0))}`);
+    expect(redactHomePathsInText(`open ${units}\\docs now`)).toBe("open [home-token] now");
+    expect(redactHomePathsInText(encodeURI(units))).toBe("[home-token]");
+  },
+);
+
 function expectMixedToken(
   redact: (text: string) => string, home: string, input: string, chain: readonly SeparatorEncoder[] = [],
 ): void {

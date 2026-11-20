@@ -220,6 +220,8 @@ const BACKSLASH_AND_URI_FAMILIES = ["full", "backslash", "percent-entity"] as co
 const DECODE_FAMILIES: readonly HomeEscapeFamily[] = [...BACKSLASH_AND_URI_FAMILIES, "percent", "entity"];
 const URI_AND_ENTITY_FAMILIES: readonly HomeEscapeFamily[] = ["full", "percent", "entity"];
 const INTRODUCER = /[\\%&]/u;
+const HEX_ESCAPE = /\\x[\dA-Fa-f]{2}/u;
+const UTF8_LEAD_ESCAPE = /\\x[C-Fc-f][\dA-Fa-f]/u;
 const BOUNDARY_CHARACTERS = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\"'`<>()[]{},|";
 
 function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform: NodeJS.Platform): HomeRedaction {
@@ -239,10 +241,16 @@ function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform
   const requiredPathCharacter = windows ? /^[a-z]:/iu.test(spellings[0] ?? "") ? ":" : "" : spellings[0]?.startsWith("/") ? "/" : "";
   const urls = new Set(slashHomes.map(spelling => `file://${spelling}`));
   if (standard) urls.add(standard);
+  const sibling = String.raw`(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
+  // A following drive prefix separates concatenated homes. Require a complete
+  // second home so sibling names and unrelated drive paths keep base behavior.
+  const driveHomes = windows ? slashHomes.filter(spelling => /^[a-z]:\//iu.test(spelling)) : [];
+  const following = driveHomes.map(spelling => homePattern(spelling, true)).join("|");
+  const end = following ? `(?:${sibling}|(?=(?:${following})${sibling}))` : sibling;
   const compile = (spelling: string, marker: string): HomeDetector => {
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
     const pattern = homePattern(spelling, windows, spelling === standard);
-    const source = String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
+    const source = `${start}${pattern}${end}`;
     return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker };
   };
   const forms = [
@@ -307,9 +315,15 @@ function escapeFamilies(view: string): readonly HomeEscapeFamily[] {
   const families = percent && entities
     ? backslashes ? DECODE_FAMILIES : URI_AND_ENTITY_FAMILIES
     : mixed ? BACKSLASH_AND_URI_FAMILIES : SINGLE_DECODE_FAMILY;
-  // Only a UTF-8 lead byte can make adjacent hexadecimal escapes diverge.
-  if (!backslashes || !/\\x[c-fC-F]/u.test(view)) return families;
-  return mixed ? [...families, "full-js", "backslash-js"] : [...families, "full-js"];
+  if (!backslashes || !HEX_ESCAPE.test(view)) return families;
+  // Hexadecimal serializers can leave the surrounding backslashes raw.
+  const candidates: HomeEscapeFamily[] = [...families, "hex", "json"];
+  // Only a UTF-8 lead byte can make the two hexadecimal readings diverge.
+  if (UTF8_LEAD_ESCAPE.test(view)) {
+    candidates.push("hex-js", "full-js");
+    if (mixed) candidates.push("backslash-js");
+  }
+  return candidates;
 }
 
 function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): boolean {

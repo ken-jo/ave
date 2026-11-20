@@ -31,9 +31,18 @@ function escapeFreeInputs(home: string, platform: HomePlatform): LiteralHomeCorp
     "/home/other/x /Users/other/y C:/Users/other/z",
     JSON.stringify({ p: path, other: 1 }), JSON.stringify(JSON.stringify({ p: path })),
   ]) inputs.push(["text", text]);
+  const slashHome = home.replaceAll("\\", "/");
+  for (const text of [`${home}${home}`, `${home}${slashHome}`, `${slashHome}${home}`, `${home}2${home}`]) {
+    inputs.push(["text", text]);
+  }
   if (windows) {
     const repeated = home.replaceAll("\\", "/").replace(/\/(?=[^/]+$)/u, "//");
     inputs.push(["path", `${repeated}/report.txt`]);
+    inputs.push(
+      ["text", `open ${home}${home}\\x now`],
+      ["text", `${home}${home}.old/file`],
+      ["text", `${home}F:/outside/file`],
+    );
   } else {
     inputs.push(
       ["path", `FILE://${home}/file`],
