@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -597,7 +598,7 @@ describe("Windows helper integrity", () => {
       const { source } = fixture();
       const resultPath = join(dirname(source), "result.json");
       const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode], {
-        cwd: repoRoot, env: { ...process.env, AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }, encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+        cwd: repoRoot, env: tsxChildEnv({ AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }), encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
       });
       expect(child.error).toBeUndefined();
       expect(child.status, child.stderr).toBe(0);

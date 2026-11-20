@@ -34,6 +34,7 @@ import {
 import { sandboxConfinementForPlatform } from "../../../shared/sandbox-capability-info.js";
 import { requireSandboxCases, sandboxCasesRequired } from "../../../plugins/isolation/__tests__/sandbox-cases.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import {
   __resetTerminalsForTest,
   _setTerminalInspectionForTest,
@@ -152,13 +153,18 @@ afterEach(async () => {
   stopMonitor = undefined;
   stopReleaseListener?.();
   stopReleaseListener = undefined;
-  if (isAsrtSandboxActive()) await resetAsrtSandbox();
-  await destination?.close();
-  destination = undefined;
-  setShellSandboxRequestedAtBoot(false);
-  __resetActiveSandboxCapabilityForTest();
-  if (dir !== undefined) await cleanupTmpDir(dir);
-  dir = undefined;
+  await cleanupAfterClosing([async () => {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+  }], [
+    () => destination?.close(),
+    () => {
+      destination = undefined;
+      setShellSandboxRequestedAtBoot(false);
+      __resetActiveSandboxCapabilityForTest();
+    },
+    async () => { if (dir !== undefined) await cleanupTmpDir(dir); },
+    () => { dir = undefined; },
+  ]);
 });
 
 interface Harness {

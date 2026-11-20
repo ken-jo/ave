@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -113,7 +114,7 @@ describe("durable task protocol", () => {
     const home = await isolate();
     const run = (action: string, id?: string) => JSON.parse(execFileSync(process.execPath,
       ["--import", "tsx", join(ROOT, "test/fixtures/mcp-tasks-store-process.mjs"), action, ...(id ? [id] : [])],
-      { cwd: ROOT, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_HOME: home, TMPDIR: home, TMP: home, TEMP: home }, encoding: "utf8" }).trim());
+      { cwd: ROOT, env: tsxChildEnv({ ELECTRON_RUN_AS_NODE: "1", AVE_HOME: home, TMPDIR: home, TMP: home, TEMP: home }), encoding: "utf8" }).trim());
     const completed = run("complete");
     expect(run("read", completed.taskId)).toEqual(completed);
     const working = run("working");

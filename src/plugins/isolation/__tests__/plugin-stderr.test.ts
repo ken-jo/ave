@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../../__tests__/support/tsx-child-env.js";
 import { spawnSync } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
@@ -76,7 +77,7 @@ describe("plugin stderr capture", () => {
   it("retains info diagnostics under the packaged logger default and raises explicit levels", () => {
     const result = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, [
       "--import", "tsx", "--input-type=module", "-e", PACKAGED_PROBE,
-    ], { encoding: "utf8", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", TSX_DISABLE_CACHE: "1" } });
+    ], { encoding: "utf8", env: tsxChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) });
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stderr)).toEqual({ level: "info" });
     const records = result.stdout.trim().split("\n").map((line) => JSON.parse(line));

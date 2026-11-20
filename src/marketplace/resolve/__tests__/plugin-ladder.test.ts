@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync } from "node:fs";
@@ -115,10 +116,11 @@ describe("plugin artifact ladder (design §6.2)", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    await removeFixtureRepo(emptyRepo);
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      () => removeFixtureRepo(emptyRepo),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(() => {

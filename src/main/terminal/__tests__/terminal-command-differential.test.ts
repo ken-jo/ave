@@ -19,6 +19,7 @@ import { analyzeShellForRules } from "../../../permissions/rules/shell-rule-matc
 import { wrapperPrefixLength } from "../../../permissions/rules/shell-prefix-policy.js";
 import { analyzeShell, staticShellWord } from "../../../shared/shell-analysis.js";
 import { TERMINAL_TEST_MODERN_BASH, TERMINAL_TEST_UTF8_LOCALE, TERMINAL_TEST_ZSH, ubuntuLikeNotFoundHandler } from "../../../__tests__/support/terminal-markers.js";
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 
 import { TERMINAL_CALLBACK_COMMANDS, TERMINAL_PRINT_DATA_COMMANDS, TERMINAL_PRINTF_DATA_COMMANDS, TERMINAL_PRINTF_UNCHECKED_COMMANDS, TERMINAL_REGISTRY_COMMANDS } from "../../../__tests__/support/terminal-registry-commands.js";
 
@@ -840,8 +841,9 @@ function plan(baseCommands: readonly string[] = BASE_COMMANDS): Plan {
 
 const opened: string[] = [];
 afterAll(async () => {
-  await Promise.all([...liveSessions].map((close) => close()));
-  for (const root of opened.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+  await cleanupAfterClosing([...liveSessions], opened.splice(0).map((root) => () => {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+  }));
 });
 
 const executeShell = promisify(execFile);

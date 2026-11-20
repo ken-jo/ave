@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, win32 } from "node:path";
+import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -198,7 +198,7 @@ export function sandboxProcessProfileEnvironment(
 }
 
 function createProfileDirectories(env: Readonly<Record<string, string>>): void {
-  for (const directory of new Set([
+  const directories = [...new Set([
     env.HOME,
     env.USERPROFILE,
     env.APPDATA,
@@ -211,9 +211,13 @@ function createProfileDirectories(env: Readonly<Record<string, string>>): void {
     env.TMPDIR,
     env.TEMP,
     env.TMP,
-  ])) {
-    if (directory) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  ])].filter((directory): directory is string => Boolean(directory));
+  // A path that is not absolute on this host is created under the working directory. A win32 profile joined onto a POSIX temp root is one such name (`\private\tmp\…\AppData\Local`), so every entry is checked before any is created.
+  const relative = directories.find(directory => !isAbsolute(directory));
+  if (relative !== undefined) {
+    throw new Error(`refusing sandbox process profile directory that is not an absolute path on this host: ${relative}`);
   }
+  for (const directory of directories) mkdirSync(directory, { recursive: true, mode: 0o700 });
 }
 
 // Give each process a fresh HOME and temp root so writable config cannot alter later commands; never store durable state there because cleanup discards it. POSIX homes live under a read-denied app root with only the process's own home re-allowed; Windows sets TEMP/TMP, while POSIX wrap/bootstrap owns TMPDIR.

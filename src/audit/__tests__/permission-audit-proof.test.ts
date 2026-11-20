@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
@@ -184,7 +185,7 @@ describe("permission audit terminal proof", () => {
         "--import", "tsx", "--input-type=module", "-e", child, moduleUrl, CHALLENGE,
       ], {
         cwd: process.cwd(),
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        env: tsxChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
         encoding: "utf8",
         timeout: 2_000,
       });

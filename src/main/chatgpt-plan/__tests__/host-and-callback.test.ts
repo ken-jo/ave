@@ -1,12 +1,18 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { request } from "node:http";
-import { Server } from "node:net";
+import { once } from "node:events";
+import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openFeatureNamespace } from "../../storage/feature-namespace.js";
 import { isChatGptPlanHostId, loadOrCreateChatGptPlanHostId } from "../host-id.js";
 import { startChatGptPlanCallbackListener } from "../loopback.js";
+import { afterQueuedCallbacks } from "../../../__tests__/support/deferred.js";
+
+vi.mock("node:http", async (original) => {
+  const actual = await original<typeof import("node:http")>();
+  return { ...actual, createServer: vi.fn(actual.createServer) };
+});
 
 const roots: string[] = [];
 const previousHome = process.env.AVE_HOME;
@@ -80,7 +86,7 @@ describe("plan-usage loopback callback", () => {
       expect((await get(`${listener.redirectUri}?code=evil&state=s2`)).status).toBe(404);
       // A rebinding host name reaches the same socket but names another host.
       expect((await get(`${listener.redirectUri}?code=evil&state=s1`, { host: `attacker.example:${port}` })).status).toBe(404);
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await afterQueuedCallbacks();
       expect(settled).toBe(false);
       expect((await get(`${listener.redirectUri}?code=c1&state=s1`)).status).toBe(200);
       expect((await listener.callback).searchParams.get("code")).toBe("c1");
@@ -105,12 +111,22 @@ describe("plan-usage loopback callback", () => {
 
   // The first fallback assignment reports a Fetch-blocked port; the browser could never reach it, so it must not reach the redirect URI.
   async function expectBlockedFirstPortRetried(start: () => ReturnType<typeof startChatGptPlanCallbackListener>): Promise<void> {
-    const address = vi.spyOn(Server.prototype, "address")
+    const unrelated = createServer().listen(0, "127.0.0.1");
+    await once(unrelated, "listening");
+    const factory = vi.mocked(createServer);
+    factory.mockClear();
+    const starting = start();
+    const server: Server | undefined = factory.mock.results[0]?.value;
+    if (!server) throw new Error("The callback did not create a server");
+    const address = vi.spyOn(server, "address")
       .mockReturnValueOnce({ address: "127.0.0.1", family: "IPv4", port: 6000 });
-    const close = vi.spyOn(Server.prototype, "close");
+    const close = vi.spyOn(server, "close");
     let listener: Awaited<ReturnType<typeof startChatGptPlanCallbackListener>> | undefined;
     try {
-      listener = await start();
+      const unrelatedClosed = once(unrelated, "close");
+      unrelated.close();
+      listener = await starting;
+      await unrelatedClosed;
       expect(close).toHaveBeenCalledTimes(1);
       address.mockRestore();
       expect(Number(new URL(listener.redirectUri).port)).not.toBe(6000);
@@ -120,6 +136,7 @@ describe("plan-usage loopback callback", () => {
       address.mockRestore();
       close.mockRestore();
       listener?.close();
+      await listener?.callback.catch(() => undefined);
     }
   }
 
@@ -136,5 +153,31 @@ describe("plan-usage loopback callback", () => {
 
   it("retries a Fetch-blocked port when no preferred port is requested", async () => {
     await expectBlockedFirstPortRetried(() => startChatGptPlanCallbackListener("s1", 0));
+  });
+
+  it("rejects a callback closed before the caller observes it", async () => {
+    const listener = await startChatGptPlanCallbackListener("s1");
+    listener.close();
+    await afterQueuedCallbacks();
+    await expect(listener.callback).rejects.toThrow(/callback listener closed/);
+  });
+
+  it("settles a pending callback when the server closes independently", async () => {
+    const create = vi.mocked(createServer);
+    create.mockClear();
+    const starting = startChatGptPlanCallbackListener("s1");
+    const server: Server | undefined = create.mock.results[0]?.value;
+    const listener = await starting;
+    const rejected = vi.fn();
+    const observed = listener.callback.catch(rejected);
+    try {
+      if (!server) throw new Error("The callback did not create a server");
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      await Promise.resolve();
+      expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: expect.stringMatching(/callback listener closed/) }));
+    } finally {
+      listener.close();
+      await observed;
+    }
   });
 });

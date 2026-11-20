@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { issueUserOwnedBrowserScope } from "../../../permissions/user-owned-browser-scope.js";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -22,9 +23,10 @@ beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "reviewer-model-audit-"));
 });
 afterEach(async () => {
-  await audit?.close();
-  audit = undefined;
-  await cleanupTmpDir(directory);
+  await cleanupAfterClosing([() => audit?.close()], [
+    () => { audit = undefined; },
+    () => cleanupTmpDir(directory),
+  ]);
 });
 
 describe("implicit reviewer model audit", () => {

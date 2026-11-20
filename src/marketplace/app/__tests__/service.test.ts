@@ -45,6 +45,7 @@ import { marketplaceEvents, startMarketplaceBackground, type BackgroundService }
 import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 import mixedHostProtocols from "../../__tests__/fixtures/mixed-host-protocols.json" with { type: "json" };
@@ -95,7 +96,8 @@ describe("MarketplaceService", () => {
   const marketSeeds = new Map<string, FixtureRepo>();
   const publishedSeeds = new Map<string, FixtureRepo>();
   let root: string;
-  let repos: FixtureRepo[] = [];
+  const repos: FixtureRepo[] = [];
+  const services: MarketplaceService[] = [];
   let counter = 0;
   let now: Date;
   let manager: FakeManager;
@@ -137,12 +139,11 @@ describe("MarketplaceService", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    for (const seed of marketSeeds.values()) await removeFixtureRepo(seed);
-    for (const seed of publishedSeeds.values()) await removeFixtureRepo(seed);
-    await removeFixtureRepo(emptyRepo);
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      ...[...marketSeeds.values(), ...publishedSeeds.values(), emptyRepo].map((repo) => () => removeFixtureRepo(repo)),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(async () => {
@@ -334,6 +335,7 @@ describe("MarketplaceService", () => {
         },
       },
     });
+    services.push(service);
   }
 
   afterEach(async () => {
@@ -341,10 +343,11 @@ describe("MarketplaceService", () => {
     _resetAveHomePrivacyForTest();
     __resetSandboxRequestedAtBootForTest();
     setProcessPlatform(ORIGINAL_PLATFORM);
-    service.close();
-    for (const repo of repos) await removeFixtureRepo(repo);
-    repos = [];
-    await cleanupTmpDir(root);
+    await cleanupAfterClosing(services.splice(0).map((service) => () => service.close()), [
+      ...repos.map((repo) => () => removeFixtureRepo(repo)),
+      () => { repos.length = 0; },
+      () => cleanupTmpDir(root),
+    ]);
   });
 
   function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { font?: boolean; language?: boolean } = {}) {
@@ -655,7 +658,7 @@ describe("MarketplaceService", () => {
 
   it("applies a default install from a managed source through the plan, once", async () => {
     const { url } = market();
-    service.close();
+    await service.close();
     await build(policyLoad({ additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
     await service.refresh();
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
@@ -679,7 +682,7 @@ describe("MarketplaceService", () => {
 
   it("tells how far a discovery got: every source, some, or none because the computer is offline (§18.7.1)", async () => {
     const { url } = market();
-    service.close();
+    await service.close();
     await build(policyLoad({ additional: [{ transport: "git", id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" } }] }));
     await service.refresh("corp");
     const synced = { status: "ok" as const, pinnedCommit: "a".repeat(40), changed: false };
@@ -712,7 +715,7 @@ describe("MarketplaceService", () => {
 
 
   it.each(["disable", "uninstall"])("preserves inert language receipts and payloads during source %s revocation", async (action) => {
-    service.close();
+    await service.close();
     const ledgerPath = join(root, "packages", "ledger.json");
     const ledger = await ContentLedger.open(ledgerPath);
     await ledger.put({ kind: "language", name: "korean", version: "1.0.0", origin: {
@@ -744,7 +747,7 @@ describe("MarketplaceService", () => {
 
   it("does not reinstall legacy languages when the official snapshot becomes available", async () => {
     const { url } = market("1.0.0", "ave", { language: true });
-    service.close();
+    await service.close();
     await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
     const applied = await AppliedDefaults.open(join(root, "packages", "default-installs.json"));
     legacyActivations = { providers: [] };
@@ -1030,7 +1033,7 @@ describe("MarketplaceService", () => {
 
   it("keeps a revoked package a requiredInstalls entry locks, and says so", async () => {
     const acme = market();
-    service.close();
+    await service.close();
     await build(policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "acme-tools" }] }));
     await addMarket(acme.url);
     await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
@@ -1047,7 +1050,7 @@ describe("MarketplaceService", () => {
   it("tells the switches which installed packages are required from the policy and their identity alone, whatever their source's health", async () => {
     const acme = market();
     const required = policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "acme-tools" }] });
-    service.close();
+    await service.close();
     await build(required);
     await addMarket(acme.url);
     const notes = { sourceId: "acme-tools", kind: "mcp" as const, name: "notes" };
@@ -1064,13 +1067,13 @@ describe("MarketplaceService", () => {
     const withdrawn = policyLoad({});
     const healthy = { acmeReads: true, installed: ["notes", "review"] };
     expect(await requiredNames()).toEqual({ ...healthy, required: ["notes"] });
-    service.close();
+    await service.close();
     await build(withdrawn);
     expect(await requiredNames()).toEqual({ ...healthy, required: [] });
     writeFileSync(join(root, "marketplaces", "acme-tools", "state.json"), "{broken");
     const damaged = { acmeReads: false, installed: ["notes", "review"] };
     expect(await requiredNames()).toEqual({ ...damaged, required: [] });
-    service.close();
+    await service.close();
     await build(required);
     expect(await requiredNames()).toEqual({ ...damaged, required: ["notes"] });
   });
@@ -1085,12 +1088,12 @@ describe("MarketplaceService", () => {
     const corp = market("1.0.0", "corp");
     const managed = (id: string, url: string) => ({ transport: "git" as const, id, url: normalizeSourceUrl(url), auth: { kind: "none" as const } });
     const additional = [managed("acme-tools", acme.url), managed("beta-tools", beta.url), managed("corp", corp.url)];
-    service.close();
+    await service.close();
     await build(policyLoad({ additional }));
     await service.refresh("acme-tools");
     await service.refresh("beta-tools");
     await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
-    service.close();
+    await service.close();
     await build(policyLoad({
       additional,
       requiredInstalls: [
@@ -1115,7 +1118,7 @@ describe("MarketplaceService", () => {
       "review: needs Ave 9.0.0",
     ]);
 
-    service.close();
+    await service.close();
     const met = policyLoad({
       additional,
       requiredInstalls: [
@@ -1131,7 +1134,7 @@ describe("MarketplaceService", () => {
 
   it("lists a requirement on a hidden source as unmet, and the boot pass skips it for the same reason (§10.2, §7.3)", async () => {
     const official = market("1.0.0", "ave");
-    service.close();
+    await service.close();
     await build(
       policyLoad({ allowDisablingOfficial: true, requiredInstalls: [{ source: "ave", kind: "skill", name: "review" }] }),
       { id: "ave", url: official.url, mirrors: [], auth: { kind: "none" } },
@@ -1406,7 +1409,7 @@ describe("MarketplaceService", () => {
 
   it("removes a revoked package when the requiredInstalls entry for it names another source", async () => {
     const acme = market();
-    service.close();
+    await service.close();
     await build(policyLoad({ requiredInstalls: [{ kind: "mcp", name: "notes", source: "other-tools" }] }));
     await addMarket(acme.url);
     await service.executeInstall((await service.planInstall({ sourceId: "acme-tools", kind: "mcp", name: "notes" })).planId);
@@ -1523,7 +1526,7 @@ describe("MarketplaceService", () => {
       snapshot?: (snapshot: Record<string, unknown>) => Record<string, unknown>;
     } = {}): Promise<string> {
       const configs = new Map(manager.configs);
-      service.close();
+      await service.close();
       const list = join(root, "marketplaces", "sources.json");
       writeFileSync(list, readFileSync(list, "utf8").replaceAll('"acme-tools"', JSON.stringify(TOKEN)));
       const moved = join(root, "marketplaces", TOKEN);
@@ -1738,7 +1741,7 @@ describe("MarketplaceService", () => {
 
   it("repairs an official source whose state file went missing, keeps its installs, and follows no link inside (§18.8)", async () => {
     const { url } = market("1.0.0", "ave");
-    service.close();
+    await service.close();
     await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
     await service.refresh("ave");
     const key = { sourceId: "ave", kind: "skill" as const, name: "review" };
@@ -1892,6 +1895,8 @@ describe("MarketplaceService", () => {
     await expect(service.previewSource({ input: url, auth: "none" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
     write({ requireHttps: false });
     expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
+    await service.close();
+    expect(readdirSync(join(root, "marketplaces", ".previews"))).toEqual([]);
   });
 
   it("treats a package required from two sources as a policy it cannot read: only the official source works, and the error names both (§12, §18.7.2)", async () => {
@@ -1900,7 +1905,7 @@ describe("MarketplaceService", () => {
       additional: [{ id: "corp", url: "https://git.corp.example/a" }],
       requiredInstalls: [{ kind: "skill", name: "review", source: "ave" }, { kind: "skill", name: "review", source: "corp" }],
     } }));
-    service.close();
+    await service.close();
     await build(await FilePolicySource.open(path));
     const { url } = market();
     const refused = service.previewSource({ input: url, auth: "none" });
@@ -1979,7 +1984,7 @@ describe("MarketplaceService", () => {
 
     it("runs the update check a sync's snapshot starts as its own operation, though it starts before that sync ends and outlives it", async () => {
       const { url, publish } = market();
-      service.close();
+      await service.close();
       const corp = { transport: "git" as const, id: "corp", url: normalizeSourceUrl(url), auth: { kind: "none" as const } };
       const policy = policySource(policyLoad({ additional: [corp] }));
       await build(policy);
@@ -2411,7 +2416,7 @@ describe("MarketplaceService", () => {
 
   it.each(REAL_ROWS)("a stopped scheduler over the real syncer: stopped during %s, which then %s, nothing reaches the renderer", async (_name, ending, hold) => {
     const { url } = market("1.0.0", "ave");
-    service.close();
+    await service.close();
     await build(policyLoad({}), { id: "ave", url, mirrors: [], auth: { kind: "none" } });
     let release: (() => void) | null = null;
     let fail: ((error: Error) => void) | null = null;

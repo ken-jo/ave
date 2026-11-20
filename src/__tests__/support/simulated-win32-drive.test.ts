@@ -1,13 +1,14 @@
 import * as childProcess from "node:child_process";
 import * as filesystem from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirs } from "../test-helpers.js";
 import { setProcessPlatform } from "./process-platform.js";
 import { useConfigurationOwner } from "./configuration-owner.js";
-import { simulatedConfigurationFs, simulatedConfigurationHandles, simulatedWindowsPathFacts } from "./simulated-win32-drive.js";
+import { simulatedConfigurationFs, simulatedConfigurationHandles, simulatedSandboxProcessHome, simulatedWindowsPathFacts } from "./simulated-win32-drive.js";
 import * as pathFacts from "../../shared/windows-path-facts.js";
 import * as configurationHandles from "../../shared/windows-configuration-handles.js";
+import type * as SandboxProcessHome from "../../permissions/sandbox-process-home.js";
 import { readAveHomeConfigurationFile, tryWithAveHomeConfigurationWrite, withAveHomeConfigurationWrite } from "../../shared/ave-home-configuration-access.js";
 
 vi.mock("node:fs", async original => (await import("./simulated-win32-drive.js")).simulatedConfigurationFs(await original(), "linux"));
@@ -69,5 +70,41 @@ describe("simulated configuration boundary", () => {
     await withAveHomeConfigurationWrite(file, async path => { filesystem.writeFileSync(path, '{"restricted":"queued"}'); });
     expect(readAveHomeConfigurationFile(file)?.toString()).toBe('{"restricted":"queued"}');
     expect(childProcess.execFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("simulated sandbox process HOME", () => {
+  const moduleWith = (createSandboxProcessHome: (...args: unknown[]) => unknown) =>
+    ({ createSandboxProcessHome }) as unknown as typeof SandboxProcessHome;
+
+  it("preserves the real HOME module on a captured Windows host", async () => {
+    const actual = moduleWith(vi.fn());
+    expect(await simulatedSandboxProcessHome(actual, "win32")).toBe(actual);
+  });
+
+  it.each(["linux", "darwin"] as const)("gives a simulated Windows HOME a host directory on a captured %s host", async nativeHost => {
+    const real = vi.fn(() => { throw new Error("Unexpected real HOME"); });
+    const simulated = await simulatedSandboxProcessHome(moduleWith(real), nativeHost);
+    setProcessPlatform("win32");
+    const homes = [simulated.createSandboxProcessHome(), simulated.createSandboxProcessHome("win32")];
+    for (const home of homes) {
+      try {
+        expect(isAbsolute(home.path)).toBe(true);
+        expect(filesystem.statSync(home.path).isDirectory()).toBe(true);
+        expect(home.env).toEqual({ HOME: home.path, USERPROFILE: home.path });
+      } finally { home.cleanup(); }
+      expect(filesystem.existsSync(home.path)).toBe(false);
+    }
+    expect(real).not.toHaveBeenCalled();
+  });
+
+  it("hands a host-platform HOME to the real module", async () => {
+    const fixture = { path: "/fixture-home", env: {}, cleanup: vi.fn() };
+    const real = vi.fn(() => fixture);
+    const simulated = await simulatedSandboxProcessHome(moduleWith(real), "linux");
+    setProcessPlatform("linux");
+    expect(simulated.createSandboxProcessHome()).toBe(fixture);
+    expect(simulated.createSandboxProcessHome("darwin")).toBe(fixture);
+    expect(real.mock.calls).toEqual([[], ["darwin"]]);
   });
 });
