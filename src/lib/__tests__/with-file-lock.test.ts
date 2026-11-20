@@ -112,6 +112,80 @@ describe("withFileLock", () => {
     }
   });
 
+  async function expectLeafAliasLockAttempts(
+    target: string,
+    alias: string,
+    expectedAttemptsWhileHeld: number,
+    acquire: typeof lockfile.lock = lockfile.lock.bind(lockfile),
+  ): Promise<void> {
+    const lock = vi.spyOn(lockfile, "lock").mockImplementation(acquire);
+    const firstEntered = deferred<void>();
+    const finishFirst = deferred<void>();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const first = withFileLock(target, async () => {
+      firstEntered.resolve();
+      await finishFirst.promise;
+      return "first";
+    }, { retries: 0 });
+    const firstResult = Promise.allSettled([first]);
+    try {
+      await Promise.race([firstEntered.promise, first]);
+      vi.setSystemTime(Date.now() + 30_000);
+      const preflightFinished = deferred<void>();
+      const realpathNative = realpath.native;
+      vi.spyOn(realpath, "native").mockImplementationOnce((path, callback) => {
+        realpathNative(path, (error, canonicalPath) => {
+          callback(error, canonicalPath);
+          preflightFinished.resolve();
+        });
+      });
+      const secondEntered = deferred<void>();
+      const finishSecond = deferred<void>();
+      const second = withFileLock(alias, async () => {
+        secondEntered.resolve();
+        await finishSecond.promise;
+        return "second";
+      }, { retries: 0 });
+      const results = Promise.allSettled([first, second]);
+      let attemptsWhileHeld: number;
+      try {
+        await Promise.race([preflightFinished.promise, second]);
+        attemptsWhileHeld = lock.mock.calls.length;
+        if (attemptsWhileHeld > 1) await Promise.race([secondEntered.promise, second]);
+      } finally {
+        finishFirst.resolve();
+        await firstResult;
+        finishSecond.resolve();
+        await results;
+      }
+      expect(await results).toEqual([
+        { status: "fulfilled", value: "first" },
+        { status: "fulfilled", value: "second" },
+      ]);
+      expect(attemptsWhileHeld).toBe(expectedAttemptsWhileHeld);
+      expect(lock.mock.calls.map(([path]) => path)).toEqual([target, alias]);
+    } finally {
+      finishFirst.resolve();
+      await firstResult;
+      vi.useRealTimers();
+    }
+  }
+
+  it.skipIf(process.platform === "linux")("queues a case-only leaf alias behind a stale-looking holder", async () => {
+    await expectLeafAliasLockAttempts(testFile, join(tmpDir, "SHARED.JSON"), 1);
+  });
+
+  it("uses one queue for NFC and NFD leaf spellings on darwin and win32", async () => {
+    const leaf = "shar\u00e9d.json";
+    const expectedAttempts = process.platform === "darwin" || process.platform === "win32" ? 1 : 2;
+    await expectLeafAliasLockAttempts(
+      join(tmpDir, leaf),
+      join(tmpDir, leaf.normalize("NFD")),
+      expectedAttempts,
+      async () => async () => {},
+    );
+  });
+
   it("creates a missing target and its parent", async () => {
     const newFile = join(tmpDir, "missing", "nonexistent.json");
     await withFileLock(newFile, async () => {

@@ -78,6 +78,8 @@ export class FileLockReleaseError<T> extends Error {
 
 /**
  * Queue through release so a stale-looking local holder cannot be replaced and release its successor.
+ * On `darwin` and `win32`, the queue folds leaf case and Unicode spelling. Distinct
+ * names can share a queue on case-sensitive or Unicode-normalization-sensitive volumes.
  * Not re-entrant: awaiting a same-key withFileLock from inside `fn` waits on itself forever. Same-key work started inside `fn` must not be awaited before `fn` returns.
  */
 export async function withFileLock<T>(
@@ -94,8 +96,13 @@ export async function withFileLock<T>(
       else resolve(canonicalPath);
     });
   });
-  const lockNamespace = join(canonicalParent, basename(lockPath));
-  const key = process.platform === "win32" ? lockNamespace.toLowerCase() : lockNamespace;
+  const leaf = basename(lockPath);
+  const platform = process.platform;
+  const queueLeaf = platform === "darwin" || platform === "win32"
+    ? leaf.normalize("NFC").toUpperCase().toLowerCase()
+    : leaf;
+  const queueParent = platform === "win32" ? canonicalParent.toLowerCase() : canonicalParent;
+  const key = join(queueParent, queueLeaf);
   return withQueuedFileWork(fileLockQueues, key, () => withCrossProcessFileLock(lockPath, fn, opts));
 }
 
