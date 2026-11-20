@@ -93,26 +93,31 @@ it.each(["D:\\", "\\\\server\\share\\"])("preserves every quote layer after a Wi
   }
 });
 
-const windowsRootRows = [
+const windowsQuoteRows = [
   { name: "drive root", home: "D:\\", path: "D:\\", expected: "[home]" },
   { name: "UNC root", home: "\\\\srv\\share\\", path: "\\\\srv\\share\\", expected: "[home]" },
   { name: "home under a root", home: "D:\\fixtures\\habitat", path: "D:\\fixtures\\habitat", expected: "[home]" },
+  ...["D:\\fixtures\\habitat", "\\\\srv\\share\\habitat"].flatMap(home => [
+    { name: "sibling", home, path: `${home}é/file`, expected: `${home}é/file` },
+    { name: "descendant", home, path: `${home}\\u0032\\file`, expected: "[home]\\u0032\\file" },
+  ]),
 ];
 
-it.each(windowsRootRows)("uses the enclosing quote width for $name", async ({ home, path, expected }) => {
+it.each(windowsQuoteRows)("uses the enclosing quote width for $name", async ({ home, path, expected }) => {
   const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, "win32");
   const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
   for (const redact of [redactHomePathsInText, redactJudgeText]) {
     expect(redact(`Open:${path}`)).toBe(`Open:${expected}`);
-    const payload = { p: `Open:"${path}"`, other: 1 };
-    const redacted = { p: `Open:"${expected}"`, other: 1 };
-    let input = JSON.stringify(payload);
-    let output = JSON.stringify(redacted);
-    for (let depth = 1; depth <= 3; depth++) {
-      expect(redact(input)).toBe(output);
-      expect(JSON.parse(serializeRuntimeAuditData(input) ?? "")).toBe(output);
-      input = JSON.stringify(input);
-      output = JSON.stringify(output);
+    const ascii = (p: string) => JSON.stringify({ p, other: 1 }).replaceAll("é", "\\u00e9");
+    for (const [prefix, suffix] of [["", ""], ['Open:"', '"'], ["Open ", ""]]) {
+      let input = ascii(`${prefix}${path}${suffix}`);
+      let output = ascii(`${prefix}${expected}${suffix}`);
+      for (let depth = 1; depth <= 3; depth++) {
+        expect(redact(input)).toBe(output);
+        expect(JSON.parse(serializeRuntimeAuditData(input) ?? "")).toBe(output);
+        input = JSON.stringify(input);
+        output = JSON.stringify(output);
+      }
     }
   }
 });

@@ -228,21 +228,6 @@ export function mayContainHomePath(value: string): boolean {
 
 const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
 
-function openingQuoteWidth(text: string, start: number): number | undefined {
-  if (text.charCodeAt(start - 1) !== 34) return undefined;
-  let prefix = start - 2;
-  while (text.charCodeAt(prefix) === 92) prefix--;
-  const quoteWidth = start - 1 - prefix;
-  if (quoteWidth === 1) return 2;
-  while (/[\t\r\n ]/u.test(text.charAt(prefix))) prefix--;
-  // A serialized value opener has 2^depth - 1 backslashes. A root
-  // separator in that value occupies twice its quote width.
-  if (prefix < 0 || !":,[".includes(text.charAt(prefix)) || (quoteWidth & (quoteWidth - 1)) !== 0) {
-    return undefined;
-  }
-  return quoteWidth * 2;
-}
-
 function windowsSeparatorEnd(text: string, start: number, width: number, escaped: boolean): number {
   let index = start;
   for (;;) {
@@ -280,7 +265,7 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveS
     let copied = 0;
     let pieces: string[] | undefined;
     const matches = preserveSiblings && !windowsRoot
-      ? homeComponentMatches(text, form, HOME_DECODE_LAYERS)
+      ? homeComponentMatches(text, form, HOME_DECODE_LAYERS, separatorWidth)
       : text.matchAll(literal);
     for (const match of matches) {
       let start = match.index;
@@ -348,18 +333,8 @@ function hasEncodedFilenameContinuation(text: string, start: number, limit: numb
   return someDecodedHomeView(candidate, layers, view => FILENAME_CONTINUATION.test(view));
 }
 
-function hasNativeSeparator(text: string, start: number, suffix: number): boolean {
-  if (text.charCodeAt(suffix) !== 92) return false;
-  // A native separator starts a descendant even when the name resembles an
-  // escape. A serialized separator uses the full slash width of its value.
-  const width = openingQuoteWidth(text, start) ?? 1;
-  let end = suffix + 1;
-  while (end < suffix + width && text.charCodeAt(end) === 92) end++;
-  return end === suffix + width;
-}
-
 /** Check continuation without using a decoded offset as a replacement boundary. */
-function* homeComponentMatches(text: string, form: HomeForm, layers: number): Generator<RegExpExecArray> {
+function* homeComponentMatches(text: string, form: HomeForm, layers: number, width: number): Generator<RegExpExecArray> {
   const matches = text.matchAll(form.literal);
   let next = matches.next();
   while (!next.done) {
@@ -369,8 +344,14 @@ function* homeComponentMatches(text: string, form: HomeForm, layers: number): Ge
     // suffix search revisit the rest of the input for every literal occurrence.
     const limit = next.done ? text.length : next.value.index;
     const suffix = match.index + match[0].length;
-    if (form.windows && hasNativeSeparator(text, match.index, suffix)
-      || !hasEncodedFilenameContinuation(text, suffix, limit, layers)) yield match;
+    if (form.windows) {
+      if (!hasCompleteWindowsSeparators(match[0], width)) continue;
+      if (windowsSeparatorEnd(text, suffix, width, false) > suffix) {
+        yield match;
+        continue;
+      }
+    }
+    if (!hasEncodedFilenameContinuation(text, suffix, limit, layers)) yield match;
   }
 }
 
@@ -386,7 +367,7 @@ function detectsEncodedHome(token: string, forms: readonly HomeDetector[], separ
       return false;
     }
     const remaining = HOME_DECODE_LAYERS - depth;
-    return !remaining || !homeComponentMatches(view, form, remaining).next().done;
+    return (!remaining && width === 1) || !homeComponentMatches(view, form, remaining, width).next().done;
   }), separatorWidth);
 }
 
