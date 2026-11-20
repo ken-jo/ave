@@ -547,10 +547,9 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
   // Boot sweeps private roots; use an owned temporary home, never the real application home.
-  const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
-  const roots = join(tmpdir(), "ave-bootstrap-integration-sandbox");
+  const roots = join(h.root, "sandbox");
   return {
     subscribeAsrtViolations: vi.fn(async () => () => {}),
     appOwnedSandboxTempRoot: vi.fn(() => join(roots, "tmp")),
@@ -627,14 +626,17 @@ import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 const savedAveHome = process.env["AVE_HOME"];
 process.env["AVE_HOME"] = `${h.root}/ave-home`;
 afterAll(async () => {
-  // Each full boot creates the scratch directory for this home; boot removes it on process exit, which a test worker never emits.
-  const scratch = aveScratchDir();
-  if (existsSync(scratch)) expect(removeAveScratchDirIfEmpty(scratch)).toEqual({ status: "removed" });
-  expect(existsSync(scratch), `${scratch} was left behind`).toBe(false);
-  const { rm } = await import("node:fs/promises");
-  await rm(h.root, { recursive: true, force: true });
-  if (savedAveHome === undefined) delete process.env["AVE_HOME"];
-  else process.env["AVE_HOME"] = savedAveHome;
+  try {
+    // Each full boot creates the scratch directory for this home; boot removes it on process exit, which a test worker never emits.
+    const scratch = aveScratchDir();
+    if (existsSync(scratch)) expect(removeAveScratchDirIfEmpty(scratch)).toEqual({ status: "removed" });
+    expect(existsSync(scratch), `${scratch} was left behind`).toBe(false);
+  } finally {
+    if (savedAveHome === undefined) delete process.env["AVE_HOME"];
+    else process.env["AVE_HOME"] = savedAveHome;
+    const { rm } = await import("node:fs/promises");
+    await rm(h.root, { recursive: true, force: true });
+  }
 });
 
 /** Observe process warnings before boot and keep the real implementation so leak checks cannot silence their evidence. */
