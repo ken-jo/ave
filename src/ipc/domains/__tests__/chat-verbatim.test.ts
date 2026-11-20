@@ -683,7 +683,14 @@ describe("ave:chat active main state", () => {
   it("persists the resolved project identity when the user explicitly selects a real project", async () => {
     // Explicit project selection persists metadata at creation for immediate project grouping.
     if (explicitTestProjectRoot === undefined) throw new Error("Explicit project fixture was not created");
-    const explicitProjectRoot = realpathSync(explicitTestProjectRoot);
+    const nativeRealpath = vi.spyOn(realpathSync, "native");
+    let explicitProjectRoot: string;
+    try {
+      explicitProjectRoot = realpathSync.native(explicitTestProjectRoot);
+      expect(nativeRealpath).toHaveBeenCalledExactlyOnceWith(explicitTestProjectRoot);
+    } finally {
+      nativeRealpath.mockRestore();
+    }
     const loop = makeConversationLoop("d1c00b95-b0af-4bd6-8179-4210161fffc3", []);
     const deps = await setupHandlers(loop);
 
