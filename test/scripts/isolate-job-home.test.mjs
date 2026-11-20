@@ -709,7 +709,7 @@ describe("Windows job root hardening", () => {
         ...PRINCIPALS.map(sid => `*${sid}:(OI)(CI)F`)]],
     ]);
     assert.equal(run.mock.calls[3].arguments[0], "powershell.exe");
-    const options = { encoding: "utf8", windowsHide: true, stdio: "pipe" };
+    const options = { encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 10_000 };
     for (const call of run.mock.calls.slice(0, 3)) assert.deepEqual(call.arguments[2], options);
     assert.deepEqual(run.mock.calls[3].arguments[2], { ...options, env: windowsPowerShellEnv() });
   });
@@ -754,6 +754,23 @@ describe("Windows job root hardening", () => {
       () => { throw new Error("DACL readback failed"); }), /DACL readback failed/);
     assert.equal(existsSync(root), false);
   });
+  for (const stage of ["child directory creation", "environment publication"]) {
+    it(`rolls back the new root on ${stage} failure`, () => {
+      const root = mkdtempSync(join(tmpdir(), "ave-job-publish-"));
+      const error = new Error(`Could not finish ${stage}`);
+      const publish = mock.fn(() => {
+        mkdirSync(join(root, "home"));
+        throw error;
+      });
+      try {
+        assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" },
+          () => root, mock.fn(), () => "1:2:3", publish), caught => caught === error);
+        assert.equal(publish.mock.callCount(), 1);
+        assert.equal(existsSync(root), false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
   it("propagates command failures and malformed readback", () => {
     for (const run of [() => { throw new Error("command failed"); }, () => "invalid JSON"]) {
       assert.throws(() => hardenWindowsJobRoot("C:\\ave-ci-abc123", run));

@@ -19,7 +19,7 @@ function runJobRootCommand(command, args, options) {
 }
 
 export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
-  const options = { encoding: "utf8", windowsHide: true, stdio: "pipe" };
+  const options = { encoding: "utf8", windowsHide: true, stdio: "pipe", timeout: 10_000 };
   const identity = run("whoami.exe", ["/user", "/fo", "csv", "/nh"], options);
   const sids = identity.trim().split(",").map(field => field.trim().replace(/^"|"$/g, ""))
     .filter(field => /^S-/.test(field));
@@ -51,32 +51,43 @@ export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
 }
 
 export function isolationAssignments(
-  { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot, readIdentity = readJobRootIdentity,
+  { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
+  readIdentity = readJobRootIdentity, publish = () => {},
 ) {
-  const paths = platform === "win32" ? win32 : posix;
-  const root = platform === "win32" ? create(paths.join(systemVolume(systemRoot), "ave-ci-")) : runnerTemp;
-  const identity = platform === "win32" ? readIdentity(root) : undefined;
-  if (platform === "win32") {
-    try { harden(root); } catch (error) {
-      assertOwnedRoot(root, identity, readIdentity);
-      rmSync(root, { recursive: true, force: true });
-      throw error;
+  const windows = platform === "win32";
+  const paths = windows ? win32 : posix;
+  const root = windows ? create(paths.join(systemVolume(systemRoot), "ave-ci-")) : runnerTemp;
+  const identity = windows ? readIdentity(root) : undefined;
+  try {
+    if (windows) harden(root);
+    const home = paths.join(root, "home");
+    const temp = paths.join(root, "tmp");
+    // Leave room for confined-process socket names and their terminators.
+    if (platform === "darwin" && Buffer.byteLength(temp) + 32 > 103) {
+      throw new Error("Job temp directory is too long for a Unix socket path");
     }
+    const values = {
+      HOME: home, USERPROFILE: home, AVE_HOME: paths.join(home, ".ave"),
+      TMPDIR: temp, TEMP: temp, TMP: temp,
+      ...(windows ? {
+        LOCALAPPDATA: paths.join(home, "local-app-data"), APPDATA: paths.join(home, "app-data"),
+        AVE_TEST_TMP_ROOT: paths.join(home, ".ave-test-tmp"),
+        AVE_CI_JOB_ROOT: root, AVE_CI_JOB_ROOT_IDENTITY: identity,
+      } : {}),
+    };
+    publish(values);
+    return values;
+  } catch (error) {
+    if (windows) {
+      try {
+        assertOwnedRoot(root, identity, readIdentity);
+        rmSync(root, { recursive: true, force: true });
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Job isolation setup and rollback failed");
+      }
+    }
+    throw error;
   }
-  const home = paths.join(root, "home");
-  const temp = paths.join(root, "tmp");
-  // Leave room for confined-process socket names and their terminators.
-  if (platform === "darwin" && Buffer.byteLength(temp) + 32 > 103) {
-    throw new Error("Job temp directory is too long for a Unix socket path");
-  }
-  return {
-    HOME: home, USERPROFILE: home, AVE_HOME: paths.join(home, ".ave"),
-    TMPDIR: temp, TEMP: temp, TMP: temp,
-    ...(platform === "win32" ? {
-      LOCALAPPDATA: paths.join(home, "local-app-data"), APPDATA: paths.join(home, "app-data"),
-      AVE_TEST_TMP_ROOT: paths.join(home, ".ave-test-tmp"), AVE_CI_JOB_ROOT: root, AVE_CI_JOB_ROOT_IDENTITY: identity,
-    } : {}),
-  };
 }
 
 export function validateJobHomeRoot(root, systemRoot) {
@@ -152,11 +163,13 @@ async function main() {
   }
   const { RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv, SystemRoot: systemRoot } = process.env;
   if (!runnerTemp || !githubEnv) throw new Error("RUNNER_TEMP and GITHUB_ENV must be set");
-  const values = isolationAssignments({ platform: process.platform, runnerTemp, systemRoot });
-  for (const path of [values.HOME, values.TEMP, values.LOCALAPPDATA, values.APPDATA]) {
-    if (path !== undefined) mkdirSync(path, { recursive: true });
-  }
-  appendFileSync(githubEnv, Object.entries(values).map(([name, value]) => `${name}=${value}\n`).join(""));
+  const values = isolationAssignments({ platform: process.platform, runnerTemp, systemRoot },
+    mkdtempSync, hardenWindowsJobRoot, readJobRootIdentity, assignments => {
+      for (const path of [assignments.HOME, assignments.TEMP, assignments.LOCALAPPDATA, assignments.APPDATA]) {
+        if (path !== undefined) mkdirSync(path, { recursive: true });
+      }
+      appendFileSync(githubEnv, Object.entries(assignments).map(([name, value]) => `${name}=${value}\n`).join(""));
+    });
   for (const [name, value] of Object.entries(values)) console.log(`${name} = ${value}`);
 }
 
