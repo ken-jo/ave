@@ -77,17 +77,18 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
   };
 });
 
-/** Use a synthetic POSIX home when emulating Windows to avoid cwd-relative drive paths. */
+/** `on` forces a synthetic home for the Windows grant cases on every host. Otherwise the simulated-win32 factory keeps real profile creation on a native host and gives emulated Windows a host directory instead of cwd-relative profile paths. */
 const fakeSandboxHome = vi.hoisted(() => ({ on: false }));
 vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/sandbox-process-home.js")>();
+  const simulated = await (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedSandboxProcessHome(actual);
   const fs = await import("node:fs");
   const os = await import("node:os");
   const path = await import("node:path");
   return {
     ...actual,
     createSandboxProcessHome: (...args: Parameters<typeof actual.createSandboxProcessHome>) => {
-      if (!fakeSandboxHome.on) return actual.createSandboxProcessHome(...args);
+      if (!fakeSandboxHome.on) return simulated.createSandboxProcessHome(...args);
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "oop-fake-sandbox-home-"));
       return { path: home, env: { HOME: home }, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
     },
