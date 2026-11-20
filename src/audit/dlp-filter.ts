@@ -8,9 +8,7 @@ import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import {
-  bracedHomeEscapeEnd, decodeHomeEscapes, type HomeEscapeFamily, mayDecodeHomeCharacter,
-} from "./home-path-decode.js";
+import { decodeHomeEscapes, type HomeEscapeFamily, mayDecodeHomeCharacter } from "./home-path-decode.js";
 
 export {
   initPiiRedactionPolicy,
@@ -223,7 +221,7 @@ export function mayContainHomePath(value: string): boolean {
   return homeRedaction.trigger.test(value);
 }
 
-const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtuvx"].map(character => character.charCodeAt(0)));
+const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
   for (const { literal, marker } of forms) {
@@ -310,10 +308,7 @@ function replaceEncodedHomeTokens(
         start = index;
       } else {
         introduced = true;
-        const digits = end + 2;
-        const escapedEnd = text.charCodeAt(end) === 117 && text.charCodeAt(end + 1) === 123
-          ? bracedHomeEscapeEnd(text, digits) : digits;
-        index = escapedEnd === digits ? end : escapedEnd;
+        index = end;
       }
     } else if (boundaries.has(code)) {
       finish(index);

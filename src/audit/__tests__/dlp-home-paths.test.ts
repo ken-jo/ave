@@ -519,12 +519,12 @@ describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (pla
   });
 });
 
-it("redacts URL descendants when the home already ends in a separator", async () => {
+it("keeps a descendant file URL when the configured home is an unsupported POSIX root", async () => {
   fixture.platform = "linux";
   fixture.home = "/";
   vi.resetModules();
   const { redactFsPath } = await import("../dlp-filter.js");
-  expect(redactFsPath("file:///etc/config")).toBe("file://<home>etc/config");
+  expect(redactFsPath("file:///etc/config")).toBe("file:///etc/config");
 });
 
 it("keeps encoded descendant bytes for a canonical UNC file URL", async () => {

@@ -3328,9 +3328,9 @@ entity escaping, the redactor replaces its whole original token. Malformed
 escapes and deeper encodings are outside this contract. On Windows and macOS
 the home matcher uses Unicode case folding.
 
-JavaScript source in inputs and logs can use braced Unicode escapes, legacy
-octal escapes, and hexadecimal code units. Detection also supports hexadecimal
-UTF-8 byte escapes, which can decode the same bytes differently.
+Detection supports JSON string escapes, percent encodings, the supported HTML
+entities, and hexadecimal `\xHH` escapes as UTF-8 bytes or JavaScript code
+units. Braced Unicode and octal escapes are outside the supported families.
 
 Home spellings containing a double quote, a control character or a filename
 backslash on POSIX are unsupported. A configured home that is itself a
