@@ -594,7 +594,7 @@ describe("Windows job root query", () => {
     assert.match(output({ diagnostic }), /Cleanup path scan reached its inspection or reporting limit/);
     assert.match(output({ diagnostic }), /Cleanup process scan reached its inspection or reporting limit/);
     assert.doesNotMatch(output({ diagnostic }), /SYNTHETIC|secret|CommandLine|env|entry-20|pid=4020/);
-    const [, , options] = run.mock.calls[1].arguments;
+    const [, , options] = run.mock.calls[0].arguments;
     const script = options.env[QUERY_VARIABLE];
     assert.ok(script.includes("$root = 'C:\\fixture''s'"));
     assert.match(script, /Get-CimInstance Win32_Process/);
@@ -652,7 +652,7 @@ describe("Windows job root hardening", () => {
       await diagnoseJobRoot("C:\\ave-ci-abc123", mock.fn(), query);
       for (const run of [harden, query]) {
         const calls = run.mock.calls.filter(call => call.arguments[0] === "powershell.exe");
-        assert.equal(calls.length, run === query ? 2 : 1);
+        assert.equal(calls.length, 1);
         for (const { arguments: [, , options] } of calls) {
           assert.ok(options.env);
           const { [QUERY_VARIABLE]: script, ...env } = options.env;

@@ -765,10 +765,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/fetch-mxc.mjs --arch x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $helper = Join-Path $PWD 'node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
-          & $helper install
+          & './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $status = & $helper user status | ConvertFrom-Json
+          $status = & './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or !$status.user.exists -or !$status.cred_present) {
             throw 'Native sandbox provisioning did not produce a usable account'
           }
