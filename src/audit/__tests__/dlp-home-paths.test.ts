@@ -537,6 +537,28 @@ describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (pla
   });
 });
 
+it("redacts emitted proxy properties without invoking their prototype trap", async () => {
+  await loadHomeRedactor("linux");
+  const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const { stringifyHomeRedacted } = await import("../home-path-json.js");
+  const home = fixture.home;
+  const trap = vi.fn((): never => { throw new RangeError("application prototype trap"); });
+  for (const [target, expected] of [
+    [{ [home]: `${home}/file` }, { "[home]": "[home]/file" }],
+    [{ [home]: `${home}/file`, "[home]": 2, other: 1 }, { "[home]#2": "[home]/file", "[home]": 2, other: 1 }],
+  ]) {
+    const proxy = new Proxy(target, { getPrototypeOf: trap });
+    expect(JSON.parse(JSON.stringify(proxy))).toEqual(target);
+    expect(trap).not.toHaveBeenCalled();
+    const request = judgeRequest({ invocation: judgeInvocation({ finalInput: { argument: proxy } }) });
+    expect(JSON.parse(redactJudgeRequest(request).tool.input.argument)).toEqual(expected);
+    expect(JSON.parse(stringifyHomeRedacted(proxy) ?? "")).toEqual(expected);
+    expect(JSON.parse(serializeRuntimeAuditData(proxy) ?? "")).toEqual(expected);
+    expect(trap).not.toHaveBeenCalled();
+  }
+});
+
 it("keeps a descendant file URL when the configured home is an unsupported POSIX root", async () => {
   fixture.platform = "linux";
   fixture.home = "/";

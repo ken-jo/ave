@@ -1,4 +1,4 @@
-import { isStringObject } from "node:util/types";
+import { isProxy, isStringObject } from "node:util/types";
 import { mayContainHomePath, redactHomePathsInText } from "./dlp-filter.js";
 
 interface RenamedKey {
@@ -78,7 +78,10 @@ function replaceSerializedKeys(serialized: string, renames: ReadonlyMap<number, 
   return output + serialized.slice(copied);
 }
 
-function isPlainRecord(value: object): boolean {
+function hasRedactableKeys(value: object): boolean {
+  // Use the properties emitted by the native serializer for proxies. Inspecting
+  // their prototypes would invoke a hook that serialization does not call.
+  if (isProxy(value)) return true;
   const prototype: unknown = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
@@ -95,9 +98,9 @@ export function stringifyHomeRedacted(value: unknown): string | undefined {
   const replace = function (this: object, key: string, current: unknown): unknown {
     if (root) root = false;
     else if (!Array.isArray(this) && isEmittedProperty(current)) {
-      if (mayContainHomePath(key) && isPlainRecord(this)) {
+      if (mayContainHomePath(key)) {
         const target = redactHomePathsInText(key);
-        if (key !== target) {
+        if (key !== target && hasRedactableKeys(this)) {
           renames ??= new Map();
           renames.set(property, { source: key, target });
         }
