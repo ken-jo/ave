@@ -1839,10 +1839,10 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     // USERPROFILE=`C:\` is not a home: every deny on the drive would look like a profile row disjoint from the grants.
     const driveRoot = ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32" ? parse(tmpdir()).root : "/";
-    process.env.AVE_ASRT_TEST_HOME = driveRoot;
     const root = mkdtempSync(join(tmpdir(), "ave-root-profile-deny-"));
-    setProcessPlatform("win32");
     try {
+      process.env.AVE_ASRT_TEST_HOME = driveRoot;
+      setProcessPlatform("win32");
       const locked = join(root, "locked");
       writeFileSync(locked, "fixture");
       const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true, denyWrite: [locked] });
