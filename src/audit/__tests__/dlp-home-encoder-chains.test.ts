@@ -198,7 +198,7 @@ function expectMixedToken(
 const listingSeparators = ["\n", "\r\n", "\b", "\f", "\u0001", "\t"];
 const jsonValueCodecs = ["string", "object", "array", "ascii"] as const;
 const controlRunChains: SeparatorEncoder[][] = jsonValueCodecs.flatMap(first =>
-  [...jsonValueCodecs, "uri" as const].map(next => [first, next, "uri"]));
+  [...jsonValueCodecs, "uri" as const].map<SeparatorEncoder[]>(next => [first, next, "uri"]));
 
 it.each([String.raw`C:\Users\bob`, String.raw`D:\fixtures\habitat`, String.raw`E:\temp\ted`, String.raw`\\srv\share\habitat`])(
   "redacts a whole mixed token after slash runs for %s", async home => {
