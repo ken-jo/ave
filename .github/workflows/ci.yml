@@ -1301,7 +1301,7 @@ jobs:
         working-directory: ave
         run: bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
       - name: Stop Windows launch diagnostic and print evidence
-        if: always() && steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
+        if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         continue-on-error: true
         shell: powershell
         working-directory: ${{ runner.temp }}
@@ -1319,7 +1319,7 @@ jobs:
           $script = Join-Path $scripts 'watch-windows-processes.mjs'
           if (Test-Path -LiteralPath $script) { node $script print $dir }
       - name: Upload Windows launch evidence
-        if: always() && steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
+        if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
