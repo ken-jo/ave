@@ -187,7 +187,7 @@ it.each([
   const path = `${home}${suffix}`;
   const bytes = separatorMatrixEncoders.hexUtf8.encode(path);
   expect(decoders.hexBytes(bytes)).toBe(path);
-  const lower = bytes.replace(/\\x[\dA-F]{2}/gu, escape => escape.toLowerCase());
+  const lower = bytes.replace(/\\x[\dA-F]{2}/gu, byteEscape => byteEscape.toLowerCase());
   const value = `open ${bytes} now`;
   for (const [input, expected] of [
     [`open ${lower} now`, "open [home-token] now"],
