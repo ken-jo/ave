@@ -1,4 +1,5 @@
 /** Published protocol schemas must match served contracts and remain reproducible across platform line endings. */
+import { tsxChildEnv } from "../../../__tests__/support/tsx-child-env.js";
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
@@ -392,7 +393,7 @@ describe("the command line always reports an outcome", () => {
       ["--import", "tsx", join(scriptsDir, "generate-plugin-host-protocol-schema.ts"), ...args],
       {
         cwd: REPO_ROOT,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        env: tsxChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
         encoding: "utf8",
         timeout: 120_000,
       },

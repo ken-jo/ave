@@ -1,4 +1,5 @@
 // A killed process must retain completed work and partial text without rerunning interrupted tools.
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,7 +33,7 @@ function startWriter(mode: "stream" | "tool-hang", ready: RegExp): { ready: Prom
   const proc = spawn(
     process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath,
     ["--import=tsx", fixture, home, SESSION_ID, String(TOOL_ROUNDS), mode],
-    { cwd: repoRoot, env: { ...process.env, HOME: home, AVE_HOME: home }, stdio: ["ignore", "pipe", "pipe"] },
+    { cwd: repoRoot, env: tsxChildEnv({ HOME: home, AVE_HOME: home }), stdio: ["ignore", "pipe", "pipe"] },
   );
   child = proc;
   let stdout = "";

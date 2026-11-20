@@ -51,6 +51,7 @@
     ],
     "out-of-process": [
       "src/__tests__/packaging-discipline-source.test.ts",
+      "src/__tests__/tsx-child-env.test.ts",
       "src/audit/__tests__/hmac-chain.test.ts",
       "src/audit/__tests__/permission-audit-proof.test.ts",
       "src/boot/steps/__tests__/desktop-network-fetch-lease.test.ts",
