@@ -7,7 +7,7 @@ import { windowsTestFileMarkers } from "../.github/scripts/windows-test-file-mar
 import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-electron.mjs";
 import { documentGuardImportArgument } from "../scripts/lib/document-consumer-node-options.mjs";
 import { assertAllowedDocumentRead } from "../scripts/lib/document-consumer-guard.mjs";
-import BoundarySequencer, { PermissionStepSequencer } from "./vitest-sequencer.js";
+import BoundarySequencer from "./vitest-sequencer.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
@@ -33,7 +33,6 @@ const rendererTestGlobs = [
 const permissionTimingTests = [
   "src/permissions/__tests__/permission-decision-cost.test.ts",
   "src/permissions/__tests__/permission-adversarial-performance.test.ts",
-  ...(fileMarkers ? ["src/shared/__tests__/tool-result-trim.test.ts"] : []),
 ];
 
 // Match the isolation seam by file identity so aliases and links also load the test guard.
@@ -93,7 +92,7 @@ export default defineConfig({
     globalSetup: [rootPath("config/vitest.globalSetup.ts")],
     // Boot fixtures retain calls from beforeAll; each suite owns mock cleanup.
     clearMocks: false,
-    sequence: { sequencer: fileMarkers ? PermissionStepSequencer : BoundarySequencer },
+    sequence: { sequencer: BoundarySequencer },
     testTimeout: 45000,
     hookTimeout: 45000,
     // Limit workers to leave CPU headroom for subprocess-heavy tests.

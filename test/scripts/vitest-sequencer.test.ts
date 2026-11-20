@@ -1,14 +1,14 @@
 import { BaseSequencer, type TestSpecification, type Vitest } from "vitest/node";
 import { describe, expect, it } from "vitest";
-import BoundarySequencer, { PermissionStepSequencer } from "../../config/vitest-sequencer.js";
+import BoundarySequencer from "../../config/vitest-sequencer.js";
 
 function context(index = 1, count = 4): Vitest {
   return { config: { root: "/workspace", shard: { index, count } },
     cache: { getTestSpecificationResult: () => undefined } } as unknown as Vitest;
 }
-function spec(name: string, groupOrder = 0, projectName = "node", include: string[] = []): TestSpecification {
+function spec(name: string, groupOrder = 0, projectName = "node"): TestSpecification {
   return { moduleId: `/workspace/${name}`, project: { name: projectName,
-    config: { sequence: { groupOrder }, isolate: true, include } } } as unknown as TestSpecification;
+    config: { sequence: { groupOrder }, isolate: true } } } as unknown as TestSpecification;
 }
 const partitions = Array.from({ length: 12 }, (_, index) =>
   spec(`src/permissions/__tests__/powershell-encoded-unicode/boundary-${index}.test.ts`));
@@ -52,12 +52,5 @@ describe("exhaustive boundary scheduling", () => {
       new BoundarySequencer(context(index, 2)).shard([first, second])));
     expect(new Set(results.flat())).toEqual(new Set([first, second]));
     expect(results.flat()).toHaveLength(2);
-  });
-  it("runs the permission step's serial files in include order after the other projects", async () => {
-    const order = ["decision-cost.test.ts", "adversarial.test.ts", "trim.test.ts"];
-    const serial = order.map(file => spec(file, 1, "permission-timing", order));
-    const file = ordinary[0];
-    const files = [serial[2], file, serial[1], serial[0]];
-    expect(await new PermissionStepSequencer(context()).sort(files)).toEqual([file, ...serial]);
   });
 });
