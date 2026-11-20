@@ -21,6 +21,7 @@ import { policyLoad, policySource } from "../../../marketplace/__tests__/fixture
 import { translate } from "../../../i18n/translate.js";
 import { ENTRY_SUBJECT, failureText, warningText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
 import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 
 vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
@@ -170,14 +171,7 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
 const setupHomes: string[] = [];
 
 async function closeFolderServicesAndRemoveRoot(root: string, ...services: { close(): Promise<void> }[]): Promise<void> {
-  try {
-    const results = await Promise.allSettled(services.map(async (service) => service.close()));
-    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-    if (errors.length === 1) throw errors[0];
-    if (errors.length > 1) throw new AggregateError(errors, "Folder fixture cleanup failed");
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+  await cleanupAfterClosing(services.map((service) => () => service.close()), [() => rmSync(root, { recursive: true, force: true })]);
 }
 
 // Registration imports the shutdown module lazily; load the mock first so every registration's hook reaches it.

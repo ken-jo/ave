@@ -45,6 +45,7 @@ import { marketplaceEvents, startMarketplaceBackground, type BackgroundService }
 import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 import mixedHostProtocols from "../../__tests__/fixtures/mixed-host-protocols.json" with { type: "json" };
@@ -95,7 +96,8 @@ describe("MarketplaceService", () => {
   const marketSeeds = new Map<string, FixtureRepo>();
   const publishedSeeds = new Map<string, FixtureRepo>();
   let root: string;
-  let repos: FixtureRepo[] = [];
+  const repos: FixtureRepo[] = [];
+  const services: MarketplaceService[] = [];
   let counter = 0;
   let now: Date;
   let manager: FakeManager;
@@ -137,12 +139,11 @@ describe("MarketplaceService", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    for (const seed of marketSeeds.values()) await removeFixtureRepo(seed);
-    for (const seed of publishedSeeds.values()) await removeFixtureRepo(seed);
-    await removeFixtureRepo(emptyRepo);
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      ...[...marketSeeds.values(), ...publishedSeeds.values(), emptyRepo].map((repo) => () => removeFixtureRepo(repo)),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(async () => {
@@ -334,6 +335,7 @@ describe("MarketplaceService", () => {
         },
       },
     });
+    services.push(service);
   }
 
   afterEach(async () => {
@@ -341,10 +343,11 @@ describe("MarketplaceService", () => {
     _resetAveHomePrivacyForTest();
     __resetSandboxRequestedAtBootForTest();
     setProcessPlatform(ORIGINAL_PLATFORM);
-    await service.close();
-    for (const repo of repos) await removeFixtureRepo(repo);
-    repos = [];
-    await cleanupTmpDir(root);
+    await cleanupAfterClosing(services.splice(0).map((service) => () => service.close()), [
+      ...repos.map((repo) => () => removeFixtureRepo(repo)),
+      () => { repos.length = 0; },
+      () => cleanupTmpDir(root),
+    ]);
   });
 
   function market(skillVersion = "1.0.0", indexName = "acme-tools", options: { font?: boolean; language?: boolean } = {}) {
@@ -1892,6 +1895,8 @@ describe("MarketplaceService", () => {
     await expect(service.previewSource({ input: url, auth: "none" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
     write({ requireHttps: false });
     expect(await service.previewSource({ input: url, auth: "none" })).toMatchObject({ type: "marketplace" });
+    await service.close();
+    expect(readdirSync(join(root, "marketplaces", ".previews"))).toEqual([]);
   });
 
   it("treats a package required from two sources as a policy it cannot read: only the official source works, and the error names both (§12, §18.7.2)", async () => {

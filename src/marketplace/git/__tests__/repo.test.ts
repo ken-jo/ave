@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { execFile } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,11 +71,11 @@ describe("BareRepo", () => {
     remote = { url: normalizeSourceUrl(server.url("market")), sourceId: "fixture", allowHttp: true, useToken: false, credentialsAllowed: true, addressPolicy: () => "allow" };
   });
   afterAll(async () => {
-    await t.cleanup();
-    await server.close();
-    await removeFixtureRepo(repo);
-    await cleanupTmpDir(root);
-    await cleanupTmpDir(scratch);
+    await cleanupAfterClosing([() => t.cleanup(), () => server.close()], [
+      () => removeFixtureRepo(repo),
+      () => cleanupTmpDir(root),
+      () => cleanupTmpDir(scratch),
+    ]);
   });
 
   it("refuses the all-zero object id before git runs (a legacy grant pin has no tree, design §16.3)", async () => {
