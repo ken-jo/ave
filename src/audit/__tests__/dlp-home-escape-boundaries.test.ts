@@ -79,7 +79,7 @@ it.each(["D:\\", "\\\\server\\share\\"])("preserves every quote layer after a Wi
     [`${stem}"`, `${stem}"`],
     [`${home}"`, '[home]"'],
     [home, "[home]"],
-    [`Open ${home}"`, 'Open [home]\\"'],
+    [`Open ${home}"`, 'Open [home]"'],
   ];
   for (const [value, expected] of cases) {
     const fields = { p: value, other: 1 };
@@ -89,6 +89,30 @@ it.each(["D:\\", "\\\\server\\share\\"])("preserves every quote layer after a Wi
       let output = redactHomePathsInText(text);
       for (let current = 1; current < depth; current++) output = JSON.parse(output);
       expect(JSON.parse(output), text).toEqual({ p: expected, other: 1 });
+    }
+  }
+});
+
+const windowsRootRows = [
+  { name: "drive root", home: "D:\\", path: "D:\\", expected: "[home]" },
+  { name: "UNC root", home: "\\\\srv\\share\\", path: "\\\\srv\\share\\", expected: "[home]" },
+  { name: "home under a root", home: "D:\\fixtures\\habitat", path: "D:\\fixtures\\habitat", expected: "[home]" },
+];
+
+it.each(windowsRootRows)("uses the enclosing quote width for $name", async ({ home, path, expected }) => {
+  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, "win32");
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  for (const redact of [redactHomePathsInText, redactJudgeText]) {
+    expect(redact(`Open:${path}`)).toBe(`Open:${expected}`);
+    const payload = { p: `Open:"${path}"`, other: 1 };
+    const redacted = { p: `Open:"${expected}"`, other: 1 };
+    let input = JSON.stringify(payload);
+    let output = JSON.stringify(redacted);
+    for (let depth = 1; depth <= 3; depth++) {
+      expect(redact(input)).toBe(output);
+      expect(JSON.parse(serializeRuntimeAuditData(input) ?? "")).toBe(output);
+      input = JSON.stringify(input);
+      output = JSON.stringify(output);
     }
   }
 });

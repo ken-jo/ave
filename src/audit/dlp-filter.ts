@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
 import { decodeHomeEscapes, type HomeEscapeFamily } from "./home-path-decode.js";
+import { rewriteWindowsPathText } from "./home-path-quote-frames.js";
 
 export {
   initPiiRedactionPolicy,
@@ -239,21 +240,17 @@ function openingQuoteWidth(text: string, start: number): number | undefined {
   return quoteWidth * 2;
 }
 
-function literalRootEnd(text: string, start: number, end: number): number {
+function literalRootEnd(text: string, start: number, end: number, width: number): number {
   if (text.charCodeAt(end) !== 34) return end;
   let run = end;
   while (run > start && text.charCodeAt(run - 1) === 92) run--;
   const slashes = end - run;
-  if (slashes % 2 === 0) return end;
-  const width = openingQuoteWidth(text, start);
-  const safeEnd = width ? end - slashes % width : run;
-  // Keep the entire run when the surrounding quote layer is ambiguous.
-  // A lone quote escape cannot serve as the root separator.
-  const hasSeparator = safeEnd > run || text.charCodeAt(run - 1) === 47 || (!width && slashes > 1);
+  const safeEnd = end - slashes % width;
+  const hasSeparator = safeEnd > run || text.charCodeAt(run - 1) === 47;
   return hasSeparator ? safeEnd : start;
 }
 
-function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveSiblings = false): string {
+function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveSiblings = false, separatorWidth = 1): string {
   for (const form of forms) {
     const { literal, marker, windowsRoot } = form;
     let copied = 0;
@@ -264,7 +261,7 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveS
     for (const match of matches) {
       let start = match.index;
       let end = start + match[0].length;
-      if (windowsRoot) end = literalRootEnd(text, start, end);
+      if (windowsRoot) end = literalRootEnd(text, start, end, separatorWidth);
       if (end === start) continue;
       if (ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
         while (start > copied && text.charCodeAt(start - 1) === 92) start--;
@@ -393,10 +390,18 @@ function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedac
 }
 
 /** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
+function redactConfiguredHome(value: string, separatorWidth: number): string {
+  if (!value || !mayContainHomePath(value)) return value;
+  let text = replaceLiteralHomes(value, homeRedaction.forms, true, separatorWidth);
+  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
+  return text;
+}
+
 export function redactHomePathsInText(value: string): string {
   if (!value || !mayContainHomePath(value)) return value;
-  let text = replaceLiteralHomes(value, homeRedaction.forms, true);
-  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
+  const text = homePlatform === "win32" && _homeDir
+    ? rewriteWindowsPathText(value, redactConfiguredHome)
+    : redactConfiguredHome(value, 1);
   return replaceLiteralHomes(text, GENERIC_HOME_FORMS);
 }
 
