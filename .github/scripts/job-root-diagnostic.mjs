@@ -21,7 +21,7 @@ const QUERY_COMMAND = `$query = [Environment]::GetEnvironmentVariable('${QUERY_V
 
 // Bind directory enumeration and metadata reads to handles. Reflection.Emit
 // builds the interop in memory without a compiler or temporary files.
-const HANDLE_QUERY = String.raw`
+const NATIVE_INTEROP = String.raw`
 $marshal = [Runtime.InteropServices.Marshal]
 $pointerSize = [IntPtr]::Size
 $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
@@ -33,6 +33,19 @@ function ImportReadMethod($dll, $name, $result, [type[]]$parameters) {
     [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
   $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
 }
+`;
+
+const PROCESS_MEMORY_METHODS = String.raw`
+$processHandleType = [Microsoft.Win32.SafeHandles.SafeProcessHandle]
+ImportReadMethod kernel32.dll OpenProcess $processHandleType @([uint32], [bool], [uint32])
+ImportReadMethod ntdll.dll NtQueryInformationProcess ([int]) @($processHandleType, [int], [byte[]], [uint32], [IntPtr])
+ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [IntPtr], [byte[]], [IntPtr], [IntPtr])
+$fileTime = [long].MakeByRefType()
+ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
+`;
+
+const HANDLE_QUERY = String.raw`
+${NATIVE_INTEROP}
 $handleType = [Microsoft.Win32.SafeHandles.SafeFileHandle]
 $outPointer = [IntPtr].MakeByRefType()
 $outLength = [uint32].MakeByRefType()
@@ -42,13 +55,8 @@ ImportReadMethod ntdll.dll NtQueryInformationFile ([int]) @($handleType, [IntPtr
 ImportReadMethod ntdll.dll NtQueryDirectoryFile ([int]) @(
   $handleType, [IntPtr], [IntPtr], [IntPtr], [IntPtr], [byte[]], [uint32], [int], [byte], [IntPtr], [byte])
 ImportReadMethod ntdll.dll NtQuerySecurityObject ([int]) @($handleType, [uint32], [byte[]], [uint32], $outLength)
-$processHandleType = [Microsoft.Win32.SafeHandles.SafeProcessHandle]
-ImportReadMethod kernel32.dll OpenProcess $processHandleType @([uint32], [bool], [uint32])
-ImportReadMethod ntdll.dll NtQueryInformationProcess ([int]) @($processHandleType, [int], [byte[]], [uint32], [IntPtr])
-ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [IntPtr], [byte[]], [IntPtr], [IntPtr])
+${PROCESS_MEMORY_METHODS}
 ImportReadMethod kernel32.dll QueryFullProcessImageNameW ([bool]) @($processHandleType, [uint32], [Text.StringBuilder], $outLength)
-$fileTime = [long].MakeByRefType()
-ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
 ImportReadMethod rstrtmgr.dll RmStartSession ([uint32]) @($outLength, [uint32], [Text.StringBuilder])
 ImportReadMethod rstrtmgr.dll RmRegisterResources ([uint32]) @([uint32], [uint32], [IntPtr], [uint32], [IntPtr], [uint32], [IntPtr])
 ImportReadMethod rstrtmgr.dll RmGetList ([uint32]) @([uint32], $outLength, $outLength, [IntPtr], $outLength)
@@ -254,26 +262,22 @@ try {
 $null = WriteEvidence @{ kind = 'suspects'; failed = $script:processFailed; limited = $limited } ${SUSPECT_OUTPUT_LIMIT}
 `;
 
-function queryScript(root) {
-  return String.raw`
-${EVIDENCE_WRITER}
-$root = '${root.replaceAll("'", "''")}'
-$prefix = $root.TrimEnd('\') + '\'
-$script:failed = $false
-$script:changed = $false
-${HANDLE_QUERY}
-${PROCESS_RECORDS}
-
+const CURRENT_DIRECTORY_PROBE = String.raw`
 function ReadProcessPointer($bytes, $offset, $size) {
   if ($size -eq 4) { return [IntPtr][long][BitConverter]::ToUInt32($bytes, $offset) }
   return [IntPtr][BitConverter]::ToInt64($bytes, $offset)
 }
 
-function ReadCurrentDirectory($id) {
+function ReadCurrentDirectory($id, $expectedCreation) {
   # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ. Skip inaccessible or exited processes.
   $process = $native::OpenProcess(0x410, $false, $id)
   try {
     if ($process.IsInvalid) { return }
+    if ($null -ne $expectedCreation) {
+      $created = $exited = $kernel = $user = 0L
+      if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user) -or
+          $exited -ne 0 -or ($created - ($created % 10)) -ne $expectedCreation) { return }
+    }
     $size = $pointerSize
     $peb = [IntPtr]::Zero
     if ($size -eq 8) {
@@ -306,6 +310,26 @@ function ReadCurrentDirectory($id) {
     }
   } finally { $process.Dispose() }
 }
+`;
+
+export const processCwdProbe = String.raw`
+${NATIVE_INTEROP}
+${PROCESS_MEMORY_METHODS}
+$native = $interop.CreateType()
+${CURRENT_DIRECTORY_PROBE}
+`;
+
+function queryScript(root) {
+  return String.raw`
+${EVIDENCE_WRITER}
+$root = '${root.replaceAll("'", "''")}'
+$prefix = $root.TrimEnd('\') + '\'
+$script:failed = $false
+$script:changed = $false
+${HANDLE_QUERY}
+${PROCESS_RECORDS}
+
+${CURRENT_DIRECTORY_PROBE}
 
 function TestJobPath($path) {
   if (!$path) { return $false }

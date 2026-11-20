@@ -840,11 +840,14 @@ jobs:
           $scripts = Join-Path $dir '.github/scripts'
           $lib = Join-Path $dir 'scripts/lib'
           New-Item -ItemType Directory -Force -Path $scripts, $lib | Out-Null
-          foreach ($file in 'watch-windows-processes.mjs', 'watch-windows-processes.ps1', 'job-root-diagnostic.mjs') {
+          foreach ($file in 'watch-windows-processes.mjs', 'watch-windows-processes.ps1', 'windows-launch-lifecycle.ps1', 'job-root-diagnostic.mjs') {
             Copy-Item -LiteralPath (Join-Path $repo ".github/scripts/$file") -Destination $scripts
           }
           Copy-Item -LiteralPath (Join-Path $repo 'scripts/lib/windows-powershell-env.mjs') -Destination $lib
-          node (Join-Path $scripts 'watch-windows-processes.mjs') start
+          node (Join-Path $scripts 'watch-windows-processes.mjs') prepare $dir
+          if ($LASTEXITCODE -ne 0) { exit 0 }
+          $env:AVE_PROCESS_WATCH_TRACE = '1'
+          & (Join-Path $scripts 'windows-launch-lifecycle.ps1') start $dir
       - name: Run Windows permission regressions
         env:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
@@ -1298,8 +1301,16 @@ jobs:
         shell: powershell
         working-directory: ${{ runner.temp }}
         run: |
-          $script = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic/.github/scripts/watch-windows-processes.mjs'
-          if (Test-Path -LiteralPath $script) { node $script stop }
+          $dir = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic'
+          $scripts = Join-Path $dir '.github/scripts'
+          $controller = Join-Path $scripts 'windows-launch-lifecycle.ps1'
+          try {
+            if (Test-Path -LiteralPath $controller) { & $controller stop $dir }
+          } catch {
+            Write-Output 'Diagnostic process exit could not be verified'
+          }
+          $script = Join-Path $scripts 'watch-windows-processes.mjs'
+          if (Test-Path -LiteralPath $script) { node $script print $dir }
       - name: Upload Windows launch evidence
         if: always() && steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
         continue-on-error: true
