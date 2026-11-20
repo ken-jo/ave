@@ -110,15 +110,19 @@ describe("background session isolation", () => {
     expect(windowsDenyOperandKey(share.toLowerCase())).not.toBe(share);
   });
 
-  it("admits a read-deny stamp with equivalent drive spellings", async () => {
-    const root = win32.join(FIXTURE_DRIVE.toUpperCase(), "fixture", "worker");
-    const directory = win32.join(root, "absent-dir");
-    const paths = Array.from({ length: 253 }, (_, index) => win32.join(root, `denied-${index}`));
-    paths.push(win32.join(root, "Case"), win32.join(root, "case"), directory, `${directory}\\`);
+  it.each(["absolute", "drive-relative"] as const)("admits a read-deny stamp with equivalent drive spellings (%s)", async (kind) => {
+    const drive = FIXTURE_DRIVE.toUpperCase();
+    const denyRoot = kind === "absolute" ? win32.join(drive, "fixture", "worker") : `${drive.slice(0, 2)}fixture\\worker`;
+    const root = win32.resolve(denyRoot);
+    const directory = win32.join(denyRoot, "absent-dir");
+    const paths = Array.from({ length: 253 }, (_, index) => win32.join(denyRoot, `denied-${index}`));
+    paths.push(win32.join(denyRoot, "Case"), win32.join(denyRoot, "case"), directory, `${directory}\\`);
     const denies = paths.flatMap((path, index) => {
       const alias = path.slice(0, 1).toLowerCase() + path.slice(1);
+      if (kind === "drive-relative") return [path, alias];
       return [path, index % 2 === 0 ? alias.replaceAll("\\", "/") : `\\\\?\\${alias}`];
     });
+    expect(denies.every(path => win32.isAbsolute(path) === (kind === "absolute"))).toBe(true);
     await initializeAsrtSandbox({ denyRead: denies, windows: { externalConfinement: true } });
     pinWorkerRoot(root);
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({

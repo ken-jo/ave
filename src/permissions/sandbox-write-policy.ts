@@ -200,7 +200,7 @@ function nativeWriteDenyPath(path: string): string {
 export function windowsDenyOperandKey(path: string): string {
   // A drive letter is a case-insensitive namespace. Keep the exact name and
   // directory hint because the caller uses this key to combine stamp targets.
-  return nativeWriteDenyPath(stripExtendedPathPrefix(path)).replace(/^[A-Za-z]:(?=[\\/])/u, normalizeCaseForComparison);
+  return nativeWriteDenyPath(stripExtendedPathPrefix(path)).replace(/^[A-Za-z]:/u, normalizeCaseForComparison);
 }
 
 function nativeWriteDenyEntries(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {
