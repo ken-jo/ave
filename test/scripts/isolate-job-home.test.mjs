@@ -392,9 +392,10 @@ describe("Windows job root cleanup diagnostics", () => {
     assert.match(stderr, /candidate path=/);
   });
   for (const processQuery of ["native", "unavailable"]) {
-    it(`never discloses target metadata when the root is replaced by a junction (${processQuery} process query)`, async () => {
-      const fixture = mkdtempSync(join(tmpdir(), "ave-job-root-swap-"));
-      const root = join(fixture, "root"), saved = join(fixture, "saved"), target = join(fixture, "target");
+    it(`never discloses target metadata when the root is replaced by a junction (${processQuery} process query)`, async t => {
+      const fixture = createJobRootFixture(t);
+      const root = `${fixture}${sep}root`;
+      const saved = join(fixture, "saved"), target = join(fixture, "target");
       const sentinel = join(target, "SYNTHETIC-OUTSIDE-SENTINEL.txt");
       mkdirSync(root); mkdirSync(target); writeFileSync(sentinel, "preserve");
       const snapshot = () => [target, sentinel].map(path => {
@@ -431,7 +432,6 @@ describe("Windows job root cleanup diagnostics", () => {
         assert.deepEqual(snapshot(), before);
       } finally {
         if (swapped) unlinkSync(root);
-        rmSync(fixture, { recursive: true, force: true });
       }
     });
   }
