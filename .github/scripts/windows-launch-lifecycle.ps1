@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$manifest = Join-Path $Directory 'watcher-processes.json'
+$ownership = Join-Path $Directory 'watcher-ownership.json'
 $stop = Join-Path $Directory 'watcher.stop'
 
 function Start-WatcherProcess($executable, $arguments) {
@@ -18,6 +18,9 @@ function Get-Identity($process) {
 }
 
 function Open-VerifiedProcess($identity) {
+  if ($identity.pid -le 0 -or $identity.created -cnotmatch '^[0-9]+$') {
+    throw 'Invalid diagnostic process identity'
+  }
   try { $process = [Diagnostics.Process]::GetProcessById($identity.pid) }
   catch [ArgumentException] { return }
   try {
@@ -27,6 +30,23 @@ function Open-VerifiedProcess($identity) {
     if (!$process.HasExited) { $process.Dispose(); throw }
   }
   $process.Dispose()
+}
+
+function Read-Ownership {
+  try {
+    $stream = [IO.File]::Open($ownership, 'Open', 'Read', 'ReadWrite')
+    try {
+      $reader = [IO.StreamReader]::new($stream)
+      $identities = $reader.ReadToEnd() | ConvertFrom-Json
+      if (!$identities) { throw 'Empty diagnostic ownership record' }
+      return $identities
+    } finally {
+      if ($reader) { $reader.Dispose() } else { $stream.Dispose() }
+    }
+  } catch {
+    if ($Mode -ne 'stop' -or !$env:AVE_PROCESS_WATCH_OWNERSHIP) { throw }
+    return $env:AVE_PROCESS_WATCH_OWNERSHIP | ConvertFrom-Json
+  }
 }
 
 function Wait-ForExit($processes, $timeout) {
@@ -60,7 +80,7 @@ function Stop-VerifiedProcesses($processes) {
 }
 
 if ($Mode -eq 'start') {
-  if ([IO.File]::Exists($manifest) -or [IO.File]::Exists($stop)) { throw 'Diagnostic directory already used' }
+  if ([IO.File]::Exists($ownership) -or [IO.File]::Exists($stop)) { throw 'Diagnostic directory already used' }
   $env:AVE_PROCESS_WATCH_PIPE = '\\.\pipe\ave-process-watch-' + [Guid]::NewGuid().ToString('N')
   foreach ($name in 'HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP','TMPDIR','AVE_TEST_TMP_ROOT') {
     [Environment]::SetEnvironmentVariable($name, $Directory, 'Process')
@@ -78,8 +98,11 @@ if ($Mode -eq 'start') {
     $collector = Start-WatcherProcess $powershell ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f $collectorScript)
     $collectorIdentity = Get-Identity $collector
     $json = @{ watcher = $watcherIdentity; collector = $collectorIdentity } | ConvertTo-Json -Compress
-    [IO.File]::WriteAllText("$manifest.tmp", $json)
-    [IO.File]::Move("$manifest.tmp", $manifest)
+    [IO.File]::WriteAllText("$ownership.tmp", $json)
+    [IO.File]::Move("$ownership.tmp", $ownership)
+    if ($env:GITHUB_OUTPUT) {
+      [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "ownership=$json`n")
+    }
     $published = $true
     $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($clock.ElapsedMilliseconds -lt 12000 -and !$watcher.HasExited -and !$collector.HasExited) {
@@ -105,8 +128,7 @@ if ($Mode -eq 'start') {
   }
   $processes = [Collections.Generic.List[Diagnostics.Process]]::new()
   try {
-    if (![IO.File]::Exists($manifest)) { return }
-    $identities = Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json
+    $identities = Read-Ownership
     $roles = if ($Mode -eq 'stop') { 'collector', 'watcher' } else { 'collector' }
     $unverified = $false
     foreach ($role in $roles) {

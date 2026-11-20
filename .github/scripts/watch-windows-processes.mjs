@@ -23,79 +23,12 @@ export function processMatch(row, root) {
   return isJobRootPath(row.cwd, root) ? "cwd" : null;
 }
 
-export function createProcessHistory(root) {
-  const byPid = new Map();
-
-  function describeProcess(row) {
-    return {
-      pid: row.pid,
-      parentPid: row.parentPid,
-      created: row.created ?? null,
-      image: (row.image ?? row.name ?? "").slice(0, FIELD_LIMIT) || null,
-      commandLine: maskJobRootArguments(row.commandLine, root)?.slice(0, FIELD_LIMIT) ?? null,
-    };
-  }
-
-  function remember(row, snapshot) {
-    const process = describeProcess(row);
-    if (!process.created) return process;
-    let generations = byPid.get(process.pid);
-    if (!generations) {
-      generations = new Map();
-      byPid.set(process.pid, generations);
-    }
-    const previous = generations.get(process.created);
-    if (previous) {
-      if (previous.lastSnapshot !== snapshot - 1) previous.firstConsecutiveSnapshot = snapshot;
-      previous.lastSnapshot = snapshot;
-      return null;
-    }
-    generations.set(process.created, {
-      process, firstSnapshot: snapshot, firstConsecutiveSnapshot: snapshot, lastSnapshot: snapshot,
-    });
-    return process;
-  }
-
-  function formatStart(process, match, row, ancestry) {
-    return JSON.stringify({
-      kind: "start", match, ...process, eventTime: row.eventTime ?? null,
-      cwdStatus: row.cwdStatus ?? "unavailable", ancestry,
-      unresolvedParentPid: (ancestry.at(-1) ?? process).parentPid || null,
-    });
-  }
-
-  function formatSnapshotStart(process, match, row = {}) {
-    const ancestry = [];
-    let child = byPid.get(process.pid)?.get(process.created);
-    while (child?.process.parentPid > 0) {
-      // Parent sightings must bracket the child's last-absent and first-present queries.
-      const candidates = [...(byPid.get(child.process.parentPid)?.values() ?? [])].filter(
-        parent => parent.firstConsecutiveSnapshot < child.firstSnapshot - 1 && parent.lastSnapshot > child.firstSnapshot,
-      );
-      if (candidates.length !== 1) break;
-      child = candidates[0];
-      ancestry.push(child.process);
-    }
-    return formatStart(process, match, row, ancestry);
-  }
-
-  function formatTraceStart(row, match, liveParent) {
-    // The baseline query finished before subscription. The live query started after event receipt.
-    const parent = liveParent?.pid === row.parentPid && byPid.get(row.parentPid)?.get(liveParent.created);
-    return formatStart(describeProcess(row), match, row, parent?.firstSnapshot === 1 ? [parent.process] : []);
-  }
-
-  return { remember, formatSnapshotStart, formatTraceStart };
-}
-
-function createRecorder(root, directory) {
-  const history = createProcessHistory(root);
+export function createRecorder(root, directory) {
+  const seen = new Set();
   const totals = new Map();
-  let pending = [];
-  let snapshot = 0;
 
   function write(file, record) {
-    const line = typeof record === "string" ? record : JSON.stringify(record);
+    const line = JSON.stringify(record);
     const size = Buffer.byteLength(line) + 1;
     const total = totals.get(file) ?? 0;
     if (total + size > 1024 * 1024) {
@@ -107,15 +40,15 @@ function createRecorder(root, directory) {
     totals.set(file, total + size);
   }
 
-  function writeStart(match, line) {
-    write(match === "media" ? MEDIA_LOG : JOB_LOG, line);
-  }
-
-  function flush() {
-    for (const { process, match, row } of pending) {
-      writeStart(match, history.formatSnapshotStart(process, match, row));
-    }
-    pending = [];
+  function writeStart(row) {
+    const match = processMatch(row, root);
+    if (!match) return;
+    write(match === "media" ? MEDIA_LOG : JOB_LOG, {
+      kind: "start", match, pid: row.pid, created: row.created ?? null, eventTime: row.eventTime ?? null,
+      image: (row.image ?? row.name ?? "").slice(0, FIELD_LIMIT) || null,
+      commandLine: maskJobRootArguments(row.commandLine, root)?.slice(0, FIELD_LIMIT) ?? null,
+      cwdStatus: row.cwdStatus ?? "unavailable", unresolvedParentPid: row.parentPid ?? null,
+    });
   }
 
   function record(entry) {
@@ -125,31 +58,26 @@ function createRecorder(root, directory) {
       return;
     }
     if (entry.kind === "trace") {
-      const [row, liveParent] = entry.rows;
-      const match = processMatch(row, root);
-      if (match) writeStart(match, history.formatTraceStart(row, match, liveParent));
+      writeStart(entry.rows[0]);
       return;
     }
     if (entry.kind !== "snapshot" && entry.kind !== "baseline") {
-      if (entry.kind === "stopped" || entry.kind === "collector-failed") flush();
       write(WATCH_LOG, entry);
       return;
     }
-    snapshot += 1;
-    const starts = entry.rows.map(row => [row, history.remember(row, snapshot)]);
-    if (entry.kind === "baseline") return;
-    flush();
-    for (const [row, process] of starts) {
-      const match = process && processMatch(row, root);
-      if (match) pending.push({ process, match, row });
+    for (const row of entry.rows) {
+      const key = `${row.pid}/${row.created}`;
+      if (seen.has(key)) continue;
+      if (row.created) seen.add(key);
+      if (entry.kind === "snapshot") writeStart(row);
     }
   }
 
-  return { flush, record, write };
+  return { record, write };
 }
 
 function watch(root, directory, pipe) {
-  const { flush, record, write } = createRecorder(root, directory);
+  const { record, write } = createRecorder(root, directory);
   let idle;
   const server = createServer(socket => {
     server.close();
@@ -160,10 +88,7 @@ function watch(root, directory, pipe) {
       catch { write(WATCH_LOG, { kind: "unreadable-collector-record" }); }
     });
     socket.on("error", () => write(WATCH_LOG, { kind: "collector-pipe-error" }));
-    socket.on("close", () => {
-      clearTimeout(idle);
-      flush();
-    });
+    socket.on("close", () => clearTimeout(idle));
   });
   idle = setTimeout(() => {
     write(WATCH_LOG, { kind: "collector-timeout" });

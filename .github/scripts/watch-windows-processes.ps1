@@ -3,7 +3,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $directory = Get-Location
 $stop = Join-Path $directory 'watcher.stop'
-$control = Join-Path $directory 'watcher-processes.json'
+$control = Join-Path $directory 'watcher-ownership.json'
 $properties = 'ProcessId', 'ParentProcessId', 'Name', 'ExecutablePath', 'CommandLine', 'CreationDate'
 $source = 'AveProcessStarts'
 $mechanism = 'polling'
@@ -86,24 +86,19 @@ function Write-Start($eventRecord, $draining) {
   $id = [uint32]$eventRecord.ProcessID
   $parentId = [uint32]$eventRecord.ParentProcessID
   $live = @()
-  if (!$draining) { $live = @(Read-Processes "ProcessId = $id OR ProcessId = $parentId") }
+  if (!$draining) { $live = @(Read-Processes "ProcessId = $id") }
   $process = @{
     pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName; created = $null
   }
-  $parent = $null
   foreach ($row in $live) {
     if ($row.ProcessId -eq $id -and $row.CreationDate -and $row.CreationDate.ToUniversalTime() -le $eventTime -and
         $row.ParentProcessId -eq $parentId -and $row.Name -eq $eventRecord.ProcessName) {
       $process = Read-Process $row
-    } elseif ($row.ProcessId -eq $parentId) {
-      $parent = Read-Process $row
     }
   }
   $process.eventTime = $eventTime.ToString('o')
   Add-ProcessCwd $process
-  $rows = @($process)
-  if ($parent) { $rows += $parent }
-  Write-Record @{ kind = 'trace'; rows = $rows }
+  Write-Record @{ kind = 'trace'; rows = @($process) }
 }
 
 try {

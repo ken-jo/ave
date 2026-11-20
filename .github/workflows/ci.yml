@@ -830,6 +830,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
       - name: Start Windows launch diagnostic
+        id: windows-launch-diagnostic
         if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
         continue-on-error: true
         shell: powershell
@@ -1304,6 +1305,8 @@ jobs:
         continue-on-error: true
         shell: powershell
         working-directory: ${{ runner.temp }}
+        env:
+          AVE_PROCESS_WATCH_OWNERSHIP: ${{ steps.windows-launch-diagnostic.outputs.ownership }}
         run: |
           $dir = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic'
           $scripts = Join-Path $dir '.github/scripts'
