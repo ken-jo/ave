@@ -13,6 +13,7 @@ import { claimRunDir, STALE_RUN_DIR_AGE_MS, sweepStaleRunDirs } from "../../__te
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { win32SystemBinary } from "../../shared/windows-system-path.js";
 
 const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
@@ -921,8 +922,13 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
     };
     const setDeny = (present: boolean): void => {
       if (hostPlatform === "win32") {
-        execFileSync(win32SystemBinary("icacls"), [marker, ...(present ? ["/deny", `*${sid}:(DE)`] : ["/remove:d", `*${sid}`]), "/L", "/Q"],
-          { windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
+        const method = present ? "AddAccessRule" : "RemoveAccessRuleSpecific";
+        const command = `$ErrorActionPreference='Stop'; $path='${marker.replace(/'/g, "''")}';
+          $sid=[Security.Principal.SecurityIdentifier]::new('${sid}');
+          $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::Delete, 'Deny');
+          $acl=Get-Acl -LiteralPath $path; $acl.${method}($rule); Set-Acl -LiteralPath $path -AclObject $acl;`;
+        execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command", command],
+          { env: windowsPowerShellEnv(), windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
       } else {
         modeledDeny = present;
       }
