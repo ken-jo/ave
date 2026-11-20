@@ -241,16 +241,10 @@ function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform
   const requiredPathCharacter = windows ? /^[a-z]:/iu.test(spellings[0] ?? "") ? ":" : "" : spellings[0]?.startsWith("/") ? "/" : "";
   const urls = new Set(slashHomes.map(spelling => `file://${spelling}`));
   if (standard) urls.add(standard);
-  const sibling = String.raw`(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
-  // A following drive prefix separates concatenated homes. Require a complete
-  // second home so sibling names and unrelated drive paths keep base behavior.
-  const driveHomes = windows ? slashHomes.filter(spelling => /^[a-z]:\//iu.test(spelling)) : [];
-  const following = driveHomes.map(spelling => homePattern(spelling, true)).join("|");
-  const end = following ? `(?:${sibling}|(?=(?:${following})${sibling}))` : sibling;
   const compile = (spelling: string, marker: string): HomeDetector => {
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
     const pattern = homePattern(spelling, windows, spelling === standard);
-    const source = `${start}${pattern}${end}`;
+    const source = String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
     return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker };
   };
   const forms = [

@@ -10,14 +10,19 @@ const base = JSON.parse(readFileSync(new URL("./fixtures/home-redaction-base.jso
   cases: string[][];
   descendants: string[][];
 };
+const unsupported = JSON.parse(readFileSync(
+  new URL("./fixtures/home-redaction-unsupported-concatenations.json", import.meta.url), "utf8",
+)) as { cases: Record<string, string[]> };
+const corpus = literalHomeCorpus();
 
-it.each(literalHomeCorpus().map((row, index) => ({ ...row, baseline: base.cases[index] })))(
+it.each(corpus.map((row, index) => ({ ...row, baseline: base.cases[index] })))(
   "matches the pinned base on literal text and paths for $platform $home",
   async ({ platform, home, inputs, baseline }) => {
     const { redactHomePathsInText, redactFsPath } = await loadHomeRedactors(home, platform);
     expect(base.revision).toBe("102440fca");
     expect(baseline).toHaveLength(inputs.length);
-    for (const [index, [mode, input]] of inputs.entries()) {
+    for (const [index, [mode, input, kind]] of inputs.entries()) {
+      if (kind === "concatenation") continue;
       const output = mode === "text" ? redactHomePathsInText(input) : redactFsPath(input);
       const upper = platform === "darwin" && input === `${home}/File.txt`.toUpperCase();
       const expected = upper ? (mode === "text" ? "[home]/FILE.TXT" : "<home>/FILE.TXT") : baseline[index];
@@ -25,6 +30,51 @@ it.each(literalHomeCorpus().map((row, index) => ({ ...row, baseline: base.cases[
     }
   },
 );
+
+describe("unsupported home concatenations documented in the redaction contract", () => {
+  it.each(corpus.flatMap(({ platform, home, inputs }) => {
+    const joined = inputs.filter(([, , kind]) => kind === "concatenation");
+    return joined.length ? [{ platform, home, joined }] : [];
+  }))("pins the two-copy outputs for $platform $home", async ({ platform, home, joined }) => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
+    const expected = unsupported.cases[`${platform}:${home}`];
+    expect(expected).toHaveLength(joined.length);
+    for (const [index, [, input]] of joined.entries()) {
+      expect(redactHomePathsInText(input), input).toBe(expected[index]);
+    }
+  });
+
+  it.each([
+    ["dot-joined drive copies", String.raw`D:\data\habitat`,
+      String.raw`D:\data\habitat.D:\data\habitat`, String.raw`D:\data\habitat.[home]`],
+    ["dot-joined drive copies with a suffix", String.raw`D:\fixtures\habitat`,
+      String.raw`open D:\fixtures\habitat.D:\fixtures\habitat\x now`, String.raw`open D:\fixtures\habitat.[home]\x now`],
+    ["dot-joined native and slash copies", String.raw`E:\temp\ted`,
+      String.raw`E:\temp\ted.E:/temp/ted`, String.raw`E:\temp\ted.[home]`],
+    ["dot-joined Unicode copies", String.raw`C:\Users\Café`,
+      String.raw`C:\Users\Café.C:\Users\Café`, "[home]é.[home]"],
+    ["dot-joined generic copies", String.raw`C:\Users\bob`,
+      String.raw`C:\Users\bob.C:\Users\bob`, "[home][home]"],
+    ["a directly joined pair before a dot join", String.raw`C:\Users\bob`,
+      String.raw`C:\Users\bobC:\Users\bob.C:\Users\bob`, String.raw`[home]:\Users\bob.[home]`],
+    ["four mixed generic copies with a literal suffix", String.raw`C:\Users\bob`,
+      String.raw`open C:\Users\bobC:/Users/bobC:\Users\bobC:\Users\bob\x now`, String.raw`open [home]:[home][home][home]\x now`],
+    ["four mixed drive copies with a literal suffix", String.raw`D:\fixtures\habitat`,
+      String.raw`open D:\fixtures\habitatD:/fixtures/habitatD:\fixtures\habitatD:\fixtures\habitat\x now`,
+      String.raw`open D:\fixtures\habitatD:/fixtures/habitatD:\fixtures\habitat[home]\x now`],
+    ["adjacent slash copies within a four-copy run", String.raw`D:\fixtures\habitat`,
+      String.raw`open D:\fixtures\habitatD:/fixtures/habitatD:/fixtures/habitatD:\fixtures\habitat\x now`, "open [home-token] now"],
+    ["a dot join after a literal descendant", String.raw`D:\data\habitat`,
+      String.raw`open D:\data\habitat\temp;D:/data/habitat.D:\data\habitat\x now`, "open [home-token] now"],
+    ["a file URL followed by a drive copy", String.raw`D:\fixtures\habitat`,
+      String.raw`file:///D:/fixtures/habitatD:\fixtures\habitat`, "file:///D:/fixtures/habitat[home]"],
+    ["file URLs between native and slash copies", String.raw`C:\Users\bob`,
+      String.raw`C:/Users/bobfile:///C:/Users/bobfile:///C:/Users/bobC:\Users\bob`, "[home]://[home]:///[home][home]"],
+  ] as const)("pins %s", async (_label, home, input, expected) => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    expect(redactHomePathsInText(input), input).toBe(expected);
+  });
+});
 
 it.each(WINDOWS_LITERAL_HOMES.map((home, index) => ({ home, baseline: base.descendants[index] })))(
   "keeps every literal descendant byte from the pinned base for $home",

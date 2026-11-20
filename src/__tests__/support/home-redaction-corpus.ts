@@ -1,10 +1,11 @@
 type HomePlatform = "linux" | "darwin" | "win32";
 type Redactor = "text" | "path";
+type LiteralHomeInput = readonly [mode: Redactor, input: string, kind?: "concatenation"];
 
 interface LiteralHomeCorpus {
   platform: HomePlatform;
   home: string;
-  inputs: readonly (readonly [Redactor, string])[];
+  inputs: readonly LiteralHomeInput[];
 }
 
 export const WINDOWS_LITERAL_HOMES = [
@@ -24,7 +25,7 @@ function escapeFreeInputs(home: string, platform: HomePlatform): LiteralHomeCorp
   const path = `${home}${separator}File.txt`;
   const forward = path.replaceAll("\\", "/");
   const plain = [home, path, forward, path.toUpperCase(), `${home}2/file`, `${home}_old/file`, `${home}.old/file`];
-  const inputs: [Redactor, string][] = plain.flatMap(value => [["text", value], ["path", value]]);
+  const inputs: LiteralHomeInput[] = plain.flatMap(value => [["text", value], ["path", value]]);
   for (const text of [
     `see ${path} and ${path} now`, `"${home}"`, `cd "${path}" && ls`, `'${path}'`,
     `(${path})`, `[${path}]`, `file://${forward}`, `${home}, ${home}. ${home}: ${home};`,
@@ -32,14 +33,17 @@ function escapeFreeInputs(home: string, platform: HomePlatform): LiteralHomeCorp
     JSON.stringify({ p: path, other: 1 }), JSON.stringify(JSON.stringify({ p: path })),
   ]) inputs.push(["text", text]);
   const slashHome = home.replaceAll("\\", "/");
-  for (const text of [`${home}${home}`, `${home}${slashHome}`, `${slashHome}${home}`, `${home}2${home}`]) {
-    inputs.push(["text", text]);
-  }
+  inputs.push(
+    ["text", `${home}${home}`, "concatenation"],
+    ["text", `${home}${slashHome}`, "concatenation"],
+    ["text", `${slashHome}${home}`, "concatenation"],
+    ["text", `${home}2${home}`],
+  );
   if (windows) {
     const repeated = home.replaceAll("\\", "/").replace(/\/(?=[^/]+$)/u, "//");
     inputs.push(["path", `${repeated}/report.txt`]);
     inputs.push(
-      ["text", `open ${home}${home}\\x now`],
+      ["text", `open ${home}${home}\\x now`, "concatenation"],
       ["text", `${home}${home}.old/file`],
       ["text", `${home}F:/outside/file`],
     );
