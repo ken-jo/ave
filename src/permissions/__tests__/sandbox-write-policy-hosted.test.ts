@@ -106,10 +106,11 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js", async ori
     ? paths.win32.normalize(path) : Reflect.apply(actual.normalizePathForSandbox, undefined, [path, ...args]) };
 });
 
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { expandWindowsFsPaths, rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -126,6 +127,38 @@ describe("hosted write policy spellings", () => {
     vi.unstubAllEnvs();
     if (driveFixture.backing) rmSync(driveFixture.backing, { recursive: true, force: true });
     driveFixture.backing = "";
+  });
+
+  it.each(["darwin", "win32"] as const)("keeps the browser staging write deny in the %s backend spelling", platform => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    driveFixture.backing = realpathSync(mkdtempSync(join(os.tmpdir(), "wp-staging-")));
+    if (hostPlatform !== "win32") mkdirSync(join(driveFixture.backing, "other-drives", "C"), { recursive: true });
+    driveFixture.enabled = hostPlatform !== "win32";
+    setProcessPlatform(platform);
+    const home = hostPlatform === "win32" ? driveFixture.backing : "D:\\hosted-profile";
+    mkdirSync(home, { recursive: true });
+    vi.spyOn(os, "homedir").mockReturnValue(home);
+    vi.spyOn(process, "cwd").mockReturnValue(home);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("AVE_HOME", join(home, ".ave"));
+    vi.stubEnv("GIT_CONFIG_GLOBAL", join(home, ".gitconfig"));
+    vi.stubEnv("GIT_CONFIG_SYSTEM", join(home, "etc", "gitconfig"));
+    const staging = join(home, ".ave", "browser-downloads");
+    const file = join(staging, "staged-file");
+    mkdirSync(staging, { recursive: true });
+    writeFileSync(file, "fixture");
+    const config = buildPerCommandSandboxCustomConfig({
+      allowRead: [staging, file], allowWrite: [staging],
+      denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    });
+    const paths = (entries: readonly FilesystemPathEntry[]) =>
+      entries.map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/u, ""));
+    const allows = paths(config?.filesystem?.allowRead ?? []);
+    expect(allows).not.toContain(staging);
+    expect(allows).not.toContain(file);
+    const stagingDeny = platform === "darwin" ? staging.replaceAll("\\", "/") : staging;
+    expect(paths(config?.filesystem?.denyWrite ?? [])).toContain(stagingDeny);
   });
 
   it.each([
