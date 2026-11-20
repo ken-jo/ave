@@ -10,12 +10,12 @@ import { promisify } from "node:util";
 import { describe, it, mock } from "node:test";
 import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
 import { diagnoseJobRoot } from "../../.github/scripts/job-root-diagnostic.mjs";
-import { cleanupWindowsJobRoot as cleanupJobRoot, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
+import { cleanupWindowsJobRoot as cleanupJobRoot, diagnoseCleanupFailure, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
 
 describe("job home isolation", () => {
   it("places Windows fixtures on the system volume instead of the runner temp volume", () => {
     const create = mock.fn(() => "C:\\ave-ci-abc123");
-    const values = isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot: "C:\\Windows" }, create, mock.fn());
+    const values = isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot: "C:\\Windows" }, create, mock.fn(), () => "1:2:3");
     assert.deepEqual(create.mock.calls.map(call => call.arguments), [["C:\\ave-ci-"]]);
     assert.deepEqual(values, {
       HOME: "C:\\ave-ci-abc123\\home", USERPROFILE: "C:\\ave-ci-abc123\\home",
@@ -23,7 +23,7 @@ describe("job home isolation", () => {
       TEMP: "C:\\ave-ci-abc123\\tmp", TMP: "C:\\ave-ci-abc123\\tmp",
       AVE_TEST_TMP_ROOT: "C:\\ave-ci-abc123\\home\\.ave-test-tmp",
       LOCALAPPDATA: "C:\\ave-ci-abc123\\home\\local-app-data", APPDATA: "C:\\ave-ci-abc123\\home\\app-data",
-      AVE_CI_JOB_ROOT: "C:\\ave-ci-abc123",
+      AVE_CI_JOB_ROOT: "C:\\ave-ci-abc123", AVE_CI_JOB_ROOT_IDENTITY: "1:2:3",
     });
   });
   it("leaves room for socket paths before publishing environment changes", () => {
@@ -79,8 +79,8 @@ function queryResult(result) {
   return mock.fn((_command, _args, _options, done) => done(null, queryRecords(result)));
 }
 const QUERY_VARIABLE = "AVE_CI_JOB_ROOT_QUERY";
-async function cleanupWindowsJobRoot(root, options) {
-  try { await cleanupJobRoot(root, options); }
+async function cleanupWindowsJobRoot(root, { remove = rmSync, ...options } = {}) {
+  try { await diagnoseCleanupFailure(root, () => remove(root, { recursive: true, force: true }), options); }
   finally { await nextTurn(); }
 }
 const PROCESS_DETAILS = {
@@ -139,6 +139,25 @@ function restoreFixtureAcls(savedAcls) {
   ].join("\n"));
   runFixturePowerShell(["$restoreError = $null", ...restore, "if ($restoreError) { throw $restoreError }"].join("\n"));
 }
+describe("Windows cleanup root ownership", () => {
+  const root = "C:\\ave-ci-abc123";
+  for (const path of ["ave-ci-abc123", "C:\\example\\ave-ci-abc123", "D:\\ave-ci-abc123"]) {
+    it(`does not dispatch removal for ${path}`, async () => {
+      const remove = mock.fn();
+      await assert.rejects(cleanupJobRoot(path, { systemRoot: "C:\\Windows", remove }), /isolated job root/);
+      assert.equal(remove.mock.callCount(), 0);
+    });
+  }
+
+  it("does not dispatch removal when the directory identity has changed", async () => {
+    const remove = mock.fn();
+    await assert.rejects(cleanupJobRoot(root, {
+      systemRoot: "C:\\Windows", identity: "1:2:3", readIdentity: () => "1:4:5", remove,
+    }), /unchanged isolated job root/);
+    assert.equal(remove.mock.callCount(), 0);
+  });
+});
+
 describe("Windows job root cleanup diagnostics", () => {
   const root = join(tmpdir(), "ave-job-diagnostic");
   it("removes once without diagnostics on first-try success", async () => {
@@ -214,7 +233,7 @@ describe("Windows job root cleanup diagnostics", () => {
   });
   it("rethrows the removal error while the stderr reader is stalled", async (t) => {
     const script = [
-      "import { cleanupWindowsJobRoot } from './.github/scripts/isolate-job-home.mjs';",
+      "import { diagnoseCleanupFailure } from './.github/scripts/isolate-job-home.mjs';",
       "const error = Object.assign(new Error('removal'), { path: 'x'.repeat(16 * 1024) });",
       "console.error = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);",
       "const records = Array.from({ length: 20 }, (_, index) => JSON.stringify({",
@@ -222,7 +241,7 @@ describe("Windows job root cleanup diagnostics", () => {
       "  owner: null, deny: null, parentDeny: null, created: null, lastWrite: null,",
       "})).join('\\n');",
       "try {",
-      "  await cleanupWindowsJobRoot('example', { remove() { throw error; },",
+      "  await diagnoseCleanupFailure('example', () => { throw error; }, {",
       "    run(_command, _args, _options, done) { done(null, records + '\\n'); },",
       "  });",
       "} catch (caught) { process.stdout.write(caught === error ? 'original' : 'wrong'); }",

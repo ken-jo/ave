@@ -50,11 +50,15 @@ export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
   }
 }
 
-export function isolationAssignments({ platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot) {
+export function isolationAssignments(
+  { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot, readIdentity = readJobRootIdentity,
+) {
   const paths = platform === "win32" ? win32 : posix;
   const root = platform === "win32" ? create(paths.join(systemVolume(systemRoot), "ave-ci-")) : runnerTemp;
+  const identity = platform === "win32" ? readIdentity(root) : undefined;
   if (platform === "win32") {
     try { harden(root); } catch (error) {
+      assertOwnedRoot(root, identity, readIdentity);
       rmSync(root, { recursive: true, force: true });
       throw error;
     }
@@ -70,18 +74,33 @@ export function isolationAssignments({ platform, runnerTemp, systemRoot }, creat
     TMPDIR: temp, TEMP: temp, TMP: temp,
     ...(platform === "win32" ? {
       LOCALAPPDATA: paths.join(home, "local-app-data"), APPDATA: paths.join(home, "app-data"),
-      AVE_TEST_TMP_ROOT: paths.join(home, ".ave-test-tmp"), AVE_CI_JOB_ROOT: root,
+      AVE_TEST_TMP_ROOT: paths.join(home, ".ave-test-tmp"), AVE_CI_JOB_ROOT: root, AVE_CI_JOB_ROOT_IDENTITY: identity,
     } : {}),
   };
 }
 
 export function validateJobHomeRoot(root, systemRoot) {
   const volume = systemVolume(systemRoot);
-  if (typeof root !== "string" || win32.dirname(root).toLowerCase() !== volume.toLowerCase()
+  if (typeof root !== "string" || !win32.isAbsolute(root) || win32.dirname(root).toLowerCase() !== volume.toLowerCase()
     || !/^ave-ci-[a-z0-9]{6}$/i.test(win32.basename(root)) || win32.normalize(root) !== root) {
     throw new Error("Cleanup requires an isolated job root directly on the system volume");
   }
   return root;
+}
+
+function readJobRootIdentity(root) {
+  const entry = lstatSync(root, { bigint: true });
+  if (!entry.isDirectory() || entry.isSymbolicLink() || entry.ino === 0n
+    || realpathSync.native(root).toLowerCase() !== root.toLowerCase()) {
+    throw new Error("Cleanup requires an unchanged isolated job root");
+  }
+  return `${entry.dev}:${entry.ino}:${entry.birthtimeNs}`;
+}
+
+function assertOwnedRoot(root, identity, readIdentity) {
+  if (typeof identity !== "string" || !/^\d+:\d+:\d+$/u.test(identity) || readIdentity(root) !== identity) {
+    throw new Error("Cleanup requires an unchanged isolated job root");
+  }
 }
 
 function writeCleanupLog(lines) {
@@ -99,9 +118,18 @@ function writeCleanupLog(lines) {
   writer.stdin.end(lines.join("\n") + "\n");
 }
 
-export async function cleanupWindowsJobRoot(root, { remove = rmSync, run, diagnostic } = {}) {
+export async function cleanupWindowsJobRoot(root, {
+  systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,
+  readIdentity = readJobRootIdentity, remove = rmSync, run, diagnostic,
+} = {}) {
+  validateJobHomeRoot(root, systemRoot);
+  assertOwnedRoot(root, identity, readIdentity);
+  await diagnoseCleanupFailure(root, () => remove(root, { recursive: true, force: true }), { run, diagnostic });
+}
+
+export async function diagnoseCleanupFailure(root, remove, { run, diagnostic } = {}) {
   try {
-    remove(root, { recursive: true, force: true });
+    remove();
   } catch (error) {
     const lines = [];
     try {
@@ -119,13 +147,7 @@ export async function cleanupWindowsJobRoot(root, { remove = rmSync, run, diagno
 }
 async function main() {
   if (process.argv.includes("--cleanup")) {
-    const root = validateJobHomeRoot(process.env.AVE_CI_JOB_ROOT, process.env.SystemRoot);
-    if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink()
-      || realpathSync.native(root).toLowerCase() !== root.toLowerCase()) {
-      throw new Error("Cleanup requires an unchanged isolated job root");
-    }
-    try { await cleanupWindowsJobRoot(root); }
-    catch { process.exitCode = 1; }
+    await cleanupWindowsJobRoot(process.env.AVE_CI_JOB_ROOT);
     return;
   }
   const { RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv, SystemRoot: systemRoot } = process.env;
