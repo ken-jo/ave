@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { loadHomeRedactors, resetHomeRedactors } from "../../__tests__/support/home-redaction-fixture.js";
+import { escapeHtml } from "../../shared/escape-html.js";
 
 afterEach(resetHomeRedactors);
 
@@ -103,6 +104,107 @@ it("keeps literal percent syntax while detecting an entity-encoded home", async 
     input = input.replaceAll("&", "&amp;");
   }
   expect(redactHomePathsInText(input)).toBe(input);
+});
+
+it.each([String.raw`C:\Users\bob`, String.raw`E:\temp\ted`])("redacts percent encoding inside two JSON layers for %s", async home => {
+  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, "win32");
+  for (const encode of [encodeURIComponent, encodeURI]) {
+    for (const suffix of ["", String.raw`\docs\file.txt`]) {
+      const input = JSON.stringify(JSON.stringify({ p: encode(home + suffix), other: 1 }));
+      const expected = JSON.stringify(JSON.stringify({ p: "[home-token]", other: 1 }));
+      expect(redactHomePathsInText(input)).toBe(expected);
+      expect(redactJudgeText(input)).toBe(expected);
+    }
+  }
+});
+
+const wrappedEncoders = {
+  string: { encode: (text: string) => JSON.stringify(text), decode: (text: string) => JSON.parse(text) as string, json: true },
+  object: {
+    encode: (text: string) => JSON.stringify({ p: text, other: 1 }),
+    decode: (text: string) => {
+      const parsed = JSON.parse(text) as { p: string; other: number };
+      expect(parsed.other).toBe(1);
+      return parsed.p;
+    },
+    json: true,
+  },
+  ascii: {
+    encode: (text: string) => `"${encoders.jsonAscii(text)}"`,
+    decode: (text: string) => JSON.parse(text) as string, json: true,
+  },
+  component: { encode: encodeURIComponent, decode: decodeURIComponent, json: false },
+  uri: { encode: encodeURI, decode: decodeURI, json: false },
+  html: {
+    encode: (text: string) => escapeHtml(text).replace(/[\u0080-\u{10ffff}]/gu, character => `&#${character.codePointAt(0)};`),
+    decode: (text: string) => html(text.replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&gt;", ">")),
+    json: false,
+  },
+};
+
+type WrappedEncoder = keyof typeof wrappedEncoders;
+const wrapperNames = Object.keys(wrappedEncoders) as WrappedEncoder[];
+const wrappedChains = wrapperNames.flatMap(a => [
+  [a], ...wrapperNames.flatMap(b => [[a, b], ...wrapperNames.map(c => [a, b, c])]),
+]);
+
+function invertWrappedChain(text: string, chain: readonly WrappedEncoder[]): string {
+  let insideNonJson = false;
+  for (const name of chain.toReversed()) {
+    const codec = wrappedEncoders[name];
+    try {
+      text = codec.decode(text);
+    } catch (error) {
+      // A token outside the innermost JSON can include that JSON's syntax.
+      if (insideNonJson && text.includes("[home-token]")) return text;
+      throw error;
+    }
+    insideNonJson ||= !codec.json;
+  }
+  return text;
+}
+
+it.each([String.raw`C:\Users\bob`, String.raw`E:\temp\ted`])("redacts with JSON object wrappers at any encoder position for %s", async home => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+  const path = `${home}\\docs\\file.txt`;
+  const account = home.split("\\").at(-1) ?? "";
+  expect(wrappedChains).toHaveLength(258);
+  for (const chain of wrappedChains) {
+    const input = chain.reduce((value, name) => wrappedEncoders[name].encode(value), path);
+    expect(invertWrappedChain(input, chain), chain.join(" > ")).toBe(path);
+    const output = redactHomePathsInText(input);
+    expect(output, chain.join(" > ")).not.toContain(account);
+    expect(invertWrappedChain(output, chain), chain.join(" > ")).not.toContain(account);
+  }
+});
+
+it.each([
+  ["win32", String.raw`D:\data\Café`], ["win32", String.raw`E:\temp\tëd`],
+  ["win32", String.raw`\\srv\share\Café`], ["win32", String.raw`C:\Users\Café`], ["linux", "/srv/fixtures/Café"],
+] as const)("redacts decoded-only homes before escape-like descendants on %s for %s", async (platform, home) => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
+  const separator = platform === "win32" ? "\\" : "/";
+  const account = home.split(separator).at(-1) ?? "";
+  let count = 0;
+  for (const name of ["x64", "new", "u0032", "tab", "file"]) {
+    const path = [home, name, "file"].join(separator);
+    for (const value of [path, `Open:"${path}"`, `[Open:"${path}"]`]) {
+      for (const initial of ["ascii", "component", "html"] as const) {
+        const chain: WrappedEncoder[] = [initial];
+        let input = wrappedEncoders[initial].encode(value);
+        for (let depth = 1; depth <= 3; depth++) {
+          expect(invertWrappedChain(input, chain)).toBe(value);
+          const output = redactHomePathsInText(input);
+          expect(output, input).not.toBe(input);
+          expect(invertWrappedChain(output, chain), input).not.toContain(account);
+          count++;
+          input = JSON.stringify(input);
+          chain.push("string");
+        }
+      }
+    }
+  }
+  expect(count).toBe(135);
 });
 
 const jsSourceHomes = [

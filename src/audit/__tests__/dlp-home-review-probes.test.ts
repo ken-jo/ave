@@ -1,10 +1,13 @@
 import { win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { loadHomeRedactors, resetHomeRedactors } from "../../__tests__/support/home-redaction-fixture.js";
 
-afterEach(resetHomeRedactors);
+afterEach(() => {
+  vi.doUnmock("node:url");
+  resetHomeRedactors();
+});
 
 type Platform = "linux" | "darwin" | "win32";
 
@@ -29,6 +32,17 @@ const probes: HomeProbe[] = [];
 function add(name: string, home: string, input: string, expected = input, platform: Platform = "linux", json = false): void {
   probes.push({ name, home, platform, input, expected, json });
 }
+
+const COMMAND_HOME = String.raw`E:\temp\ted`;
+add("literal Windows home in a quoted command", COMMAND_HOME,
+  `cd "${COMMAND_HOME}\\repo" && ls`, 'cd "[home]\\repo" && ls', "win32");
+const BRACKETED_PATH = `[Open:"${COMMAND_HOME}\\new\\file"]`;
+add("literal Windows home in serialized bracketed prose", COMMAND_HOME,
+  JSON.stringify({ p: BRACKETED_PATH, other: 1 }), JSON.stringify({ p: '[Open:"[home]\\new\\file"]', other: 1 }), "win32", true);
+add("literal Windows home before an escape-like directory name", WINDOWS_HOME,
+  `run "${win32.normalize(WINDOWS_HOME)}\\x64\\tool.exe"`, 'run "[home]\\x64\\tool.exe"', "win32");
+add("literal Windows home in prose with mixed separators", win32.normalize(WINDOWS_HOME),
+  String.raw`Open:"D:/fixtures/habitat\u0032\file"`, String.raw`Open:"[home]\u0032\file"`, "win32");
 
 for (const { character, tail, count } of [
   { character: '"', tail: '"' }, { character: "\n", tail: "n" }, { character: "\t", tail: "t" },
@@ -202,21 +216,37 @@ it.each([
   ["linux", POSIX_HOME],
   ["win32", WINDOWS_HOME],
   ["win32", UNC_HOME],
-] as const)("keeps encoded sibling continuations after a literal prefix on %s for %s", async (platform, home) => {
+] as const)("uses base literal boundaries before escaped sibling characters on %s for %s", async (platform, home) => {
+  vi.doMock("node:url", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:url")>();
+    return { ...actual, pathToFileURL: (path: string) => actual.pathToFileURL(path, { windows: platform === "win32" }) };
+  });
   const { redactHomePathsInText, redactJudgeText, redactFsPath } = await loadHomeRedactors(home, platform);
   const url = pathToFileURL(`${home}.é/file`, { windows: platform === "win32" }).href;
   expect(redactFsPath(url)).toBe(url);
   const unicode = `{"p":${JSON.stringify(home).slice(0, -1)}\\u0032/file","other":1}`;
   expect(JSON.parse(unicode).p).toBe(`${home}2/file`);
-  const siblings = [
-    url, unicode, `${home}%32/file`, `${home}%5Fold/file`, `${home}%2Eext/file`,
-    `${home}%2532/file`, `${home}.&#00000000000233;/file`, `${encodeURIComponent(home)}%2532/file`,
-  ];
-  for (const input of siblings) {
-    expect(redactHomePathsInText(input), input).toBe(input);
-    expect(redactJudgeText(input), input).toBe(input);
+  const inputs = [
+    [url, "file://[home].%C3%A9/file"],
+    [unicode, String.raw`{"p":"[home]\u0032/file","other":1}`],
+    ...["%32", "%5Fold", "%2Eext", "%2532", ".&#00000000000233;"].map(suffix => [`${home}${suffix}/file`, `[home]${suffix}/file`] as const),
+    [`${encodeURIComponent(home)}%2532/file`, TOKEN],
+  ] as const;
+  for (const [input, expected] of inputs) {
+    expect(redactHomePathsInText(input), input).toBe(expected);
+    expect(redactJudgeText(input), input).toBe(expected);
   }
   expect(redactHomePathsInText(`${home}%2Ffile`)).toBe("[home]%2Ffile");
+});
+
+it.each([win32.normalize(WINDOWS_HOME), UNC_HOME])("keeps an escaped sibling suffix after a base literal hit for %s", async home => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+  const literal = JSON.stringify(home).slice(1, -1);
+  for (const quote of ['"', "'", "`"]) {
+    for (const suffix of [String.raw`\xE9`, String.raw`\u00e9`, String.raw`\u{e9}`, String.raw`\351`]) {
+      expect(redactHomePathsInText(`${quote}${literal}${suffix}/file${quote}`)).toBe(`${quote}[home]${suffix}/file${quote}`);
+    }
+  }
 });
 
 it.each([WINDOWS_HOME, UNC_HOME])("still redacts a native descendant starting with escape-like text for %s", async home => {

@@ -3333,9 +3333,11 @@ octal escapes, and hexadecimal code units. Detection also supports hexadecimal
 UTF-8 byte escapes, which can decode the same bytes differently.
 
 Home spellings containing a double quote, a control character or a filename
-backslash on POSIX are unsupported. Trailing separators are normalized except
-for filesystem roots. This lets text redaction preserve the delimiters and
-escape runs that hold serialized values together.
+backslash on POSIX are unsupported. A configured home that is itself a
+filesystem root is also unsupported, including drive roots, UNC share roots
+and POSIX `/`. The generic users/home text rules still apply. Supported homes
+have trailing separators normalized so literal replacements can preserve
+the delimiters and escape runs that hold serialized values together.
 
 ### Windows object ownership
 

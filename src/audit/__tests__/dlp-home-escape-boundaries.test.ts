@@ -1,7 +1,42 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { literalHomeCorpus, WINDOWS_LITERAL_HOMES, windowsDescendantInputs } from "../../__tests__/support/home-redaction-corpus.js";
 import { loadHomeRedactors, resetHomeRedactors } from "../../__tests__/support/home-redaction-fixture.js";
 
 afterEach(resetHomeRedactors);
+
+const base = JSON.parse(readFileSync(new URL("./fixtures/home-redaction-base.json", import.meta.url), "utf8")) as {
+  revision: string;
+  cases: string[][];
+  descendants: string[][];
+};
+
+it.each(literalHomeCorpus().map((row, index) => ({ ...row, baseline: base.cases[index] })))(
+  "matches the pinned base on literal text and paths for $platform $home",
+  async ({ platform, home, inputs, baseline }) => {
+    const { redactHomePathsInText, redactFsPath } = await loadHomeRedactors(home, platform);
+    expect(base.revision).toBe("102440fca");
+    expect(baseline).toHaveLength(inputs.length);
+    for (const [index, [mode, input]] of inputs.entries()) {
+      const output = mode === "text" ? redactHomePathsInText(input) : redactFsPath(input);
+      const upper = platform === "darwin" && input === `${home}/File.txt`.toUpperCase();
+      const expected = upper ? (mode === "text" ? "[home]/FILE.TXT" : "<home>/FILE.TXT") : baseline[index];
+      expect(output, `${mode} ${JSON.stringify(input)}`).toBe(expected);
+    }
+  },
+);
+
+it.each(WINDOWS_LITERAL_HOMES.map((home, index) => ({ home, baseline: base.descendants[index] })))(
+  "keeps every literal descendant byte from the pinned base for $home",
+  async ({ home, baseline }) => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    const inputs = windowsDescendantInputs(home);
+    expect(baseline).toHaveLength(180);
+    for (const [index, input] of inputs.entries()) {
+      expect(redactHomePathsInText(input), input).toBe(baseline[index]);
+    }
+  },
+);
 
 describe("complete source escape spans", () => {
   it("includes an escaped first separator", async () => {
@@ -56,89 +91,55 @@ it.each(homes)("preserves nested JSON syntax and idempotence on %s for %s", asyn
 });
 
 it.each([
-  { home: "D:\\", stem: "D:" },
-  { home: "\\\\server\\share\\", stem: "\\\\server\\share" },
-])("preserves quote escapes and redacts descendants of a Windows root $home", async ({ home, stem }) => {
-  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, "win32");
-  for (const redact of [redactHomePathsInText, redactJudgeText]) {
-    const outside = JSON.stringify({ p: `${stem}"`, other: 1 });
-    expect(redact(outside)).toBe(outside);
-    const inside = JSON.stringify({ p: `${home}"`, other: 1 });
-    expect(JSON.parse(redact(inside))).toEqual({ p: '[home]"', other: 1 });
-    for (const spelling of [home, home.replaceAll("\\", "/")]) {
-      expect(redact(`${spelling}descendant`)).toBe("[home]descendant");
-      expect(JSON.parse(redact(JSON.stringify({ p: `${spelling}descendant` })))).toEqual({ p: "[home]descendant" });
-    }
-  }
-});
-
-it.each(["D:\\", "\\\\server\\share\\"])("preserves every quote layer after a Windows root %s", async home => {
-  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
-  const stem = home.slice(0, -1);
-  const cases = [
-    [`${stem}"`, `${stem}"`],
-    [`${home}"`, '[home]"'],
-    [home, "[home]"],
-    [`Open ${home}"`, 'Open [home]"'],
-  ];
-  for (const [value, expected] of cases) {
-    const fields = { p: value, other: 1 };
-    let text = JSON.stringify(fields);
-    for (let depth = 2; depth <= 3; depth++) {
-      text = JSON.stringify(text);
-      let output = redactHomePathsInText(text);
-      for (let current = 1; current < depth; current++) output = JSON.parse(output);
-      expect(JSON.parse(output), text).toEqual({ p: expected, other: 1 });
-    }
-  }
-});
-
-const windowsQuoteRows = [
-  { name: "drive root", home: "D:\\", path: "D:\\", expected: "[home]" },
-  { name: "UNC root", home: "\\\\srv\\share\\", path: "\\\\srv\\share\\", expected: "[home]" },
-  { name: "home under a root", home: "D:\\fixtures\\habitat", path: "D:\\fixtures\\habitat", expected: "[home]" },
-  ...["D:\\fixtures\\habitat", "\\\\srv\\share\\habitat"].flatMap(home => [
-    { name: "sibling", home, path: `${home}é/file`, expected: `${home}é/file` },
-    { name: "descendant", home, path: `${home}\\u0032\\file`, expected: "[home]\\u0032\\file" },
-  ]),
-];
-
-it.each(windowsQuoteRows)("uses the enclosing quote width for $name", async ({ home, path, expected }) => {
-  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, "win32");
+  ["D:\\", "D:/", "D:"],
+  ["\\\\server\\share\\", "//server/share/", "//server/share"],
+] as const)("leaves unsupported Windows root home %s and its descendants unchanged", async (home, slashHome, stem) => {
+  const { redactHomePathsInText, redactJudgeText, redactFsPath } = await loadHomeRedactors(home, "win32");
   const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
-  for (const redact of [redactHomePathsInText, redactJudgeText]) {
-    expect(redact(`Open:${path}`)).toBe(`Open:${expected}`);
-    const ascii = (p: string) => JSON.stringify({ p, other: 1 }).replaceAll("é", "\\u00e9");
-    for (const [prefix, suffix] of [["", ""], ['Open:"', '"'], ["Open ", ""]]) {
-      let input = ascii(`${prefix}${path}${suffix}`);
-      let output = ascii(`${prefix}${expected}${suffix}`);
-      for (let depth = 1; depth <= 3; depth++) {
-        expect(redact(input)).toBe(output);
-        expect(JSON.parse(serializeRuntimeAuditData(input) ?? "")).toBe(output);
-        input = JSON.stringify(input);
-        output = JSON.stringify(output);
-      }
+  for (const p of [
+    home, `${stem}"`, `${home}"`, `Open ${home}"`, `Open:"${home}"`,
+    `${home}descendant`, `${slashHome}descendant`, `${home}new\\file`,
+    `Open:"${home}new\\file"`, `[Open:"${home}new\\file"]`,
+  ]) {
+    expect(redactHomePathsInText(p)).toBe(p);
+    expect(redactJudgeText(p)).toBe(p);
+    let serialized = JSON.stringify({ p, other: 1 });
+    for (let depth = 1; depth <= 3; depth++) {
+      expect(redactHomePathsInText(serialized)).toBe(serialized);
+      expect(redactJudgeText(serialized)).toBe(serialized);
+      expect(JSON.parse(serializeRuntimeAuditData(serialized) ?? "")).toBe(serialized);
+      serialized = JSON.stringify(serialized);
     }
   }
+  expect(redactFsPath(`${home}descendant`)).toBe(`${home}descendant`);
 });
 
 it.each([
   ["D:\\", "D:/", "D:"],
   ["\\\\srv\\share\\", "//srv/share/", "//srv/share"],
-] as const)("consumes only actual root separators before Unicode on %s", async (home, rooted, outside) => {
+] as const)("leaves Unicode escapes under an unsupported root %s unchanged", async (home, rooted, outside) => {
   const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
-  const wrap = (text: string) => JSON.stringify(text);
-  for (const [prefix, expected] of [[rooted, "[home]"], [outside, outside]]) {
+  for (const prefix of [rooted, outside]) {
     let input = `{"p":"${prefix}\\u00e9/file","other":1}`;
-    let output = `{"p":"${expected}\\u00e9/file","other":1}`;
     expect(JSON.parse(input)).toEqual({ p: `${prefix}é/file`, other: 1 });
-    expect(redactHomePathsInText(`${prefix}é/file`)).toBe(`${expected}é/file`);
+    expect(redactHomePathsInText(`${prefix}é/file`)).toBe(`${prefix}é/file`);
     for (let depth = 1; depth <= 3; depth++) {
-      expect(redactHomePathsInText(input)).toBe(output);
-      input = wrap(input);
-      output = wrap(output);
+      expect(redactHomePathsInText(input)).toBe(input);
+      input = JSON.stringify(input);
     }
   }
   const nativeOutside = `${home.slice(0, -1)}é/file`;
   expect(redactHomePathsInText(nativeOutside)).toBe(nativeOutside);
+});
+
+it.each([
+  ["linux", "/", "/srv/fixtures/file"],
+  ["darwin", "//", "/srv/fixtures/file"],
+  ["win32", "D:/./", "D:/fixtures/file"],
+  ["win32", "\\\\srv\\share", "\\\\srv\\share\\fixtures\\file"],
+] as const)("uses only generic text rules when %s has unsupported root home %s", async (platform, home, path) => {
+  const { redactHomePathsInText, redactFsPath } = await loadHomeRedactors(home, platform);
+  expect(redactHomePathsInText(path)).toBe(path);
+  expect(redactFsPath(path)).toBe(path);
+  expect(redactHomePathsInText("C:/Users/sample/a /home/example/b")).toBe("[home]/a [home]/b");
 });

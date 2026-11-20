@@ -3,15 +3,14 @@
 
 
 import os from "node:os";
-import { win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
 import {
-  bracedHomeEscapeEnd, decodeHomeEscapes, decodesHomeBackslashes, type HomeEscapeFamily, mayDecodeHomeCharacter,
+  bracedHomeEscapeEnd, decodeHomeEscapes, type HomeEscapeFamily, mayDecodeHomeCharacter,
 } from "./home-path-decode.js";
-import { rewriteWindowsPathText } from "./home-path-quote-frames.js";
 
 export {
   initPiiRedactionPolicy,
@@ -80,11 +79,13 @@ function configuredHome(): string {
   let raw: string;
   try { raw = os.homedir(); } catch { return ""; }
   const windows = homePlatform === "win32";
-  const root = windows ? win32.parse(raw).root : raw.startsWith("/") ? "/" : "";
+  const paths = windows ? win32 : posix;
+  const root = paths.parse(raw).root;
   const home = root + raw.slice(root.length).replace(/[\\/]+$/u, "");
+  // Root homes have no account component. Only the generic text rules apply.
+  if (root && paths.normalize(home) === paths.normalize(root)) return "";
   // Quotes and controls can coincide with syntax in serialized text. POSIX
   // filename backslashes can also change the meaning of a following quote.
-  // These home spellings are unsupported. Trailing separators are normalized.
   return /["\p{Cc}]/u.test(home) || !windows && home.includes("\\") ? "" : home;
 }
 
@@ -158,9 +159,6 @@ export function redactFsPath(path: string): string {
 interface HomeForm {
   literal: RegExp;
   marker: string;
-  windows?: boolean;
-  windowsRoot?: boolean;
-  escapedSeparators?: boolean;
 }
 
 interface HomeDetector extends HomeForm {
@@ -191,15 +189,12 @@ const BACKSLASH_AND_URI_FAMILIES = ["full", "backslash", "percent-entity"] as co
 const DECODE_FAMILIES: readonly HomeEscapeFamily[] = [...BACKSLASH_AND_URI_FAMILIES, "percent", "entity"];
 const URI_AND_ENTITY_FAMILIES: readonly HomeEscapeFamily[] = ["full", "percent", "entity"];
 const INTRODUCER = /[\\%&]/u;
-const FILENAME_CONTINUATION = /^(?:[\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])/u;
 const BOUNDARY_CHARACTERS = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\"'`<>()[]{},|";
 
 function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeRedaction {
   const windows = platform === "win32";
-  const windowsRoot = windows && /[\\/]$/u.test(home);
   const flags = windows || platform === "darwin" ? "iu" : "u";
-  const url = home ? pathToFileURL(home).href : "";
-  const standard = windowsRoot ? url : url.replace(/\/$/u, "");
+  const standard = home ? pathToFileURL(home).href.replace(/\/$/u, "") : "";
   const slashHome = home.replace(/\\/gu, "/");
   const anchor = home.split(/[\\/]/u).filter(Boolean).at(-1);
   const trigger = new RegExp(String.raw`[\\%&]|users|home` + (anchor ? "|" + escapeRegExp(anchor) : ""), "iu");
@@ -215,12 +210,9 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
   ] as const;
   const forms = spellings.map(([spelling, marker]) => {
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
-    const escapedSeparators = spelling === standard;
-    const stem = windowsRoot ? spelling.replace(/(?:[\\/]|%5[cC])+$/u, "") : spelling;
-    const pattern = homePattern(stem, windows, escapedSeparators);
-    const end = windowsRoot ? String.raw`(?=[\\/%])` : `(?!${FILENAME_CONTINUATION.source.slice(1)})`;
-    const source = `${start}${pattern}${end}`;
-    return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker, windows, windowsRoot, escapedSeparators };
+    const pattern = homePattern(spelling, windows, spelling === standard);
+    const source = String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
+    return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker };
   });
   return { forms, trigger, boundaries, requiredPathCharacter };
 }
@@ -233,54 +225,13 @@ export function mayContainHomePath(value: string): boolean {
 
 const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtuvx"].map(character => character.charCodeAt(0)));
 
-function windowsSeparatorEnd(text: string, start: number, width: number, escaped: boolean): number {
-  let index = start;
-  for (;;) {
-    const code = text.charCodeAt(index);
-    if (code === 47) {
-      index++;
-    } else if (code === 92) {
-      let next = index + 1;
-      while (text.charCodeAt(next) === 92) next++;
-      const residue = (next - index) % width;
-      if (residue === 0) index = next;
-      else if (residue === width / 2 && text.charCodeAt(next) === 47) index = next + 1;
-      else return next - residue;
-    } else if (escaped && code === 37 && text.charCodeAt(index + 1) === 53 && (text.charCodeAt(index + 2) | 32) === 99) {
-      index += 3;
-    } else {
-      return index;
-    }
-  }
-}
-
-function hasCompleteWindowsSeparators(spelling: string, width: number): boolean {
-  if (width === 1) return true;
-  for (const { 0: run, index } of spelling.matchAll(/\\+/gu)) {
-    const residue = run.length % width;
-    if (residue && (residue !== width / 2 || spelling.charCodeAt(index + run.length) !== 47)) return false;
-    if (index === 0 && run.length < width * 2 && spelling.charCodeAt(run.length) !== 47) return false;
-  }
-  return true;
-}
-
-function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveSiblings = false, separatorWidth = 1): string {
-  for (const form of forms) {
-    const { literal, marker, windowsRoot } = form;
+function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
+  for (const { literal, marker } of forms) {
     let copied = 0;
     let pieces: string[] | undefined;
-    const matches = preserveSiblings && !windowsRoot
-      ? homeComponentMatches(text, form, HOME_DECODE_LAYERS, separatorWidth)
-      : text.matchAll(literal);
-    for (const match of matches) {
+    for (const match of text.matchAll(literal)) {
       let start = match.index;
-      let end = start + match[0].length;
-      if (windowsRoot) {
-        if (!hasCompleteWindowsSeparators(match[0], separatorWidth)) continue;
-        const rootEnd = windowsSeparatorEnd(text, end, separatorWidth, form.escapedSeparators === true);
-        if (rootEnd === end) continue;
-        end = rootEnd;
-      }
+      const end = start + match[0].length;
       if (ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
         while (start > copied && text.charCodeAt(start - 1) === 92) start--;
       }
@@ -307,25 +258,19 @@ function escapeFamilies(view: string): readonly HomeEscapeFamily[] {
   return mixed ? [...families, "full-js", "backslash-js"] : [...families, "full-js"];
 }
 
-function someDecodedHomeView(
-  token: string, layers: number, match: (view: string, depth: number, width: number) => boolean, separatorWidth = 1,
-): boolean {
-  const seen = new Map([[token, separatorWidth]]);
-  let layer = [{ text: token, width: separatorWidth }];
-  // Breadth first keeps the shortest route to each view, including when
-  // different escape families reach the same spelling at different depths.
-  for (let depth = 1; depth <= layers && layer.length; depth++) {
-    const next: typeof layer = [];
-    for (const { text, width } of layer) {
-      for (const family of escapeFamilies(text)) {
-        const decoded = decodeHomeEscapes(text, family);
-        if (decoded === text) continue;
-        const decodedWidth = decodesHomeBackslashes(family) ? Math.max(1, width / 2) : width;
-        const widths = seen.get(decoded) ?? 0;
-        if (widths & decodedWidth) continue;
-        if (match(decoded, depth, decodedWidth)) return true;
-        seen.set(decoded, widths | decodedWidth);
-        if (depth < layers && INTRODUCER.test(decoded)) next.push({ text: decoded, width: decodedWidth });
+function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): boolean {
+  const seen = new Set([token]);
+  let layer = [token];
+  // Breadth first explores each distinct spelling at its lowest depth.
+  for (let depth = 1; depth <= HOME_DECODE_LAYERS && layer.length; depth++) {
+    const next: string[] = [];
+    for (const view of layer) {
+      for (const family of escapeFamilies(view)) {
+        const decoded = decodeHomeEscapes(view, family);
+        if (seen.has(decoded)) continue;
+        if (forms.some(({ detector }) => detector.test(decoded))) return true;
+        seen.add(decoded);
+        if (depth < HOME_DECODE_LAYERS && INTRODUCER.test(decoded)) next.push(decoded);
       }
     }
     layer = next;
@@ -333,57 +278,9 @@ function someDecodedHomeView(
   return false;
 }
 
-function hasEncodedFilenameContinuation(text: string, start: number, limit: number, layers: number): boolean {
-  if (!layers || start >= limit) return false;
-  const introducer = text.charCodeAt(start + (text.charCodeAt(start) === 46 ? 1 : 0));
-  if (introducer !== 37 && introducer !== 38 && introducer !== 92) return false;
-  const suffix = text.slice(start, limit);
-  const boundary = suffix.search(/[/:"'\s]/u);
-  const candidate = boundary < 0 ? suffix : suffix.slice(0, boundary);
-  return someDecodedHomeView(candidate, layers, view => FILENAME_CONTINUATION.test(view));
-}
-
-/** Check continuation without using a decoded offset as a replacement boundary. */
-function* homeComponentMatches(text: string, form: HomeForm, layers: number, width: number): Generator<RegExpExecArray> {
-  const matches = text.matchAll(form.literal);
-  let next = matches.next();
-  while (!next.done) {
-    const match = next.value;
-    next = matches.next();
-    // Check only the gap to the next match so nearby matches cannot make the
-    // suffix search revisit the rest of the input for every literal occurrence.
-    const limit = next.done ? text.length : next.value.index;
-    const suffix = match.index + match[0].length;
-    if (form.windows) {
-      if (!hasCompleteWindowsSeparators(match[0], width)) continue;
-      if (windowsSeparatorEnd(text, suffix, width, false) > suffix) {
-        yield match;
-        continue;
-      }
-    }
-    if (!hasEncodedFilenameContinuation(text, suffix, limit, layers)) yield match;
-  }
-}
-
-function detectsEncodedHome(token: string, forms: readonly HomeDetector[], separatorWidth: number): boolean {
-  return someDecodedHomeView(token, HOME_DECODE_LAYERS, (view, depth, width) => forms.some(form => {
-    if (!form.detector.test(view)) return false;
-    if (form.windowsRoot) {
-      for (const match of view.matchAll(form.literal)) {
-        const end = match.index + match[0].length;
-        if (hasCompleteWindowsSeparators(match[0], width)
-          && windowsSeparatorEnd(view, end, width, form.escapedSeparators === true) > end) return true;
-      }
-      return false;
-    }
-    const remaining = HOME_DECODE_LAYERS - depth;
-    return (!remaining && width === 1) || !homeComponentMatches(view, form, remaining, width).next().done;
-  }), separatorWidth);
-}
-
 /** Delimiters and their preceding slash runs belong to the original text. */
 function replaceEncodedHomeTokens(
-  text: string, { forms, boundaries, requiredPathCharacter }: HomeRedaction, separatorWidth: number,
+  text: string, { forms, boundaries, requiredPathCharacter }: HomeRedaction,
 ): string {
   let pieces: string[] | undefined;
   let copied = 0;
@@ -395,7 +292,7 @@ function replaceEncodedHomeTokens(
       introduced = false;
       if (requiredPathCharacter && token.length >= LARGE_ESCAPE_TOKEN && !token.includes(requiredPathCharacter)
         && !mayDecodeHomeCharacter(token, requiredPathCharacter.charCodeAt(0), HOME_DECODE_LAYERS)) return;
-      if (!detectsEncodedHome(token, forms, separatorWidth)) return;
+      if (!detectsEncodedHome(token, forms)) return;
       pieces ??= [];
       pieces.push(text.slice(copied, start), HOME_TOKEN_MARKER);
       copied = end;
@@ -432,18 +329,10 @@ function replaceEncodedHomeTokens(
 }
 
 /** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
-function redactConfiguredHome(value: string, separatorWidth: number): string {
-  if (!value || !mayContainHomePath(value)) return value;
-  let text = replaceLiteralHomes(value, homeRedaction.forms, true, separatorWidth);
-  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction, separatorWidth);
-  return text;
-}
-
 export function redactHomePathsInText(value: string): string {
   if (!value || !mayContainHomePath(value)) return value;
-  const text = homePlatform === "win32" && _homeDir
-    ? rewriteWindowsPathText(value, redactConfiguredHome)
-    : redactConfiguredHome(value, 1);
+  let text = replaceLiteralHomes(value, homeRedaction.forms);
+  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
   return replaceLiteralHomes(text, GENERIC_HOME_FORMS);
 }
 
