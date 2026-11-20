@@ -63,7 +63,7 @@ describe("Windows launch diagnostic", () => {
   });
 
   it("selects the media names and normalized job-root images and current directories", () => {
-    for (const name of ["SETUP_WM.EXE", "unregmp2.exe", "wmplayer.exe"]) {
+    for (const name of ["SETUP_WM.EXE", "unregmp2.exe", "wmplayer.exe", "wmpnscfg.exe", "wmpnetwk.exe"]) {
       assert.equal(processMatch({ name, image: null }, ROOT), "media");
     }
     assert.equal(processMatch({ image: "\\\\?\\c:\\AVE-ci-example\\tmp\\a.exe" }, ROOT), "image");
@@ -110,6 +110,65 @@ describe("Windows launch diagnostic", () => {
     const rendered = renderRunnerOutput(`${JSON.stringify(row)}\n`);
     assert.doesNotMatch(rendered, /::|##\[/u);
     assert.deepEqual(JSON.parse(rendered), row);
+  });
+
+  it("records compact starts for all images up to a reported row limit", t => {
+    const directory = fixture(t);
+    const { record } = createRecorder(ROOT, directory, { rawStartLimit: 2 });
+    const row = { pid: 30, parentPid: 20, eventTime: time(4), name: "outside.exe" };
+    for (let offset = 0; offset < 4; offset++) {
+      record({ kind: "raw-start", ...row, pid: row.pid + offset, image: "C:/other/outside.exe", commandLine: "private" });
+    }
+    record({ kind: "trace", rows: [{ ...row, image: `${ROOT}\\target.exe`, commandLine: `target "${ROOT}"` }] });
+    assert.deepEqual(readLines(join(directory, "raw-starts.jsonl")), [row, { ...row, pid: 31 }]);
+    assert.deepEqual(readLines(join(directory, "watcher.jsonl")), [{ kind: "raw-start-limit", maxRows: 2 }]);
+    const [full] = readLines(join(directory, "job-root-starts.jsonl"));
+    assert.equal(full.commandLine, 'target "[job-root]"');
+  });
+
+  it("prints escaped ancestor facts and bounded preceding starts for each media start", async t => {
+    const directory = fixture(t);
+    const { record } = createRecorder(ROOT, directory);
+    const parent = {
+      pid: 20, name: "parent.exe", image: "C:/other/parent.exe", created: time(9),
+      commandLine: `parent "${ROOT}" "::stop-commands::example" "##[error]" ${"x".repeat(2048)}`,
+      parentCreatedBeforeChild: true,
+    };
+    const replacement = { ...parent, pid: 10, created: time(11), parentCreatedBeforeChild: false };
+    for (const [pid, eventTime] of [[10, time(4)], [11, time(5)], [12, time(9)], [13, time(10)], [14, time(11)]]) {
+      record({ kind: "raw-start", pid, eventTime, parentPid: 1, name: "outside.exe" });
+    }
+    for (let pid = 100; pid < 140; pid++) {
+      record({ kind: "raw-start", pid, eventTime: time(9), parentPid: 1, name: "outside.exe" });
+    }
+    // An older start can arrive later than another event.
+    record({ kind: "raw-start", pid: 20, eventTime: time(8), parentPid: 10, name: parent.name });
+    for (const [pid, eventTime] of [[30, time(10)], [31, time(15)]]) {
+      record({ kind: "trace", rows: [{
+        pid, parentPid: parent.pid, eventTime, created: eventTime, name: "setup_wm.exe",
+        ancestry: [parent, replacement], ancestryTimeBasis: "child-creation", ancestryStatus: "parent-not-older",
+      }] });
+    }
+    const file = join(directory, "media-starts.jsonl");
+    assert.doesNotMatch(readFileSync(file, "utf8"), /::|##\[/u);
+    const [media] = readLines(file);
+    assert.equal(media.ancestry[0].commandLine.length, 2048);
+    assert.match(media.ancestry[0].commandLine, /\[job-root\].*::stop-commands::example.*##\[error\]/u);
+    assert.equal(media.ancestry[1].parentCreatedBeforeChild, false);
+    const script = fileURLToPath(new URL("watch-windows-processes.mjs", SCRIPTS));
+    const { stdout } = await run(process.execPath, [script, "print", directory], { cwd: directory, windowsHide: true });
+    assert.doesNotMatch(stdout, /::|##\[/u);
+    const rows = stdout.split(/\r?\n/u).filter(line => line.startsWith("{")).map(line => JSON.parse(line));
+    const starts = rows.filter(row => row.kind === "start");
+    assert.deepEqual(starts.map(row => row.pid), [30, 31]);
+    assert.deepEqual(starts[0].ancestry, media.ancestry);
+    const windows = rows.filter(row => row.kind === "preceding-starts");
+    assert.deepEqual(windows.map(row => row.pid), [30, 31]);
+    assert.equal(windows[0].starts.length, 32);
+    assert.equal(windows[0].omitted, 11);
+    assert.ok(windows[0].starts.every(row => row.eventTime === time(9)));
+    assert.deepEqual(windows[1].starts.map(row => row.pid), [13, 14]);
+    assert.equal(windows[1].omitted, 0);
   });
 
   it("launches the watcher with the job's executable when PATH contains multiple node.exe files", WIN32_ONLY, async t => {
@@ -282,6 +341,107 @@ describe("Windows launch diagnostic", () => {
       kind: "mechanism", mechanism: "polling", jobRootMatch: "image path or current directory",
     });
     assert.equal(log.at(-1).kind, "stopped");
+  });
+
+  it("traces a media setup start and its live parent outside the job root", WIN32_ONLY, async t => {
+    const directory = fixture(t);
+    const root = join(directory, "job");
+    mkdirSync(root);
+    const image = join(directory, "setup_wm.exe");
+    copyFileSync(join(process.env.SystemRoot, "System32", "ping.exe"), image);
+    const scripts = join(directory, ".github", "scripts");
+    const lib = join(directory, "scripts", "lib");
+    mkdirSync(scripts, { recursive: true });
+    mkdirSync(lib, { recursive: true });
+    for (const file of ["windows-launch-lifecycle.ps1", "watch-windows-processes.mjs", "job-root-diagnostic.mjs"]) {
+      copyFileSync(new URL(file, SCRIPTS), join(scripts, file));
+    }
+    copyFileSync(new URL("../../scripts/lib/windows-powershell-env.mjs", SCRIPTS), join(lib, "windows-powershell-env.mjs"));
+    const collector = readFileSync(new URL("watch-windows-processes.ps1", SCRIPTS), "utf8");
+    // Supply trace events without CIM subscription privileges. The collector still queries the live processes.
+    writeFileSync(join(scripts, "watch-windows-processes.ps1"), [
+      "function Register-CimIndicationEvent {}",
+      "function Get-Event {",
+      "  if ([IO.File]::Exists('trace-events.json')) {",
+      "    $events = [IO.File]::ReadAllText('trace-events.json') | ConvertFrom-Json",
+      "    [IO.File]::Delete('trace-events.json')",
+      "    $script:fixtureEvents = @(for ($i = 0; $i -lt $events.Length; $i++) {",
+      "      $event = $events[$i]",
+      "      $event.TIME_CREATED = [DateTime]::UtcNow.AddSeconds(-$event.AgeSeconds).ToFileTimeUtc()",
+      "      @{ EventIdentifier = $i; SourceEventArgs = @{ NewEvent = $event } }",
+      "    })",
+      "  } elseif ($null -ne $script:fixtureEvents -and $script:fixtureEvents.Length -eq 0) {",
+      "    [IO.File]::WriteAllText('trace-drained', '')",
+      "    $script:fixtureEvents = $null",
+      "  }",
+      "  $script:fixtureEvents",
+      "}",
+      "function Remove-Event($EventIdentifier) {",
+      "  $script:fixtureEvents = @($script:fixtureEvents | Where-Object { $_.EventIdentifier -ne $EventIdentifier })",
+      "}",
+      collector,
+    ].join("\n"));
+    const env = {
+      ...process.env, AVE_CI_JOB_ROOT: root, AVE_PROCESS_WATCH_PARENT: String(process.pid),
+      AVE_PROCESS_WATCH_TRACE: "1", GITHUB_ACTIONS: "true",
+    };
+    let parent;
+    let childPid = "";
+    try {
+      await control(directory, scripts, "start", env);
+      const log = readLines(join(directory, "watcher.jsonl"));
+      assert.equal(log.find(row => row.kind === "mechanism")?.mechanism, "Win32_ProcessStartTrace");
+      parent = spawn(process.execPath, ["-e", [
+        'const { spawn } = require("node:child_process");',
+        'const { renameSync, writeFileSync } = require("node:fs");',
+        'const child = spawn(process.argv[1], ["-n", "5", "127.0.0.1"], { windowsHide: true, stdio: "ignore" });',
+        'const event = (ProcessID, ParentProcessID, ProcessName, AgeSeconds = 0) =>',
+        '  ({ ProcessID, ParentProcessID, ProcessName, AgeSeconds, TIME_CREATED: 0 });',
+        'writeFileSync("trace-events.tmp", JSON.stringify([event(process.pid, process.ppid, "node.exe"),',
+        '  event(child.pid, process.pid, "setup_wm.exe"), event(0, process.ppid, "setup_wm.exe", 3600),',
+        '  event(0, 4294967295, "wmpnetwk.exe")]));',
+        'renameSync("trace-events.tmp", "trace-events.json");',
+        'process.stdout.write(String(child.pid));',
+        'child.on("exit", code => { process.exitCode = code ?? 1; });',
+      ].join(" "), image, "fixture::token", "##[example]"], {
+        cwd: directory, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+      });
+      parent.stdout.on("data", chunk => { childPid += chunk; });
+      const [code, signal] = await once(parent, "close");
+      assert.deepEqual([code, signal], [0, null]);
+      await waitForPath(join(directory, "trace-drained"));
+    } finally {
+      const { stdout } = await control(directory, scripts, "stop");
+      assert.match(stdout, /collector and watcher exits verified/);
+      assert.doesNotMatch(stdout, /Forced diagnostic process exit/);
+    }
+    const rows = readLines(join(directory, "media-starts.jsonl"));
+    const media = rows.find(row => row.pid === Number(childPid));
+    assert.ok(media);
+    assert.equal(media.match, "media");
+    assert.equal(media.image.toLowerCase(), image.toLowerCase());
+    assert.equal(media.ancestryTimeBasis, "child-creation");
+    assert.ok(media.ancestry.length <= 6);
+    const [link] = media.ancestry;
+    assert.equal(link.pid, parent.pid);
+    assert.equal(link.name.toLowerCase(), "node.exe");
+    assert.equal(link.image.toLowerCase(), process.execPath.toLowerCase());
+    assert.match(link.commandLine, /fixture::token.*##\[example\]/u);
+    assert.ok(Date.parse(link.created) <= Date.parse(media.created));
+    assert.equal(link.parentCreatedBeforeChild, true);
+    const [later, missing] = rows.filter(row => row.pid === 0);
+    assert.equal(later.ancestryTimeBasis, "start-event");
+    assert.equal(later.ancestryStatus, "parent-not-older");
+    assert.deepEqual(later.ancestry.map(({ pid, parentCreatedBeforeChild }) => [pid, parentCreatedBeforeChild]), [[process.pid, false]]);
+    assert.equal(missing.ancestryStatus, "parent-unavailable");
+    assert.deepEqual(missing.ancestry, [{
+      pid: 4294967295, name: null, created: null, image: null, commandLine: null, parentCreatedBeforeChild: false,
+    }]);
+    const starts = readLines(join(directory, "raw-starts.jsonl"));
+    const compact = starts.find(row => row.pid === parent.pid);
+    assert.ok(Number.isFinite(Date.parse(compact?.eventTime)));
+    assert.deepEqual(compact, { pid: parent.pid, parentPid: process.pid, name: link.name, eventTime: compact.eventTime });
+    assert.equal(starts.find(row => row.pid === media.pid)?.parentPid, parent.pid);
   });
 });
 

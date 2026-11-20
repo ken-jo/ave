@@ -5,6 +5,7 @@ $directory = Get-Location
 $stop = Join-Path $directory 'watcher.stop'
 $control = Join-Path $directory 'watcher-ownership.json'
 $properties = 'ProcessId', 'ParentProcessId', 'Name', 'ExecutablePath', 'CommandLine', 'CreationDate'
+$mediaImages = 'setup_wm.exe', 'unregmp2.exe', 'wmplayer.exe', 'wmpnscfg.exe', 'wmpnetwk.exe'
 $source = 'AveProcessStarts'
 $mechanism = 'polling'
 $seen = [Collections.Generic.HashSet[string]]::new()
@@ -81,22 +82,62 @@ function Write-Snapshot($kind) {
   Write-CwdCoverage
 }
 
-function Write-Start($eventRecord, $draining) {
+function Read-Ancestors($parentId, $childTime, $batch, $draining) {
+  $links = [Collections.Generic.List[object]]::new()
+  $status = 'root'
+  while ($parentId -gt 0) {
+    if ($links.Count -ge 6) { $status = 'depth-limited'; break }
+    if ($batch.ElapsedMilliseconds -ge 1500) { $status = 'batch-limited'; break }
+    if (!$draining -and [IO.File]::Exists($stop)) { $status = 'stop-requested'; break }
+    try { $row = Read-Processes "ProcessId = $parentId" }
+    catch { $status = 'query-failed'; break }
+    $parent = Read-Process $row
+    if (!$parent) {
+      $links.Add(@{ pid = $parentId; parentCreatedBeforeChild = $false })
+      $status = 'parent-unavailable'
+      break
+    }
+    $parentTime = $row.CreationDate.ToUniversalTime()
+    $parent.parentCreatedBeforeChild = $parentTime -lt $childTime
+    $links.Add($parent)
+    if (!$parent.parentCreatedBeforeChild) { $status = 'parent-not-older'; break }
+    $childTime = $parentTime
+    $parentId = $parent.parentPid
+  }
+  @{ links = $links.ToArray(); status = $status }
+}
+
+function Write-Start($eventRecord, $draining, $batch) {
   $eventTime = [DateTime]::FromFileTimeUtc([long]$eventRecord.TIME_CREATED)
   $id = [uint32]$eventRecord.ProcessID
   $parentId = [uint32]$eventRecord.ParentProcessID
+  Write-Record @{
+    kind = 'raw-start'; pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName
+    eventTime = $eventTime.ToString('o')
+  }
   $live = @()
-  if (!$draining) { $live = @(Read-Processes "ProcessId = $id") }
+  if (!$draining) {
+    try { $live = @(Read-Processes "ProcessId = $id") }
+    catch { Write-Record @{ kind = 'trace-process-query-failed' } }
+  }
   $process = @{
     pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName; created = $null
   }
+  $childTime = $eventTime
   foreach ($row in $live) {
     if ($row.ProcessId -eq $id -and $row.CreationDate -and $row.CreationDate.ToUniversalTime() -le $eventTime -and
         $row.ParentProcessId -eq $parentId -and $row.Name -eq $eventRecord.ProcessName) {
       $process = Read-Process $row
+      $childTime = $row.CreationDate.ToUniversalTime()
     }
   }
   $process.eventTime = $eventTime.ToString('o')
+  if ($eventRecord.ProcessName -in $mediaImages) {
+    $ancestry = Read-Ancestors $parentId $childTime $batch $draining
+    $process.ancestry = $ancestry.links
+    $process.ancestryStatus = $ancestry.status
+    $process.ancestryTimeBasis = if ($process.created) { 'child-creation' } else { 'start-event' }
+  }
   Add-ProcessCwd $process
   Write-Record @{ kind = 'trace'; rows = @($process) }
 }
@@ -143,7 +184,7 @@ try {
         }
         if (!$stopping -and [IO.File]::Exists($stop)) { break }
         Remove-Event -EventIdentifier $start.EventIdentifier
-        Write-Start $start.SourceEventArgs.NewEvent $stopping
+        Write-Start $start.SourceEventArgs.NewEvent $stopping $batch
       }
       Write-CwdCoverage
     } elseif (!$stopping) {
