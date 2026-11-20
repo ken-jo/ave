@@ -38,19 +38,25 @@ function Wait-ForExit($processes, $timeout) {
 
 function Stop-VerifiedProcesses($processes) {
   foreach ($process in $processes) {
+    try { if ($process.HasExited) { continue } } catch {}
     try {
-      if (!$process.HasExited) {
-        $process.Kill()
-        Write-Output "Forced diagnostic process exit ($($process.Id))"
-      }
+      $process.Kill()
+      Write-Output "Forced diagnostic process exit ($($process.Id))"
     } catch {
-      if (!$process.HasExited) { Write-Output "Could not terminate diagnostic process ($($process.Id))" }
+      Write-Output "Could not terminate diagnostic process ($($process.Id))"
     }
   }
-  Wait-ForExit $processes 3000
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $verified = $true
   foreach ($process in $processes) {
-    if (!$process.HasExited) { throw 'Diagnostic process exit could not be verified' }
+    try {
+      if ($process.WaitForExit([Math]::Max(0, 3000 - $clock.ElapsedMilliseconds))) { continue }
+    } catch {}
+    try { if ($process.HasExited) { continue } } catch {}
+    Write-Output "Diagnostic process exit could not be verified ($($process.Id))"
+    $verified = $false
   }
+  if (!$verified) { throw 'Diagnostic process exit could not be verified' }
 }
 
 if ($Mode -eq 'start') {
@@ -90,11 +96,17 @@ if ($Mode -eq 'start') {
     }
   }
 } else {
-  if ($Mode -eq 'stop') { [IO.File]::WriteAllText($stop, '') }
-  if (![IO.File]::Exists($manifest)) { return }
-  $identities = Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json
+  $graceful = $false
+  if ($Mode -eq 'stop') {
+    try {
+      [IO.File]::WriteAllText($stop, '')
+      $graceful = $true
+    } catch { Write-Output 'Could not signal diagnostic stop' }
+  }
   $processes = [Collections.Generic.List[Diagnostics.Process]]::new()
   try {
+    if (![IO.File]::Exists($manifest)) { return }
+    $identities = Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json
     $roles = if ($Mode -eq 'stop') { 'collector', 'watcher' } else { 'collector' }
     $unverified = $false
     foreach ($role in $roles) {
@@ -103,10 +115,16 @@ if ($Mode -eq 'start') {
         if ($process) { $processes.Add($process) }
       } catch { $unverified = $true }
     }
-    if ($Mode -eq 'stop') { Wait-ForExit $processes $GraceMilliseconds }
+    if ($graceful) {
+      try { Wait-ForExit $processes $GraceMilliseconds }
+      catch { Write-Output 'Diagnostic graceful wait failed' }
+    }
     Stop-VerifiedProcesses $processes
     if ($unverified) { throw 'Diagnostic process identity could not be verified' }
     if ($Mode -eq 'stop') { Write-Output 'Diagnostic collector and watcher exits verified' }
+  } catch {
+    if ($Mode -eq 'stop-collector') { throw }
+    Write-Output 'Diagnostic collector and watcher exits could not be verified'
   } finally {
     foreach ($process in $processes) { $process.Dispose() }
   }

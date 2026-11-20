@@ -26,14 +26,18 @@ export function processMatch(row, root) {
 export function createProcessHistory(root) {
   const byPid = new Map();
 
-  function remember(row) {
-    const process = {
+  function describeProcess(row) {
+    return {
       pid: row.pid,
       parentPid: row.parentPid,
       created: row.created ?? null,
       image: (row.image ?? row.name ?? "").slice(0, FIELD_LIMIT) || null,
       commandLine: maskJobRootArguments(row.commandLine, root)?.slice(0, FIELD_LIMIT) ?? null,
     };
+  }
+
+  function remember(row, snapshot) {
+    const process = describeProcess(row);
     if (!process.created) return process;
     let generations = byPid.get(process.pid);
     if (!generations) {
@@ -42,38 +46,53 @@ export function createProcessHistory(root) {
     }
     const previous = generations.get(process.created);
     if (previous) {
-      if (row.observedAt > previous.observedAt) previous.observedAt = row.observedAt;
+      if (previous.lastSnapshot !== snapshot - 1) previous.firstConsecutiveSnapshot = snapshot;
+      previous.lastSnapshot = snapshot;
       return null;
     }
-    generations.set(process.created, { process, observedAt: row.observedAt ?? "" });
+    generations.set(process.created, {
+      process, firstSnapshot: snapshot, firstConsecutiveSnapshot: snapshot, lastSnapshot: snapshot,
+    });
     return process;
   }
 
-  function formatStart(process, match, row = {}) {
-    const ancestry = [];
-    let child = process;
-    while (child.created && child.parentPid > 0) {
-      // A live observation at or after creation proves this generation spanned the launch.
-      const candidates = [...(byPid.get(child.parentPid)?.values() ?? [])].filter(
-        ({ process: parent, observedAt }) => parent.created < child.created && observedAt >= child.created,
-      );
-      if (candidates.length !== 1) break;
-      child = candidates[0].process;
-      ancestry.push(child);
-    }
+  function formatStart(process, match, row, ancestry) {
     return JSON.stringify({
       kind: "start", match, ...process, eventTime: row.eventTime ?? null,
-      cwdStatus: row.cwdStatus ?? "unavailable", ancestry, unresolvedParentPid: child.parentPid || null,
+      cwdStatus: row.cwdStatus ?? "unavailable", ancestry,
+      unresolvedParentPid: (ancestry.at(-1) ?? process).parentPid || null,
     });
   }
 
-  return { remember, formatStart, find: row => byPid.get(row.pid)?.get(row.created)?.process };
+  function formatSnapshotStart(process, match, row = {}) {
+    const ancestry = [];
+    let child = byPid.get(process.pid)?.get(process.created);
+    while (child?.process.parentPid > 0) {
+      // Parent sightings must bracket the child's last-absent and first-present queries.
+      const candidates = [...(byPid.get(child.process.parentPid)?.values() ?? [])].filter(
+        parent => parent.firstConsecutiveSnapshot < child.firstSnapshot - 1 && parent.lastSnapshot > child.firstSnapshot,
+      );
+      if (candidates.length !== 1) break;
+      child = candidates[0];
+      ancestry.push(child.process);
+    }
+    return formatStart(process, match, row, ancestry);
+  }
+
+  function formatTraceStart(row, match, liveParent) {
+    // The baseline query finished before subscription. The live query started after event receipt.
+    const parent = liveParent?.pid === row.parentPid && byPid.get(row.parentPid)?.get(liveParent.created);
+    return formatStart(describeProcess(row), match, row, parent?.firstSnapshot === 1 ? [parent.process] : []);
+  }
+
+  return { remember, formatSnapshotStart, formatTraceStart };
 }
 
 function createRecorder(root, directory) {
   const history = createProcessHistory(root);
   const totals = new Map();
   let pending = [];
+  let snapshot = 0;
 
   function write(file, record) {
     const line = typeof record === "string" ? record : JSON.stringify(record);
@@ -88,38 +107,41 @@ function createRecorder(root, directory) {
     totals.set(file, total + size);
   }
 
-  function writeStart(start) {
-    const { process, match, row } = start;
-    write(match === "media" ? MEDIA_LOG : JOB_LOG, history.formatStart(process, match, row));
+  function writeStart(match, line) {
+    write(match === "media" ? MEDIA_LOG : JOB_LOG, line);
   }
 
   function flush() {
-    for (const start of pending) writeStart(start);
+    for (const { process, match, row } of pending) {
+      writeStart(match, history.formatSnapshotStart(process, match, row));
+    }
     pending = [];
   }
 
   function record(entry) {
     if (entry.kind === "heartbeat") return;
-    if (entry.kind !== "snapshot" && entry.kind !== "baseline" && entry.kind !== "trace") {
+    if (entry.kind === "ready") {
+      writeFileSync(join(directory, READY), "");
+      return;
+    }
+    if (entry.kind === "trace") {
+      const [row, liveParent] = entry.rows;
+      const match = processMatch(row, root);
+      if (match) writeStart(match, history.formatTraceStart(row, match, liveParent));
+      return;
+    }
+    if (entry.kind !== "snapshot" && entry.kind !== "baseline") {
       if (entry.kind === "stopped" || entry.kind === "collector-failed") flush();
       write(WATCH_LOG, entry);
       return;
     }
-    const starts = entry.rows.map(row => [row, history.remember(row)]);
-    if (entry.kind === "baseline") {
-      writeFileSync(join(directory, READY), "");
-      return;
-    }
-    const polling = entry.kind === "snapshot";
-    if (polling) flush();
-    for (const [row, observed] of (polling ? starts : starts.slice(0, 1))) {
-      const process = observed ?? (polling ? null : history.find(row));
+    snapshot += 1;
+    const starts = entry.rows.map(row => [row, history.remember(row, snapshot)]);
+    if (entry.kind === "baseline") return;
+    flush();
+    for (const [row, process] of starts) {
       const match = process && processMatch(row, root);
-      if (!match) continue;
-      const start = { process, match, row };
-      // A snapshot may straddle a launch. One more observation can prove overlap.
-      if (polling) pending.push(start);
-      else writeStart(start);
+      if (match) pending.push({ process, match, row });
     }
   }
 

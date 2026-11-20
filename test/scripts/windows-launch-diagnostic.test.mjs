@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { maskJobRootArguments, processCwdProbe } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { createProcessHistory, processMatch, renderRunnerOutput } from "../../.github/scripts/watch-windows-processes.mjs";
@@ -74,26 +74,27 @@ describe("Windows launch diagnostic", () => {
     assert.equal(processMatch({ image: "C:/other/a.exe", cwd: `${ROOT}-other` }, ROOT), null);
   });
 
-  it("resolves an observed overlapping lifetime across delayed events and PID reuse", () => {
+  it("resolves generation lifetimes using snapshot order even when creation times run backward", () => {
     const history = createProcessHistory(ROOT);
-    const grandparent = history.remember({
-      pid: 10, parentPid: 90, created: time(1), observedAt: time(4), name: "launcher.exe",
-    });
+    const grandparentRow = { pid: 10, parentPid: 90, created: time(12), name: "launcher.exe" };
+    const grandparent = history.remember(grandparentRow, 1);
+    history.remember(grandparentRow, 2);
     const parentRow = {
-      pid: 20, parentPid: 10, created: time(2), observedAt: time(2),
+      pid: 20, parentPid: 10, created: time(6),
       image: "C:/example/shell.exe", commandLine: `shell "${ROOT}\\probe"`,
     };
-    const parent = history.remember(parentRow);
-    assert.equal(history.remember({ ...parentRow, observedAt: time(4) }), null);
-    history.remember({ ...parentRow, created: time(5), observedAt: time(7) });
+    const parent = history.remember(parentRow, 3);
+    for (const snapshot of [3, 4, 5, 6, 7]) history.remember(grandparentRow, snapshot);
+    for (const snapshot of [4, 5, 6]) assert.equal(history.remember(parentRow, snapshot), null);
     const row = {
-      pid: 30, parentPid: 20, created: time(3), eventTime: time(4), observedAt: time(7),
+      pid: 30, parentPid: 20, created: time(3),
       name: "setup_wm.exe", commandLine: `setup_wm "${ROOT}\\log"`,
     };
-    const child = history.remember(row);
+    const child = history.remember(row, 5);
+    history.remember({ ...parentRow, created: time(5) }, 7);
     assert.equal(parent.commandLine, 'shell "[job-root]"');
-    assert.deepEqual(JSON.parse(history.formatStart(child, "media", row)), {
-      kind: "start", match: "media", pid: 30, parentPid: 20, created: time(3), eventTime: time(4),
+    assert.deepEqual(JSON.parse(history.formatSnapshotStart(child, "media", row)), {
+      kind: "start", match: "media", pid: 30, parentPid: 20, created: time(3), eventTime: null,
       image: "setup_wm.exe", commandLine: 'setup_wm "[job-root]"', cwdStatus: "unavailable",
       ancestry: [parent, grandparent], unresolvedParentPid: 90,
     });
@@ -101,29 +102,56 @@ describe("Windows launch diagnostic", () => {
 
   it("leaves an exited cached parent unresolved when polling missed its replacement", () => {
     const history = createProcessHistory(ROOT);
-    history.remember({ pid: 20, created: time(1), observedAt: time(2), name: "departed.exe" });
-    const child = history.remember({ pid: 30, parentPid: 20, created: time(4), observedAt: time(5) });
-    const record = JSON.parse(history.formatStart(child, "media"));
+    const departed = { pid: 20, created: time(1), name: "departed.exe" };
+    history.remember(departed, 1);
+    history.remember(departed, 2);
+    const child = history.remember({ pid: 30, parentPid: 20, created: time(4) }, 3);
+    history.remember({ ...departed, created: time(6), name: "later.exe" }, 4);
+    const record = JSON.parse(history.formatSnapshotStart(child, "media"));
     assert.deepEqual(record.ancestry, []);
     assert.equal(record.unresolvedParentPid, 20);
   });
 
-  it("leaves a late event unresolved when the only live generation started after the child", () => {
+  it("leaves a missed replacement unresolved after the clock steps backward", () => {
     const history = createProcessHistory(ROOT);
-    history.remember({ pid: 20, created: time(5), observedAt: time(7), name: "replacement.exe" });
+    const departed = { pid: 20, created: time(1), observedAt: time(9), name: "departed.exe" };
+    history.remember(departed, 1);
+    history.remember(departed, 2);
+    const child = history.remember({ pid: 30, parentPid: 20, created: time(4), observedAt: time(5) }, 3);
+    const record = JSON.parse(history.formatSnapshotStart(child, "media"));
+    assert.deepEqual(record.ancestry, []);
+    assert.equal(record.unresolvedParentPid, 20);
+  });
+
+  it("leaves a late trace unresolved when the live parent generation differs from the baseline", () => {
+    const history = createProcessHistory(ROOT);
+    history.remember({ pid: 20, created: time(5), name: "departed.exe" }, 1);
+    const replacement = { pid: 20, created: time(2), name: "replacement.exe" };
     const row = { pid: 30, parentPid: 20, created: time(3), eventTime: time(6), name: "setup_wm.exe" };
-    const record = JSON.parse(history.formatStart(history.remember(row), "media", row));
+    const record = JSON.parse(history.formatTraceStart(row, "media", replacement));
     assert.equal(record.eventTime, time(6));
     assert.equal(record.created, time(3));
     assert.deepEqual(record.ancestry, []);
     assert.equal(record.unresolvedParentPid, 20);
   });
 
+  it("resolves a trace parent observed before subscription and after event receipt", () => {
+    const history = createProcessHistory(ROOT);
+    const parent = { pid: 20, parentPid: 10, created: time(7), name: "parent.exe" };
+    const saved = history.remember(parent, 1);
+    const row = { pid: 30, parentPid: 20, eventTime: time(4), name: "unregmp2.exe" };
+    const record = JSON.parse(history.formatTraceStart(row, "media", parent));
+    assert.equal(record.created, null);
+    assert.equal(record.eventTime, time(4));
+    assert.deepEqual(record.ancestry, [saved]);
+    assert.equal(record.unresolvedParentPid, 10);
+  });
+
   it("retains the trace time for an exited media target without inventing its creation or ancestry", () => {
     const history = createProcessHistory(ROOT);
-    history.remember({ pid: 20, created: time(1), observedAt: time(7), name: "parent.exe" });
+    history.remember({ pid: 20, created: time(1), name: "parent.exe" }, 1);
     const row = { pid: 30, parentPid: 20, eventTime: time(4), name: "unregmp2.exe" };
-    const record = JSON.parse(history.formatStart(history.remember(row), processMatch(row, ROOT), row));
+    const record = JSON.parse(history.formatTraceStart(row, processMatch(row, ROOT)));
     assert.equal(record.match, "media");
     assert.equal(record.eventTime, time(4));
     assert.equal(record.created, null);
@@ -139,13 +167,20 @@ describe("Windows launch diagnostic", () => {
     assert.deepEqual(JSON.parse(rendered), row);
   });
 
-  for (const stall of ["before readiness", "during stop"]) {
+  for (const stall of ["before readiness", "during stop", "with a blocked stop signal", "when the graceful wait throws"]) {
     it(`verifies and forces both diagnostic exits for a stall ${stall}`, WIN32_ONLY, async t => {
       const directory = fixture(t);
       const scripts = join(directory, "scripts");
       mkdirSync(scripts);
-      copyFileSync(new URL("windows-launch-lifecycle.ps1", SCRIPTS), join(scripts, "windows-launch-lifecycle.ps1"));
-      const prepared = stall === "during stop";
+      const controller = readFileSync(new URL("windows-launch-lifecycle.ps1", SCRIPTS), "utf8");
+      const waitFailure = stall === "when the graceful wait throws";
+      const gracefulWait = "function Wait-ForExit($processes, $timeout) {";
+      assert.ok(controller.includes(gracefulWait));
+      writeFileSync(join(scripts, "windows-launch-lifecycle.ps1"), waitFailure ? controller.replace(gracefulWait,
+        `${gracefulWait}\n  if ($timeout -eq 325) { throw 'Synthetic graceful wait failure' }`) : controller);
+      const blockedSignal = stall === "with a blocked stop signal";
+      const stopPath = join(directory, "watcher.stop");
+      const prepared = stall !== "before readiness";
       writeFileSync(join(scripts, "watch-windows-processes.mjs"), [
         'import { existsSync, writeFileSync } from "node:fs";',
         'setInterval(() => {',
@@ -169,13 +204,19 @@ describe("Windows launch diagnostic", () => {
         const identities = Object.values(JSON.parse(readFileSync(manifest, "utf8")));
         assert.equal(identities.length, 2);
         assert.ok(identities.every(({ pid }) => isAlive(pid)));
-        const { stdout } = await control(directory, scripts, "stop");
+        if (blockedSignal) mkdirSync(stopPath);
+        const { stdout } = await control(directory, scripts, "stop", process.env, waitFailure ? 325 : 2000);
+        if (blockedSignal) assert.match(stdout, /Could not signal diagnostic stop/);
+        if (waitFailure) assert.match(stdout, /Diagnostic graceful wait failed/);
         assert.equal((stdout.match(/Forced diagnostic process exit/g) ?? []).length, 2);
         assert.match(stdout, /collector and watcher exits verified/);
         assert.ok(identities.every(({ pid }) => !isAlive(pid)));
-        assert.ok(existsSync(join(directory, "collector.stopping")));
-        assert.ok(existsSync(join(directory, "watcher.stopping")));
+        if (!blockedSignal && !waitFailure) {
+          assert.ok(existsSync(join(directory, "collector.stopping")));
+          assert.ok(existsSync(join(directory, "watcher.stopping")));
+        }
       } finally {
+        if (blockedSignal && existsSync(stopPath)) rmdirSync(stopPath);
         await starting;
         await control(directory, scripts, "stop");
       }
@@ -229,7 +270,7 @@ describe("Windows launch diagnostic", () => {
 });
 
 describe("Windows test file markers", () => {
-  it("requires hosted Windows and writes pre-load and execution phases in UTC", t => {
+  it("requires hosted Windows and writes queue receipt and execution phases in UTC", t => {
     const directory = fixture(t);
     const enabled = { GITHUB_ACTIONS: "true", RUNNER_TEMP: directory, AVE_CI_WINDOWS_TEST_FILE_MARKERS: "1" };
     assert.equal(windowsTestFileMarkers(enabled, "linux"), undefined);
@@ -246,12 +287,33 @@ describe("Windows test file markers", () => {
     reporter.onTestModuleEnd(module);
     const lines = readLines(join(directory, "windows-launch-diagnostic", "test-files.jsonl"));
     assert.deepEqual(lines.map(line => [line.phase, line.file]), [
-      ["queued-before-load", "test/probe.test.ts"],
+      ["queued-host-receipt", "test/probe.test.ts"],
       ["execution-start", "test/probe.test.ts"],
       ["execution-finish", "test/probe.test.ts"],
     ]);
     assert.ok(lines.every(line => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(line.time)));
     assert.deepEqual(lines.map(line => line.time), lines.map(line => line.time).sort());
+  });
+
+  it("labels a delayed queue receipt even when module import already launched a process", async t => {
+    const directory = fixture(t);
+    const moduleId = join(directory, "probe.mjs");
+    const launched = join(directory, "top-level-launch");
+    const args = ["-e", 'require("node:fs").writeFileSync(process.argv[1], "")', launched];
+    writeFileSync(moduleId, [
+      'import { execFileSync } from "node:child_process";',
+      `execFileSync(process.execPath, ${JSON.stringify(args)}, { windowsHide: true, timeout: 5000 });`,
+    ].join("\n"));
+    const reporter = windowsTestFileMarkers({
+      GITHUB_ACTIONS: "true", RUNNER_TEMP: directory, AVE_CI_WINDOWS_TEST_FILE_MARKERS: "1",
+    }, "win32");
+    const receiveQueue = () => reporter.onTestModuleQueued({ project: { config: { root: directory } }, moduleId });
+    await import(pathToFileURL(moduleId).href);
+    assert.ok(existsSync(launched));
+    receiveQueue();
+    const [marker] = readLines(join(directory, "windows-launch-diagnostic", "test-files.jsonl"));
+    assert.equal(marker.phase, "queued-host-receipt");
+    assert.match(marker.ordering, /may follow module import and top-level execution/);
   });
 
   it("leaves the test outcome alone when the marker directory is unavailable", t => {

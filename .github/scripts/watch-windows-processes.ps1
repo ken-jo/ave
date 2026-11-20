@@ -23,13 +23,12 @@ function Read-Processes($filter) {
   Get-CimInstance @query
 }
 
-function Read-Process($row, $observedAt) {
+function Read-Process($row) {
   if ($row.ProcessId -gt 0 -and $row.CreationDate) {
     @{
       pid = $row.ProcessId; parentPid = $row.ParentProcessId; name = $row.Name
       image = $row.ExecutablePath; commandLine = $row.CommandLine
       created = $row.CreationDate.ToUniversalTime().ToString('o')
-      observedAt = $observedAt.ToString('o')
     }
   }
 }
@@ -70,12 +69,10 @@ function Write-Snapshot($kind) {
     $parentId = [uint32]$env:AVE_PROCESS_WATCH_PARENT
     $filter = "ProcessId = $parentId OR ParentProcessId = $parentId"
   }
-  # The query start is a conservative lower bound on when each returned row was alive.
-  $observedAt = [DateTime]::UtcNow
   $snapshot = @(Read-Processes $filter)
   Reset-CwdBudget
   $rows = @(foreach ($row in $snapshot) {
-    $process = Read-Process $row $observedAt
+    $process = Read-Process $row
     if (!$process) { continue }
     if ($seen.Add("$($process.pid)/$($process.created)") -and $kind -ne 'baseline') { Add-ProcessCwd $process }
     $process
@@ -88,7 +85,6 @@ function Write-Start($eventRecord, $draining) {
   $eventTime = [DateTime]::FromFileTimeUtc([long]$eventRecord.TIME_CREATED)
   $id = [uint32]$eventRecord.ProcessID
   $parentId = [uint32]$eventRecord.ParentProcessID
-  $observedAt = [DateTime]::UtcNow
   $live = @()
   if (!$draining) { $live = @(Read-Processes "ProcessId = $id OR ProcessId = $parentId") }
   $process = @{
@@ -98,9 +94,9 @@ function Write-Start($eventRecord, $draining) {
   foreach ($row in $live) {
     if ($row.ProcessId -eq $id -and $row.CreationDate -and $row.CreationDate.ToUniversalTime() -le $eventTime -and
         $row.ParentProcessId -eq $parentId -and $row.Name -eq $eventRecord.ProcessName) {
-      $process = Read-Process $row $observedAt
+      $process = Read-Process $row
     } elseif ($row.ProcessId -eq $parentId) {
-      $parent = Read-Process $row $observedAt
+      $parent = Read-Process $row
     }
   }
   $process.eventTime = $eventTime.ToString('o')
@@ -122,6 +118,7 @@ try {
   $cwdAvailable = $true
   try { . (Join-Path $directory 'cwd-probe.ps1') }
   catch { $cwdAvailable = $false }
+  Write-Snapshot 'baseline'
   if ($env:GITHUB_ACTIONS -ceq 'true' -and $env:AVE_PROCESS_WATCH_TRACE -eq '1') {
     try {
       Write-Record @{ kind = 'heartbeat' }
@@ -133,7 +130,8 @@ try {
     }
   }
   Write-Record @{ kind = 'mechanism'; mechanism = $mechanism; jobRootMatch = 'image path or current directory' }
-  Write-Snapshot 'baseline'
+  if ($mechanism -eq 'polling') { Write-Snapshot 'snapshot' }
+  Write-Record @{ kind = 'ready' }
   while ($true) {
     $stopping = [IO.File]::Exists($stop)
     if ($mechanism -eq 'Win32_ProcessStartTrace') {
