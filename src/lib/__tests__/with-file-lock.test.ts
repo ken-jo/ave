@@ -2,12 +2,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import * as fsPromises from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import lockfile from "proper-lockfile";
 import { FileLockReleaseError, createSerialQueue, withFileLock, withInProcessFileQueue } from "../with-file-lock.js";
 
+import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+vi.mock("node:fs/promises", { spy: true });
 
 let tmpDir: string;
 let testFile: string;
@@ -40,6 +44,54 @@ describe("withFileLock", () => {
     const N = 5;
     await Promise.all(Array.from({ length: N }, () => incrementUnderLock()));
     expect(readCounter()).toBe(N);
+  });
+
+  it("keeps a same-process waiter out of a stale-looking lock until the holder releases", async () => {
+    // The fixture directory already exists. Complete the preflight mkdir at a known microtask boundary.
+    const mkdir = vi.mocked(fsPromises.mkdir).mockResolvedValue(undefined);
+    const lock = vi.spyOn(lockfile, "lock");
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    try {
+      const firstEntered = deferred<void>();
+      const secondEntered = deferred<void>();
+      const finishFirst = deferred<void>();
+      const finishSecond = deferred<void>();
+      const first = withFileLock(testFile, async () => {
+        firstEntered.resolve();
+        await finishFirst.promise;
+        return "first";
+      });
+      const firstResult = Promise.allSettled([first]);
+      await Promise.race([firstEntered.promise, first]);
+
+      vi.setSystemTime(Date.now() + 30_000);
+      const alias = `${dirname(testFile)}/./${basename(testFile)}`;
+      const second = withFileLock(alias, async () => {
+        secondEntered.resolve();
+        await finishSecond.promise;
+        return "second";
+      });
+      const results = Promise.allSettled([first, second]);
+      await Promise.resolve();
+      const attemptedWhileHeld = lock.mock.calls.length > 1;
+      try {
+        if (attemptedWhileHeld) await Promise.race([secondEntered.promise, second]);
+      } finally {
+        finishFirst.resolve();
+        await firstResult;
+        finishSecond.resolve();
+        await results;
+      }
+
+      expect(await results).toEqual([
+        { status: "fulfilled", value: "first" },
+        { status: "fulfilled", value: "second" },
+      ]);
+      expect(attemptedWhileHeld).toBe(false);
+    } finally {
+      mkdir.mockReset();
+      vi.useRealTimers();
+    }
   });
 
   it("creates target file if it does not exist", async () => {

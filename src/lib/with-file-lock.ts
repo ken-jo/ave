@@ -1,24 +1,44 @@
-/** Acquire the sibling cross-process lock and release in finally; recover stale holders with bounded retries. */
+/** Serialize local holders and acquire the sibling cross-process lock. */
 import lockfile from "proper-lockfile";
 import { mkdir, open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { errorMessage } from "../shared/error-message.js";
+
+interface FileQueue {
+  run: SerialQueue;
+  pending: number;
+}
+
+const inProcessFileQueues = new Map<string, FileQueue>();
+// Callers can already hold an in-process transaction queue for the same path.
+const fileLockQueues = new Map<string, FileQueue>();
 
 /** This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work. */
 export async function withInProcessFileQueue<T>(
   filePath: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const key = resolve(filePath);
-  let queue = inProcessFileQueues.get(key);
-  if (!queue) {
-    queue = createSerialQueue();
-    inProcessFileQueues.set(key, queue);
-  }
-  return queue(fn);
+  return withQueuedFileWork(inProcessFileQueues, resolve(filePath), fn);
 }
 
-const inProcessFileQueues = new Map<string, SerialQueue>();
+async function withQueuedFileWork<T>(
+  queues: Map<string, FileQueue>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let queue = queues.get(key);
+  if (!queue) {
+    queue = { run: createSerialQueue(), pending: 0 };
+    queues.set(key, queue);
+  }
+  queue.pending++;
+  try {
+    return await queue.run(fn);
+  } finally {
+    queue.pending--;
+    if (queue.pending === 0) queues.delete(key);
+  }
+}
 
 export type SerialQueue = <T>(work: () => Promise<T>) => Promise<T>;
 
@@ -52,11 +72,21 @@ export class FileLockReleaseError<T> extends Error {
   }
 }
 
-/** Touch the target only after acquiring the lock; a waiting Windows open can block the holder's replacement. */
+/** Queue through release so a stale-looking local holder cannot be replaced and release its successor. */
 export async function withFileLock<T>(
   targetPath: string,
   fn: () => Promise<T>,
   opts: FileLockOptions = {},
+): Promise<T> {
+  const lockPath = resolve(targetPath);
+  const key = process.platform === "win32" ? lockPath.toLowerCase() : lockPath;
+  return withQueuedFileWork(fileLockQueues, key, () => withCrossProcessFileLock(lockPath, fn, opts));
+}
+
+async function withCrossProcessFileLock<T>(
+  targetPath: string,
+  fn: () => Promise<T>,
+  opts: FileLockOptions,
 ): Promise<T> {
   const { stale = 10_000, retries = 5 } = opts;
 
