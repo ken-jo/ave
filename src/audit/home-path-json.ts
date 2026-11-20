@@ -109,13 +109,7 @@ export function stringifyHomeRedacted(value: unknown): string | undefined {
     if (isStringObject(current)) return redactHomePathsInText(String(current));
     return current;
   };
-  let serialized: string | undefined;
-  try {
-    serialized = JSON.stringify(value, replace);
-  } catch (error) {
-    if (error instanceof RangeError) return '{"unserializable":true}';
-    throw error;
-  }
+  const serialized = JSON.stringify(value, replace);
   // Renaming before serialization would change both getter order and the key
   // passed to child toJSON hooks. Raw JSON and value bytes stay native here.
   return serialized !== undefined && renames ? replaceSerializedKeys(serialized, renames) : serialized;

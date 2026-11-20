@@ -287,9 +287,24 @@ it("rewrites keys ahead of a large string with bounded stack use", async () => {
   });
 });
 
-it("fails closed when native serialization exhausts its stack", async () => {
+it("fails closed at the runtime audit boundary when native serialization exhausts its stack", async () => {
   const { stringifyHomeRedacted } = await import("../home-path-json.js");
   let value: unknown = fixture.home;
   for (let depth = 0; depth < 25_000; depth++) value = { child: value };
-  expect(stringifyHomeRedacted(value)).toBe('{"unserializable":true}');
+  expect(() => stringifyHomeRedacted(value)).toThrow(RangeError);
+  expect(serializeRuntimeAuditData(value)).toBe('{"unserializable":true}');
+});
+
+it("propagates application RangeErrors through structured judge arguments", async () => {
+  const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");
+  const { judgeInvocation, judgeRequest } = await import("../../permissions/judge/__tests__/judge-request-fixture.js");
+  const failure = new RangeError("application serialization error");
+  const reject = () => { throw failure; };
+  for (const argument of [{ get p() { return reject(); } }, { p: { toJSON: reject } }]) {
+    const request = judgeRequest({ invocation: judgeInvocation({ finalInput: { argument } }) });
+    let caught: unknown;
+    try { redactJudgeRequest(request); } catch (error) { caught = error; }
+    expect(caught).toBe(failure);
+    expect(serializeRuntimeAuditData(argument)).toBe('{"unserializable":true}');
+  }
 });
