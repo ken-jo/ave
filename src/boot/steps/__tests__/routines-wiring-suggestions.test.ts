@@ -1,5 +1,6 @@
 import { ConversationLoop } from "../../../engine/conversation-loop.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { RoutineEngine, type Routine } from "../../../routines/routine-engine.js";
 import { ScriptedTurnProvider, makeBasicConversationLoopDeps } from "../../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { ToolRegistry } from "../../../tools/registry.js";
@@ -271,11 +272,13 @@ it("records a recovered child stream-error and parent end_turn as done with both
   const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "Recover the child result", schedule: { at: futureIso() } });
   const fired = await store.markFired(item.id);
   const memoryManager = new MemoryManager({ aveDir: dir });
+  const llm = fakeLlmSettings();
+  llm.vendors[llm.provider].contextWindow = 16_000;
   const createLoop = (events: StreamEvent[][], registry: ToolRegistry) => {
     const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       memoryManager,
       toolRegistry: registry,
-      networkFetch: async () => new Response(null, { status: 503 }),
+      settingsService: { get: () => llm, getSecret: () => "test-key" },
     }));
     loop.provider = new ScriptedTurnProvider(events);
     return loop;
