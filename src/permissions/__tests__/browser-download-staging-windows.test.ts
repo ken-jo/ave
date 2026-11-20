@@ -1,7 +1,7 @@
 /** The browser's download staging folder through the Windows launch projections of every confined lane: the container shell request
  * handed to its launcher, the srt-win session floor and worker wrap handed to the runtime, the ACL holder's grant turn, and the
  * container holder's request handed to its native entry. A foreign host uses an in-memory drive; win32 uses real scratch directories
- * and native identity pins. DACLs, runtime calls, the launcher and the native process entry remain OS stand-ins; projection composers run for real.
+ * and native identity pins. Projection composers run against OS stand-ins; the cleanup regression uses a real scratch-file DACL on Windows.
  * Each lane is checked for the folder and a staged file inside it, for read, list and write, against grants that name the folder, a
  * path in it, the Ave home or a parent of it, under a relocated Ave home and the default profile-child one, including a process whose
  * projection was taken before the folder existed. */
@@ -9,8 +9,12 @@ import { PassThrough } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isolation-guard.js";
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
+import { claimRunDir, STALE_RUN_DIR_AGE_MS, sweepStaleRunDirs } from "../../__tests__/support/test-run-dirs.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 
 const { hostPlatform } = vi.hoisted(() => ({ hostPlatform: process.platform }));
 const resourceLifecycle = vi.hoisted(() => ({ events: [] as ("configured" | "identity")[] }));
@@ -171,13 +175,14 @@ vi.mock("node:fs/promises", async (original) => {
   }]));
   return { ...actual, ...guarded, default: { ...actual, ...guarded } };
 });
-// Native identity pins on win32, injected facts on a foreign host. This fixture owns every filesystem mutation; reuse a pin only
-// while the leaf and every ancestor's metadata still match. DACLs stay modeled: `drive.readable` also grants Users read.
+// Native identity pins on win32, injected facts on a foreign host. Only suite-owned paths and ancestors participate in the
+// fixture cache. DACLs stay modeled: `drive.readable` also grants Users read.
 vi.mock("../../shared/windows-path-facts.js", async (original) => {
   const actual = await original<typeof import("../../shared/windows-path-facts.js")>();
   const { getHostResources } = await import("../../main/host-resources.js");
   const fs = await import("node:fs");
-  const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
+  const { posix, win32 } = await vi.importActual<typeof import("node:path")>("node:path");
+  const pathFor = (path: string) => hostPlatform !== "win32" && posix.isAbsolute(path) ? posix : win32;
   const owner = "S-1-5-21-100-200-300-1001";
   const component = (path: string): Omit<import("../../shared/windows-path-facts.js").WindowsPathFacts, "ancestors"> => {
     const info = fs.lstatSync(path, { throwIfNoEntry: false, bigint: true });
@@ -185,29 +190,42 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
       return { exists: false as const, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null, fileIndex: null,
         fileSystemName: null, changeTime: null, attributes: 0, reparseTag: 0, directory: false, reparseTarget: null };
     }
-    return { exists: true as const, canonical: win32.normalize(path).replace(/(?<!:)[\\/]+$/, ""), volumeSerial: `0x${info.dev.toString(16)}`,
+    const paths = pathFor(path);
+    const normalized = paths.normalize(path);
+    const canonical = normalized === paths.parse(normalized).root ? normalized : normalized.replace(/[\\/]+$/, "");
+    const changeTime = `0x${(info.ctimeNs / 100n + 116444736000000000n).toString(16).padStart(16, "0")}`;
+    const link = info.isSymbolicLink();
+    return { exists: true as const, canonical, volumeSerial: `0x${info.dev.toString(16)}`,
       fileId: `0x${info.ino.toString(16).padStart(32, "0")}`, volumeSerialNumber: `0x${info.dev.toString(16)}`, fileIndex: `0x${info.ino.toString(16)}`,
-      fileSystemName: null, changeTime: "0x1", attributes: info.isDirectory() ? 16 : 0, reparseTag: 0, directory: info.isDirectory(),
-      reparseTarget: null };
+      fileSystemName: null, changeTime, attributes: link ? 0x400 : info.isDirectory() ? 16 : 0,
+      reparseTag: link ? 0xa000000c : 0, directory: info.isDirectory(), reparseTarget: link ? fs.readlinkSync(path) : null };
   };
   const facts = (path: string): import("../../shared/windows-path-facts.js").WindowsPathFacts => {
-    const normalized = win32.normalize(path);
+    const paths = pathFor(path);
+    const normalized = paths.normalize(path);
     const ancestors: ReturnType<typeof component>[] = [];
-    for (let parent = win32.dirname(normalized); parent !== normalized;) {
+    for (let parent = paths.dirname(normalized); parent !== normalized;) {
       ancestors.unshift(component(parent));
-      const above = win32.dirname(parent);
+      const above = paths.dirname(parent);
       if (above === parent) break;
       parent = above;
     }
     return { ...component(path), ancestors };
   };
-  const stamp = (path: string): string => {
+  const stamp = (path: string): string | undefined => {
+    const paths = pathFor(path);
+    if (!paths.isAbsolute(path)) return undefined;
+    const root = hostPlatform !== "win32" && paths === win32 && /^[a-z]:[\\/]/iu.test(path)
+      ? win32.parse(path).root
+      : [pinRoot, resourceRoot].find((directory) => {
+        const relative = paths.relative(directory, path);
+        return relative !== ".." && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
+      });
+    if (root === undefined) return undefined;
     const chain: string[] = [];
-    for (let entry = win32.normalize(path);;) {
+    for (let entry = path;; entry = paths.dirname(entry)) {
       chain.unshift(entry);
-      const parent = win32.dirname(entry);
-      if (parent === entry) break;
-      entry = parent;
+      if (paths.relative(root, entry) === "") break;
     }
     return JSON.stringify(chain.map(entry => {
       const info = fs.lstatSync(entry, { throwIfNoEntry: false, bigint: true });
@@ -218,9 +236,9 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
   const pin = (paths: readonly string[]) => {
     expect(getHostResources()).toEqual(fixtureResources);
     if (!resourceLifecycle.events.includes("identity")) resourceLifecycle.events.push("identity");
-    const keys = paths.map(path => win32.normalize(path));
+    const keys = paths.map(path => pathFor(path).normalize(path));
     const stamps = new Map([...new Set(keys)].map(path => [path, stamp(path)]));
-    const pending = [...stamps].filter(([path, current]) => drive.pins.get(path)?.stamp !== current);
+    const pending = [...stamps].filter(([path, current]) => current === undefined || drive.pins.get(path)?.stamp !== current);
     const fresh = new Map<string, import("../../shared/windows-path-facts.js").WindowsPathFacts>();
     if (pending.length > 0) {
       const requested = pending.map(([path]) => path);
@@ -232,7 +250,7 @@ vi.mock("../../shared/windows-path-facts.js", async (original) => {
         fresh.set(path, row);
         // A changing tree cannot populate the cache, even if the native request itself succeeded.
         drive.pins.delete(path);
-        if (current === stamp(path)) drive.pins.set(path, { stamp: current, facts: row });
+        if (current !== undefined && current === stamp(path)) drive.pins.set(path, { stamp: current, facts: row });
       });
     }
     return keys.map(path => {
@@ -329,8 +347,7 @@ vi.mock("node:child_process", async (original) => {
       if (args[0] !== "--mxc-policy") return actual.spawn(command, args, options);
       const helper = createPolicyPipeHelper(new actual.ChildProcess());
       helper.stdin.once("data", (frame: Buffer) => {
-        expect(frame.readUInt32LE(0)).toBe(frame.length - 4);
-        runtime.policyFrames.push(frame.subarray(4));
+        runtime.policyFrames.push(frame);
         queueMicrotask(() => helper.stdout.write("ready\n"));
       });
       return helper.child;
@@ -352,8 +369,13 @@ const hostFs = await vi.importActual<typeof import("node:fs")>("node:fs");
 const hostPath = await vi.importActual<typeof import("node:path")>("node:path");
 const hostOs = await vi.importActual<typeof import("node:os")>("node:os");
 const nativeDirectories = createTmpDirTracker();
-const nativeRoot = hostPlatform === "win32"
-  ? hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-drive-")))) : null;
+afterAll(async () => { await nativeDirectories.cleanup(); });
+const runTmp = hostFs.realpathSync.native(hostOs.tmpdir());
+function createPinRoot(runRoot: string): string {
+  return hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runRoot, "browser-download-drive-"))));
+}
+const pinRoot = createPinRoot(runTmp);
+const nativeRoot = hostPlatform === "win32" ? pinRoot : null;
 const resourceRoot = hostFs.realpathSync.native(nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(hostOs.tmpdir(), "browser-download-resources-"))));
 const fixtureResources = { resourcePath: hostPath.join(resourceRoot, "resources"), isPackaged: false };
 const fixtureScripts = hostPath.join(resourceRoot, "dist", "skill-scripts");
@@ -368,7 +390,6 @@ const fixtureSystemGitConfig = hostPath.join(resourceRoot, "system.gitconfig");
 const srtPath = hostPath.join(fixturePrivateSrtWin, "srt-win.exe");
 const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
 if (originalExecPath === undefined) throw new Error("The host runtime path descriptor is missing");
-afterAll(async () => { await nativeDirectories.cleanup(); });
 const profileRoot = nativeRoot === null ? "C:\\Users\\alice" : hostPath.join(nativeRoot, "profile");
 const programRoot = nativeRoot === null ? "C:\\Program Files" : hostPath.join(nativeRoot, "programs");
 const launcherPath = `${programRoot}\\app\\resources\\mxc\\x64\\wxc-exec.exe`;
@@ -389,8 +410,8 @@ function writeDriveFile(path: string): void {
 
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 const {
-  getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, initializeAsrtSandbox, isAsrtSandboxActive,
-  resetAsrtSandbox, wrapWorkerCommand,
+  cleanupAsrtSandboxAfterCommand, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths,
+  initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapWorkerCommand,
 } = await import("../asrt-sandbox.js");
 const { holdWindowsFilesystemGrant } = await import("../windows-acl-grant-holder.js");
 const { createAveHomeBoundarySnapshot } = await import("../ave-home-boundary-snapshot.js");
@@ -431,8 +452,6 @@ beforeAll(() => {
   }
   configureHostResources(fixtureResources);
 });
-const cwdDirectories = createTmpDirTracker();
-afterAll(async () => { await cwdDirectories.cleanup(); });
 const STAGED = "0123456789abcdef0123456789abcdef";
 const RELOCATED = { name: "a relocated Ave home inside the project", project: `${profileRoot}\\work`, home: `${profileRoot}\\work\\ave` } as const;
 const PROFILE_CHILD = { name: "the default profile-child Ave home", project: `${profileRoot}\\work`, home: `${profileRoot}\\.ave` } as const;
@@ -475,7 +494,7 @@ beforeEach(() => {
     hostFs.mkdirSync(nativeRoot, { recursive: true });
   }
   // A foreign drive spelling is relative to the real host; keep that projection inside the validated test scratch.
-  if (hostPlatform !== "win32") process.chdir(cwdDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
+  if (hostPlatform !== "win32") process.chdir(nativeDirectories.track(mkdtempSync(hostJoin(tmpdir(), "browser-download-drive-"))));
   setProcessPlatform("win32");
   Object.defineProperty(process, "execPath", { ...originalExecPath, value: fixtureRuntime });
   vi.stubEnv("USERPROFILE", profileRoot);
@@ -492,8 +511,8 @@ beforeEach(() => {
 afterEach(async () => {
   try {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
-    _resetAveHomePrivacyForTest();
   } finally {
+    _resetAveHomePrivacyForTest();
     process.chdir(originalCwd);
     setProcessPlatform(hostPlatform);
     Object.defineProperty(process, "execPath", originalExecPath);
@@ -563,7 +582,8 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
       expect(runtime.policyFrames).toHaveLength(1);
       const frame = runtime.policyFrames.pop();
       if (!frame) throw new Error("The policy helper received no frame");
-      bytes = frame;
+      expect(frame.readUInt32LE(0)).toBe(frame.length - 4);
+      bytes = frame.subarray(4);
     } else {
       expect(launch.argv[1]).toBe("--config-base64");
       expect(runtime.policyFrames).toHaveLength(0);
@@ -583,6 +603,20 @@ function expectNoGrantInside(filesystem: ContainerFilesystem): void {
   }
 }
 
+it("reclaims a pin fixture when its run owner is dead and suite teardown never ran", async () => {
+  const scratch = nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "abandoned-pin-run-")));
+  const run = hostFs.mkdtempSync(hostPath.join(scratch, "t-"));
+  const deadOwner = { exists: () => false, startedAt: () => "ps:1", host: () => "fixture-host" };
+  claimRunDir(run, deadOwner);
+  const abandoned = createPinRoot(run);
+  hostFs.writeFileSync(hostPath.join(abandoned, "held-fixture"), "fixture");
+  const swept = await sweepStaleRunDirs(scratch, async path => {
+    hostFs.rmSync(path, { recursive: true });
+  }, { probe: deadOwner, now: Date.now() + 2 * STALE_RUN_DIR_AGE_MS });
+  expect(swept).toEqual({ removed: [run], stranded: [], leftAside: [] });
+  expect(hostFs.existsSync(abandoned)).toBe(false);
+});
+
 it("composes host resources before the first native identity request", () => {
   const [profile] = pinWindowsPaths([profileRoot]);
   expect(profile).toMatchObject({ exists: true, directory: true });
@@ -592,20 +626,30 @@ it("composes host resources before the first native identity request", () => {
   expect(resourceLifecycle.events.indexOf("identity")).toBeGreaterThan(configuredAt);
 });
 
+function changeSharedPinAncestors(): void {
+  nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "pin-cache-neighbor-")));
+  // Model churn from another run without leaving an unowned entry in the shared scratch base.
+  const scratchBase = hostPath.dirname(runTmp);
+  const { atime, mtimeMs } = hostFs.statSync(scratchBase);
+  hostFs.utimesSync(scratchBase, atime, new Date(mtimeMs - 1_000));
+}
+
 it("pins unchanged fixture paths once instead of starting a helper for each grant read", () => {
-  useLayout(PROFILE_CHILD, { staged: true });
-  const first = pinWindowsPaths([staging()]);
+  const path = hostPath.join(pinRoot, "present");
+  hostFs.mkdirSync(path);
+  const first = pinWindowsPaths([path]);
   expect(first[0]).toMatchObject({ exists: true, directory: true });
   const queries = runtime.identityQuery.mock.calls.length;
-  expect(pinWindowsPaths([staging()])).toEqual(first);
+  changeSharedPinAncestors();
+  expect(pinWindowsPaths([path])).toEqual(first);
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
 });
 
 it("refreshes fixture pins when a missing target is created or an existing target is removed", () => {
-  useLayout(PROFILE_CHILD, { staged: false });
-  const path = staging();
+  const path = hostPath.join(pinRoot, "changing");
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
   const queries = runtime.identityQuery.mock.calls.length;
+  changeSharedPinAncestors();
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries);
   mkdirSync(path);
@@ -613,6 +657,25 @@ it("refreshes fixture pins when a missing target is created or an existing targe
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 1);
   rmdirSync(path);
   expect(pinWindowsPaths([path])[0]).toMatchObject({ exists: false });
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 2);
+});
+
+it("refreshes an owned path on identity replacement and on substitution with a link", () => {
+  const path = hostPath.join(pinRoot, "replaceable");
+  const original = hostPath.join(pinRoot, "original");
+  hostFs.mkdirSync(path);
+  const [first] = pinWindowsPaths([path]);
+  expect(first).toMatchObject({ exists: true, directory: true, reparseTag: 0 });
+  const queries = runtime.identityQuery.mock.calls.length;
+  hostFs.renameSync(path, original);
+  hostFs.mkdirSync(path);
+  const [replacement] = pinWindowsPaths([path]);
+  expect(replacement).toMatchObject({ exists: true, directory: true, reparseTag: 0 });
+  expect(replacement?.fileId).not.toBe(first?.fileId);
+  expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 1);
+  hostFs.renameSync(path, hostPath.join(pinRoot, "replacement"));
+  hostFs.symlinkSync(original, path, hostPlatform === "win32" ? "junction" : "dir");
+  expect(pinWindowsPaths([path])[0]?.reparseTag).toBeGreaterThan(0);
   expect(runtime.identityQuery).toHaveBeenCalledTimes(queries + 2);
 });
 
@@ -689,7 +752,11 @@ async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }
     });
     return (lastCall(runtime.wrap)[2] as { filesystem: { denyRead: DenyList; denyWrite: DenyList } }).filesystem;
   } finally {
-    egress.release();
+    try {
+      await cleanupAsrtSandboxAfterCommand();
+    } finally {
+      egress.release();
+    }
   }
 }
 
@@ -800,7 +867,18 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
   beforeEach(() => {
     runtime.initialize.mockResolvedValue(undefined);
     // The holder: a pinned System32 process that only has to stay alive.
-    runtime.spawn.mockImplementation(() => Object.assign(new PassThrough(), { pid: 4321, exitCode: null, signalCode: null, stdin: new PassThrough(), kill: () => true }));
+    runtime.spawn.mockImplementation(() => {
+      const child = Object.assign(new PassThrough(), { pid: 4321, exitCode: null, signalCode: null as NodeJS.Signals | null, stdin: new PassThrough() });
+      return Object.assign(child, { kill: (signal: NodeJS.Signals) => {
+        queueMicrotask(() => {
+          child.signalCode = signal;
+          child.stdin.destroy();
+          child.destroy();
+          child.emit("exit", null, signal);
+        });
+        return true;
+      } });
+    });
     runtime.revoke.mockImplementation(() => runtime.grant.mock.calls.flatMap(([request]) => (request as { read: string[] }).read.map((path) => ({ path, status: "revoked" }))));
   });
 
@@ -813,11 +891,103 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
     ["a write to the Ave home's parent", { allowRead: [], allowWrite: [aveHome().replace(/\\[^\\]+$/, "")] }, /ancestor of the workspace or Ave home/],
   ];
 
+  async function expectGrantRefused(request: Parameters<typeof holdWindowsFilesystemGrant>[0], reason: RegExp, label?: string): Promise<void> {
+    let held: Awaited<ReturnType<typeof holdWindowsFilesystemGrant>> | undefined;
+    try {
+      await expect(async () => { held = await holdWindowsFilesystemGrant(request); }, label).rejects.toThrow(reason);
+    } finally {
+      held?.release();
+    }
+  }
+
+  it("revokes and closes a grant when an assertion fails after acquisition", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: false });
+    await sessionFloor();
+    const own = `${aveHome()}\\mcp\\fs\\sandbox`;
+    mkdirSync(own, { recursive: true });
+    const directory = nativeDirectories.track(hostFs.mkdtempSync(hostPath.join(runTmp, "grant-cleanup-")));
+    const marker = hostPath.join(directory, "held");
+    const sid = "S-1-5-21-100-200-300-2002";
+    const { execFileSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const { readWindowsDacls } = await vi.importActual<typeof import("../../shared/windows-path-facts.js")>("../../shared/windows-path-facts.js");
+    let modeledDeny = false;
+    let denyPending = false;
+    let descriptor: number | undefined;
+    let opened: number | undefined;
+    const hasDeny = (): boolean => {
+      if (hostPlatform !== "win32") return modeledDeny;
+      const dacl = readWindowsDacls([marker])[0]?.dacl;
+      if (!dacl) throw new Error("The fixture's DACL could not be read");
+      return dacl.aces.some(ace => ace.type === 1 && ace.sid === sid);
+    };
+    const setDeny = (present: boolean): void => {
+      if (hostPlatform === "win32") {
+        const method = present ? "AddAccessRule" : "RemoveAccessRuleSpecific";
+        const command = `$ErrorActionPreference='Stop'; $path='${marker.replace(/'/g, "''")}';
+          $sid=[Security.Principal.SecurityIdentifier]::new('${sid}');
+          $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]::Delete, 'Deny');
+          $acl=Get-Acl -LiteralPath $path; $acl.${method}($rule); Set-Acl -LiteralPath $path -AclObject $acl;`;
+        execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command", command],
+          { env: windowsPowerShellEnv(), windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
+      } else {
+        modeledDeny = present;
+      }
+    };
+    const restore = (): void => {
+      try {
+        if (denyPending) {
+          setDeny(false);
+          denyPending = false;
+        }
+      } finally {
+        if (descriptor !== undefined) {
+          hostFs.closeSync(descriptor);
+          descriptor = undefined;
+        }
+      }
+    };
+    try {
+      checkSandboxStampTargets([marker]);
+      hostFs.writeFileSync(marker, "fixture");
+      expect(hasDeny()).toBe(false);
+      runtime.grant.mockImplementationOnce(() => {
+        opened = descriptor = hostFs.openSync(marker, "r");
+        denyPending = true;
+        setDeny(true);
+        expect(hasDeny()).toBe(true);
+        expect(hostFs.fstatSync(descriptor).isFile()).toBe(true);
+      });
+      runtime.revoke.mockImplementationOnce(() => {
+        restore();
+        return [{ path: own, status: "revoked" }];
+      });
+      // The allowed grant makes the inner refusal assertion fail after acquisition.
+      await expect(expectGrantRefused({ label: "mcp:fs", allowRead: [own], allowWrite: [] }, /protected sensitive target/))
+        .rejects.toThrow(/resolved.*instead of rejecting/s);
+      const closed = opened;
+      if (closed === undefined) throw new Error("The fixture did not open a descriptor");
+      expect(hasDeny()).toBe(false);
+      expect(() => hostFs.fstatSync(closed)).toThrow(expect.objectContaining({ code: "EBADF" }));
+      const child = runtime.spawn.mock.results[0]?.value;
+      expect(child?.signalCode).toBe("SIGTERM");
+      expect(child?.stdin.destroyed).toBe(true);
+      hostFs.rmSync(directory, { recursive: true });
+      expect(hostFs.existsSync(directory)).toBe(false);
+    } finally {
+      try {
+        restore();
+      } finally {
+        runtime.grant.mockReset();
+        runtime.revoke.mockReset();
+      }
+    }
+  });
+
   it.each([PROFILE_CHILD, OUTSIDE_PROFILE])("refuses every grant that would open the folder, a staged file, the Ave home or its parent under $name, before any native grant or stamp", async (layout) => {
     useLayout(layout, { staged: true });
     await sessionFloor();
     for (const [label, request, refusal] of requests()) {
-      await expect(holdWindowsFilesystemGrant({ label: `mcp:fs:${label}`, ...request }), label).rejects.toThrow(refusal);
+      await expectGrantRefused({ label: `mcp:fs:${label}`, ...request }, refusal, label);
     }
     expect(runtime.grant).not.toHaveBeenCalled();
     expect(runtime.stamp).not.toHaveBeenCalled();
@@ -828,7 +998,7 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
   it("refuses a grant on the folder while it does not exist yet, and leaves it denied in the session floor a re-allowed child's grant updates", async () => {
     useLayout(OUTSIDE_PROFILE, { staged: false });
     await sessionFloor();
-    await expect(holdWindowsFilesystemGrant({ label: "mcp:fs:absent", allowRead: [staging()], allowWrite: [] })).rejects.toThrow(/protected sensitive target|identity is unproven/);
+    await expectGrantRefused({ label: "mcp:fs:absent", allowRead: [staging()], allowWrite: [] }, /protected sensitive target|identity is unproven/);
     expect(runtime.grant).not.toHaveBeenCalled();
     // The control: a server's own sandbox root, a re-allowed child, is granted.
     const own = `${aveHome()}\\mcp\\fs\\sandbox`;
@@ -847,7 +1017,7 @@ describe("the browser download staging folder at the srt-win ACL holder's grant 
       held.release();
     }
     // Once the browser has created it, the same grant is refused as a protected target, not only for having no identity to pin.
-    await expect(holdWindowsFilesystemGrant({ label: "mcp:fs:created", allowRead: [staging()], allowWrite: [] })).rejects.toThrow(/protected sensitive target/);
+    await expectGrantRefused({ label: "mcp:fs:created", allowRead: [staging()], allowWrite: [] }, /protected sensitive target/);
     expect(runtime.grant).toHaveBeenCalledTimes(1);
   });
 });
