@@ -215,7 +215,7 @@ function LimitProcessPath($path) {
 
 function NewProcessRecord($row, $kind) {
   @{
-    kind = $kind; pid = $row.ProcessId; parentPid = $row.ParentProcessId
+    kind = $kind; pid = $row.ProcessId; unresolvedParentPid = $row.ParentProcessId
     image = LimitProcessPath $row.ExecutablePath
     created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') } else { $null }
   }
@@ -226,18 +226,6 @@ function NewProcessRecord($row, $kind) {
 const SUSPECT_QUERY = String.raw`
 ${EVIDENCE_WRITER}
 ${PROCESS_RECORDS}
-function ReadParentName($id, $childCreated) {
-  if (!$id) { return }
-  try {
-    $parent = [Diagnostics.Process]::GetProcessById($id)
-    try {
-      $name = $parent.ProcessName
-      if ($childCreated -and $parent.StartTime.ToUniversalTime() -gt $childCreated.ToUniversalTime()) { return }
-      return $name + '.exe'
-    } finally { $parent.Dispose() }
-  } catch {}
-}
-
 function FindNamedSuspects {
   if (!(Get-Process -Name setup_wm,unregmp2,wmplayer -ErrorAction SilentlyContinue)) { return }
   $filter = "Name = 'setup_wm.exe' OR Name = 'unregmp2.exe' OR Name = 'wmplayer.exe'"
@@ -246,7 +234,6 @@ function FindNamedSuspects {
       try {
         $record = NewProcessRecord $_ 'suspect'
         $record.name = $_.Name
-        $record.parentName = ReadParentName $_.ParentProcessId $_.CreationDate
         $record
       } catch { $script:processFailed = $true }
     }
@@ -355,7 +342,7 @@ function ReadHolderMetadata($record, $started) {
     }
     $info = [byte[]]::new(6 * $pointerSize)
     if ($native::NtQueryInformationProcess($process, 0, $info, $info.Length, 0) -eq 0) {
-      $record.parentPid = (ReadProcessPointer $info (5 * $pointerSize) $pointerSize).ToInt64()
+      $record.unresolvedParentPid = (ReadProcessPointer $info (5 * $pointerSize) $pointerSize).ToInt64()
     }
   } finally { $process.Dispose() }
 }
@@ -400,7 +387,7 @@ function FindFileHolders([string[]]$paths) {
           if ($paths.Length -gt 1) { return $true }
           $started = $marshal::ReadInt64($row, 4)
           $record = @{
-            kind = 'holder'; path = $path; pid = $id; parentPid = $null; image = $null
+            kind = 'holder'; path = $path; pid = $id; unresolvedParentPid = $null; image = $null
             app = $marshal::PtrToStringUni([IntPtr]::Add($row, 12), 256).Split([char]0)[0].Trim()
             service = $marshal::PtrToStringUni([IntPtr]::Add($row, 524), 64).Split([char]0)[0]
             created = [DateTime]::FromFileTimeUtc($started).ToString('o')
@@ -564,8 +551,8 @@ function FindSurvivingEntries {
   $queue = [Collections.Generic.Queue[object]]::new()
   $volume = [IO.Path]::GetPathRoot($root)
   if ($volume -notmatch '^[a-zA-Z]:\\$') { throw 'Expected a local drive path' }
-  $parentName = [IO.Path]::GetDirectoryName($root).Substring($volume.Length)
-  $volumeAccess = if ($parentName) { $readAttributes } else { $readAttributes -bor $readControl }
+  $parentPath = [IO.Path]::GetDirectoryName($root).Substring($volume.Length)
+  $volumeAccess = if ($parentPath) { $readAttributes } else { $readAttributes -bor $readControl }
   # OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS and FILE_FLAG_OPEN_REPARSE_POINT.
   $drive = $native::CreateFileW(('\\?\' + $volume), $volumeAccess, $shareWithoutDelete, 0, 3, 0x02200000, 0)
   $handles.Add($drive)
@@ -573,8 +560,8 @@ function FindSurvivingEntries {
   $parent = $drive
   $parentPinned = $true
   if ((ReadBasicInformation $parent).attributes -band $reparseFlag) { throw 'Job volume is a reparse point' }
-  if ($parentName) {
-    $ancestors = $parentName.Split('\')
+  if ($parentPath) {
+    $ancestors = $parentPath.Split('\')
     for ($i = 0; $i -lt $ancestors.Length; $i++) {
       $access = $readAttributes -bor $readData
       if ($i -eq $ancestors.Length - 1) { $access = $access -bor $readControl }
@@ -747,19 +734,19 @@ function formatCandidate({ path, attributes, owner, deny, denyOmitted, parentDen
     ` created=${formatOptionalText(created, 32)} last-write=${formatOptionalText(lastWrite, 32)}`;
 }
 
-function formatProcess({ kind, pid, parentPid, image, created, path, app, service, name, parentName, reason }) {
+function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, app, service, name, reason }) {
   if (!Number.isSafeInteger(pid) || pid <= 0 ||
-      (parentPid !== null && (!Number.isSafeInteger(parentPid) || parentPid < 0))) {
+      (unresolvedParentPid !== null && (!Number.isSafeInteger(unresolvedParentPid) || unresolvedParentPid < 0))) {
     throw new Error("Invalid cleanup process identity");
   }
-  const base = `${kind} pid=${pid} parent-pid=${parentPid ?? '"not determined"'} image=${formatOptionalText(image, PROCESS_PATH_LIMIT)}`;
+  const base = `${kind} pid=${pid} unresolved-parent-pid=${unresolvedParentPid ?? '"not determined"'} image=${formatOptionalText(image, PROCESS_PATH_LIMIT)}`;
   const started = `created=${formatOptionalText(created, 32)}`;
   if (kind === "holder") {
     if (typeof path !== "string") throw new Error("Invalid holder path");
     return `${base} path=${JSON.stringify(path)} app=${formatOptionalText(app, 256)} service=${formatOptionalText(service, 64)} ${started}`;
   }
   if (kind === "suspect") {
-    return `${base} parent-name=${formatOptionalText(parentName, 256)} name=${formatOptionalText(name, 256)} ${started}`;
+    return `${base} name=${formatOptionalText(name, 256)} ${started}`;
   }
   if (!["image", "cwd", "argument"].includes(reason)) throw new Error("Invalid process match reason");
   return `${base} match=${reason} ${started}`;

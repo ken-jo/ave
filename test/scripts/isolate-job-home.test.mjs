@@ -89,7 +89,7 @@ async function cleanupWindowsJobRoot(root, options) {
   finally { await nextTurn(); }
 }
 const PROCESS_DETAILS = {
-  kind: "process", pid: 4000, parentPid: 2000, image: "C:\\fixture\\holder.exe", reason: "argument",
+  kind: "process", pid: 4000, unresolvedParentPid: 2000, image: "C:\\fixture\\holder.exe", reason: "argument",
   created: "2026-01-02T03:04:05.0000000Z",
 };
 function output(seams) {
@@ -178,7 +178,7 @@ describe("Windows job root cleanup diagnostics", () => {
     assert.deepEqual({ ...options, timeout: undefined, env }, {
       encoding: "utf8", windowsHide: true, timeout: undefined, maxBuffer: 56 * 1024, env: windowsPowerShellEnv(),
     });
-    assert.match(output(seams), /process pid=4000 parent-pid=2000 image=.*holder\.exe.*match=argument.*created="2026-01-02T03:04:05.0000000Z"/);
+    assert.match(output(seams), /process pid=4000 unresolved-parent-pid=2000 image=.*holder\.exe.*match=argument.*created="2026-01-02T03:04:05.0000000Z"/);
     assert.doesNotMatch(output(seams), /diagnostic failed/);
   });
   for (const failure of ["child", "malformed JSON", "invalid entries", "incomplete scan", "output"]) {
@@ -193,7 +193,7 @@ describe("Windows job root cleanup diagnostics", () => {
       await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
       assert.doesNotMatch(output(seams), /SYNTHETIC PRIVATE/);
       if (failure !== "output") assert.equal(output(seams).split("\n").filter(line => line === "Cleanup diagnostic failed or timed out").length, 1);
-      if (failure === "incomplete scan") assert.match(output(seams), /process pid=4000 parent-pid=2000/);
+      if (failure === "incomplete scan") assert.match(output(seams), /process pid=4000 unresolved-parent-pid=2000/);
     });
   }
   it("retains valid evidence on both sides of a malformed process record", async () => {
@@ -481,7 +481,7 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.equal(Date.parse(candidate.match(/last-write="([^"]+)"/)?.[1]), +lastWrite);
       const holderLine = lines.split("\n").find(line => line.startsWith(`holder pid=${holder.pid} `));
       assert.ok(holderLine, lines);
-      for (const detail of [`parent-pid=${process.pid}`, `image=${JSON.stringify(image)}`, `path=${JSON.stringify(file)}`]) {
+      for (const detail of [`unresolved-parent-pid=${process.pid}`, `image=${JSON.stringify(image)}`, `path=${JSON.stringify(file)}`]) {
         assert.ok(holderLine.includes(detail), holderLine);
       }
       assert.match(holderLine, /app="holder\.exe".*created="[\d:T.-]+Z"/i);
@@ -685,7 +685,8 @@ function Get-CimInstance($Class, $Property, $Filter) {
       const diagnostic = mock.fn();
       await diagnoseJobRoot(root, diagnostic, run);
       const lines = output({ diagnostic });
-      assert.match(lines, /suspect pid=29999.*parent-name="node\.exe".*name="setup_wm\.exe".*created="[\d:T.-]+Z"/);
+      assert.doesNotMatch(lines, /parent-name=/);
+      assert.match(lines, new RegExp(String.raw`suspect pid=29999 unresolved-parent-pid=${process.pid} .*name="setup_wm\.exe".*created="[\d:T.-]+Z"`));
       assert.ok(lines.indexOf("suspect pid=29999") < lines.indexOf("process pid="), lines);
       assert.match(lines, /Cleanup process scan reached its inspection or reporting limit/);
       assert.equal(lines.split("\n").filter(line => line.startsWith("process pid=")).length, 20);
@@ -734,7 +735,7 @@ describe("Windows job root query", () => {
     });
     await diagnoseJobRoot("C:\\fixture's", diagnostic, run);
     assert.equal(diagnostic.mock.callCount(), 42);
-    assert.match(output({ diagnostic }), /process pid=4000 parent-pid=2000 image=.*holder\.exe/);
+    assert.match(output({ diagnostic }), /process pid=4000 unresolved-parent-pid=2000 image=.*holder\.exe/);
     assert.match(output({ diagnostic }), /candidate path=.*entry-19.*Delete.*\(\+2 more\).*parent-deny=\[\].*ReadOnly, Hidden.*handle="not determined"/);
     assert.match(output({ diagnostic }), /Cleanup path scan reached its inspection or reporting limit/);
     assert.match(output({ diagnostic }), /Cleanup process scan reached its inspection or reporting limit/);
