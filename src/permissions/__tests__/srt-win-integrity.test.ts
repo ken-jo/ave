@@ -2,7 +2,7 @@ import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
@@ -12,6 +12,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { hasNativeSrtWinBuildReceipt, readSrtWinTestInput, selectSrtWinTestReceipts } from "../../__tests__/support/srt-win-build-receipts.js";
 import BUILD_RECEIPTS from "../generated/srt-win-build-receipts.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { retireSrtWinAllocation, srtWinAllocations } from "../srt-win-allocation-ledger.js";
 import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
 
 const require = createRequire(import.meta.url);
@@ -36,6 +37,11 @@ function fixture(): { source: string; bytes: Buffer } {
   const source = join(directory, "srt-win.exe");
   copyFileSync(join(vendor, "srt-win", getSrtWinArchitecture(), "srt-win.exe"), source);
   return { source, bytes: readFileSync(source) };
+}
+
+function recordMockCreation(journal: string, claim: string, path: string): void {
+  const stat = lstatSync(path, { bigint: true });
+  appendFileSync(journal, `${claim} ${stat.dev}:${stat.ino}:${stat.birthtimeNs}\n`);
 }
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -296,44 +302,42 @@ describe("Windows helper integrity", () => {
       expect(existsSync(join(directory, "owner.json"))).toBe(true);
     });
 
-    it("keeps unrecorded images regardless of marker liveness and image sharing", async () => {
+    it("reclaims a recorded tombstone after a native image handle closes", async () => {
       isolateTemp();
-      const live = stage();
-      const reused = stage();
-      const held = stage();
-      abandon(held);
+      const { source } = fixture();
+      const executable = prepareSrtWinExecutable(source);
+      const original = dirname(dirname(executable));
+      const record = srtWinAllocations().find((allocation) => allocation.path === original);
+      assert(record);
+      retireSrtWinAllocation(record);
+      renameSync(original, record.retired);
+      const image = join(record.retired, "bin", "srt-win.exe");
       const script = [
         "$ErrorActionPreference = 'Stop'",
         "$handle = [System.IO.File]::Open($env:AVE_SRT_TEST_IMAGE, 'Open', 'Read', 'Read')",
-        "$p = [System.Diagnostics.Process]::GetCurrentProcess()",
-        // Built without ConvertTo-Json: autoloading its module in this minimal environment took tens of seconds on the hosted runner.
-        "[Console]::Out.WriteLine('{\"pid\":' + $p.Id + ',\"started\":\"' + $p.StartTime.ToUniversalTime().Ticks.ToString() + '\"}')",
+        "[Console]::Out.WriteLine('ready')",
         "try { [Console]::ReadLine() | Out-Null } finally { $handle.Dispose() }",
       ].join("; ");
       const child = spawn(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
         "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
       ], {
-        env: { SystemRoot: process.env.SystemRoot, AVE_SRT_TEST_IMAGE: join(held, "srt-win.exe") },
+        env: { SystemRoot: process.env.SystemRoot, AVE_SRT_TEST_IMAGE: image },
         windowsHide: true, stdio: ["pipe", "pipe", "pipe"], timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
       });
       const exited = once(child, "exit");
       try {
         const [output] = await once(child.stdout, "data");
-        const marker = JSON.parse(String(output));
-        writeFileSync(join(live, "owner.json"), JSON.stringify(marker));
-        writeFileSync(join(reused, "owner.json"), JSON.stringify({ ...marker, started: "1" }));
+        expect(String(output).trim()).toBe("ready");
         sweepStaleSrtWinDirectories();
-        expect(existsSync(live)).toBe(true);
-        expect(existsSync(reused)).toBe(true);
-        expect(existsSync(join(held, "srt-win.exe"))).toBe(true);
-        expect(existsSync(join(held, "owner.json"))).toBe(true);
+        expect(existsSync(image)).toBe(true);
+        expect(existsSync(record.record)).toBe(true);
       } finally {
         child.stdin.end("\n");
         await exited;
       }
       sweepStaleSrtWinDirectories();
-      expect(existsSync(live)).toBe(true);
-      expect(existsSync(held)).toBe(true);
+      expect(existsSync(record.retired)).toBe(false);
+      expect(existsSync(record.record)).toBe(false);
     });
 
     it("retains a directory with inherited modification grants", () => {
@@ -482,20 +486,30 @@ describe("Windows helper integrity", () => {
   // The two PowerShell steps as `prepareSrtWinExecutable` sends them, captured on any host: the stale-copy sweep, then the private-directory step.
   async function captureScripts(): Promise<string[]> {
     const scripts: string[] = [];
+    let hostType = "Windows_NT";
     vi.resetModules();
-    vi.doMock("node:os", async (importOriginal) => ({ ...await importOriginal<typeof import("node:os")>(), type: () => "Windows_NT" }));
+    vi.doMock("node:os", async (importOriginal) => ({ ...await importOriginal<typeof import("node:os")>(), type: () => hostType }));
     vi.doMock("node:child_process", async (importOriginal) => ({
       ...await importOriginal<typeof import("node:child_process")>(),
-      execFileSync: (_command: string, args: readonly string[], options: { env: Record<string, string> }) => {
-        scripts.push(Buffer.from(args.at(-1)!, "base64").toString("utf16le"));
+      execFileSync: (_command: string, _args: readonly string[], options: { input: string; env: Record<string, string> }) => {
+        scripts.push(options.input);
         // Stand in for the private-directory step, which creates the directory and the empty image itself: nothing may exist at its path before.
         const directory = options.env.AVE_SRT_PRIVATE_DIRECTORY;
         if (directory) {
+          const journal = options.env.AVE_SRT_ALLOCATION_RECORD;
+          assert(journal);
           expect(existsSync(directory)).toBe(false);
-          mkdirSync(directory);
-          mkdirSync(join(directory, "bin"));
-          writeFileSync(join(directory, "bin", "srt-win.exe"), "");
-          return Buffer.from("private-sandbox-directory-created\r\n");
+          mkdirSync(directory, { mode: 0o700 });
+          recordMockCreation(journal, "outer", directory);
+          const bin = join(directory, "bin");
+          mkdirSync(bin, { mode: 0o700 });
+          recordMockCreation(journal, "bin", bin);
+          for (const [claim, name] of [["image", "srt-win.exe"], ["marker", "owner.json"]] as const) {
+            const path = join(bin, name);
+            writeFileSync(path, "");
+            recordMockCreation(journal, claim, path);
+          }
+          hostType = "Darwin";
         }
         return Buffer.alloc(0);
       },
@@ -542,8 +556,8 @@ describe("Windows helper integrity", () => {
     expect(refusal).toBeGreaterThan(-1);
     const create = script.indexOf("[PrivateDirectory]::Create($outer, $descriptor)");
     expect(create).toBeGreaterThan(refusal);
-    expect(script).toContain("if (!CreateDirectoryW(path, ref attributes)) throw new Win32Exception");
-    const receipt = script.indexOf("[Console]::Out.WriteLine('private-sandbox-directory-created')");
+    expect(script).toContain("if (!CreateDirectoryW(ExtendedPath(path), ref attributes)) throw new Win32Exception");
+    const receipt = script.indexOf("[PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, 'outer', $outerHandle)");
     expect(receipt).toBeGreaterThan(create);
     expect(receipt).toBeLessThan(script.indexOf("[PrivateDirectory]::Create($bin, $descriptor)"));
     expect(script).toContain("[System.IO.FileMode]::CreateNew");
@@ -556,6 +570,7 @@ describe("Windows helper integrity", () => {
     "refuses a private path that is already a %s and changes nothing",
     async (kind, context) => {
       const [, script] = await captureScripts();
+      assert(script);
       const parent = mkdtempSync(join(tmpdir(), "ave-srt-existing-"));
       directories.push(parent);
       const target = join(parent, "target");
@@ -589,10 +604,10 @@ describe("Windows helper integrity", () => {
       const before = descriptor();
       try {
         const run = spawnSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
-          "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script!, "utf16le").toString("base64"),
+          "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))",
         ], {
           env: { SystemRoot: process.env.SystemRoot, AVE_SRT_OWNER_PID: String(process.pid), AVE_SRT_PRIVATE_DIRECTORY: path },
-          windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+          input: script, windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
         });
         expect(run.status, run.stderr).not.toBe(0);
         expect(run.stderr).toContain("Private directory already exists");
@@ -711,29 +726,35 @@ describe("Windows helper integrity", () => {
     const root = join(dirname(source), "copies");
     mkdirSync(root);
     const confirmed = code !== "EEXIST";
-    const error = Object.assign(new Error(`Provisioning failed: ${code}`), {
-      code,
-      stdout: Buffer.from(confirmed ? "private-sandbox-directory-created\r\n" : ""),
-    });
+    const error = Object.assign(new Error(`Provisioning failed: ${code}`), { code });
     let allocated: string | undefined;
+    let hostType = "Windows_NT";
     const retire = vi.fn(renameSync);
     vi.stubEnv("SystemRoot", process.env.SystemRoot ?? "C:\\Windows");
     vi.resetModules();
     vi.doMock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>(), renameSync: retire }));
     vi.doMock("node:os", async (original) => ({
-      ...await original<typeof import("node:os")>(), type: () => "Windows_NT", tmpdir: () => root,
+      ...await original<typeof import("node:os")>(), type: () => hostType, tmpdir: () => root,
     }));
     vi.doMock("node:child_process", async (original) => ({
       ...await original<typeof import("node:child_process")>(),
       execFileSync: (_: string, _args: string[], options: { env: Record<string, string> }) => {
         allocated = options.env.AVE_SRT_PRIVATE_DIRECTORY;
         if (!allocated) return Buffer.alloc(0);
-        mkdirSync(allocated);
+        const journal = options.env.AVE_SRT_ALLOCATION_RECORD;
+        assert(journal);
+        mkdirSync(allocated, { mode: 0o700 });
+        if (confirmed) recordMockCreation(journal, "outer", allocated);
         if (code === "EPERM") {
-          mkdirSync(join(allocated, "bin"));
-          writeFileSync(join(allocated, "bin", "owner.json"), "partial marker");
+          const bin = join(allocated, "bin");
+          mkdirSync(bin, { mode: 0o700 });
+          recordMockCreation(journal, "bin", bin);
+          const marker = join(bin, "owner.json");
+          writeFileSync(marker, "partial marker");
+          recordMockCreation(journal, "marker", marker);
         }
         if (!confirmed) writeFileSync(join(allocated, "sentinel"), "keep");
+        hostType = "Darwin";
         throw error;
       },
     }));
@@ -751,6 +772,61 @@ describe("Windows helper integrity", () => {
     } finally {
       vi.doUnmock("node:child_process");
       vi.doUnmock("node:fs");
+      vi.doUnmock("node:os");
+      vi.resetModules();
+    }
+  });
+
+  it.each(["directory", "link"])("preserves a pre-existing bin %s after the outer creation receipt", async (kind) => {
+    const { source } = fixture();
+    const root = join(dirname(source), "copies");
+    const target = join(dirname(source), "outside");
+    mkdirSync(root);
+    mkdirSync(target);
+    let allocated: string | undefined;
+    let hostType = "Windows_NT";
+    const collision = Object.assign(new Error("Second exclusive create failed"), { code: "EEXIST" });
+    vi.stubEnv("SystemRoot", process.env.SystemRoot ?? "C:\\Windows");
+    vi.resetModules();
+    vi.doMock("node:os", async (original) => ({
+      ...await original<typeof import("node:os")>(), type: () => hostType, tmpdir: () => root,
+    }));
+    vi.doMock("node:child_process", async (original) => ({
+      ...await original<typeof import("node:child_process")>(),
+      execFileSync: (_: string, _args: string[], options: { env: Record<string, string> }) => {
+        allocated = options.env.AVE_SRT_PRIVATE_DIRECTORY;
+        if (!allocated) return Buffer.alloc(0);
+        mkdirSync(allocated, { mode: 0o700 });
+        const journal = options.env.AVE_SRT_ALLOCATION_RECORD;
+        assert(journal);
+        recordMockCreation(journal, "outer", allocated);
+        const bin = join(allocated, "bin");
+        if (kind === "link") symlinkSync(target, bin, "junction");
+        else mkdirSync(bin);
+        const contents = kind === "link" ? target : bin;
+        writeFileSync(join(contents, "srt-win.exe"), "foreign image");
+        writeFileSync(join(contents, "owner.json"), "foreign marker");
+        hostType = "Darwin";
+        throw collision;
+      },
+    }));
+    try {
+      const integrity = await import("../srt-win-integrity.js");
+      expect(() => integrity.prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ cause: collision }));
+      assert(allocated);
+      const bin = join(allocated, "bin");
+      expect(lstatSync(bin, { throwIfNoEntry: false })?.isSymbolicLink()).toBe(kind === "link");
+      integrity.sweepStaleSrtWinDirectories();
+      expect(readFileSync(join(bin, "srt-win.exe"), "utf8")).toBe("foreign image");
+      expect(readFileSync(join(bin, "owner.json"), "utf8")).toBe("foreign marker");
+    } finally {
+      if (kind === "link" && allocated !== undefined) {
+        const bin = join(allocated, "bin");
+        if (lstatSync(bin, { throwIfNoEntry: false })?.isSymbolicLink()) {
+          if (process.platform === "win32") rmdirSync(bin); else rmSync(bin);
+        }
+      }
+      vi.doUnmock("node:child_process");
       vi.doUnmock("node:os");
       vi.resetModules();
     }

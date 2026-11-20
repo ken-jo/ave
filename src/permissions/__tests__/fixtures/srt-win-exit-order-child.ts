@@ -2,6 +2,8 @@
 // stands in for the sandbox runtime's, which initialize registers later and which spawns the private copy synchronously to release the session's ACEs.
 import { existsSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
+import { resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 
 if (process.env.AVE_TEST_SRT_RECEIPTS) {
   const receipts = JSON.parse(process.env.AVE_TEST_SRT_RECEIPTS);
@@ -18,6 +20,7 @@ const [source, resultPath, mode] = process.argv.slice(2);
 if (!source || !resultPath || !mode) throw new Error("usage: <source> <result> <runtime-pending|runtime-reset|no-runtime>");
 
 const { ensureAveHomePrivate } = await import("../../../shared/ave-home.js");
+configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
 if (ensureAveHomePrivate().enforcement === "none") throw new Error("Test home is not private");
 const executable = prepareSrtWinExecutable(source);
 if (mode !== "no-runtime") {

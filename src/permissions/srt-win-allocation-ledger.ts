@@ -9,6 +9,7 @@ const namespace = openFeatureNamespace(AVE_HOME_RUNTIME_DIRECTORY);
 const RECORD_NAME = /^srt-win-allocation-([a-f0-9]{32})\.jsonl$/u;
 const ID = /^[a-f0-9]{32}$/u;
 const IDENTITY = /^[0-9]+:[1-9][0-9]*:-?[0-9]+$/u;
+export type SrtWinClaim = "outer" | "bin" | "image" | "marker";
 
 export interface SrtWinAllocation {
   readonly record: string;
@@ -16,7 +17,7 @@ export interface SrtWinAllocation {
   readonly pid: number;
   readonly path: string;
   readonly retired: string;
-  identity?: string;
+  readonly claims: Partial<Record<SrtWinClaim, string>>;
   disposing: boolean;
 }
 
@@ -51,7 +52,7 @@ export function beginSrtWinAllocation(id: string, path: string, retired: string)
     writeRecordLine(fd, JSON.stringify(initial));
   } finally { closeSync(fd); }
   syncNamespaceDirectorySync({ dir });
-  return { ...initial, record: join(dir, name), disposing: false };
+  return { ...initial, record: join(dir, name), claims: {}, disposing: false };
 }
 
 function openRecord(path: string, flags: number): number {
@@ -80,9 +81,9 @@ function writeRecordLine(fd: number, line: string): void {
   fsyncSync(fd);
 }
 
-export function confirmSrtWinAllocation(allocation: SrtWinAllocation, identity: string): void {
-  append(allocation.record, `outer ${identity}`);
-  allocation.identity = identity;
+export function confirmSrtWinClaim(allocation: SrtWinAllocation, claim: SrtWinClaim, identity: string): void {
+  append(allocation.record, `${claim} ${identity}`);
+  allocation.claims[claim] = identity;
 }
 
 export function retireSrtWinAllocation(allocation: SrtWinAllocation): void {
@@ -111,13 +112,26 @@ function readAllocation(record: string, id: string): SrtWinAllocation | undefine
     || basename(plan.path) !== `ave-srt-win-${id}` || typeof plan.retired !== "string" || dirname(plan.retired) !== dirname(plan.path)
     || !basename(plan.retired).startsWith(`${basename(plan.path)}.delete-`) || !ID.test(plan.retired.slice(-32))
     || plan.retired.length !== plan.path.length + 40 || !Number.isSafeInteger(plan.pid) || plan.pid <= 0) return undefined;
-  const allocation: SrtWinAllocation = { id, path: plan.path, retired: plan.retired, pid: plan.pid, record, disposing: false };
+  const allocation: SrtWinAllocation = { id, path: plan.path, retired: plan.retired, pid: plan.pid, record, claims: {}, disposing: false };
   for (const line of lines.slice(1)) {
     if (line === "dispose") { allocation.disposing = true; continue; }
-    if (!line.startsWith("outer ") || allocation.identity !== undefined || !IDENTITY.test(line.slice(6))) return undefined;
-    allocation.identity = line.slice(6);
+    const [claim, identity, extra] = line.split(" ");
+    if ((claim !== "outer" && claim !== "bin" && claim !== "image" && claim !== "marker")
+      || extra !== undefined || identity === undefined || !IDENTITY.test(identity)
+      || allocation.disposing || allocation.claims[claim] !== undefined
+      || (claim === "bin" && allocation.claims.outer === undefined)
+      || ((claim === "image" || claim === "marker") && allocation.claims.bin === undefined)) return undefined;
+    allocation.claims[claim] = identity;
   }
   return allocation;
+}
+
+export function confirmNativeSrtWinClaims(allocation: SrtWinAllocation): void {
+  const persisted = readAllocation(allocation.record, allocation.id);
+  if (persisted?.path !== allocation.path || persisted.retired !== allocation.retired || persisted.pid !== allocation.pid) {
+    throw new Error("Private helper allocation record changed during provisioning");
+  }
+  Object.assign(allocation.claims, persisted.claims);
 }
 
 export function srtWinAllocations(): SrtWinAllocation[] {

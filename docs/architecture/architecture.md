@@ -3531,13 +3531,16 @@ with its own owner rule:
   `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
   both directories with the token user as owner and a protected DACL: full control for the user,
   read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at either directory path, a link included, refuses exclusive creation. It reports
-  the successful outer creation before provisioning `bin`. The empty image and
+  already at either directory path, a link included, refuses exclusive creation. It flushes
+  the outer identity before provisioning `bin` and records `bin` independently. The empty image and
   the owner marker are then created new inside `bin`, each with its own
-  descriptor, and each owner is read on the handle that created the file. No
+  descriptor, and each identity and owner is read on the handle that created the file. No
   step changes the owner or DACL of an object that already exists. The image's
-  bytes are written only after that step. On an error or timeout after confirmation,
-  the host retires the owned directory using the same path as shutdown.
+  bytes are written only after that step. On an error or timeout the host reads
+  the flushed receipts and uses the same cleanup as shutdown. Only individually
+  recorded entries can be removed. Cleanup holds Windows ancestors without
+  delete sharing, opens each claimed entry without following a reparse point,
+  and removes by handle without a recursive walk. A colliding `bin` remains in place.
   The write-deny target is `bin`, so its parent's inheritable delete-child deny
   lands on the private outer directory, never `%TEMP%`. Grants inside or writable
   grants covering that outer directory are refused. Session reset or holder

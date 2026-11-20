@@ -1,16 +1,18 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, type } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { renamePathOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
+import { posixHomeProtectionFailure } from "../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
-import { allocationIdentity, allocationOwnerIsLive, beginSrtWinAllocation, confirmSrtWinAllocation, forgetSrtWinAllocation, retireSrtWinAllocation, srtWinAllocations, type SrtWinAllocation } from "./srt-win-allocation-ledger.js";
+import { allocationIdentity, allocationOwnerIsLive, beginSrtWinAllocation, confirmNativeSrtWinClaims, confirmSrtWinClaim, forgetSrtWinAllocation, retireSrtWinAllocation, srtWinAllocations, type SrtWinAllocation, type SrtWinClaim } from "./srt-win-allocation-ledger.js";
 import SRT_WIN_BUILD_RECEIPTS from "./generated/srt-win-build-receipts.js";
 import { _registerSrtWinCopyForTest } from "./srt-win-copy-owner.js";
+import { PRIVATE_DIRECTORY_API } from "./srt-win-private-directory-source.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
 
 export class SrtWinIntegrityError extends Error {
@@ -38,28 +40,6 @@ const POWERSHELL_PROLOGUE = [
   "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')",
 ];
 
-// The managed CreateDirectory API can succeed on an existing directory. Claim the path exclusively with the final descriptor.
-const PRIVATE_DIRECTORY_API = [
-  "using System;",
-  "using System.ComponentModel;",
-  "using System.Runtime.InteropServices;",
-  "public static class PrivateDirectory {",
-  "  [StructLayout(LayoutKind.Sequential)]",
-  "  private struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int InheritHandle; }",
-  '  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]',
-  "  [return: MarshalAs(UnmanagedType.Bool)]",
-  "  private static extern bool CreateDirectoryW(string path, ref SecurityAttributes attributes);",
-  "  public static void Create(string path, byte[] descriptor) {",
-  "    GCHandle pinned = GCHandle.Alloc(descriptor, GCHandleType.Pinned);",
-  "    try {",
-  "      SecurityAttributes attributes = new SecurityAttributes { Length = Marshal.SizeOf(typeof(SecurityAttributes)), Descriptor = pinned.AddrOfPinnedObject(), InheritHandle = 0 };",
-  "      if (!CreateDirectoryW(path, ref attributes)) throw new Win32Exception(Marshal.GetLastWin32Error());",
-  "    } finally { pinned.Free(); }",
-  "  }",
-  "}",
-].join("\n");
-const PRIVATE_DIRECTORY_CREATED = "private-sandbox-directory-created";
-
 // Set the protected descriptor at creation. Confirm the outer allocation before provisioning its contents.
 const PRIVATE_DIRECTORY_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
@@ -78,11 +58,12 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "foreach ($id in $readers) { $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
   `Add-Type -TypeDefinition '${PRIVATE_DIRECTORY_API}'`,
   "$descriptor = $security.GetSecurityDescriptorBinaryForm()",
-  "[PrivateDirectory]::Create($outer, $descriptor)",
-  `[Console]::Out.WriteLine('${PRIVATE_DIRECTORY_CREATED}')`,
-  "[Console]::Out.Flush()",
+  "$held = [PrivateDirectory]::HoldParents($outer)",
+  "try {",
+  "$outerHandle = [PrivateDirectory]::Create($outer, $descriptor); $held.Add($outerHandle)",
+  "[PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, 'outer', $outerHandle)",
   "foreach ($directory in @($outer, $bin)) {",
-  "if ($directory -eq $bin) { [PrivateDirectory]::Create($bin, $descriptor) }",
+  "if ($directory -eq $bin) { $binHandle = [PrivateDirectory]::Create($bin, $descriptor); $held.Add($binHandle); [PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, 'bin', $binHandle) }",
   "$attributes = [System.IO.File]::GetAttributes($directory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { throw 'Private directory is not a plain directory' }",
   "$check = [System.IO.Directory]::GetAccessControl($directory)",
@@ -101,9 +82,14 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$owner = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
   "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $owner.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
   "$contents = @{ 'srt-win.exe' = [byte[]]@(); 'owner.json' = (New-Object System.Text.UTF8Encoding($false)).GetBytes($marker) }",
-  "foreach ($name in @('srt-win.exe', 'owner.json')) { $stream = New-Object System.IO.FileStream([System.IO.Path]::Combine($bin, $name), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity); try { $bytes = $contents[$name]; $stream.Write($bytes, 0, $bytes.Length); if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } } finally { $stream.Dispose() } }",
+  "foreach ($name in @('srt-win.exe', 'owner.json')) { $stream = New-Object System.IO.FileStream([System.IO.Path]::Combine($bin, $name), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions, ReadAttributes', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity); try { $claim = 'image'; if ($name -eq 'owner.json') { $claim = 'marker' }; [PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, $claim, $stream.SafeFileHandle); $bytes = $contents[$name]; $stream.Write($bytes, 0, $bytes.Length); if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } } finally { $stream.Dispose() } }",
+  "} finally { $held.Dispose() }",
 ].join("; ");
-const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
+const DISPOSE_COPY_SCRIPT = [
+  ...POWERSHELL_PROLOGUE,
+  `Add-Type -TypeDefinition '${PRIVATE_DIRECTORY_API}'`,
+  "[PrivateDirectory]::DisposeCopy($env:AVE_SRT_COPY_PATH, $env:AVE_SRT_RETIRE_PATH, $env:AVE_SRT_OUTER_ID, $env:AVE_SRT_BIN_ID, $env:AVE_SRT_IMAGE_ID, $env:AVE_SRT_MARKER_ID)",
+].join("; ");
 
 const TEMP_ROOT_ACL_DIAGNOSTIC = "srt-win-temp-root-acl-owner-action-required";
 const CHECK_TEMP_ROOT_SCRIPT = [
@@ -112,33 +98,32 @@ const CHECK_TEMP_ROOT_SCRIPT = [
   "if (([System.IO.File]::GetAttributes($root) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { exit }",
   `try { $sandboxSid = (New-Object System.Security.Principal.NTAccount('srt-sandbox')).Translate([System.Security.Principal.SecurityIdentifier]); $rootAcl = [System.IO.Directory]::GetAccessControl($root); if (@($rootAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference -eq $sandboxSid }).Count -ne 0) { [Console]::Out.WriteLine('${TEMP_ROOT_ACL_DIAGNOSTIC}') } } catch { }`,
 ].join("; ");
-const CHECK_TEMP_ROOT_COMMAND = Buffer.from(CHECK_TEMP_ROOT_SCRIPT, "utf16le").toString("base64");
+const DIRECTORY_SCRIPT_BOOTSTRAP = Buffer.from("& ([ScriptBlock]::Create([Console]::In.ReadToEnd()))", "utf16le").toString("base64");
 
-function runDirectoryCommand(command: string, env: Record<string, string>): Buffer {
+function runDirectoryCommand(script: string, env: Record<string, string>): void {
   const root = windowsSystemRoot();
   const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", command,
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", DIRECTORY_SCRIPT_BOOTSTRAP,
   ], {
     env: { SystemRoot: root, AVE_SRT_OWNER_PID: String(process.pid), ...env },
-    windowsHide: true, stdio: "pipe", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+    input: script, windowsHide: true, stdio: "pipe", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
   });
   if (output.toString("utf8").includes(TEMP_ROOT_ACL_DIAGNOSTIC)) {
     console.warn(`[${TEMP_ROOT_ACL_DIAGNOSTIC}] Sandbox account ACEs exist on the temporary root; owner review and an explicitly authorized ACL repair are required. No temporary-root ACL was changed.`);
   }
-  return output;
 }
 
 // Only a durable allocation record authorizes cleanup. Names and markers are not provenance.
 export function sweepStaleSrtWinDirectories(): void {
   if (type() === "Windows_NT") {
-    try { runDirectoryCommand(CHECK_TEMP_ROOT_COMMAND, { AVE_SRT_TEMP_ROOT: tmpdir() }); }
+    try { runDirectoryCommand(CHECK_TEMP_ROOT_SCRIPT, { AVE_SRT_TEMP_ROOT: tmpdir() }); }
     catch { /* The temp-root diagnostic is independent of reclamation. */ }
   }
   try {
     for (const allocation of srtWinAllocations()) {
-      if (!allocation.disposing && allocationOwnerIsLive(allocation.pid)) continue;
+      if (!(allocation.disposing && allocation.pid === process.pid) && allocationOwnerIsLive(allocation.pid)) continue;
       try {
-        if (isAllocationDirectory(allocation.retired, allocation.identity)) removePrivateCopy(allocation.retired);
+        removePrivateCopy(allocation, allocation.retired);
         forgetIfGone(allocation);
       } catch { /* Keep the record and continue with independent allocations. */ }
     }
@@ -168,9 +153,7 @@ function forgetIfGone(allocation: SrtWinAllocation): void {
 
 function ownPrivateCopy(allocation: SrtWinAllocation): () => void {
   const directory = allocation.path;
-  const info = lstatSync(directory, { bigint: true });
-  if (!info.isDirectory()) throw new Error("Private directory is not a plain directory");
-  confirmSrtWinAllocation(allocation, allocationIdentity(info));
+  if (!isAllocationDirectory(directory, allocation.claims.outer)) throw new Error("Private directory identity changed");
   const dispose = (): void => {
     if (!copyDisposers.has(dispose)) return;
     if (lstatSync(directory, { throwIfNoEntry: false }) === undefined) {
@@ -178,12 +161,14 @@ function ownPrivateCopy(allocation: SrtWinAllocation): () => void {
       copyDisposers.delete(dispose);
       return;
     }
-    if (!isAllocationDirectory(directory, allocation.identity)) throw new Error("Private directory identity changed");
+    if (!isAllocationDirectory(directory, allocation.claims.outer)) throw new Error("Private directory identity changed");
     retireSrtWinAllocation(allocation);
-    renamePathOnceSync(directory, allocation.retired);
-    copyDisposers.delete(dispose);
-    if (!isAllocationDirectory(allocation.retired, allocation.identity)) throw new Error("Retired directory identity changed");
-    removePrivateCopy(allocation.retired);
+    try {
+      removePrivateCopy(allocation, directory, allocation.retired);
+    } finally {
+      // After a committed rename, the ledger owns the retired entry across shutdown.
+      if (lstatSync(directory, { throwIfNoEntry: false }) === undefined) copyDisposers.delete(dispose);
+    }
     forgetIfGone(allocation);
   };
   copyDisposers.add(dispose);
@@ -217,7 +202,7 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
     return cached.executable;
   }
   // A fresh, unpublished name: on Windows the protecting step creates it, and anything already at the path refuses creation.
-  const temp = resolve(tmpdir());
+  const temp = realpathSync.native(resolve(tmpdir()));
   const id = randomBytes(16).toString("hex");
   const directory = join(temp, `ave-srt-win-${id}`);
   const retired = `${directory}.delete-${randomBytes(16).toString("hex")}`;
@@ -230,26 +215,28 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
     // POSIX modes do not enforce a Windows boundary. On Windows both directories and the empty image are created with their protected DACL and the current user as owner before any executable byte exists; this needs no elevation, and the bytes go into the file that step made.
     const windows = type() === "Windows_NT";
     if (windows) {
-      let output: unknown;
       try {
-        output = runDirectoryCommand(PRIVATE_DIRECTORY_COMMAND, { AVE_SRT_PRIVATE_DIRECTORY: directory, TEMP: temp, TMP: temp });
-      } catch (error) {
-        // The sync command retains stdout written before failure, including on timeout.
-        if (error instanceof Error && "stdout" in error) output = error.stdout;
-        throw error;
+        runDirectoryCommand(PRIVATE_DIRECTORY_SCRIPT, {
+          AVE_SRT_PRIVATE_DIRECTORY: directory, AVE_SRT_ALLOCATION_RECORD: allocation.record, TEMP: temp, TMP: temp,
+        });
       } finally {
-        if (Buffer.isBuffer(output) && output.toString("utf8").split(/\r?\n/).includes(PRIVATE_DIRECTORY_CREATED)) {
-          dispose = ownPrivateCopy(allocation);
-        }
+        confirmNativeSrtWinClaims(allocation);
+        if (allocation.claims.outer !== undefined) dispose = ownPrivateCopy(allocation);
       }
-      if (dispose === undefined) throw new Error("Private directory creation was not confirmed");
+      if (dispose === undefined || allocation.claims.bin === undefined || allocation.claims.image === undefined || allocation.claims.marker === undefined) {
+        throw new Error("Private helper creation was not confirmed");
+      }
     } else {
       mkdirSync(directory, { mode: 0o700 });
+      confirmSrtWinClaim(allocation, "outer", allocationIdentity(lstatSync(directory, { bigint: true })));
       dispose = ownPrivateCopy(allocation);
       mkdirSync(bin, { mode: 0o700 });
+      confirmSrtWinClaim(allocation, "bin", allocationIdentity(lstatSync(bin, { bigint: true })));
+      createLocalClaim(allocation, "image", executable);
+      createLocalClaim(allocation, "marker", join(bin, "owner.json"));
     }
     // Write the bytes that were hashed, rather than re-opening the source to copy.
-    writeFileSync(executable, bytes, windows ? { flag: "r+" } : { flag: "wx", mode: 0o700 });
+    writeFileSync(executable, bytes, { flag: "r+" });
     assertSrtWinDigest(readHelper(executable), arch);
     copies.set(key, { executable, arch });
     return executable;
@@ -276,24 +263,56 @@ export function assertSrtWinSpawnIntegrity(executable: string): void {
   assertSrtWinDigest(readHelper(executable), copy.arch);
 }
 
-// Remove only the two known files and their two directories, never recursing or following a swapped-in directory link.
-function removePrivateCopy(directory: string): void {
-  const entry = lstatSync(directory, { throwIfNoEntry: false });
+function createLocalClaim(allocation: SrtWinAllocation, claim: SrtWinClaim, path: string): void {
+  const fd = openSync(path, "wx", 0o700);
+  try { confirmSrtWinClaim(allocation, claim, allocationIdentity(fstatSync(fd, { bigint: true }))); }
+  finally { closeSync(fd); }
+}
+
+function removeClaimedFile(path: string, identity: string | undefined): void {
+  if (identity === undefined) return;
+  const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
   if (entry === undefined) return;
-  if (entry.isSymbolicLink()) {
-    // A Windows directory link (junction or symlink) is removed with rmdir.
-    if (process.platform === "win32") rmdirSync(directory); else unlinkSync(directory);
+  if (!entry.isFile() || allocationIdentity(entry) !== identity) throw new Error("Private helper file identity changed");
+  rmSync(path);
+}
+
+function removePrivateCopy(allocation: SrtWinAllocation, path: string, retired?: string): void {
+  const { outer, bin, image, marker } = allocation.claims;
+  if (!isAllocationDirectory(path, outer)) return;
+  if (type() === "Windows_NT" && process.platform === "win32") {
+    const temp = dirname(path);
+    runDirectoryCommand(DISPOSE_COPY_SCRIPT, {
+      AVE_SRT_COPY_PATH: path, AVE_SRT_RETIRE_PATH: retired ?? "",
+      AVE_SRT_OUTER_ID: outer ?? "", AVE_SRT_BIN_ID: bin ?? "",
+      AVE_SRT_IMAGE_ID: image ?? "", AVE_SRT_MARKER_ID: marker ?? "", TEMP: temp, TMP: temp,
+    });
     return;
   }
-  const bin = join(directory, "bin");
-  const child = lstatSync(bin, { throwIfNoEntry: false });
-  if (child?.isSymbolicLink()) {
-    if (process.platform === "win32") rmdirSync(bin); else unlinkSync(bin);
-  } else if (child?.isDirectory()) {
-    for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(bin, name), { force: true });
-    rmdirSync(bin);
+  // Verified private directories and their protected ancestors prevent swaps by another user.
+  if (process.getuid !== undefined && (realpathSync.native(path) !== path || posixHomeProtectionFailure(path) !== undefined)) {
+    throw new Error("Private helper directory is not protected");
   }
-  rmdirSync(directory);
+  let imageDirectory = join(path, "bin");
+  if (bin === undefined && lstatSync(imageDirectory, { throwIfNoEntry: false }) !== undefined) {
+    throw new Error("Private helper bin is unclaimed");
+  }
+  if (retired !== undefined) {
+    renamePathOnceSync(path, retired);
+    path = retired;
+    imageDirectory = join(path, "bin");
+    if (!isAllocationDirectory(path, outer)) throw new Error("Retired directory identity changed");
+  }
+  if (bin !== undefined && lstatSync(imageDirectory, { throwIfNoEntry: false }) !== undefined) {
+    if (!isAllocationDirectory(imageDirectory, bin) || posixHomeProtectionFailure(imageDirectory) !== undefined) {
+      throw new Error("Private helper bin identity changed");
+    }
+    removeClaimedFile(join(imageDirectory, "srt-win.exe"), image);
+    removeClaimedFile(join(imageDirectory, "owner.json"), marker);
+    rmdirSync(imageDirectory);
+  }
+  // Nonrecursive removal preserves any unclaimed entries.
+  rmdirSync(path);
 }
 
 // The sandbox runtime spawns this copy again when its session reset revokes and restores the session's ACEs. The quit sequence awaits that reset
