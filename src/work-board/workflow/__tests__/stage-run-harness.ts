@@ -11,6 +11,7 @@ import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { WorkflowTemplateStore } from "../../../main/workflow-template-store.js";
 import { mintHostDecisionProof } from "../../../main/workflow-template-decision.js";
 import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/work-board-engine.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
@@ -47,7 +48,7 @@ function observeRunWork() {
       return;
     }
     // A controlled child parks its launch after linkage and resumes tracking before it ends.
-    const linked = Promise.withResolvers<void>();
+    const linked = deferred<void>();
     const done = launches.run({ linked: linked.resolve, resume: () => track(done) }, work);
     track(Promise.race([linked.promise, done]));
   };

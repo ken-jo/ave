@@ -7,6 +7,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import type { RunEndCause } from "../../../main/workflow-run-store.js";
 import * as classification from "../../../main/run-classification.js";
 import * as homeTrust from "../../../shared/ave-home-trust.js";
@@ -349,8 +350,8 @@ async function runCells(cells: Cell[], tally: (key: string) => void): Promise<vo
 
 it("waits for a posted run end before checking for an absent settlement", async () => {
   const h = await stageRunHarness({ observeRunWork: true });
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
+  const entered = deferred<void>();
+  const release = deferred<void>();
   try {
     const holder = await h.board.create({ title: "Holder" });
     if (holder.status !== "created") throw new Error("no holder");
