@@ -8,7 +8,9 @@ import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import { bracedHomeEscapeEnd, decodeHomeEscapes, decodesHomeBackslashes, type HomeEscapeFamily } from "./home-path-decode.js";
+import {
+  bracedHomeEscapeEnd, decodeHomeEscapes, decodesHomeBackslashes, type HomeEscapeFamily, mayDecodeHomeCharacter,
+} from "./home-path-decode.js";
 import { rewriteWindowsPathText } from "./home-path-quote-frames.js";
 
 export {
@@ -169,6 +171,7 @@ interface HomeRedaction {
   forms: readonly HomeDetector[];
   trigger: RegExp;
   boundaries: ReadonlySet<number>;
+  requiredPathCharacter: string;
 }
 
 const GENERIC_HOME_FORMS: readonly HomeForm[] = [
@@ -181,6 +184,7 @@ const GENERIC_HOME_FORMS: readonly HomeForm[] = [
 ];
 
 const HOME_DECODE_LAYERS = 3;
+const LARGE_ESCAPE_TOKEN = 4096;
 const HOME_TOKEN_MARKER = "[home-token]";
 const SINGLE_DECODE_FAMILY = ["full"] as const;
 const BACKSLASH_AND_URI_FAMILIES = ["full", "backslash", "percent-entity"] as const;
@@ -201,7 +205,8 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
   const trigger = new RegExp(String.raw`[\\%&]|users|home` + (anchor ? "|" + escapeRegExp(anchor) : ""), "iu");
   const boundaries = new Set([...BOUNDARY_CHARACTERS].map(character => character.charCodeAt(0)));
   for (const character of home) if (character !== '"') boundaries.delete(character.charCodeAt(0));
-  if (!home) return { forms: [], trigger, boundaries };
+  const requiredPathCharacter = windows ? /^[a-z]:/iu.test(home) ? ":" : "" : home.startsWith("/") ? "/" : "";
+  if (!home) return { forms: [], trigger, boundaries, requiredPathCharacter };
   const spellings = [
     [`file://${slashHome}`, "file://[home]"],
     [standard, "file://[home]"],
@@ -217,7 +222,7 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
     const source = `${start}${pattern}${end}`;
     return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker, windows, windowsRoot, escapedSeparators };
   });
-  return { forms, trigger, boundaries };
+  return { forms, trigger, boundaries, requiredPathCharacter };
 }
 
 const homeRedaction = compileHomeRedaction(_homeDir, homePlatform);
@@ -377,13 +382,20 @@ function detectsEncodedHome(token: string, forms: readonly HomeDetector[], separ
 }
 
 /** Delimiters and their preceding slash runs belong to the original text. */
-function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedaction, separatorWidth: number): string {
+function replaceEncodedHomeTokens(
+  text: string, { forms, boundaries, requiredPathCharacter }: HomeRedaction, separatorWidth: number,
+): string {
   let pieces: string[] | undefined;
   let copied = 0;
   let start = 0;
   let introduced = false;
   const finish = (end: number): void => {
-    if (introduced && start < end && detectsEncodedHome(text.slice(start, end), forms, separatorWidth)) {
+    if (introduced && start < end) {
+      const token = text.slice(start, end);
+      introduced = false;
+      if (requiredPathCharacter && token.length >= LARGE_ESCAPE_TOKEN && !token.includes(requiredPathCharacter)
+        && !mayDecodeHomeCharacter(token, requiredPathCharacter.charCodeAt(0), HOME_DECODE_LAYERS)) return;
+      if (!detectsEncodedHome(token, forms, separatorWidth)) return;
       pieces ??= [];
       pieces.push(text.slice(copied, start), HOME_TOKEN_MARKER);
       copied = end;

@@ -4,16 +4,16 @@ interface Quote {
 }
 
 function nextQuote(text: string, cursor: number, limit: number, width: number): Quote | undefined {
-  const escape = width / 2 - 1;
+  const quoteEscaping = width / 2 - 1;
   for (let index = text.indexOf('"', cursor); index >= 0 && index < limit; index = text.indexOf('"', index + 1)) {
     let start = index;
     while (start > cursor && text.charCodeAt(start - 1) === 92) start--;
-    if ((index - start) % width === escape) return { index, start: index - escape };
+    if ((index - start) % width === quoteEscaping) return { index, start: index - quoteEscaping };
   }
   return undefined;
 }
 
-const JSON_ESCAPE_TAIL = /^(?:[\/bfnrt]|u[0-9a-fA-F]{4})/u;
+const JSON_ESCAPE_TAIL = /^(?:[/bfnrt]|u[0-9a-fA-F]{4})/u;
 
 function hasJsonStringSyntax(text: string, start: number, end: number, width: number): boolean {
   for (let index = start; index < end;) {

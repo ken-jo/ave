@@ -382,7 +382,9 @@ it("keeps the generated entity subset complete and bounded", async () => {
   expect(HOME_NAMED_ENTITIES).toMatchObject({ sol: 47, bsol: 92, colon: 58, period: 46, lowbar: 95, amp: 38, percnt: 37, apos: 39, eacute: 233 });
 });
 
-describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros"])("decoder scaling for %s", (shape) => {
+const MIXED_ESCAPE_FRAGMENT = String.raw`%252541&amp;amp;amp;B\u0043`;
+
+describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros", MIXED_ESCAPE_FRAGMENT])("decoder scaling for %s", (shape) => {
   it("scans adversarial runs with linear scaling", async () => {
     const { redactHomePathsInText } = await loadHomeRedactor("linux");
     const input = (size: number): string => shape === "peeling" ? `%${"25".repeat(Math.floor(size / 2))}2F` : shape === "zeros" ? `&#${"0".repeat(size)}47;` : shape.repeat(Math.ceil(size / shape.length));
@@ -390,9 +392,10 @@ describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros"])("de
       const text = input(size);
       const samples = Array.from({ length: 5 }, () => {
         const start = performance.now();
-        redactHomePathsInText(text);
+        const output = redactHomePathsInText(text);
         const elapsed = performance.now() - start;
         expect(elapsed).toBeLessThan(2_000);
+        if (shape === MIXED_ESCAPE_FRAGMENT) expect(output).toBe(text);
         return elapsed;
       });
       return samples.sort((a, b) => a - b)[2];
@@ -406,6 +409,15 @@ describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros"])("de
     expect(timings[3]).toBeLessThan(Math.max(timings[0], 1) * 16);
     console.info("decoder scaling", { shape, kib: [100, 200, 400, 800], milliseconds: timings });
   });
+});
+
+it("checks a long mixed token when a necessary path character is synthesized in later layers", async () => {
+  const { redactHomePathsInText } = await loadHomeRedactor("linux");
+  const root = "%26%23%34%37%3B";
+  const encodedHome = fixture.home.replaceAll("/", root);
+  const noise = MIXED_ESCAPE_FRAGMENT.repeat(400);
+  expect(redactHomePathsInText(noise)).toBe(noise);
+  expect(redactHomePathsInText(`${noise}${encodedHome}${root}file`)).toBe("[home-token]");
 });
 
 it("preserves input marker text without manufacturing home evidence", async () => {

@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { HOME_NAMED_ENTITIES } from "./home-named-entities.js";
 
 const HEX_VALUES = new Int16Array(128).fill(-1);
@@ -8,6 +9,23 @@ for (let digit = 0; digit < 16; digit++) {
 }
 const SINGLE_ESCAPES = new Int16Array(128).fill(-1);
 for (const [character, value] of [[34, 34], [39, 39], [47, 47], [92, 92], [98, 8], [102, 12], [110, 10], [114, 13], [116, 9], [118, 11]]) SINGLE_ESCAPES[character] = value;
+
+const UTF16_LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+const ASCII_ESCAPE_SPELLINGS = Array.from({ length: 128 }, (_, code) => {
+  const digits = code.toString(16);
+  const byte = digits.padStart(2, "0");
+  return [
+    `%${byte}`, `\\x${byte}`, `\\u${digits.padStart(4, "0")}`, `\\u{${digits}}`,
+    `\\${code.toString(8)}`, `&#${code};`, `&#x${digits};`,
+  ];
+});
+for (const [name, value] of Object.entries(HOME_NAMED_ENTITIES)) {
+  if (value < 128) ASCII_ESCAPE_SPELLINGS[value].push(`&${name.toLowerCase()};`);
+}
+
+function lowerAscii(code: number): number {
+  return code >= 65 && code <= 90 ? code + 32 : code;
+}
 
 // The bounded trie avoids allocating a substring or result object for each escape attempt.
 const entityTrie: { value: number; next: Map<number, number> }[] = [{ value: -1, next: new Map() }];
@@ -161,6 +179,43 @@ function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex:
   return -1;
 }
 
+/**
+ * A necessary ASCII path character may be absent from every decode view.
+ * First collect raw characters and the actual one-layer escape outputs.
+ * For later layers, allow any supported escape composed of those characters,
+ * ignoring order and adjacency. This can admit extra work but cannot discard
+ * a possible match. UTF-8 sequences with several bytes cannot emit ASCII.
+ */
+export function mayDecodeHomeCharacter(text: string, target: number, layers: number): boolean {
+  const alphabet = new Uint8Array(128);
+  const output: EscapeValue = { value: 0 };
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code === target) return true;
+    if (code < 128) alphabet[lowerAscii(code)] = 1;
+    if ((code === 37 || code === 38 || code === 92) && readHomeEscape(text, index, output, false) > 0) {
+      if (output.value === target) return true;
+      if (output.value < 128) alphabet[lowerAscii(output.value)] = 1;
+    }
+  }
+  let possible = alphabet;
+  for (let depth = 1; depth < layers; depth++) {
+    const next = possible.slice();
+    for (let code = 32; code < 128; code++) {
+      const lower = lowerAscii(code);
+      if (!next[lower] && ASCII_ESCAPE_SPELLINGS[code].some(spelling => {
+        for (let index = 0; index < spelling.length; index++) {
+          if (!possible[spelling.charCodeAt(index)]) return false;
+        }
+        return true;
+      })) next[lower] = 1;
+    }
+    if (next[target]) return true;
+    possible = next;
+  }
+  return false;
+}
+
 
 export type HomeEscapeFamily = "full" | "backslash" | "percent-entity" | "percent" | "entity" | "full-js" | "backslash-js";
 
@@ -215,9 +270,7 @@ export function decodeHomeEscapes(text: string, family: HomeEscapeFamily): strin
     index += width;
   }
   if (!units) return text;
-  let decoded = text.slice(0, prefix);
-  for (let offset = 0; offset < length; offset += 8192) {
-    decoded += String.fromCharCode(...units.subarray(offset, Math.min(offset + 8192, length)));
-  }
-  return decoded;
+  const bytes = Buffer.from(units.buffer, 0, length * 2);
+  if (!UTF16_LITTLE_ENDIAN) bytes.swap16();
+  return text.slice(0, prefix) + bytes.toString("utf16le");
 }
