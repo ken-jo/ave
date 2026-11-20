@@ -54,7 +54,7 @@ it("routes the permission and native inventories through bounded batches", () =>
   ]) {
     const step = steps.find(entry => entry.name === name);
     assert.equal(step.run, `bun run scripts/run-windows-test-list.mjs ${inventory}`);
-    assert.equal(step.env.UV_PYTHON_CACHE_DIR, "${{ runner.temp }}/python-archives");
+    assert.equal(step.env.UV_PYTHON_CACHE_DIR, `\${{ runner.temp }}/python-archives`);
     const list = readFileSync(new URL(`../../${inventory}`, import.meta.url), "utf8");
     const batches = windowsTestCommands(list);
     assert.ok(batches.length > 2);
