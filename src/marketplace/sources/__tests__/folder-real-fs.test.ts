@@ -59,7 +59,7 @@ async function previewOf(input: string) {
   try {
     return await harness.service.previewSource({ input, auth: "none" });
   } finally {
-    harness.service.close();
+    await harness.service.close();
   }
 }
 

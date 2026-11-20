@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -71,9 +72,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await auditLogger.close();
-  delete process.env.AVE_HOME;
-  await cleanupTmpDir(tmp);
+  await cleanupAfterClosing([() => auditLogger.close()], [
+    () => { delete process.env.AVE_HOME; },
+    () => cleanupTmpDir(tmp),
+  ]);
 });
 
 describe("diagnostics IPC — fail-closed sender guard", () => {

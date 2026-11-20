@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import AdmZip from "adm-zip";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -200,10 +201,11 @@ describe("resolveMcpPackage", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    await removeFixtureRepo(emptyRepo);
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      () => removeFixtureRepo(emptyRepo),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(() => {

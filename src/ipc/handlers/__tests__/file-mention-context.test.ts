@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, realpath, rm, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -57,9 +58,10 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   vi.restoreAllMocks();
-  await loop.auditLogger.close();
-  vi.unstubAllEnvs();
-  await rm(root, { recursive: true, force: true });
+  await cleanupAfterClosing([() => loop.auditLogger.close()], [
+    () => { vi.unstubAllEnvs(); },
+    () => rm(root, { recursive: true, force: true }),
+  ]);
 });
 
 describe("host file mention context", () => {

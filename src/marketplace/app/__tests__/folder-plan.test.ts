@@ -45,10 +45,16 @@ beforeEach(async () => {
   if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
   await harness.service.addSource({ previewId: preview.previewId, id: "team" });
 });
-afterEach(() => {
-  harness.service.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(dirname(folder), { recursive: true, force: true });
+afterEach(async () => {
+  try {
+    await harness.service.close();
+  } finally {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } finally {
+      rmSync(dirname(folder), { recursive: true, force: true });
+    }
+  }
 });
 
 

@@ -51,7 +51,7 @@ describe("folder source reads", () => {
       expect(snapshot.packages).toEqual([]);
       expect(snapshot.diagnostics).toEqual([]);
       expect(snapshot.excluded).toEqual([expect.objectContaining({ packageId: "plugin/meeting", version: old.version, reason: "foreign-host-protocol" })]);
-    } finally { harness.service.close(); }
+    } finally { await harness.service.close(); }
   });
 
   it.each(["dev", "ino"] as const)("repairs a refused legacy numeric %s record with freshly verified decimal identities", async (field) => {
@@ -105,7 +105,7 @@ describe("folder source reads", () => {
       }
       await expect(harness.syncer.sync("team")).resolves.toMatchObject({ status: "ok", changed: false });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
 
     const reopened = await folderService({ root, folders });
@@ -115,7 +115,7 @@ describe("folder source reads", () => {
         expect.objectContaining({ id: "team", status: { state: "up-to-date" }, packageCount: 1 }),
       ]));
     } finally {
-      reopened.service.close();
+      await reopened.service.close();
     }
   });
 
@@ -144,7 +144,7 @@ describe("folder source reads", () => {
 
     expect(harness.gitCalls).toEqual([]);
     expect(harness.fetches).toEqual([]);
-    harness.service.close();
+    await harness.service.close();
   });
 
   it("serves only the version in the folder, and keeps other listed versions out of the plan", async () => {
@@ -166,7 +166,7 @@ describe("folder source reads", () => {
     const snapshot = (await harness.syncer.readSnapshot("team"))!;
     expect(snapshot.packages[0]!.versions.map((version) => version.version)).toEqual(["1.0.0"]);
     expect(snapshot.packages[0]!.versions[0]!.commit).toBe(snapshot.commit);
-    harness.service.close();
+    await harness.service.close();
   });
 
   it("persists a background read's permission failure with its reason, and renders it after a reload", async () => {
@@ -184,7 +184,7 @@ describe("folder source reads", () => {
     volume.fail("/srv/team", "EACCES");
     const failed = await first.syncer.sync("team");
     expect(failed).toMatchObject({ status: "failed", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "permission", path: "/srv/team" }, pinnedCommit: pinned });
-    first.service.close();
+    await first.service.close();
 
     const reloaded = await folderService({ root, folders });
     const [, row] = await reloaded.service.listSources();
@@ -196,7 +196,7 @@ describe("folder source reads", () => {
     const sentence = sourceStatusDetail((key, vars) => translate("en", key, vars), row!);
     expect(sentence).toBe(translate("en", "gitMarketplace.error.localUnreadable.permission", { path: "/srv/team", message: "EACCES: /srv/team" }));
     await expect(reloaded.syncer.readSnapshot("team")).resolves.toMatchObject({ commit: pinned });
-    reloaded.service.close();
+    await reloaded.service.close();
     expect(reloaded.gitCalls).toEqual([]);
   });
 
@@ -218,7 +218,7 @@ describe("folder source reads", () => {
     const failed = await first.syncer.sync("team");
     expect(failed).toMatchObject({ status: "failed", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "classifier-unavailable", path: "C:\\team" } });
     expect(volume.calls.slice(before)).toEqual([]);
-    first.service.close();
+    await first.service.close();
 
     const reloaded = await folderService({ root, folders, home: "C:\\Users\\example" });
     const [, row] = await reloaded.service.listSources();
@@ -226,7 +226,7 @@ describe("folder source reads", () => {
     expect(sourceStatusDetail((key, vars) => translate("ko", key, vars), row!)).toBe(
       "Ave의 폴더 분류 도구가 없거나 손상되어 C:\\team이(가) 다른 컴퓨터에 있는지 알 수 없습니다. Ave를 다시 설치하세요.",
     );
-    reloaded.service.close();
+    await reloaded.service.close();
   });
 
   it("refuses to read a stored folder whose path now leads elsewhere, as moved, without reading the new target", async () => {
@@ -246,6 +246,6 @@ describe("folder source reads", () => {
     volume.calls.length = 0;
     await expect(harness.syncer.sync("note")).resolves.toMatchObject({ status: "failed", detail: { reason: "moved", path: "/srv/team", target: "/srv/team" } });
     expect(volume.paths("open")).toEqual([]);
-    harness.service.close();
+    await harness.service.close();
   });
 });

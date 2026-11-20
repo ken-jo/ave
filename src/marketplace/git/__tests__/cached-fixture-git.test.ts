@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,10 +35,11 @@ describe("cached fixture repositories", () => {
     remote = { url: normalizeSourceUrl(server.url("market-1")), sourceId: "fixture", allowHttp: true, useToken: false, credentialsAllowed: false, addressPolicy: () => "allow" };
   });
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    await removeFixtureRepo(repo);
-    await cleanupTmpDir(root);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      () => removeFixtureRepo(repo),
+      () => cleanupTmpDir(root),
+    ]);
   });
 
   const client = () => BareRepo.init(commands, join(root, `client-${++sequence}`));

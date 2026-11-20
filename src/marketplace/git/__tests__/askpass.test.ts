@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, write
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { AskpassBroker, promptHost, TOKEN_USERNAME } from "../askpass.js";
 
 function runLauncher(broker: AskpassBroker, env: Record<string, string>, prompt: string): Promise<{ code: number; stdout: string }> {
@@ -78,8 +79,9 @@ describe("AskpassBroker", () => {
   it.skipIf(process.platform === "win32")("listens outside a directory too deep for a unix socket, and removes both on close", async () => {
     const deep = join(mkdtempSync(join(tmpdir(), "ave-deep-")), "x".repeat(80));
     mkdirSync(deep, { recursive: true });
+    let long: AskpassBroker | undefined;
     try {
-      const long = await AskpassBroker.start({ getToken: async () => "tok", parentDir: deep });
+      long = await AskpassBroker.start({ getToken: async () => "tok", parentDir: deep });
       expect(Buffer.byteLength(long.endpoint)).toBeLessThanOrEqual(103);
       expect(long.launcherPath.startsWith(deep)).toBe(true);
       expect(statSync(dirname(long.endpoint)).mode & 0o777).toBe(0o700);
@@ -89,7 +91,7 @@ describe("AskpassBroker", () => {
       expect(existsSync(dirname(long.endpoint))).toBe(false);
       expect(existsSync(dirname(long.launcherPath))).toBe(false);
     } finally {
-      rmSync(dirname(deep), { recursive: true, force: true });
+      await cleanupAfterClosing([() => long?.close()], [() => rmSync(dirname(deep), { recursive: true, force: true })]);
     }
   });
 
@@ -115,6 +117,7 @@ describe("AskpassBroker", () => {
     const unrelated = make(parent, "other-crashed", gone);
     const crashedSocket = mkdtempSync("/tmp/ave-ask-");
     writeFileSync(join(crashedSocket, "owner.pid"), String(gone));
+    let second: AskpassBroker | undefined;
     try {
       broker = await AskpassBroker.start({ getToken: async () => null, parentDir: parent });
       expect(existsSync(crashed)).toBe(false);
@@ -125,14 +128,14 @@ describe("AskpassBroker", () => {
       expect(existsSync(live)).toBe(true);
       expect(existsSync(settingUp)).toBe(true);
       expect(existsSync(unrelated)).toBe(true);
-      const second = await AskpassBroker.start({ getToken: async () => null, parentDir: parent });
+      second = await AskpassBroker.start({ getToken: async () => null, parentDir: parent });
       expect(existsSync(broker.launcherPath)).toBe(true);
-      await second.close();
     } finally {
-      await broker?.close();
-      broker = null;
-      rmSync(parent, { recursive: true, force: true });
-      rmSync(crashedSocket, { recursive: true, force: true });
+      await cleanupAfterClosing([() => broker?.close(), () => second?.close()], [
+        () => { broker = null; },
+        () => rmSync(parent, { recursive: true, force: true }),
+        () => rmSync(crashedSocket, { recursive: true, force: true }),
+      ]);
     }
   });
 

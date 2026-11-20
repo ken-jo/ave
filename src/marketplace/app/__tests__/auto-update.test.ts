@@ -88,10 +88,16 @@ beforeEach(async () => {
   await setUp(ownership);
 });
 
-afterEach(() => {
-  harness.service.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(dirname(folder), { recursive: true, force: true });
+afterEach(async () => {
+  try {
+    await harness.service.close();
+  } finally {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } finally {
+      rmSync(dirname(folder), { recursive: true, force: true });
+    }
+  }
 });
 
 async function edit(files: Record<string, string>): Promise<void> {
@@ -196,9 +202,12 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
     const observedRoot = mkdtempSync(join(tmpdir(), "ave-auto-update-idle-"));
     const observed = await folderService({ root: observedRoot, folders: sourceFolders,
       onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
-    onTestFinished(() => {
-      observed.service.close();
-      rmSync(observedRoot, { recursive: true, force: true });
+    onTestFinished(async () => {
+      try {
+        await observed.service.close();
+      } finally {
+        rmSync(observedRoot, { recursive: true, force: true });
+      }
     });
     const preview = await observed.service.previewSource({ input: folder, auth: "none" });
     if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
@@ -340,7 +349,7 @@ describe("a quarantined source (§18.8)", () => {
     await edit({ "plugins/alpha/dist/index.js": "export default { version: 2 };\n" });
     expect(await harness.service.updates()).toHaveLength(1);
     const item = harness.installed.get("alpha")!;
-    harness.service.close();
+    await harness.service.close();
     const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
     const list = join(root, "marketplaces", "sources.json");
     writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));
@@ -364,7 +373,7 @@ describe("a quarantined source (§18.8)", () => {
   });
   async function quarantineTeam(): Promise<string> {
     const item = harness.installed.get("alpha")!;
-    harness.service.close();
+    await harness.service.close();
     const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
     const list = join(root, "marketplaces", "sources.json");
     writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));
