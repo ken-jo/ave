@@ -51,14 +51,26 @@ export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
   }
 }
 
+function createOwnedJobRoot(prefix, create, readIdentity) {
+  const root = create(prefix);
+  try {
+    const identity = readIdentity(root);
+    if (!isJobRootIdentity(identity)) throw new Error("Invalid directory identity");
+    return { root, identity };
+  } catch (cause) {
+    throw new Error(`Cannot verify ownership of the new job root. Directory left at ${root}`, { cause });
+  }
+}
+
 export function isolationAssignments(
   { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
   readIdentity = readJobRootIdentity, publish = () => {},
 ) {
   const windows = platform === "win32";
   const paths = windows ? win32 : posix;
-  const root = windows ? create(paths.join(systemVolume(systemRoot), "ave-ci-")) : runnerTemp;
-  const identity = windows ? readIdentity(root) : undefined;
+  const { root, identity } = windows
+    ? createOwnedJobRoot(paths.join(systemVolume(systemRoot), "ave-ci-"), create, readIdentity)
+    : { root: runnerTemp };
   try {
     if (windows) harden(root);
     const home = paths.join(root, "home");
@@ -109,8 +121,12 @@ function readJobRootIdentity(root) {
   return `${entry.dev}:${entry.ino}:${entry.birthtimeNs}`;
 }
 
+function isJobRootIdentity(identity) {
+  return typeof identity === "string" && /^\d+:\d+:\d+$/u.test(identity);
+}
+
 function assertOwnedRoot(root, identity, readIdentity) {
-  if (typeof identity !== "string" || !/^\d+:\d+:\d+$/u.test(identity) || readIdentity(root) !== identity) {
+  if (!isJobRootIdentity(identity) || readIdentity(root) !== identity) {
     throw new Error("Cleanup requires an unchanged isolated job root");
   }
 }

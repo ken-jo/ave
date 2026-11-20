@@ -29,6 +29,28 @@ describe("job home isolation", () => {
   it("leaves room for socket paths before publishing environment changes", () => {
     assert.throws(() => isolationAssignments({ platform: "darwin", runnerTemp: "/".padEnd(81, "a") }), /socket path/);
   });
+
+  it("reports and preserves the new directory when its identity cannot be read", t => {
+    const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "example-")));
+    t.after(() => rmSync(parent, { recursive: true, force: true }));
+    const root = join(parent, "ave-ci-abc123");
+    const identityError = new Error("Could not read directory identity");
+    const create = () => { mkdirSync(root); return root; };
+    const harden = mock.fn();
+    const publish = mock.fn();
+
+    assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, create, harden,
+      () => { throw identityError; }, publish), error => {
+      assert.match(error.message, /Directory left at /);
+      assert.ok(error.message.includes(root));
+      assert.equal(error.cause, identityError);
+      return true;
+    });
+    assert.deepEqual(readdirSync(root), []);
+    assert.equal(harden.mock.callCount(), 0);
+    assert.equal(publish.mock.callCount(), 0);
+  });
+
   it("keeps non-Windows homes under runner temp", () => {
     const create = mock.fn();
     const home = "/runner/temp/home";
