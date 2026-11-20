@@ -1,3 +1,4 @@
+import { win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { afterEach, expect, it } from "vitest";
@@ -216,4 +217,14 @@ it.each([
     expect(redactJudgeText(input), input).toBe(input);
   }
   expect(redactHomePathsInText(`${home}%2Ffile`)).toBe("[home]%2Ffile");
+});
+
+it.each([WINDOWS_HOME, UNC_HOME])("still redacts a native descendant starting with escape-like text for %s", async home => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+  const descendant = win32.join(home, "u0032", "file");
+  const expected = "[home]\\u0032\\file";
+  expect(redactHomePathsInText(descendant)).toBe(expected);
+  const serialized = JSON.stringify({ p: descendant });
+  expect(JSON.parse(redactHomePathsInText(serialized))).toEqual({ p: expected });
+  expect(redactHomePathsInText(encodeURIComponent(descendant))).toBe("[home-token]");
 });
