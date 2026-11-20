@@ -19,6 +19,7 @@ import { pruneModelsDevDocument } from "../../../shared/model-catalog/normalize.
 import { catalogProviderIds } from "../../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
 import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { withFileLock } from "../../../lib/with-file-lock.js";
 
 vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
@@ -104,11 +105,12 @@ describe("refreshModelCatalogCache", () => {
   it("a waiting refresh does not create a missing anchor before it holds the lock", async () => {
     const anchor = join(dir, ".refresh-lock");
     const { fetchImpl, calls } = respondWith(() => json(rawDocument()));
+    const runWaiter = AsyncLocalStorage.snapshot();
     let refresh: ReturnType<typeof refreshModelCatalogCache> | undefined;
     try {
       await withFileLock(anchor, async () => {
         rmSync(anchor);
-        refresh = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });
+        refresh = runWaiter(() => refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW }));
         await new Promise((resolve) => setTimeout(resolve, 250));
         expect(existsSync(anchor)).toBe(false);
         expect(calls).toHaveLength(0);

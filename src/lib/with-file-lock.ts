@@ -1,5 +1,6 @@
 /** Serialize local holders and acquire the sibling cross-process lock. */
 import lockfile from "proper-lockfile";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { realpath } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -10,9 +11,16 @@ interface FileQueue {
   pending: number;
 }
 
+interface FileLockContext {
+  readonly key: string;
+  readonly parent: FileLockContext | undefined;
+  active: boolean;
+}
+
 const inProcessFileQueues = new Map<string, FileQueue>();
 // Callers can already hold an in-process transaction queue for the same path.
 const fileLockQueues = new Map<string, FileQueue>();
+const fileLockContext = new AsyncLocalStorage<FileLockContext>();
 
 /** This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work. */
 export async function withInProcessFileQueue<T>(
@@ -90,7 +98,21 @@ export async function withFileLock<T>(
   });
   const lockNamespace = join(canonicalParent, basename(lockPath));
   const key = process.platform === "win32" ? lockNamespace.toLowerCase() : lockNamespace;
-  return withQueuedFileWork(fileLockQueues, key, () => withCrossProcessFileLock(lockPath, fn, opts));
+  const parentContext = fileLockContext.getStore();
+  for (let holder = parentContext; holder; holder = holder.parent) {
+    if (holder.active && holder.key === key) {
+      throw new Error("re-entrant acquisition of a held file lock");
+    }
+  }
+  return withQueuedFileWork(fileLockQueues, key, () => withCrossProcessFileLock(lockPath, async () => {
+    const holder = { key, parent: parentContext, active: true };
+    try {
+      return await fileLockContext.run(holder, fn);
+    } finally {
+      // Descendants can outlive the callback and acquire the same key once it settles.
+      holder.active = false;
+    }
+  }, opts));
 }
 
 async function withCrossProcessFileLock<T>(
