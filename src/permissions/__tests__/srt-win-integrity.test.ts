@@ -618,12 +618,12 @@ describe("Windows helper integrity", () => {
 
     it("removes the private copy at exit once the quit sequence has reset the runtime", () => {
       const { executable, stderr } = runChild("runtime-reset");
-      expect(existsSync(executable)).toBe(false);
+      expect(existsSync(dirname(dirname(executable)))).toBe(false);
       expect(stderr).not.toContain("srt-win: sandbox session");
     });
 
     it("removes the private copy at exit when no runtime was initialized", () => {
-      expect(existsSync(runChild("no-runtime").executable)).toBe(false);
+      expect(existsSync(dirname(dirname(runChild("no-runtime").executable)))).toBe(false);
     });
   });
 });
