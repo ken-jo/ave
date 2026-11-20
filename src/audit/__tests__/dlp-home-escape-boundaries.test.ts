@@ -71,3 +71,24 @@ it.each([
     }
   }
 });
+
+it.each(["D:\\", "\\\\server\\share\\"])("preserves every quote layer after a Windows root %s", async home => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+  const stem = home.slice(0, -1);
+  const cases = [
+    [`${stem}"`, `${stem}"`],
+    [`${home}"`, '[home]"'],
+    [home, "[home]"],
+    [`Open ${home}"`, 'Open [home]\\"'],
+  ];
+  for (const [value, expected] of cases) {
+    const fields = { p: value, other: 1 };
+    let text = JSON.stringify(fields);
+    for (let depth = 2; depth <= 3; depth++) {
+      text = JSON.stringify(text);
+      let output = redactHomePathsInText(text);
+      for (let current = 1; current < depth; current++) output = JSON.parse(output);
+      expect(JSON.parse(output), text).toEqual({ p: expected, other: 1 });
+    }
+  }
+});

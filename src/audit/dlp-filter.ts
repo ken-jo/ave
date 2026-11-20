@@ -223,15 +223,33 @@ export function mayContainHomePath(value: string): boolean {
 
 const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
 
+function openingQuoteWidth(text: string, start: number): number | undefined {
+  if (text.charCodeAt(start - 1) !== 34) return undefined;
+  let prefix = start - 2;
+  while (text.charCodeAt(prefix) === 92) prefix--;
+  const quoteWidth = start - 1 - prefix;
+  if (quoteWidth === 1) return 2;
+  while (/[\t\r\n ]/u.test(text.charAt(prefix))) prefix--;
+  // A serialized value opener has 2^depth - 1 backslashes. A root
+  // separator in that value occupies twice its quote width.
+  if (prefix < 0 || !":,[".includes(text.charAt(prefix)) || (quoteWidth & (quoteWidth - 1)) !== 0) {
+    return undefined;
+  }
+  return quoteWidth * 2;
+}
+
 function literalRootEnd(text: string, start: number, end: number): number {
-  // An odd final slash belongs to the quote escape. The remaining match
-  // must still contain the root separator to be a literal home.
   if (text.charCodeAt(end) !== 34) return end;
   let run = end;
   while (run > start && text.charCodeAt(run - 1) === 92) run--;
-  if ((end - run) % 2 === 0) return end;
-  const last = text.charCodeAt(end - 2);
-  return last === 92 || last === 47 ? end - 1 : start;
+  const slashes = end - run;
+  if (slashes % 2 === 0) return end;
+  const width = openingQuoteWidth(text, start);
+  const safeEnd = width ? end - slashes % width : run;
+  // Keep the entire run when the surrounding quote layer is ambiguous.
+  // A lone quote escape cannot serve as the root separator.
+  const hasSeparator = safeEnd > run || text.charCodeAt(run - 1) === 47 || (!width && slashes > 1);
+  return hasSeparator ? safeEnd : start;
 }
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveSiblings = false): string {
