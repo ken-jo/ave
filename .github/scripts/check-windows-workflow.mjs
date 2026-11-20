@@ -130,10 +130,11 @@ function inspectPowerShell(shell, steps) {
   const env = windowsPowerShellEnv();
   let executable = shell;
   if (shell === "powershell") {
-    if (!/^[a-z]:[\\/]/iu.test(env.SystemRoot ?? "")) {
+    const systemRoot = Object.entries(env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
+    if (!/^[a-z]:[\\/]/iu.test(systemRoot ?? "")) {
       throw new Error("The powershell parser requires an absolute system directory");
     }
-    executable = win32.join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    executable = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   }
   const encoded = Buffer.from(INSPECT_POWERSHELL_AST, "utf16le").toString("base64");
   const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {

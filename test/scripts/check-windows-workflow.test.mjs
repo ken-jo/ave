@@ -42,33 +42,36 @@ it("fails when a required PowerShell parser cannot launch", () => {
   }), /Missing parser: pwsh/);
 });
 
-it("launches the system parser with literal command lookup and an edition-specific environment", t => {
-  const originalEnv = process.env;
-  const launch = t.mock.method(childProcess, "spawnSync", () => ({
-    status: 0, stdout: JSON.stringify({ cmdlets: [], aliases: [], steps: [{ errors: [], functions: [], commands: [] }] }),
-  }));
-  syncBuiltinESMExports();
-  process.env = { ...originalEnv, SystemRoot: "D:\\Windows", PSModulePath: "D:\\example" };
-  const steps = [{ name: "example", shell: "powershell", run: "Write-Output 'example'" }];
-  try {
-    assert.deepEqual(powerShellCommandProblems(steps), []);
-    assert.equal(launch.mock.callCount(), 1);
-    const [executable, args, options] = launch.mock.calls[0].arguments;
-    const script = Buffer.from(args[args.indexOf("-EncodedCommand") + 1], "base64").toString("utf16le");
-    assert.doesNotMatch(script, /\bGet-Command\b(?![^\r\n)]*\s-Name\b)/iu);
-    assert.equal(executable, "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
-    assert.equal(options.env.SystemRoot, process.env.SystemRoot);
-    assert.equal(Object.keys(options.env).some(key => /^psmodulepath$/i.test(key)), false);
-
-    process.env.SystemRoot = "Windows";
-    assert.throws(() => powerShellCommandProblems(steps), /absolute system directory/);
-    assert.equal(launch.mock.callCount(), 1);
-  } finally {
-    process.env = originalEnv;
-    launch.mock.restore();
+for (const systemRootName of ["SystemRoot", "SYSTEMROOT"]) {
+  it(`launches the system parser with literal command lookup and an edition-specific environment (${systemRootName})`, t => {
+    const originalEnv = process.env;
+    const launch = t.mock.method(childProcess, "spawnSync", () => ({
+      status: 0, stdout: JSON.stringify({ cmdlets: [], aliases: [], steps: [{ errors: [], functions: [], commands: [] }] }),
+    }));
     syncBuiltinESMExports();
-  }
-});
+    const env = Object.fromEntries(Object.entries(originalEnv).filter(([key]) => !/^systemroot$/i.test(key)));
+    process.env = { ...env, [systemRootName]: "D:\\Windows", PSModulePath: "D:\\example" };
+    const steps = [{ name: "example", shell: "powershell", run: "Write-Output 'example'" }];
+    try {
+      assert.deepEqual(powerShellCommandProblems(steps), []);
+      assert.equal(launch.mock.callCount(), 1);
+      const [executable, args, options] = launch.mock.calls[0].arguments;
+      const script = Buffer.from(args[args.indexOf("-EncodedCommand") + 1], "base64").toString("utf16le");
+      assert.doesNotMatch(script, /\bGet-Command\b(?![^\r\n)]*\s-Name\b)/iu);
+      assert.equal(executable, "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+      assert.equal(options.env[systemRootName], process.env[systemRootName]);
+      assert.equal(Object.keys(options.env).some(key => /^psmodulepath$/i.test(key)), false);
+
+      process.env[systemRootName] = "Windows";
+      assert.throws(() => powerShellCommandProblems(steps), /absolute system directory/);
+      assert.equal(launch.mock.callCount(), 1);
+    } finally {
+      process.env = originalEnv;
+      launch.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
 
 it("keeps every Windows run scalar within the workflow limit", () => {
   const oversized = windowsRunSteps(workflow).filter(({ run }) => run.length > 21_000)
