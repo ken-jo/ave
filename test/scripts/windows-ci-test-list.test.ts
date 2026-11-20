@@ -10,7 +10,9 @@ const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
-const nativeTestLists = new Map([[NATIVE_TEST_LIST, readFileSync(join(root, NATIVE_TEST_LIST), "utf8")]]);
+const PERMISSION_TEST_LIST = "config/windows-permission-tests.txt";
+const windowsTestLists = new Map([NATIVE_TEST_LIST, PERMISSION_TEST_LIST]
+  .map(file => [file, readFileSync(join(root, file), "utf8")]));
 const REQUIRED_SECURITY_SUITES = [
   // Boot, settings and transport callers reach native stores without platform guards.
   "src/boot/steps/__tests__/terminal-scrollback-setup.test.ts",
@@ -50,7 +52,7 @@ const REQUIRED_SECURITY_SUITES = [
   // Its fixture home must stay under the test temp root, which only a restricted Windows lane checks.
   "src/boot/__tests__/bootstrap-integration.test.ts",
 ] as const;
-function windowsJobFiles(workflow: string, inventories: ReadonlyMap<string, string> = nativeTestLists): string[] {
+function windowsJobFiles(workflow: string, inventories: ReadonlyMap<string, string> = windowsTestLists): string[] {
   const lines = workflow.split("\n");
   const start = lines.findIndex((line) => line.trim() === `- name: ${STEP_NAME}`);
   if (start < 0) throw new Error(`ci.yml has no "${STEP_NAME}" step`);
@@ -60,9 +62,10 @@ function windowsJobFiles(workflow: string, inventories: ReadonlyMap<string, stri
     while (++i < lines.length && !/^\s*-\s/.test(lines[i] ?? "")) {
       const line = lines[i] ?? "";
       for (const file of line.match(/(?:src|test)\/[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?/g) ?? []) files.add(file);
-      if (line.includes(`scripts/run-windows-test-list.mjs ${NATIVE_TEST_LIST}`)) {
-        const inventory = inventories.get(NATIVE_TEST_LIST);
-        if (inventory === undefined) throw new Error("Windows native test inventory is missing");
+      for (const inventoryName of [NATIVE_TEST_LIST, PERMISSION_TEST_LIST]) {
+        if (!line.includes(`scripts/run-windows-test-list.mjs ${inventoryName}`)) continue;
+        const inventory = inventories.get(inventoryName);
+        if (inventory === undefined) throw new Error(`Windows test inventory is missing: ${inventoryName}`);
         for (const file of inventory.trim().split(/\r?\n/)) files.add(file);
       }
     }
@@ -82,8 +85,8 @@ function sourceFiles(dir: string): string[] {
 }
 
 const nativeInventory = new WeakMap<ReadonlyMap<string, string>, Map<string, string[]>>();
-function listProblems(sources: Map<string, string>, workflow: string): string[] {
-  const listed = new Set(windowsJobFiles(workflow));
+function listProblems(sources: Map<string, string>, workflow: string, inventories = windowsTestLists): string[] {
+  const listed = new Set(windowsJobFiles(workflow, inventories));
   let native = nativeInventory.get(sources);
   if (native === undefined) {
     native = nativeBackedTestFiles(sources);
@@ -142,14 +145,20 @@ describe("Windows CI test list", () => {
     expect(REQUIRED_SECURITY_SUITES.filter((file) => !listed.includes(file))).toEqual([]);
   });
 
+  function withoutPermissionSuite(file: string) {
+    const inventories = new Map(windowsTestLists);
+    inventories.set(PERMISSION_TEST_LIST, (inventories.get(PERMISSION_TEST_LIST) ?? "")
+      .split("\n").filter(line => line.trim() !== file).join("\n"));
+    return listProblems(sources, workflow, inventories);
+  }
+
   it.each(REQUIRED_SECURITY_SUITES)("rejects removal of an unconditional security suite: %s", (file) => {
-    const withoutSuite = workflow.split("\n").filter((line) => line.trim() !== file).join("\n");
-    expect(listProblems(sources, withoutSuite)).toEqual([`${file}: missing from ${STEP_NAME}`]);
+    expect(withoutPermissionSuite(file)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
   it("rejects removal of the executable location tests from the workflow string", () => {
     const file = "src/main/__tests__/codex-executable-location.test.ts";
-    expect(listProblems(sources, workflow.split("\n").filter((line) => line.trim() !== file).join("\n")))
+    expect(withoutPermissionSuite(file))
       .toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 });

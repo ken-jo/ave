@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { it } from "node:test";
 import { parse, stringify } from "yaml";
+import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
+import { COMMAND_LINE_BUDGET_CHARS, commandLineLength } from "../../scripts/hooks/spawn-command.mjs";
 import { checkWindowsWorkflow, directCommandProblems, windowsRunSteps } from "../../.github/scripts/check-windows-workflow.mjs";
 
 const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
@@ -36,4 +38,28 @@ it("fails when a required PowerShell parser cannot launch", () => {
   assert.throws(() => checkWindowsWorkflow(workflow, shell => {
     throw new Error(`Missing parser: ${shell}`);
   }), /Missing parser: pwsh/);
+});
+
+it("keeps every Windows run scalar within the workflow limit", () => {
+  const oversized = windowsRunSteps(workflow).filter(({ run }) => run.length > 21_000)
+    .map(({ name, run }) => [name, run.length]);
+  assert.deepEqual(oversized, []);
+});
+
+it("routes the permission and native inventories through bounded batches", () => {
+  const { steps } = parse(workflow).jobs["windows-permission-tests"];
+  for (const [name, inventory] of [
+    ["Run Windows permission regressions", "config/windows-permission-tests.txt"],
+    ["Run Windows native import regressions", "config/windows-native-tests.txt"],
+  ]) {
+    const step = steps.find(entry => entry.name === name);
+    assert.equal(step.run, `bun run scripts/run-windows-test-list.mjs ${inventory}`);
+    assert.equal(step.env.UV_PYTHON_CACHE_DIR, "${{ runner.temp }}/python-archives");
+    const list = readFileSync(new URL(`../../${inventory}`, import.meta.url), "utf8");
+    const batches = windowsTestCommands(list);
+    assert.ok(batches.length > 2);
+    for (const args of batches) assert.ok(commandLineLength("bun.exe", args) <= COMMAND_LINE_BUDGET_CHARS);
+    assert.deepEqual(batches.slice(1).flatMap(args => args.slice(4)),
+      [...new Set(list.trim().split(/\r?\n/u))].map(file => `./${file}`));
+  }
 });
