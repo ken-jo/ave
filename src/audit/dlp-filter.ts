@@ -373,14 +373,22 @@ function isEscapeIntroducer(code: number): boolean {
   return code === 37 || code === 38 || code === 92;
 }
 
-/** Find a separate candidate after a literal marker using whole raw lexemes. */
-function separateTokenStart(
+/** Find separate candidates next to a literal marker using whole raw lexemes. */
+function separateHomeTokens(
   token: string, componentCharacters: ReadonlySet<number>, containsEncodedHome: (candidate: string) => boolean,
-): number {
+  beforeLiteral: boolean,
+): LiteralMarker | undefined {
   let start = 0;
   let introduced = false;
   let driveLetterEnd = -1;
+  let range: LiteralMarker | undefined;
   const escapeValue = { value: 0 };
+  const collect = (end: number): boolean => {
+    if ((!start && !beforeLiteral) || !introduced || !containsEncodedHome(token.slice(start, end))) return false;
+    if (range) range.end = end;
+    else range = { start, end };
+    return !beforeLiteral;
+  };
   for (let index = 0; index < token.length;) {
     const source = token.codePointAt(index) ?? 0;
     const introducer = isEscapeIntroducer(source);
@@ -399,7 +407,7 @@ function separateTokenStart(
     // Test disjoint candidates. A separator may be a raw character or one
     // complete escape. Its source width determines the cut.
     if (!driveColon && !isPathSeparator(code) && !componentCharacters.has(code) && TOKEN_SEPARATOR.test(String.fromCodePoint(code))) {
-      if (start && introduced && containsEncodedHome(token.slice(start, index))) return start;
+      if (collect(index)) return range;
       start = end;
       introduced = false;
     } else {
@@ -408,7 +416,8 @@ function separateTokenStart(
     }
     index = end;
   }
-  return start && introduced && containsEncodedHome(token.slice(start)) ? start : 0;
+  collect(token.length);
+  return range;
 }
 
 /** Delimiters and their preceding slash runs belong to the original text. */
@@ -427,26 +436,24 @@ function replaceEncodedHomeTokens(
       && !mayDecodeHomeCharacter(token, requiredPathCharacter.charCodeAt(0), HOME_DECODE_LAYERS)) return false;
     return detectsEncodedHome(token, forms);
   };
-  const finish = (end: number): void => {
+  const finish = (end: number, beforeLiteral = false): void => {
     const token = introduced && start < end ? text.slice(start, end) : "";
-    let separate = 0;
     if (token && containsEncodedHome(token)) {
-      if (literalSuffix) separate = separateTokenStart(token, componentCharacters, containsEncodedHome);
-      // Keep the original token when narrowing could expose a second home in its prefix.
-      if (separate) {
-        const prefix = token.slice(0, separate);
-        if (INTRODUCER.test(prefix) && containsEncodedHome(prefix)) separate = 0;
-      }
+      const separate = literalSuffix || beforeLiteral
+        ? separateHomeTokens(token, componentCharacters, containsEncodedHome, beforeLiteral) : undefined;
+      // Keep an edge of the original candidate if narrowing would expose a home there.
+      const from = separate && !containsEncodedHome(token.slice(0, separate.start)) ? separate.start : 0;
+      const to = beforeLiteral && separate && !containsEncodedHome(token.slice(separate.end)) ? separate.end : token.length;
       pieces ??= [];
-      pieces.push(text.slice(copied, start + separate), HOME_TOKEN_MARKER);
-      copied = end;
+      pieces.push(text.slice(copied, start + from), HOME_TOKEN_MARKER);
+      copied = start + to;
     }
     literalSuffix = false;
     introduced = false;
   };
   for (let index = 0; index < text.length;) {
     if (index === markerStart) {
-      finish(index);
+      finish(index, true);
       index = markers[markerIndex++].end;
       markerStart = markers[markerIndex]?.start ?? Infinity;
       start = index;
@@ -458,7 +465,7 @@ function replaceEncodedHomeTokens(
       let end = index + 1;
       while (text.charCodeAt(end) === 92) end++;
       if (end === markerStart || boundaries.has(text.charCodeAt(end))) {
-        finish(index);
+        finish(index, end === markerStart);
         index = end === markerStart ? end : end + 1;
         start = index;
       } else {

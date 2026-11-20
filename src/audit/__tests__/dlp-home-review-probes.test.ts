@@ -48,6 +48,23 @@ add("keeps a literal suffix before a separate encoded path", WINDOWS_HOME, MIXED
 add("keeps a literal suffix and its entity before a separate encoded path", WINDOWS_HOME,
   MIXED_PATH_LIST.replace("/one;", "/one&amp;;"), "[home]/one&amp;;[home-token]", "win32");
 
+const NATIVE_WINDOWS_HOME = win32.normalize(WINDOWS_HOME);
+for (const join of [";", "?next="]) {
+  const encoded = encodeURI(`${NATIVE_WINDOWS_HOME}\\two${join}${WINDOWS_HOME}/one`);
+  const expected = `[home-token]${join}[home]/one`;
+  add(`keeps ${join} before a literal home`, WINDOWS_HOME, encoded, expected, "win32");
+  add(`keeps ${join} before a literal home in JSON`, WINDOWS_HOME, JSON.stringify({ u: encoded }),
+    JSON.stringify({ u: expected }), "win32", true);
+}
+let copyCommand = `copy ${NATIVE_WINDOWS_HOME}\\b ${WINDOWS_HOME}/a`;
+let copySeparator = " ";
+for (let layer = 1; layer <= 3; layer++) {
+  copyCommand = encodeURI(copyCommand);
+  copySeparator = encodeURI(copySeparator);
+  add(`keeps the command and separator before a literal home at layer ${layer}`, WINDOWS_HOME,
+    copyCommand, `copy${copySeparator}[home-token]${copySeparator}[home]/a`, "win32");
+}
+
 for (const home of [WINDOWS_HOME, win32.normalize(WINDOWS_HOME), String.raw`C:\Users\bob`, COMMAND_HOME]) {
   for (const separator of [";", " ", "?", "&", "=", ":", "+", "$", "!", "*", "@", "#", "~", " to ", "?from="]) {
     const path = `${home.replaceAll("\\", "/")}/one${separator}${win32.normalize(home)}\\two`;
