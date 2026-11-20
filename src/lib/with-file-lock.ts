@@ -14,7 +14,10 @@ const inProcessFileQueues = new Map<string, FileQueue>();
 // Callers can already hold an in-process transaction queue for the same path.
 const fileLockQueues = new Map<string, FileQueue>();
 
-/** This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work. */
+/**
+ * This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work.
+ * Not re-entrant: awaiting a same-key call from inside `fn` waits on itself forever. Same-key work started inside `fn` must not be awaited before `fn` returns.
+ */
 export async function withInProcessFileQueue<T>(
   filePath: string,
   fn: () => Promise<T>,
@@ -73,7 +76,10 @@ export class FileLockReleaseError<T> extends Error {
   }
 }
 
-/** Queue through release so a stale-looking local holder cannot be replaced and release its successor. */
+/**
+ * Queue through release so a stale-looking local holder cannot be replaced and release its successor.
+ * Not re-entrant: awaiting a same-key withFileLock from inside `fn` waits on itself forever. Same-key work started inside `fn` must not be awaited before `fn` returns.
+ */
 export async function withFileLock<T>(
   targetPath: string,
   fn: () => Promise<T>,
