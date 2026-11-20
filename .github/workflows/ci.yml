@@ -857,7 +857,14 @@ jobs:
           AVE_CI_WINDOWS_TEST_FILE_MARKERS: '1'
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: >
+        run: >2
+            $diagnostic = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic'
+            if ([IO.Directory]::Exists($diagnostic)) {
+              try {
+                $created = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffff')
+                [IO.File]::WriteAllText((Join-Path $diagnostic 'permission-step.txt'), "$PID $created")
+              } catch { Write-Warning 'Could not publish the permission step process identity' }
+            }
           bun run test --
           src/shared/__tests__/tool-result-trim.test.ts
           src/engine/__tests__/conversation-history-trim.test.ts

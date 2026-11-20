@@ -4,6 +4,7 @@ $ProgressPreference = 'SilentlyContinue'
 $directory = Get-Location
 $stop = Join-Path $directory 'watcher.stop'
 $control = Join-Path $directory 'watcher-ownership.json'
+$permissionStep = Join-Path $directory 'permission-step.txt'
 $properties = 'ProcessId', 'ParentProcessId', 'Name', 'ExecutablePath', 'CommandLine', 'CreationDate'
 $mediaImages = 'setup_wm.exe', 'unregmp2.exe', 'wmplayer.exe', 'wmpnscfg.exe', 'wmpnetwk.exe'
 $source = 'AveProcessStarts'
@@ -16,6 +17,12 @@ $batchLimitMs = 1500
 $mediaLimit = 8
 $enrichment = $null
 $enrichmentResult = $null
+$recentStarts = [Collections.Generic.Queue[hashtable]]::new()
+$latestStart = [DateTime]::MinValue
+$contextLookup = $null
+$contextResult = $null
+$pendingContexts = $null
+$contextBatch = $null
 
 function Write-Record($record) {
   $writer.WriteLine((ConvertTo-Json -InputObject $record -Compress -Depth 6))
@@ -26,10 +33,11 @@ function Write-Mechanism {
 }
 
 $mediaLookup = {
-  param($name, $parameters, $definition, $readPointer, $native, $pointerSize)
+  param($name, $parameters, $definitions, $native, $pointerSize)
   $ErrorActionPreference = 'Stop'
-  if ($definition) { Set-Item -LiteralPath "function:$name" -Value $definition }
-  if ($readPointer) { Set-Item -LiteralPath function:ReadProcessPointer -Value $readPointer }
+  foreach ($functionName in $definitions.Keys) {
+    Set-Item -LiteralPath "function:$functionName" -Value $definitions[$functionName]
+  }
   & $name @parameters
 }
 
@@ -44,8 +52,8 @@ function Invoke-MediaLookup($name, $parameters, $batch) {
   if (!$enrichment) { $script:enrichment = [PowerShell]::Create() }
   $enrichment.Commands.Clear()
   $null = $enrichment.AddScript($mediaLookup.ToString(), $true).AddParameters(@{
-    name = $name; parameters = $parameters; definition = $enrichmentDefinitions[$name]
-    readPointer = $enrichmentDefinitions['ReadProcessPointer']; native = $native; pointerSize = $pointerSize
+    name = $name; parameters = $parameters; definitions = $enrichmentDefinitions
+    native = $native; pointerSize = $pointerSize
   })
   $script:enrichmentResult = $enrichment.BeginInvoke()
   $remaining = [int][Math]::Max(0, $batchLimitMs - $batch.ElapsedMilliseconds)
@@ -70,6 +78,102 @@ function Read-Process($row) {
       created = $row.CreationDate.ToUniversalTime().ToString('o')
     }
   }
+}
+
+function Read-MediaContexts($contexts, $stepIdentity, $query, $batch) {
+  $live = @{}
+  foreach ($row in (Get-CimInstance @query)) {
+    $process = Read-Process $row
+    if ($process) { $live[[uint32]$process.pid] = $process }
+  }
+  $step = $null
+  if ($stepIdentity -match '^([0-9]{1,10}) (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6})$') {
+    $candidate = $live[[uint32]$Matches[1]]
+    if ($candidate -and $candidate.created.StartsWith($Matches[2])) { $step = $candidate }
+  }
+  $descendants = if ($step) {
+    @(foreach ($process in $live.Values) {
+      if ($process.name -notin 'electron.exe', 'node.exe') { continue }
+      $child = $process
+      while ($child.parentPid -gt 0) {
+        $parent = $live[[uint32]$child.parentPid]
+        if (!$parent -or [string]::CompareOrdinal($parent.created, $child.created) -ge 0) { break }
+        if ($parent.pid -eq $step.pid) { $process; break }
+        $child = $parent
+      }
+    })
+  }
+  $records = @(foreach ($context in $contexts) {
+    $before = @(foreach ($start in $context.preceding) {
+      $process = $live[$start.pid]
+      if ($process -and $process.parentPid -eq $start.parentPid -and $process.name -eq $start.name -and
+          [string]::CompareOrdinal($process.created, $start.eventTime) -le 0 -and
+          $process.created -ge $context.windowStart) { $process }
+    })
+    @{
+      kind = 'media-context'; pid = $context.pid; eventTime = $context.eventTime
+      enriched = $before.Count; unavailable = $context.preceding.Count - $before.Count; starts = $before
+      stepProcesses = if ($step) { ,@($descendants | Where-Object { $_ -and $_.created -le $context.eventTime }) }
+    }
+  })
+  @{ records = $records; elapsed = $batch.ElapsedMilliseconds }
+}
+
+function Write-UnavailableContexts($contexts) {
+  foreach ($context in $contexts) {
+    Write-Record @{
+      kind = 'media-context'; pid = $context.pid; eventTime = $context.eventTime
+      enriched = 0; unavailable = $context.preceding.Count; starts = @(); stepProcesses = $null
+    }
+  }
+}
+
+function Complete-MediaContexts($stopping) {
+  if (!$contextResult) { return }
+  if ($contextResult.IsCompleted) {
+    $result = $null
+    try { $result = $contextLookup.EndInvoke($contextResult)[0] }
+    catch {}
+    $script:contextResult = $null
+    if ($pendingContexts -and $result -and $result.elapsed -lt $batchLimitMs) {
+      foreach ($record in $result.records) { Write-Record $record }
+      $script:pendingContexts = $null
+    }
+  }
+  if ($pendingContexts -and (!$contextResult -or $stopping -or $contextBatch.ElapsedMilliseconds -ge $batchLimitMs)) {
+    Write-UnavailableContexts $pendingContexts
+    $script:pendingContexts = $null
+  }
+}
+
+function Start-MediaContexts($starts, $batch, $stopping) {
+  $contexts = @(foreach ($process in $starts) {
+    $eventTime = [DateTime]::Parse($process.eventTime).ToUniversalTime()
+    $windowStart = $eventTime.AddSeconds(-3).ToString('o')
+    @{
+      pid = $process.pid; eventTime = $process.eventTime; windowStart = $windowStart
+      preceding = @($recentStarts | Where-Object { $_.eventTime -ge $windowStart -and $_.eventTime -lt $process.eventTime })
+    }
+  })
+  if ($stopping -or $contextResult -or $batch.ElapsedMilliseconds -ge $batchLimitMs) {
+    Write-UnavailableContexts $contexts
+    return
+  }
+  $stepIdentity = $null
+  try { $stepIdentity = [IO.File]::ReadAllText($permissionStep) } catch {}
+  try {
+    if (!$contextLookup) { $script:contextLookup = [PowerShell]::Create() }
+    $contextLookup.Commands.Clear()
+    $null = $contextLookup.AddScript($mediaLookup.ToString(), $true).AddParameters(@{
+      name = 'Read-MediaContexts'; definitions = $contextDefinitions; parameters = @{
+        contexts = $contexts; stepIdentity = $stepIdentity; batch = $batch
+        query = @{ ClassName = 'Win32_Process'; Property = $properties; OperationTimeoutSec = 2 }
+      }
+    })
+    $script:contextResult = $contextLookup.BeginInvoke()
+    $script:contextBatch = $batch
+    $script:pendingContexts = $contexts
+  } catch { Write-UnavailableContexts $contexts }
 }
 
 function Reset-CwdBudget {
@@ -165,7 +269,7 @@ function Read-Start($eventRecord) {
   } catch { return }
   @{
     pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName; created = $null
-    eventTime = $eventTime.ToString('o')
+    eventTime = $eventTime.ToString('o'); traceTime = $eventTime
   }
 }
 
@@ -246,9 +350,10 @@ function Write-TraceBatch($stopping) {
       $process = Read-Start $eventArgs.NewEvent
       if ($process) {
         Write-RawStart $process
+        $recentStarts.Enqueue($process)
+        if ($process.traceTime -gt $latestStart) { $script:latestStart = $process.traceTime }
         if ($process.name -in $mediaImages) {
-          if ($mediaStarts.Count -lt $mediaLimit) { $mediaStarts.Add($process) }
-          else { Write-MediaOnly $process 'media-batch-limited' }
+          $mediaStarts.Add($process)
         }
       } elseif ($null -eq $eventArgs.Exception -or $null -ne $eventArgs.NewEvent) { $dropped++ }
       if ((!$process -or $null -ne $eventArgs.Exception) -and !$traceEnd -and !$stopping) {
@@ -265,7 +370,22 @@ function Write-TraceBatch($stopping) {
     }
   } while ($drainTail)
   if ($dropped) { Write-Record @{ kind = 'dropped'; count = $dropped; reason = 'invalid-start-event' } }
-  if ($mediaStarts.Count) { Write-MediaBatch $mediaStarts $batch $stopping }
+  Complete-MediaContexts ($stopping -or $traceEnd)
+  if ($mediaStarts.Count) {
+    $bounded = $mediaStarts.GetRange(0, [Math]::Min($mediaLimit, $mediaStarts.Count))
+    Start-MediaContexts $bounded $batch ($stopping -or $traceEnd)
+    Write-MediaBatch $bounded $batch $stopping
+    if ($mediaStarts.Count -gt $mediaLimit) {
+      $remaining = $mediaStarts.GetRange($mediaLimit, $mediaStarts.Count - $mediaLimit)
+      Start-MediaContexts $remaining $batch $true
+      foreach ($process in $remaining) { Write-MediaOnly $process 'media-batch-limited' }
+    }
+  }
+  # Leave room for events delivered out of timestamp order.
+  if ($recentStarts.Count) {
+    $retainAfter = $latestStart.AddSeconds(-6)
+    while ($recentStarts.Count -and $recentStarts.Peek().traceTime -lt $retainAfter) { $null = $recentStarts.Dequeue() }
+  }
   if ($traceEnd -and !$stopping) {
     Write-Record $traceEnd
     $script:mechanism = 'polling'
@@ -296,6 +416,11 @@ try {
         $function = Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue
         if ($function) { $enrichmentDefinitions[$name] = $function.Definition }
       }
+      $contextDefinitions = @{}
+      foreach ($name in 'Read-Process', 'Read-MediaContexts', 'Get-CimInstance') {
+        $function = Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue
+        if ($function) { $contextDefinitions[$name] = $function.Definition }
+      }
       $mechanism = 'Win32_ProcessStartTrace'
     } catch {
       Write-Record @{ kind = 'trace-unavailable' }
@@ -324,4 +449,5 @@ try {
   $pipe.Dispose()
   # Disposing a running lookup would block shutdown.
   if ($enrichment -and (!$enrichmentResult -or $enrichmentResult.IsCompleted)) { $enrichment.Dispose() }
+  if ($contextLookup -and (!$contextResult -or $contextResult.IsCompleted)) { $contextLookup.Dispose() }
 }

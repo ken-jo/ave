@@ -11,6 +11,7 @@ import { isJobRootPath, maskJobRootArguments, processCwdProbe } from "./job-root
 const MEDIA_IMAGES = new Set(["setup_wm.exe", "unregmp2.exe", "wmplayer.exe", "wmpnscfg.exe", "wmpnetwk.exe"]);
 const WATCH_LOG = "watcher.jsonl";
 const MEDIA_LOG = "media-starts.jsonl";
+const CONTEXT_LOG = "media-context.jsonl";
 const RAW_LOG = "raw-starts.jsonl";
 const JOB_LOG = "job-root-starts.jsonl";
 const MARKER_LOG = "test-files.jsonl";
@@ -97,6 +98,19 @@ export function createRecorder(root, directory, { rawStartLimit = RAW_START_LIMI
     }
     if (entry.kind === "trace") {
       writeStart(entry.rows[0]);
+      return;
+    }
+    if (entry.kind === "media-context") {
+      const processFacts = row => ({
+        pid: row.pid, parentPid: row.parentPid, created: row.created,
+        image: row.image?.slice(0, FIELD_LIMIT) ?? null,
+        commandLine: maskJobRootArguments(row.commandLine, root)?.slice(0, FIELD_LIMIT) ?? null,
+      });
+      write(CONTEXT_LOG, {
+        kind: entry.kind, pid: entry.pid, eventTime: entry.eventTime,
+        enriched: entry.enriched, unavailable: entry.unavailable,
+        starts: entry.starts.map(processFacts), stepProcesses: entry.stepProcesses?.map(processFacts) ?? null,
+      });
       return;
     }
     if (entry.kind !== "snapshot" && entry.kind !== "baseline") {
@@ -229,6 +243,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         printTail(directory, file, limit);
       }
       printMediaStarts(directory);
+      printTail(directory, CONTEXT_LOG, LOG_LIMIT);
     } catch {
       console.log("Process watcher could not print the diagnostic");
     }

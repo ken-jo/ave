@@ -80,9 +80,9 @@ async function collectTrace(t, fixtureScript, onRecord = () => {}) {
     "function Remove-Event($EventIdentifier) {",
     "  $script:fixtureEvents = @($script:fixtureEvents | Where-Object { $_.EventIdentifier -ne $EventIdentifier })",
     "}",
-    "function New-Start($id, $name) {",
-    "  @{ EventIdentifier = $id; SourceEventArgs = @{ NewEvent = @{ ProcessID = $id; ParentProcessID = 0;",
-    "    ProcessName = $name; TIME_CREATED = [DateTime]::UtcNow.ToFileTimeUtc() } } }",
+    "function New-Start($id, $name, $parentId = 0, $time = [DateTime]::UtcNow) {",
+    "  @{ EventIdentifier = $id; SourceEventArgs = @{ NewEvent = @{ ProcessID = $id; ParentProcessID = $parentId;",
+    "    ProcessName = $name; TIME_CREATED = $time.ToFileTimeUtc() } } }",
     "}",
     ...fixtureScript,
     readFileSync(new URL("watch-windows-processes.ps1", SCRIPTS), "utf8"),
@@ -177,6 +177,27 @@ describe("Windows launch diagnostic", () => {
     ]);
     const [full] = readLines(join(directory, "job-root-starts.jsonl"));
     assert.equal(full.commandLine, 'target "[job-root]"');
+  });
+
+  it("records media context separately from raw process starts", async t => {
+    const directory = fixture(t);
+    const { record } = createRecorder(ROOT, directory);
+    const start = { pid: 31, parentPid: 20, eventTime: time(3), name: "node.exe" };
+    const commandLine = `node "${ROOT}\\example" "##[error]"`;
+    const live = { pid: 31, parentPid: 20, created: time(3), image: "C:/tools/node.exe", commandLine };
+    record({ kind: "raw-start", ...start });
+    record({ kind: "media-context", pid: 32, eventTime: time(5), enriched: 1, unavailable: 0,
+      starts: [live], stepProcesses: [live] });
+    assert.deepEqual(readLines(join(directory, "raw-starts.jsonl")), [start]);
+    const file = join(directory, "media-context.jsonl");
+    assert.doesNotMatch(readFileSync(file, "utf8"), /##\[/u);
+    const [context] = readLines(file);
+    assert.deepEqual(context.starts, [{ ...live, commandLine: 'node "[job-root]" "##[error]"' }]);
+    assert.deepEqual(context.stepProcesses, context.starts);
+    const script = fileURLToPath(new URL("watch-windows-processes.mjs", SCRIPTS));
+    const { stdout } = await run(process.execPath, [script, "print", directory], { cwd: directory, windowsHide: true });
+    assert.match(stdout, /media-context\.jsonl/u);
+    assert.doesNotMatch(stdout, /##\[/u);
   });
 
   it("prints escaped ancestor facts and bounded preceding starts for each media start", async t => {
@@ -550,6 +571,87 @@ describe("Windows launch diagnostic", () => {
     assert.ok(gap < 12_000, `The next raw start took ${Math.round(gap)} ms during media enrichment`);
     assert.equal(records.find(row => row.kind === "trace-process-query-failed")?.reason, "media-budget-exhausted");
     assert.equal(records.at(-1)?.kind, "stopped");
+  });
+
+  it("enriches only preceding starts and verifies the step ancestry once per media start", WIN32_ONLY, async t => {
+    const { records } = await collectTrace(t, [
+      "$now = [DateTime]::UtcNow",
+      "[IO.File]::WriteAllText('fixture-time', $now.ToString('o'))",
+      "[IO.File]::WriteAllText('permission-step.txt', '10 ' + $now.AddSeconds(-10).ToString('yyyy-MM-ddTHH:mm:ss.ffffff'))",
+      "function Get-CimInstance($Filter) {",
+      "  if ($Filter -or !(Test-Path -LiteralPath 'query-context')) { return }",
+      "  [IO.File]::AppendAllText('context-lookups', '1')",
+      "  $time = [DateTime]::Parse([IO.File]::ReadAllText('fixture-time')).ToUniversalTime()",
+      "  @{ ProcessId = 10; ParentProcessId = 0; Name = 'pwsh.exe'; CreationDate = $time.AddSeconds(-10) }",
+      "  @{ ProcessId = 11; ParentProcessId = 10; Name = 'bun.exe'; CreationDate = $time.AddSeconds(-9) }",
+      "  @{ ProcessId = 12; ParentProcessId = 11; Name = 'electron.exe'; CreationDate = $time.AddSeconds(-8); CommandLine = 'worker' }",
+      "  @{ ProcessId = 13; ParentProcessId = 12; Name = 'node.exe'; CreationDate = $time.AddSeconds(-2); ExecutablePath = 'C:/tools/node.exe'; CommandLine = 'child' }",
+      "  @{ ProcessId = 14; ParentProcessId = 12; Name = 'node.exe'; CreationDate = $time.AddSeconds(-1) }",
+      "  @{ ProcessId = 15; ParentProcessId = 10; Name = 'node.exe'; CreationDate = $time.AddSeconds(-11) }",
+      "}",
+      "function Wait-Event { Start-Sleep -Milliseconds 30 }",
+      "function Get-Event {",
+      "  if (!$script:sent) {",
+      "    $script:sent = $true",
+      "    [IO.File]::WriteAllText('query-context', '')",
+      "    $script:fixtureEvents = @((New-Start 12 'electron.exe' 11 $now.AddSeconds(-8)),",
+      "      (New-Start 14 'node.exe' 12 $now.AddSeconds(-2)), (New-Start 31 'setup_wm.exe' 0 $now),",
+      "      (New-Start 13 'node.exe' 12 $now.AddSeconds(-2)), (New-Start 32 'unregmp2.exe' 0 $now),",
+      "      (New-Start 33 'ordinary.exe' 0 $now.AddSeconds(1)))",
+      "  }",
+      "  $script:fixtureEvents",
+      "}",
+    ], (row, directory) => {
+      if (row.kind === "media-context" && row.pid === 32) {
+        writeFileSync(join(directory, "watcher.stop"), "");
+      }
+      if (row.kind === "trace" && row.rows[0]?.pid === 32) {
+        setTimeout(() => {
+          const stop = join(directory, "watcher.stop");
+          if (existsSync(directory) && !existsSync(stop)) writeFileSync(stop, "");
+        }, 2000).unref();
+      }
+    });
+    assert.deepEqual(records.filter(row => row.kind === "raw-start").map(row => row.pid), [12, 14, 31, 13, 32, 33]);
+    const contexts = records.filter(row => row.kind === "media-context");
+    assert.deepEqual(contexts.map(row => [row.pid, row.enriched, row.unavailable]), [[31, 1, 1], [32, 1, 1]]);
+    for (const row of contexts) {
+      assert.deepEqual(row.starts.map(start => [start.pid, start.image, start.commandLine]), [[13, "C:/tools/node.exe", "child"]]);
+      assert.deepEqual(row.stepProcesses.map(start => start.pid).sort(), [12, 13, 14]);
+    }
+  });
+
+  it("leaves raw starts flowing and abandons an overdue media context without a second lookup", WIN32_ONLY, async t => {
+    const { directory, records } = await collectTrace(t, [
+      "function Get-CimInstance($Filter) {",
+      "  if ($Filter -or !(Test-Path -LiteralPath 'query-context')) { return }",
+      "  [IO.File]::AppendAllText('context-lookups', '1')",
+      "  Start-Sleep -Milliseconds 3000",
+      "}",
+      "function Wait-Event { Start-Sleep -Milliseconds 30 }",
+      "function Get-Event {",
+      "  if (!$script:sent) {",
+      "    $script:sent = $true",
+      "    [IO.File]::WriteAllText('query-context', '')",
+      "    $script:fixtureEvents = @((New-Start 10 'node.exe'), (New-Start 31 'setup_wm.exe'))",
+      "  } elseif (!$script:later -and [IO.File]::Exists('context-lookups')) {",
+      "    $script:later = $true",
+      "    $script:fixtureEvents = @((New-Start 11 'ordinary.exe'), (New-Start 32 'unregmp2.exe'))",
+      "  } elseif (!$script:later -and !$script:fixtureEvents.Count) { [IO.File]::WriteAllText($stop, '') }",
+      "  $script:fixtureEvents",
+      "}",
+    ], (row, directory) => {
+      if (row.kind === "media-context" && row.pid === 31) writeFileSync(join(directory, "watcher.stop"), "");
+    });
+    assert.equal(readFileSync(join(directory, "context-lookups"), "utf8"), "1");
+    const starts = records.filter(row => row.kind === "raw-start");
+    assert.deepEqual(starts.map(row => row.pid), [10, 31, 11, 32]);
+    const contexts = records.filter(row => row.kind === "media-context");
+    assert.equal(contexts.length, 2);
+    const first = contexts.find(row => row.pid === 31);
+    assert.deepEqual([first.enriched, first.unavailable, first.stepProcesses], [0, 1, null]);
+    assert.ok(starts[3].received < first.received);
+    assert.ok(first.received - starts[1].received < 3000);
   });
 
   it("traces a media setup start and its live parent outside the job root", WIN32_ONLY, async t => {
