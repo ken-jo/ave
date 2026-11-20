@@ -61,7 +61,7 @@ const WORKFLOW_EXECUTABLES = [
   "./node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
 ];
 const TEST_COMMAND_NAME_RE = /\.(?:ts|tsx|mjs)$|\.test\./i;
-const INSPECT_POWERSHELL_AST = `
+const INSPECT_POWERSHELL_AST = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
@@ -72,22 +72,38 @@ function Get-ScopeChain($node) {
     if ($ancestor -is [System.Management.Automation.Language.ScriptBlockAst]) { $ancestor.Extent.StartOffset }
   }
 }
-$result = @{
-  cmdlets = @((Get-Command -CommandType Cmdlet).Name)
-  aliases = @((Get-Command -CommandType Alias).Name)
-  steps = @(foreach ($source in $inputData.steps) {
-    $tokens = $null
-    $errors = $null
-    $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
-    @{
-      errors = @(foreach ($errorItem in $errors) { "line $($errorItem.Extent.StartLineNumber): $($errorItem.Message)" })
-      functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-        ForEach-Object { @{ name = $_.Name; scope = @(Get-ScopeChain $_)[0] } })
-      commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
-        ForEach-Object { @{ name = $_.GetCommandName(); head = $_.CommandElements[0].Extent.Text
-          line = $_.Extent.StartLineNumber; scopes = @(Get-ScopeChain $_) } })
+$steps = @(foreach ($source in $inputData.steps) {
+  $tokens = $null
+  $errors = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
+  @{
+    errors = @(foreach ($errorItem in $errors) { "line $($errorItem.Extent.StartLineNumber): $($errorItem.Message)" })
+    functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+      ForEach-Object { @{ name = $_.Name; scope = @(Get-ScopeChain $_)[0] } })
+    commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
+      ForEach-Object { @{ name = $_.GetCommandName(); head = $_.CommandElements[0].Extent.Text
+        line = $_.Extent.StartLineNumber; scopes = @(Get-ScopeChain $_) } })
+  }
+})
+$seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$resolved = @{
+  Cmdlet = [Collections.Generic.List[string]]::new()
+  Alias = [Collections.Generic.List[string]]::new()
+}
+foreach ($step in $steps) {
+  foreach ($command in $step.commands) {
+    $name = $command.name
+    if ($name -and $name -notmatch '[/\\:]' -and $inputData.executableNames -notcontains $name -and $seenNames.Add($name)) {
+      # Look up literal names, including punctuation aliases, without enumerating installed commands.
+      $info = $ExecutionContext.InvokeCommand.GetCommand($name, 'Cmdlet,Alias')
+      if ($info -and $info.Name -eq $name) { $resolved[[string]$info.CommandType].Add($info.Name) }
     }
-  })
+  }
+}
+$result = @{
+  cmdlets = $resolved.Cmdlet.ToArray()
+  aliases = $resolved.Alias.ToArray()
+  steps = $steps
 }
 ConvertTo-Json -InputObject $result -Depth 6 -Compress
 `;
@@ -110,7 +126,8 @@ export function directCommandProblems(steps) {
 function inspectPowerShell(shell, steps) {
   const encoded = Buffer.from(INSPECT_POWERSHELL_AST, "utf16le").toString("base64");
   const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
-    input: JSON.stringify({ steps }), encoding: "utf8", windowsHide: true, timeout: 15_000,
+    input: JSON.stringify({ steps, executableNames: WORKFLOW_EXECUTABLES }),
+    encoding: "utf8", windowsHide: true, timeout: 15_000,
     env: windowsPowerShellEnv(),
   });
   if (result.error) throw new Error(`Cannot launch required ${shell} parser`, { cause: result.error });
