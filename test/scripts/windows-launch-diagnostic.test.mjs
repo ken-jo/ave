@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { describe, it } from "node:test";
@@ -348,6 +349,65 @@ describe("Windows launch diagnostic", () => {
     assert.equal(log.at(-1).kind, "stopped");
   });
 
+  for (const [name, eventArgs] of [
+    ["a missing event", "@{ NewEvent = $null }"],
+    ["a subscription exception", "@{ Exception = [TimeoutException]::new(); NewEvent = $processEvent }"],
+    ["an invalid process start", "@{ NewEvent = @{ ProcessID = 0; ParentProcessID = 0; TIME_CREATED = 0 } }"],
+  ]) {
+    it(`ends the trace and takes a polling snapshot after ${name}`, WIN32_ONLY, async t => {
+      const directory = fixture(t);
+      const pipe = `\\\\.\\pipe\\ave-trace-${process.pid}-${directory.split("\\").at(-1)}`;
+      const transcript = Promise.withResolvers();
+      const server = createServer(socket => {
+        socket.setEncoding("utf8");
+        let buffered = "";
+        socket.on("data", chunk => { buffered += chunk; });
+        socket.on("end", () => transcript.resolve(buffered));
+      });
+      server.listen(pipe);
+      await once(server, "listening");
+      t.after(() => promisify(server.close.bind(server))());
+
+      const script = join(directory, "collector.ps1");
+      writeFileSync(script, [
+        "function Register-CimIndicationEvent($ClassName, $SourceIdentifier, $OperationTimeoutSec) {",
+        "  [IO.File]::WriteAllText('operation-timeout', [string]$OperationTimeoutSec)",
+        "}",
+        "function Wait-Event {}",
+        "function Remove-Event {}",
+        "function Get-CimInstance {",
+        "  if ($mechanism -eq 'polling' -and $script:sent) {",
+        "    [IO.File]::WriteAllText($stop, '')",
+        "    @{ ProcessId = 104; ParentProcessId = 10; Name = 'polling.exe'; CreationDate = [DateTime]::UtcNow }",
+        "  }",
+        "}",
+        "function Get-Event {",
+        "  if ($script:sent) { [IO.File]::WriteAllText($stop, ''); return }",
+        "  $script:sent = $true",
+        "  $processEvent = @{ ProcessID = 101; ParentProcessID = 10; ProcessName = 'fixture.exe'; TIME_CREATED = [DateTime]::UtcNow.ToFileTimeUtc() }",
+        "  @{ EventIdentifier = 1; SourceEventArgs = @{ NewEvent = $processEvent } }",
+        `  @{ EventIdentifier = 2; SourceEventArgs = ${eventArgs} }`,
+        "}",
+        readFileSync(new URL("watch-windows-processes.ps1", SCRIPTS), "utf8"),
+      ].join("\n"));
+      writeFileSync(join(directory, "watcher-ownership.json"), "{}");
+      const executable = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      await run(executable, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script], {
+        cwd: directory, windowsHide: true, timeout: 25_000,
+        env: { ...process.env, GITHUB_ACTIONS: "true", AVE_PROCESS_WATCH_TRACE: "1", AVE_PROCESS_WATCH_PIPE: pipe },
+      });
+
+      const records = (await transcript.promise).trim().split("\n").map(line => JSON.parse(line));
+      assert.deepEqual(records.filter(row => row.kind === "raw-start").map(row => row.pid), [101]);
+      const ended = records.findIndex(row => row.kind === "trace-ended");
+      assert.ok(ended > records.findIndex(row => row.kind === "trace"));
+      assert.equal(records[ended + 1]?.mechanism, "polling");
+      assert.deepEqual(records.find(row => row.kind === "snapshot")?.rows.map(row => row.pid), [104]);
+      assert.equal(records.at(-1)?.kind, "stopped");
+      assert.equal(readFileSync(join(directory, "operation-timeout"), "utf8"), "");
+    });
+  }
+
   it("traces a media setup start and its live parent outside the job root", WIN32_ONLY, async t => {
     const directory = fixture(t);
     const root = join(directory, "job");
@@ -426,8 +486,8 @@ describe("Windows launch diagnostic", () => {
         '  ({ ProcessID, ParentProcessID, ProcessName, AgeSeconds, TIME_CREATED: 0 });',
         'const noise = Array.from({ length: 33 }, (_, index) => event(4294967200 + index, 0, "noise.exe"));',
         'writeFileSync("trace-events.tmp", JSON.stringify([...noise, event(process.pid, process.ppid, "node.exe"),',
-        '  event(child.pid, process.pid, "setup_wm.exe"), event(0, process.ppid, "setup_wm.exe", 3600),',
-        '  event(0, 4294967295, "wmpnetwk.exe"),',
+        '  event(child.pid, process.pid, "setup_wm.exe"), event(4294967294, process.ppid, "setup_wm.exe", 3600),',
+        '  event(4294967293, 4294967295, "wmpnetwk.exe"),',
         '  ...Array.from({ length: 6 }, (_, index) => event(4294967100 + index, 0, "wmplayer.exe"))]));',
         'renameSync("trace-events.tmp", "trace-events.json");',
         'process.stdout.write(String(child.pid));',
@@ -466,7 +526,8 @@ describe("Windows launch diagnostic", () => {
     assert.match(link.commandLine, /fixture::token.*##\[example\]/u);
     assert.ok(Date.parse(link.created) <= Date.parse(media.created));
     assert.equal(link.parentCreatedBeforeChild, true);
-    const [later, missing] = rows.filter(row => row.pid === 0);
+    const later = rows.find(row => row.pid === 4294967294);
+    const missing = rows.find(row => row.pid === 4294967293);
     assert.equal(later.ancestryTimeBasis, "start-event");
     assert.equal(later.ancestryStatus, "parent-not-older");
     assert.deepEqual(later.ancestry.map(({ pid, parentCreatedBeforeChild }) => [pid, parentCreatedBeforeChild]), [[process.pid, false]]);

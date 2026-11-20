@@ -17,6 +17,10 @@ function Write-Record($record) {
   $writer.WriteLine((ConvertTo-Json -InputObject $record -Compress -Depth 6))
 }
 
+function Write-Mechanism {
+  Write-Record @{ kind = 'mechanism'; mechanism = $mechanism; jobRootMatch = 'image path or current directory' }
+}
+
 function Read-Processes($filter) {
   Write-Record @{ kind = 'heartbeat' }
   $query = @{ ClassName = 'Win32_Process'; Property = $properties; OperationTimeoutSec = 2 }
@@ -107,16 +111,25 @@ function Read-Ancestors($parentId, $childTime, $draining) {
 }
 
 function Read-Start($eventRecord) {
-  $eventTime = [DateTime]::FromFileTimeUtc([long]$eventRecord.TIME_CREATED)
-  $id = [uint32]$eventRecord.ProcessID
-  $parentId = [uint32]$eventRecord.ParentProcessID
-  Write-Record @{
-    kind = 'raw-start'; pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName
-    eventTime = $eventTime.ToString('o')
-  }
+  if (!$eventRecord -or $null -eq $eventRecord.ParentProcessID -or
+      $eventRecord.ProcessName -isnot [string] -or [string]::IsNullOrWhiteSpace($eventRecord.ProcessName)) { return }
+  try {
+    $id = [uint32]$eventRecord.ProcessID
+    $fileTime = [long]$eventRecord.TIME_CREATED
+    if ($id -eq 0 -or $fileTime -le 0) { return }
+    $eventTime = [DateTime]::FromFileTimeUtc($fileTime)
+    $parentId = [uint32]$eventRecord.ParentProcessID
+  } catch { return }
   @{
     pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName; created = $null
     eventTime = $eventTime.ToString('o')
+  }
+}
+
+function Write-RawStart($process) {
+  Write-Record @{
+    kind = 'raw-start'; pid = $process.pid; parentPid = $process.parentPid; name = $process.name
+    eventTime = $process.eventTime
   }
 }
 
@@ -155,15 +168,29 @@ function Write-Start($process, $draining) {
 function Write-TraceBatch($stopping) {
   $mediaStarts = [Collections.Generic.List[object]]::new()
   $otherStarts = [Collections.Generic.List[object]]::new()
+  $traceEnd = $null
   foreach ($start in (Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)) {
-    if ($start.SourceEventArgs.NewEvent.ProcessName -in $mediaImages) { $mediaStarts.Add($start) }
-    else { $otherStarts.Add($start) }
+    $eventArgs = $start.SourceEventArgs
+    if ($null -ne $eventArgs.Exception) {
+      $traceEnd = @{ kind = 'trace-ended'; reason = 'subscription-error' }
+      if ($null -ne $eventArgs.Exception.StatusCode) { $traceEnd.status = [string]$eventArgs.Exception.StatusCode }
+      break
+    }
+    $process = Read-Start $eventArgs.NewEvent
+    if (!$process) {
+      $traceEnd = @{ kind = 'trace-ended'; reason = 'invalid-start-event' }
+      break
+    }
+    $entry = @{ id = $start.EventIdentifier; process = $process }
+    if ($process.name -in $mediaImages) { $mediaStarts.Add($entry) }
+    else { $otherStarts.Add($entry) }
   }
 
   $mediaLimit = 8
   $media = @(foreach ($start in $mediaStarts) {
-    Remove-Event -EventIdentifier $start.EventIdentifier
-    $process = Read-Start $start.SourceEventArgs.NewEvent
+    Remove-Event -EventIdentifier $start.id
+    $process = $start.process
+    Write-RawStart $process
     if ($mediaLimit-- -le 0) {
       $process.ancestry = @()
       $process.ancestryStatus = 'media-batch-limited'
@@ -189,10 +216,17 @@ function Write-TraceBatch($stopping) {
       break
     }
     if (!$stopping -and [IO.File]::Exists($stop)) { break }
-    Remove-Event -EventIdentifier $start.EventIdentifier
-    Write-Start (Read-Start $start.SourceEventArgs.NewEvent) $stopping
+    Remove-Event -EventIdentifier $start.id
+    Write-RawStart $start.process
+    Write-Start $start.process $stopping
   }
   Write-CwdCoverage
+  if ($traceEnd) {
+    Write-Record $traceEnd
+    Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue
+    $script:mechanism = 'polling'
+    Write-Mechanism
+  }
 }
 
 try {
@@ -211,14 +245,14 @@ try {
   if ($env:GITHUB_ACTIONS -ceq 'true' -and $env:AVE_PROCESS_WATCH_TRACE -eq '1') {
     try {
       Write-Record @{ kind = 'heartbeat' }
-      Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace -OperationTimeoutSec 2 -SourceIdentifier $source |
+      Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace -SourceIdentifier $source |
         Out-Null
       $mechanism = 'Win32_ProcessStartTrace'
     } catch {
       Write-Record @{ kind = 'trace-unavailable' }
     }
   }
-  Write-Record @{ kind = 'mechanism'; mechanism = $mechanism; jobRootMatch = 'image path or current directory' }
+  Write-Mechanism
   if ($mechanism -eq 'polling') { Write-Snapshot 'snapshot' }
   Write-Record @{ kind = 'ready' }
   while ($true) {
