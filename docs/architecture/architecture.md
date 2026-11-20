@@ -3335,9 +3335,11 @@ units. Braced Unicode and octal escapes are outside the supported families.
 Home spellings containing a double quote, a control character or a filename
 backslash on POSIX are unsupported. A configured home that is itself a
 filesystem root is also unsupported, including drive roots, UNC share roots
-and POSIX `/`. The generic users/home text rules still apply. Supported homes
-have trailing separators normalized so literal replacements can preserve
-the delimiters and escape runs that hold serialized values together.
+and POSIX `/`. The generic users/home text rules still apply. For supported
+homes the redactor matches both the configured spelling with trailing
+separators removed and the normalized spelling. Platform path normalization
+collapses dot segments and duplicate separators without consulting the working
+directory.
 
 ### Windows object ownership
 
