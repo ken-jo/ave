@@ -1,10 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { deflateSync, inflateSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeFixtureFile as write } from "./gate-script-runner.js";
+import { cleanupAfterClosing } from "../../src/__tests__/support/fixture-cleanup.js";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 
 const REPO_ROOT = process.cwd();
@@ -12,6 +14,18 @@ const SCRIPT = resolve(REPO_ROOT, "scripts/check-generated-assets.mjs");
 const MANIFEST = "build/generated-assets.json";
 const nodeCommand = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const roots: string[] = [];
+
+const syncRemovalRefusal = vi.hoisted(() => ({ root: undefined as string | undefined }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  const rmSync: typeof fs.rmSync = (path, options) => {
+    if (path === syncRemovalRefusal.root && options?.recursive) {
+      throw Object.assign(new Error("Cannot synchronously remove read-only Git objects"), { code: "EPERM" });
+    }
+    fs.rmSync(path, options);
+  };
+  return { ...fs, rmSync };
+});
 
 // Compare controlled fixture bytes instead of relying on a platform-skipped checkout check.
 function forcedEnv(home: string): NodeJS.ProcessEnv {
@@ -120,9 +134,14 @@ function writeManifest(root: string, paths: string[]): void {
   write(root, MANIFEST, `${JSON.stringify(paths, null, 2)}\n`);
 }
 
-function createRepo(): string {
-  const root = mkdtempSync(join(tmpdir(), "ave-generated-assets-"));
+function fixtureRoot(prefix: string): string {
+  const root = mkdtempSync(join(tmpdir(), prefix));
   roots.push(root);
+  return root;
+}
+
+function createRepo(): string {
+  const root = fixtureRoot("ave-generated-assets-");
   git(root, ["init", "--quiet"]);
   write(root, ".gitignore", "build/generated-assets.json\nbuild/icon.png\n");
   write(root, "build/installerIcon.ico", "committed-bytes");
@@ -132,17 +151,25 @@ function createRepo(): string {
   return root;
 }
 
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    // Retry transient Windows EPERM cleanup; leftover scratch files must not fail product assertions.
-    try {
-      rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-    } catch {
-    }
-  }
+afterEach(async () => {
+  // Async removal clears the Windows read-only attribute on loose Git objects.
+  await cleanupAfterClosing([], roots.splice(0).map((root) => () => rm(root, { recursive: true, force: true })));
 });
 
 describe("check-generated-assets", () => {
+  it("removes a Git fixture when synchronous deletion would refuse its read-only objects", ({ onTestFinished }) => {
+    const root = createRepo();
+    const head = git(root, ["rev-parse", "HEAD"]).stdout.trim();
+    const object = join(root, ".git", "objects", head.slice(0, 2), head.slice(2));
+    expect(statSync(object).mode & 0o200).toBe(0);
+
+    syncRemovalRefusal.root = root;
+    onTestFinished(() => {
+      syncRemovalRefusal.root = undefined;
+      expect(existsSync(root)).toBe(false);
+    });
+  });
+
   it("passes when the committed asset equals the generator's output", () => {
     const root = createRepo();
 
@@ -252,8 +279,7 @@ describe("check-generated-assets", () => {
   });
 
   it("fails where there is no committed state to compare against", () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-generated-assets-bare-"));
-    roots.push(root);
+    const root = fixtureRoot("ave-generated-assets-bare-");
     writeManifest(root, ["build/installerIcon.ico"]);
 
     const result = run(root);
@@ -283,8 +309,7 @@ function reencodePng(png: Buffer, level: number): Buffer {
 describe("generate-ave-icons", () => {
   // Run the generator under a scratch root to avoid repository writes.
   function generatorRoot(): string {
-    const root = mkdtempSync(join(tmpdir(), "ave-generate-icons-"));
-    roots.push(root);
+    const root = fixtureRoot("ave-generate-icons-");
     for (const rel of ["scripts/generate-ave-icons.cjs", "scripts/lib/normalized-image.cjs", "src/shared/ave-logo.ts"]) {
       mkdirSync(dirname(join(root, rel)), { recursive: true });
       copyFileSync(join(REPO_ROOT, rel), join(root, rel));
