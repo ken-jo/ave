@@ -1,7 +1,8 @@
 // Isolate every job path from the account profile. Native Windows fixtures also
 // need the system volume's aliases and trusted volume-root ownership.
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
@@ -80,8 +81,8 @@ export function isolationAssignments(
   } catch (error) {
     if (windows) {
       try {
-        assertOwnedRoot(root, identity, readIdentity);
-        rmSync(root, { recursive: true, force: true });
+        const tombstone = renameOwnedRoot(root, identity, readIdentity);
+        rmSync(tombstone, { recursive: true, force: true });
       } catch (rollbackError) {
         throw new AggregateError([error, rollbackError], "Job isolation setup and rollback failed");
       }
@@ -114,6 +115,18 @@ function assertOwnedRoot(root, identity, readIdentity) {
   }
 }
 
+function renameOwnedRoot(root, identity, readIdentity, rename = renameSync) {
+  assertOwnedRoot(root, identity, readIdentity);
+  const tombstone = `${root}.cleanup-${randomUUID()}`;
+  rename(root, tombstone);
+  try {
+    assertOwnedRoot(tombstone, identity, readIdentity);
+  } catch (cause) {
+    throw new Error(`Cleanup requires an unchanged isolated job root. Directory left at ${tombstone}`, { cause });
+  }
+  return tombstone;
+}
+
 function writeCleanupLog(lines) {
   // A synchronous stderr sink can stall the writer without holding up cleanup.
   const writer = spawn(process.execPath, ["-e", "process.stdin.pipe(process.stderr)"],
@@ -131,30 +144,40 @@ function writeCleanupLog(lines) {
 
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,
-  readIdentity = readJobRootIdentity, remove = rmSync, run, diagnostic,
+  readIdentity = readJobRootIdentity, rename = renameSync, remove = rmSync, run, diagnostic,
 } = {}) {
   validateJobHomeRoot(root, systemRoot);
-  assertOwnedRoot(root, identity, readIdentity);
-  await diagnoseCleanupFailure(root, () => remove(root, { recursive: true, force: true }), { run, diagnostic });
+  let tombstone;
+  try {
+    tombstone = renameOwnedRoot(root, identity, readIdentity, rename);
+  } catch (error) {
+    if (error?.syscall === "rename") await reportCleanupFailure(root, error, { run, diagnostic });
+    throw error;
+  }
+  await diagnoseCleanupFailure(tombstone, () => remove(tombstone, { recursive: true, force: true }), { run, diagnostic });
 }
 
-export async function diagnoseCleanupFailure(root, remove, { run, diagnostic } = {}) {
+export async function diagnoseCleanupFailure(root, remove, options) {
   try {
     remove();
   } catch (error) {
-    const lines = [];
-    try {
-      lines.push(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)} path=${JSON.stringify(error.path)}`);
-      await diagnoseJobRoot(root, line => lines.push(line), run);
-    } catch { lines.push("Cleanup diagnostic failed or timed out"); }
-    setImmediate(() => {
-      try {
-        if (diagnostic) lines.forEach(line => diagnostic(line));
-        else writeCleanupLog(lines);
-      } catch { /* The removal rejection has already settled. */ }
-    });
+    await reportCleanupFailure(root, error, options);
     throw error;
   }
+}
+
+async function reportCleanupFailure(root, error, { run, diagnostic } = {}) {
+  const lines = [];
+  try {
+    lines.push(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)} path=${JSON.stringify(error.path)}`);
+    await diagnoseJobRoot(root, line => lines.push(line), run);
+  } catch { lines.push("Cleanup diagnostic failed or timed out"); }
+  setImmediate(() => {
+    try {
+      if (diagnostic) lines.forEach(line => diagnostic(line));
+      else writeCleanupLog(lines);
+    } catch { /* The removal rejection has already settled. */ }
+  });
 }
 async function main() {
   if (process.argv.includes("--cleanup")) {

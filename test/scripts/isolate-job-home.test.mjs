@@ -3,7 +3,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -139,6 +139,36 @@ function restoreFixtureAcls(savedAcls) {
   ].join("\n"));
   runFixturePowerShell(["$restoreError = $null", ...restore, "if ($restoreError) { throw $restoreError }"].join("\n"));
 }
+
+function fixtureIdentity(path) {
+  const { dev, ino, birthtimeNs } = lstatSync(path, { bigint: true });
+  return `${dev}:${ino}:${birthtimeNs}`;
+}
+
+function rootSwapFixture(t) {
+  const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "example-")));
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  const root = join(parent, "ave-ci-abc123");
+  const replacement = join(parent, "alice");
+  const original = join(parent, "bob");
+  mkdirSync(root);
+  mkdirSync(replacement);
+  writeFileSync(join(root, "example"), "original");
+  writeFileSync(join(replacement, "example"), "sentinel");
+  return {
+    parent, root,
+    swap() {
+      renameSync(root, original);
+      renameSync(replacement, root);
+    },
+    assertPreserved() {
+      assert.equal(readFileSync(join(original, "example"), "utf8"), "original");
+      const contents = readdirSync(parent).map(name => readFileSync(join(parent, name, "example"), "utf8"));
+      assert.ok(contents.includes("sentinel"), "the replacement directory's sentinel must survive");
+    },
+  };
+}
+
 describe("Windows cleanup root ownership", () => {
   const root = "C:\\ave-ci-abc123";
   for (const path of ["ave-ci-abc123", "C:\\example\\ave-ci-abc123", "D:\\ave-ci-abc123"]) {
@@ -155,6 +185,42 @@ describe("Windows cleanup root ownership", () => {
       systemRoot: "C:\\Windows", identity: "1:2:3", readIdentity: () => "1:4:5", remove,
     }), /unchanged isolated job root/);
     assert.equal(remove.mock.callCount(), 0);
+  });
+
+  it("preserves a directory swapped in after the cleanup identity check", async t => {
+    const fixture = rootSwapFixture(t);
+    const localPath = path => join(fixture.parent, win32.basename(path));
+    const failure = await cleanupJobRoot(root, {
+      systemRoot: "C:\\Windows", identity: fixtureIdentity(fixture.root),
+      readIdentity(path) {
+        const identity = fixtureIdentity(localPath(path));
+        if (path === root) fixture.swap();
+        return identity;
+      },
+      rename: (from, to) => renameSync(localPath(from), localPath(to)),
+      remove: (path, options) => rmSync(localPath(path), options),
+    }).catch(error => error);
+    fixture.assertPreserved();
+    assert.match(String(failure), /unchanged isolated job root/);
+  });
+
+  it("preserves a directory swapped in after the rollback identity check", t => {
+    const fixture = rootSwapFixture(t);
+    const setupError = new Error("DACL readback failed");
+    let reads = 0;
+    let failure;
+    try {
+      isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => fixture.root,
+        () => { throw setupError; }, path => {
+          const identity = fixtureIdentity(path);
+          if (++reads === 2) fixture.swap();
+          return identity;
+        });
+    } catch (error) { failure = error; }
+    fixture.assertPreserved();
+    assert.ok(failure instanceof AggregateError);
+    assert.equal(failure.errors[0], setupError);
+    assert.match(String(failure.errors[1]), /unchanged isolated job root/);
   });
 });
 
