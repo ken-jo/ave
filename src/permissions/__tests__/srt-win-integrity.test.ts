@@ -721,6 +721,59 @@ describe("Windows helper integrity", () => {
     }
   });
 
+  it("recovers a partial allocation after rollback and exit both fail to retire it", async () => {
+    const { source } = fixture();
+    const root = join(dirname(source), "copies");
+    mkdirSync(root);
+    const earlierExitHandlers = new Set(process.listeners("exit"));
+    const creationFailure = new Error("Bin creation failed");
+    const retire = vi.fn(renameSync).mockImplementation(() => {
+      throw Object.assign(new Error("Directory is locked"), { code: "EPERM" });
+    });
+    vi.resetModules();
+    vi.doMock("node:os", async (original) => ({
+      ...await original<typeof import("node:os")>(), type: () => "Darwin", tmpdir: () => root,
+    }));
+    vi.doMock("node:fs", async (original) => {
+      const fs = await original<typeof import("node:fs")>();
+      const mkdir: typeof mkdirSync = (path, options) => {
+        if (basename(String(path)) === "bin") throw creationFailure;
+        return fs.mkdirSync(path, options);
+      };
+      return { ...fs, mkdirSync: mkdir, renameSync: retire };
+    });
+    try {
+      const integrity = await import("../srt-win-integrity.js");
+      const [onExit] = process.listeners("exit").filter((handler) => !earlierExitHandlers.has(handler));
+      assert(onExit);
+      process.removeListener("exit", onExit);
+
+      expect(() => integrity.prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ cause: creationFailure }));
+      expect(retire).toHaveBeenCalledTimes(1);
+      onExit(0);
+      expect(retire).toHaveBeenCalledTimes(2);
+      const [name] = readdirSync(root);
+      assert(name);
+      expect(name).toMatch(/^ave-srt-win-[a-f0-9]{32}$/);
+      expect(readdirSync(join(root, name))).toEqual([]);
+
+      // The new module only has the journal, and rename remains unavailable.
+      vi.resetModules();
+      const restarted = await import("../srt-win-integrity.js");
+      restarted.sweepStaleSrtWinDirectories();
+      expect(readdirSync(root)).toEqual([]);
+      expect(srtWinAllocations().some((allocation) => allocation.path === join(root, name))).toBe(false);
+      expect(retire).toHaveBeenCalledTimes(2);
+    } finally {
+      for (const handler of process.listeners("exit")) {
+        if (!earlierExitHandlers.has(handler)) process.removeListener("exit", handler);
+      }
+      vi.doUnmock("node:fs");
+      vi.doUnmock("node:os");
+      vi.resetModules();
+    }
+  });
+
   it.each(["EPERM", "ETIMEDOUT", "EEXIST"])("handles protected provisioning failure %s without claiming an unconfirmed directory", async (code) => {
     const { source } = fixture();
     const root = join(dirname(source), "copies");

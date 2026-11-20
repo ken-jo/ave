@@ -3567,7 +3567,8 @@ with its own owner rule:
   The copy's `exit` handler, registered at import and so run before the
   runtime's own, retires the verified directory with a same-parent rename only
   after a successful release. It then removes the retired directory. The next
-  startup can reclaim a retired copy only through its private allocation record.
+  startup reclaims the recorded copy at either its original or retired name,
+  including when shutdown could not commit the rename.
   The host flushes the record in its protected runtime directory before provisioning
   begins and records the filesystem identity upon creation. The sweep ignores
   unrecorded paths and refuses an identity mismatch.

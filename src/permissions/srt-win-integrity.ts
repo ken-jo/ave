@@ -123,7 +123,9 @@ export function sweepStaleSrtWinDirectories(): void {
     for (const allocation of srtWinAllocations()) {
       if (!(allocation.disposing && allocation.pid === process.pid) && allocationOwnerIsLive(allocation.pid)) continue;
       try {
-        removePrivateCopy(allocation, allocation.retired);
+        // The planned retirement may never have committed. Both names require the same receipt.
+        const path = isAllocationDirectory(allocation.retired, allocation.claims.outer) ? allocation.retired : allocation.path;
+        removePrivateCopy(allocation, path);
         forgetIfGone(allocation);
       } catch { /* Keep the record and continue with independent allocations. */ }
     }
