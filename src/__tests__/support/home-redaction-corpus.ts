@@ -39,6 +39,8 @@ function escapeFreeInputs(home: string, platform: HomePlatform): LiteralHomeCorp
       ["path", `FILE://${home}/file`],
       ["path", `file://${home}?view=1`],
       ["path", `file://${home}#page`],
+      ["text", `C:\\work\\${home}/file`],
+      ["text", `\\\\wsl$\\Ubuntu\\${home}/file`],
     );
   }
   return inputs;
@@ -50,6 +52,10 @@ export function literalHomeCorpus(): LiteralHomeCorpus[] {
     ...(["linux", "darwin"] as const).flatMap(platform => posixHomes.map(home => ({ platform, home, inputs: escapeFreeInputs(home, platform) }))),
     ...[...WINDOWS_LITERAL_HOMES, String.raw`D:\fixtures\bob`, String.raw`C:\Users\John Smith`, String.raw`C:\Users\Café`]
       .map(home => ({ platform: "win32" as const, home, inputs: escapeFreeInputs(home, "win32") })),
+    { platform: "linux", home: "/home/José Gil", inputs: [
+      ["text", String.raw`C:\work\/home/José Gil/file`],
+      ["text", String.raw`\\wsl$\Ubuntu\/home/José Gil/file`],
+    ] },
   ];
 }
 

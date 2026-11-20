@@ -270,6 +270,30 @@ interface LiteralMarkers {
   spans: LiteralMarker[];
 }
 
+/** Locate lexically valid JSON strings without parsing their values. */
+function* jsonStringSpans(text: string): Generator<LiteralMarker> {
+  const escape = { value: 0 };
+  let index = 0;
+  while ((index = text.indexOf('"', index)) >= 0) {
+    const start = index++;
+    let valid = true;
+    while (index < text.length) {
+      const code = text.charCodeAt(index++);
+      if (code === 34) {
+        if (valid) yield { start, end: index };
+        break;
+      }
+      if (code < 32) valid = false;
+      if (code === 92) {
+        const next = text.charCodeAt(index);
+        const width = next === 39 || next === 120 ? -1 : readHomeEscape(text, index - 1, escape);
+        if (width < 0) valid = false;
+        index += Math.max(1, width - 1);
+      }
+    }
+  }
+}
+
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[], markers?: LiteralMarkers): string {
   for (const { literal, marker } of forms) {
     let copied = 0;
@@ -277,17 +301,23 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[], markers?:
     let spans: LiteralMarker[] | undefined;
     let previousMarker = 0;
     let offset = 0;
+    let strings: Generator<LiteralMarker> | undefined;
+    let quoted: IteratorResult<LiteralMarker> | undefined;
     const copyMarker = (previous: LiteralMarker): void => {
       spans?.push({ start: previous.start + offset, end: previous.end + offset });
     };
     for (const match of text.matchAll(literal)) {
       let start = match.index;
       const end = start + match[0].length;
-      if (ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
+      if (text.charCodeAt(start - 1) === 92 && ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
         let runStart = start;
         while (runStart > copied && text.charCodeAt(runStart - 1) === 92) runStart--;
-        // A paired backslash belongs to the preceding text in a JSON string.
-        if ((start - runStart) % 2 !== 0) start--;
+        if ((start - runStart) % 2 !== 0) {
+          strings ??= jsonStringSpans(text);
+          while (!quoted || !quoted.done && quoted.value.end <= start) quoted = strings.next();
+          // Consume only the unpaired escape introducer of a JSON string.
+          if (!quoted.done && quoted.value.start < runStart) start--;
+        }
       }
       pieces ??= [];
       pieces.push(text.slice(copied, start), marker);
