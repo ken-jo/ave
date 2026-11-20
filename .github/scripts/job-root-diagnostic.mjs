@@ -9,6 +9,11 @@ const SCAN_LIMIT = 128;
 const DENY_LIMIT = 8;
 const PROCESS_SCAN_LIMIT = 512;
 const PROCESS_PATH_LIMIT = 256;
+const HOLDER_LIMIT = 16;
+// Keep room for holders and named suspects even when the file inventory is large.
+const FILE_OUTPUT_LIMIT = 32 * 1024;
+const HOLDER_OUTPUT_LIMIT = 52 * 1024;
+const STATUS_RESERVE = 1024;
 const QUERY_VARIABLE = "AVE_CI_JOB_ROOT_QUERY";
 const QUERY_COMMAND = `$query = [Environment]::GetEnvironmentVariable('${QUERY_VARIABLE}'); & ([ScriptBlock]::Create($query))`;
 
@@ -39,6 +44,13 @@ $processHandleType = [Microsoft.Win32.SafeHandles.SafeProcessHandle]
 ImportReadMethod kernel32.dll OpenProcess $processHandleType @([uint32], [bool], [uint32])
 ImportReadMethod ntdll.dll NtQueryInformationProcess ([int]) @($processHandleType, [int], [byte[]], [uint32], [IntPtr])
 ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [IntPtr], [byte[]], [IntPtr], [IntPtr])
+ImportReadMethod kernel32.dll QueryFullProcessImageNameW ([bool]) @($processHandleType, [uint32], [Text.StringBuilder], $outLength)
+$fileTime = [long].MakeByRefType()
+ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
+ImportReadMethod rstrtmgr.dll RmStartSession ([uint32]) @($outLength, [uint32], [Text.StringBuilder])
+ImportReadMethod rstrtmgr.dll RmRegisterResources ([uint32]) @([uint32], [uint32], [IntPtr], [uint32], [IntPtr], [uint32], [IntPtr])
+ImportReadMethod rstrtmgr.dll RmGetList ([uint32]) @([uint32], $outLength, $outLength, [IntPtr], $outLength)
+ImportReadMethod rstrtmgr.dll RmEndSession ([uint32]) @([uint32])
 $native = $interop.CreateType()
 
 $readAttributes = 0x80
@@ -139,7 +151,18 @@ $ProgressPreference = 'SilentlyContinue'
 $root = '${root.replaceAll("'", "''")}'
 $prefix = $root.TrimEnd('\') + '\'
 $script:failed = $false
-$changed = $false
+$script:changed = $false
+$script:outputBytes = 0
+
+function WriteEvidence($record, $limit) {
+  $line = ConvertTo-Json -Compress -Depth 5 -InputObject $record
+  $size = [Text.Encoding]::UTF8.GetByteCount($line) + 2
+  if ($script:outputBytes + $size -gt $limit) { return $false }
+  [Console]::Out.WriteLine($line)
+  [Console]::Out.Flush()
+  $script:outputBytes += $size
+  return $true
+}
 
 ${HANDLE_QUERY}
 
@@ -201,32 +224,137 @@ function LimitProcessPath($path) {
   return $path.Substring(0, [Math]::Min($path.Length, ${PROCESS_PATH_LIMIT}))
 }
 
+function ReadHolderMetadata($record, $started) {
+  $process = $native::OpenProcess(0x1000, $false, $record.pid)
+  try {
+    if ($process.IsInvalid) { return }
+    $created = $exited = $kernel = $user = 0L
+    if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user) -or
+        $created -ne $started) { return }
+    $image = [Text.StringBuilder]::new(32768)
+    $length = [uint32]$image.Capacity
+    if ($native::QueryFullProcessImageNameW($process, 0, $image, [ref]$length)) {
+      $record.image = LimitProcessPath $image.ToString()
+    }
+    $info = [byte[]]::new(6 * $pointerSize)
+    if ($native::NtQueryInformationProcess($process, 0, $info, $info.Length, 0) -eq 0) {
+      $record.parentPid = (ReadProcessPointer $info (5 * $pointerSize) $pointerSize).ToInt64()
+    }
+  } finally { $process.Dispose() }
+}
+
+function FindFileHolders($path) {
+  $session = [uint32]0
+  $key = [Text.StringBuilder]::new(33)
+  $operation = 'RmStartSession'
+  $code = $native::RmStartSession([ref]$session, 0, $key)
+  if ($code -ne 0) { @{ kind = 'restartManager'; path = $path; operation = $operation; code = $code }; return }
+  $file = $files = $buffer = [IntPtr]::Zero
+  try {
+    $file = $marshal::StringToHGlobalUni($path)
+    $files = $marshal::AllocHGlobal($pointerSize)
+    $marshal::WriteIntPtr($files, $file)
+    $operation = 'RmRegisterResources'
+    $code = $native::RmRegisterResources($session, 1, $files, 0, 0, 0, 0)
+    if ($code -eq 0) {
+      # RM_PROCESS_INFO is a PID and FILETIME, two WCHAR arrays (256 and 64),
+      # and four 32-bit fields. The native record has no pointers.
+      $rowSize = 668
+      $count = [uint32]${HOLDER_LIMIT}
+      $buffer = $marshal::AllocHGlobal($rowSize * $count)
+      $needed = $reasons = [uint32]0
+      $operation = 'RmGetList'
+      $code = $native::RmGetList($session, [ref]$needed, [ref]$count, $buffer, [ref]$reasons)
+      if ($code -eq 0) {
+        for ($i = 0; $i -lt $count; $i++) {
+          $row = [IntPtr]::Add($buffer, $i * $rowSize)
+          $id = $marshal::ReadInt32($row)
+          if ($id -le 0 -or $id -eq $PID) { continue }
+          $started = $marshal::ReadInt64($row, 4)
+          $record = @{
+            kind = 'holder'; path = $path; pid = $id; parentPid = $null; image = $null
+            app = $marshal::PtrToStringUni([IntPtr]::Add($row, 12), 256).Split([char]0)[0].Trim()
+            service = $marshal::PtrToStringUni([IntPtr]::Add($row, 524), 64).Split([char]0)[0]
+            created = [DateTime]::FromFileTimeUtc($started).ToString('o')
+          }
+          try { ReadHolderMetadata $record $started } catch {}
+          if (!$record.app) { $record.app = [IO.Path]::GetFileName($record.image) }
+          $record
+        }
+      }
+    }
+    if ($code -ne 0) {
+      @{ kind = 'restartManager'; path = $path; operation = $operation; code = $code }
+    }
+  } finally {
+    $marshal::FreeHGlobal($buffer)
+    $marshal::FreeHGlobal($files)
+    $marshal::FreeHGlobal($file)
+    $code = $native::RmEndSession($session)
+    if ($code -ne 0) { @{ kind = 'restartManager'; path = $path; operation = 'RmEndSession'; code = $code } }
+  }
+}
+
+function ReadParentName($id, $childCreated) {
+  if (!$id) { return }
+  try {
+    $parent = [Diagnostics.Process]::GetProcessById($id)
+    try {
+      $name = $parent.ProcessName
+      if ($childCreated -and $parent.StartTime.ToUniversalTime() -gt $childCreated.ToUniversalTime()) { return }
+      return $name + '.exe'
+    } finally { $parent.Dispose() }
+  } catch {}
+}
+
+function NewProcessRecord($row, $kind) {
+  @{
+    kind = $kind; pid = $row.ProcessId; parentPid = $row.ParentProcessId
+    image = LimitProcessPath $row.ExecutablePath
+    created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') } else { $null }
+  }
+}
+
+function FindNamedSuspects {
+  $filter = "Name = 'setup_wm.exe' OR Name = 'unregmp2.exe' OR Name = 'wmplayer.exe'"
+  Get-CimInstance Win32_Process -Filter $filter -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate |
+    ForEach-Object {
+      try {
+        $record = NewProcessRecord $_ 'suspect'
+        $record.name = $_.Name
+        $record.parentName = ReadParentName $_.ParentProcessId $_.CreationDate
+        $record
+      } catch { $script:processFailed = $true }
+    }
+}
+
 function FindJobProcesses {
   $rootPattern = '(?<![\w:\\])(?:\\\\\?\\)?' + [regex]::Escape($root) +
     '(?:\\[^\s"''<>|;&=,)]*)?(?=$|[\s"''<>|;&=,):])'
   $pattern = [regex]::new($rootPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
-  $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate |
-    Sort-Object CreationDate -Descending | Select-Object -First ${PROCESS_SCAN_LIMIT + 1})
-  if ($rows.Count -gt ${PROCESS_SCAN_LIMIT}) { $script:processLimited = $true }
-  foreach ($row in ($rows | Select-Object -First ${PROCESS_SCAN_LIMIT})) {
-    if ($row.ProcessId -eq $PID -or $row.ProcessId -eq 0) { continue }
-    $cwd = ReadCurrentDirectory $row.ProcessId
-    if (!(TestJobPath $cwd)) { $cwd = $null }
-    # Keep job paths from arguments. Other arguments can contain credentials.
-    $commandPaths = @()
-    if ($row.CommandLine) {
-      $commandPaths = @($pattern.Matches($row.CommandLine.Replace('/', '\')) | ForEach-Object { $_.Value } |
-        Where-Object { TestJobPath $_ } | Select-Object -Unique -First 3 | ForEach-Object { LimitProcessPath $_ })
-    }
-    if (!$cwd -and !$commandPaths.Count -and !(TestJobPath $row.ExecutablePath)) { continue }
-    @{
-      pid = $row.ProcessId
-      parentPid = $row.ParentProcessId
-      image = LimitProcessPath $row.ExecutablePath
-      commandPaths = $commandPaths
-      cwd = LimitProcessPath $cwd
-      created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') } else { $null }
-    }
+  $inspected = 0
+  $matched = 0
+  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate |
+    Sort-Object CreationDate -Descending | Select-Object -First ${PROCESS_SCAN_LIMIT + 1} | ForEach-Object {
+    if (++$inspected -gt ${PROCESS_SCAN_LIMIT}) { $script:processLimited = $true; return }
+    if ($matched -gt ${RESULT_LIMIT}) { return }
+    $row = $_
+    if ($row.ProcessId -eq $PID -or $row.ProcessId -eq 0) { return }
+    try {
+      $reason = $null
+      if (TestJobPath $row.ExecutablePath) { $reason = 'image' }
+      elseif ($row.CommandLine) {
+        foreach ($match in $pattern.Matches($row.CommandLine.Replace('/', '\'))) {
+          if (TestJobPath $match.Value) { $reason = 'argument'; break }
+        }
+      }
+      if (!$reason -and (TestJobPath (ReadCurrentDirectory $row.ProcessId))) { $reason = 'cwd' }
+      if (!$reason) { return }
+      if (++$matched -gt ${RESULT_LIMIT}) { $script:processLimited = $true; return }
+      $record = NewProcessRecord $row 'process'
+      $record.reason = $reason
+      $record
+    } catch { $script:processFailed = $true }
   }
 }
 
@@ -256,12 +384,8 @@ function ReadEntryAcl($handle) {
   } catch { $script:failed = $true }
 }
 
-$priority = [Collections.Generic.List[object]]::new()
-$survivors = [Collections.Generic.List[object]]::new()
-$queue = [Collections.Generic.Queue[object]]::new()
-$handles = [Collections.Generic.List[object]]::new()
-$discovered = 0
-try {
+function FindSurvivingEntries {
+  $queue = [Collections.Generic.Queue[object]]::new()
   $volume = [IO.Path]::GetPathRoot($root)
   if ($volume -notmatch '^[a-zA-Z]:\\$') { throw 'Expected a local drive path' }
   $parentName = [IO.Path]::GetDirectoryName($root).Substring($volume.Length)
@@ -271,22 +395,41 @@ try {
   $handles.Add($drive)
   if ($drive.IsInvalid) { throw 'Cannot open job volume' }
   $parent = $drive
+  $parentPinned = $true
+  if ((ReadBasicInformation $parent).attributes -band $reparseFlag) { throw 'Job volume is a reparse point' }
   if ($parentName) {
-    $parent = OpenRelative $drive $parentName ($readAttributes -bor $readControl) $shareWithoutDelete
-    if (!$parent) { $parent = OpenRelative $drive $parentName $readAttributes $shareAll }
-    if (!$parent) { throw 'Cannot open job parent without following redirects' }
-    $handles.Add($parent)
+    $ancestors = $parentName.Split('\')
+    for ($i = 0; $i -lt $ancestors.Length; $i++) {
+      $access = if ($i -eq $ancestors.Length - 1) { $readAttributes -bor $readControl } else { $readAttributes }
+      $ancestor = OpenRelative $parent $ancestors[$i] $access $shareWithoutDelete
+      if (!$ancestor -and $access -ne $readAttributes) {
+        $ancestor = OpenRelative $parent $ancestors[$i] $readAttributes $shareWithoutDelete
+      }
+      if (!$ancestor) {
+        $parentPinned = $false
+        $ancestor = OpenRelative $parent $ancestors[$i] $readAttributes $shareAll
+      }
+      if (!$ancestor) { throw 'Cannot open job parent without following redirects' }
+      $handles.Add($ancestor)
+      if ((ReadBasicInformation $ancestor).attributes -band $reparseFlag) { throw 'Job parent is a reparse point' }
+      $parent = $ancestor
+    }
   }
-  if ((ReadBasicInformation $parent).attributes -band $reparseFlag) { throw 'Job parent is a reparse point' }
   $queue.Enqueue(@{ path = $root; name = [IO.Path]::GetFileName($root); attributes = $directoryFlag;
     parent = $parent; parentAcl = (ReadEntryAcl $parent) })
   while ($queue.Count) {
     $next = $queue.Dequeue()
     $isRoot = $next.path -eq $root
     $expectedKind = $next.attributes -band ($directoryFlag -bor $reparseFlag)
-    $canList = $expectedKind -eq $directoryFlag -and $discovered -lt ${SCAN_LIMIT}
+    $canList = $expectedKind -eq $directoryFlag -and $script:discovered -lt ${SCAN_LIMIT}
     $access = $readAttributes -bor $readControl
     $handle = if ($canList) { OpenRelative $next.parent $next.name ($access -bor $listDirectory) $shareWithoutDelete }
+    $isFile = $expectedKind -eq 0
+    if ($isFile) {
+      $handle = OpenRelative $next.parent $next.name $access $shareWithoutDelete
+      if (!$handle) { $handle = OpenRelative $next.parent $next.name $readAttributes $shareWithoutDelete }
+    }
+    $pinned = $parentPinned -and $null -ne $handle
     if (!$handle) {
       if ($canList) { $script:failed = $true }
       $canList = $false
@@ -298,12 +441,13 @@ try {
     $basic = ReadBasicInformation $handle
     $attributes = $basic.attributes
     if (($attributes -band ($directoryFlag -bor $reparseFlag)) -ne $expectedKind) {
-      $changed = $true
+      $script:changed = $true
       $script:failed = $true
       continue
     }
     $acl = ReadEntryAcl $handle
     $entry = @{
+      kind = 'candidate'
       path = $next.path
       attributes = $attributes.ToString()
       created = $basic.created
@@ -314,6 +458,7 @@ try {
       parentDeny = $next.parentAcl.deny
       parentDenyOmitted = $next.parentAcl.omitted
     }
+    if ($isFile) { $entry.pinned = $pinned }
     if ($isRoot -or !$acl -or ($attributes -band ($reparseFlag -bor [IO.FileAttributes]::ReadOnly)) -or
         ($acl.deleteRights -band [Security.AccessControl.FileSystemRights]::Delete) -or
         ($next.parentAcl.deleteRights -band [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles)) {
@@ -321,33 +466,75 @@ try {
     } else { $survivors.Add($entry) }
     if ($canList) {
       try {
-        foreach ($child in (ReadChildren $handle (${SCAN_LIMIT} - $discovered))) {
+        foreach ($child in (ReadChildren $handle (${SCAN_LIMIT} - $script:discovered))) {
           $queue.Enqueue(@{ path = [IO.Path]::Combine($next.path, $child.name); name = $child.name;
             attributes = $child.attributes; parent = $handle; parentAcl = $acl })
-          $discovered++
+          $script:discovered++
         }
       } catch { $script:failed = $true }
     }
   }
-} catch { $script:failed = $true }
-finally {
+}
+
+$priority = [Collections.Generic.List[object]]::new()
+$survivors = [Collections.Generic.List[object]]::new()
+$handles = [Collections.Generic.List[object]]::new()
+$files = [Collections.Generic.List[object]]::new()
+$script:discovered = 0
+try {
+  try { FindSurvivingEntries } catch { $script:failed = $true }
+  $entries = @($priority.ToArray() + $survivors.ToArray() | Select-Object -First ${RESULT_LIMIT})
+  $fileLimited = $priority.Count + $survivors.Count -gt ${RESULT_LIMIT} -or $script:discovered -ge ${SCAN_LIMIT}
+  foreach ($entry in $entries) {
+    $isFile = $entry.ContainsKey('pinned')
+    if ($isFile) { $pinned = $entry.pinned; $entry.Remove('pinned') }
+    if (!(WriteEvidence $entry ${FILE_OUTPUT_LIMIT})) { $fileLimited = $true; continue }
+    if ($isFile) { $files.Add(@{ path = $entry.path; pinned = $pinned }) }
+  }
+  $null = WriteEvidence @{
+    kind = 'files'; failed = $script:failed; changed = $script:changed; limited = $fileLimited
+    empty = $entries.Count -eq 0
+  } ${FILE_OUTPUT_LIMIT + 256}
+
+  $holderLimited = $false
+  foreach ($file in $files) {
+    if (!$file.pinned) {
+      if (!(WriteEvidence @{ kind = 'restartManager'; path = $file.path; operation = 'unverified-path'; code = $null } ${HOLDER_OUTPUT_LIMIT})) {
+        $holderLimited = $true
+      }
+      continue
+    }
+    try {
+      FindFileHolders $file.path | ForEach-Object {
+        if (!(WriteEvidence $_ ${HOLDER_OUTPUT_LIMIT})) { $holderLimited = $true }
+      }
+    } catch {
+      if (!(WriteEvidence @{ kind = 'restartManager'; path = $file.path; operation = 'query'; code = $null } ${HOLDER_OUTPUT_LIMIT})) {
+        $holderLimited = $true
+      }
+    }
+  }
+} finally {
   foreach ($handle in $handles) { $handle.Dispose() }
 }
-$processScanFailed = $false
+$null = WriteEvidence @{ kind = 'holders'; limited = $holderLimited } ${HOLDER_OUTPUT_LIMIT + 256}
+$script:processFailed = $false
 $script:processLimited = $false
-$processes = [Collections.Generic.List[object]]::new()
+$suspectLimited = $false
 try {
-  FindJobProcesses | Select-Object -First ${RESULT_LIMIT + 1} | ForEach-Object { $processes.Add($_) }
-} catch { $processScanFailed = $true }
-ConvertTo-Json -Compress -Depth 6 -InputObject @{
-  processes = @($processes | Select-Object -First ${RESULT_LIMIT})
-  processScanFailed = $processScanFailed
-  processLimited = $script:processLimited -or $processes.Count -gt ${RESULT_LIMIT}
-  failed = $script:failed
-  changed = $changed
-  limited = $priority.Count + $survivors.Count -gt ${RESULT_LIMIT}
-  entries = @($priority.ToArray() + $survivors.ToArray() | Select-Object -First ${RESULT_LIMIT})
-}
+  FindNamedSuspects | ForEach-Object {
+    if (!(WriteEvidence $_ ${OUTPUT_LIMIT - STATUS_RESERVE})) { $suspectLimited = $true }
+  }
+} catch { $script:processFailed = $true }
+try {
+  FindJobProcesses | ForEach-Object {
+    if (!(WriteEvidence $_ ${OUTPUT_LIMIT - STATUS_RESERVE})) { $script:processLimited = $true }
+  }
+} catch { $script:processFailed = $true }
+$null = WriteEvidence @{
+  kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited
+  suspectLimited = $suspectLimited
+} ${OUTPUT_LIMIT}
 `;
 }
 
@@ -367,46 +554,149 @@ function formatOptionalText(value, limit) {
   return JSON.stringify(value.slice(0, limit));
 }
 
+function formatCandidate({ path, attributes, owner, deny, denyOmitted, parentDeny, parentDenyOmitted, created, lastWrite }) {
+  if (typeof path !== "string") throw new Error("Invalid cleanup path");
+  return `candidate path=${JSON.stringify(path)} owner=${formatOptionalText(owner, 192)}` +
+    ` deny=${formatDenies(deny, denyOmitted)} parent-deny=${formatDenies(parentDeny, parentDenyOmitted)}` +
+    ` attributes=${formatOptionalText(attributes, 192)} handle="not determined"` +
+    ` created=${formatOptionalText(created, 32)} last-write=${formatOptionalText(lastWrite, 32)}`;
+}
+
+function formatProcess({ kind, pid, parentPid, image, created, path, app, service, name, parentName, reason }) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 ||
+      (parentPid !== null && (!Number.isSafeInteger(parentPid) || parentPid < 0))) {
+    throw new Error("Invalid cleanup process identity");
+  }
+  const base = `${kind} pid=${pid} parent-pid=${parentPid ?? '"not determined"'} image=${formatOptionalText(image, PROCESS_PATH_LIMIT)}`;
+  const started = `created=${formatOptionalText(created, 32)}`;
+  if (kind === "holder") {
+    if (typeof path !== "string") throw new Error("Invalid holder path");
+    return `${base} path=${JSON.stringify(path)} app=${formatOptionalText(app, 256)} service=${formatOptionalText(service, 64)} ${started}`;
+  }
+  if (kind === "suspect") {
+    return `${base} parent-name=${formatOptionalText(parentName, 256)} name=${formatOptionalText(name, 256)} ${started}`;
+  }
+  if (!["image", "cwd", "argument"].includes(reason)) throw new Error("Invalid process match reason");
+  return `${base} match=${reason} ${started}`;
+}
+
+function formatRestartManagerFailure({ path, operation, code }) {
+  if (typeof path !== "string" ||
+      !["RmStartSession", "RmRegisterResources", "RmGetList", "RmEndSession", "unverified-path", "query"].includes(operation) ||
+      (code !== null && (!Number.isSafeInteger(code) || code < 0))) {
+    throw new Error("Invalid Restart Manager status");
+  }
+  return `Restart Manager lookup failed path=${JSON.stringify(path)} operation=${operation}` +
+    (code === null ? "" : ` code=${code}`);
+}
+
 export async function diagnoseJobRoot(root, diagnostic, run = runJobRootQuery) {
   const args = ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(QUERY_COMMAND, "utf16le").toString("base64")];
-  const stdout = await new Promise((resolve, reject) => {
-    run("powershell.exe", args, {
-      encoding: "utf8", windowsHide: true, timeout: TIMEOUT_MS, maxBuffer: OUTPUT_LIMIT,
-      env: { ...windowsPowerShellEnv(), [QUERY_VARIABLE]: queryScript(root) },
-    }, (error, output) => error ? reject(error) : resolve(output));
-  });
-  if (Buffer.byteLength(stdout) > OUTPUT_LIMIT) throw new Error("Cleanup query output exceeded the limit");
-  const { processes, entries, failed, changed, limited, processScanFailed, processLimited } = JSON.parse(stdout);
-  if (!Array.isArray(processes) || !Array.isArray(entries) || typeof failed !== "boolean" ||
-      typeof changed !== "boolean" || typeof limited !== "boolean" ||
-      typeof processScanFailed !== "boolean" || typeof processLimited !== "boolean") {
-    throw new Error("Invalid cleanup query results");
-  }
-  const lines = processes.slice(0, RESULT_LIMIT).map(({ pid, parentPid, image, commandPaths, cwd, created }) => {
-    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(parentPid) || parentPid < 0 ||
-        !Array.isArray(commandPaths) || commandPaths.some(path => typeof path !== "string")) {
-      throw new Error("Invalid cleanup process details");
+  const options = {
+    encoding: "utf8", windowsHide: true, timeout: TIMEOUT_MS, maxBuffer: OUTPUT_LIMIT,
+    env: { ...windowsPowerShellEnv(), [QUERY_VARIABLE]: queryScript(root) },
+  };
+  await new Promise((resolve, reject) => {
+    let child;
+    let settled = false;
+    let failed = false;
+    let filesComplete = false;
+    let holdersComplete = false;
+    let processesComplete = false;
+    let pending = "";
+    let inputBytes = 0;
+    let outputBytes = 0;
+    let outputLimited = false;
+    let fileCount = 0;
+    let processCount = 0;
+
+    function emit(line, limit = OUTPUT_LIMIT - STATUS_RESERVE) {
+      const size = Buffer.byteLength(line) + 1;
+      if (outputBytes + size <= limit) {
+        diagnostic(line);
+        outputBytes += size;
+      } else {
+        outputLimited = true;
+      }
     }
-    return `process pid=${pid} parent-pid=${parentPid} image=${formatOptionalText(image, PROCESS_PATH_LIMIT)}` +
-      ` command-line-paths=${JSON.stringify(commandPaths.slice(0, 3).map(path => path.slice(0, PROCESS_PATH_LIMIT)))}` +
-      ` cwd=${formatOptionalText(cwd, PROCESS_PATH_LIMIT)} created=${formatOptionalText(created, 32)}`;
-  });
-  for (const entry of entries.slice(0, RESULT_LIMIT)) {
-    const { path, attributes, owner, deny, denyOmitted, parentDeny, parentDenyOmitted, created, lastWrite } = entry;
-    if (typeof path !== "string" || (attributes !== null && typeof attributes !== "string") || (owner !== null && typeof owner !== "string")) {
-      throw new Error("Invalid cleanup path details");
+
+    function readRecord(line) {
+      const row = JSON.parse(line);
+      if (!filesComplete && row.kind === "candidate") {
+        if (fileCount++ < RESULT_LIMIT) emit(formatCandidate(row), FILE_OUTPUT_LIMIT);
+      } else if (!filesComplete && row.kind === "files") {
+        filesComplete = true;
+        failed ||= row.failed;
+        if (row.empty && !row.failed) emit("Cleanup path scan found no surviving entries");
+        if (row.changed) emit("Cleanup path scan skipped an entry whose directory or reparse attributes changed");
+        if (row.limited) emit("Cleanup path scan reached its inspection or reporting limit");
+      } else if (filesComplete && !holdersComplete) {
+        if (row.kind === "holders") {
+          holdersComplete = true;
+          if (row.limited) emit("Restart Manager output reached its reporting limit");
+        } else if (row.kind === "restartManager") {
+          emit(formatRestartManagerFailure(row));
+        } else if (row.kind === "holder") {
+          emit(formatProcess(row));
+        } else {
+          failed = true;
+        }
+      } else if (holdersComplete && !processesComplete) {
+        if (row.kind === "processes") {
+          processesComplete = true;
+          if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");
+          if (row.failed) emit("Cleanup process scan was incomplete");
+          if (row.suspectLimited) emit("Cleanup named suspect output reached its reporting limit");
+        } else if (row.kind === "suspect" ||
+            (row.kind === "process" && processCount++ < RESULT_LIMIT)) {
+          emit(formatProcess(row));
+        } else if (row.kind !== "process") {
+          failed = true;
+        }
+      } else {
+        failed = true;
+      }
     }
-    lines.push(`candidate path=${JSON.stringify(path)} owner=${JSON.stringify(owner ?? "not determined")}` +
-      ` deny=${formatDenies(deny, denyOmitted)} parent-deny=${formatDenies(parentDeny, parentDenyOmitted)}` +
-      ` attributes=${JSON.stringify(attributes ?? "not determined")} handle="not determined"` +
-      ` created=${formatOptionalText(created, 32)} last-write=${formatOptionalText(lastWrite, 32)}`);
-  }
-  if (!failed && entries.length === 0) lines.push("Cleanup path scan found no surviving entries");
-  if (changed) lines.push("Cleanup path scan skipped an entry whose directory or reparse attributes changed");
-  if (limited) lines.push("Cleanup path scan reached its inspection or reporting limit");
-  if (processLimited) lines.push("Cleanup process scan reached its inspection or reporting limit");
-  if (processScanFailed) lines.push("Cleanup process scan was incomplete");
-  if (Buffer.byteLength(lines.join("\n") + "\n") > OUTPUT_LIMIT) throw new Error("Cleanup diagnostic output exceeded the limit");
-  for (const line of lines) diagnostic(line);
-  if (failed) throw new Error("Cleanup query was incomplete");
+
+    function consume(chunk) {
+      if (settled) return;
+      const size = Buffer.byteLength(chunk);
+      if (inputBytes + size > OUTPUT_LIMIT) {
+        failed = true;
+        if (inputBytes === OUTPUT_LIMIT) return;
+        chunk = Buffer.from(chunk).subarray(0, OUTPUT_LIMIT - inputBytes).toString("utf8");
+      }
+      inputBytes = Math.min(OUTPUT_LIMIT, inputBytes + size);
+      const lines = (pending + chunk).split("\n");
+      pending = lines.pop();
+      for (const line of lines) {
+        try { readRecord(line); }
+        catch { failed = true; }
+      }
+    }
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      try {
+        if (filesComplete && !holdersComplete) emit("Restart Manager lookup was incomplete", OUTPUT_LIMIT - 256);
+        if (outputLimited) emit("Cleanup diagnostic output reached its byte limit", OUTPUT_LIMIT);
+        if (error || failed || pending || !filesComplete || !processesComplete) throw new Error("Cleanup query was incomplete");
+        resolve();
+      } catch (failure) { reject(failure); }
+    }
+
+    const deadline = setTimeout(() => {
+      try { child?.kill(); } catch {}
+      finish(new Error("Cleanup query timed out"));
+    }, TIMEOUT_MS);
+    try {
+      child = run("powershell.exe", args, options, (error, stdout) => {
+        if (!child?.stdout && stdout) consume(stdout);
+        finish(error);
+      });
+      child?.stdout?.on("data", consume);
+    } catch (error) { finish(error); }
+  });
 }
