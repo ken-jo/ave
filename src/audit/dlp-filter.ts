@@ -248,7 +248,10 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[], markers?:
       let start = match.index;
       const end = start + match[0].length;
       if (ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
-        while (start > copied && text.charCodeAt(start - 1) === 92) start--;
+        let runStart = start;
+        while (runStart > copied && text.charCodeAt(runStart - 1) === 92) runStart--;
+        // A paired backslash belongs to the preceding text in a JSON string.
+        if ((start - runStart) % 2 !== 0) start--;
       }
       pieces ??= [];
       pieces.push(text.slice(copied, start), marker);

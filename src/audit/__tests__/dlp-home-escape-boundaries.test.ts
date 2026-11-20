@@ -45,6 +45,18 @@ describe("complete source escape spans", () => {
     const output = redactHomePathsInText(input);
     expect(JSON.parse(output)).toEqual({ p: "[home]/file", other: 1 });
   });
+  it("keeps paired backslashes before a literal home in JSON", async () => {
+    const home = "/srv/fixtures/habitat";
+    const { redactHomePathsInText } = await loadHomeRedactors(home);
+    const prefix = "D:\\fixtures\\";
+    for (const input of [
+      JSON.stringify({ p: `${prefix}${home}/file`, other: 1 }),
+      String.raw`{"p":"D:\\fixtures\\\/${home.slice(1)}/file","other":1}`,
+    ]) {
+      expect(JSON.parse(input)).toEqual({ p: `${prefix}${home}/file`, other: 1 });
+      expect(JSON.parse(redactHomePathsInText(input))).toEqual({ p: `${prefix}[home]/file`, other: 1 });
+    }
+  });
   it("keeps the serialized trailing separator outside the normalized home", async () => {
     const home = "/srv/fixtures/ab\\";
     const { redactHomePathsInText } = await loadHomeRedactors(home);
