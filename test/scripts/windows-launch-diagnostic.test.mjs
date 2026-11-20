@@ -91,6 +91,7 @@ describe("Windows launch diagnostic", () => {
     const expected = {
       kind: "start", match: "media", pid: 30, created: time(3), eventTime: null,
       image: "setup_wm.exe", commandLine: 'setup_wm "[job-root]"', cwdStatus: "unavailable", unresolvedParentPid: 20,
+      ancestryTimeBasis: null, ancestryStatus: "trace-unavailable", ancestry: [],
     };
     assert.deepEqual(readLines(join(directory, "media-starts.jsonl")), [expected, { ...expected, eventTime: time(6) }]);
   });
@@ -98,10 +99,14 @@ describe("Windows launch diagnostic", () => {
   it("keeps the trace time when the child has already exited", t => {
     const directory = fixture(t);
     const { record } = createRecorder(ROOT, directory);
-    record({ kind: "trace", rows: [{ pid: 30, parentPid: 0, eventTime: time(4), name: "unregmp2.exe" }] });
+    record({ kind: "trace", rows: [{
+      pid: 30, parentPid: 0, eventTime: time(4), name: "unregmp2.exe",
+      ancestryTimeBasis: "start-event", ancestryStatus: "root", ancestry: [],
+    }] });
     assert.deepEqual(readLines(join(directory, "media-starts.jsonl")), [{
       kind: "start", match: "media", pid: 30, created: null, eventTime: time(4),
       image: "unregmp2.exe", commandLine: null, cwdStatus: "unavailable", unresolvedParentPid: 0,
+      ancestryTimeBasis: "start-event", ancestryStatus: "root", ancestry: [],
     }]);
   });
 
@@ -348,7 +353,7 @@ describe("Windows launch diagnostic", () => {
     const root = join(directory, "job");
     mkdirSync(root);
     const image = join(directory, "setup_wm.exe");
-    copyFileSync(join(process.env.SystemRoot, "System32", "ping.exe"), image);
+    copyFileSync(process.execPath, image);
     const scripts = join(directory, ".github", "scripts");
     const lib = join(directory, "scripts", "lib");
     mkdirSync(scripts, { recursive: true });
@@ -358,10 +363,24 @@ describe("Windows launch diagnostic", () => {
     }
     copyFileSync(new URL("../../scripts/lib/windows-powershell-env.mjs", SCRIPTS), join(lib, "windows-powershell-env.mjs"));
     const collector = readFileSync(new URL("watch-windows-processes.ps1", SCRIPTS), "utf8");
-    // Supply trace events without CIM subscription privileges. The collector still queries the live processes.
+    // Feed the same busy queue whether or not the native subscription can start.
     writeFileSync(join(scripts, "watch-windows-processes.ps1"), [
-      "function Register-CimIndicationEvent {}",
+      "function Register-CimIndicationEvent($ClassName, $OperationTimeoutSec, $SourceIdentifier) {",
+      "  $native = 'unavailable'",
+      "  try {",
+      "    CimCmdlets\\Register-CimIndicationEvent @PSBoundParameters -ErrorAction Stop | Out-Null",
+      "    $native = 'active'",
+      "  } catch { $native = 'unavailable (' + $_.FullyQualifiedErrorId + ')' }",
+      "  [IO.File]::WriteAllText('native-trace', $native)",
+      "}",
+      "function Get-CimInstance($ClassName, $Property, $OperationTimeoutSec, $Filter) {",
+      "  if ($Filter) { [IO.File]::AppendAllText('lookups', $Filter + [Environment]::NewLine) }",
+      "  if ($Filter -match '^ProcessId = 4294967[12][0-9]{2}$') { return }",
+      "  CimCmdlets\\Get-CimInstance @PSBoundParameters",
+      "}",
       "function Get-Event {",
+      "  $nativeStarts = @(Microsoft.PowerShell.Utility\\Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)",
+      "  foreach ($start in $nativeStarts) { Microsoft.PowerShell.Utility\\Remove-Event -EventIdentifier $start.EventIdentifier }",
       "  if ([IO.File]::Exists('trace-events.json')) {",
       "    $events = [IO.File]::ReadAllText('trace-events.json') | ConvertFrom-Json",
       "    [IO.File]::Delete('trace-events.json')",
@@ -370,6 +389,9 @@ describe("Windows launch diagnostic", () => {
       "      $event.TIME_CREATED = [DateTime]::UtcNow.AddSeconds(-$event.AgeSeconds).ToFileTimeUtc()",
       "      @{ EventIdentifier = $i; SourceEventArgs = @{ NewEvent = $event } }",
       "    })",
+      "    foreach ($start in ($nativeStarts | Where-Object { $_.SourceEventArgs.NewEvent.ProcessName -notin $mediaImages } | Select-Object -First 4)) {",
+      "      $script:fixtureEvents += @{ EventIdentifier = $script:fixtureEvents.Length; SourceEventArgs = $start.SourceEventArgs }",
+      "    }",
       "  } elseif ($null -ne $script:fixtureEvents -and $script:fixtureEvents.Length -eq 0) {",
       "    [IO.File]::WriteAllText('trace-drained', '')",
       "    $script:fixtureEvents = $null",
@@ -386,35 +408,50 @@ describe("Windows launch diagnostic", () => {
       AVE_PROCESS_WATCH_TRACE: "1", GITHUB_ACTIONS: "true",
     };
     let parent;
+    let parentClosed;
     let childPid = "";
     try {
       await control(directory, scripts, "start", env);
       const log = readLines(join(directory, "watcher.jsonl"));
       assert.equal(log.find(row => row.kind === "mechanism")?.mechanism, "Win32_ProcessStartTrace");
+      t.diagnostic(`native trace subscription ${readFileSync(join(directory, "native-trace"), "utf8")}`);
       parent = spawn(process.execPath, ["-e", [
         'const { spawn } = require("node:child_process");',
         'const { renameSync, writeFileSync } = require("node:fs");',
-        'const child = spawn(process.argv[1], ["-n", "5", "127.0.0.1"], { windowsHide: true, stdio: "ignore" });',
+        'const child = spawn(process.argv[1], ["-e", "process.stdin.resume()"], { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] });',
+        'process.stdin.on("end", () => { child.stdin.end(); });',
+        'process.stdin.resume();',
+        'child.on("exit", code => { process.exitCode = code ?? 1; process.stdin.destroy(); });',
         'const event = (ProcessID, ParentProcessID, ProcessName, AgeSeconds = 0) =>',
         '  ({ ProcessID, ParentProcessID, ProcessName, AgeSeconds, TIME_CREATED: 0 });',
-        'writeFileSync("trace-events.tmp", JSON.stringify([event(process.pid, process.ppid, "node.exe"),',
+        'const noise = Array.from({ length: 33 }, (_, index) => event(4294967200 + index, 0, "noise.exe"));',
+        'writeFileSync("trace-events.tmp", JSON.stringify([...noise, event(process.pid, process.ppid, "node.exe"),',
         '  event(child.pid, process.pid, "setup_wm.exe"), event(0, process.ppid, "setup_wm.exe", 3600),',
-        '  event(0, 4294967295, "wmpnetwk.exe")]));',
+        '  event(0, 4294967295, "wmpnetwk.exe"),',
+        '  ...Array.from({ length: 6 }, (_, index) => event(4294967100 + index, 0, "wmplayer.exe"))]));',
         'renameSync("trace-events.tmp", "trace-events.json");',
         'process.stdout.write(String(child.pid));',
-        'child.on("exit", code => { process.exitCode = code ?? 1; });',
       ].join(" "), image, "fixture::token", "##[example]"], {
-        cwd: directory, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
+        cwd: directory, windowsHide: true, stdio: ["pipe", "pipe", "ignore"],
       });
+      parentClosed = once(parent, "close");
       parent.stdout.on("data", chunk => { childPid += chunk; });
-      const [code, signal] = await once(parent, "close");
-      assert.deepEqual([code, signal], [0, null]);
       await waitForPath(join(directory, "trace-drained"));
     } finally {
-      const { stdout } = await control(directory, scripts, "stop");
-      assert.match(stdout, /collector and watcher exits verified/);
-      assert.doesNotMatch(stdout, /Forced diagnostic process exit/);
+      try {
+        parent?.stdin.end();
+        if (parentClosed) assert.deepEqual(await parentClosed, [0, null]);
+      } finally {
+        const { stdout } = await control(directory, scripts, "stop");
+        assert.match(stdout, /collector and watcher exits verified/);
+        assert.doesNotMatch(stdout, /Forced diagnostic process exit/);
+      }
     }
+    const lookups = readFileSync(join(directory, "lookups"), "utf8").split(/\r?\n/u);
+    const missingParent = lookups.indexOf("ProcessId = 4294967295");
+    const firstOrdinaryStart = lookups.indexOf("ProcessId = 4294967200");
+    assert.ok(missingParent >= 0 && firstOrdinaryStart > missingParent,
+      "Media ancestry lookups must precede ordinary live lookups in a busy batch");
     const rows = readLines(join(directory, "media-starts.jsonl"));
     const media = rows.find(row => row.pid === Number(childPid));
     assert.ok(media);
@@ -437,6 +474,9 @@ describe("Windows launch diagnostic", () => {
     assert.deepEqual(missing.ancestry, [{
       pid: 4294967295, name: null, created: null, image: null, commandLine: null, parentCreatedBeforeChild: false,
     }]);
+    const overflow = rows.find(row => row.pid === 4294967105);
+    assert.equal(overflow?.ancestryStatus, "media-batch-limited");
+    assert.deepEqual(overflow.ancestry, []);
     const starts = readLines(join(directory, "raw-starts.jsonl"));
     const compact = starts.find(row => row.pid === parent.pid);
     assert.ok(Number.isFinite(Date.parse(compact?.eventTime)));

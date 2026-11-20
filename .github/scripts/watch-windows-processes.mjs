@@ -57,10 +57,10 @@ export function createRecorder(root, directory, { rawStartLimit = RAW_START_LIMI
       commandLine: maskJobRootArguments(row.commandLine, root)?.slice(0, FIELD_LIMIT) ?? null,
       cwdStatus: row.cwdStatus ?? "unavailable", unresolvedParentPid: row.parentPid ?? null,
     };
-    if (match === "media" && Array.isArray(row.ancestry)) {
-      start.ancestryTimeBasis = row.ancestryTimeBasis;
-      start.ancestryStatus = row.ancestryStatus;
-      start.ancestry = row.ancestry.slice(0, 6).map(link => ({
+    if (match === "media") {
+      start.ancestryTimeBasis = row.ancestryTimeBasis ?? null;
+      start.ancestryStatus = row.ancestryStatus ?? "trace-unavailable";
+      start.ancestry = (Array.isArray(row.ancestry) ? row.ancestry : []).slice(0, 6).map(link => ({
         pid: link.pid, name: link.name?.slice(0, NAME_LIMIT) ?? null, created: link.created ?? null,
         image: link.image?.slice(0, FIELD_LIMIT) ?? null,
         commandLine: maskJobRootArguments(link.commandLine, root)?.slice(0, FIELD_LIMIT) ?? null,

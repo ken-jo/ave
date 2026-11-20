@@ -82,12 +82,11 @@ function Write-Snapshot($kind) {
   Write-CwdCoverage
 }
 
-function Read-Ancestors($parentId, $childTime, $batch, $draining) {
+function Read-Ancestors($parentId, $childTime, $draining) {
   $links = [Collections.Generic.List[object]]::new()
   $status = 'root'
   while ($parentId -gt 0) {
     if ($links.Count -ge 6) { $status = 'depth-limited'; break }
-    if ($batch.ElapsedMilliseconds -ge 1500) { $status = 'batch-limited'; break }
     if (!$draining -and [IO.File]::Exists($stop)) { $status = 'stop-requested'; break }
     try { $row = Read-Processes "ProcessId = $parentId" }
     catch { $status = 'query-failed'; break }
@@ -107,7 +106,7 @@ function Read-Ancestors($parentId, $childTime, $batch, $draining) {
   @{ links = $links.ToArray(); status = $status }
 }
 
-function Write-Start($eventRecord, $draining, $batch) {
+function Read-Start($eventRecord) {
   $eventTime = [DateTime]::FromFileTimeUtc([long]$eventRecord.TIME_CREATED)
   $id = [uint32]$eventRecord.ProcessID
   $parentId = [uint32]$eventRecord.ParentProcessID
@@ -115,31 +114,85 @@ function Write-Start($eventRecord, $draining, $batch) {
     kind = 'raw-start'; pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName
     eventTime = $eventTime.ToString('o')
   }
+  @{
+    pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName; created = $null
+    eventTime = $eventTime.ToString('o')
+  }
+}
+
+function Write-Start($process, $draining) {
   $live = @()
-  if (!$draining) {
-    try { $live = @(Read-Processes "ProcessId = $id") }
+  if (!$draining -and ![IO.File]::Exists($stop)) {
+    try { $live = @(Read-Processes "ProcessId = $($process.pid)") }
     catch { Write-Record @{ kind = 'trace-process-query-failed' } }
   }
-  $process = @{
-    pid = $id; parentPid = $parentId; name = $eventRecord.ProcessName; created = $null
-  }
-  $childTime = $eventTime
+  $eventTime = [DateTime]::Parse($process.eventTime).ToUniversalTime()
   foreach ($row in $live) {
-    if ($row.ProcessId -eq $id -and $row.CreationDate -and $row.CreationDate.ToUniversalTime() -le $eventTime -and
-        $row.ParentProcessId -eq $parentId -and $row.Name -eq $eventRecord.ProcessName) {
-      $process = Read-Process $row
-      $childTime = $row.CreationDate.ToUniversalTime()
-    }
+    if ($row.ProcessId -ne $process.pid -or !$row.CreationDate -or $row.CreationDate.ToUniversalTime() -gt $eventTime -or
+        $row.ParentProcessId -ne $process.parentPid -or $row.Name -ne $process.name) { continue }
+    $child = Read-Process $row
+    if (!$child) { continue }
+    $process.created = $child.created
+    $process.image = $child.image
+    $process.commandLine = $child.commandLine
   }
-  $process.eventTime = $eventTime.ToString('o')
-  if ($eventRecord.ProcessName -in $mediaImages) {
-    $ancestry = Read-Ancestors $parentId $childTime $batch $draining
-    $process.ancestry = $ancestry.links
-    $process.ancestryStatus = $ancestry.status
-    $process.ancestryTimeBasis = if ($process.created) { 'child-creation' } else { 'start-event' }
+  if ($process.created -and $process.ancestryTimeBasis) {
+    $process.ancestryTimeBasis = 'child-creation'
+    # The live child can predate its trace timestamp.
+    if ($process.ancestry.Count -gt 0) {
+      $parent = $process.ancestry[0]
+      if ($parent.created -and [DateTimeOffset]::Parse($parent.created) -ge [DateTimeOffset]::Parse($process.created)) {
+        $parent.parentCreatedBeforeChild = $false
+        $process.ancestry = @($parent)
+        $process.ancestryStatus = 'parent-not-older'
+      }
+    }
   }
   Add-ProcessCwd $process
   Write-Record @{ kind = 'trace'; rows = @($process) }
+}
+
+function Write-TraceBatch($stopping) {
+  $mediaStarts = [Collections.Generic.List[object]]::new()
+  $otherStarts = [Collections.Generic.List[object]]::new()
+  foreach ($start in (Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)) {
+    if ($start.SourceEventArgs.NewEvent.ProcessName -in $mediaImages) { $mediaStarts.Add($start) }
+    else { $otherStarts.Add($start) }
+  }
+
+  $mediaLimit = 8
+  $media = @(foreach ($start in $mediaStarts) {
+    Remove-Event -EventIdentifier $start.EventIdentifier
+    $process = Read-Start $start.SourceEventArgs.NewEvent
+    if ($mediaLimit-- -le 0) {
+      $process.ancestry = @()
+      $process.ancestryStatus = 'media-batch-limited'
+      Write-Record @{ kind = 'trace'; rows = @($process) }
+      continue
+    }
+    $ancestry = Read-Ancestors $process.parentPid ([DateTime]::Parse($process.eventTime).ToUniversalTime()) $stopping
+    $process.ancestry = $ancestry.links
+    $process.ancestryStatus = $ancestry.status
+    $process.ancestryTimeBasis = 'start-event'
+    $process
+  })
+  Reset-CwdBudget
+  foreach ($process in $media) { Write-Start $process $stopping }
+  Write-CwdCoverage
+
+  Reset-CwdBudget
+  $batch = [Diagnostics.Stopwatch]::StartNew()
+  $limit = 32
+  foreach ($start in $otherStarts) {
+    if ($limit-- -eq 0 -or $batch.ElapsedMilliseconds -ge 1500) {
+      if ($stopping) { Write-Record @{ kind = 'stop-drain-limited' } }
+      break
+    }
+    if (!$stopping -and [IO.File]::Exists($stop)) { break }
+    Remove-Event -EventIdentifier $start.EventIdentifier
+    Write-Start (Read-Start $start.SourceEventArgs.NewEvent) $stopping
+  }
+  Write-CwdCoverage
 }
 
 try {
@@ -173,20 +226,7 @@ try {
     if ($mechanism -eq 'Win32_ProcessStartTrace') {
       if (!$stopping) { Wait-Event -SourceIdentifier $source -Timeout 1 | Out-Null }
       Write-Record @{ kind = 'heartbeat' }
-      Reset-CwdBudget
-      $batch = [Diagnostics.Stopwatch]::StartNew()
-      $limit = 32
-      foreach ($start in (Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue |
-          Select-Object -First ($limit + 1))) {
-        if ($limit-- -eq 0 -or $batch.ElapsedMilliseconds -ge 1500) {
-          if ($stopping) { Write-Record @{ kind = 'stop-drain-limited' } }
-          break
-        }
-        if (!$stopping -and [IO.File]::Exists($stop)) { break }
-        Remove-Event -EventIdentifier $start.EventIdentifier
-        Write-Start $start.SourceEventArgs.NewEvent $stopping $batch
-      }
-      Write-CwdCoverage
+      Write-TraceBatch $stopping
     } elseif (!$stopping) {
       Start-Sleep -Milliseconds 250
       if (![IO.File]::Exists($stop)) { Write-Snapshot 'snapshot' }
