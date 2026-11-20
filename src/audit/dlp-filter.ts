@@ -270,30 +270,15 @@ interface LiteralMarkers {
   spans: LiteralMarker[];
 }
 
-/** Locate lexically valid JSON strings without parsing their values. */
-function* jsonStringSpans(text: string): Generator<LiteralMarker> {
-  const escapeValue = { value: 0 };
-  let index = 0;
-  while (index < text.length) {
-    const start = text.indexOf('"', index);
-    if (start < 0) return;
-    index = start + 1;
-    let valid = true;
-    while (index < text.length) {
-      const code = text.charCodeAt(index++);
-      if (code === 34) {
-        if (valid) yield { start, end: index };
-        break;
-      }
-      if (code < 32) valid = false;
-      if (code === 92) {
-        const next = text.charCodeAt(index);
-        const width = next === 39 || next === 120 ? -1 : readHomeEscape(text, index - 1, escapeValue);
-        if (width < 0) valid = false;
-        index += Math.max(1, width - 1);
-      }
-    }
+/** Require a complete JSON container. A quoted path alone is ambiguous prose. */
+function hasJsonContainer(text: string): boolean {
+  for (let depth = 0; depth < HOME_DECODE_LAYERS && /^\s*[[{"]/u.test(text); depth++) {
+    let value: unknown;
+    try { value = JSON.parse(text); } catch { return false; }
+    if (typeof value !== "string") return true;
+    text = value;
   }
+  return false;
 }
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[], markers?: LiteralMarkers): string {
@@ -303,8 +288,7 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[], markers?:
     let spans: LiteralMarker[] | undefined;
     let previousMarker = 0;
     let offset = 0;
-    let strings: Generator<LiteralMarker> | undefined;
-    let quoted: IteratorResult<LiteralMarker> | undefined;
+    let insideJson: boolean | undefined;
     const copyMarker = (previous: LiteralMarker): void => {
       spans?.push({ start: previous.start + offset, end: previous.end + offset });
     };
@@ -315,10 +299,9 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[], markers?:
         let runStart = start;
         while (runStart > copied && text.charCodeAt(runStart - 1) === 92) runStart--;
         if ((start - runStart) % 2 !== 0) {
-          strings ??= jsonStringSpans(text);
-          while (!quoted || !quoted.done && quoted.value.end <= start) quoted = strings.next();
-          // Consume only the unpaired escape introducer of a JSON string.
-          if (!quoted.done && quoted.value.start < runStart) start--;
+          insideJson ??= hasJsonContainer(text);
+          // An odd run in a parsed document can only be a string escape.
+          if (insideJson) start--;
         }
       }
       pieces ??= [];

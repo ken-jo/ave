@@ -45,6 +45,21 @@ describe("complete source escape spans", () => {
     const output = redactHomePathsInText(input);
     expect(JSON.parse(output)).toEqual({ p: "[home]/file", other: 1 });
   });
+  it("only consumes a JSON escape when the enclosing document parses", async () => {
+    const home = "/srv/fixtures/habitat";
+    const { redactHomePathsInText } = await loadHomeRedactors(home);
+    const escaped = String.raw`\/${home.slice(1)}/file`;
+    const prose = `{"p":"${escaped}","other":invalid}`;
+    expect(redactHomePathsInText(prose)).toBe(prose.replace(home, "[home]"));
+    const nested = JSON.stringify(JSON.stringify({ p: `${home}/file`, other: 1 })).replace(home, `\\${home}`);
+    expect(JSON.parse(JSON.parse(nested))).toEqual({ p: `${home}/file`, other: 1 });
+    expect(JSON.parse(JSON.parse(redactHomePathsInText(nested)))).toEqual({ p: "[home]/file", other: 1 });
+  });
+  it("preserves the plain backslash before a generic home inside prose quotes", async () => {
+    const { redactHomePathsInText } = await loadHomeRedactors("/srv/fixtures/habitat");
+    const input = String.raw`cd "C:\temp\/home/bob/x"`;
+    expect(redactHomePathsInText(input)).toBe(String.raw`cd "C:\temp\[home]/x"`);
+  });
   it("keeps paired backslashes before a literal home in JSON", async () => {
     const home = "/srv/fixtures/habitat";
     const { redactHomePathsInText } = await loadHomeRedactors(home);

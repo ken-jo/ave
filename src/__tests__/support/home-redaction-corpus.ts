@@ -46,6 +46,16 @@ function escapeFreeInputs(home: string, platform: HomePlatform): LiteralHomeCorp
   return inputs;
 }
 
+function quotedHomeInputs(home: string): LiteralHomeCorpus["inputs"] {
+  const prefixes = ["C:\\temp\\", "C:\\tools\\", "C:\\new\\", "D:\\build\\", "C:\\root\\", "C:\\files\\", "C:\\work\\",
+    "\\\\wsl$\\Ubuntu\\", "\\\\wsl.localhost\\Ubuntu\\", "\\"];
+  return prefixes.flatMap(prefix => {
+    const path = `${prefix}${home}/file`;
+    return [`cd "${path}" && ls`, `"${path}"`, `open "${path}"`, `Error: ENOENT, open "${path}"`, `cd ${path}`]
+      .map(input => ["text", input] as const);
+  });
+}
+
 export function literalHomeCorpus(): LiteralHomeCorpus[] {
   const posixHomes = ["/srv/fixtures/habitat", "/home/bob", "/Users/Bob", "/home/John Smith", "/home/o'brien", "/Users/Café"];
   return [
@@ -56,6 +66,10 @@ export function literalHomeCorpus(): LiteralHomeCorpus[] {
       ["text", String.raw`C:\work\/home/José Gil/file`],
       ["text", String.raw`\\wsl$\Ubuntu\/home/José Gil/file`],
     ] },
+    ...([
+      ["linux", "/srv/fixtures/habitat"], ["linux", "/home/José Gil"],
+      ["linux", "/home/bob"], ["darwin", "/Users/Bob"],
+    ] as const).map(([platform, home]) => ({ platform, home, inputs: quotedHomeInputs(home) })),
   ];
 }
 
