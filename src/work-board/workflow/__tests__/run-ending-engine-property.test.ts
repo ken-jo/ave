@@ -347,6 +347,48 @@ async function runCells(cells: Cell[], tally: (key: string) => void): Promise<vo
   }
 }
 
+it("waits for a posted run end before checking for an absent settlement", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    const holder = await h.board.create({ title: "Holder" });
+    if (holder.status !== "created") throw new Error("no holder");
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const { running, child } = await startLinked(h, id, version);
+    child.finish();
+    await running;
+    await h.drainRunWork();
+    const { runId = "" } = await h.item(id);
+    leave(h, { consumer: "board write", board: "unnamed", intent: false, marker: false, window: "none" }, { id, runId, holder: holder.itemId });
+    const resolveVersion = h.templates.resolveVersion.bind(h.templates);
+    vi.spyOn(h.templates, "resolveVersion").mockImplementation(async pin => {
+      entered.resolve();
+      await release.promise;
+      return resolveVersion(pin);
+    });
+    await h.board.update(holder.itemId, { title: "Holder edited" });
+    await entered.promise;
+
+    let checked = false;
+    const lost = h.drainRunWork().then(() => {
+      checked = true;
+      return h.events.some(event => event.itemId === id && event.reasonCode === "template-run-lost");
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const checkedWhileHeld = checked;
+    release.resolve();
+    expect(await lost).toBe(true);
+    expect(checkedWhileHeld).toBe(false);
+  } finally {
+    release.resolve();
+    for (const child of h.children) child.finish();
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
 // One-shot unreadable events have positive retention and recovery checks below for every intent and marker pair.
 const windowsOf = (consumer: Consumer): FailureWindow[] => WINDOWS.filter(window => consumer !== "run write" || window !== "run file unreadable");
 const HELD_WINDOWS = ["none", "run file unreadable"] as const;

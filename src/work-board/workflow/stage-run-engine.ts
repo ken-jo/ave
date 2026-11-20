@@ -91,6 +91,7 @@ export interface StageRunEngineDeps {
   releaseItem: (itemId: number) => void;
   /** Record a run that the run authority ended. */
   audit?: (e: { itemId: number; runId: string; event: "work-run:authority-refused"; code: string; tool?: EnvelopeToolRef }) => void;
+  _observeDetachedWorkForTest?: (work: () => Promise<unknown>, kind?: "launch") => void;
 }
 
 export interface StageRunEngine {
@@ -239,6 +240,10 @@ function pinFault(error: unknown): "version-missing" | "graph-mismatch" | null {
 
 export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const { store, templates, workspace } = deps;
+  function detach(work: () => Promise<unknown>, kind?: "launch"): void {
+    if (deps._observeDetachedWorkForTest) deps._observeDetachedWorkForTest(work, kind);
+    else void work();
+  }
   function notify(deliver: () => void): void {
     try { deliver(); } catch (error) { log.warn("stage run notification failed: %s", errorMessage(error)); }
   }
@@ -364,7 +369,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function post(state: RunState, event: RunEvent, attempt?: number): void {
     const eventAttempt = "attempt" in event ? event.attempt : attempt;
     const done = "stageId" in event && eventAttempt !== undefined ? trackStageWork(state, event.stageId, eventAttempt) : () => undefined;
-    void enqueue(state, () => handle(state, event, undefined, undefined, eventAttempt)).finally(done).catch(() => undefined);
+    detach(() => enqueue(state, () => handle(state, event, undefined, undefined, eventAttempt)).finally(done).catch(() => undefined));
   }
 
   /** The run's board row is gone: the run is cancelled as by Stop, and from here its record is written by run id alone and ends as `cause`. */
@@ -426,7 +431,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   function drain(state: RunState): void {
     if (state.draining) return;
     state.draining = true;
-    void enqueue(state, async () => {
+    detach(() => enqueue(state, async () => {
       while (state.held.length > 0) {
         if (runs.get(state.itemId) !== state || state.rowGone || state.lost) return;
         const record = await records.get(state.itemId, state.runId);
@@ -467,7 +472,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         log.info("a running stage with nothing left to end it ends interrupted (id=%d, stage=%s)", state.itemId, run.stageId);
         post(state, { type: "stage_ended", stageId: run.stageId, attempt: run.attempt, ok: false, interrupted: true });
       }
-    }).finally(() => { state.draining = false; }).catch(() => undefined);
+    }).finally(() => { state.draining = false; }).catch(() => undefined));
   }
 
   /** A permitted read, after the intents and markers: each run boot kept is adopted once its class is live, and each run's held events are
@@ -485,13 +490,13 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     }
   }
   store.boardChanged.subscribe(() => {
-    if (runs.size > 0) void checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error)));
+    if (runs.size > 0) detach(() => checkRows().catch((error: unknown) => log.warn("stage run row check failed: %s", errorMessage(error))));
   });
   // The user deleted a row that named a run: the delete intents are read again, and a run ends only as the store's one rule finds its
   // row gone (deleteIntentsOnDisk), live or left parked by a restart.
   store.rowDeleted.subscribe(() => {
     intentsPending = true;
-    void consumeIntents();
+    detach(consumeIntents);
   });
   /** Whether a state holds the item; when it is that run, its row is removed. */
   function removedHeld(itemId: number, runId: string): boolean {
@@ -817,7 +822,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         case "spawn":
           state.due.add(`${effect.stageId}#${effect.attempt}`);
           state.busy += 1;
-          void launch(state, effect.stageId, effect.attempt);
+          detach(() => launch(state, effect.stageId, effect.attempt), "launch");
           break;
         case "evaluate_gate": {
           const stage = version.stages.find(candidate => candidate.id === effect.stageId);
@@ -1543,7 +1548,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function projectRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]> {
     // Each reader asks for the takeover, the unconfirmed run ends and the delete intents, whichever rows it reads: a run whose row is gone
     // or no longer names it is shown on no row and is ended this way too.
-    void adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error)));
+    detach(() => adopted().catch((error: unknown) => log.warn("template run takeover for a reader failed: %s", errorMessage(error))));
     const named = items.some(item => item.templateId !== undefined && item.runId !== undefined);
     const runOf = named ? await records.view().catch(() => null) : null;
     return items.map((item) => {

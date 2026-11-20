@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/w
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
-import { boardRunState, type RunRecord, type WorkflowRunState } from "../run-state.js";
+import { boardRunState, type RunRecord } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import type { JoinConflict } from "../shipped-shapes.js";
@@ -34,28 +35,26 @@ type WorkflowDeps = NonNullable<WorkBoardEngineDeps["workflow"]>;
 
 function observeRunWork() {
   const pending = new Set<Promise<unknown>>();
-  function track<T>(work: Promise<T>): Promise<T> {
+  const launches = new AsyncLocalStorage<{ linked(): void; resume(): void }>();
+  function track(work: Promise<unknown>): void {
     pending.add(work);
     const remove = () => { pending.delete(work); };
     void work.then(remove, remove);
-    return work;
   }
-  function observe(runs: WorkflowRunState): WorkflowRunState {
-    return new Proxy(runs, {
-      get(target, key: keyof WorkflowRunState) {
-        return (...args: unknown[]) => track(Reflect.apply(target[key], target, args));
-      },
-    });
-  }
-  async function drain(): Promise<void> {
-    // Run the engine's promise continuations, including work posted by a completed store operation.
-    await new Promise<void>(resolve => setImmediate(resolve));
-    while (pending.size > 0) {
-      await Promise.allSettled(pending);
-      await new Promise<void>(resolve => setImmediate(resolve));
+  const observe: NonNullable<WorkflowDeps["_observeDetachedWorkForTest"]> = (work, kind) => {
+    if (kind !== "launch") {
+      track(work());
+      return;
     }
+    // A controlled child parks its launch after linkage and resumes tracking before it ends.
+    const linked = Promise.withResolvers<void>();
+    const done = launches.run({ linked: linked.resolve, resume: () => track(done) }, work);
+    track(Promise.race([linked.promise, done]));
+  };
+  async function drain(): Promise<void> {
+    while (pending.size > 0) await Promise.allSettled(pending);
   }
-  return { track, observe, drain };
+  return { observe, drain, currentLaunch: () => launches.getStore() };
 }
 
 /** A real board, run file and template store in a temp folder, a runner whose children end when the test says so, and a workspace provider that
@@ -91,6 +90,7 @@ export async function stageRunHarness(opts: {
   const runner = {
     async spawn(input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }): Promise<SubAgentSpawnResult> {
       const sessionId = `child-${children.length + 1}`;
+      const launch = runWork?.currentLaunch();
       let end: (result: SubAgentSpawnResult) => void = () => undefined;
       const done = new Promise<SubAgentSpawnResult>(resolve => { end = resolve; });
       const child: FakeChild = {
@@ -98,6 +98,7 @@ export async function stageRunHarness(opts: {
         finish: (result = {}) => {
           if (child.ended) return;
           child.ended = true;
+          launch?.resume();
           end({ summary: `output of ${sessionId}`, toolCallCount: 0, turnCount: 1, childSessionId: sessionId, entries: [], ok: true, endTrustOrigin: "llm-tool-arg", ...result });
           for (const changed of childChanges) changed();
         },
@@ -108,6 +109,7 @@ export async function stageRunHarness(opts: {
       hooks?.onLinked?.({ childSessionId: sessionId });
       const scripted = opts.script?.(input);
       if (scripted) child.finish(scripted);
+      launch?.linked();
       return done;
     },
     interruptRun(id: string) {
@@ -151,16 +153,8 @@ export async function stageRunHarness(opts: {
       audit: (event: (typeof audits)[number]) => { audits.push(event); },
       ...opts.workflow,
       ...opts.wiring?.(store, { workspace }),
+      ...(runWork ? { _observeDetachedWorkForTest: runWork.observe } : {}),
     } satisfies WorkflowDeps;
-    if (runWork) {
-      workflow.runs = runWork.observe(workflow.runs);
-      const get = store.get.bind(store);
-      const setRunStatus = store.setRunStatus.bind(store);
-      const setRunResult = store.setRunResult.bind(store);
-      store.get = (...args) => runWork.track(get(...args));
-      store.setRunStatus = (...args) => runWork.track(setRunStatus(...args));
-      store.setRunResult = (...args) => runWork.track(setRunResult(...args));
-    }
     return createWorkBoardEngine({
       store,
       getRunner: () => runner,
