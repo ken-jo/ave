@@ -1090,6 +1090,7 @@ describe("construct negotiates the host protocol", () => {
     const roots = spawnableRoots();
     const originalPlatform = process.platform;
     spawnConfinedChild.mockReset();
+    fakeSandboxHome.on = true;
     setProcessPlatform("win32");
     setPluginWorkerConfinementRequestedAtBoot(true);
     setAveHomePrivacyAtBoot({ enforcement: "none", home: roots.context.pluginRoot!, category: "read-back-failed", reason: "fixture" });
@@ -1106,6 +1107,7 @@ describe("construct negotiates the host protocol", () => {
       _resetAveHomePrivacyForTest();
       __resetSandboxRequestedAtBootForTest();
       setProcessPlatform(originalPlatform);
+      fakeSandboxHome.on = false;
       spawnConfinedChild.mockReset();
       roots.remove();
     }

@@ -1,7 +1,9 @@
 /** Module factories for tests that simulate win32 on a POSIX host; each returns the real module on Windows. Use from vi.mock factories via a dynamic import. */
 import type * as Fs from "node:fs";
 import type * as Module from "node:module";
+import type * as Os from "node:os";
 import type * as Path from "node:path";
+import type * as SandboxProcessHome from "../../permissions/sandbox-process-home.js";
 import type * as StampTargets from "../../permissions/windows-stamp-targets.js";
 import type * as ConfigurationHandles from "../../shared/windows-configuration-handles.js";
 import type * as PathFacts from "../../shared/windows-path-facts.js";
@@ -62,6 +64,22 @@ export async function simulatedWindowsPathFacts(actual: typeof PathFacts, native
           ...(options?.content ? { contentHex: row.exists && !row.directory ? readFileSync(path).toString("hex") : null } : {}) };
       }),
   };
+}
+
+/** A Windows profile joined onto a POSIX temp root is one relative name to this kernel, which the real HOME would create in the working directory. While win32 is simulated, the HOME is a host temp directory and carries no Windows profile variables. */
+export async function simulatedSandboxProcessHome(actual: typeof SandboxProcessHome, nativeHost = host): Promise<typeof SandboxProcessHome> {
+  if (nativeHost === "win32") return actual;
+  const { vi } = await import("vitest");
+  const { mkdtempSync, realpathSync, rmSync } = await vi.importActual<typeof Fs>("node:fs");
+  const { tmpdir } = await vi.importActual<typeof Os>("node:os");
+  const { join } = await vi.importActual<typeof Path>("node:path");
+  const createSandboxProcessHome: typeof actual.createSandboxProcessHome = (...args) => {
+    if ((args[0] ?? process.platform) !== "win32") return actual.createSandboxProcessHome(...args);
+    const path = realpathSync.native(mkdtempSync(join(tmpdir(), "simulated-sandbox-home-")));
+    return Object.freeze({ path, env: Object.freeze({ HOME: path, USERPROFILE: path }),
+      cleanup: () => rmSync(path, { recursive: true, force: true }) });
+  };
+  return { ...actual, createSandboxProcessHome };
 }
 
 /** Drive-path arguments use win32 path operations while the simulated platform is win32. */
