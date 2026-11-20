@@ -537,6 +537,62 @@ describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (pla
   });
 });
 
+it.each([
+  ["linux", "/srv//fixtures/habitat", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/x/../habitat", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/./habitat", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/habitat/.", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/alice/.", "/srv/fixtures/alice"],
+  ["linux", "//srv/fixtures/habitat", "/srv/fixtures/habitat"],
+  ["darwin", "/Users//bob", "/Users/bob"],
+  ["darwin", "//Users/bob", "/Users/bob"],
+  ["win32", String.raw`D:\fixtures\x\..\habitat`, String.raw`D:\fixtures\habitat`],
+  ["win32", String.raw`D:\fixtures\.\habitat`, String.raw`D:\fixtures\habitat`],
+] as const)("redacts the configured and normalized home spellings on %s (%s)", async (platform, configured, normalized) => {
+  fixture.platform = platform;
+  fixture.home = configured;
+  vi.resetModules();
+  const { redactHomePathsInText, redactFsPath } = await import("../dlp-filter.js");
+  const { redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+  for (const spelling of [configured, normalized]) {
+    const path = `${spelling}/file`;
+    expect(redactHomePathsInText(`see ${path} now`)).toBe("see [home]/file now");
+    expect(JSON.parse(redactHomePathsInText(JSON.stringify({ p: path })))).toEqual({ p: "[home]/file" });
+    expect(redactFsPath(path)).toBe("<home>/file");
+    expect(redactJudgeText(path)).toBe("[home]/file");
+    const legacyUrl = `file://${path.replaceAll("\\", "/")}`;
+    expect(redactHomePathsInText(legacyUrl)).toBe("file://[home]/file");
+    expect(redactHomePathsInText(encodeURIComponent(path))).toBe("[home-token]");
+  }
+  const url = pathToFileURL(`${configured}/file`).href;
+  expect(redactHomePathsInText(url)).toBe("file://[home]/file");
+  expect(redactFsPath(url)).toBe("file://<home>/file");
+});
+
+it.each([
+  ["linux", "synthetic-account/./home", "synthetic-account/home"],
+  ["win32", "D:synthetic-account/./home", "D:synthetic-account/home"],
+] as const)("keeps relative spellings independent of the working directory on %s", async (platform, configured, normalized) => {
+  fixture.platform = platform;
+  fixture.home = configured;
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  const drive = platform === "win32" ? "D:" : "";
+  const absolute = `${drive}${process.cwd()}/${normalized.slice(drive.length)}/file`;
+  expect(redactFsPath(absolute)).toBe(absolute);
+  for (const home of [configured, normalized]) expect(redactFsPath(`${home}/file`)).toBe("<home>/file");
+});
+
+it.each(["D:", "D:."])("does not treat the drive-relative spelling %s as a configured home", async home => {
+  fixture.platform = "win32";
+  fixture.home = home;
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  const absolute = `D:${process.cwd()}/file`;
+  expect(redactFsPath(absolute)).toBe(absolute);
+  expect(redactFsPath(`${home}file`)).toBe(`${home}file`);
+});
+
 it("redacts emitted proxy properties without invoking their prototype trap", async () => {
   await loadHomeRedactor("linux");
   const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");

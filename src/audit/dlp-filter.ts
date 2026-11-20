@@ -73,23 +73,36 @@ export function redactForLLM(text: string, turnId?: string): RedactResult {
 
 const homePlatform = os.platform();
 
-function configuredHome(): string {
+interface ConfiguredHome {
+  spellings: string[];
+  nativeUrl: string;
+}
+
+function configuredHome(): ConfiguredHome {
+  const unsupported = { spellings: [], nativeUrl: "" };
   let raw: string;
-  try { raw = os.homedir(); } catch { return ""; }
-  if (!raw) return "";
+  try { raw = os.homedir(); } catch { return unsupported; }
+  if (!raw) return unsupported;
   const windows = homePlatform === "win32";
   const paths = windows ? win32 : posix;
   const root = paths.parse(raw).root;
   const spelling = root + raw.slice(root.length).replace(/[\\/]+$/u, "");
   // Quotes and controls can coincide with syntax in serialized text. POSIX
   // filename backslashes can also change the meaning of a following quote.
-  if (/["\p{Cc}]/u.test(spelling) || !windows && spelling.includes("\\")) return "";
-  const home = paths.resolve(spelling);
-  // Root homes have no account component. Only the generic text rules apply.
-  return home === paths.parse(home).root ? "" : home;
+  if (/["\p{Cc}]/u.test(spelling) || !windows && spelling.includes("\\")) return unsupported;
+  const normalized = paths.normalize(spelling);
+  // Roots and current-directory aliases have no account component.
+  if (normalized === paths.parse(normalized).root || normalized === "." || windows && /^[a-z]:\.$/iu.test(normalized)) {
+    return unsupported;
+  }
+  const comparable = (path: string): string => windows ? path.replaceAll("\\", "/") : path;
+  const spellings = comparable(spelling) === comparable(normalized) ? [spelling] : [spelling, normalized];
+  // The file URL converter would resolve relative paths against the process directory.
+  const absolute = windows ? /^(?:[a-z]:[\\/]|[\\/]{2})/iu.test(normalized) : posix.isAbsolute(normalized);
+  return { spellings, nativeUrl: absolute ? pathToFileURL(normalized).href : "" };
 }
 
-const _homeDir = configuredHome();
+const home = configuredHome();
 
 const MAX_AUDIT_PATH = 256;
 
@@ -110,12 +123,9 @@ interface HomePrefix {
   slashSuffix: boolean;
 }
 
-function compileHomePrefixes(home: string): { literal: HomePrefix[]; decoded: HomePrefix[] } {
-  if (!home) return { literal: [], decoded: [] };
+function compileHomePrefixes({ spellings, nativeUrl: standard }: ConfiguredHome): { literal: HomePrefix[]; decoded: HomePrefix[] } {
   const windows = homePlatform === "win32";
   const flags = windows || homePlatform === "darwin" ? "iu" : "u";
-  const standard = pathToFileURL(home).href;
-  const legacy = `file://${home}`;
   const compile = (prefix: string, kind: "native-url" | "raw-url" | "legacy-url" | "path", decoded = false): HomePrefix => {
     const url = kind !== "path";
     const nativeUrl = kind === "native-url" && windows;
@@ -128,17 +138,18 @@ function compileHomePrefixes(home: string): { literal: HomePrefix[]; decoded: Ho
       slashSuffix: kind === "legacy-url",
     };
   };
-  return {
-    literal: [compile(standard, "native-url"), compile(legacy, "legacy-url"), compile(home, "path")],
-    decoded: [
-      compile(decodeHomeEscapes(standard, "percent-entity"), "raw-url", true),
-      compile(legacy, "legacy-url", true),
-      compile(home, "path", true),
-    ],
+  const compileSpellings = (decoded: boolean): HomePrefix[] => {
+    const legacy = spellings.map(spelling => compile(`file://${spelling}`, "legacy-url", decoded));
+    // Prefer the exact configured spelling when it extends a normalized URL prefix.
+    if (standard) legacy.splice(spellings.length > 1 ? 1 : 0, 0, decoded
+      ? compile(decodeHomeEscapes(standard, "percent-entity"), "raw-url", true)
+      : compile(standard, "native-url"));
+    return [...legacy, ...spellings.map(spelling => compile(spelling, "path", decoded))];
   };
+  return { literal: compileSpellings(false), decoded: compileSpellings(true) };
 }
 
-const homePrefixes = compileHomePrefixes(_homeDir);
+const homePrefixes = compileHomePrefixes(home);
 
 const URL_PERCENT_ESCAPE = /%[0-9a-f]{2}/iu;
 
@@ -210,33 +221,34 @@ const URI_AND_ENTITY_FAMILIES: readonly HomeEscapeFamily[] = ["full", "percent",
 const INTRODUCER = /[\\%&]/u;
 const BOUNDARY_CHARACTERS = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\"'`<>()[]{},|";
 
-function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeRedaction {
+function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform: NodeJS.Platform): HomeRedaction {
   const windows = platform === "win32";
   const flags = windows || platform === "darwin" ? "iu" : "u";
-  const standard = home ? pathToFileURL(home).href.replace(/\/$/u, "") : "";
-  const slashHome = home.replace(/\\/gu, "/");
-  const anchor = home.split(/[\\/]/u).filter(Boolean).at(-1);
-  const trigger = new RegExp(String.raw`[\\%&]|users|home` + (anchor ? "|" + escapeRegExp(anchor) : ""), "iu");
+  const standard = nativeUrl.replace(/\/$/u, "");
+  const slashHomes = spellings.map(spelling => spelling.replaceAll("\\", "/"));
+  const anchors = new Set(slashHomes.map(spelling => spelling.slice(spelling.lastIndexOf("/") + 1)));
+  const trigger = new RegExp([String.raw`[\\%&]|users|home`, ...[...anchors].map(escapeRegExp)].join("|"), "iu");
   const boundaries = new Set([...BOUNDARY_CHARACTERS].map(character => character.charCodeAt(0)));
-  for (const character of home) if (character !== '"') boundaries.delete(character.charCodeAt(0));
-  const requiredPathCharacter = windows ? /^[a-z]:/iu.test(home) ? ":" : "" : home.startsWith("/") ? "/" : "";
-  if (!home) return { forms: [], trigger, boundaries, requiredPathCharacter };
-  const spellings = [
-    [`file://${slashHome}`, "file://[home]"],
-    [standard, "file://[home]"],
-    [slashHome, "[home]"],
-    [home, "[home]"],
-  ] as const;
-  const forms = spellings.map(([spelling, marker]) => {
+  for (const spelling of spellings) {
+    for (const character of spelling) if (character !== '"') boundaries.delete(character.charCodeAt(0));
+  }
+  const requiredPathCharacter = windows ? /^[a-z]:/iu.test(spellings[0] ?? "") ? ":" : "" : spellings[0]?.startsWith("/") ? "/" : "";
+  const urls = new Set(slashHomes.map(spelling => `file://${spelling}`));
+  if (standard) urls.add(standard);
+  const compile = (spelling: string, marker: string): HomeDetector => {
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
     const pattern = homePattern(spelling, windows, spelling === standard);
     const source = String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`;
     return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker };
-  });
+  };
+  const forms = [
+    ...[...urls].map(spelling => compile(spelling, "file://[home]")),
+    ...slashHomes.map(spelling => compile(spelling, "[home]")),
+  ];
   return { forms, trigger, boundaries, requiredPathCharacter };
 }
 
-const homeRedaction = compileHomeRedaction(_homeDir, homePlatform);
+const homeRedaction = compileHomeRedaction(home, homePlatform);
 
 export function mayContainHomePath(value: string): boolean {
   return homeRedaction.trigger.test(value);
