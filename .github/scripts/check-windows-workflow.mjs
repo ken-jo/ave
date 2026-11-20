@@ -31,25 +31,27 @@ export function windowsRunSteps(workflow) {
   });
 }
 
+export function windowsRegressionStepFiles(run, readInventory, name) {
+  const invocation = run.trim();
+  const inventoryName = LIST_INVOCATION.exec(invocation)?.[1];
+  const directPaths = TEST_COMMAND_RE.exec(invocation)?.[1];
+  let list;
+  if (inventoryName !== undefined) {
+    list = readInventory(inventoryName);
+    if (list === undefined) throw new Error(`Windows test inventory is missing: ${inventoryName}`);
+  } else if (directPaths !== undefined) {
+    list = directPaths.trim().split(/[ \t]+/u).join("\n");
+  } else {
+    throw new Error(`${name}: expected one validated test invocation`);
+  }
+  return windowsTestCommands(list).slice(1).flatMap(args => args.slice(4).map(file => file.slice(2)));
+}
+
 export function windowsRegressionFiles(workflow, inventories) {
   const files = new Set();
   for (const { jobId, stepName, name, run } of windowsRunSteps(workflow)) {
     if (jobId !== "windows-permission-tests" || !REGRESSION_STEP.test(stepName ?? "")) continue;
-    const invocation = run.trim();
-    const inventoryName = LIST_INVOCATION.exec(invocation)?.[1];
-    const directPaths = TEST_COMMAND_RE.exec(invocation)?.[1];
-    let list;
-    if (inventoryName !== undefined) {
-      list = inventories.get(inventoryName);
-      if (list === undefined) throw new Error(`Windows test inventory is missing: ${inventoryName}`);
-    } else if (directPaths !== undefined) {
-      list = directPaths.trim().split(/[ \t]+/u).join("\n");
-    } else {
-      throw new Error(`${name}: expected one validated test invocation`);
-    }
-    for (const args of windowsTestCommands(list).slice(1)) {
-      for (const file of args.slice(4)) files.add(file.slice(2));
-    }
+    for (const file of windowsRegressionStepFiles(run, path => inventories.get(path), name)) files.add(file);
   }
   return [...files];
 }
