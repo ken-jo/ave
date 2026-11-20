@@ -11,7 +11,7 @@ import {
   type PermissionCheckContext,
   type PermissionCheckResult,
 } from "../permissions/permission-manager.js";
-import { isHostApprovalRejectedDecision, type ApprovalDecision } from "../permissions/approval-gate.js";
+import { approvalReasonFields, approvalRequestTarget, isHostApprovalRejectedDecision, type ApprovalDecision, type LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type {
   HostShellExecutionPlan,
@@ -121,6 +121,7 @@ export interface AuthorizationStageContext {
   rationaleResumeContext: RationaleResumeExecutionContext | undefined;
   rationaleBatchContext: RationaleBatchExecutionContext | undefined;
   targetFilePath: string | undefined;
+  linkedTargets: readonly LinkedApprovalTarget[];
   canonicalTargets: Array<{ filePath: string; canonicalPath: string }>;
   approvalCacheKey: string | undefined;
   executionCwd: string;
@@ -199,6 +200,7 @@ export async function authorizeToolInvocation(
     rationaleResumeContext,
     rationaleBatchContext,
     targetFilePath,
+    linkedTargets,
     canonicalTargets,
     approvalCacheKey,
     executionCwd,
@@ -988,7 +990,8 @@ export async function authorizeToolInvocation(
           source: source as ToolSource,
           ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
           createdAt: Date.now(),
-          ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
+          ...(approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) ? { target: approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) } : {}),
+          ...approvalReasonFields(permissionResult, { fileTarget: targetFilePath !== undefined && invocationCategory !== "shell" }),
           sensitivePathPattern,
           trustOrigin: invocationPermissionContext.trustOrigin,
           // Propagate approvalCacheKey so renderer record key

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, renameSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { constants, linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FileHandle } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +9,7 @@ const file = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock("node:fs/promises", async (importOriginal) => ({
   lstat: (await importOriginal<typeof import("node:fs/promises")>()).lstat, open: file.open,
 }));
-import { readPreviewDocumentInput } from "../preview-document-input.js";
+import { readJudgedDocumentInput, readPreviewDocumentInput } from "../preview-document-input.js";
 
 let dir: string;
 let path: string;
@@ -131,6 +131,53 @@ describe("bounded document input", () => {
     };
     await expect(readPreviewDocumentInput(path)).rejects.toMatchObject({ code: "read-failed" });
     expect(opened?.fd).toBe(-1);
+  });
+
+  it("reads a document for the model only from the file its judged path still names after the read", async () => {
+    const folder = join(dir, "sheets");
+    const elsewhere = join(dir, "elsewhere", ".ssh");
+    mkdirSync(folder);
+    mkdirSync(elsewhere, { recursive: true });
+    const judged = join(folder, "table.csv");
+    const protectedFile = join(elsewhere, "table.csv");
+    writeFileSync(judged, "a,b\n1,2");
+    writeFileSync(protectedFile, "key,PROTECTED");
+    // The folder, or the last name (a second name for the protected file), leads into the protected folder from just
+    // before the open until the first read, so the name and the descriptor agree right after the open; it is back before
+    // anything looks at the path again. The open lacks the flag that refuses a link, as on Windows.
+    const swaps = {
+      folder: {
+        to: () => { renameSync(folder, `${folder}.orig`); symlinkSync(elsewhere, folder, "junction"); },
+        back: () => { unlinkSync(folder); renameSync(`${folder}.orig`, folder); },
+      },
+      "last name": {
+        to: () => { renameSync(judged, `${judged}.orig`); linkSync(protectedFile, judged); },
+        back: () => { unlinkSync(judged); renameSync(`${judged}.orig`, judged); },
+      },
+    };
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const swapAroundOpen = (swap: { to: () => void; back: () => void }) =>
+      file.open.mockImplementationOnce(async (target: string, flags: number) => {
+        swap.to();
+        opened = await actual.open(target, flags & ~(constants.O_NOFOLLOW ?? 0));
+        const read = opened.read.bind(opened);
+        vi.spyOn(opened, "read").mockImplementationOnce((async (...readArgs: Parameters<FileHandle["read"]>) => {
+          swap.back();
+          return read(...readArgs);
+        }) as FileHandle["read"]);
+        return opened;
+      });
+    for (const [label, swap] of Object.entries(swaps)) {
+      swapAroundOpen(swap);
+      await expect(readJudgedDocumentInput(judged), label).rejects.toMatchObject({ code: "read-failed" });
+      expect(opened?.fd, label).toBe(-1);
+      // Control: through the reader that judges no path (the engine's own files), the same swap does reach the other
+      // file, so the refusal above is the judged path's check.
+      swapAroundOpen(swap);
+      expect((await readPreviewDocumentInput(judged)).toString(), label).toBe("key,PROTECTED");
+    }
+    // Nothing swapped: the judged read takes the file.
+    expect((await readJudgedDocumentInput(judged)).toString()).toBe("a,b\n1,2");
   });
 
   it("refuses non-files and oversize files before allocating an input buffer", async () => {

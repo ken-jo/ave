@@ -102,4 +102,19 @@ describe("app zoom persistence", () => {
   await settings.patch({ appearance: { zoomLevel: 8.5 } });
   expect(createSettingsService(directory).get("appearance")).toMatchObject({ zoomLevel: -4, font: { family: "Example Sans" } });
  });
+
+  it("keeps the editor command empty by default, persists one, and refuses one that is not a single readable line", async () => {
+    expect(DEFAULT_SETTINGS).toHaveProperty("documents.editorCommand", "");
+    const settings = createSettingsService(directory);
+    await settings.patch({ documents: { editorCommand: "edit --goto {file}:{line}" } });
+    expect(createSettingsService(directory).getAll()).toHaveProperty("documents.editorCommand", "edit --goto {file}:{line}");
+    for (const refused of ["edit\n{file}", 'edit "{file}', "x".repeat(2_001), 7]) {
+      await settings.patch({ documents: { editorCommand: refused as string } });
+      expect(settings.getAll()).toHaveProperty("documents.editorCommand", "edit --goto {file}:{line}");
+    }
+    await settings.patch({ documents: { editorCommand: "" } });
+    expect(createSettingsService(directory).getAll()).toHaveProperty("documents.editorCommand", "");
+    // The open mode is untouched by an editor-command patch.
+    expect(settings.getAll()).toHaveProperty("documents.openMode", "direct");
+  });
 });

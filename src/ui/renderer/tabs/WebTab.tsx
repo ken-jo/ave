@@ -9,6 +9,7 @@ import type { AppSettings, AveApi } from "../types.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { useSettingsPersistence } from "../hooks/use-settings-persistence.js";
 import { useTranslation } from "../../../i18n/react.js";
+import { ADDRESS_SEARCH_ENGINE_IDS, DEFAULT_ADDRESS_SEARCH_ENGINE, isAddressSearchEngine, type AddressSearchEngine } from "../../../shared/browser-address.js";
 
 /** ─── webView preferredFlow options (relocated from AppearanceTab — it is browsing behavior, so it belongs on the Web /
  * Browsing tab) ─────────── */
@@ -63,6 +64,55 @@ function useWebViewPreferredFlow(api: AveApi, onSaved: () => void) {
   return { flow, setFlow, loaded, saving: persistence.saving, error: loadError ?? persistence.error };
 }
 
+/** The engine browser address-row text goes to when it is not an address. Saved on selection; a failed save restores the stored choice. */
+function useAddressSearchEngine(api: AveApi, onSaved: () => void) {
+  const editor = useSettingsEditor();
+  const inEditor = editor !== null;
+  const editorSettings = editor?.settings ?? null;
+  const [engine, setEngineState] = useState<AddressSearchEngine>(editorSettings?.webView.addressSearchEngine ?? DEFAULT_ADDRESS_SEARCH_ENGINE);
+  const canonical = useRef({ engine, revision: 0 });
+  const [loaded, setLoaded] = useState(editorSettings !== null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const persistence = useSettingsPersistence(onSaved);
+  useEffect(() => {
+    if (!editorSettings) return;
+    canonical.current = { engine: editorSettings.webView.addressSearchEngine, revision: canonical.current.revision + 1 };
+    setEngineState(editorSettings.webView.addressSearchEngine);
+    setLoaded(true);
+    setLoadFailed(false);
+  }, [editorSettings]);
+  useEffect(() => {
+    if (inEditor) return;
+    let cancelled = false;
+    const readRevision = canonical.current.revision;
+    const applySnapshot = (settings: AppSettings) => {
+      const stored = settings.webView?.addressSearchEngine;
+      if (cancelled) return;
+      const next = isAddressSearchEngine(stored) ? stored : DEFAULT_ADDRESS_SEARCH_ENGINE;
+      canonical.current = { engine: next, revision: canonical.current.revision + 1 };
+      setEngineState(next);
+      setLoaded(true);
+      setLoadFailed(false);
+    };
+    void api.getSettings().then((settings) => {
+      if (canonical.current.revision === readRevision) applySnapshot(settings);
+    }, () => { if (!cancelled && canonical.current.revision === readRevision) setLoadFailed(true); });
+    const unsubscribe = api.onSettingsUpdated(applySnapshot);
+    return () => { cancelled = true; unsubscribe(); };
+  }, [api, inEditor]);
+  const setEngine = (next: AddressSearchEngine) => {
+    if (!loaded || persistence.saving || next === engine) return;
+    const revision = canonical.current.revision;
+    setEngineState(next);
+    void persistence.persist(() => api.updateSettings({ webView: { addressSearchEngine: next } }), {
+      rollback: () => setEngineState(canonical.current.engine),
+    }).then((result) => {
+      if (result !== null && canonical.current.revision === revision) canonical.current = { engine: next, revision: revision + 1 };
+    });
+  };
+  return { engine, setEngine, loaded, saving: persistence.saving, failed: loadFailed || persistence.error !== null };
+}
+
 export interface WebTabProps {
   api: AveApi;
   webProvider: AppSettings["webSearch"]["provider"];
@@ -80,7 +130,7 @@ export interface WebTabProps {
 
 export function WebTab(props: WebTabProps) {
   const { t } = useTranslation();
-  useAppSettingsControls(["web-search-engine", "web-view-flow"]);
+  useAppSettingsControls(["web-search-engine", "web-view-flow", "web-address-search"]);
   const editor = useSettingsEditor();
   const { api, webProvider, setWebProvider, hasWebKey, setHasWebKey, webKeyInput, setWebKeyInput, onSaved, onSaveKey, saving, onImmediateChange } = props;
   const webInfo = WEB_PROVIDERS.find((p) => p.id === webProvider) ?? WEB_PROVIDERS[0];
@@ -127,6 +177,8 @@ export function WebTab(props: WebTabProps) {
     },
   })));
 
+
+  const addressSearch = useAddressSearchEngine(api, onSaved);
 
   if (!webViewOption) throw new Error("Invalid browsing flow");
 
@@ -219,6 +271,33 @@ export function WebTab(props: WebTabProps) {
           })}
         </div>
         {webViewError && <p role="alert" className="mt-2 text-xs text-destructive">{webViewError}</p>}
+      </SettingsSection>
+
+      <SettingsSection
+        data-settings-section="web-address-search"
+        title={t("webTab.addressSearchTitle")}
+        description={t("webTab.addressSearchDescription")}
+      >
+        <fieldset data-testid="web-address-search-engine" data-setting-id="webView.addressSearchEngine" disabled={!addressSearch.loaded || addressSearch.saving} className="flex flex-wrap gap-2">
+          <legend className="sr-only">{t("webTab.addressSearchTitle")}</legend>
+          {ADDRESS_SEARCH_ENGINE_IDS.map((id) => {
+            const checked = addressSearch.engine === id;
+            return (
+              <label key={id} data-value={id} data-checked={checked ? "true" : "false"}
+                className={`cursor-pointer rounded-full border px-3 py-1 text-xs transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring ${
+                  checked
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"
+                }`}
+              >
+                <input type="radio" name="address-search-engine" value={id} checked={checked} className="sr-only"
+                  onChange={() => addressSearch.setEngine(id)} />
+                {t(`webTab.addressSearchEngine.${id}`)}
+              </label>
+            );
+          })}
+        </fieldset>
+        {addressSearch.failed ? <p role="alert" className="mt-2 text-xs text-destructive">{t("webTab.addressSearchSaveFailed")}</p> : null}
       </SettingsSection>
     </div>
   );

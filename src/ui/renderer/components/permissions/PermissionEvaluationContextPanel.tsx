@@ -2,9 +2,11 @@ import type { PermissionEvaluationContext } from "../../types.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { t } from "../../../../i18n/runtime.js";
 import { categoryLabel, ReviewRow } from "./PermissionDecisionCard.js";
+import { revealHiddenCharacters } from "../../../../shared/display-safe-text.js";
 
+// One path per line: a hidden character or a line break inside a path is spelled, so a row is always one whole path.
 function formatList(values: readonly string[], emptyText: string): string {
-  return values.length > 0 ? values.join("\n") : emptyText;
+  return values.length > 0 ? values.map((value) => revealHiddenCharacters(value, { lineBreaks: true })).join("\n") : emptyText;
 }
 
 export function formatEvaluationLimits(context?: PermissionEvaluationContext): string {
@@ -52,7 +54,7 @@ export function PermissionEvaluationContextPanel({
         </ReviewRow>
         <ReviewRow label={t("permissionEvaluationContextPanel.labelWorkingDir")}>
           <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-dense">
-            {context.executionCwd}
+            {revealHiddenCharacters(context.executionCwd, { lineBreaks: true })}
           </pre>
         </ReviewRow>
         <ReviewRow label={t("permissionEvaluationContextPanel.labelAllowedPaths")}>

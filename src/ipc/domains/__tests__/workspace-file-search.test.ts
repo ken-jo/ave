@@ -39,6 +39,36 @@ afterAll(async () => {
 const paths = (r: { matches: Array<{ relativePath: string }> }) => r.matches.map((m) => m.relativePath);
 
 describe("searchWorkspaceFiles", () => {
+  it("searches the named folder itself, so a large sibling cannot use up the match cap", async () => {
+    const big = join(workspace, "many");
+    const docs = join(workspace, "docs");
+    mkdirSync(big);
+    mkdirSync(docs);
+    for (let i = 0; i < 120; i += 1) writeFileSync(join(big, `f${String(i).padStart(4, "0")}.txt`), "x");
+    writeFileSync(join(docs, "notes-f0001.txt"), "x");
+    writeFileSync(join(docs, "data.csv"), "x");
+    const everywhere = await searchWorkspaceFiles({ query: "f0", roots: [workspace], cwd: workspace, extraAllowed: [] });
+    expect(everywhere.matches.some((match) => match.path === join(docs, "notes-f0001.txt"))).toBe(false);
+    const scoped = await searchWorkspaceFiles({
+      query: "f0", roots: [workspace], cwd: workspace, extraAllowed: [], folder: { path: docs, root: workspace },
+    });
+    expect(scoped.matches).toEqual([{ path: join(docs, "notes-f0001.txt"), relativePath: "notes-f0001.txt", root: workspace, bytes: 1 }]);
+    expect(scoped.truncated).toBe(false);
+  });
+
+  it("matches file names only in a folder search, and finds a file created after an earlier search", async () => {
+    const assets = join(workspace, "assets");
+    mkdirSync(join(assets, "ts-icons"), { recursive: true });
+    writeFileSync(join(assets, "ts-icons", "blob.bin"), "x");
+    const search = () => searchWorkspaceFiles({
+      query: "ts", roots: [workspace], cwd: workspace, extraAllowed: [], folder: { path: assets, root: workspace },
+    });
+    // The folder name contains the query and a path-wide match would list it; the file's own name does not.
+    expect((await search()).matches).toEqual([]);
+    writeFileSync(join(assets, "parts.txt"), "x");
+    expect(paths(await search())).toEqual(["parts.txt"]);
+  });
+
   it("ranks basename-prefix matches first and returns relative paths", async () => {
     const result = await searchWorkspaceFiles({
       query: "app",

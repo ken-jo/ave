@@ -1,5 +1,6 @@
 import type { ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import type { PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
+import type { PermissionCheckContext } from "../permissions/permission-manager.js";
 import type { A2AAgentCausalContext } from "../engine/a2a-agent-message-envelope.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import type {
@@ -90,7 +91,7 @@ export interface ToolPermissionContext {
   otherPrincipal?: boolean;
   admissionDenial?: PermissionDecisionRequest["admissionDenial"];
   floor?: PermissionDecisionRequest["floor"];
-  paths?: PermissionDecisionRequest["paths"];
+  paths?: PermissionCheckContext["paths"];
   secretRead?: boolean;
   headless?: boolean;
   // Native --exec uses headless review but honors the local owner's explicit rules and durable grants first.
@@ -115,6 +116,8 @@ export interface ToolPermissionContext {
   remoteControllerAuthority?: RemoteControllerAuthority;
   // Host-selected guest for grading process and filesystem effects; never supplied by tools or wire data.
   disposableSubstrate?: DisposableSubstrate;
+  /** Effective cwd from the issued guest route; never supplied by tools or wire data. */
+  guestCwd?: string;
   /** Host-derived app identity and optional opaque one-shot grant. Never copied into tool metadata. */
   pluginOperation?: PluginOperationInvocationContext;
   /** Host-owned stale-card binding checked against the final resolved registry Tool. */

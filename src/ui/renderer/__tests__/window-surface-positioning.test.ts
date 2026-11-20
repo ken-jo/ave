@@ -20,6 +20,8 @@ const FIXED_POSITIONING_ALLOWED: Record<string, string> = {
     "portaled composer menu anchored to the caret in viewport coordinates, so the pane's overflow clipping cannot cut it",
   "components/ResourceMentionMenu.tsx":
     "portaled composer menu anchored to the caret in viewport coordinates, so the pane's overflow clipping cannot cut it",
+  "components/files/FileRowMenu.tsx":
+    "a file row's menu opens at the pointer: its zero-size anchor is portaled under the body at that viewport point, so a transformed or contained pane cannot move it, and the menu is the shared dropdown",
   "components/DevToolsPanel.tsx":
     "developer chrome behind AVE_DEV that inspects the window; not a product surface",
   "components/DevComponentLabels.tsx":

@@ -81,12 +81,8 @@ function buildPreviewRows(sideBrowserUrl = "https://example.com/docs"): JsonObje
       role: "tool_result",
       toolUseId: "preview-write",
       toolName: "write_file",
-      content: JSON.stringify({
-        kind: "ave.write_file",
-        path: WRITE_PATH,
-        before: "export const value = 1;\n",
-        after: "export const value = 2;\n",
-      }),
+      // The exact shape the write tool returns; the diff itself is a host record, not part of the result.
+      content: JSON.stringify({ path: WRITE_PATH, bytes: 24 }),
       createdAt: now + 300,
     },
     {

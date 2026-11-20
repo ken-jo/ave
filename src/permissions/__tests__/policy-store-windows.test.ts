@@ -24,6 +24,7 @@ import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { createServiceClient } from "../../boot/steps/service-endpoint.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as pathFacts from "../../shared/windows-path-facts.js";
+import { writeDenyPaths } from "../../__tests__/support/filesystem-policy-paths.js";
 
 describe.skipIf(process.platform !== "win32")("Windows administrative policy trust", () => {
   let root: string;
@@ -69,7 +70,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     vi.stubEnv("ProgramW6432", join(root, "programs64"));
     const paths = [admin, join(process.env.ProgramFiles!, "absent"), join(process.env["ProgramFiles(x86)"]!, "absent"), join(process.env.CommonProgramFiles!, "absent"), join(process.env.ProgramW6432!, "absent"), join(process.env.SystemRoot!, "absent-policy")];
     const config = buildSandboxConfig({ allowedDomains: [], allowWrite: [join(root, "workspace")], denyRead: paths, denyWrite: paths });
-    const denies = config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path);
+    const denies = writeDenyPaths(config);
     expect(denies.filter((path) => path.toLowerCase().startsWith(machine.toLowerCase()))).toEqual([]);
     for (const path of paths) expect(denies).not.toContain(path);
   });
@@ -85,7 +86,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
       denyWrite: [locked],
     });
     const denyRead = config.filesystem.denyRead.map((entry) => typeof entry === "string" ? entry : entry.path);
-    const denyWrite = config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path);
+    const denyWrite = writeDenyPaths(config);
     expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(workspace);
     expect(denyWrite).toContain(join(workspace, ".git", "config"));
     expect(denyWrite).toContain(join(workspace, ".git", "hooks"));
@@ -101,7 +102,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     await mkdir(child, { recursive: true });
     const config = buildSandboxConfig({ allowedDomains: [], allowWrite: [child], denyWrite: [blocked] });
     expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(child);
-    expect(config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path)).toContain(blocked);
+    expect(writeDenyPaths(config)).toContain(blocked);
   });
 
   it("refuses a write pattern whose literal base contains a machine root", () => {
@@ -148,7 +149,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     const target = join(process.env.ProgramData!, "OTHER~1", "locked");
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [target], denyWrite: [target] });
     expect(config.filesystem.denyRead).toContain(target);
-    expect(config.filesystem.denyWrite).toContain(target);
+    expect(writeDenyPaths(config)).toContain(target);
   });
 
   it("keeps machine deny rows when canonical identity throws", () => {
@@ -161,7 +162,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     try {
       const config = buildSandboxConfig({ allowedDomains: [], denyRead: [target], denyWrite: [target] });
       expect(config.filesystem.denyRead).toContain(target);
-      expect(config.filesystem.denyWrite).toContain(target);
+      expect(writeDenyPaths(config)).toContain(target);
     } finally {
       spy.mockRestore();
     }
@@ -179,7 +180,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     for (const allowRead of [undefined, [process.env.ProgramData!], [root]]) {
       const config = buildSandboxConfig({ allowedDomains: [], allowRead, denyRead: [admin], denyWrite: [admin] });
       expect(config.filesystem.denyRead).toContain(admin);
-      expect(config.filesystem.denyWrite).not.toContain(admin);
+      expect(writeDenyPaths(config)).not.toContain(admin);
     }
   });
 

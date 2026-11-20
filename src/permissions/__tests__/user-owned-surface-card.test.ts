@@ -121,6 +121,18 @@ describe("authenticated user-owned surface choices", () => {
     }
   });
 
+  it("sends a card about a file its file reason, and a surface decision's code to no such card", async () => {
+    for (const [reasonCode, sent] of [["secret-read", true], ["project-escape", true], ["user-owned-surface-ask", false]] as const) {
+      const f = subject("browser", { userOwnedSurface: undefined, toolName: "read_file", toolCategory: "read", reasonCode,
+        target: { filePath: "/project/.env" } });
+      if (!f.card) throw new Error(`no card was sent for ${reasonCode}`);
+      if (sent) expect(f.card, reasonCode).toMatchObject({ reasonCode });
+      else expect(f.card, reasonCode).not.toHaveProperty("reasonCode");
+      f.gate.resolveFromDesktopRenderer(f.request.id, f.answer({ choice: "deny-once", userOwnedSurfaceChoice: undefined }), f.contents as never);
+      await f.pending;
+    }
+  });
+
   it("retains the selector and native receipt for an outside-directory card", async () => {
     const f = subject("host-terminal", { kind: "out-of-allowed-dir", outOfAllowedDir: { candidatePath: "/outside", suggestedParent: "/", currentAllowed: [], adjacencyWarnings: [] } });
     expect(f.card).toMatchObject({ kind: "out-of-allowed-dir", userOwnedSurface: "host-terminal", exactRecordAllowed: false });

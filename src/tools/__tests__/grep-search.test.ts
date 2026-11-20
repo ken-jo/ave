@@ -9,6 +9,7 @@ import {
   buildRipgrepArgs,
   GrepFilesInputSchema,
   isWithinAdmittedRoot,
+  liesUnderRealRoot,
   resolveBundledRipgrep,
   searchWithRipgrep,
 } from "../grep-search.js";
@@ -81,6 +82,7 @@ describe("grep_files ripgrep engine", () => {
   it("builds argv that ignores user config and cannot read the pattern or path as flags", () => {
     const args = buildRipgrepArgs("/w", GrepFilesInputSchema.parse({ pattern: "-x" }));
     expect(args[0]).toBe("--no-config");
+    expect(args).toContain("--line-buffered");
     expect(args.slice(-4)).toEqual(["--regexp", "-x", "--", "/w"]);
     expect(args.some((arg) => arg.startsWith("--pre") || arg === "--follow" || arg.startsWith("--max-filesize"))).toBe(false);
   });
@@ -124,6 +126,12 @@ describe("grep_files ripgrep engine", () => {
     const multi = await grep({ pattern: "alpha.three", multiline: true });
     expect(multi.output).toContain("2: Needle alpha");
     expect(multi.output).toContain("3: three");
+  });
+
+  it.each(["content", "count", "files_with_matches"] as const)("retains an ordinary completed %s no-match", async (outputMode) => {
+    const result = await grep({ pattern: "absent from every file", outputMode });
+    expect(result.isError, result.output).toBe(false);
+    expect(result.output).toContain("No matches found.");
   });
 
   it("pages with limit and offset and says where to continue", async () => {
@@ -183,6 +191,54 @@ describe("grep_files ripgrep engine", () => {
     expect(result.output).toContain(`${join(workDir, "src", "b.py")}\n  1: needle gamma`);
   });
 
+  it("treats binary and UTF-16 files as the search of the tree does", async () => {
+    const folder = join(workDir, "encoded");
+    mkdirSync(folder);
+    const utf16 = (bom: number[], text: string, encoding: "le" | "be"): Buffer => {
+      const units = Buffer.from(text, "utf16le");
+      return Buffer.concat([Buffer.from(bom), encoding === "le" ? units : units.swap16()]);
+    };
+    const filler = "filler line of text\n".repeat(6_000);
+    // Zero bytes, but no zero code unit: U+0100, then U+0200 beside a space, which puts two zero bytes side by side.
+    writeFileSync(join(folder, "utf16be.txt"), utf16([0xfe, 0xff], "Āneedle Ȁ one\n", "be"));
+    writeFileSync(join(folder, "utf16le.txt"), utf16([0xff, 0xfe], "hello\nneedle two\nbye\n", "le"));
+    writeFileSync(join(folder, "utf16le-late-nul.txt"), utf16([0xff, 0xfe], `needle early\n${filler}\0\nneedle late\n`, "le"));
+    writeFileSync(join(folder, "near-nul.txt"), "needle first\nx\0y\nneedle second\n");
+    writeFileSync(join(folder, "late-nul.txt"), `needle early\n${filler}z\0z\nneedle late\n`);
+    const search = (outputMode: string) => grep({ path: "encoded", pattern: "needle", outputMode });
+
+    const lines = await search("content");
+    expect(lines.output).toContain(`${join(folder, "utf16be.txt")}\n  1: Āneedle Ȁ one`);
+    expect(lines.output).toContain(`${join(folder, "utf16le.txt")}\n  2: needle two`);
+    // A file that turns binary shows its lines up to its first NUL; one that does at once, none.
+    expect(lines.output).toContain(`${join(folder, "utf16le-late-nul.txt")}\n  1: needle early`);
+    expect(lines.output).toContain(`${join(folder, "late-nul.txt")}\n  1: needle early`);
+    expect(lines.output).not.toContain("needle late");
+    expect(lines.output).not.toContain("near-nul.txt");
+
+    const names = await search("files_with_matches");
+    for (const name of ["utf16be.txt", "utf16le.txt", "utf16le-late-nul.txt", "late-nul.txt"]) {
+      expect(names.output).toContain(join(folder, name));
+    }
+    expect(names.output).not.toContain("near-nul.txt");
+
+    // A count is of the whole file, and a file binary anywhere has none.
+    const counts = await search("count");
+    expect(counts.output).toContain(`${join(folder, "utf16be.txt")}: 1`);
+    expect(counts.output).toContain(`${join(folder, "utf16le.txt")}: 1`);
+    for (const name of ["utf16le-late-nul.txt", "late-nul.txt", "near-nul.txt"]) expect(counts.output).not.toContain(name);
+    // Across lines, the binary test reaches only as far as the last match.
+    const across = await grep({ path: "encoded", pattern: "early\\n", multiline: true, outputMode: "count" });
+    expect(across.output).toContain(`${join(folder, "late-nul.txt")}: 1`);
+    expect(across.output).toContain(`${join(folder, "utf16le-late-nul.txt")}: 1`);
+
+    // A file searched by name is searched whole, binary or not: its matches are counted and it is listed, its lines held back.
+    const named = (outputMode: string) => grep({ path: join("encoded", "near-nul.txt"), pattern: "needle", outputMode });
+    expect((await named("count")).output).toContain(`${join(folder, "near-nul.txt")}: 2`);
+    expect((await named("files_with_matches")).output).toContain(join(folder, "near-nul.txt"));
+    expect((await named("content")).output).toContain("No matches found.");
+  });
+
   it("stops ripgrep when the turn is aborted", async () => {
     const controller = new AbortController();
     controller.abort(new Error("turn aborted"));
@@ -192,6 +248,26 @@ describe("grep_files ripgrep engine", () => {
       controller.signal,
     );
     expect(result).toMatchObject({ isError: true, output: "turn aborted" });
+  });
+});
+
+describe("liesUnderRealRoot", () => {
+  // Explicit platform arguments so every case runs on every host.
+  it("takes a filesystem or drive root as its own boundary", () => {
+    expect(liesUnderRealRoot("/", "/", "linux")).toBe(true);
+    expect(liesUnderRealRoot("/a/b", "/", "linux")).toBe(true);
+    expect(liesUnderRealRoot("C:\\", "C:\\", "win32")).toBe(true);
+    expect(liesUnderRealRoot("C:\\x\\y", "C:\\", "win32")).toBe(true);
+    expect(liesUnderRealRoot("D:\\x", "C:\\", "win32")).toBe(false);
+  });
+
+  it("keeps a prefix-sharing sibling out of any other root", () => {
+    expect(liesUnderRealRoot("/w/a", "/w", "linux")).toBe(true);
+    expect(liesUnderRealRoot("/w-other/a", "/w", "linux")).toBe(false);
+    expect(liesUnderRealRoot("C:\\w\\a", "C:\\w", "win32")).toBe(true);
+    expect(liesUnderRealRoot("C:\\w-other\\a", "C:\\w", "win32")).toBe(false);
+    // On posix a backslash is a filename byte, not a separator.
+    expect(liesUnderRealRoot("/w\\a", "/w", "linux")).toBe(false);
   });
 });
 

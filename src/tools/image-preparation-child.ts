@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import {
   ImagePreparationBytesRequestSchema,
@@ -41,7 +42,11 @@ try {
     // Recheck file policy just before open; parent approval must never broaden the admitted read scope.
     const denied = ensureFileAccess(request.path, { ...request.scope, metadata: {} }, "read");
     if (denied) throw new Error(denied.output);
-    const bytes = await readImageInput(request.path, new AbortController().signal);
+    // The bytes reach the model, so they are read from the real path judged here, which must still name the file read.
+    const judged = await realpath(request.path);
+    const judgedDenied = ensureFileAccess(judged, { ...request.scope, metadata: {} }, "read");
+    if (judgedDenied) throw new Error(judgedDenied.output);
+    const bytes = await readImageInput(judged, new AbortController().signal);
     process.stdout.write(JSON.stringify({ ok: true, image: await normalizeImage(bytes, request.options) }));
   }
 } catch (error) {

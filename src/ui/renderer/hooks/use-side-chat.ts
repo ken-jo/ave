@@ -30,6 +30,7 @@ import { errorMessage } from "../../../shared/error-message.js";
 import { sideChatFailureNotice, type SideChatOperationFailure } from "../../../shared/side-chat-operation.js";
 import { parseTabId } from "../../../shared/tab-id.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
+import { notifyWorkspaceFilesChangedByStream } from "../utils/workspace-files-signal.js";
 
 interface SideChatSendOptions {
   /** Vision / resource parts composed from the composer's attachments. */
@@ -338,6 +339,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
   useEffect(() => {
     if (!api.sideChat || runtime.unsubscribe !== null) return;
     const handleSideStreamEvent = (event: ChatStreamEvent) => {
+      // A side chat's tools write project files too: open file lists and viewers ask main again.
+      notifyWorkspaceFilesChangedByStream(event);
       if (event.type === "user_message" && event.sendRequestId !== undefined
         && typeof event.sessionId === "string" && event.sessionId.trim().length > 0) {
         runtime.pendingAdmissionRef.current.get(event.sendRequestId)?.();

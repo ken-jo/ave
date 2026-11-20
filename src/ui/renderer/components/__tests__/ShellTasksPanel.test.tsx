@@ -16,7 +16,8 @@ describe("command tasks", () => {
       chatControlShellTask: vi.fn(async () => ({ ok: true, shellId: "shell" })),
     } as unknown as AveApi;
     const composerRef = { current: { textarea: () => own, focus: () => {}, insertAtCursor: () => {},
-      insertFileReference: () => ({ inserted: false }), insertFileMention: () => ({ inserted: false }) } };
+      insertFileReference: () => ({ inserted: false }), insertFileMention: () => ({ inserted: false }),
+      dropZone: { onDragEnter: () => {}, onDragOver: () => {}, onDragLeave: () => {}, onDrop: () => {} } } };
     render(<ShellTasksPanel api={api} sessionId="session" composerRef={composerRef} />);
     fireEvent.keyDown(other, { key: "b", ctrlKey: true });
     expect(api.chatControlShellTask).not.toHaveBeenCalled();

@@ -33,6 +33,12 @@ export function stripMarkers(text: string): string {
   return text.replace(MARKER_RE, "").replace(/[ \t]{2,}/g, " ").trim();
 }
 
+/** `text` without the marker of attachment number `n`, and without the one space the attach flow puts after a marker. A
+ * pasted-text marker is matched with or without its line-count suffix, which a person may have edited away. */
+export function removeMarker(text: string, n: number): string {
+  return text.replace(new RegExp(`\\[(?:${MARKER_LABELS}) #${n}(?:\\s+\\+\\d+\\s+lines)?\\] ?`, "g"), "");
+}
+
 /** Collapse the whole path while preserving the extension and both ends so directory context remains recognizable. */
 export function collapsePath(path: string): string {
   const dotIdx = path.lastIndexOf(".");

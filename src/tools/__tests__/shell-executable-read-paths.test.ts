@@ -1,14 +1,21 @@
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { shellQuote as quote } from "../../lib/shell-resolver.js";
 
 import { inspectShellExecution, type ShellExecutionFacts } from "../../shared/shell-execution.js";
 import { collectShellExecutableReadPaths } from "../shell-executable-read-paths.js";
+import { isSensitivePath } from "../../permissions/sensitive-paths.js";
+
+vi.mock("../../permissions/sensitive-paths.js", async original => {
+  const actual = await original<typeof import("../../permissions/sensitive-paths.js")>();
+  return { ...actual, isSensitivePath: vi.fn(actual.isSensitivePath) };
+});
 
 const roots: string[] = [];
 afterEach(() => {
+  vi.mocked(isSensitivePath).mockClear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -34,6 +41,14 @@ function fixture() {
 }
 
 describe.skipIf(process.platform === "win32")("shell executable read paths", () => {
+  it("retains native executable spellings for content inspection", () => {
+    const f = fixture();
+    const executable = f.executable("Cafe\u0301-Mixed");
+    expect(f.collect("Cafe\u0301-Mixed")).toEqual([executable]);
+    expect(isSensitivePath).toHaveBeenCalledWith(executable);
+    expect(vi.mocked(isSensitivePath).mock.calls.every(([path]) => path === executable)).toBe(true);
+  });
+
   it("selects the first executable from the captured PATH and returns only immutable file paths", () => {
     const f = fixture();
     const selected = f.executable("probe");

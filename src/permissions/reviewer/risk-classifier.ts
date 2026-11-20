@@ -23,7 +23,10 @@ import {
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  createSensitivePathMatcher,
+  foldCanonicalPathSeparators,
   isSensitivePath,
+  resolvePathForPolicy,
 } from "../sensitive-paths.js";
 import { isPathAllowed } from "../allowed-directories.js";
 import {
@@ -33,10 +36,11 @@ import {
 } from "./network-target.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import type { RiskLevel } from "../../shared/permission-review-status.js";
-import { resolve as resolvePath } from "node:path";
+import { posix, resolve as resolvePath } from "node:path";
 import { SHELL_EXFIL_VERDICT_REASON } from "../rules/shell-exfiltration.js";
-import { shellExfiltrationSignal, inspectShellCommand } from "../rules/literal-shell-inspection.js";
-import { powerShellExfiltrationSignal, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
+import { inspectShellCommand } from "../rules/literal-shell-inspection.js";
+import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
+import { ShellFloorContext } from "../rules/shell-floor-policy.js";
 import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
 import { reviewUserOwnedSurface, type UserOwnedSurfaceReviewInput, type UserOwnedSurfaceReviewResult } from "./user-owned-surface-reviewer.js";
 import { exactCanonicalStringify } from "../../shared/exact-json.js";
@@ -1272,27 +1276,30 @@ function isGraphMetadataRead(input: Record<string, unknown>, target: NetworkTarg
   return normalizedPath === "/v1.0/me" || normalizedPath === "/beta/me" || normalizedPath === "/me";
 }
 
-// Resolve ~ and relative operands against invocation cwd with the same resolver as enforcement, then canonicalize/case-fold before comparing. Both sides need identical normalization so traversal, symlink, Unicode or case spelling cannot bypass sandbox containment.
-function extractDeclaredPaths(ctx: ToolInvocationContext): string[] {
-  const paths: string[] = [];
+// Resolve native targets once before deriving policy keys. Distinct native names can share a folded key but still require separate content inspection.
+function extractDeclaredPathTargets(ctx: ToolInvocationContext): Array<{ nativePath: string; canonicalPath: string }> {
+  const paths = new Map<string, string>();
+  const guest = isDisposableSubstrateCapability(ctx.sandboxCapability);
   for (const field of ctx.pathFields) {
     const values = selectDeclaredPathValues(ctx.finalInput, field);
     for (const value of values) {
       if (typeof value !== "string" || value.length === 0) continue;
+      if (guest && !posix.isAbsolute(value)) continue;
       try {
-        paths.push(
-          caseFoldForMatch(
-            canonicalizePathForMatch(
-              resolveToolPathForPermission(value, ctx.executionCwd),
-            ),
-          ),
-        );
+        const nativePath = guest ? posix.normalize(value)
+          : resolvePathForPolicy(resolveToolPathForPermission(value, ctx.executionCwd));
+        paths.set(nativePath, caseFoldForMatch(foldCanonicalPathSeparators(nativePath)));
       } catch {
         // Mirror the enforcer: tool schema validation owns argument-type failures. An unresolvable path contributes nothing, and an empty path list falls through to the "write path not declared" HIGH rule — the safe direction.
       }
     }
   }
-  return [...new Set(paths)];
+  return [...paths].map(([nativePath, canonicalPath]) => ({ nativePath, canonicalPath }));
+}
+
+// Resolve ~ and relative operands against invocation cwd with the same resolver as enforcement, then canonicalize/case-fold before comparing. Both sides need identical normalization so traversal, symlink, Unicode or case spelling cannot bypass sandbox containment.
+function extractDeclaredPaths(ctx: ToolInvocationContext): string[] {
+  return [...new Set(extractDeclaredPathTargets(ctx).map(({ canonicalPath }) => canonicalPath))];
 }
 
 // Share the enforced prefix predicate but retain geometric outside-scope risk for reads even when enforcement exempts them. Both targets and allowed roots must already be canonical; this check performs no filesystem lookup.
@@ -1304,13 +1311,14 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   // File-sourced uploads receive a HIGH ordinary-review assessment on every substrate. The pipeline applies modes and model choice; the sandbox egress policy remains the network boundary.
   (ctx) => {
     if (ctx.category !== "shell") return null;
-    const cwd = shellInvocationCwd(ctx);
+    const guest = isDisposableSubstrateCapability(ctx.sandboxCapability);
+    const cwd = guest ? undefined : shellInvocationCwd(ctx);
     // The builtin PowerShell tool and the host guardrail use the same grammar; every other shell-category tool is read as bash.
-    const signalOf = ctx.source === "builtin" && ctx.toolName === "powershell"
-      ? powerShellExfiltrationSignal
-      : shellExfiltrationSignal;
+    const powershell = ctx.source === "builtin" && ctx.toolName === "powershell";
     for (const cmd of extractShellCommands(ctx.finalInput)) {
-      const signal = signalOf(cmd, cwd);
+      const context = guest ? new ShellFloorContext(powershell ? "powershell" : "bash", { inspectHostFiles: false }) : undefined;
+      const signal = powershell ? inspectPowerShellCommand(cmd, cwd, undefined, undefined, context).exfiltration
+        : inspectShellCommand(cmd, cwd, context).exfiltration;
       if (signal) return { level: "high", reason: `${SHELL_EXFIL_VERDICT_REASON} (${signal})` };
     }
     return null;
@@ -1627,12 +1635,18 @@ function buildUserPrompt(
       ? maskSensitiveData(recentUserMessage).masked.slice(0, 500)
       : undefined;
   // Use the same resolver and predicates as the rule classifier. This is evidence about declared operands, not an attestation about tool code.
-  const declaredPaths = extractDeclaredPaths(input);
-  const pathChecks = declaredPaths.map((path) => ({
-    path,
-    insideAllowedDirectories: isInsideAllowed(path, input.allowedDirectories),
-    sensitiveRead: isSensitivePath(path, "read") !== null,
-    sensitiveWrite: isSensitivePath(path, "write") !== null,
+  const declaredPaths = extractDeclaredPathTargets(input);
+  const guest = isDisposableSubstrateCapability(input.sandboxCapability);
+  const canonicalizeGuestPath = (path: string) => foldCanonicalPathSeparators(posix.normalize(path));
+  const sensitiveRead = guest ? createSensitivePathMatcher("read", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
+    : (path: string) => isSensitivePath(path, "read");
+  const sensitiveWrite = guest ? createSensitivePathMatcher("write", undefined, canonicalizeGuestPath, { inspectKeyMaterial: false })
+    : (path: string) => isSensitivePath(path, "write");
+  const pathChecks = declaredPaths.map(({ nativePath, canonicalPath }) => ({
+    path: nativePath,
+    insideAllowedDirectories: isInsideAllowed(canonicalPath, input.allowedDirectories),
+    sensitiveRead: sensitiveRead(nativePath) !== null,
+    sensitiveWrite: sensitiveWrite(nativePath) !== null,
   }));
   const hostPolicyFacts = {
     ruleVerdict: input.permissionReason === undefined ? ruleVerdict

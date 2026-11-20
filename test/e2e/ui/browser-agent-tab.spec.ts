@@ -100,7 +100,13 @@ test("keeps an agent page mounted through blank bootstrap and first navigation",
     }, guestId);
     expect(preferences).toMatchObject({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     expect(await inspectBrowserTarget(ctx.app, host.windowId, url)).toMatchObject({ id: guestId, type: "window", embedded: false });
-    await expect(ctx.page.getByTestId("chat-side-panel-url-viewer")).toContainText(url);
+    // A tab the agent opened carries the same address row as a tab the user opened.
+    const addressRow = ctx.page.locator('[data-testid="browser-address-row"]:visible');
+    await expect(addressRow.getByTestId("chat-side-panel-browser-address")).toHaveValue(url);
+    await expect(addressRow.getByTestId("browser-back")).toBeVisible();
+    await expect(addressRow.getByTestId("browser-forward")).toBeVisible();
+    await expect(addressRow.getByTestId("browser-reload")).toBeEnabled();
+    await expect(addressRow.getByTestId("chat-side-panel-browser-go")).toBeVisible();
     expect(await browserTargetId(ctx.app, url)).toBe(guestId);
     // The shipping preload/IPC/native guest must agree with the visible chrome.
     await ctx.page.getByTestId("browser-workspace-toggle").click();
@@ -111,7 +117,7 @@ test("keeps an agent page mounted through blank bootstrap and first navigation",
       const state = await window.aveApi.browserWorkspace!.getState();
       return state.ok ? state.value.bookmarks.map((entry) => entry.url) : [];
     })).toContain(url);
-    await workspace.getByRole("combobox", { name: /^(Zoom|확대)$/ }).selectOption("1.25");
+    await ctx.page.getByTestId("browser-zoom").selectOption("1.25");
     await expect.poll(() => ctx!.app.evaluate(({ webContents }, id) => webContents.fromId(id)?.getZoomFactor(), guestId)).toBe(1.25);
     await workspace.getByRole("textbox", { name: /^(Find|찾기)$/ }).fill("Ready");
     await workspace.getByRole("button", { name: /^(Find|찾기)$/ }).click();

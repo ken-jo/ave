@@ -1,5 +1,5 @@
 import { countFileChangeLines } from "../../../shared/file-change-counts.js";
-import type { TurnChangeReview, TurnReviewFile } from "../../../shared/turn-change-review.js";
+import type { TurnChangeReview, TurnReviewDecision, TurnReviewError, TurnReviewFile } from "../../../shared/turn-change-review.js";
 import { isFileChangeOperation, type ChatPreviewTarget, type WorkspaceFileItem } from "./preview-targets.js";
 
 export type WorkspaceFileFilter = "all" | "changed" | "session";
@@ -17,6 +17,12 @@ export interface WorkspaceChangeFile {
 }
 export interface WorkspaceChanges {
   onRefresh?: () => void;
+  /** Keep or undo the latest turn's changes; absent where the changes are shown read-only. */
+  onDecide?: (decision: TurnReviewDecision) => void;
+  /** True while a decision is being applied; the controls wait for the review that follows it. */
+  deciding?: boolean;
+  /** Why the last decision was refused, until the next decision or refresh. */
+  decisionError?: TurnReviewError | null;
   workspaceRoot?: string;
   latestFiles: WorkspaceChangeFile[];
   changedFiles: WorkspaceChangeFile[];
@@ -67,7 +73,8 @@ export function deriveWorkspaceChanges({ files, targets, workspaceRoot, review }
     byPath.set(path, { path, displayPath: displayPath(path, workspaceRoot), operation: file.operation,
       added: counts?.reduce((total, count) => total + count.added, 0) ?? 0,
       removed: counts?.reduce((total, count) => total + count.removed, 0) ?? 0,
-      countsKnown: diff !== undefined && !diff.truncated && counts!.every((count) => count.exact), latest: false, file });
+      // An overwrite carries no input diff: its counts are unknown, not zero.
+      countsKnown: diff !== undefined && diff.hunks.length > 0 && !diff.truncated && counts!.every((count) => count.exact), latest: false, file });
   }
   const latestFiles = (review?.files ?? []).map((captured): WorkspaceChangeFile => {
     const path = workspaceFilePath(captured.path, workspaceRoot);

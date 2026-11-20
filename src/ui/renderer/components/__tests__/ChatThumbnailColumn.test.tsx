@@ -17,7 +17,7 @@ import { OverlayCardRegion } from "../OverlayCardRegion.js";
 vi.mock("../../../../i18n/react.js", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
 const TAB = { tabId: "browser:one", documentGeneration: 4, url: "https://site.example/", title: "Session site", zoomFactor: 1 };
-const STATE: BrowserWorkspaceState = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [TAB], storageStatus: "ready", capabilities: { fullscreen: false } };
+const STATE: BrowserWorkspaceState = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [TAB], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
 const CONTROL: BrowserTabControlState = { revision: 1, tabs: [{ tabId: "handle:one", rendererTabId: TAB.tabId, url: TAB.url, title: TAB.title, owner: { sessionId: "session" }, lease: null, generation: 1, kind: "embedded", openerTabId: null, mode: "human-paused" }] };
 
 function setup() {

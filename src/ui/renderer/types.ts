@@ -29,6 +29,7 @@ import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
 import type { McpUiModelContextOutcome } from "../../mcp/mcp-app-model-context.js";
 import type { SerializedHistoryMessage } from "../../shared/chat-history.js";
+import type { AttachFileRejectReason } from "../../shared/attachment-rejection.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 import type { PluginConfigRecord } from "../../shared/plugin-config.js";
 import type {
@@ -117,7 +118,7 @@ import type { WorkspacePreviewRemoveRootResult } from "../../ipc/domains/workspa
 // `a2aRemote` block, expressed once by the IPC projection type.
 import type { RendererSettingsSnapshot as AppSettings } from "../../ipc/domains/settings.js";
 import type { HomeDocsStatus } from "../../ipc/domains/home-docs.js";
-import type { WorkspaceListDirResult, WorkspaceOpenPathResult } from "../../ipc/domains/workspace.js";
+import type { WorkspaceListDirResult, WorkspaceOpenInEditorResult, WorkspaceOpenPathResult, WorkspaceReadForEditResult, WorkspaceSaveEditResult } from "../../ipc/domains/workspace.js";
 export type { AppSettings };
 
 // Approval / permission contracts are the host types themselves (the full
@@ -739,6 +740,8 @@ export type AvePreloadApi = {
    */
   chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
   chatGetTurnReview: (expectedSessionId: string) => Promise<TurnReviewResult>;
+  /** Keep or undo the latest turn's changes for a hunk, a file or the whole turn; resolves with the review afterwards. */
+  chatDecideTurnReview: (expectedSessionId: string, decision: import("../../shared/turn-change-review.js").TurnReviewDecisionRequest) => Promise<TurnReviewResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
   chatContinueLastUser: (sessionId: string, authority?: import("../../shared/chat-origin.js").ContinueAuthority) => Promise<{ ok: boolean; error?: string }>;
@@ -792,13 +795,12 @@ export type AvePreloadApi = {
   ) => Promise<{ content: string; lineCount: number } | null>;
   /** Lazy-load the isolated child-session transcript for a sub-agent row. */
   chatGetSubAgentTranscript?: (opts: SubAgentTranscriptRequest) => Promise<SubAgentTranscriptResult>;
-  /** Issue #749: lazy-load full write_file diff when content exceeded preview limit.
-   * Returns { before, after } from ~/.ave/diff-cache/<sessionId>/<toolUseId>.json,
-   * or null when sidecar not found / session id invalid. */
+  /** The host-computed line diff of one write_file, edit_file or multi_edit call, for its chat card.
+   * Null when none is stored (older sessions, cleaned caches) or an id is invalid. */
   chatGetWriteDiff: (
     sessionId: string,
     toolUseId: string,
-  ) => Promise<{ before: string; after: string } | null>;
+  ) => Promise<import("../../shared/line-diff.js").WriteDiffRecord | null>;
   submitFeedback: (payload: { sessionId: string; messageIndex: number; rating: "up" | "down"; reason?: string }) => Promise<{ ok: boolean; error?: string }>;
   starredList: () => Promise<Array<{ id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string }>>;
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
@@ -1816,7 +1818,7 @@ export interface AveAttachApi {
       isImage: boolean;
       mimeType?: string;
     }>;
-    rejected: string[];
+    rejected: Array<{ name: string; reason: AttachFileRejectReason }>;
   }>;
   readImage: (filePath: string) => Promise<{
     ok: boolean;
@@ -1837,12 +1839,9 @@ export interface AveAttachApi {
     dataUrl?: string;
     error?: string;
   }>;
-  discardClipboardImage: (filePath: string) => Promise<{
-    ok: boolean;
-    /** The app revoked this rejected image's capability without pathname deletion. */
-    retained?: true;
-    error?: string;
-  }>;
+  /** Give back the authorization each of `paths` holds in main: one per attachment that left the composer, because it was
+   * removed, sent or refused. A clipboard image this app wrote is deleted with it. Paths main does not hold are ignored. */
+  release: (paths: readonly string[]) => Promise<{ ok: boolean; error?: string }>;
   openExternal: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
   /**
    * Composer drop, step 2. Redeem the one-shot token from
@@ -1989,17 +1988,33 @@ export interface AveWorkspaceApi {
   }>;
   /**
    * Composer `@file` autocomplete. Only the query crosses; main walks the
-   * current roots, applies the Layer-0 sensitive filter and the read-scope guard.
+   * current roots, applies the Layer-0 sensitive filter and the read-scope guard. With `folder` (the folder view's
+   * "find in this folder") main searches that one folder of a registered root and matches file names only.
    */
-  searchFiles: (query: string) => Promise<
+  searchFiles: (query: string, options?: { folder: string }) => Promise<
     | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
-    | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" }
+    | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" | "folder-not-allowed" }
   >;
   /**
    * Open one file inside `projectRoot` with the OS default app. Call it only from a click or key handler: preload sends the
    * gesture flag and main refuses without it. Main re-checks the root, the real path, the file type and the deny list.
    */
   openPath: (projectRoot: string, path: string) => Promise<WorkspaceOpenPathResult>;
+  /**
+   * Open one file inside `projectRoot` in the editor command the user set (`documents.editorCommand`), at `line` when
+   * given. Call it only from a click or key handler, as `openPath`. Main answers `not-configured` when no command is set.
+   */
+  openInEditor: (projectRoot: string, path: string, line?: number) => Promise<WorkspaceOpenInEditorResult>;
+  /**
+   * Read one file inside `projectRoot` for the in-app text editor: its whole text with "\n" line breaks and the hash a save
+   * must name. Call it only from a click or key handler, as `openPath`.
+   */
+  readForEdit: (projectRoot: string, path: string) => Promise<WorkspaceReadForEditResult>;
+  /**
+   * Save text edited in the app over the file, if it still holds the content `baseHash` names; main restores the file's own
+   * line ending and byte order mark. Call it only from a click or key handler. `changed` means nothing was written.
+   */
+  saveEdit: (projectRoot: string, path: string, baseHash: string, text: string) => Promise<WorkspaceSaveEditResult>;
 }
 
 /**
@@ -2010,16 +2025,18 @@ export interface AveWorkspaceApi {
  * `workspace.dropPrepare` gate makes the read-scope decision.
  */
 export interface AveDropApi {
-  resolveDroppedPaths: (files: FileList | readonly File[]) => string[];
+  /** Both calls take an ARRAY of `File`s. A `FileList` does not survive the bridge into the preload: it arrives as an object
+   * with no files in it, so nothing would be resolved. */
+  resolveDroppedPaths: (files: readonly File[]) => string[];
   /**
    * Composer drop, step 1. Takes dropped `File`s (never paths): the preload
    * resolves them and registers them with main in one step, returning a
    * one-shot token to redeem via `ave.attach.redeemDrop`. `rejected` names the
    * items main refused, by stable reason code.
    */
-  prepareFileDrop: (files: FileList | readonly File[]) => Promise<
-    | { ok: true; token: string; rejected: Array<{ name: string; reason: string }> }
-    | { ok: false; error: string; rejected?: Array<{ name: string; reason: string }> }
+  prepareFileDrop: (files: readonly File[]) => Promise<
+    | { ok: true; token: string; rejected: Array<{ name: string; reason: AttachFileRejectReason }> }
+    | { ok: false; error: string; rejected?: Array<{ name: string; reason: AttachFileRejectReason }> }
   >;
 }
 

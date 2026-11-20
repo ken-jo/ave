@@ -222,9 +222,13 @@ afterEach(async () => {
   }
 });
 
-// Strip the directory marker only for comparisons with the literal floor.
+function nativeDenySpelling(path: string): string {
+  return /^[A-Za-z]:[\\/]/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
+}
+
+// Compare drive-path separators and strip the directory marker for the literal floor.
 function bare(paths: readonly FilesystemPathEntry[]): string[] {
-  return paths.map(path => (typeof path === "string" ? path : path.path).replace(/[\\/]$/, ""));
+  return paths.map(path => nativeDenySpelling(typeof path === "string" ? path : path.path).replace(/[\\/]$/, ""));
 }
 
 // On macOS an exactly spelled root (a sandbox private root or an Ave home boundary root) reaches ASRT canonical, its last character a glob class.
@@ -1577,8 +1581,21 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("buildSandboxConfig unions the sensitive write deny-list into filesystem.denyWrite", () => {
     const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
     const sensitive = getDefaultSensitiveWriteDenyPaths();
+    const literalDenies = bare(config.filesystem.denyWrite.filter(entry => typeof entry !== "string" || !/[*?[\]]/u.test(entry)));
     for (const p of sensitive) {
-      if (reachesAsrt(p)) expect(bare(config.filesystem.denyWrite)).toContain(bare([p])[0]);
+      if (!reachesAsrt(p)) continue;
+      const target = bare([p])[0];
+      if (target === undefined) throw new Error("Sensitive write deny is missing");
+      if (process.platform === "darwin") {
+        expect(literalDenies.some(parent => target === parent || target.startsWith(`${parent}${sep}`)), target).toBe(true);
+      } else {
+        expect(literalDenies, target).toContain(target);
+      }
+      if (process.platform === "win32") {
+        const ranked = rankWindowsFsAccess({ allowRead: [], allowWrite: [target], denyRead: [], denyWrite: literalDenies, credentialDeny: [] });
+        expect(ranked.grantWrite, target).toEqual([]);
+        expect(ranked.grantRead, target).toContain(target);
+      }
     }
     if (reachesAsrt(join(homedir(), ".config"))) {
       expect(bare(config.filesystem.denyWrite)).toContain(join(homedir(), ".config"));
@@ -1607,8 +1624,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     setProcessPlatform("win32");
     try {
       const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
-      const denyWrite = config.filesystem.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
-      // A missing target is created by `srt-win acl stamp`: a trailing separator makes it a directory instead of a 0-byte file. The floor appends the host separator (a backslash on a real Windows host).
+      const denyWrite = config.filesystem.denyWrite.map(entry => nativeDenySpelling(typeof entry === "string" ? entry : entry.path));
+      // A missing target is created by `srt-win acl stamp`: a trailing separator makes it a directory instead of a 0-byte file.
       expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}${sep}`);
       expect(denyWrite).toContain(join(FAKE_AVE_HOME, "settings.json"));
       // `/etc/shadow` would become `<drive>:\etc\shadow`.
@@ -1766,7 +1783,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         allowWrite: [work],
         denyWrite: [join(work, "locked")],
       });
-      const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(entry => typeof entry === "string" ? entry : entry.path);
+      const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(entry => nativeDenySpelling(typeof entry === "string" ? entry : entry.path));
       // Under the grant: kept, the sandbox user could otherwise reach it.
       expect(denies).toContain(join(work, "locked"));
       // Missing disjoint rows would create placeholders and stamp the profile itself as the parent.
@@ -1777,6 +1794,29 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+    }
+  });
+
+  it("retains a linked child deny after its disjoint machine parent is filtered", () => {
+    const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "sandbox-machine-deny-")));
+    const machine = join(fixture, "machine");
+    const target = join(fixture, "outside");
+    mkdirSync(machine);
+    mkdirSync(target);
+    const alias = join(machine, "linked");
+    symlinkSync(target, alias, ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32" ? "junction" : "dir");
+    const child = join(alias, "locked");
+    writeFileSync(child, "fixture");
+    vi.stubEnv("ProgramData", machine);
+    setProcessPlatform("win32");
+    try {
+      const config = buildSandboxConfig({ allowWrite: [target], denyWrite: [machine, child] });
+      expect(bare(config.filesystem.denyWrite)).not.toContain(machine);
+      expect(bare(config.filesystem.denyWrite)).toContain(child);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      vi.unstubAllEnvs();
+      rmSync(fixture, { recursive: true, force: true });
     }
   });
 

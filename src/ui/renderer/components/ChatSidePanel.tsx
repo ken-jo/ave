@@ -1,8 +1,10 @@
 import { EmptyState } from "../../../components/ui/empty-state.js";
+import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS } from "./BrowserAddressRow.js";
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { disposeLiveTerminal } from "../preview/live-terminal-registry.js";
-import { subscribeWebSurfaceLocations, webSurfaceLocation, webSurfaceTitle } from "../preview/web-surfaces.js";
+import { subscribeWebSurfaceLocations, subscribeWebSurfaces, webSurfaceLocation, webSurfaceTitle } from "../preview/web-surfaces.js";
+import { browserTabFavicon, browserTabLabel } from "../preview/browser-tab-label.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
 import { useBrowserControlState } from "../preview/agent-browser-bridge.js";
@@ -30,7 +32,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
 import { ToolActivityBody, ToolActivityWorkspace, toolActivityTotal, type ToolActivityState } from "./ToolActivity.js";
 import { WorkPanelCard } from "./DockedWorkPanel.js";
-import type { AveApi } from "../types.js";
+import type { ApprovalRequest, AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import type { WorkspaceChanges, FileWorkspaceReveal } from "../preview/workspace-changes.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
@@ -486,7 +488,9 @@ function tabLabel(
 ): string {
   if (!tab.content) {
     const base = t(tabLabelKey(tab.kind));
-    return showOrdinal ? `${base} ${tab.ordinal}` : base;
+    const numbered = showOrdinal ? `${base} ${tab.ordinal}` : base;
+    // A browser tab is named by the page it shows; "Browser" is only the name of a tab with no page yet.
+    return tab.kind === "browser" ? browserTabLabel(tab.id, numbered) : numbered;
   }
   if (tab.content.source === "browser") {
     const title = webSurfaceTitle(tab.id)?.trim();
@@ -555,7 +559,9 @@ function ContentTabView({
   if (!content) return null;
   if (browserTarget) {
     return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-full min-h-0 flex-col" data-testid="chat-side-panel-content-browser" data-tab-id={tab.id}>
+      <BrowserAddressRow api={api} tabId={tab.id} chrome="background" testIds={SIDE_PANEL_ADDRESS_ROW_TEST_IDS}
+        fallbackUrl={browserTarget.url} onNavigate={(url) => onBrowserUrlChange(tab.id, url)} />
       <BrowserSurfaceTools api={api} tabId={tab.id} composerGroupId={composerGroupId} onOpenUrl={(url) => {
         void navigateBrowserTabAsUser(api, tab.id, () => onBrowserUrlChange(tab.id, url));
       }} />
@@ -563,6 +569,7 @@ function ContentTabView({
         api={api}
         sessionId={sessionId}
         target={browserTarget}
+        showHeader={false}
         surfaceTabId={tab.id}
         browserTab={{ tabId: tab.id, ...(tab.agentRequestId === undefined ? {} : { agentRequestId: tab.agentRequestId }) }}
       />
@@ -757,6 +764,8 @@ function WorkspaceLauncherMenu({ onOpen }: { onOpen: (kind: WorkspaceTabKind) =>
 
 export interface ChatSidePanelProps {
   api: AveApi;
+  /** The approvals waiting for the user, which mark the pages still waiting to open. */
+  pendingApprovals?: readonly ApprovalRequest[];
   /** Whether the column fits and is drawn, independent of retained tab state. */
   visible?: boolean;
   sessionId?: string;
@@ -765,7 +774,7 @@ export interface ChatSidePanelProps {
   changes?: WorkspaceChanges;
   revealRequest?: FileWorkspaceReveal | null;
   onReference?: (reference: FileMentionReference) => void;
-  onFileReference?: (path: string) => void;
+  onFileReference?: (path: string) => AttachTextResult;
   selectedId: string | null;
   onSelect: (id: string) => void;
   /**
@@ -829,6 +838,7 @@ export interface ChatSidePanelProps {
 
 export function ChatSidePanel({
   api,
+  pendingApprovals,
   visible = true,
   sessionId,
   targets,
@@ -1001,6 +1011,8 @@ export function ChatSidePanel({
   } = workspaceTabs;
   const [, setBrowserMetadataRevision] = useState(0);
   useEffect(() => subscribeWebSurfaceLocations(() => setBrowserMetadataRevision((revision) => revision + 1)), []);
+  // Titles and icons arrive through the surface registry's own notifications.
+  useEffect(() => subscribeWebSurfaces(() => setBrowserMetadataRevision((revision) => revision + 1)), []);
   const browserControl = useBrowserControlState();
   const visibleOwners = browserTabOwners(sessionId, browserControl.tabs.map((tab) => tab.owner));
   const tabs = allTabs.filter((tab) => tabVisibleTo(tab, sessionId, visibleOwners));
@@ -1199,6 +1211,8 @@ export function ChatSidePanel({
                         workingTestId="chat-side-panel-tab-side-chat-working"
                         badgeTestId="chat-side-panel-tab-side-chat-pending-answer"
                       />
+                    ) : tab.kind === "browser" && browserTabFavicon(tab.id) !== null ? (
+                      <img src={browserTabFavicon(tab.id) ?? undefined} alt="" className="h-3.5 w-3.5 shrink-0 rounded-sm" data-testid="chat-side-panel-tab-favicon" />
                     ) : (
                       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     )}
@@ -1299,6 +1313,7 @@ export function ChatSidePanel({
                 <VisitedSites
                   api={api}
                   targets={browserTargets}
+                  {...(pendingApprovals === undefined ? {} : { pendingApprovals })}
                   onOpen={(target) => workspaceTabs.openInEphemeral(
                     target.kind === "url"
                       ? { source: "browser", url: target.url }

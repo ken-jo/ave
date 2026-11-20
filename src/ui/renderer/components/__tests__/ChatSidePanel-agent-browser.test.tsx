@@ -106,7 +106,31 @@ afterEach(() => {
   __resetBrowserTabBridgeForTest();
 });
 
+function addressRow(tabId: string) {
+  const row = document.querySelector<HTMLElement>(`[data-testid="browser-address-row"][data-tab-id="${tabId}"]`);
+  if (!row) throw new Error(`No address row for ${tabId}`);
+  return within(row);
+}
+
 describe("ChatSidePanel agent browser", () => {
+  it("gives a tab the agent opened the same address row, and takes the tab back before it navigates", async () => {
+    const { api, native } = makeApi();
+    render(<Harness api={api} />);
+    let tabId = "";
+    await act(async () => { tabId = openNativeAgentTab("about:blank", "browser-op-row"); });
+    act(() => { native.publish(tabId, { url: "https://a.example/page", canGoBack: true }); });
+    const row = addressRow(tabId);
+    expect(row.getByTestId("browser-back")).toBeEnabled();
+    expect(row.getByTestId("browser-forward")).toBeDisabled();
+    expect(row.getByTestId("browser-reload")).toBeEnabled();
+    const address = row.getByTestId("chat-side-panel-browser-address");
+    fireEvent.change(address, { target: { value: "b.example/next" } });
+    await act(async () => { fireEvent.submit(address.closest("form") as HTMLFormElement); });
+    expect(api.browserTabs?.stop).toHaveBeenCalledWith(tabId);
+    expect(store?.tabs.find((tab) => tab.id === tabId)?.content).toEqual({ source: "browser", url: "about:blank" });
+    expect(native.nativeSurface).toHaveBeenCalledWith(expect.objectContaining({ action: "navigate", tabId, url: "https://b.example/next" }));
+  });
+
   it("lists an agent tab only in the chat that opened it, keeping its page mounted elsewhere", () => {
     const { api } = makeApi();
     const view = render(<Harness api={api} />);
@@ -141,9 +165,10 @@ describe("ChatSidePanel agent browser", () => {
     let tabId = "";
     await act(async () => { tabId = openNativeAgentTab("about:blank", "browser-op-blank"); });
     const page = screen.getByTestId("chat-side-panel-browser-native");
-    const viewer = screen.getByTestId("chat-side-panel-url-viewer");
-    const openExternal = within(viewer).getByRole("button");
+    const row = addressRow(tabId);
+    const openExternal = row.getByTestId("chat-side-panel-browser-open-external");
     expect(openExternal).toBeDisabled();
+    expect(row.getByTestId("chat-side-panel-browser-address")).toHaveValue("");
     expect(native.nativeSurface).toHaveBeenCalledWith({ action: "create", tabId, requestId: "browser-op-blank" });
     expect(native.nativeSurface.mock.calls.some(([r]) => r.action === "navigate")).toBe(false);
     act(() => {
@@ -151,7 +176,7 @@ describe("ChatSidePanel agent browser", () => {
       store!.openPinned({ source: "browser", url: "https://b.example/" });
     });
     act(() => store!.setActiveTabId(tabId));
-    expect(within(viewer).getByText("https://a.example/approved")).toBeInTheDocument();
+    expect(row.getByTestId("chat-side-panel-browser-address")).toHaveValue("https://a.example/approved");
     fireEvent.click(openExternal);
     expect(api.openExternalUrl).toHaveBeenCalledWith("https://a.example/approved");
     expect(screen.getByTestId("chat-side-panel-browser-native")).toBe(page);
@@ -163,9 +188,8 @@ describe("ChatSidePanel agent browser", () => {
     render(<Harness api={api} />);
     let tabId = "";
     await act(async () => { tabId = openNativeAgentTab("about:blank", "browser-op-observed"); });
-    const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const page = screen.getByTestId("chat-side-panel-browser-native");
-    const openExternal = within(viewer).getByRole("button");
+    const openExternal = addressRow(tabId).getByTestId("chat-side-panel-browser-open-external");
     act(() => { native.publish(tabId, { url: "https://a.example/committed" }); });
     expect(openExternal).toBeEnabled();
     act(() => { native.publish(tabId, { url }); });
@@ -179,7 +203,6 @@ describe("ChatSidePanel agent browser", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
     await act(async () => { store!.openPinned({ source: "browser", url: "https://a.example/bootstrap" }); });
-    const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/page" })));
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://a.example/page#section", isMainFrame: true })));
@@ -188,7 +211,7 @@ describe("ChatSidePanel agent browser", () => {
     expect(committedWebSurfaceLocation(tabId)).toBe("https://a.example/page#section");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://frame.example/", isMainFrame: false })));
     expect(committedWebSurfaceLocation(tabId)).toBe("https://a.example/page#section");
-    fireEvent.click(within(viewer).getByRole("button"));
+    fireEvent.click(addressRow(tabId).getByTestId("chat-side-panel-browser-open-external"));
     expect(api.openExternalUrl).toHaveBeenCalledWith("https://a.example/bootstrap");
     expect(webview).toHaveAttribute("src", "https://a.example/bootstrap");
   });
@@ -197,17 +220,17 @@ describe("ChatSidePanel agent browser", () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
     await act(async () => { store!.openPinned({ source: "browser", url: "https://a.example/bootstrap" }); });
-    const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
-    const openExternal = within(viewer).getByRole("button");
+    const tabId = webview.dataset.tabId;
+    if (!tabId) throw new Error("Page identity is missing");
+    const row = addressRow(tabId);
+    const openExternal = row.getByTestId("chat-side-panel-browser-open-external");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/previous" })));
     expect(openExternal).toBeEnabled();
     act(() => webview.dispatchEvent(new Event("did-attach")));
-    const tabId = webview.dataset.tabId;
-    if (!tabId) throw new Error("Page identity is missing");
     expect(committedWebSurfaceLocation(tabId)).toBeNull();
     expect(openExternal).toBeEnabled();
-    expect(within(viewer).getByText("https://a.example/bootstrap")).toBeInTheDocument();
+    expect(row.getByTestId("chat-side-panel-browser-address")).toHaveValue("https://a.example/bootstrap");
   });
 
   it.each([

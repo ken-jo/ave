@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { PanelsTopLeft } from "lucide-react";
 import type { AveApi } from "../types.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -17,6 +17,14 @@ export function BrowserSurfaceTools({ api, tabId, onOpenUrl, composerGroupId }: 
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const panelId = useId();
+  // The find key pressed in this tab's page opens these tools and puts the caret in the find field.
+  const [findFocus, setFindFocus] = useState(0);
+  const workspaceApi = api.browserWorkspace;
+  useEffect(() => workspaceApi?.onPageShortcut((shortcut) => {
+    if (shortcut.tabId !== tabId || shortcut.action !== "find") return;
+    setOpen(true);
+    setFindFocus((count) => count + 1);
+  }), [workspaceApi, tabId]);
   return <div className="shrink-0 border-b" data-native-page-chrome="background">
     <div className="flex h-7 min-w-0 items-center gap-1" data-testid="browser-control-toolbar">
     {api.browserWorkspace && api.browserTabs ? <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs"
@@ -29,7 +37,7 @@ export function BrowserSurfaceTools({ api, tabId, onOpenUrl, composerGroupId }: 
     </div>
     {open && api.browserWorkspace && api.browserTabs ? <div id={panelId} className="max-h-80 overflow-auto">
       <BrowserWorkspacePanel api={api.browserWorkspace} browserTabs={api.browserTabs}
-        activeTabId={tabId} visible onOpenUrl={onOpenUrl} />
+        activeTabId={tabId} visible onOpenUrl={onOpenUrl} findFocus={findFocus} />
     </div> : null}
   </div>;
 }

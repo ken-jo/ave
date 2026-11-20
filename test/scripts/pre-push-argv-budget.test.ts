@@ -89,7 +89,7 @@ describe("pre-push Vitest spawns under the budget", () => {
     {
       commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
       join, tmpdir, mkdtempSync, rmSync, console: { log: () => {} },
-      runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
+      runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {}, ensureMacosDirOps: () => {},
       resolveHostLockSettings: () => ({ directory: "/fixture-locks", timeoutMs: 1000, fastSlots: 1 }),
       withHostLock: (_options: object, callback: () => unknown) => callback(),
       run: (_command: string, args: string[], _dir: string, env: unknown) => { runs.push(args); envs.push(env); },
