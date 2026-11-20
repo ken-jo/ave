@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../../__tests__/support/tsx-child-env.js";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ const repoRoot = resolve(here, "../../../..");
 
 function refreshInProcess(home: string): Promise<string> {
   const child = spawn(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", fixture, home], {
-    cwd: repoRoot, env: { ...process.env, AVE_HOME: home }, stdio: ["ignore", "pipe", "pipe"], timeout: 10_000,
+    cwd: repoRoot, env: tsxChildEnv({ AVE_HOME: home }), stdio: ["ignore", "pipe", "pipe"], timeout: 10_000,
   });
   let stdout = "";
   let stderr = "";
