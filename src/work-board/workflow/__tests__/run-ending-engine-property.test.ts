@@ -205,7 +205,7 @@ function copyParkedRun(h: Harness, parked: Awaited<ReturnType<typeof prepareBoar
     }
   }
   writeFileSync(h.boardPath, parked.board);
-  writeFileSync(runsPath(h), JSON.stringify(runFile, null, 2) + "\n");
+  writeFileSync(runsPath(h), `${JSON.stringify(runFile, null, 2)}\n`);
 }
 
 /** One cell on its own home: the run, the files as the cell leaves them, the consumer's event, and the checks. */
