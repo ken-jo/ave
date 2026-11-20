@@ -367,8 +367,9 @@ function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): bool
   return false;
 }
 
-const TOKEN_SEPARATOR = /[\p{White_Space}\p{P}\p{S}]/u;
+const TOKEN_SEPARATOR = /[\p{White_Space}\p{P}\p{S}\p{Cc}]/u;
 const NESTED_PERCENT_BYTE = /%(?:25){1,2}([0-9a-f]{2})/iy;
+const URI_JSON_CONTROL = /(?:%5c(?:%5c)?|%255c)(?:[bfnrt]|u00[01][0-9a-f])/iy;
 
 function isPathSeparator(code: number): boolean {
   return code === 47 || code === 92;
@@ -378,6 +379,18 @@ function isEscapeIntroducer(code: number): boolean {
   return code === 37 || code === 38 || code === 92;
 }
 
+function isDriveLetter(code: number): boolean {
+  const lower = code | 32;
+  return lower >= 97 && lower <= 122;
+}
+
+function uriJsonControlEnd(token: string, start: number): number {
+  let end = start;
+  URI_JSON_CONTROL.lastIndex = start;
+  while (URI_JSON_CONTROL.test(token)) end = URI_JSON_CONTROL.lastIndex;
+  return end;
+}
+
 /** Find separate candidates next to a literal marker using whole raw lexemes. */
 function separateHomeTokens(
   token: string, componentCharacters: ReadonlySet<number>, containsEncodedHome: (candidate: string) => boolean,
@@ -385,7 +398,7 @@ function separateHomeTokens(
 ): LiteralMarker | undefined {
   let start = 0;
   let introduced = false;
-  let driveLetterEnd = -1;
+  let previousLetter = -1;
   let range: LiteralMarker | undefined;
   const escapeValue = { value: 0 };
   const collect = (end: number): boolean => {
@@ -405,10 +418,21 @@ function separateHomeTokens(
       const nested = NESTED_PERCENT_BYTE.exec(token);
       if (nested) { width = nested[0].length; code = Number.parseInt(nested[1], 16); }
     }
+    if (homePlatform === "win32" && source === 37 && code === 92) {
+      const controlEnd = uriJsonControlEnd(token, index);
+      if (controlEnd > index) {
+        // Only treat a serialized control run as a separator at a drive or
+        // literal marker. For example, %5Cnew is still a path component.
+        const nextDrive = isDriveLetter(token.charCodeAt(controlEnd)) && token.charCodeAt(controlEnd + 1) === 58;
+        code = nextDrive || beforeLiteral && controlEnd === token.length ? 10 : token.charCodeAt(controlEnd - 1);
+        width = controlEnd - index;
+      }
+    }
     const end = index + (width > 0 ? width : source > 0xffff ? 2 : 1);
     const next = token.charCodeAt(end);
-    const driveColon = homePlatform === "win32" && index === driveLetterEnd && code === 58
-      && (isPathSeparator(next) || isEscapeIntroducer(next));
+    const driveColon = homePlatform === "win32" && code === 58 && previousLetter >= 0
+      && (previousLetter === start || isPathSeparator(next) || isEscapeIntroducer(next));
+    previousLetter = isDriveLetter(code) ? index : -1;
     // Test disjoint candidates. A separator may be a raw character or one
     // complete escape. Its source width determines the cut.
     if (!driveColon && !isPathSeparator(code) && !componentCharacters.has(code) && TOKEN_SEPARATOR.test(String.fromCodePoint(code))) {
@@ -417,7 +441,6 @@ function separateHomeTokens(
       introduced = false;
     } else {
       introduced ||= introducer;
-      if (index === start && ((code | 32) >= 97 && (code | 32) <= 122)) driveLetterEnd = end;
     }
     index = end;
   }

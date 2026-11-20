@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { loadHomeRedactors, resetHomeRedactors } from "../../__tests__/support/home-redaction-fixture.js";
 import { escapeHtml } from "../../shared/escape-html.js";
+import { escapeRegExp } from "../../shared/escape-reg-exp.js";
 
 afterEach(resetHomeRedactors);
 
@@ -166,9 +167,55 @@ const separatorMatrixEncoders = {
 
 type SeparatorEncoder = keyof typeof separatorMatrixEncoders;
 const separatorNames = Object.keys(separatorMatrixEncoders) as SeparatorEncoder[];
-const uriChains = separatorNames.flatMap(a => [
+const separatorChains: SeparatorEncoder[][] = [[], ...separatorNames.flatMap(a => [
   [a], ...separatorNames.flatMap(b => [[a, b], ...separatorNames.map(c => [a, b, c])]),
-]).filter(chain => chain.includes("uri"));
+])];
+const uriChains = separatorChains.filter(chain => chain.includes("uri"));
+
+it.each(["D:\\fixtures\\habitat", "\\\\srv\\share\\habitat", "C:\\Users\\John Smith", "C:\\Users\\Café", "E:\\temp\\ted"])(
+  "keeps drive prefixes attached to both encoded homes before a literal home for %s", async home => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    const parts = home.replace(/^[a-z]:/iu, "").split(/\\+/u).filter(Boolean).map(escapeRegExp);
+    const tail = new RegExp(String.raw`[\\/]+${parts.join(String.raw`[\\/]+`)}(?![\p{L}\p{N}_-])`, "iu");
+    const slashHome = home.replaceAll("\\", "/");
+    const exposures: string[] = [];
+    let count = 0;
+    for (const separator of ["\n", "\r\n", "\b", "\f", "\u0001", "\t"]) {
+      const listing = [`${home}\\b`, `${home}\\c`, `${slashHome}/a`].join(separator);
+      for (const chain of separatorChains) {
+        const input = chain.reduce((text, codec) => separatorMatrixEncoders[codec].encode(text), listing);
+        const output = redactHomePathsInText(input);
+        let inverted = "";
+        try {
+          inverted = chain.toReversed().reduce((text, codec) => separatorMatrixEncoders[codec].decode(text), output);
+        } catch {
+          // A whole encoded token can include a wrapper encoded on an inner layer.
+        }
+        if (tail.test(output) || tail.test(inverted)) exposures.push(`${chain.join(">")} ${JSON.stringify(separator)}: ${output}`);
+        count++;
+      }
+    }
+    expect(count).toBe(6_666);
+    expect(exposures.length, exposures.slice(0, 4).join("\n")).toBe(0);
+  },
+);
+
+it.each(["C:\\Users\\bob", "D:\\fixtures\\habitat"])(
+  "retains a literal download suffix before an encoded drive path for %s", async home => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    const literal = `${home.replaceAll("\\", "/")}/Downloads`;
+    for (const separator of ["\n", "\t", "\r\n"]) {
+      const next = separator === "\r\n" ? [`${home}\\Documents`, `${home}\\Music`].join(separator) : `${home}\\Documents`;
+      for (const wrap of [wrappedEncoders.string.encode, wrappedEncoders.object.encode, (text: string) => JSON.stringify(JSON.stringify(text))]) {
+        const input = encodeURI(wrap(`${literal}${separator}${next}`));
+        const preserved = encodeURI(wrap(`${literal}${separator}nextPath`)).split("/Downloads")[1].split("nextPath")[0];
+        const output = redactHomePathsInText(input);
+        expect(output, input).toContain(`[home]/Downloads${preserved}[home-token]`);
+        expect(output.toLowerCase()).not.toContain(home.split("\\").at(-1)?.toLowerCase());
+      }
+    }
+  },
+);
 
 it.each([String.raw`D:\fixtures\habitat`, String.raw`\\srv\share\habitat`, String.raw`E:\temp\ted`])(
   "preserves literal descendants next to separately encoded paths through three layers for %s", async home => {
