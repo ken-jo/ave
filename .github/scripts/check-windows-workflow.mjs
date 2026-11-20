@@ -13,6 +13,7 @@ const TEST_COMMAND_RE = new RegExp(
   String.raw`^bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)((?:[ \t]+${TEST_PATH})+)$`,
 );
 const REGRESSION_STEP = /^Run Windows (?:permission|appearance|session persistence|native import) regressions$/u;
+const REGRESSION_CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
 const LIST_INVOCATION = /^bun[ \t]+run[ \t]+scripts\/run-windows-test-list\.mjs[ \t]+(config\/[\w-]+\.txt)$/u;
 
 export function windowsRunSteps(workflow) {
@@ -48,12 +49,20 @@ export function windowsRegressionStepFiles(run, readInventory, name) {
   return windowsTestCommands(list).slice(1).flatMap(args => args.slice(4).map(file => file.slice(2)));
 }
 
+function windowsRegressionSteps(steps) {
+  const regressions = steps.filter(({ jobId, stepName }) =>
+    jobId === "windows-permission-tests" && REGRESSION_STEP.test(stepName ?? ""));
+  for (const { name, condition } of regressions) {
+    if (condition !== REGRESSION_CONDITION) {
+      throw new Error(`${name}: expected if: ${REGRESSION_CONDITION}; found ${JSON.stringify(condition) ?? "no if condition"}`);
+    }
+  }
+  return regressions;
+}
+
 export function windowsRegressionFiles(workflow, inventories) {
   const files = new Set();
-  for (const { jobId, stepName, name, condition, run } of windowsRunSteps(workflow)) {
-    if (jobId !== "windows-permission-tests" || !REGRESSION_STEP.test(stepName ?? "")) continue;
-    if (condition === false || (typeof condition === "string"
-      && /^(?:false|\$\{\{\s*false\s*\}\})$/iu.test(condition.trim()))) continue;
+  for (const { name, run } of windowsRegressionSteps(windowsRunSteps(workflow))) {
     for (const file of windowsRegressionStepFiles(run, path => inventories.get(path), name)) files.add(file);
   }
   return [...files];
@@ -171,7 +180,7 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell) {
 
 export function checkWindowsWorkflow(workflow, inspect) {
   const steps = windowsRunSteps(workflow);
-  if (!steps.some(step => step.name === "windows-permission-tests: Run Windows permission regressions"
+  if (!windowsRegressionSteps(steps).some(step => step.stepName === "Run Windows permission regressions"
     && /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i.test(step.shell))) {
     throw new Error("The Windows permission step requires a PowerShell parser");
   }

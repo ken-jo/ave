@@ -103,23 +103,25 @@ describe("Windows CI test list", () => {
     expect(listProblems(new Map([[file, ""]]), mentioned)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
-  it.each(["false", `\${{ false }}`])("excludes a step with constant-false condition %s", (condition) => {
+  it.each([
+    "false", `\${{ false }}`, `\${{ (false) }}`, "steps.docs-impact.outputs.docs_only == 'true'", undefined,
+  ])("rejects an unexpected Windows regression condition %s", (condition) => {
     const disabled = "test/alice.windows.test.ts";
     const enabled = "test/bob.windows.test.ts";
+    const stepName = "Run Windows native import regressions";
     const conditional = `
 jobs:
   windows-permission-tests:
     runs-on: windows-latest
     steps:
-      - name: ${STEP_NAME}
-        if: ${condition}
+      - name: ${stepName}${condition === undefined ? "" : `\n        if: ${condition}`}
         run: bun run test -- ${disabled}
       - name: Run Windows appearance regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         run: bun run test -- ${enabled}
 `;
-    expect(listProblems(new Map([[disabled, ""], [enabled, ""]]), conditional))
-      .toEqual([`${disabled}: missing from ${STEP_NAME}`]);
+    expect(() => windowsRegressionFiles(conditional, windowsTestLists))
+      .toThrow(`windows-permission-tests: ${stepName}: expected if: steps.docs-impact.outputs.docs_only != 'true'`);
   });
 
   it("names every file with win32-only cases", () => {
