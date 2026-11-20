@@ -4,10 +4,13 @@ import { once } from "node:events";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
 import { describe, it, mock } from "node:test";
 import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
 import { diagnoseJobRoot } from "../../.github/scripts/job-root-diagnostic.mjs";
-import { cleanupWindowsJobRoot, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
+import { cleanupWindowsJobRoot as cleanupJobRoot, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
 
 describe("job home isolation", () => {
   it("places Windows fixtures on the system volume instead of the runner temp volume", () => {
@@ -73,9 +76,18 @@ function queryRecords({
   return `${rows.map(row => JSON.stringify(row)).join("\n")}\n`;
 }
 function queryResult(result) {
-  return mock.fn((_command, _args, _options, done) => done(null, queryRecords(result)));
+  return mock.fn(withSuspectResponse((_command, _args, _options, done) => done(null, queryRecords(result))));
 }
 const QUERY_VARIABLE = "AVE_CI_JOB_ROOT_QUERY";
+function withSuspectResponse(run) {
+  return (command, args, options, done) => options.env[QUERY_VARIABLE].includes("function FindNamedSuspects")
+    ? done(null, '{"kind":"suspects","failed":false,"limited":false}\n')
+    : run(command, args, options, done);
+}
+async function cleanupWindowsJobRoot(root, options) {
+  try { await cleanupJobRoot(root, options); }
+  finally { await nextTurn(); }
+}
 const PROCESS_DETAILS = {
   kind: "process", pid: 4000, parentPid: 2000, image: "C:\\fixture\\holder.exe", reason: "argument",
   created: "2026-01-02T03:04:05.0000000Z",
@@ -92,12 +104,23 @@ function runFixturePowerShell(script) {
     ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")],
     { encoding: "utf8", windowsHide: true, stdio: "pipe", env: windowsPowerShellEnv() }).trim();
 }
-function runInjectedQuery(injection) {
+function runInjectedQuery(injection, transform = script => script) {
   return (command, args, options, done) => {
-    const env = { ...options.env, [QUERY_VARIABLE]: `${injection}\n${options.env[QUERY_VARIABLE]}` };
+    const env = { ...options.env, [QUERY_VARIABLE]: `${injection}\n${transform(options.env[QUERY_VARIABLE])}` };
     return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
       args, { ...options, env }, done);
   };
+}
+function runInjectedProcessQuery(injection, transform = script => script) {
+  return runInjectedQuery(injection, script => transform(script.replace(
+    "  if (!(Get-Process -Name setup_wm,unregmp2,wmplayer -ErrorAction SilentlyContinue)) { return }\n", "",
+  )));
+}
+async function within(promise, ms, message) {
+  const timer = new AbortController();
+  try {
+    return await Promise.race([promise, sleep(ms, undefined, { signal: timer.signal }).then(() => { throw new Error(message); })]);
+  } finally { timer.abort(); }
 }
 function fixtureAcl(path) {
   return `Get-Acl -LiteralPath ${powerShellLiteral(path)}`;
@@ -140,15 +163,21 @@ describe("Windows job root cleanup diagnostics", () => {
     const seams = cleanupSeams(error);
     seams.run = queryResult({ processes: [PROCESS_DETAILS] });
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
-    assert.equal(seams.run.mock.callCount(), 1);
+    assert.equal(seams.run.mock.callCount(), 2);
     assert.equal(seams.remove.mock.callCount(), 1);
-    const [command, args, options] = seams.run.mock.calls[0].arguments;
+    const [, , suspectOptions] = seams.run.mock.calls[0].arguments;
+    const [command, args, options] = seams.run.mock.calls[1].arguments;
     assert.equal(command, "powershell.exe");
     assert.deepEqual(args.slice(0, -1), ["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
     assert.ok(Buffer.from(args.at(-1), "base64").toString("utf16le").includes(QUERY_VARIABLE));
     const { [QUERY_VARIABLE]: script, ...env } = options.env;
     assert.ok(script.includes(root));
-    assert.deepEqual({ ...options, env }, { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 64 * 1024, env: windowsPowerShellEnv() });
+    assert.equal(suspectOptions.timeout, 1800);
+    assert.equal(suspectOptions.maxBuffer, 8 * 1024);
+    assert.ok(options.timeout > 0 && options.timeout <= 5000);
+    assert.deepEqual({ ...options, timeout: undefined, env }, {
+      encoding: "utf8", windowsHide: true, timeout: undefined, maxBuffer: 56 * 1024, env: windowsPowerShellEnv(),
+    });
     assert.match(output(seams), /process pid=4000 parent-pid=2000 image=.*holder\.exe.*match=argument.*created="2026-01-02T03:04:05.0000000Z"/);
     assert.doesNotMatch(output(seams), /diagnostic failed/);
   });
@@ -184,12 +213,53 @@ describe("Windows job root cleanup diagnostics", () => {
   it("bounds a stalled diagnostic child and still throws the original removal error", async () => {
     const error = blockedRemoval();
     const seams = cleanupSeams(error);
-    seams.run = (_command, _args, options, done) => execFile(process.execPath, ["-e", "setInterval(() => {}, 1000)"], options, done);
+    const child = { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      kill: mock.fn(), unref: mock.fn() };
+    seams.run = withSuspectResponse(() => child);
     const start = performance.now();
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     const elapsed = performance.now() - start;
     assert.ok(elapsed >= 4500 && elapsed < 6500, `elapsed=${elapsed}`);
+    assert.equal(child.kill.mock.callCount(), 1);
+    assert.equal(child.unref.mock.callCount(), 1);
+    assert.ok(child.stdin.destroyed && child.stdout.destroyed && child.stderr.destroyed);
     assert.match(output(seams), /Cleanup diagnostic failed or timed out/);
+  });
+  it("rethrows the removal error while the stderr reader is stalled", async (t) => {
+    const script = [
+      "import { cleanupWindowsJobRoot } from './.github/scripts/isolate-job-home.mjs';",
+      "const error = Object.assign(new Error('removal'), { path: 'x'.repeat(16 * 1024) });",
+      "console.error = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);",
+      "const records = Array.from({ length: 20 }, (_, index) => JSON.stringify({",
+      "  kind: 'candidate', path: 'example/' + index + '/' + 'x'.repeat(1400), attributes: 'Archive',",
+      "  owner: null, deny: null, parentDeny: null, created: null, lastWrite: null,",
+      "})).join('\\n');",
+      "try {",
+      "  await cleanupWindowsJobRoot('example', { remove() { throw error; },",
+      "    run(_command, _args, _options, done) { done(null, records + '\\n'); },",
+      "  });",
+      "} catch (caught) { process.stdout.write(caught === error ? 'original' : 'wrong'); }",
+    ].join("\n");
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const exited = once(child, "exit");
+    try {
+      const seen = [];
+      child.stdout.on("data", chunk => seen.push(chunk));
+      const [code] = await within(exited, 5700, "Cleanup remained blocked while stderr was unread");
+      assert.equal(code, 0);
+      assert.equal(Buffer.concat(seen).toString(), "original");
+      t.diagnostic("original removal error observed with stderr unread");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      child.stderr.destroy();
+      child.stdout.destroy();
+      await within(exited, 2000, "Cleanup fixture did not exit");
+    }
+    const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script],
+      { timeout: 5500, windowsHide: true });
+    assert.equal(stdout, "original");
+    assert.match(stderr, /^Job root cleanup failed:/);
+    assert.match(stderr, /candidate path=/);
   });
   for (const processQuery of ["native", "unavailable"]) {
     it(`never discloses target metadata when the root is replaced by a junction (${processQuery} process query)`, async () => {
@@ -213,15 +283,15 @@ describe("Windows job root cleanup diagnostics", () => {
         const before = snapshot();
         const error = Object.assign(blockedRemoval(), { path: join(root, "blocked-original.txt") });
         const seams = cleanupSeams(error);
-        seams.run = mock.fn((command, args, options, done) => {
+        seams.run = mock.fn(withSuspectResponse((command, args, options, done) => {
           renameSync(root, saved); symlinkSync(target, root, "junction"); swapped = true;
           if (processQuery === "unavailable" || process.platform !== "win32") return done(new Error("Query unavailable"));
           return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command), args, options, done);
-        });
+        }));
         await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
         assert.equal(swapped, true);
         assert.equal(seams.remove.mock.callCount(), 1);
-        assert.equal(seams.run.mock.callCount(), 1);
+        assert.equal(seams.run.mock.callCount(), 2);
         const lines = output(seams);
         assert.doesNotMatch(lines, /SYNTHETIC-OUTSIDE|candidate path=/);
         assert.match(lines, /Cleanup diagnostic failed or timed out/);
@@ -242,9 +312,9 @@ describe("Windows job root cleanup diagnostics", () => {
       entries: [{ path: root, attributes: "Directory", owner: null, deny: null, parentDeny: null, created: null, lastWrite: null }],
     }).split("\n").slice(0, 2);
     const evidence = `${records.join("\n")}\n`;
-    seams.run = (_command, _args, options, done) => execFile(process.execPath,
+    seams.run = withSuspectResponse((_command, _args, options, done) => execFile(process.execPath,
       ["-e", "process.stdout.write(process.env.EXAMPLE_EVIDENCE, () => process.stdout.write('SYNTHETIC'.repeat(20000)))"],
-      { ...options, env: { ...options.env, EXAMPLE_EVIDENCE: evidence } }, done);
+      { ...options, env: { ...options.env, EXAMPLE_EVIDENCE: evidence } }, done));
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     assert.doesNotMatch(output(seams), /SYNTHETIC/);
     assert.match(output(seams), /candidate path=/);
@@ -297,7 +367,7 @@ describe("Windows job root cleanup diagnostics", () => {
       mkdirSync(target);
       writeFileSync(sentinel, "preserve");
       symlinkSync(target, staged, "junction");
-      seams.run = (command, args, options, done) => {
+      seams.run = withSuspectResponse((command, args, options, done) => {
         const script = options.env[QUERY_VARIABLE];
         const beforeOpen = "    $handle = if ($canList)";
         assert.ok(script.includes(beforeOpen));
@@ -310,7 +380,7 @@ describe("Windows job root cleanup diagnostics", () => {
         const env = { ...options.env, [QUERY_VARIABLE]: script.replace(beforeOpen, `${swap}\n${beforeOpen}`) };
         return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
           args, { ...options, env }, done);
-      };
+      });
       await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
       assert.ok(lstatSync(saved).isDirectory());
       assert.ok(lstatSync(child).isSymbolicLink());
@@ -398,7 +468,9 @@ describe("Windows job root cleanup diagnostics", () => {
         Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, stdio: "pipe", env: windowsPowerShellEnv() });
       holder = spawn(image, [], { cwd: fixture, env: { ...process.env, TEMP: root }, windowsHide: true, stdio: "pipe" });
       exited = once(holder, "exit");
-      const [ready] = await Promise.race([once(holder.stdout, "data"), exited.then(() => { throw new Error("Holder exited before opening the file"); })]);
+      const [ready] = await within(Promise.race([
+        once(holder.stdout, "data"), exited.then(() => { throw new Error("Holder exited before opening the file"); }),
+      ]), 5000, "Holder did not open the file");
       assert.equal(ready.toString().trim(), "ready");
       const diagnostic = mock.fn();
       await assert.rejects(cleanupWindowsJobRoot(root, { diagnostic }), error => error.code === "EPERM" || error.code === "EBUSY" || error.code === "EACCES");
@@ -416,18 +488,151 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.ok(lines.indexOf(candidate) < lines.indexOf(holderLine), lines);
       t.diagnostic(holderLine);
       holder.stdin.end("\n");
-      const [code] = await exited;
+      const [code] = await within(exited, 2000, "Holder did not exit after EOF");
       assert.equal(code, 0);
       await cleanupWindowsJobRoot(root);
       assert.equal(existsSync(root), false);
     } finally {
       if (holder && holder.exitCode === null) {
-        holder.stdin.end("\n");
-        await exited;
+        if (holder.signalCode === null) holder.kill();
+        await within(exited, 2000, "Holder did not terminate");
       }
       rmSync(fixture, { recursive: true, force: true });
     }
   });
+  for (const pressure of [false, true]) {
+    it(`reports a System32 holder of tmp/wmsetup.log${pressure ? " at the discovery bound" : ""}`, { skip: process.platform !== "win32" }, async (t) => {
+      const fixture = mkdtempSync(join(tmpdir(), "ave-job-system-holder-"));
+      const root = join(fixture, "root");
+      const temp = join(root, "tmp");
+      const file = join(temp, "wmsetup.log");
+      const registerTrace = join(fixture, "registered.txt");
+      const image = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      let holder;
+      let exited;
+      const queryExits = [];
+      try {
+        mkdirSync(temp, { recursive: true });
+        writeFileSync(file, "held fixture");
+        if (pressure) {
+          for (let index = 0; index < 130; index++) writeFileSync(join(root, `entry-${index}.txt`), "");
+        }
+        const share = pressure ? "None" : "Read";
+        const script = `$ErrorActionPreference = 'Stop';
+$file = [IO.File]::Open([IO.Path]::Combine($env:TEMP, 'wmsetup.log'), 'Open', 'Read', '${share}');
+try { [Console]::WriteLine('ready'); $null = [Console]::ReadLine() } finally { $file.Dispose() }`;
+        holder = spawn(image, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+          { cwd: fixture, env: { ...windowsPowerShellEnv(), TEMP: temp }, windowsHide: true, stdio: "pipe" });
+        exited = once(holder, "exit");
+        const [ready] = await within(Promise.race([
+          once(holder.stdout, "data"), exited.then(() => { throw new Error("System holder exited before opening the file"); }),
+        ]), 5000, "System holder did not open the file");
+        assert.equal(ready.toString().trim(), "ready");
+        const diagnostic = mock.fn();
+        const remove = pressure ? cleanupSeams().remove : undefined;
+        const traceQuery = runInjectedQuery("", script => {
+          if (!script.includes("function FindFileHolders([string[]]$paths)")) return script;
+          const success = "    if ($code -eq 0) {";
+          return script.replace(success,
+            `${success}\n      [IO.File]::AppendAllLines(${powerShellLiteral(registerTrace)}, $paths)`);
+        });
+        const run = pressure ? (...args) => {
+          const child = traceQuery(...args);
+          queryExits.push(once(child, "exit"));
+          return child;
+        } : undefined;
+        await assert.rejects(cleanupWindowsJobRoot(root, { remove, run, diagnostic }),
+          error => ["EPERM", "EBUSY", "EACCES"].includes(error.code));
+        const lines = output({ diagnostic });
+        const holderRows = lines.split("\n").filter(line => line.startsWith(`holder pid=${holder.pid} `));
+        const holderLine = holderRows.find(line => line.includes(`path=${JSON.stringify(file)}`));
+        assert.ok(holderLine, lines);
+        assert.ok(holderLine.toLowerCase().includes(`image=${JSON.stringify(image.toLowerCase())}`) &&
+          holderLine.includes(`path=${JSON.stringify(file)}`), holderLine);
+        if (pressure) {
+          assert.match(lines, /Cleanup path scan reached its inspection or reporting limit/);
+          assert.equal(lines.split("\n").filter(line => line.startsWith("candidate path=")).length, 20);
+          assert.ok(lines.split("\n").every(line => !line.startsWith(`candidate path=${JSON.stringify(file)} `)), lines);
+          const registered = new Set(readFileSync(registerTrace, "utf8").trim().split(/\r?\n/));
+          assert.equal(registered.size, 128);
+          assert.ok(registered.delete(file));
+          for (const path of registered) {
+            assert.ok(path.startsWith(`${root}\\`));
+            assert.match(path.slice(root.length + 1), /^entry-\d+\.txt$/);
+          }
+          assert.doesNotMatch(lines, /Restart Manager lookup was incomplete/);
+          t.diagnostic(`${registered.size + 1} regular files registered, including the held log`);
+        }
+        t.diagnostic(holderLine);
+        holder.stdin.end();
+        const [code] = await within(exited, 2000, "System holder did not exit after EOF");
+        assert.equal(code, 0);
+      } finally {
+        if (holder && holder.exitCode === null && holder.signalCode === null) {
+          holder.kill();
+          await within(exited, 2000, "System holder did not terminate");
+        }
+        await within(Promise.all(queryExits), 2000, "Holder query did not exit");
+        rmSync(fixture, { recursive: true, force: true });
+      }
+    });
+  }
+  it("reports named suspects even when Restart Manager exhausts its time budget", { skip: process.platform !== "win32" }, async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-job-holder-timeout-"));
+    const exits = [];
+    try {
+      writeFileSync(join(root, "example.log"), "fixture");
+      const run = runInjectedProcessQuery(`
+function Get-CimInstance($Class, $Property, $Filter) {
+  if ($Filter) {
+    @{ ProcessId = 29999; ParentProcessId = 0; Name = 'setup_wm.exe';
+      ExecutablePath = 'C:\\Example\\setup_wm.exe'; CreationDate = [DateTime]::UtcNow }
+  }
+}
+`, script => script.replace("    $operation = 'RmRegisterResources'", "    Start-Sleep -Seconds 30\n    $operation = 'RmRegisterResources'"));
+      const seams = cleanupSeams();
+      seams.run = (...args) => {
+        const child = run(...args);
+        exits.push(once(child, "exit"));
+        return child;
+      };
+      await assert.rejects(cleanupWindowsJobRoot(root, seams), error => error.code === "EPERM");
+      const lines = output(seams);
+      assert.match(lines, /Restart Manager lookup was incomplete/);
+      assert.match(lines, /suspect pid=29999.*name="setup_wm\.exe"/);
+    } finally {
+      await within(Promise.all(exits), 2000, "Timed-out query did not exit");
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+  for (const stage of ["before", "during"]) {
+    it(`rejects a leaf replacement ${stage} registration`, { skip: process.platform !== "win32" }, async () => {
+      const fixture = mkdtempSync(join(tmpdir(), "ave-job-holder-swap-"));
+      const root = join(fixture, "root");
+      const file = join(root, "example.log");
+      try {
+        mkdirSync(root);
+        writeFileSync(file, "original");
+        const run = runInjectedQuery("", script => {
+          const lookup = script.includes("function ReadVerifiedHolders") ? "    try { ReadVerifiedHolders $file" : "      FindFileHolders $file";
+          const marker = stage === "before" ? lookup : "    $operation = 'RmRegisterResources'";
+          const swap = [
+            `    [IO.File]::Move(${powerShellLiteral(file)}, ${powerShellLiteral(join(fixture, "saved.log"))})`,
+            `    [IO.File]::WriteAllText(${powerShellLiteral(file)}, 'replacement')`,
+            "",
+          ].join("\n");
+          // An exclusive opener can force the metadata-only identity check.
+          const pin = "  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete";
+          const query = stage === "during" ? script.replace(pin, "  $pin = $null") : script;
+          return query.replace(marker, swap + marker);
+        });
+        const diagnostic = mock.fn();
+        await diagnoseJobRoot(root, diagnostic, run);
+        assert.equal(readFileSync(file, "utf8"), "replacement");
+        assert.match(output({ diagnostic }), /Restart Manager lookup failed .*operation=unverified-path/);
+      } finally { rmSync(fixture, { recursive: true, force: true }); }
+    });
+  }
   it("matches current directories and command arguments independently of the image path", { skip: process.platform !== "win32" }, async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-job-process-"));
     const fixtureCommand = "console.log('ready'); process.stdin.resume();";
@@ -462,12 +667,13 @@ describe("Windows job root cleanup diagnostics", () => {
   it("reports an old named suspect behind newer rows and matches", { skip: process.platform !== "win32" }, async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-job-process-priority-"));
     try {
-      const run = runInjectedQuery(`
+      const run = runInjectedProcessQuery(`
 function Get-CimInstance($Class, $Property, $Filter) {
   $older = (Get-Process -Id ${process.pid}).StartTime
   $newer = [DateTime]::UtcNow
   $suspect = @{ ProcessId = 29999; ParentProcessId = ${process.pid}; Name = 'setup_wm.exe';
-    ExecutablePath = 'C:\\Example\\setup_wm.exe'; CreationDate = $older }
+    ExecutablePath = 'C:\\Example\\setup_wm.exe'; CreationDate = $older;
+    CommandLine = ${powerShellLiteral(join(root, "example.log"))} }
   if ($Filter) { if ($Filter -match 'setup_wm') { $suspect }; return }
   foreach ($id in 30000..30539) {
     @{ ProcessId = $id; ParentProcessId = 0; ExecutablePath = ${powerShellLiteral(join(root, "example.exe"))};
@@ -496,7 +702,7 @@ function Get-CimInstance($Class, $Property, $Filter) {
         const { birthtimeMs } = statSync(file);
         const error = blockedRemoval();
         const seams = cleanupSeams(error);
-        seams.run = runInjectedQuery(`function Get-CimInstance($Class, $Property, $Filter) { ${action} }`);
+        seams.run = runInjectedProcessQuery(`function Get-CimInstance($Class, $Property, $Filter) { ${action} }`);
         await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
         const lines = output(seams);
         const candidate = lines.split("\n").find(line => line.startsWith(`candidate path=${JSON.stringify(file)} `));
@@ -533,7 +739,7 @@ describe("Windows job root query", () => {
     assert.match(output({ diagnostic }), /Cleanup path scan reached its inspection or reporting limit/);
     assert.match(output({ diagnostic }), /Cleanup process scan reached its inspection or reporting limit/);
     assert.doesNotMatch(output({ diagnostic }), /SYNTHETIC|secret|CommandLine|env|entry-20|pid=4020/);
-    const [, , options] = run.mock.calls[0].arguments;
+    const [, , options] = run.mock.calls[1].arguments;
     const script = options.env[QUERY_VARIABLE];
     assert.ok(script.includes("$root = 'C:\\fixture''s'"));
     assert.match(script, /Get-CimInstance Win32_Process/);
@@ -591,13 +797,14 @@ describe("Windows job root hardening", () => {
       await diagnoseJobRoot("C:\\ave-ci-abc123", mock.fn(), query);
       for (const run of [harden, query]) {
         const calls = run.mock.calls.filter(call => call.arguments[0] === "powershell.exe");
-        assert.equal(calls.length, 1);
-        const options = calls[0].arguments[2];
-        assert.ok(options.env);
-        const { [QUERY_VARIABLE]: script, ...env } = options.env;
-        assert.equal(typeof script, run === query ? "string" : "undefined");
-        assert.deepEqual(env, expectedEnv);
-        assert.equal(Object.keys(options.env).some(key => /^psmodulepath$/i.test(key)), false);
+        assert.equal(calls.length, run === query ? 2 : 1);
+        for (const { arguments: [, , options] } of calls) {
+          assert.ok(options.env);
+          const { [QUERY_VARIABLE]: script, ...env } = options.env;
+          assert.equal(typeof script, run === query ? "string" : "undefined");
+          assert.deepEqual(env, expectedEnv);
+          assert.equal(Object.keys(options.env).some(key => /^psmodulepath$/i.test(key)), false);
+        }
       }
       assert.equal(process.env, injectedEnv);
       assert.equal(process.env.PSModulePath, "C:\\Program Files\\PowerShell\\7\\Modules");

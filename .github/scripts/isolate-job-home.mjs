@@ -1,6 +1,6 @@
 // Isolate every job path from the account profile. Native Windows fixtures also
 // need the system volume's aliases and trusted volume-root ownership.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,20 +84,37 @@ export function validateJobHomeRoot(root, systemRoot) {
   return root;
 }
 
-export async function cleanupWindowsJobRoot(root, {
-  remove = rmSync, run, diagnostic = line => console.error(line),
-} = {}) {
+function writeCleanupLog(lines) {
+  // A synchronous stderr sink can stall the writer without holding up cleanup.
+  const writer = spawn(process.execPath, ["-e", "process.stdin.pipe(process.stderr)"],
+    { stdio: ["pipe", "ignore", 2], windowsHide: true });
+  const deadline = setTimeout(() => {
+    writer.stdin.destroy();
+    try { writer.kill(); } catch {}
+    writer.unref();
+  }, 250).unref();
+  writer.on("error", () => {});
+  writer.stdin.on("error", () => {});
+  writer.once("close", () => clearTimeout(deadline));
+  writer.stdin.end(lines.join("\n") + "\n");
+}
+
+export async function cleanupWindowsJobRoot(root, { remove = rmSync, run, diagnostic } = {}) {
   try {
     remove(root, { recursive: true, force: true });
   } catch (error) {
+    const lines = [];
     try {
-      diagnostic(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)} path=${JSON.stringify(error.path)}`);
-      await diagnoseJobRoot(root, diagnostic, run);
-    } catch { diagnosticSafely(); }
+      lines.push(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)} path=${JSON.stringify(error.path)}`);
+      await diagnoseJobRoot(root, line => lines.push(line), run);
+    } catch { lines.push("Cleanup diagnostic failed or timed out"); }
+    setImmediate(() => {
+      try {
+        if (diagnostic) lines.forEach(line => diagnostic(line));
+        else writeCleanupLog(lines);
+      } catch { /* The removal rejection has already settled. */ }
+    });
     throw error;
-    function diagnosticSafely() {
-      try { diagnostic("Cleanup diagnostic failed or timed out"); } catch { /* Preserve the removal error. */ }
-    }
   }
 }
 async function main() {
@@ -107,7 +124,8 @@ async function main() {
       || realpathSync.native(root).toLowerCase() !== root.toLowerCase()) {
       throw new Error("Cleanup requires an unchanged isolated job root");
     }
-    await cleanupWindowsJobRoot(root);
+    try { await cleanupWindowsJobRoot(root); }
+    catch { process.exitCode = 1; }
     return;
   }
   const { RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv, SystemRoot: systemRoot } = process.env;
