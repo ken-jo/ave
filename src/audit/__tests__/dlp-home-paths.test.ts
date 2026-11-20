@@ -495,6 +495,19 @@ it("preserves each structured judge argument value when keys redact to the same 
   expect(JSON.parse(result.tool.input.argument)).toEqual({ "[home]#2": "[home]/file", "[home]": 2, encoded: "[home-token]" });
 });
 describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (platform) => {
+  it("redacts a canonical URL when the configured home contains dot segments", async () => {
+    fixture.platform = platform;
+    const home = platform === "win32" ? "D:/fixtures/alice" : "/srv/fixtures/alice";
+    for (const configured of [`${home}/.`, `${home}/staging/../`, home.replace("fixtures/", "fixtures//")]) {
+      fixture.home = configured;
+      vi.resetModules();
+      const { redactHomePathsInText, redactFsPath } = await import("../dlp-filter.js");
+      const url = pathToFileURL(`${configured}/readme`).href;
+      expect(url).toBe(pathToFileURL(`${home}/readme`).href);
+      expect(redactHomePathsInText(url), configured).toBe("file://[home]/readme");
+      expect(redactFsPath(url), configured).toBe("file://<home>/readme");
+    }
+  });
   it("redacts equivalent URL encodings and decodes descendants in the fallback", async () => {
     fixture.platform = platform;
     fixture.home = platform === "win32" ? "D:/fixtures/habitat" : "/srv/fixtures/habitat";

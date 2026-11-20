@@ -76,15 +76,17 @@ const homePlatform = os.platform();
 function configuredHome(): string {
   let raw: string;
   try { raw = os.homedir(); } catch { return ""; }
+  if (!raw) return "";
   const windows = homePlatform === "win32";
   const paths = windows ? win32 : posix;
   const root = paths.parse(raw).root;
-  const home = root + raw.slice(root.length).replace(/[\\/]+$/u, "");
-  // Root homes have no account component. Only the generic text rules apply.
-  if (root && paths.normalize(home) === paths.normalize(root)) return "";
+  const spelling = root + raw.slice(root.length).replace(/[\\/]+$/u, "");
   // Quotes and controls can coincide with syntax in serialized text. POSIX
   // filename backslashes can also change the meaning of a following quote.
-  return /["\p{Cc}]/u.test(home) || !windows && home.includes("\\") ? "" : home;
+  if (/["\p{Cc}]/u.test(spelling) || !windows && spelling.includes("\\")) return "";
+  const home = paths.resolve(spelling);
+  // Root homes have no account component. Only the generic text rules apply.
+  return home === paths.parse(home).root ? "" : home;
 }
 
 const _homeDir = configuredHome();
