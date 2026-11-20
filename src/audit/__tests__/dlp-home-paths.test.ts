@@ -560,3 +560,17 @@ it("scrubs boxed strings and non-plain serialized keys before sending judge argu
   expect(serializeRuntimeAuditData(boxed)).toBe(JSON.stringify(redactHomePathsInText(`${home}/file`)));
   expect(serializeRuntimeAuditData(raw)).toBe(JSON.stringify(`${home}/file`));
 });
+
+it("propagates application RangeErrors through structured judge arguments", async () => {
+  const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const failure = new RangeError("application serialization error");
+  const reject = () => { throw failure; };
+  for (const argument of [{ get p() { return reject(); } }, { p: { toJSON: reject } }]) {
+    const request = judgeRequest({ invocation: judgeInvocation({ finalInput: { argument } }) });
+    let caught: unknown;
+    try { redactJudgeRequest(request); } catch (error) { caught = error; }
+    expect(caught).toBe(failure);
+    expect(serializeRuntimeAuditData(argument)).toBe('{"unserializable":true}');
+  }
+});
