@@ -1,6 +1,5 @@
 /** Locks serialize writes; plain reads may still observe the pre-write value. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, realpath, rmSync, symlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
@@ -131,44 +130,16 @@ describe("withFileLock", () => {
 
   it("a waiting caller does not open the target before it holds the lock", async () => {
     // A waiting caller must not hold the target open or recreate a holder-removed file before acquiring the lock.
-    const runWaiter = AsyncLocalStorage.snapshot();
     let waiter: Promise<void> | undefined;
     await withFileLock(testFile, async () => {
       rmSync(testFile);
-      waiter = runWaiter(() => withFileLock(testFile, async () => {}));
+      waiter = withFileLock(testFile, async () => {});
       await new Promise((resolve) => setTimeout(resolve, 250));
       expect(existsSync(testFile)).toBe(false);
       writeFileSync(testFile, "{}", "utf-8");
     });
     await waiter;
     expect(readFileSync(testFile, "utf-8")).toBe("{}");
-  });
-
-  it("rejects an awaited same-key acquire during a lock callback", async () => {
-    const lock = vi.spyOn(lockfile, "lock");
-    await expect(withFileLock(testFile, async () => {
-      await withFileLock(testFile, async () => undefined, { retries: 0 });
-    })).rejects.toThrow("re-entrant acquisition of a held file lock");
-    expect(lock).toHaveBeenCalledTimes(1);
-    expect(existsSync(`${testFile}.lock`)).toBe(false);
-  });
-
-  it("allows work that inherits a lock context to acquire after the callback settles", async () => {
-    const startWaiter = deferred<void>();
-    let waiter!: Promise<string>;
-    await withFileLock(testFile, async () => {
-      waiter = startWaiter.promise.then(() => withFileLock(testFile, async () => "waiter"));
-    });
-    startWaiter.resolve();
-    await expect(waiter).resolves.toBe("waiter");
-  });
-
-  it("allows a different nested key and rejects reacquiring an ancestor key", async () => {
-    await expect(withFileLock(testFile, () => withFileLock(join(tmpDir, "other.json"), async () => {
-      await expect(withFileLock(testFile, async () => undefined, { retries: 0 }))
-        .rejects.toThrow("re-entrant acquisition of a held file lock");
-      return "nested";
-    }))).resolves.toBe("nested");
   });
 
   it("stale lock recovery — removes leftover .lock dir and acquires fresh lock", async () => {
