@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
 import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
@@ -124,11 +124,19 @@ export function directCommandProblems(steps) {
 }
 
 function inspectPowerShell(shell, steps) {
+  const env = windowsPowerShellEnv();
+  let executable = shell;
+  if (shell === "powershell") {
+    if (!/^[a-z]:[\\/]/iu.test(env.SystemRoot ?? "")) {
+      throw new Error("The powershell parser requires an absolute system directory");
+    }
+    executable = win32.join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  }
   const encoded = Buffer.from(INSPECT_POWERSHELL_AST, "utf16le").toString("base64");
-  const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
+  const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
     input: JSON.stringify({ steps, executableNames: WORKFLOW_EXECUTABLES }),
     encoding: "utf8", windowsHide: true, timeout: 15_000,
-    env: windowsPowerShellEnv(),
+    env,
   });
   if (result.error) throw new Error(`Cannot launch required ${shell} parser`, { cause: result.error });
   if (result.status !== 0) throw new Error(`${shell} parser failed: ${result.stderr}`);
