@@ -1117,7 +1117,6 @@ jobs:
           src/boot/steps/__tests__/plugin-runtime.test.ts
           src/boot/steps/__tests__/plugin-runtime-auth-partition.test.ts
           src/boot/steps/__tests__/plugin-runtime-hostapi-wiring.test.ts
-
           src/__tests__/packaging-discipline-source.test.ts
           src/__tests__/support/child-tracker.test.ts
           src/__tests__/support/simulated-win32-drive.test.ts

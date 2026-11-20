@@ -3,12 +3,19 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { conditionalGates } from "./windows-test-gates.js";
 import { isInventorySource, nativeBackedTestFiles } from "./windows-native-test-inventory.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
+const BARE_TEST_PATH_RE = new RegExp(String.raw`^\s*${TEST_PATH}(?![\w./\\-])`);
+const TEST_INVOCATION_RE = /\bbun[ \t]+run[ \t]+test(?::vitest)?(?=[ \t]|$)/;
+const TEST_COMMAND_RE = new RegExp(
+  String.raw`^bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)(?:[ \t]+${TEST_PATH})+$`,
+);
 const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
 const nativeTestLists = new Map([[NATIVE_TEST_LIST, readFileSync(join(root, NATIVE_TEST_LIST), "utf8")]]);
 const REQUIRED_SECURITY_SUITES = [
@@ -100,11 +107,48 @@ function listProblems(sources: Map<string, string>, workflow: string): string[] 
   }).sort();
 }
 
+type WorkflowJob = {
+  "runs-on"?: string | string[];
+  steps?: { name?: string; run?: string }[];
+};
+
+function windowsRunSteps(workflow: string) {
+  const { jobs } = parse(workflow) as { jobs: Record<string, WorkflowJob> };
+  return Object.entries(jobs).flatMap(([jobId, job]) => {
+    const runners = [job["runs-on"] ?? []].flat();
+    if (!runners.some((runner) => /^windows(?:-|$)/i.test(runner))) return [];
+    return (job.steps ?? []).flatMap((step, index) => step.run === undefined ? [] : [{
+      name: `${jobId}: ${step.name ?? `step ${index + 1}`}`,
+      lines: step.run.trimEnd().split("\n"),
+    }]);
+  });
+}
+
 describe("Windows CI test list", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
   const listed = windowsJobFiles(workflow);
   const sources = new Map(["src", "test", "scripts", "config", ".github"].flatMap((dir) => sourceFiles(join(root, dir)))
     .map((file) => [file, readFileSync(join(root, file), "utf8")]));
+
+  it("keeps each direct Windows test list in one command", () => {
+    const brokenSteps = windowsRunSteps(workflow).filter(({ lines }) => {
+      const commands = lines.filter((line) => TEST_INVOCATION_RE.test(line));
+      if (commands.length === 0) return false;
+      const command = commands[0]?.trim() ?? "";
+      if (commands.length !== 1 || !TEST_COMMAND_RE.test(command)) return true;
+      // The permission list ends its step after any diagnostic preamble.
+      return !command.includes("test:vitest") && commands[0] !== lines.at(-1);
+    });
+    expect(brokenSteps.map(({ name }) => name)).toEqual([]);
+  });
+
+  it("keeps bare test paths off Windows command lines", () => {
+    const barePaths = windowsRunSteps(workflow).flatMap(({ name, lines }) => lines.flatMap((line) => {
+      const path = BARE_TEST_PATH_RE.exec(line)?.[0].trim();
+      return path === undefined ? [] : [`${name}: ${path}`];
+    }));
+    expect(barePaths).toEqual([]);
+  });
 
   it("names only files that exist", () => {
     expect(listed.filter((file) => !sources.has(file))).toEqual([]);
