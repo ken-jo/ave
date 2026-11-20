@@ -1229,9 +1229,9 @@ describe("native access-rule admission", () => {
     await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate)).resolves.toBeUndefined();
   });
 
-  it("requires current-account ownership for the runtime leaf", async () => {
+  it.each(["S-1-5-18", "S-1-5-32-544"])("requires current-account ownership for the runtime leaf (owner %s)", async (owner) => {
     const fixture = windowsFixture(String.raw`C:\Tools\runtime`, true);
-    fixture.modify((paths) => { paths[2]!.owner = "S-1-5-18"; });
+    fixture.modify((paths) => { paths[2]!.owner = owner; });
     await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate)).rejects.toThrow("not owned by the current account");
   });
 
