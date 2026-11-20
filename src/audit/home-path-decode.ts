@@ -112,7 +112,11 @@ function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex:
     const value = next < 128 ? SINGLE_ESCAPES[next] : -1;
     return value >= 0 ? setEscapeValue(output, value, 2) : -1;
   }
-  if (code !== 38) return -1;
+  return code === 38 ? readHomeEntity(text, index, output) : -1;
+}
+
+/** Read one complete HTML reference starting at its ampersand. */
+export function readHomeEntity(text: string, index: number, output: EscapeValue): number {
   if (text.charCodeAt(index + 1) === 35) {
     let cursor = index + 2;
     const radix = text.charCodeAt(cursor) === 120 || text.charCodeAt(cursor) === 88 ? 16 : 10;

@@ -148,6 +148,19 @@ const wrappedChains = wrapperNames.flatMap(a => [
   [a], ...wrapperNames.flatMap(b => [[a, b], ...wrapperNames.map(c => [a, b, c])]),
 ]);
 
+it("replaces the whole encoded object token while preserving an outer JSON layer", async () => {
+  const home = String.raw`E:\temp\ted`;
+  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+  const value = { p: `${home}\\docs\\file.txt`, other: 1 };
+  const encoded = encodeURIComponent(JSON.stringify(value));
+  expect(JSON.parse(decodeURIComponent(encoded))).toEqual(value);
+  expect(redactHomePathsInText(encoded)).toBe("[home-token]");
+  const outer = JSON.stringify({ payload: encoded, retained: 2 });
+  const output = redactHomePathsInText(outer);
+  expect(output).not.toContain(home);
+  expect(JSON.parse(output)).toEqual({ payload: "[home-token]", retained: 2 });
+});
+
 function invertWrappedChain(text: string, chain: readonly WrappedEncoder[]): string {
   let insideNonJson = false;
   for (const name of chain.toReversed()) {

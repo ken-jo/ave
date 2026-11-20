@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import { decodeHomeEscapes, type HomeEscapeFamily, mayDecodeHomeCharacter } from "./home-path-decode.js";
+import { decodeHomeEscapes, type HomeEscapeFamily, mayDecodeHomeCharacter, readHomeEntity } from "./home-path-decode.js";
 
 export {
   initPiiRedactionPolicy,
@@ -225,10 +225,25 @@ export function mayContainHomePath(value: string): boolean {
 
 const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
 
-function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
+interface LiteralMarker {
+  start: number;
+  end: number;
+}
+
+interface LiteralMarkers {
+  spans: LiteralMarker[];
+}
+
+function replaceLiteralHomes(text: string, forms: readonly HomeForm[], markers?: LiteralMarkers): string {
   for (const { literal, marker } of forms) {
     let copied = 0;
     let pieces: string[] | undefined;
+    let spans: LiteralMarker[] | undefined;
+    let previousMarker = 0;
+    let offset = 0;
+    const copyMarker = (previous: LiteralMarker): void => {
+      spans?.push({ start: previous.start + offset, end: previous.end + offset });
+    };
     for (const match of text.matchAll(literal)) {
       let start = match.index;
       const end = start + match[0].length;
@@ -237,9 +252,24 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
       }
       pieces ??= [];
       pieces.push(text.slice(copied, start), marker);
+      if (markers) {
+        spans ??= [];
+        while (previousMarker < markers.spans.length && markers.spans[previousMarker].end <= start) {
+          copyMarker(markers.spans[previousMarker++]);
+        }
+        while (previousMarker < markers.spans.length && markers.spans[previousMarker].start < end) previousMarker++;
+        spans.push({ start: start + offset, end: start + offset + marker.length });
+        offset += marker.length - (end - start);
+      }
       copied = end;
     }
-    if (pieces) text = pieces.join("") + text.slice(copied);
+    if (pieces) {
+      text = pieces.join("") + text.slice(copied);
+      if (spans && markers) {
+        while (previousMarker < markers.spans.length) copyMarker(markers.spans[previousMarker++]);
+        markers.spans = spans;
+      }
+    }
   }
   return text;
 }
@@ -280,33 +310,59 @@ function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): bool
 
 /** Delimiters and their preceding slash runs belong to the original text. */
 function replaceEncodedHomeTokens(
-  text: string, { forms, boundaries, requiredPathCharacter }: HomeRedaction,
+  text: string, { forms, boundaries, requiredPathCharacter }: HomeRedaction, markers: readonly LiteralMarker[],
 ): string {
   let pieces: string[] | undefined;
   let copied = 0;
   let start = 0;
   let introduced = false;
+  let markerIndex = 0;
+  let markerStart = markers[0]?.start ?? Infinity;
+  let literalSuffix = false;
+  let separatorEnd = 0;
+  let escapedSuffix = false;
+  const entityValue = { value: 0 };
+  const containsEncodedHome = (token: string): boolean => {
+    if (requiredPathCharacter && token.length >= LARGE_ESCAPE_TOKEN && !token.includes(requiredPathCharacter)
+      && !mayDecodeHomeCharacter(token, requiredPathCharacter.charCodeAt(0), HOME_DECODE_LAYERS)) return false;
+    return detectsEncodedHome(token, forms);
+  };
   const finish = (end: number): void => {
+    let replaceFrom = start;
+    // A literal descendant can end at a raw list separator. Prefer the
+    // separate token, with the original candidate as the fallback.
+    if (introduced && separatorEnd > start && separatorEnd < end
+      && containsEncodedHome(text.slice(separatorEnd, end))
+      && (!escapedSuffix || !containsEncodedHome(text.slice(start, separatorEnd)))) {
+      replaceFrom = separatorEnd;
+    }
+    literalSuffix = false;
+    separatorEnd = 0;
     if (introduced && start < end) {
-      const token = text.slice(start, end);
       introduced = false;
-      if (requiredPathCharacter && token.length >= LARGE_ESCAPE_TOKEN && !token.includes(requiredPathCharacter)
-        && !mayDecodeHomeCharacter(token, requiredPathCharacter.charCodeAt(0), HOME_DECODE_LAYERS)) return;
-      if (!detectsEncodedHome(token, forms)) return;
+      if (replaceFrom === start && !containsEncodedHome(text.slice(start, end))) return;
       pieces ??= [];
-      pieces.push(text.slice(copied, start), HOME_TOKEN_MARKER);
+      pieces.push(text.slice(copied, replaceFrom), HOME_TOKEN_MARKER);
       copied = end;
     }
     introduced = false;
   };
   for (let index = 0; index < text.length;) {
+    if (index === markerStart) {
+      finish(index);
+      index = markers[markerIndex++].end;
+      markerStart = markers[markerIndex]?.start ?? Infinity;
+      start = index;
+      literalSuffix = true;
+      continue;
+    }
     const code = text.charCodeAt(index);
     if (code === 92) {
       let end = index + 1;
       while (text.charCodeAt(end) === 92) end++;
-      if (boundaries.has(text.charCodeAt(end))) {
+      if (end === markerStart || boundaries.has(text.charCodeAt(end))) {
         finish(index);
-        index = end + 1;
+        index = end === markerStart ? end : end + 1;
         start = index;
       } else {
         introduced = true;
@@ -317,8 +373,14 @@ function replaceEncodedHomeTokens(
       index++;
       start = index;
     } else {
+      if (literalSuffix && code === 59) {
+        separatorEnd = index + 1;
+        escapedSuffix = introduced;
+        literalSuffix = false;
+      }
       if (code === 37 || code === 38) introduced = true;
-      index++;
+      // A reference's terminating semicolon is part of the escape.
+      index += literalSuffix && code === 38 ? Math.max(1, readHomeEntity(text, index, entityValue)) : 1;
     }
   }
   finish(text.length);
@@ -328,8 +390,9 @@ function replaceEncodedHomeTokens(
 /** Unlike prefix-only path redaction, display text must redact home paths anywhere, including file URLs. */
 export function redactHomePathsInText(value: string): string {
   if (!value || !mayContainHomePath(value)) return value;
-  let text = replaceLiteralHomes(value, homeRedaction.forms);
-  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
+  const markers = homeRedaction.forms.length && INTRODUCER.test(value) ? { spans: [] } : undefined;
+  let text = replaceLiteralHomes(value, homeRedaction.forms, markers);
+  if (markers && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction, markers.spans);
   return replaceLiteralHomes(text, GENERIC_HOME_FORMS);
 }
 

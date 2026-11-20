@@ -43,6 +43,10 @@ add("literal Windows home before an escape-like directory name", WINDOWS_HOME,
   `run "${win32.normalize(WINDOWS_HOME)}\\x64\\tool.exe"`, 'run "[home]\\x64\\tool.exe"', "win32");
 add("literal Windows home in prose with mixed separators", win32.normalize(WINDOWS_HOME),
   String.raw`Open:"D:/fixtures/habitat\u0032\file"`, String.raw`Open:"[home]\u0032\file"`, "win32");
+const MIXED_PATH_LIST = encodeURI(`${WINDOWS_HOME}/one;${win32.normalize(WINDOWS_HOME)}\\two`);
+add("keeps a literal suffix before a separate encoded path", WINDOWS_HOME, MIXED_PATH_LIST, "[home]/one;[home-token]", "win32");
+add("keeps a literal suffix and its entity before a separate encoded path", WINDOWS_HOME,
+  MIXED_PATH_LIST.replace("/one;", "/one&amp;;"), "[home]/one&amp;;[home-token]", "win32");
 
 for (const { character, tail, count } of [
   { character: '"', tail: '"' }, { character: "\n", tail: "n" }, { character: "\t", tail: "t" },
