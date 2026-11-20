@@ -1,8 +1,8 @@
-import { copyFileSync, existsSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -16,7 +16,6 @@ import {
   isSrtWinRuntimeReleasePending,
   markSrtWinRuntimeReleased,
   prepareSrtWinExecutable,
-  srtWinPrivateDirectories,
 } from "../srt-win-integrity.js";
 
 useVerifiedAveHomePrivacy();
@@ -53,25 +52,22 @@ vi.mock("node:child_process", async (importOriginal) => ({
   },
 }));
 
-const require = createRequire(import.meta.url);
-const vendor = join(dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json")), "vendor");
-const sourceRoot = mkdtempSync(join(tmpdir(), "ave-asrt-exit-release-"));
-const source = join(sourceRoot, "srt-win.exe");
-copyFileSync(join(vendor, "srt-win", getSrtWinArchitecture(), "srt-win.exe"), source);
-// The runtime is handed this copy at initialize on Windows; preparing it here makes the pending release observable on every platform.
-const executable = prepareSrtWinExecutable(source);
-
-afterAll(() => {
-  rmSync(sourceRoot, { recursive: true, force: true });
-  for (const bin of srtWinPrivateDirectories()) {
-    for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(bin, name), { force: true });
-    if (existsSync(bin)) rmdirSync(bin);
-    if (existsSync(dirname(bin))) rmdirSync(dirname(bin));
-  }
-});
-
 describe("sandbox runtime release at exit", () => {
   const originalPlatform = process.platform;
+  let sourceRoot: string | undefined;
+  let executable: string;
+  beforeAll(() => {
+    const require = createRequire(import.meta.url);
+    const vendor = join(dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json")), "vendor");
+    sourceRoot = mkdtempSync(join(tmpdir(), "ave-asrt-exit-release-"));
+    const source = join(sourceRoot, "srt-win.exe");
+    copyFileSync(join(vendor, "srt-win", getSrtWinArchitecture(), "srt-win.exe"), source);
+    // A real private copy makes the pending release observable on every platform.
+    executable = prepareSrtWinExecutable(source);
+  });
+  afterAll(() => {
+    if (sourceRoot !== undefined) rmSync(sourceRoot, { recursive: true, force: true });
+  });
   beforeEach(async () => {
     setProcessPlatform("linux");
     manager.reset.mockReset().mockImplementation(async () => {
