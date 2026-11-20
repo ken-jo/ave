@@ -24,6 +24,7 @@ export function windowsRunSteps(workflow) {
       jobId,
       stepName: step.name,
       name: `${jobId}: ${step.name ?? `step ${index + 1}`}`,
+      condition: step.if,
       shell: step.shell ?? job.defaults?.run?.shell ?? defaults?.run?.shell ?? "pwsh",
       run: step.run,
       lines: step.run.trimEnd().split("\n"),
@@ -49,8 +50,10 @@ export function windowsRegressionStepFiles(run, readInventory, name) {
 
 export function windowsRegressionFiles(workflow, inventories) {
   const files = new Set();
-  for (const { jobId, stepName, name, run } of windowsRunSteps(workflow)) {
+  for (const { jobId, stepName, name, condition, run } of windowsRunSteps(workflow)) {
     if (jobId !== "windows-permission-tests" || !REGRESSION_STEP.test(stepName ?? "")) continue;
+    if (condition === false || (typeof condition === "string"
+      && /^(?:false|\$\{\{\s*false\s*\}\})$/iu.test(condition.trim()))) continue;
     for (const file of windowsRegressionStepFiles(run, path => inventories.get(path), name)) files.add(file);
   }
   return [...files];
