@@ -160,7 +160,7 @@ const separatorMatrixEncoders = {
     json: true,
   },
   slash: { encode: (text: string) => `"${encoders.jsonSlash(text)}"`, decode: wrappedEncoders.string.decode, json: true },
-  hexEntity: { encode: (text: string) => escapeHtml(text).replace(/[^\x00-\x7f]/gu, c => `&#x${c.codePointAt(0)?.toString(16)};`), decode: wrappedEncoders.html.decode, json: false },
+  hexEntity: { encode: (text: string) => escapeHtml(text).replace(/[\u0080-\u{10ffff}]/gu, c => `&#x${c.codePointAt(0)?.toString(16)};`), decode: wrappedEncoders.html.decode, json: false },
   hexUtf8: { encode: (text: string) => utf8(text).map(byte => byte < 0x80 ? String.fromCharCode(byte) : `\\x${hex2(byte)}`).join(""), decode: decoders.hexBytes, json: false },
 };
 

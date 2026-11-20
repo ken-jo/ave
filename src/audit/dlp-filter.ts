@@ -272,10 +272,12 @@ interface LiteralMarkers {
 
 /** Locate lexically valid JSON strings without parsing their values. */
 function* jsonStringSpans(text: string): Generator<LiteralMarker> {
-  const escape = { value: 0 };
+  const escapeValue = { value: 0 };
   let index = 0;
-  while ((index = text.indexOf('"', index)) >= 0) {
-    const start = index++;
+  while (index < text.length) {
+    const start = text.indexOf('"', index);
+    if (start < 0) return;
+    index = start + 1;
     let valid = true;
     while (index < text.length) {
       const code = text.charCodeAt(index++);
@@ -286,7 +288,7 @@ function* jsonStringSpans(text: string): Generator<LiteralMarker> {
       if (code < 32) valid = false;
       if (code === 92) {
         const next = text.charCodeAt(index);
-        const width = next === 39 || next === 120 ? -1 : readHomeEscape(text, index - 1, escape);
+        const width = next === 39 || next === 120 ? -1 : readHomeEscape(text, index - 1, escapeValue);
         if (width < 0) valid = false;
         index += Math.max(1, width - 1);
       }
@@ -395,12 +397,12 @@ function separateTokenStart(
   let start = 0;
   let introduced = false;
   let driveLetterEnd = -1;
-  const escape = { value: 0 };
+  const escapeValue = { value: 0 };
   for (let index = 0; index < token.length;) {
     const source = token.codePointAt(index) ?? 0;
     const introducer = isEscapeIntroducer(source);
-    let width = introducer ? readHomeEscape(token, index, escape) : -1;
-    let code = width > 0 ? escape.value : source;
+    let width = introducer ? readHomeEscape(token, index, escapeValue) : -1;
+    let code = width > 0 ? escapeValue.value : source;
     if (source === 37 && code === 37 && width > 0) {
       // URI encoding repeats the percent byte without escaping the final hex digits.
       NESTED_PERCENT_BYTE.lastIndex = index;

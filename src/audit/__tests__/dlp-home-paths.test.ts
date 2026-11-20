@@ -577,8 +577,8 @@ it.each([
   fixture.home = configured;
   vi.resetModules();
   const { redactFsPath } = await import("../dlp-filter.js");
-  const drive = platform === "win32" ? "D:" : "";
-  const absolute = `${drive}${process.cwd()}/${normalized.slice(drive.length)}/file`;
+  const paths = platform === "win32" ? win32 : posix;
+  const absolute = paths.resolve(configured, "file");
   expect(redactFsPath(absolute)).toBe(absolute);
   for (const home of [configured, normalized]) expect(redactFsPath(`${home}/file`)).toBe("<home>/file");
 });
@@ -588,7 +588,7 @@ it.each(["D:", "D:."])("does not treat the drive-relative spelling %s as a confi
   fixture.home = home;
   vi.resetModules();
   const { redactFsPath } = await import("../dlp-filter.js");
-  const absolute = `D:${process.cwd()}/file`;
+  const absolute = win32.resolve(home, "file");
   expect(redactFsPath(absolute)).toBe(absolute);
   expect(redactFsPath(`${home}file`)).toBe(`${home}file`);
 });
