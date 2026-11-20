@@ -76,14 +76,9 @@ function queryRecords({
   return `${rows.map(row => JSON.stringify(row)).join("\n")}\n`;
 }
 function queryResult(result) {
-  return mock.fn(withSuspectResponse((_command, _args, _options, done) => done(null, queryRecords(result))));
+  return mock.fn((_command, _args, _options, done) => done(null, queryRecords(result)));
 }
 const QUERY_VARIABLE = "AVE_CI_JOB_ROOT_QUERY";
-function withSuspectResponse(run) {
-  return (command, args, options, done) => options.env[QUERY_VARIABLE].includes("function FindNamedSuspects")
-    ? done(null, '{"kind":"suspects","failed":false,"limited":false}\n')
-    : run(command, args, options, done);
-}
 async function cleanupWindowsJobRoot(root, options) {
   try { await cleanupJobRoot(root, options); }
   finally { await nextTurn(); }
@@ -110,11 +105,6 @@ function runInjectedQuery(injection, transform = script => script) {
     return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
       args, { ...options, env }, done);
   };
-}
-function runInjectedProcessQuery(injection, transform = script => script) {
-  return runInjectedQuery(injection, script => transform(script.replace(
-    "  if (!(Get-Process -Name setup_wm,unregmp2,wmplayer -ErrorAction SilentlyContinue)) { return }\n", "",
-  )));
 }
 async function within(promise, ms, message) {
   const timer = new AbortController();
@@ -163,20 +153,17 @@ describe("Windows job root cleanup diagnostics", () => {
     const seams = cleanupSeams(error);
     seams.run = queryResult({ processes: [PROCESS_DETAILS] });
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
-    assert.equal(seams.run.mock.callCount(), 2);
+    assert.equal(seams.run.mock.callCount(), 1);
     assert.equal(seams.remove.mock.callCount(), 1);
-    const [, , suspectOptions] = seams.run.mock.calls[0].arguments;
-    const [command, args, options] = seams.run.mock.calls[1].arguments;
+    const [command, args, options] = seams.run.mock.calls[0].arguments;
     assert.equal(command, "powershell.exe");
     assert.deepEqual(args.slice(0, -1), ["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
     assert.ok(Buffer.from(args.at(-1), "base64").toString("utf16le").includes(QUERY_VARIABLE));
     const { [QUERY_VARIABLE]: script, ...env } = options.env;
     assert.ok(script.includes(root));
-    assert.equal(suspectOptions.timeout, 1800);
-    assert.equal(suspectOptions.maxBuffer, 8 * 1024);
-    assert.ok(options.timeout > 0 && options.timeout <= 5000);
+    assert.equal(options.timeout, 5000);
     assert.deepEqual({ ...options, timeout: undefined, env }, {
-      encoding: "utf8", windowsHide: true, timeout: undefined, maxBuffer: 56 * 1024, env: windowsPowerShellEnv(),
+      encoding: "utf8", windowsHide: true, timeout: undefined, maxBuffer: 64 * 1024, env: windowsPowerShellEnv(),
     });
     assert.match(output(seams), /process pid=4000 unresolved-parent-pid=2000 image=.*holder\.exe.*match=argument.*created="2026-01-02T03:04:05.0000000Z"/);
     assert.doesNotMatch(output(seams), /diagnostic failed/);
@@ -215,7 +202,7 @@ describe("Windows job root cleanup diagnostics", () => {
     const seams = cleanupSeams(error);
     const child = { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
       kill: mock.fn(), unref: mock.fn() };
-    seams.run = withSuspectResponse(() => child);
+    seams.run = () => child;
     const start = performance.now();
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     const elapsed = performance.now() - start;
@@ -283,15 +270,15 @@ describe("Windows job root cleanup diagnostics", () => {
         const before = snapshot();
         const error = Object.assign(blockedRemoval(), { path: join(root, "blocked-original.txt") });
         const seams = cleanupSeams(error);
-        seams.run = mock.fn(withSuspectResponse((command, args, options, done) => {
+        seams.run = mock.fn((command, args, options, done) => {
           renameSync(root, saved); symlinkSync(target, root, "junction"); swapped = true;
           if (processQuery === "unavailable" || process.platform !== "win32") return done(new Error("Query unavailable"));
           return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command), args, options, done);
-        }));
+        });
         await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
         assert.equal(swapped, true);
         assert.equal(seams.remove.mock.callCount(), 1);
-        assert.equal(seams.run.mock.callCount(), 2);
+        assert.equal(seams.run.mock.callCount(), 1);
         const lines = output(seams);
         assert.doesNotMatch(lines, /SYNTHETIC-OUTSIDE|candidate path=/);
         assert.match(lines, /Cleanup diagnostic failed or timed out/);
@@ -312,9 +299,9 @@ describe("Windows job root cleanup diagnostics", () => {
       entries: [{ path: root, attributes: "Directory", owner: null, deny: null, parentDeny: null, created: null, lastWrite: null }],
     }).split("\n").slice(0, 2);
     const evidence = `${records.join("\n")}\n`;
-    seams.run = withSuspectResponse((_command, _args, options, done) => execFile(process.execPath,
+    seams.run = (_command, _args, options, done) => execFile(process.execPath,
       ["-e", "process.stdout.write(process.env.EXAMPLE_EVIDENCE, () => process.stdout.write('SYNTHETIC'.repeat(20000)))"],
-      { ...options, env: { ...options.env, EXAMPLE_EVIDENCE: evidence } }, done));
+      { ...options, env: { ...options.env, EXAMPLE_EVIDENCE: evidence } }, done);
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     assert.doesNotMatch(output(seams), /SYNTHETIC/);
     assert.match(output(seams), /candidate path=/);
@@ -367,7 +354,7 @@ describe("Windows job root cleanup diagnostics", () => {
       mkdirSync(target);
       writeFileSync(sentinel, "preserve");
       symlinkSync(target, staged, "junction");
-      seams.run = withSuspectResponse((command, args, options, done) => {
+      seams.run = (command, args, options, done) => {
         const script = options.env[QUERY_VARIABLE];
         const beforeOpen = "    $handle = if ($canList)";
         assert.ok(script.includes(beforeOpen));
@@ -380,7 +367,7 @@ describe("Windows job root cleanup diagnostics", () => {
         const env = { ...options.env, [QUERY_VARIABLE]: script.replace(beforeOpen, `${swap}\n${beforeOpen}`) };
         return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
           args, { ...options, env }, done);
-      });
+      };
       await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
       assert.ok(lstatSync(saved).isDirectory());
       assert.ok(lstatSync(child).isSymbolicLink());
@@ -457,12 +444,12 @@ describe("Windows job root cleanup diagnostics", () => {
       mkdirSync(root);
       hardenWindowsJobRoot(root);
       const image = join(fixture, "holder.exe");
-      const file = join(root, "wmsetup.log");
+      const file = join(root, "held.log");
       writeFileSync(file, "held fixture");
       const lastWrite = new Date("2026-01-02T03:04:05Z");
       utimesSync(file, lastWrite, lastWrite);
       const { birthtimeMs } = statSync(file);
-      const source = 'using System; using System.IO; public class Holder { public static void Main() { using (new FileStream(Path.Combine(Environment.GetEnvironmentVariable("TEMP"), "wmsetup.log"), FileMode.Open, FileAccess.Read, FileShare.Read)) { Console.WriteLine("ready"); Console.ReadLine(); } } }';
+      const source = 'using System; using System.IO; public class Holder { public static void Main() { using (new FileStream(Path.Combine(Environment.GetEnvironmentVariable("TEMP"), "held.log"), FileMode.Open, FileAccess.Read, FileShare.Read)) { Console.WriteLine("ready"); Console.ReadLine(); } } }';
       const script = `Add-Type -TypeDefinition '${source}' -OutputAssembly '${image.replaceAll("'", "''")}' -OutputType ConsoleApplication`;
       execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
         Buffer.from(script, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, stdio: "pipe", env: windowsPowerShellEnv() });
@@ -498,111 +485,6 @@ describe("Windows job root cleanup diagnostics", () => {
         await within(exited, 2000, "Holder did not terminate");
       }
       rmSync(fixture, { recursive: true, force: true });
-    }
-  });
-  for (const pressure of [false, true]) {
-    it(`reports a System32 holder of tmp/wmsetup.log${pressure ? " at the discovery bound" : ""}`, { skip: process.platform !== "win32" }, async (t) => {
-      const fixture = mkdtempSync(join(tmpdir(), "ave-job-system-holder-"));
-      const root = join(fixture, "root");
-      const temp = join(root, "tmp");
-      const file = join(temp, "wmsetup.log");
-      const registerTrace = join(fixture, "registered.txt");
-      const image = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      let holder;
-      let exited;
-      const queryExits = [];
-      try {
-        mkdirSync(temp, { recursive: true });
-        writeFileSync(file, "held fixture");
-        if (pressure) {
-          for (let index = 0; index < 130; index++) writeFileSync(join(root, `entry-${index}.txt`), "");
-        }
-        const share = pressure ? "None" : "Read";
-        const script = `$ErrorActionPreference = 'Stop';
-$file = [IO.File]::Open([IO.Path]::Combine($env:TEMP, 'wmsetup.log'), 'Open', 'Read', '${share}');
-try { [Console]::WriteLine('ready'); $null = [Console]::ReadLine() } finally { $file.Dispose() }`;
-        holder = spawn(image, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-          { cwd: fixture, env: { ...windowsPowerShellEnv(), TEMP: temp }, windowsHide: true, stdio: "pipe" });
-        exited = once(holder, "exit");
-        const [ready] = await within(Promise.race([
-          once(holder.stdout, "data"), exited.then(() => { throw new Error("System holder exited before opening the file"); }),
-        ]), 5000, "System holder did not open the file");
-        assert.equal(ready.toString().trim(), "ready");
-        const diagnostic = mock.fn();
-        const remove = pressure ? cleanupSeams().remove : undefined;
-        const traceQuery = runInjectedQuery("", script => {
-          if (!script.includes("function FindFileHolders([string[]]$paths)")) return script;
-          const success = "    if ($code -eq 0) {";
-          return script.replace(success,
-            `${success}\n      [IO.File]::AppendAllLines(${powerShellLiteral(registerTrace)}, $paths)`);
-        });
-        const run = pressure ? (...args) => {
-          const child = traceQuery(...args);
-          queryExits.push(once(child, "exit"));
-          return child;
-        } : undefined;
-        await assert.rejects(cleanupWindowsJobRoot(root, { remove, run, diagnostic }),
-          error => ["EPERM", "EBUSY", "EACCES"].includes(error.code));
-        const lines = output({ diagnostic });
-        const holderRows = lines.split("\n").filter(line => line.startsWith(`holder pid=${holder.pid} `));
-        const holderLine = holderRows.find(line => line.includes(`path=${JSON.stringify(file)}`));
-        assert.ok(holderLine, lines);
-        assert.ok(holderLine.toLowerCase().includes(`image=${JSON.stringify(image.toLowerCase())}`) &&
-          holderLine.includes(`path=${JSON.stringify(file)}`), holderLine);
-        if (pressure) {
-          assert.match(lines, /Cleanup path scan reached its inspection or reporting limit/);
-          assert.equal(lines.split("\n").filter(line => line.startsWith("candidate path=")).length, 20);
-          assert.ok(lines.split("\n").every(line => !line.startsWith(`candidate path=${JSON.stringify(file)} `)), lines);
-          const registered = new Set(readFileSync(registerTrace, "utf8").trim().split(/\r?\n/));
-          assert.equal(registered.size, 128);
-          assert.ok(registered.delete(file));
-          for (const path of registered) {
-            assert.ok(path.startsWith(`${root}\\`));
-            assert.match(path.slice(root.length + 1), /^entry-\d+\.txt$/);
-          }
-          assert.doesNotMatch(lines, /Restart Manager lookup was incomplete/);
-          t.diagnostic(`${registered.size + 1} regular files registered, including the held log`);
-        }
-        t.diagnostic(holderLine);
-        holder.stdin.end();
-        const [code] = await within(exited, 2000, "System holder did not exit after EOF");
-        assert.equal(code, 0);
-      } finally {
-        if (holder && holder.exitCode === null && holder.signalCode === null) {
-          holder.kill();
-          await within(exited, 2000, "System holder did not terminate");
-        }
-        await within(Promise.all(queryExits), 2000, "Holder query did not exit");
-        rmSync(fixture, { recursive: true, force: true });
-      }
-    });
-  }
-  it("reports named suspects even when Restart Manager exhausts its time budget", { skip: process.platform !== "win32" }, async () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-job-holder-timeout-"));
-    const exits = [];
-    try {
-      writeFileSync(join(root, "example.log"), "fixture");
-      const run = runInjectedProcessQuery(`
-function Get-CimInstance($Class, $Property, $Filter) {
-  if ($Filter) {
-    @{ ProcessId = 29999; ParentProcessId = 0; Name = 'setup_wm.exe';
-      ExecutablePath = 'C:\\Example\\setup_wm.exe'; CreationDate = [DateTime]::UtcNow }
-  }
-}
-`, script => script.replace("    $operation = 'RmRegisterResources'", "    Start-Sleep -Seconds 30\n    $operation = 'RmRegisterResources'"));
-      const seams = cleanupSeams();
-      seams.run = (...args) => {
-        const child = run(...args);
-        exits.push(once(child, "exit"));
-        return child;
-      };
-      await assert.rejects(cleanupWindowsJobRoot(root, seams), error => error.code === "EPERM");
-      const lines = output(seams);
-      assert.match(lines, /Restart Manager lookup was incomplete/);
-      assert.match(lines, /suspect pid=29999.*name="setup_wm\.exe"/);
-    } finally {
-      await within(Promise.all(exits), 2000, "Timed-out query did not exit");
-      rmSync(root, { recursive: true, force: true });
     }
   });
   for (const stage of ["before", "during"]) {
@@ -664,34 +546,6 @@ function Get-CimInstance($Class, $Property, $Filter) {
       rmSync(root, { recursive: true, force: true });
     }
   });
-  it("reports an old named suspect behind newer rows and matches", { skip: process.platform !== "win32" }, async () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-job-process-priority-"));
-    try {
-      const run = runInjectedProcessQuery(`
-function Get-CimInstance($Class, $Property, $Filter) {
-  $older = (Get-Process -Id ${process.pid}).StartTime
-  $newer = [DateTime]::UtcNow
-  $suspect = @{ ProcessId = 29999; ParentProcessId = ${process.pid}; Name = 'setup_wm.exe';
-    ExecutablePath = 'C:\\Example\\setup_wm.exe'; CreationDate = $older;
-    CommandLine = ${powerShellLiteral(join(root, "example.log"))} }
-  if ($Filter) { if ($Filter -match 'setup_wm') { $suspect }; return }
-  foreach ($id in 30000..30539) {
-    @{ ProcessId = $id; ParentProcessId = 0; ExecutablePath = ${powerShellLiteral(join(root, "example.exe"))};
-      CreationDate = $newer }
-  }
-  $suspect
-}
-`);
-      const diagnostic = mock.fn();
-      await diagnoseJobRoot(root, diagnostic, run);
-      const lines = output({ diagnostic });
-      assert.doesNotMatch(lines, /parent-name=/);
-      assert.match(lines, new RegExp(String.raw`suspect pid=29999 unresolved-parent-pid=${process.pid} .*name="setup_wm\.exe".*created="[\d:T.-]+Z"`));
-      assert.ok(lines.indexOf("suspect pid=29999") < lines.indexOf("process pid="), lines);
-      assert.match(lines, /Cleanup process scan reached its inspection or reporting limit/);
-      assert.equal(lines.split("\n").filter(line => line.startsWith("process pid=")).length, 20);
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
   for (const [mode, action] of [["failed", "throw 'SYNTHETIC-PRIVATE'"], ["stalled", "Start-Sleep -Seconds 30"]]) {
     it(`keeps real file timestamps when the process scan ${mode}`, { skip: process.platform !== "win32" }, async () => {
       const root = mkdtempSync(join(tmpdir(), "ave-job-process-incomplete-"));
@@ -703,7 +557,7 @@ function Get-CimInstance($Class, $Property, $Filter) {
         const { birthtimeMs } = statSync(file);
         const error = blockedRemoval();
         const seams = cleanupSeams(error);
-        seams.run = runInjectedProcessQuery(`function Get-CimInstance($Class, $Property, $Filter) { ${action} }`);
+        seams.run = runInjectedQuery(`function Get-CimInstance($Class, $Property, $Filter) { ${action} }`);
         await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
         const lines = output(seams);
         const candidate = lines.split("\n").find(line => line.startsWith(`candidate path=${JSON.stringify(file)} `));

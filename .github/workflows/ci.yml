@@ -829,42 +829,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
-      - name: Start Windows launch diagnostic
-        id: windows-launch-diagnostic
-        if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
-        continue-on-error: true
-        shell: powershell
-        working-directory: ${{ runner.temp }}
-        run: |
-          $repo = Join-Path $env:GITHUB_WORKSPACE 'ave'
-          $dir = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic'
-          $scripts = Join-Path $dir '.github/scripts'
-          $lib = Join-Path $dir 'scripts/lib'
-          New-Item -ItemType Directory -Force -Path $scripts, $lib | Out-Null
-          foreach ($file in 'watch-windows-processes.mjs', 'watch-windows-processes.ps1', 'windows-launch-lifecycle.ps1', 'job-root-diagnostic.mjs') {
-            Copy-Item -LiteralPath (Join-Path $repo ".github/scripts/$file") -Destination $scripts
-          }
-          Copy-Item -LiteralPath (Join-Path $repo 'scripts/lib/windows-powershell-env.mjs') -Destination $lib
-          $node = node -p 'process.execPath'
-          if ($LASTEXITCODE -ne 0 -or !$node) { throw 'Could not resolve the diagnostic Node executable' }
-          & $node (Join-Path $scripts 'watch-windows-processes.mjs') prepare $dir
-          if ($LASTEXITCODE -ne 0) { exit 0 }
-          $env:AVE_PROCESS_WATCH_TRACE = '1'
-          & (Join-Path $scripts 'windows-launch-lifecycle.ps1') start $dir -NodeExecutable $node
       - name: Run Windows permission regressions
         env:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
-          AVE_CI_WINDOWS_TEST_FILE_MARKERS: '1'
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: >2
-            $diagnostic = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic'
-            if ([IO.Directory]::Exists($diagnostic)) {
-              try {
-                $created = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.ffffff')
-                [IO.File]::WriteAllText((Join-Path $diagnostic 'permission-step.txt'), "$PID $created")
-              } catch { Write-Warning 'Could not publish the permission step process identity' }
-            }
+        run: >
           bun run test --
           src/shared/__tests__/tool-result-trim.test.ts
           src/engine/__tests__/conversation-history-trim.test.ts
@@ -1308,32 +1278,6 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
-      - name: Stop Windows launch diagnostic and print evidence
-        if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
-        continue-on-error: true
-        shell: powershell
-        working-directory: ${{ runner.temp }}
-        env:
-          AVE_PROCESS_WATCH_OWNERSHIP: ${{ steps.windows-launch-diagnostic.outputs.ownership }}
-        run: |
-          $dir = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic'
-          $scripts = Join-Path $dir '.github/scripts'
-          $controller = Join-Path $scripts 'windows-launch-lifecycle.ps1'
-          try {
-            if (Test-Path -LiteralPath $controller) { & $controller stop $dir }
-          } catch {
-            Write-Output 'Diagnostic process exit could not be verified'
-          }
-          $script = Join-Path $scripts 'watch-windows-processes.mjs'
-          if (Test-Path -LiteralPath $script) { node $script print $dir }
-      - name: Upload Windows launch evidence
-        if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
-        continue-on-error: true
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: windows-launch-diagnostic
-          path: ${{ runner.temp }}/windows-launch-diagnostic/*.jsonl
-          if-no-files-found: ignore
       - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

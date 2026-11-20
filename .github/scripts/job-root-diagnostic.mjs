@@ -3,7 +3,6 @@ import { win32 } from "node:path";
 import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
 
 const TIMEOUT_MS = 5000;
-const SUSPECT_TIMEOUT_MS = 1800;
 const OUTPUT_LIMIT = 64 * 1024;
 const RESULT_LIMIT = 20;
 const SCAN_LIMIT = 128;
@@ -12,7 +11,6 @@ const PROCESS_SCAN_LIMIT = 512;
 const PROCESS_PATH_LIMIT = 256;
 const HOLDER_LIMIT = 16;
 const MAX_HOLDERS = 128;
-const SUSPECT_OUTPUT_LIMIT = 8 * 1024;
 const FILE_OUTPUT_LIMIT = 32 * 1024;
 const HOLDER_OUTPUT_LIMIT = 52 * 1024;
 const STATUS_RESERVE = 1024;
@@ -21,7 +19,7 @@ const QUERY_COMMAND = `$query = [Environment]::GetEnvironmentVariable('${QUERY_V
 
 // Bind directory enumeration and metadata reads to handles. Reflection.Emit
 // builds the interop in memory without a compiler or temporary files.
-const NATIVE_INTEROP = String.raw`
+const HANDLE_QUERY = String.raw`
 $marshal = [Runtime.InteropServices.Marshal]
 $pointerSize = [IntPtr]::Size
 $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
@@ -33,19 +31,6 @@ function ImportReadMethod($dll, $name, $result, [type[]]$parameters) {
     [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
   $method.SetImplementationFlags($method.GetMethodImplementationFlags() -bor [Reflection.MethodImplAttributes]::PreserveSig)
 }
-`;
-
-const PROCESS_MEMORY_METHODS = String.raw`
-$processHandleType = [Microsoft.Win32.SafeHandles.SafeProcessHandle]
-ImportReadMethod kernel32.dll OpenProcess $processHandleType @([uint32], [bool], [uint32])
-ImportReadMethod ntdll.dll NtQueryInformationProcess ([int]) @($processHandleType, [int], [byte[]], [uint32], [IntPtr])
-ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [IntPtr], [byte[]], [IntPtr], [IntPtr])
-$fileTime = [long].MakeByRefType()
-ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
-`;
-
-const HANDLE_QUERY = String.raw`
-${NATIVE_INTEROP}
 $handleType = [Microsoft.Win32.SafeHandles.SafeFileHandle]
 $outPointer = [IntPtr].MakeByRefType()
 $outLength = [uint32].MakeByRefType()
@@ -55,8 +40,13 @@ ImportReadMethod ntdll.dll NtQueryInformationFile ([int]) @($handleType, [IntPtr
 ImportReadMethod ntdll.dll NtQueryDirectoryFile ([int]) @(
   $handleType, [IntPtr], [IntPtr], [IntPtr], [IntPtr], [byte[]], [uint32], [int], [byte], [IntPtr], [byte])
 ImportReadMethod ntdll.dll NtQuerySecurityObject ([int]) @($handleType, [uint32], [byte[]], [uint32], $outLength)
-${PROCESS_MEMORY_METHODS}
+$processHandleType = [Microsoft.Win32.SafeHandles.SafeProcessHandle]
+ImportReadMethod kernel32.dll OpenProcess $processHandleType @([uint32], [bool], [uint32])
+ImportReadMethod ntdll.dll NtQueryInformationProcess ([int]) @($processHandleType, [int], [byte[]], [uint32], [IntPtr])
+ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [IntPtr], [byte[]], [IntPtr], [IntPtr])
 ImportReadMethod kernel32.dll QueryFullProcessImageNameW ([bool]) @($processHandleType, [uint32], [Text.StringBuilder], $outLength)
+$fileTime = [long].MakeByRefType()
+ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
 ImportReadMethod rstrtmgr.dll RmStartSession ([uint32]) @($outLength, [uint32], [Text.StringBuilder])
 ImportReadMethod rstrtmgr.dll RmRegisterResources ([uint32]) @([uint32], [uint32], [IntPtr], [uint32], [IntPtr], [uint32], [IntPtr])
 ImportReadMethod rstrtmgr.dll RmGetList ([uint32]) @([uint32], $outLength, $outLength, [IntPtr], $outLength)
@@ -163,33 +153,6 @@ function runJobRootQuery(command, args, options, done) {
   return execFile(executable, args, options, done);
 }
 
-function jobRootArgumentPattern(root) {
-  const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(String.raw`(?<![\w:\\])(?:\\\\\?\\)?` + escapedRoot +
-    String.raw`(?:\\[^\s"'<>|;&=,)]*)?(?=$|[\s"'<>|;&=,):])`, "gi");
-}
-
-export function isJobRootPath(path, root) {
-  if (!path) return false;
-  const drivePath = path.replaceAll("/", "\\").replace(/^\\\\\?\\/, "");
-  if (!/^[a-z]:\\/i.test(drivePath)) return false;
-  const full = win32.normalize(drivePath).replace(/\\+$/, "").toLowerCase();
-  const base = root.toLowerCase();
-  return full === base || full.startsWith(base + "\\");
-}
-
-export function maskJobRootArguments(commandLine, root) {
-  if (commandLine == null) return null;
-  let masked = "";
-  let end = 0;
-  for (const match of commandLine.replaceAll("/", "\\").matchAll(jobRootArgumentPattern(root))) {
-    if (!isJobRootPath(match[0], root)) continue;
-    masked += commandLine.slice(end, match.index) + "[job-root]";
-    end = match.index + match[0].length;
-  }
-  return masked + commandLine.slice(end);
-}
-
 const EVIDENCE_WRITER = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -222,49 +185,17 @@ function NewProcessRecord($row, $kind) {
 }
 
 `;
-
-const SUSPECT_QUERY = String.raw`
-${EVIDENCE_WRITER}
-${PROCESS_RECORDS}
-function FindNamedSuspects {
-  if (!(Get-Process -Name setup_wm,unregmp2,wmplayer -ErrorAction SilentlyContinue)) { return }
-  $filter = "Name = 'setup_wm.exe' OR Name = 'unregmp2.exe' OR Name = 'wmplayer.exe'"
-  Get-CimInstance Win32_Process -Filter $filter -Property ProcessId,ParentProcessId,Name,ExecutablePath,CreationDate |
-    ForEach-Object {
-      try {
-        $record = NewProcessRecord $_ 'suspect'
-        $record.name = $_.Name
-        $record
-      } catch { $script:processFailed = $true }
-    }
-}
-
-$script:processFailed = $false
-$limited = $false
-try {
-  FindNamedSuspects | ForEach-Object {
-    if (!(WriteEvidence $_ ${SUSPECT_OUTPUT_LIMIT - 256})) { $limited = $true }
-  }
-} catch { $script:processFailed = $true }
-$null = WriteEvidence @{ kind = 'suspects'; failed = $script:processFailed; limited = $limited } ${SUSPECT_OUTPUT_LIMIT}
-`;
-
 const CURRENT_DIRECTORY_PROBE = String.raw`
 function ReadProcessPointer($bytes, $offset, $size) {
   if ($size -eq 4) { return [IntPtr][long][BitConverter]::ToUInt32($bytes, $offset) }
   return [IntPtr][BitConverter]::ToInt64($bytes, $offset)
 }
 
-function ReadCurrentDirectory($id, $expectedCreation) {
+function ReadCurrentDirectory($id) {
   # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ. Skip inaccessible or exited processes.
   $process = $native::OpenProcess(0x410, $false, $id)
   try {
     if ($process.IsInvalid) { return }
-    if ($null -ne $expectedCreation) {
-      $created = $exited = $kernel = $user = 0L
-      if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user) -or
-          $exited -ne 0 -or ($created - ($created % 10)) -ne $expectedCreation) { return }
-    }
     $size = $pointerSize
     $peb = [IntPtr]::Zero
     if ($size -eq 8) {
@@ -297,13 +228,6 @@ function ReadCurrentDirectory($id, $expectedCreation) {
     }
   } finally { $process.Dispose() }
 }
-`;
-
-export const processCwdProbe = String.raw`
-${NATIVE_INTEROP}
-${PROCESS_MEMORY_METHODS}
-$native = $interop.CreateType()
-${CURRENT_DIRECTORY_PROBE}
 `;
 
 function queryScript(root) {
@@ -474,7 +398,8 @@ function ReadHolderGroup([object[]]$group) {
 }
 
 function FindJobProcesses {
-  $rootPattern = '${jobRootArgumentPattern(root).source.replaceAll("'", "''")}'
+  $rootPattern = '(?<![\w:\\])(?:\\\\\?\\)?' + [regex]::Escape($root) +
+    '(?:\\[^\s"''<>|;&=,)]*)?(?=$|[\s"''<>|;&=,):])'
   $pattern = [regex]::new($rootPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
   $inspected = 0
   $matched = 0
@@ -528,25 +453,6 @@ function ReadEntryAcl($handle) {
   } catch { $script:failed = $true }
 }
 
-function FindSetupLog($rootHandle, $parentPinned) {
-  $directory = OpenRelative $rootHandle 'tmp' ($readData -bor $readAttributes -bor $readControl) $shareWithoutDelete
-  if (!$directory) {
-    $directory = OpenRelative $rootHandle 'tmp' ($readData -bor $readAttributes) $shareWithoutDelete
-  }
-  if (!$directory) { return }
-  $handles.Add($directory)
-  $kindMask = $directoryFlag -bor $reparseFlag
-  if (((ReadBasicInformation $directory).attributes -band $kindMask) -ne $directoryFlag) { return }
-  $file = OpenRelative $directory 'wmsetup.log' $readAttributes $shareAll
-  if (!$file) { return }
-  try {
-    $attributes = (ReadBasicInformation $file).attributes
-    if ($attributes -band $kindMask) { return }
-    return @{ path = $setupLog; name = 'wmsetup.log'; attributes = $attributes
-      parent = $directory; parentAcl = (ReadEntryAcl $directory); parentPinned = $parentPinned }
-  } finally { $file.Dispose() }
-}
-
 function FindSurvivingEntries {
   $queue = [Collections.Generic.Queue[object]]::new()
   $volume = [IO.Path]::GetPathRoot($root)
@@ -581,7 +487,6 @@ function FindSurvivingEntries {
   }
   $queue.Enqueue(@{ path = $root; name = [IO.Path]::GetFileName($root); attributes = $directoryFlag;
     parent = $parent; parentAcl = (ReadEntryAcl $parent); parentPinned = $parentPinned })
-  $setupEntry = $null
   while ($queue.Count) {
     $next = $queue.Dequeue()
     $isRoot = $next.path -eq $root
@@ -630,26 +535,15 @@ function FindSurvivingEntries {
     } else { $survivors.Add($entry) }
     if ($canList) {
       $remaining = ${SCAN_LIMIT} - $script:discovered
-      if ($isRoot) {
-        # Keep one discovery slot for the known log even if the root fills the queue.
-        $setupEntry = FindSetupLog $handle $next.parentPinned
-        if ($setupEntry) { $remaining-- }
-      }
-      if ($setupEntry -and $next.path -eq [IO.Path]::GetDirectoryName($setupLog)) { $remaining++ }
       try {
         foreach ($child in (ReadChildren $handle $remaining)) {
           $path = [IO.Path]::Combine($next.path, $child.name)
-          if ($setupEntry -and $path -eq $setupLog) { continue }
           if ($script:discovered -ge ${SCAN_LIMIT}) { break }
           $queue.Enqueue(@{ path = $path; name = $child.name;
             attributes = $child.attributes; parent = $handle; parentAcl = $acl; parentPinned = $next.parentPinned })
           $script:discovered++
         }
       } catch { $script:failed = $true }
-      if ($isRoot -and $setupEntry) {
-        $queue.Enqueue($setupEntry)
-        $script:discovered++
-      }
     }
   }
 }
@@ -658,7 +552,6 @@ $priority = [Collections.Generic.List[object]]::new()
 $survivors = [Collections.Generic.List[object]]::new()
 $handles = [Collections.Generic.List[object]]::new()
 $files = [Collections.Generic.List[object]]::new()
-$setupLog = [IO.Path]::Combine($root, 'tmp', 'wmsetup.log')
 $script:discovered = 0
 $script:holderFailed = $false
 try {
@@ -676,11 +569,8 @@ try {
   $holderLimited = $false
   $holderFailures = [Collections.Generic.List[object]]::new()
   & {
-    $known = @($files | Where-Object { $_.path -eq $setupLog })
-    $others = @($files | Where-Object { $_.path -ne $setupLog })
     try {
-      if ($known.Count) { ReadHolderGroup $known }
-      if ($others.Count) { ReadHolderGroup $others }
+      if ($files.Count) { ReadHolderGroup $files.ToArray() }
     } catch {
       @{ kind = 'restartManager'; path = $root; operation = 'query'; code = $null }
       $script:holderFailed = $true
@@ -701,12 +591,12 @@ $script:processFailed = $false
 $script:processLimited = $false
 try {
   FindJobProcesses | ForEach-Object {
-    if (!(WriteEvidence $_ ${OUTPUT_LIMIT - SUSPECT_OUTPUT_LIMIT - STATUS_RESERVE})) { $script:processLimited = $true }
+    if (!(WriteEvidence $_ ${OUTPUT_LIMIT - STATUS_RESERVE})) { $script:processLimited = $true }
   }
 } catch { $script:processFailed = $true }
 $null = WriteEvidence @{
   kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited
-} ${OUTPUT_LIMIT - SUSPECT_OUTPUT_LIMIT}
+} ${OUTPUT_LIMIT}
 `;
 }
 
@@ -734,7 +624,7 @@ function formatCandidate({ path, attributes, owner, deny, denyOmitted, parentDen
     ` created=${formatOptionalText(created, 32)} last-write=${formatOptionalText(lastWrite, 32)}`;
 }
 
-function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, app, service, name, reason }) {
+function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, app, service, reason }) {
   if (!Number.isSafeInteger(pid) || pid <= 0 ||
       (unresolvedParentPid !== null && (!Number.isSafeInteger(unresolvedParentPid) || unresolvedParentPid < 0))) {
     throw new Error("Invalid cleanup process identity");
@@ -744,9 +634,6 @@ function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, a
   if (kind === "holder") {
     if (typeof path !== "string") throw new Error("Invalid holder path");
     return `${base} path=${JSON.stringify(path)} app=${formatOptionalText(app, 256)} service=${formatOptionalText(service, 64)} ${started}`;
-  }
-  if (kind === "suspect") {
-    return `${base} name=${formatOptionalText(name, 256)} ${started}`;
   }
   if (!["image", "cwd", "argument"].includes(reason)) throw new Error("Invalid process match reason");
   return `${base} match=${reason} ${started}`;
@@ -822,11 +709,9 @@ function collectQuery(script, timeout, maxBuffer, readRecord, run) {
 }
 
 export async function diagnoseJobRoot(root, diagnostic, run = runJobRootQuery) {
-  const expiresAt = performance.now() + TIMEOUT_MS;
   let outputBytes = 0;
   let outputLimited = false;
   let failed = false;
-  let suspectsComplete = false;
 
   function emit(line, limit = OUTPUT_LIMIT - STATUS_RESERVE) {
     const size = Buffer.byteLength(line) + 1;
@@ -838,36 +723,16 @@ export async function diagnoseJobRoot(root, diagnostic, run = runJobRootQuery) {
     }
   }
 
-  const suspectsOk = await collectQuery(SUSPECT_QUERY, SUSPECT_TIMEOUT_MS, SUSPECT_OUTPUT_LIMIT, row => {
-    if (!suspectsComplete && row.kind === "suspect") {
-      emit(formatProcess(row), SUSPECT_OUTPUT_LIMIT - 256);
-    } else if (!suspectsComplete && row.kind === "suspects") {
-      suspectsComplete = true;
-      if (row.failed) {
-        failed = true;
-        emit("Cleanup named suspect query was incomplete", SUSPECT_OUTPUT_LIMIT);
-      }
-      if (row.limited) emit("Cleanup named suspect output reached its reporting limit", SUSPECT_OUTPUT_LIMIT);
-    } else {
-      throw new Error("Unexpected suspect record");
-    }
-  }, run);
-  if (!suspectsOk || !suspectsComplete) {
-    failed = true;
-    emit("Cleanup named suspect query was incomplete", SUSPECT_OUTPUT_LIMIT);
-  }
-
   let filesComplete = false;
   let holdersComplete = false;
   let processesComplete = false;
   let fileCount = 0;
   let processCount = 0;
-  const filesOutputEnd = outputBytes + FILE_OUTPUT_LIMIT;
   let holdersOutputEnd = 0;
   const script = queryScript(root);
-  const queryOk = await collectQuery(script, Math.floor(expiresAt - performance.now()), OUTPUT_LIMIT - SUSPECT_OUTPUT_LIMIT, row => {
+  const queryOk = await collectQuery(script, TIMEOUT_MS, OUTPUT_LIMIT, row => {
     if (!filesComplete && row.kind === "candidate") {
-      if (fileCount++ < RESULT_LIMIT) emit(formatCandidate(row), filesOutputEnd);
+      if (fileCount++ < RESULT_LIMIT) emit(formatCandidate(row), FILE_OUTPUT_LIMIT);
     } else if (!filesComplete && row.kind === "files") {
       filesComplete = true;
       failed ||= row.failed;
