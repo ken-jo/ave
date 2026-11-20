@@ -3,7 +3,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, sep, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -165,6 +165,14 @@ function restoreFixtureAcls(savedAcls) {
 function fixtureIdentity(path) {
   const { dev, ino, birthtimeNs } = lstatSync(path, { bigint: true });
   return `${dev}:${ino}:${birthtimeNs}`;
+}
+
+function createJobRootFixture(t) {
+  const root = mkdtempSync(`${tmpdir()}${sep}.${sep}example-`);
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const canonicalRoot = realpathSync.native(root);
+  assert.notEqual(root.toLowerCase(), canonicalRoot.toLowerCase());
+  return canonicalRoot;
 }
 
 function rootSwapFixture(t) {
@@ -825,19 +833,17 @@ describe("Windows job root hardening", () => {
       assert.equal(run.mock.callCount(), 1);
     });
   }
-  it("hardens the new root while it is empty before returning child paths", () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-job-order-"));
-    try {
-      const harden = mock.fn(path => {
-        assert.equal(path, root);
-        assert.deepEqual(readdirSync(root), []);
-      });
-      isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => root, harden);
-      assert.equal(harden.mock.callCount(), 1);
-    } finally { rmSync(root, { recursive: true, force: true }); }
+  it("hardens the new root while it is empty before returning child paths", t => {
+    const root = createJobRootFixture(t);
+    const harden = mock.fn(path => {
+      assert.equal(path, root);
+      assert.deepEqual(readdirSync(root), []);
+    });
+    isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => root, harden);
+    assert.equal(harden.mock.callCount(), 1);
   });
-  it("removes the half-made root when hardening fails", () => {
-    const root = mkdtempSync(join(tmpdir(), "ave-job-failed-"));
+  it("removes the half-made root when hardening fails", t => {
+    const root = createJobRootFixture(t);
     assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => root,
       () => { throw new Error("DACL readback failed"); }), /DACL readback failed/);
     assert.equal(existsSync(root), false);
