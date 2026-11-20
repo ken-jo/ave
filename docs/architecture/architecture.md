@@ -3561,7 +3561,10 @@ with its own owner rule:
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
   The copy's `exit` handler, registered at import and so run before the
-  runtime's own, removes the copy only after a successful release.
+  runtime's own, retires the verified directory with a same-parent rename only
+  after a successful release. It then removes the retired directory. The next
+  startup can reclaim a partial retired directory under the temp root after
+  checking its name, owner and ACL. The sweep never traverses reparse points.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL

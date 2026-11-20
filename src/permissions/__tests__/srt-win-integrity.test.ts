@@ -2,7 +2,7 @@ import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
@@ -193,6 +193,30 @@ describe("Windows helper integrity", () => {
       if (kind === "nested directory") mkdirSync(join(directory, "nested"));
       sweepStaleSrtWinDirectories();
       expect(existsSync(join(directory, "srt-win.exe"))).toBe(true);
+    });
+
+    it("sweeps an owned partial tombstone without following its links or admitting a lookalike", () => {
+      isolateTemp();
+      const bin = stage();
+      const original = dirname(bin);
+      const stem = basename(original).replace(/-abandoned$/, "");
+      const tombstone = join(tmpdir(), `${stem}.delete-${"a".repeat(32)}`);
+      const lookalike = `${tombstone}-extra`;
+      const target = join(tmpdir(), "outside-tombstone");
+      mkdirSync(target);
+      writeFileSync(join(target, "sentinel"), "keep");
+      rmSync(join(bin, "owner.json"));
+      mkdirSync(join(bin, "extra"));
+      symlinkSync(target, join(bin, "extra", "alias"), "junction");
+      renameSync(original, tombstone);
+      const unrelated = stage();
+      rmSync(join(unrelated, "owner.json"));
+      renameSync(dirname(unrelated), lookalike);
+
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(tombstone)).toBe(false);
+      expect(existsSync(lookalike)).toBe(true);
+      expect(readFileSync(join(target, "sentinel"), "utf8")).toBe("keep");
     });
 
     it("never traverses a junction or a linked directory entry", (context) => {
@@ -576,18 +600,67 @@ describe("Windows helper integrity", () => {
     }
   });
 
+  it.each(["srt-win.exe", "owner.json", "bin"])("recovers the private copy after exit hits a lock on %s", async (leaf) => {
+    const { source } = fixture();
+    const root = join(dirname(source), "copies");
+    mkdirSync(root);
+    const earlierExitHandlers = new Set(process.listeners("exit"));
+    const lock = Object.assign(new Error("Entry is locked"), { code: "EPERM" });
+    const failures: string[] = [];
+    const failOnce = (entry: unknown) => {
+      if (failures.length === 0 && basename(String(entry)) === leaf) {
+        failures.push(String(entry));
+        throw lock;
+      }
+    };
+    vi.resetModules();
+    vi.doMock("node:os", async (original) => ({
+      ...await original<typeof import("node:os")>(), type: () => "Darwin", tmpdir: () => root,
+    }));
+    vi.doMock("node:fs", async (original) => {
+      const fs = await original<typeof import("node:fs")>();
+      return {
+        ...fs,
+        rmSync: (...args: Parameters<typeof fs.rmSync>) => { failOnce(args[0]); fs.rmSync(...args); },
+        rmdirSync: (...args: Parameters<typeof fs.rmdirSync>) => { failOnce(args[0]); fs.rmdirSync(...args); },
+      };
+    });
+    try {
+      const integrity = await import("../srt-win-integrity.js");
+      const handlers = process.listeners("exit").filter((handler) => !earlierExitHandlers.has(handler));
+      expect(handlers).toHaveLength(1);
+      const [onExit] = handlers;
+      assert(onExit);
+      process.removeListener("exit", onExit);
+      const executable = integrity.prepareSrtWinExecutable(source);
+      writeFileSync(join(dirname(executable), "owner.json"), JSON.stringify({ pid: 2147483647, started: "1" }));
+
+      onExit(0);
+      expect(failures).toHaveLength(1);
+      const interrupted = readdirSync(root);
+      expect(interrupted).toHaveLength(1);
+      integrity.sweepStaleSrtWinDirectories();
+      expect(readdirSync(root)).toEqual([]);
+      expect(interrupted[0]).toMatch(/^ave-srt-win-[a-f0-9]{32}\.delete-[a-f0-9]{32}$/);
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.doUnmock("node:os");
+      vi.resetModules();
+    }
+  });
+
   it("removes an incomplete copy at exit if its immediate rollback fails", async () => {
     const { source } = fixture();
     const earlierExitHandlers = new Set(process.listeners("exit"));
     const writeError = new Error("Image write failed");
-    const remove = vi.fn(rmSync).mockImplementationOnce(() => { throw new Error("Image was busy"); });
+    const retire = vi.fn(renameSync).mockImplementationOnce(() => { throw new Error("Directory was busy"); });
     const write = vi.fn<typeof writeFileSync>().mockImplementation(() => { throw writeError; });
     vi.resetModules();
     vi.doMock("node:os", async (original) => ({
       ...await original<typeof import("node:os")>(), type: () => "Darwin", tmpdir: () => dirname(source),
     }));
     vi.doMock("node:fs", async (original) => ({
-      ...await original<typeof import("node:fs")>(), writeFileSync: write, rmSync: remove,
+      ...await original<typeof import("node:fs")>(), writeFileSync: write, renameSync: retire,
     }));
     try {
       const integrity = await import("../srt-win-integrity.js");
@@ -598,7 +671,7 @@ describe("Windows helper integrity", () => {
       process.removeListener("exit", onExit);
 
       expect(() => integrity.prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ cause: writeError }));
-      expect(remove).toHaveBeenCalledTimes(1);
+      expect(retire).toHaveBeenCalledTimes(1);
       const executable = write.mock.calls[0]?.[0];
       assert(typeof executable === "string");
       const directory = dirname(dirname(executable));

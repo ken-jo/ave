@@ -15,12 +15,10 @@ vi.mock("../permissions/srt-win-copy-owner.js", () => ({
 
 async function disposeSrtWinCopies(): Promise<void> {
   if (srtWinCopyDisposers.size === 0) return;
-  // Load the filesystem helper after suite mocks have registered.
-  const { retryOnTransientFsLock } = await import("../lib/transient-fs-lock-retry.js");
   const { lstatSync } = getBuiltinModule("node:fs");
   try {
-    await cleanupAfterClosing([], [...srtWinCopyDisposers].map(([directory, dispose]) => async () => {
-      await retryOnTransientFsLock(async () => dispose());
+    await cleanupAfterClosing([], [...srtWinCopyDisposers].map(([directory, dispose]) => () => {
+      dispose();
       expect(lstatSync(directory, { throwIfNoEntry: false }), directory).toBeUndefined();
     }));
   } finally {
