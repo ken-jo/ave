@@ -48,16 +48,23 @@ function replaceSerializedKeys(serialized: string, renames: ReadonlyMap<number, 
   const objects: KeySpan[][] = [];
   const edits: KeySpan[] = [];
   let property = 0;
-  for (const { 0: token, index } of serialized.matchAll(/[{}]|"(?:[^"\\]|\\[\s\S])*"/gu)) {
-    if (token === "{") objects.push([]);
-    else if (token === "}") {
+  for (let cursor = 0; cursor < serialized.length;) {
+    const code = serialized.charCodeAt(cursor++);
+    if (code === 123) objects.push([]);
+    else if (code === 125) {
       const keys = objects.pop();
       if (keys) assignKeyNames(keys);
-    } else {
-      const end = index + token.length;
-      if (serialized.charCodeAt(end) !== 58) continue;
+    } else if (code === 34) {
+      const start = cursor - 1;
+      // Native JSON guarantees a closing quote. Skip each complete escape
+      // iteratively so value length cannot exhaust the regexp stack.
+      while (serialized.charCodeAt(cursor) !== 34) {
+        cursor += serialized.charCodeAt(cursor) === 92 ? 2 : 1;
+      }
+      cursor++;
+      if (serialized.charCodeAt(cursor) !== 58) continue;
       const rename = renames.get(property++);
-      const key = { start: index, end, quoted: token, rename };
+      const key = { start, end: cursor, quoted: serialized.slice(start, cursor), rename };
       objects.at(-1)?.push(key);
       if (rename) edits.push(key);
     }
@@ -85,7 +92,7 @@ export function stringifyHomeRedacted(value: unknown): string | undefined {
   let root = true;
   let property = 0;
   let renames: Map<number, RenamedKey> | undefined;
-  const serialized = JSON.stringify(value, function (this: object, key, current: unknown) {
+  const replace = function (this: object, key: string, current: unknown): unknown {
     if (root) root = false;
     else if (!Array.isArray(this) && isEmittedProperty(current)) {
       if (mayContainHomePath(key) && isPlainRecord(this)) {
@@ -101,7 +108,14 @@ export function stringifyHomeRedacted(value: unknown): string | undefined {
     // Native serialization unboxes these after calling the replacer.
     if (isStringObject(current)) return redactHomePathsInText(String(current));
     return current;
-  });
+  };
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value, replace);
+  } catch (error) {
+    if (error instanceof RangeError) return '{"unserializable":true}';
+    throw error;
+  }
   // Renaming before serialization would change both getter order and the key
   // passed to child toJSON hooks. Raw JSON and value bytes stay native here.
   return serialized !== undefined && renames ? replaceSerializedKeys(serialized, renames) : serialized;

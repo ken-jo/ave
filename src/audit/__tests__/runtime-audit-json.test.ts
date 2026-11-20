@@ -273,3 +273,23 @@ it("keeps the original toJSON key and native getter order across a renamed prope
   });
   expect(calls).toEqual([home, "flag"]);
 });
+
+it("rewrites keys ahead of a large string with bounded stack use", async () => {
+  const { stringifyHomeRedacted } = await import("../home-path-json.js");
+  const later = "x ".repeat(4 * 1024 * 1024);
+  const value = { [fixture.home]: 7, later };
+  const expected = JSON.stringify({ "[home]": 7, later });
+  expect(stringifyHomeRedacted(value)).toBe(expected);
+  const bounded = serializeRuntimeAuditData(value) ?? "";
+  expect(bounded.length).toBeLessThanOrEqual(500);
+  expect(JSON.parse(bounded)).toMatchObject({
+    truncated: true, originalLength: expected.length, preview: expect.stringContaining('"[home]":7'),
+  });
+});
+
+it("fails closed when native serialization exhausts its stack", async () => {
+  const { stringifyHomeRedacted } = await import("../home-path-json.js");
+  let value: unknown = fixture.home;
+  for (let depth = 0; depth < 25_000; depth++) value = { child: value };
+  expect(stringifyHomeRedacted(value)).toBe('{"unserializable":true}');
+});
