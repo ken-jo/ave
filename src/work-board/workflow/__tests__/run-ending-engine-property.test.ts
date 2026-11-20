@@ -3,12 +3,15 @@
  * file's own: it derives the class from how the cell built the two files, and the end from the design's consumer table. Each end must come
  * through `settleRun`, and each consumer must have read the oracle's class from `classifyRun`. Boot adoption is a new engine over the same
  * files; live adoption is the running engine adopting again after its boot adoption could not read the run file. */
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RunEndCause } from "../../../main/workflow-run-store.js";
 import * as classification from "../../../main/run-classification.js";
 import * as homeTrust from "../../../shared/ave-home-trust.js";
+import type { TemplateVersion } from "../../../shared/workflow-template-types.js";
+import type { RunRecord } from "../run-state.js";
 import { stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
@@ -23,6 +26,23 @@ const WINDOWS = ["none", "settle write fails", "run file unreadable"] as const;
 type FailureWindow = (typeof WINDOWS)[number];
 interface Cell { consumer: Consumer; board: BoardState; intent: boolean; marker: boolean; window: FailureWindow; record?: "unreadable" | "repeated" }
 
+const classifications = new AsyncLocalStorage<Class[]>();
+const heldInputs = new Map<string, boolean>();
+beforeEach(() => {
+  const read = homeTrust.readAveHomeInput;
+  vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path => {
+    const io = heldInputs.get(path);
+    if (io === undefined) return read(path);
+    if (io) throw Object.assign(new Error("run file unreadable"), { code: "EIO" });
+    return { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" };
+  });
+  const classify = classification.classifyRun;
+  vi.spyOn(classification, "classifyRun").mockImplementation((...args) => {
+    const result = classify(...args);
+    classifications.getStore()?.push(result);
+    return result;
+  });
+});
 afterEach(() => { vi.restoreAllMocks(); });
 
 /** The design's consumer table, row by row. */
@@ -104,13 +124,9 @@ function leave(h: Harness, cell: Cell, at: { id: number; runId: string; holder: 
 
 /** While held, the run file reads as awaiting review. */
 function holdRunFile(h: Harness, io = false): { release(): void } {
-  const read = homeTrust.readAveHomeInput;
-  const spy = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path => {
-    if (path !== runsPath(h)) return read(path);
-    if (io) throw Object.assign(new Error("run file unreadable"), { code: "EIO" });
-    return { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" };
-  });
-  return { release: () => spy.mockRestore() };
+  const path = runsPath(h);
+  heldInputs.set(path, io);
+  return { release: () => { heldInputs.delete(path); } };
 }
 
 /** Every settle the store was asked for, with what it stored; while `failing`, each one that would end a run throws, until released. */
@@ -120,7 +136,7 @@ function watchSettles(h: Harness, failing: boolean) {
   let fail = failing;
   let failed = false;
   const stored: { runId: string; status: string; cause: RunEndCause }[] = [];
-  vi.spyOn(runs, "settleRun").mockImplementation(async (runId, step, allowed) => {
+  const spy = vi.spyOn(runs, "settleRun").mockImplementation(async (runId, step, allowed) => {
     let cause: RunEndCause | undefined;
     const result = await settle(runId, run => {
       const next = step(run);
@@ -137,15 +153,7 @@ function watchSettles(h: Harness, failing: boolean) {
     }
     return result;
   });
-  return { stored, failed: () => failed, release: () => { fail = false; } };
-}
-
-async function until(check: () => boolean | Promise<boolean>, polls = 60): Promise<boolean> {
-  for (let i = 0; i < polls; i += 1) {
-    if (await check()) return true;
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
-  return check();
+  return { stored, failed: () => failed, release: () => { fail = false; }, restore: () => spy.mockRestore() };
 }
 
 async function reader(h: Harness): Promise<void> {
@@ -153,27 +161,75 @@ async function reader(h: Harness): Promise<void> {
   if (listed?.status === "ok") await h.engine.projectTemplateRuns(listed.items);
 }
 
-/** One cell on its own home: the run, the files as the cell leaves them, the consumer's event, and the checks. */
-async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> {
-  const h = await stageRunHarness();
-  const context = JSON.stringify(cell);
+async function startLinked(h: Harness, id: number, version: TemplateVersion) {
+  const running = h.start(id, h.local(version)).catch(() => undefined);
+  const [child] = await h.waitForLive(1);
+  await h.drainRunWork();
+  return { running, child };
+}
+
+async function prepareBoard() {
+  const h = await stageRunHarness({ observeRunWork: true });
   try {
-    const holderRow = await h.board.create({ title: `holder ${context}` });
-    const bystanderRow = await h.board.create({ title: `bystander ${context}` });
-    if (holderRow.status !== "created" || bystanderRow.status !== "created") throw new Error("no rows");
+    const holder = await h.board.create({ title: "Holder" });
+    const bystander = await h.board.create({ title: "Bystander" });
+    if (holder.status !== "created" || bystander.status !== "created") throw new Error("no rows");
     const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
     const id = await h.addItem(version);
-    void h.start(id, h.local(version)).catch(() => undefined);
-    const [child] = await h.untilLive(1);
-    await h.until(id, item => item.stageRuns.some(stage => stage.childSessionId === child.sessionId));
-    const runId = (await h.item(id)).runId ?? "";
-    // Every consumer but the run write works on a parked run: stage a waits at its gate. The engine's own writes land before the hand edit.
-    if (cell.consumer !== "run write") {
-      child.finish();
-      await h.untilStage(id, "a", "awaiting_gate");
-    } else await h.untilStage(id, "a", "running");
-    await new Promise(resolve => setTimeout(resolve, 50));
-    leave(h, cell, { id, runId, holder: holderRow.itemId });
+    const files = ["board.json", "workflow-runs.json", "templates.json"].map(name => ({ name, bytes: readFileSync(join(h.dir, name)) }));
+    // A restart observes the saved run after the first engine drains. Capture that state once.
+    const { running, child } = await startLinked(h, id, version);
+    child.finish();
+    await running;
+    await h.drainRunWork();
+    const parked = {
+      dir: h.dir, childSessionId: child.sessionId, board: readFileSync(h.boardPath),
+      runFile: JSON.parse(readFileSync(runsPath(h), "utf8")) as { runs: RunRecord[] },
+    };
+    return { holder: holder.itemId, bystander: bystander.itemId, version, id, files, parked };
+  } finally {
+    for (const child of h.children) child.finish();
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+}
+
+function copyParkedRun(h: Harness, parked: Awaited<ReturnType<typeof prepareBoard>>["parked"]): void {
+  const runFile = structuredClone(parked.runFile);
+  for (const run of runFile.runs) {
+    if (run.runWorkspace) run.runWorkspace.runRoot = join(h.dir, relative(parked.dir, run.runWorkspace.runRoot));
+    for (const stage of run.stageRuns) {
+      if (!stage.workspace) continue;
+      stage.workspace.root = join(h.dir, relative(parked.dir, stage.workspace.root));
+      mkdirSync(stage.workspace.root, { recursive: true });
+    }
+  }
+  writeFileSync(h.boardPath, parked.board);
+  writeFileSync(runsPath(h), JSON.stringify(runFile, null, 2) + "\n");
+}
+
+/** One cell on its own home: the run, the files as the cell leaves them, the consumer's event, and the checks. */
+async function runCell(cell: Cell, fixture: Awaited<ReturnType<typeof prepareBoard>>, classes: Class[], tally: (key: string) => void): Promise<void> {
+  const h = await stageRunHarness({ observeRunWork: true });
+  const context = JSON.stringify(cell);
+  let restoreSettleSpy: (() => void) | undefined;
+  try {
+    const { holder, bystander, version, id, files, parked } = fixture;
+    const boot = cell.consumer === "boot adoption" || cell.consumer === "live adoption";
+    for (const file of files) writeFileSync(join(h.dir, file.name), file.bytes);
+    const liveRun = boot ? undefined : await startLinked(h, id, version);
+    if (boot) copyParkedRun(h, parked);
+    const initial = await h.item(id);
+    expect(initial.stageRuns[0]?.childSessionId, context).toBe(liveRun?.child.sessionId ?? parked.childSessionId);
+    // The live engine drains its own writes before the hand edit. Only the run-write consumer needs a live child.
+    if (liveRun && cell.consumer !== "run write") {
+      liveRun.child.finish();
+      await liveRun.running;
+      await h.drainRunWork();
+    }
+    const runId = initial.runId ?? "";
+    expect((await h.stageRun(id, "a")).status, context).toBe(cell.consumer === "run write" ? "running" : "awaiting_gate");
+    leave(h, cell, { id, runId, holder });
     const resolved = oracle(cell);
     const { cls } = resolved;
     const ending = END[cell.consumer][cls];
@@ -185,11 +241,12 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
     tally(`${pair}:${cell.board}`);
     tally(`${cell.consumer}:${window}`);
     if (ending !== "open") tally(`${pair} ends:${window}`);
-    const boot = cell.consumer === "boot adoption" || cell.consumer === "live adoption";
     if (boot) h.makeEngine();
     const settles = watchSettles(h, window === "settle write fails" && ending !== "open");
-    const classify = vi.spyOn(classification, "classifyRun");
+    restoreSettleSpy = settles.restore;
+    classes.length = 0;
     let booted = false;
+    let boardWrites = 0;
     const event = async (): Promise<void> => {
       switch (cell.consumer) {
         case "boot adoption":
@@ -198,10 +255,15 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
           booted = true;
           await h.engine.adoptParkedTemplateRuns();
           break;
-        case "board write": await h.board.update(bystanderRow.itemId, { title: `bystander edited ${Math.random()}` }).catch(() => undefined); break;
-        case "run write": child.finish(); break;
+        case "board write": await h.board.update(bystander, { title: `Bystander edit ${++boardWrites}` }).catch(() => undefined); break;
+        case "run write":
+          if (!liveRun) throw new Error("No live run for the run-write consumer");
+          liveRun.child.finish();
+          await liveRun.running;
+          break;
         case "reader": await reader(h); break;
       }
+      await h.drainRunWork();
     };
     const ended = () => settles.stored.some(end => end.runId === runId);
     const onDisk = async () => (await h.board.runs.get(runId).catch(() => null)) ?? null;
@@ -210,19 +272,16 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
     if (window === "run file unreadable" || cell.consumer === "live adoption") {
       const held = holdRunFile(h, cell.consumer === "run write");
       await event();
-      await until(ended, 10);
       expect(ended(), context).toBe(false);
-      expect(classify.mock.results.every(result => result.value === "unreadable"), context).toBe(true);
+      expect(classes.every(result => result === "unreadable"), context).toBe(true);
       held.release();
-      classify.mockClear();
+      classes.length = 0;
     }
     await event();
-    await until(() => ending === "open" ? false : ended() || settles.failed(), ending === "open" ? 20 : 400);
 
     // A settle whose write failed leaves the run unconfirmed: its record stays, unsettled, and retention keeps it; the next reader, once
     // the run file takes writes again, ends it.
     if (settles.failed()) {
-      await until(() => false, 10);
       expect(ended(), context).toBe(false);
       await h.board.pruneSettledRuns().catch(() => undefined);
       const kept = await onDisk();
@@ -230,10 +289,9 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
       tally(`${cell.consumer}:unconfirmed kept`);
       settles.release();
       await reader(h);
-      await until(ended, 400);
+      await h.drainRunWork();
     }
 
-    const classes = classify.mock.results.map(result => result.value);
     // The consumer read the oracle's class. Not asked: any consumer over a board file that shows nothing (the store answers every run
     // unreadable, `template-runs-board-unread`, before a classifier call), a
     // run write whose row's standing on disk decides it first (the row names the run, or the board shows it unreadable), and a reader with
@@ -257,7 +315,6 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
       // adoption ends those without one). An orphan's end is never told as an error, nor a lost run's as cancelled.
       const live = cell.consumer === "board write" || cell.consumer === "run write";
       const told = (): typeof h.events => h.events.filter(e => e.itemId === id && (e.phase === "cancelled" || e.phase === "error"));
-      if (ending === "item-removed" || live) await until(() => told().length > 0, 400);
       if (ending === "item-removed") expect(told(), context).toContainEqual(expect.objectContaining({ phase: "cancelled", message: "item-removed" }));
       if (ending === "orphan" && live) expect(told(), context).not.toEqual([]);
       if (ending === "lost" && live) expect(told(), context).toContainEqual(expect.objectContaining({ phase: "error", reasonCode: "template-run-lost" }));
@@ -270,9 +327,23 @@ async function runCell(cell: Cell, tally: (key: string) => void): Promise<void> 
       expect(wrong, context).toEqual([]);
     }
   } finally {
-    vi.restoreAllMocks();
     for (const c of h.children) c.finish();
+    await h.drainRunWork();
+    heldInputs.delete(runsPath(h));
+    restoreSettleSpy?.();
     await h.cleanup();
+  }
+}
+
+async function runCells(cells: Cell[], tally: (key: string) => void): Promise<void> {
+  const fixture = await prepareBoard();
+  const concurrency = 4;
+  for (let index = 0; index < cells.length; index += concurrency) {
+    const results = await Promise.allSettled(cells.slice(index, index + concurrency).map(cell => {
+      const classes: Class[] = [];
+      return classifications.run(classes, () => runCell(cell, fixture, classes, tally));
+    }));
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 }
 
@@ -284,6 +355,7 @@ const ends = (cell: Omit<Cell, "window">): boolean => END[cell.consumer][oracle(
 it("every consumer ends a run as its class says, through settleRun, over every board state, intent, marker and failure window", { timeout: 600_000 }, async () => {
   const counts: Record<string, number> = {};
   const tally = (key: string) => { counts[key] = (counts[key] ?? 0) + 1; };
+  const cells: Cell[] = [];
   // Every consumer meets every board state with and without an intent and a marker. A cell whose run ends meets every failure window
   // that applies to its consumer; a cell whose run is held, where no settle comes, rotates between none and an unreadable run file.
   for (const consumer of CONSUMERS) {
@@ -293,11 +365,12 @@ it("every consumer ends a run as its class says, through settleRun, over every b
         for (const marker of [false, true]) {
           const cell = { consumer, board, intent, marker };
           const windows = ends(cell) ? windowsOf(consumer) : [HELD_WINDOWS[turn++ % HELD_WINDOWS.length]];
-          for (const window of windows) await runCell({ ...cell, window }, tally);
+          for (const window of windows) cells.push({ ...cell, window });
         }
       }
     }
   }
+  await runCells(cells, tally);
   // Every class, every board state under every intent and marker pair, and every failure window that applies was reached under every
   // consumer; where a pair's run ends, it ended in each of those windows; and a failed settle was kept unconfirmed.
   for (const consumer of CONSUMERS) {
@@ -316,36 +389,43 @@ it("every consumer ends a run as its class says, through settleRun, over every b
 });
 
 it("unreadable and repeated individual records stay unconfirmed under every consumer and delete-state pair", { timeout: 600_000 }, async () => {
+  const cells: Cell[] = [];
   for (const consumer of CONSUMERS) {
     for (const record of ["unreadable", "repeated"] as const) {
       for (const board of ["named", "gone"] as const) {
         for (const intent of [false, true]) {
-          for (const marker of [false, true]) await runCell({ consumer, record, board, intent, marker, window: "none" }, () => undefined);
+          for (const marker of [false, true]) cells.push({ consumer, record, board, intent, marker, window: "none" });
         }
       }
     }
   }
+  await runCells(cells, () => undefined);
 });
 
 it("one-shot run-file I/O failures retain a completion and recover its output under every intent and marker pair", { timeout: 120_000 }, async () => {
   for (const intent of [false, true]) {
     for (const marker of [false, true]) {
-      const h = await stageRunHarness();
+      const h = await stageRunHarness({ observeRunWork: true });
+      let restoreSpies: (() => void) | undefined;
       try {
         const version = await h.confirm([stageOf("a")]);
         const id = await h.addItem(version);
-        const running = h.start(id, h.local(version));
-        void running.catch(() => undefined);
-        const [child] = await h.untilLive(1);
-        await h.until(id, item => item.stageRuns[0]?.childSessionId === child.sessionId);
-        const runId = (await h.item(id)).runId ?? "";
+        const running = h.start(id, h.local(version)).catch(() => undefined);
+        const [child] = await h.waitForLive(1);
+        await h.drainRunWork();
+        const initial = await h.item(id);
+        expect(initial.stageRuns[0]?.childSessionId).toBe(child.sessionId);
+        const runId = initial.runId ?? "";
         leave(h, { consumer: "run write", board: "named", intent, marker, window: "none" }, { id, runId, holder: -1 });
         const settles = watchSettles(h, false);
         const retain = vi.spyOn(h.board.runs, "holdEvent");
+        restoreSpies = () => { retain.mockRestore(); settles.restore(); };
         const identity = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
         const held = holdRunFile(h, true);
         child.finish();
-        await vi.waitFor(() => expect(retain).toHaveBeenCalledWith(identity));
+        await running;
+        await h.drainRunWork();
+        expect(retain).toHaveBeenCalledWith(identity);
         expect(settles.stored).toEqual([]);
         const raw = JSON.parse(readFileSync(runsPath(h), "utf8")) as {
           runs: { runId: string; settled?: unknown; stageRuns: { status: string }[] }[];
@@ -360,16 +440,19 @@ it("one-shot run-file I/O failures retain a completion and recover its output un
         if (intent && !marker) expect(await h.board.runs.withdrawIntent({ itemId: id, runId })).toBe(true);
         await reader(h);
         await h.engine.adoptParkedTemplateRuns();
-        const recovered = await h.untilStage(id, "a", "awaiting_gate");
-        expect(recovered.stageRuns[0]).toMatchObject({ attempt: 1, output: `output of ${child.sessionId}` });
+        await h.drainRunWork();
+        const recovered = await h.stageRun(id, "a");
+        expect(recovered).toMatchObject({ status: "awaiting_gate", attempt: 1, output: `output of ${child.sessionId}` });
         expect(await h.board.runs.heldEvents({ itemId: id, runId })).toEqual([]);
         expect(settles.stored).toEqual([]);
         expect(h.events.filter(event => event.phase === "error" || event.phase === "cancelled")).toEqual([]);
         await h.board.runs.prune(() => null);
         expect((await h.board.runs.get(runId)).status).toBe("found");
       } finally {
-        vi.restoreAllMocks();
         for (const child of h.children) child.finish();
+        await h.drainRunWork();
+        heldInputs.delete(runsPath(h));
+        restoreSpies?.();
         await h.cleanup();
       }
     }

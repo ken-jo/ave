@@ -13,7 +13,7 @@ import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/w
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
-import { boardRunState, type RunRecord } from "../run-state.js";
+import { boardRunState, type RunRecord, type WorkflowRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import type { JoinConflict } from "../shipped-shapes.js";
@@ -32,6 +32,32 @@ type IntegrateResult = { ok: true } | { ok: false; conflict: JoinConflict };
 export type StageRunView = WorkItemResolved & { stageRuns: WorkItemStageRun[]; stageJoins: StageJoin[]; record: RunRecord | null };
 type WorkflowDeps = NonNullable<WorkBoardEngineDeps["workflow"]>;
 
+function observeRunWork() {
+  const pending = new Set<Promise<unknown>>();
+  function track<T>(work: Promise<T>): Promise<T> {
+    pending.add(work);
+    const remove = () => { pending.delete(work); };
+    void work.then(remove, remove);
+    return work;
+  }
+  function observe(runs: WorkflowRunState): WorkflowRunState {
+    return new Proxy(runs, {
+      get(target, key: keyof WorkflowRunState) {
+        return (...args: unknown[]) => track(Reflect.apply(target[key], target, args));
+      },
+    });
+  }
+  async function drain(): Promise<void> {
+    // Run the engine's promise continuations, including work posted by a completed store operation.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    while (pending.size > 0) {
+      await Promise.allSettled(pending);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+  }
+  return { track, observe, drain };
+}
+
 /** A real board, run file and template store in a temp folder, a runner whose children end when the test says so, and a workspace provider that
  * hands every stage its own folder name under the run root. */
 export async function stageRunHarness(opts: {
@@ -43,6 +69,7 @@ export async function stageRunHarness(opts: {
   integrate?: () => IntegrateResult | Promise<IntegrateResult>;
   /** Replaces a part of the workspace provider. */
   workspace?: Partial<StageWorkspaceProvider>;
+  observeRunWork?: boolean;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
   const boardPath = join(dir, "board.json");
@@ -57,6 +84,9 @@ export async function stageRunHarness(opts: {
   /** The run ids each boot sweep kept. */
   const sweeps: string[][] = [];
   const registry = boardParentToolRegistry();
+  const runWork = opts.observeRunWork ? observeRunWork() : undefined;
+  const childChanges = new Set<() => void>();
+  const progressChanges = new Set<() => void>();
 
   const runner = {
     async spawn(input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }): Promise<SubAgentSpawnResult> {
@@ -69,9 +99,11 @@ export async function stageRunHarness(opts: {
           if (child.ended) return;
           child.ended = true;
           end({ summary: `output of ${sessionId}`, toolCallCount: 0, turnCount: 1, childSessionId: sessionId, entries: [], ok: true, endTrustOrigin: "llm-tool-arg", ...result });
+          for (const changed of childChanges) changed();
         },
       };
       children.push(child);
+      for (const changed of childChanges) changed();
       await Promise.resolve();
       hooks?.onLinked?.({ childSessionId: sessionId });
       const scripted = opts.script?.(input);
@@ -111,19 +143,34 @@ export async function stageRunHarness(opts: {
     ...opts.workspace,
   };
 
-  const engineOn = (store: WorkBoardStore) => createWorkBoardEngine({
-    store,
-    getRunner: () => runner,
-    emitProgress: event => { events.push(event); },
-    workflow: {
+  function engineOn(store: WorkBoardStore) {
+    const workflow = {
       templates, attachments: templates, runs: boardRunState(store), workspace, authoriseRunSource, passConditions: createPassConditionRegistry(),
-      scopeAuthorised: scope => scope.kind === "all" || !unauthorised.has(scope.projectRoot),
-      resolveProjectRoot: root => unauthorised.has(root) ? null : root,
-      audit: event => { audits.push(event); },
+      scopeAuthorised: (scope: TemplateScope) => scope.kind === "all" || !unauthorised.has(scope.projectRoot),
+      resolveProjectRoot: (root: string) => unauthorised.has(root) ? null : root,
+      audit: (event: (typeof audits)[number]) => { audits.push(event); },
       ...opts.workflow,
       ...opts.wiring?.(store, { workspace }),
-    },
-  });
+    } satisfies WorkflowDeps;
+    if (runWork) {
+      workflow.runs = runWork.observe(workflow.runs);
+      const get = store.get.bind(store);
+      const setRunStatus = store.setRunStatus.bind(store);
+      const setRunResult = store.setRunResult.bind(store);
+      store.get = (...args) => runWork.track(get(...args));
+      store.setRunStatus = (...args) => runWork.track(setRunStatus(...args));
+      store.setRunResult = (...args) => runWork.track(setRunResult(...args));
+    }
+    return createWorkBoardEngine({
+      store,
+      getRunner: () => runner,
+      emitProgress: event => {
+        events.push(event);
+        for (const changed of progressChanges) changed();
+      },
+      workflow,
+    });
+  }
   let engine = engineOn(board);
   /** The next process over the same files: a new board store and a new engine. The first engine is left as a crash leaves it. */
   const makeEngine = () => {
@@ -187,6 +234,28 @@ export async function stageRunHarness(opts: {
   const statusOf = (current: StageRunView, stageId: string) => current.stageRuns.find(run => run.stageId === stageId)?.status;
   const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) => until(itemId, current => statusOf(current, stageId) === status);
   const live = () => children.filter(child => !child.ended);
+  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description: string): Promise<T> {
+    const current = get();
+    if (current !== undefined) return Promise.resolve(current);
+    return new Promise<T>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        listeners.delete(changed);
+        reject(new Error(`timed out waiting for ${description}`));
+      }, 2_000);
+      function changed() {
+        const value = get();
+        if (value === undefined) return;
+        listeners.delete(changed);
+        clearTimeout(timeout);
+        resolve(value);
+      }
+      listeners.add(changed);
+    });
+  }
+  const waitForLive = (count: number) => waitForSignal(childChanges, () => {
+    const active = live();
+    return active.length === count ? active : undefined;
+  }, `${count} live children`);
   async function untilLive(count: number): Promise<FakeChild[]> {
     for (let i = 0; i < 400; i += 1) {
       if (live().length === count) return live();
@@ -201,15 +270,9 @@ export async function stageRunHarness(opts: {
     }
     throw new Error(`timed out waiting for ${count} children; have ${children.length}`);
   }
+  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
-  async function settleEvent(): Promise<WorkBoardRunEvent> {
-    for (let i = 0; i < 400; i += 1) {
-      const event = events.find(candidate => candidate.phase === "cancelled" || candidate.phase === "done" || candidate.phase === "denied" || candidate.phase === "error");
-      if (event) return event;
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    throw new Error("timed out waiting for the run to settle");
-  }
+  const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");
   /** The decision the board would send for the stored gate of the stage. */
   async function decide(itemId: number, stageId: string, decision: "approve" | "reject" | "request_changes", note?: string) {
     const current = await item(itemId);
@@ -220,7 +283,8 @@ export async function stageRunHarness(opts: {
 
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
-    confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, live, decide, statusOf, start,
+    confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
+    drainRunWork: async () => { await runWork?.drain(); },
     cleanup: () => cleanupTmpDir(dir),
   };
 }
