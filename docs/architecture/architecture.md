@@ -3322,11 +3322,14 @@ review is advisory, never a merge gate.
 
 ### Home path redaction
 
-Literal home paths in audit and display text are replaced in place. If a home
-is visible only after up to three layers of supported string, percent, byte or
-entity escaping, the redactor replaces its whole original token. Malformed
-escapes and deeper encodings are outside this contract. On Windows and macOS
-the home matcher uses Unicode case folding.
+The redactor identifies tokens in the original audit or display text. It
+replaces literal-only home paths in place and keeps their suffixes. If a token
+contains a home occurrence visible only after up to three layers of supported
+escaping, the redactor replaces the entire token with `[home-token]`. This
+includes mixed tokens that also contain a literal home path. Neighbouring
+text within a mixed token is removed with it. Malformed escapes and deeper
+encodings are outside this contract. On Windows and macOS the home matcher
+uses Unicode case folding.
 
 Detection supports JSON string escapes, percent encodings, the supported HTML
 entities, and hexadecimal `\xHH` escapes as UTF-8 bytes or JavaScript code

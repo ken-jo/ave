@@ -90,7 +90,7 @@ function readByteEscape(text: string, index: number, width: number, output: Esca
 }
 
 /** Reuse the caller’s single value slot for escape recognition. */
-export function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex = false): number {
+function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex: boolean): number {
   const code = text.charCodeAt(index);
   if (code === 37) return readByteEscape(text, index, 3, output);
   if (code === 92) {

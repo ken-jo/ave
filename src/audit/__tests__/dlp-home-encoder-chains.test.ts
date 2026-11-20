@@ -172,15 +172,85 @@ const separatorChains: SeparatorEncoder[][] = [[], ...separatorNames.flatMap(a =
 ])];
 const uriChains = separatorChains.filter(chain => chain.includes("uri"));
 
+function expectMixedToken(
+  redact: (text: string) => string, home: string, input: string, chain: readonly SeparatorEncoder[] = [],
+): void {
+  const account = home.split("\\").at(-1)?.toLowerCase() ?? "";
+  // JSON outside the opaque token still parses at every layer.
+  const outer = JSON.stringify({ p: JSON.stringify({ value: input, retained: 1 }), retained: 2 });
+  const parsed = JSON.parse(redact(outer)) as { p: string; retained: number };
+  const inner = JSON.parse(parsed.p) as { value: string; retained: number };
+  expect(parsed.retained).toBe(2);
+  expect(inner.retained).toBe(1);
+  let output = redact(input);
+  for (const name of chain.toReversed()) {
+    const codec = separatorMatrixEncoders[name];
+    if (!codec.json) break;
+    output = codec.decode(output);
+  }
+  for (const result of [output, inner.value]) {
+    expect(result.match(/\[home-token\]/gu), input).toEqual(["[home-token]"]);
+    expect(result).not.toContain("[home]");
+    expect(result.toLowerCase()).not.toContain(account);
+  }
+}
+
+const listingSeparators = ["\n", "\r\n", "\b", "\f", "\u0001", "\t"];
+const jsonValueCodecs = ["string", "object", "array", "ascii"] as const;
+const controlRunChains: SeparatorEncoder[][] = jsonValueCodecs.flatMap(first =>
+  [...jsonValueCodecs, "uri" as const].map(next => [first, next, "uri"]));
+
+it.each([String.raw`C:\Users\bob`, String.raw`D:\fixtures\habitat`, String.raw`E:\temp\ted`, String.raw`\\srv\share\habitat`])(
+  "redacts a whole mixed token after slash runs for %s", async home => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    const slashHome = home.replaceAll("\\", "/");
+    expect(controlRunChains).toHaveLength(20);
+    for (const separator of listingSeparators) {
+      for (const directory of ["b", "f"]) {
+        const listing = `copy${separator}${home}\\${directory}${separator}${slashHome}/a`;
+        for (const chain of controlRunChains) {
+          const input = chain.reduce((text, codec) => separatorMatrixEncoders[codec].encode(text), listing);
+          expectMixedToken(redactHomePathsInText, home, input, chain);
+        }
+      }
+    }
+  },
+);
+
+const uncListingChains = uriChains.filter(chain => {
+  const json = chain.findIndex(codec => separatorMatrixEncoders[codec].json);
+  return json >= 0 && json < chain.indexOf("uri") && !chain.includes("slash") && !chain.includes("component");
+});
+
+it.each([String.raw`\\srv\share\habitat`, String.raw`\\srv\share\bob`])(
+  "redacts whole mixed tokens in UNC listings for %s", async home => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    const literal = `${home.replaceAll("\\", "/")}/a`;
+    expect(uncListingChains).toHaveLength(76);
+    for (const separator of listingSeparators) {
+      const encoded = `${home}\\c`;
+      for (const listing of [
+        `${literal}${separator}${encoded}`, `${literal}${separator}${encoded}${separator}${home}\\d`,
+        `x${separator}${home}\\b${separator}${literal}${separator}${encoded} y`,
+      ]) {
+        for (const chain of uncListingChains) {
+          const input = chain.reduce((text, codec) => separatorMatrixEncoders[codec].encode(text), listing);
+          expectMixedToken(redactHomePathsInText, home, input, chain);
+        }
+      }
+    }
+  },
+);
+
 it.each(["D:\\fixtures\\habitat", "\\\\srv\\share\\habitat", "C:\\Users\\John Smith", "C:\\Users\\Café", "E:\\temp\\ted"])(
-  "keeps drive prefixes attached to both encoded homes before a literal home for %s", async home => {
+  "redacts both encoded homes before a literal home for %s", async home => {
     const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
     const parts = home.replace(/^[a-z]:/iu, "").split(/\\+/u).filter(Boolean).map(escapeRegExp);
     const tail = new RegExp(String.raw`[\\/]+${parts.join(String.raw`[\\/]+`)}(?![\p{L}\p{N}_-])`, "iu");
     const slashHome = home.replaceAll("\\", "/");
     const exposures: string[] = [];
     let count = 0;
-    for (const separator of ["\n", "\r\n", "\b", "\f", "\u0001", "\t"]) {
+    for (const separator of listingSeparators) {
       const listing = [`${home}\\b`, `${home}\\c`, `${slashHome}/a`].join(separator);
       for (const chain of separatorChains) {
         const input = chain.reduce((text, codec) => separatorMatrixEncoders[codec].encode(text), listing);
@@ -201,24 +271,21 @@ it.each(["D:\\fixtures\\habitat", "\\\\srv\\share\\habitat", "C:\\Users\\John Sm
 );
 
 it.each(["C:\\Users\\bob", "D:\\fixtures\\habitat"])(
-  "retains a literal download suffix before an encoded drive path for %s", async home => {
+  "redacts a whole mixed token containing a literal download suffix for %s", async home => {
     const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
     const literal = `${home.replaceAll("\\", "/")}/Downloads`;
     for (const separator of ["\n", "\t", "\r\n"]) {
       const next = separator === "\r\n" ? [`${home}\\Documents`, `${home}\\Music`].join(separator) : `${home}\\Documents`;
       for (const wrap of [wrappedEncoders.string.encode, wrappedEncoders.object.encode, (text: string) => JSON.stringify(JSON.stringify(text))]) {
         const input = encodeURI(wrap(`${literal}${separator}${next}`));
-        const preserved = encodeURI(wrap(`${literal}${separator}nextPath`)).split("/Downloads")[1].split("nextPath")[0];
-        const output = redactHomePathsInText(input);
-        expect(output, input).toContain(`[home]/Downloads${preserved}[home-token]`);
-        expect(output.toLowerCase()).not.toContain(home.split("\\").at(-1)?.toLowerCase());
+        expectMixedToken(redactHomePathsInText, home, input);
       }
     }
   },
 );
 
 it.each([String.raw`D:\fixtures\habitat`, String.raw`\\srv\share\habitat`, String.raw`E:\temp\ted`])(
-  "preserves literal descendants next to separately encoded paths through three layers for %s", async home => {
+  "redacts whole mixed tokens through three layers for %s", async home => {
     const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
     const slashHome = home.replaceAll("\\", "/");
     for (const [before, suffix, after, descendant] of [
@@ -226,31 +293,15 @@ it.each([String.raw`D:\fixtures\habitat`, String.raw`\\srv\share\habitat`, Strin
     ] as const) {
       const literalPath = slashHome + suffix;
       let count = 0;
-      const failures: string[] = [];
       for (const chain of uriChains) {
         const encode = (value: string) => chain.reduce((text, codec) => separatorMatrixEncoders[codec].encode(text), value);
         const prefix = before + literalPath + after;
         const input = encode(`${prefix}${home}\\${descendant}`);
         if (!input.includes(literalPath)) continue;
         count++;
-        const separate = "nextPath";
-        const reference = encode(prefix + separate);
-        const literalStart = reference.indexOf(literalPath);
-        const separatorEnd = reference.indexOf(separate, literalStart + literalPath.length);
-        const expected = `[home]${reference.slice(literalStart + slashHome.length, separatorEnd)}[home-token]`;
-        const output = redactHomePathsInText(input);
-        if (!output.includes(expected) || output.toLowerCase().includes(home.split("\\").at(-1)?.toLowerCase() ?? "")) {
-          failures.push(`${chain.join(">")}: ${output} (expected ${expected})`);
-        }
-        let outer = output;
-        for (const name of chain.toReversed()) {
-          const codec = separatorMatrixEncoders[name];
-          if (!codec.json) break;
-          outer = codec.decode(outer);
-        }
+        expectMixedToken(redactHomePathsInText, home, input, chain);
       }
       expect(count).toBe(185);
-      expect(failures.length, failures.slice(0, 5).join("\n")).toBe(0);
     }
   },
 );

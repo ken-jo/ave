@@ -44,34 +44,33 @@ add("literal Windows home before an escape-like directory name", WINDOWS_HOME,
 add("literal Windows home in prose with mixed separators", win32.normalize(WINDOWS_HOME),
   String.raw`Open:"D:/fixtures/habitat\u0032\file"`, String.raw`Open:"[home]\u0032\file"`, "win32");
 const MIXED_PATH_LIST = encodeURI(`${WINDOWS_HOME}/one;${win32.normalize(WINDOWS_HOME)}\\two`);
-add("keeps a literal suffix before a separate encoded path", WINDOWS_HOME, MIXED_PATH_LIST, "[home]/one;[home-token]", "win32");
-add("keeps a literal suffix and its entity before a separate encoded path", WINDOWS_HOME,
-  MIXED_PATH_LIST.replace("/one;", "/one&amp;;"), "[home]/one&amp;;[home-token]", "win32");
+add("redacts the whole mixed path list", WINDOWS_HOME, MIXED_PATH_LIST, TOKEN, "win32");
+add("redacts the whole mixed path list containing an entity", WINDOWS_HOME,
+  MIXED_PATH_LIST.replace("/one;", "/one&amp;;"), TOKEN, "win32");
 
 const NATIVE_WINDOWS_HOME = win32.normalize(WINDOWS_HOME);
 for (const join of [";", "?next="]) {
   const encoded = encodeURI(`${NATIVE_WINDOWS_HOME}\\two${join}${WINDOWS_HOME}/one`);
-  const expected = `[home-token]${join}[home]/one`;
-  add(`keeps ${join} before a literal home`, WINDOWS_HOME, encoded, expected, "win32");
-  add(`keeps ${join} before a literal home in JSON`, WINDOWS_HOME, JSON.stringify({ u: encoded }),
-    JSON.stringify({ u: expected }), "win32", true);
+  add(`redacts a whole mixed token with ${join} before a literal home`, WINDOWS_HOME, encoded, TOKEN, "win32");
+  add(`preserves outer JSON around a mixed token joined by ${join}`, WINDOWS_HOME, JSON.stringify({ u: encoded, retained: 1 }),
+    JSON.stringify({ u: TOKEN, retained: 1 }), "win32", true);
 }
 let copyCommand = `copy ${NATIVE_WINDOWS_HOME}\\b ${WINDOWS_HOME}/a`;
-let copySeparator = " ";
 for (let layer = 1; layer <= 3; layer++) {
   copyCommand = encodeURI(copyCommand);
-  copySeparator = encodeURI(copySeparator);
-  add(`keeps the command and separator before a literal home at layer ${layer}`, WINDOWS_HOME,
-    copyCommand, `copy${copySeparator}[home-token]${copySeparator}[home]/a`, "win32");
+  add(`redacts the whole mixed copy command at layer ${layer}`, WINDOWS_HOME, copyCommand, TOKEN, "win32");
 }
 
 for (const home of [WINDOWS_HOME, win32.normalize(WINDOWS_HOME), String.raw`C:\Users\bob`, COMMAND_HOME]) {
   for (const separator of [";", " ", "?", "&", "=", ":", "+", "$", "!", "*", "@", "#", "~", " to ", "?from="]) {
     const path = `${home.replaceAll("\\", "/")}/one${separator}${win32.normalize(home)}\\two`;
-    add(`keeps the literal descendant before ${JSON.stringify(separator)} on ${home}`, home,
-      encodeURI(path), `[home]/one${encodeURI(separator)}[home-token]`, "win32");
+    add(`redacts the whole mixed token joined by ${JSON.stringify(separator)} on ${home}`, home, encodeURI(path), TOKEN, "win32");
   }
 }
+const separatePaths = `${WINDOWS_HOME}/one ${encodeURI(`${NATIVE_WINDOWS_HOME}\\two`)}`;
+add("keeps a literal suffix across a raw token boundary", WINDOWS_HOME, separatePaths, "[home]/one [home-token]", "win32");
+add("keeps the suffix of a literal-only home with an encoded descendant", WINDOWS_HOME,
+  `${WINDOWS_HOME}/Kept%20File`, "[home]/Kept%20File", "win32");
 
 for (const { character, tail, count } of [
   { character: '"', tail: '"' }, { character: "\n", tail: "n" }, { character: "\t", tail: "t" },
