@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSy
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { createInterface } from "node:readline";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -53,6 +54,47 @@ function isAlive(pid) {
     if (error.code === "ESRCH") return false;
     throw error;
   }
+}
+
+async function collectTrace(t, fixtureScript, onRecord = () => {}) {
+  const directory = fixture(t);
+  const pipe = `\\\\.\\pipe\\ave-trace-${process.pid}-${directory.split("\\").at(-1)}`;
+  const transcript = Promise.withResolvers();
+  const records = [];
+  const server = createServer(socket => {
+    const lines = createInterface({ input: socket, crlfDelay: Infinity });
+    lines.on("line", line => {
+      const row = { ...JSON.parse(line), received: performance.now() };
+      records.push(row);
+      onRecord(row, directory);
+    });
+    lines.on("close", transcript.resolve);
+  });
+  server.listen(pipe);
+  await once(server, "listening");
+  t.after(() => promisify(server.close.bind(server))());
+  const script = join(directory, "collector.ps1");
+  writeFileSync(script, [
+    "function Register-CimIndicationEvent {}",
+    "function Unregister-Event {}",
+    "function Remove-Event($EventIdentifier) {",
+    "  $script:fixtureEvents = @($script:fixtureEvents | Where-Object { $_.EventIdentifier -ne $EventIdentifier })",
+    "}",
+    "function New-Start($id, $name) {",
+    "  @{ EventIdentifier = $id; SourceEventArgs = @{ NewEvent = @{ ProcessID = $id; ParentProcessID = 0;",
+    "    ProcessName = $name; TIME_CREATED = [DateTime]::UtcNow.ToFileTimeUtc() } } }",
+    "}",
+    ...fixtureScript,
+    readFileSync(new URL("watch-windows-processes.ps1", SCRIPTS), "utf8"),
+  ].join("\n"));
+  writeFileSync(join(directory, "watcher-ownership.json"), "{}");
+  const executable = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  await run(executable, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script], {
+    cwd: directory, windowsHide: true, timeout: 25_000,
+    env: { ...process.env, GITHUB_ACTIONS: "true", AVE_PROCESS_WATCH_TRACE: "1", AVE_PROCESS_WATCH_PIPE: pipe },
+  });
+  await transcript.promise;
+  return { directory, records };
 }
 
 describe("Windows launch diagnostic", () => {
@@ -126,8 +168,13 @@ describe("Windows launch diagnostic", () => {
       record({ kind: "raw-start", ...row, pid: row.pid + offset, image: "C:/other/outside.exe", commandLine: "private" });
     }
     record({ kind: "trace", rows: [{ ...row, image: `${ROOT}\\target.exe`, commandLine: `target "${ROOT}"` }] });
+    record({ kind: "stopped" });
     assert.deepEqual(readLines(join(directory, "raw-starts.jsonl")), [row, { ...row, pid: 31 }]);
-    assert.deepEqual(readLines(join(directory, "watcher.jsonl")), [{ kind: "raw-start-limit", maxRows: 2 }]);
+    assert.deepEqual(readLines(join(directory, "watcher.jsonl")), [
+      { kind: "raw-start-limit", maxRows: 2 },
+      { kind: "dropped", count: 2, reason: "raw-output-limit" },
+      { kind: "stopped" },
+    ]);
     const [full] = readLines(join(directory, "job-root-starts.jsonl"));
     assert.equal(full.commandLine, 'target "[job-root]"');
   });
@@ -351,7 +398,7 @@ describe("Windows launch diagnostic", () => {
 
   for (const [name, eventArgs] of [
     ["a missing event", "@{ NewEvent = $null }"],
-    ["a subscription exception", "@{ Exception = [TimeoutException]::new(); NewEvent = $processEvent }"],
+    ["a subscription exception", "@{ Exception = [TimeoutException]::new() }"],
     ["an invalid process start", "@{ NewEvent = @{ ProcessID = 0; ParentProcessID = 0; TIME_CREATED = 0 } }"],
   ]) {
     it(`ends the trace and takes a polling snapshot after ${name}`, WIN32_ONLY, async t => {
@@ -382,11 +429,14 @@ describe("Windows launch diagnostic", () => {
         "  }",
         "}",
         "function Get-Event {",
-        "  if ($script:sent) { [IO.File]::WriteAllText($stop, ''); return }",
+        "  if ($script:sent) { return }",
         "  $script:sent = $true",
         "  $processEvent = @{ ProcessID = 101; ParentProcessID = 10; ProcessName = 'fixture.exe'; TIME_CREATED = [DateTime]::UtcNow.ToFileTimeUtc() }",
         "  @{ EventIdentifier = 1; SourceEventArgs = @{ NewEvent = $processEvent } }",
         `  @{ EventIdentifier = 2; SourceEventArgs = ${eventArgs} }`,
+        "  $processEvent = $processEvent.Clone()",
+        "  $processEvent.ProcessID = 102",
+        "  @{ EventIdentifier = 3; SourceEventArgs = @{ NewEvent = $processEvent } }",
         "}",
         readFileSync(new URL("watch-windows-processes.ps1", SCRIPTS), "utf8"),
       ].join("\n"));
@@ -398,15 +448,109 @@ describe("Windows launch diagnostic", () => {
       });
 
       const records = (await transcript.promise).trim().split("\n").map(line => JSON.parse(line));
-      assert.deepEqual(records.filter(row => row.kind === "raw-start").map(row => row.pid), [101]);
+      assert.deepEqual(records.filter(row => row.kind === "raw-start").map(row => row.pid), [101, 102]);
+      assert.deepEqual(records.filter(row => row.kind === "dropped"),
+        name === "a subscription exception" ? [] : [{ kind: "dropped", count: 1, reason: "invalid-start-event" }]);
       const ended = records.findIndex(row => row.kind === "trace-ended");
-      assert.ok(ended > records.findIndex(row => row.kind === "trace"));
+      assert.ok(ended > records.findLastIndex(row => row.kind === "raw-start"));
       assert.equal(records[ended + 1]?.mechanism, "polling");
       assert.deepEqual(records.find(row => row.kind === "snapshot")?.rows.map(row => row.pid), [104]);
       assert.equal(records.at(-1)?.kind, "stopped");
       assert.equal(readFileSync(join(directory, "operation-timeout"), "utf8"), "");
     });
   }
+
+  it("writes a mixed burst in queue order and only looks up the media start", WIN32_ONLY, async t => {
+    const { directory, records } = await collectTrace(t, [
+      "[IO.File]::WriteAllText('cwd-probe.ps1', 'function ReadCurrentDirectory($id, $expectedCreation) { ''fixture-cwd'' }')",
+      "function Get-CimInstance($Filter) {",
+      "  if ($Filter) {",
+      "    [IO.File]::AppendAllText('lookups', $Filter + [Environment]::NewLine)",
+      "    if ($Filter -eq 'ProcessId = 132') {",
+      "      @{ ProcessId = 132; ParentProcessId = 0; Name = 'setup_wm.exe'; CreationDate = [DateTime]::UtcNow.AddSeconds(-1) }",
+      "    }",
+      "  }",
+      "}",
+      "function Wait-Event {}",
+      "function Get-Event {",
+      "  if (!$script:sent) {",
+      "    $script:sent = $true",
+      "    $script:fixtureEvents = @(100..195 | ForEach-Object {",
+      "      New-Start $_ $(if ($_ -eq 132) { 'setup_wm.exe' } else { 'ordinary.exe' })",
+      "    })",
+      "  } elseif (!$script:fixtureEvents.Count) { [IO.File]::WriteAllText($stop, '') }",
+      "  $script:fixtureEvents",
+      "}",
+    ]);
+    const lookups = readFileSync(join(directory, "lookups"), "utf8").trim().split(/\r?\n/u);
+    const starts = records.filter(row => row.kind === "raw-start").map(row => row.pid);
+    t.diagnostic(`${starts.length} raw starts, ${lookups.length} live lookup(s)`);
+    assert.equal(lookups.length, 1, "Expected one media live lookup");
+    assert.deepEqual(lookups, ["ProcessId = 132"]);
+    assert.deepEqual(starts, Array.from({ length: 96 }, (_, index) => index + 100));
+    const media = records.filter(row => row.kind === "trace").map(row => row.rows[0]);
+    assert.equal(media.length, 1);
+    assert.equal(media[0].pid, 132);
+    assert.equal(media[0].ancestryTimeBasis, "child-creation");
+    assert.equal(media[0].ancestryStatus, "root");
+    assert.equal(media[0].cwd, "fixture-cwd");
+    assert.equal(media[0].cwdStatus, "read");
+    assert.equal(records.at(-1)?.kind, "stopped");
+  });
+
+  it("drains the entire queued backlog in order on stop", WIN32_ONLY, async t => {
+    const { records } = await collectTrace(t, [
+      "function Get-CimInstance {}",
+      "function Wait-Event { [IO.File]::WriteAllText($stop, '') }",
+      "function Get-Event {",
+      "  if (!$script:sent) { $script:sent = $true; return }",
+      "  if (!$script:fixtureEvents) {",
+      "    if ($script:queued) { return }",
+      "    $script:queued = $true",
+      "    $script:fixtureEvents = @(100..195 | ForEach-Object { New-Start $_ 'ordinary.exe' })",
+      "  }",
+      "  $script:fixtureEvents",
+      "}",
+    ]);
+    const starts = records.filter(row => row.kind === "raw-start").map(row => row.pid);
+    t.diagnostic(`${starts.length} raw starts drained`);
+    assert.equal(starts.length, 96);
+    assert.deepEqual(starts, Array.from({ length: 96 }, (_, index) => index + 100));
+    assert.equal(records.some(row => row.kind === "dropped"), false);
+    assert.equal(records.at(-1)?.kind, "stopped");
+  });
+
+  it("keeps emitting while a media lookup takes longer than the idle limit", WIN32_ONLY, async t => {
+    const { directory, records } = await collectTrace(t, [
+      "function Get-CimInstance($Filter) {",
+      "  if ($Filter -eq 'ProcessId = 101') {",
+      "    [IO.File]::WriteAllText('lookup-started', '')",
+      "    Start-Sleep -Milliseconds 13000",
+      "  }",
+      "}",
+      "function Wait-Event { Start-Sleep -Milliseconds 50 }",
+      "function Get-Event {",
+      "  if (!$script:sent) {",
+      "    $script:sent = $true",
+      "    $script:fixtureEvents = @(New-Start 101 'setup_wm.exe')",
+      "  } elseif (!$script:sentLater -and [IO.File]::Exists('lookup-started')) {",
+      "    $script:sentLater = $true",
+      "    $script:fixtureEvents = @(New-Start 102 'ordinary.exe')",
+      "  }",
+      "  $script:fixtureEvents",
+      "}",
+    ], (row, directory) => {
+      if (row.kind === "raw-start" && row.pid === 102) writeFileSync(join(directory, "watcher.stop"), "");
+    });
+    assert.ok(existsSync(join(directory, "lookup-started")));
+    const starts = records.filter(row => row.kind === "raw-start");
+    assert.deepEqual(starts.map(row => row.pid), [101, 102]);
+    const gap = starts[1].received - starts[0].received;
+    t.diagnostic(`${Math.round(gap)} ms between raw starts`);
+    assert.ok(gap < 12_000, `The next raw start took ${Math.round(gap)} ms during media enrichment`);
+    assert.equal(records.find(row => row.kind === "trace-process-query-failed")?.reason, "media-budget-exhausted");
+    assert.equal(records.at(-1)?.kind, "stopped");
+  });
 
   it("traces a media setup start and its live parent outside the job root", WIN32_ONLY, async t => {
     const directory = fixture(t);
@@ -435,8 +579,16 @@ describe("Windows launch diagnostic", () => {
       "}",
       "function Get-CimInstance($ClassName, $Property, $OperationTimeoutSec, $Filter) {",
       "  if ($Filter) { [IO.File]::AppendAllText('lookups', $Filter + [Environment]::NewLine) }",
-      "  if ($Filter -match '^ProcessId = 4294967[12][0-9]{2}$') { return }",
-      "  CimCmdlets\\Get-CimInstance @PSBoundParameters",
+      `  if ($Filter -eq 'ProcessId = 4294967294 OR ProcessId = ${process.pid}') {`,
+      `    return @{ ProcessId = ${process.pid}; Name = 'node.exe'; CreationDate = [DateTime]::UtcNow }`,
+      "  }",
+      "  if ($Filter -match '^ProcessId = 4294967[12][0-9]{2}\\b') { return }",
+      "  foreach ($row in (CimCmdlets\\Get-CimInstance @PSBoundParameters)) {",
+      "    if ($Filter -match ' OR ' -and $row.Name -eq 'node.exe') {",
+      "      @{ ProcessId = $row.ProcessId; ParentProcessId = 0; Name = $row.Name; CreationDate = $row.CreationDate;",
+      "        ExecutablePath = $row.ExecutablePath; CommandLine = $row.CommandLine }",
+      "    } else { $row }",
+      "  }",
       "}",
       "function Get-Event {",
       "  $nativeStarts = @(Microsoft.PowerShell.Utility\\Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)",
@@ -508,11 +660,13 @@ describe("Windows launch diagnostic", () => {
       }
     }
     const lookups = readFileSync(join(directory, "lookups"), "utf8").split(/\r?\n/u);
-    const missingParent = lookups.indexOf("ProcessId = 4294967295");
-    const firstOrdinaryStart = lookups.indexOf("ProcessId = 4294967200");
-    assert.ok(missingParent >= 0 && firstOrdinaryStart > missingParent,
-      "Media ancestry lookups must precede ordinary live lookups in a busy batch");
     const rows = readLines(join(directory, "media-starts.jsonl"));
+    const missingParent = lookups.indexOf("ProcessId = 4294967293 OR ProcessId = 4294967295");
+    assert.ok(missingParent >= 0, JSON.stringify({
+      lookups: lookups.filter(Boolean).length,
+      media: rows.map(({ ancestryStatus, created }) => [ancestryStatus, Boolean(created)]),
+    }));
+    assert.equal(lookups.includes("ProcessId = 4294967200"), false, "Ordinary starts must not be looked up");
     const media = rows.find(row => row.pid === Number(childPid));
     assert.ok(media);
     assert.equal(media.match, "media");

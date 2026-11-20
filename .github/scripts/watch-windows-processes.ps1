@@ -12,6 +12,10 @@ $seen = [Collections.Generic.HashSet[string]]::new()
 $pipeName = $env:AVE_PROCESS_WATCH_PIPE.Substring('\\.\pipe\'.Length)
 $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $pipeName, [IO.Pipes.PipeDirection]::Out)
 $writer = $null
+$batchLimitMs = 1500
+$mediaLimit = 8
+$enrichment = $null
+$enrichmentResult = $null
 
 function Write-Record($record) {
   $writer.WriteLine((ConvertTo-Json -InputObject $record -Compress -Depth 6))
@@ -21,11 +25,41 @@ function Write-Mechanism {
   Write-Record @{ kind = 'mechanism'; mechanism = $mechanism; jobRootMatch = 'image path or current directory' }
 }
 
-function Read-Processes($filter) {
+$mediaLookup = {
+  param($name, $parameters, $definition, $readPointer, $native, $pointerSize)
+  $ErrorActionPreference = 'Stop'
+  if ($definition) { Set-Item -LiteralPath "function:$name" -Value $definition }
+  if ($readPointer) { Set-Item -LiteralPath function:ReadProcessPointer -Value $readPointer }
+  & $name @parameters
+}
+
+function Invoke-MediaLookup($name, $parameters, $batch) {
+  # A timed-out lookup may still be unwinding. Keep at most one in flight.
+  if ($enrichmentResult) {
+    if (!$enrichmentResult.IsCompleted) { throw 'Media lookup is still running' }
+    try { $null = $enrichment.EndInvoke($enrichmentResult) } catch {}
+    $script:enrichmentResult = $null
+  }
+  if ($batch.ElapsedMilliseconds -ge $batchLimitMs) { throw 'Media batch time exhausted' }
+  if (!$enrichment) { $script:enrichment = [PowerShell]::Create() }
+  $enrichment.Commands.Clear()
+  $null = $enrichment.AddScript($mediaLookup.ToString(), $true).AddParameters(@{
+    name = $name; parameters = $parameters; definition = $enrichmentDefinitions[$name]
+    readPointer = $enrichmentDefinitions['ReadProcessPointer']; native = $native; pointerSize = $pointerSize
+  })
+  $script:enrichmentResult = $enrichment.BeginInvoke()
+  $remaining = [int][Math]::Max(0, $batchLimitMs - $batch.ElapsedMilliseconds)
+  if (!$enrichmentResult.AsyncWaitHandle.WaitOne($remaining)) { throw 'Media batch time exhausted' }
+  try { $enrichment.EndInvoke($enrichmentResult) }
+  finally { $script:enrichmentResult = $null }
+}
+
+function Read-Processes($filter, $batch) {
   Write-Record @{ kind = 'heartbeat' }
   $query = @{ ClassName = 'Win32_Process'; Property = $properties; OperationTimeoutSec = 2 }
   if ($filter) { $query.Filter = $filter }
-  Get-CimInstance @query
+  if ($batch) { Invoke-MediaLookup 'Get-CimInstance' $query $batch }
+  else { Get-CimInstance @query }
 }
 
 function Read-Process($row) {
@@ -43,7 +77,7 @@ function Reset-CwdBudget {
   $script:cwdAttempts = $script:cwdUnavailable = $script:cwdSkipped = 0
 }
 
-function Add-ProcessCwd($process) {
+function Add-ProcessCwd($process, $batch) {
   if (!$process.created -or !$cwdAvailable) {
     $process.cwdStatus = 'unavailable'
     $script:cwdUnavailable++
@@ -55,7 +89,9 @@ function Add-ProcessCwd($process) {
     $cwdTimer.Start()
     try {
       $created = [DateTime]::Parse($process.created).ToFileTimeUtc()
-      $process.cwd = ReadCurrentDirectory $process.pid $created
+      if ($batch) {
+        $process.cwd = Invoke-MediaLookup 'ReadCurrentDirectory' @{ id = $process.pid; expectedCreation = $created } $batch
+      } else { $process.cwd = ReadCurrentDirectory $process.pid $created }
     } catch {} finally { $cwdTimer.Stop() }
     $process.cwdStatus = if ($process.cwd) { 'read' } else { 'unavailable' }
     if (!$process.cwd) { $script:cwdUnavailable++ }
@@ -86,14 +122,21 @@ function Write-Snapshot($kind) {
   Write-CwdCoverage
 }
 
-function Read-Ancestors($parentId, $childTime, $draining) {
+function Read-Ancestors($parentId, $childTime, $firstParent, $batch) {
   $links = [Collections.Generic.List[object]]::new()
   $status = 'root'
   while ($parentId -gt 0) {
     if ($links.Count -ge 6) { $status = 'depth-limited'; break }
-    if (!$draining -and [IO.File]::Exists($stop)) { $status = 'stop-requested'; break }
-    try { $row = Read-Processes "ProcessId = $parentId" }
-    catch { $status = 'query-failed'; break }
+    $row = $firstParent
+    if ($links.Count -gt 0) {
+      if ([IO.File]::Exists($stop)) { $status = 'stop-requested'; break }
+      if ($batch.ElapsedMilliseconds -ge $batchLimitMs) { $status = 'media-budget-exhausted'; break }
+      try { $row = Read-Processes "ProcessId = $parentId" $batch }
+      catch {
+        $status = if ($batch.ElapsedMilliseconds -ge $batchLimitMs) { 'media-budget-exhausted' } else { 'query-failed' }
+        break
+      }
+    }
     $parent = Read-Process $row
     if (!$parent) {
       $links.Add(@{ pid = $parentId; parentCreatedBeforeChild = $false })
@@ -133,14 +176,22 @@ function Write-RawStart($process) {
   }
 }
 
-function Write-Start($process, $draining) {
-  $live = @()
-  if (!$draining -and ![IO.File]::Exists($stop)) {
-    try { $live = @(Read-Processes "ProcessId = $($process.pid)") }
-    catch { Write-Record @{ kind = 'trace-process-query-failed' } }
+function Write-Start($process, $batch) {
+  $filter = "ProcessId = $($process.pid)"
+  if ($process.parentPid -gt 0) { $filter += " OR ProcessId = $($process.parentPid)" }
+  try { $live = @(Read-Processes $filter $batch) }
+  catch {
+    $status = if ($batch.ElapsedMilliseconds -ge $batchLimitMs) { 'media-budget-exhausted' } else { 'query-failed' }
+    Write-Record @{ kind = 'trace-process-query-failed'; reason = $status }
+    Write-MediaOnly $process $status
+    return
   }
   $eventTime = [DateTime]::Parse($process.eventTime).ToUniversalTime()
+  $childTime = $eventTime
+  $firstParent = $null
+  $process.ancestryTimeBasis = 'start-event'
   foreach ($row in $live) {
+    if ($row.ProcessId -eq $process.parentPid) { $firstParent = $row }
     if ($row.ProcessId -ne $process.pid -or !$row.CreationDate -or $row.CreationDate.ToUniversalTime() -gt $eventTime -or
         $row.ParentProcessId -ne $process.parentPid -or $row.Name -ne $process.name) { continue }
     $child = Read-Process $row
@@ -148,82 +199,75 @@ function Write-Start($process, $draining) {
     $process.created = $child.created
     $process.image = $child.image
     $process.commandLine = $child.commandLine
-  }
-  if ($process.created -and $process.ancestryTimeBasis) {
     $process.ancestryTimeBasis = 'child-creation'
-    # The live child can predate its trace timestamp.
-    if ($process.ancestry.Count -gt 0) {
-      $parent = $process.ancestry[0]
-      if ($parent.created -and [DateTimeOffset]::Parse($parent.created) -ge [DateTimeOffset]::Parse($process.created)) {
-        $parent.parentCreatedBeforeChild = $false
-        $process.ancestry = @($parent)
-        $process.ancestryStatus = 'parent-not-older'
-      }
-    }
+    $childTime = $row.CreationDate.ToUniversalTime()
   }
-  Add-ProcessCwd $process
+  $ancestry = Read-Ancestors $process.parentPid $childTime $firstParent $batch
+  $process.ancestry = $ancestry.links
+  $process.ancestryStatus = $ancestry.status
+  if ($batch.ElapsedMilliseconds -lt $batchLimitMs -and ![IO.File]::Exists($stop)) {
+    Add-ProcessCwd $process $batch
+  }
   Write-Record @{ kind = 'trace'; rows = @($process) }
 }
 
+function Write-MediaOnly($process, $status) {
+  $process.ancestry = @()
+  $process.ancestryStatus = $status
+  Write-Record @{ kind = 'trace'; rows = @($process) }
+}
+
+function Write-MediaBatch($starts, $batch, $stopping) {
+  Reset-CwdBudget
+  foreach ($process in $starts) {
+    if ($stopping -or [IO.File]::Exists($stop)) {
+      Write-MediaOnly $process 'stop-requested'
+    } elseif ($batch.ElapsedMilliseconds -ge $batchLimitMs -or ($enrichmentResult -and !$enrichmentResult.IsCompleted)) {
+      Write-MediaOnly $process 'media-budget-exhausted'
+    } else {
+      Write-Start $process $batch
+    }
+  }
+  Write-CwdCoverage
+}
+
 function Write-TraceBatch($stopping) {
-  $mediaStarts = [Collections.Generic.List[object]]::new()
-  $otherStarts = [Collections.Generic.List[object]]::new()
-  $traceEnd = $null
-  foreach ($start in (Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)) {
-    $eventArgs = $start.SourceEventArgs
-    if ($null -ne $eventArgs.Exception) {
-      $traceEnd = @{ kind = 'trace-ended'; reason = 'subscription-error' }
-      if ($null -ne $eventArgs.Exception.StatusCode) { $traceEnd.status = [string]$eventArgs.Exception.StatusCode }
-      break
-    }
-    $process = Read-Start $eventArgs.NewEvent
-    if (!$process) {
-      $traceEnd = @{ kind = 'trace-ended'; reason = 'invalid-start-event' }
-      break
-    }
-    $entry = @{ id = $start.EventIdentifier; process = $process }
-    if ($process.name -in $mediaImages) { $mediaStarts.Add($entry) }
-    else { $otherStarts.Add($entry) }
-  }
-
-  $mediaLimit = 8
-  $media = @(foreach ($start in $mediaStarts) {
-    Remove-Event -EventIdentifier $start.id
-    $process = $start.process
-    Write-RawStart $process
-    if ($mediaLimit-- -le 0) {
-      $process.ancestry = @()
-      $process.ancestryStatus = 'media-batch-limited'
-      Write-Record @{ kind = 'trace'; rows = @($process) }
-      continue
-    }
-    $ancestry = Read-Ancestors $process.parentPid ([DateTime]::Parse($process.eventTime).ToUniversalTime()) $stopping
-    $process.ancestry = $ancestry.links
-    $process.ancestryStatus = $ancestry.status
-    $process.ancestryTimeBasis = 'start-event'
-    $process
-  })
-  Reset-CwdBudget
-  foreach ($process in $media) { Write-Start $process $stopping }
-  Write-CwdCoverage
-
-  Reset-CwdBudget
   $batch = [Diagnostics.Stopwatch]::StartNew()
-  $limit = 32
-  foreach ($start in $otherStarts) {
-    if ($limit-- -eq 0 -or $batch.ElapsedMilliseconds -ge 1500) {
-      if ($stopping) { Write-Record @{ kind = 'stop-drain-limited' } }
-      break
+  $mediaStarts = [Collections.Generic.List[hashtable]]::new()
+  $traceEnd = $null
+  $dropped = 0
+  $processed = $false
+  if ($stopping) { Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue }
+  do {
+    $drainTail = $false
+    foreach ($start in (Get-Event -SourceIdentifier $source -ErrorAction SilentlyContinue)) {
+      if ($processed -and !$stopping -and !$traceEnd -and $batch.ElapsedMilliseconds -ge $batchLimitMs) { break }
+      $eventArgs = $start.SourceEventArgs
+      $process = Read-Start $eventArgs.NewEvent
+      if ($process) {
+        Write-RawStart $process
+        if ($process.name -in $mediaImages) {
+          if ($mediaStarts.Count -lt $mediaLimit) { $mediaStarts.Add($process) }
+          else { Write-MediaOnly $process 'media-batch-limited' }
+        }
+      } elseif ($null -eq $eventArgs.Exception -or $null -ne $eventArgs.NewEvent) { $dropped++ }
+      if ((!$process -or $null -ne $eventArgs.Exception) -and !$traceEnd -and !$stopping) {
+        $traceEnd = @{ kind = 'trace-ended'; reason = 'invalid-start-event' }
+        if ($null -ne $eventArgs.Exception) {
+          $traceEnd.reason = 'subscription-error'
+          if ($null -ne $eventArgs.Exception.StatusCode) { $traceEnd.status = [string]$eventArgs.Exception.StatusCode }
+        }
+        Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue
+        $drainTail = $true
+      }
+      Remove-Event -EventIdentifier $start.EventIdentifier
+      $processed = $true
     }
-    if (!$stopping -and [IO.File]::Exists($stop)) { break }
-    Remove-Event -EventIdentifier $start.id
-    Write-RawStart $start.process
-    Write-Start $start.process $stopping
-  }
-  Write-CwdCoverage
-  if ($traceEnd) {
+  } while ($drainTail)
+  if ($dropped) { Write-Record @{ kind = 'dropped'; count = $dropped; reason = 'invalid-start-event' } }
+  if ($mediaStarts.Count) { Write-MediaBatch $mediaStarts $batch $stopping }
+  if ($traceEnd -and !$stopping) {
     Write-Record $traceEnd
-    Unregister-Event -SourceIdentifier $source -ErrorAction SilentlyContinue
     $script:mechanism = 'polling'
     Write-Mechanism
   }
@@ -247,6 +291,11 @@ try {
       Write-Record @{ kind = 'heartbeat' }
       Register-CimIndicationEvent -ClassName Win32_ProcessStartTrace -SourceIdentifier $source |
         Out-Null
+      $enrichmentDefinitions = @{}
+      foreach ($name in 'ReadProcessPointer', 'ReadCurrentDirectory', 'Get-CimInstance') {
+        $function = Get-Command -Name $name -CommandType Function -ErrorAction SilentlyContinue
+        if ($function) { $enrichmentDefinitions[$name] = $function.Definition }
+      }
       $mechanism = 'Win32_ProcessStartTrace'
     } catch {
       Write-Record @{ kind = 'trace-unavailable' }
@@ -273,4 +322,6 @@ try {
 } finally {
   if ($writer) { $writer.Dispose() }
   $pipe.Dispose()
+  # Disposing a running lookup would block shutdown.
+  if ($enrichment -and (!$enrichmentResult -or $enrichmentResult.IsCompleted)) { $enrichment.Dispose() }
 }

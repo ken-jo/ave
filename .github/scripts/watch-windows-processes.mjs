@@ -34,6 +34,7 @@ export function createRecorder(root, directory, { rawStartLimit = RAW_START_LIMI
   const seen = new Set();
   const totals = new Map();
   let rawStarts = 0;
+  let droppedRawStarts = 0;
 
   function write(file, record) {
     const line = renderRunnerOutput(JSON.stringify(record));
@@ -42,10 +43,17 @@ export function createRecorder(root, directory, { rawStartLimit = RAW_START_LIMI
     if (total + size > (file === RAW_LOG ? RAW_LOG_LIMIT : LOG_LIMIT)) {
       if (file !== WATCH_LOG && total !== Infinity) write(WATCH_LOG, { kind: "output-limit", file });
       totals.set(file, Infinity);
-      return;
+      return false;
     }
     appendFileSync(join(directory, file), line + "\n");
     totals.set(file, total + size);
+    return true;
+  }
+
+  function flushDroppedStarts() {
+    if (droppedRawStarts === 0) return;
+    write(WATCH_LOG, { kind: "dropped", count: droppedRawStarts, reason: "raw-output-limit" });
+    droppedRawStarts = 0;
   }
 
   function writeStart(row) {
@@ -78,10 +86,11 @@ export function createRecorder(root, directory, { rawStartLimit = RAW_START_LIMI
     }
     if (entry.kind === "raw-start") {
       if (rawStarts < rawStartLimit) {
-        write(RAW_LOG, { pid: entry.pid, parentPid: entry.parentPid, eventTime: entry.eventTime,
-          name: entry.name?.slice(0, NAME_LIMIT) ?? null });
-      } else if (rawStarts === rawStartLimit) {
-        write(WATCH_LOG, { kind: "raw-start-limit", maxRows: rawStartLimit });
+        if (!write(RAW_LOG, { pid: entry.pid, parentPid: entry.parentPid, eventTime: entry.eventTime,
+          name: entry.name?.slice(0, NAME_LIMIT) ?? null })) droppedRawStarts++;
+      } else {
+        if (rawStarts === rawStartLimit) write(WATCH_LOG, { kind: "raw-start-limit", maxRows: rawStartLimit });
+        droppedRawStarts++;
       }
       rawStarts++;
       return;
@@ -91,6 +100,7 @@ export function createRecorder(root, directory, { rawStartLimit = RAW_START_LIMI
       return;
     }
     if (entry.kind !== "snapshot" && entry.kind !== "baseline") {
+      if (entry.kind === "stopped") flushDroppedStarts();
       write(WATCH_LOG, entry);
       return;
     }
@@ -102,11 +112,11 @@ export function createRecorder(root, directory, { rawStartLimit = RAW_START_LIMI
     }
   }
 
-  return { record, write };
+  return { record, write, flushDroppedStarts };
 }
 
 function watch(root, directory, pipe) {
-  const { record, write } = createRecorder(root, directory);
+  const { record, write, flushDroppedStarts } = createRecorder(root, directory);
   let idle;
   const server = createServer(socket => {
     server.close();
@@ -117,7 +127,10 @@ function watch(root, directory, pipe) {
       catch { write(WATCH_LOG, { kind: "unreadable-collector-record" }); }
     });
     socket.on("error", () => write(WATCH_LOG, { kind: "collector-pipe-error" }));
-    socket.on("close", () => clearTimeout(idle));
+    socket.on("close", () => {
+      clearTimeout(idle);
+      flushDroppedStarts();
+    });
   });
   idle = setTimeout(() => {
     write(WATCH_LOG, { kind: "collector-timeout" });
