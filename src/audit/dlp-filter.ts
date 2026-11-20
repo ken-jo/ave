@@ -158,6 +158,7 @@ interface HomeForm {
   marker: string;
   windows?: boolean;
   windowsRoot?: boolean;
+  escapedSeparators?: boolean;
 }
 
 interface HomeDetector extends HomeForm {
@@ -209,10 +210,12 @@ function compileHomeRedaction(home: string, platform: NodeJS.Platform): HomeReda
   ] as const;
   const forms = spellings.map(([spelling, marker]) => {
     const start = windows && /^[\\/]/u.test(spelling) ? String.raw`(?<![\\/])` : "";
-    const pattern = homePattern(spelling, windows, spelling === standard);
-    const end = windowsRoot ? "" : `(?!${FILENAME_CONTINUATION.source.slice(1)})`;
+    const escapedSeparators = spelling === standard;
+    const stem = windowsRoot ? spelling.replace(/(?:[\\/]|%5[cC])+$/u, "") : spelling;
+    const pattern = homePattern(stem, windows, escapedSeparators);
+    const end = windowsRoot ? String.raw`(?=[\\/%])` : `(?!${FILENAME_CONTINUATION.source.slice(1)})`;
     const source = `${start}${pattern}${end}`;
-    return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker, windows, windowsRoot };
+    return { literal: new RegExp(source, `g${flags}`), detector: new RegExp(source, flags), marker, windows, windowsRoot, escapedSeparators };
   });
   return { forms, trigger, boundaries };
 }
@@ -240,14 +243,35 @@ function openingQuoteWidth(text: string, start: number): number | undefined {
   return quoteWidth * 2;
 }
 
-function literalRootEnd(text: string, start: number, end: number, width: number): number {
-  if (text.charCodeAt(end) !== 34) return end;
-  let run = end;
-  while (run > start && text.charCodeAt(run - 1) === 92) run--;
-  const slashes = end - run;
-  const safeEnd = end - slashes % width;
-  const hasSeparator = safeEnd > run || text.charCodeAt(run - 1) === 47;
-  return hasSeparator ? safeEnd : start;
+function windowsSeparatorEnd(text: string, start: number, width: number, escaped: boolean): number {
+  let index = start;
+  for (;;) {
+    const code = text.charCodeAt(index);
+    if (code === 47) {
+      index++;
+    } else if (code === 92) {
+      let next = index + 1;
+      while (text.charCodeAt(next) === 92) next++;
+      const residue = (next - index) % width;
+      if (residue === 0) index = next;
+      else if (residue === width / 2 && text.charCodeAt(next) === 47) index = next + 1;
+      else return next - residue;
+    } else if (escaped && code === 37 && text.charCodeAt(index + 1) === 53 && (text.charCodeAt(index + 2) | 32) === 99) {
+      index += 3;
+    } else {
+      return index;
+    }
+  }
+}
+
+function hasCompleteWindowsSeparators(spelling: string, width: number): boolean {
+  if (width === 1) return true;
+  for (const { 0: run, index } of spelling.matchAll(/\\+/gu)) {
+    const residue = run.length % width;
+    if (residue && (residue !== width / 2 || spelling.charCodeAt(index + run.length) !== 47)) return false;
+    if (index === 0 && run.length < width * 2 && spelling.charCodeAt(run.length) !== 47) return false;
+  }
+  return true;
 }
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveSiblings = false, separatorWidth = 1): string {
@@ -261,8 +285,12 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[], preserveS
     for (const match of matches) {
       let start = match.index;
       let end = start + match[0].length;
-      if (windowsRoot) end = literalRootEnd(text, start, end, separatorWidth);
-      if (end === start) continue;
+      if (windowsRoot) {
+        if (!hasCompleteWindowsSeparators(match[0], separatorWidth)) continue;
+        const rootEnd = windowsSeparatorEnd(text, end, separatorWidth, form.escapedSeparators === true);
+        if (rootEnd === end) continue;
+        end = rootEnd;
+      }
       if (ESCAPABLE_INITIAL.has(text.charCodeAt(start))) {
         while (start > copied && text.charCodeAt(start - 1) === 92) start--;
       }
@@ -284,20 +312,25 @@ function escapeFamilies(view: string): readonly HomeEscapeFamily[] {
   return backslashes && (percent || entities) ? BACKSLASH_AND_URI_FAMILIES : SINGLE_DECODE_FAMILY;
 }
 
-function someDecodedHomeView(token: string, layers: number, match: (view: string, depth: number) => boolean): boolean {
-  const seen = new Set([token]);
-  let layer = [token];
+function someDecodedHomeView(
+  token: string, layers: number, match: (view: string, depth: number, width: number) => boolean, separatorWidth = 1,
+): boolean {
+  const seen = new Map([[token, separatorWidth]]);
+  let layer = [{ text: token, width: separatorWidth }];
   // Breadth first keeps the shortest route to each view, including when
   // different escape families reach the same spelling at different depths.
   for (let depth = 1; depth <= layers && layer.length; depth++) {
-    const next: string[] = [];
-    for (const view of layer) {
-      for (const family of escapeFamilies(view)) {
-        const decoded = decodeHomeEscapes(view, family);
-        if (seen.has(decoded)) continue;
-        if (match(decoded, depth)) return true;
-        seen.add(decoded);
-        if (depth < layers && INTRODUCER.test(decoded)) next.push(decoded);
+    const next: typeof layer = [];
+    for (const { text, width } of layer) {
+      for (const family of escapeFamilies(text)) {
+        const decoded = decodeHomeEscapes(text, family);
+        if (decoded === text) continue;
+        const decodedWidth = family === "full" || family === "backslash" ? Math.max(1, width / 2) : width;
+        const widths = seen.get(decoded) ?? 0;
+        if (widths & decodedWidth) continue;
+        if (match(decoded, depth, decodedWidth)) return true;
+        seen.set(decoded, widths | decodedWidth);
+        if (depth < layers && INTRODUCER.test(decoded)) next.push({ text: decoded, width: decodedWidth });
       }
     }
     layer = next;
@@ -341,22 +374,30 @@ function* homeComponentMatches(text: string, form: HomeForm, layers: number): Ge
   }
 }
 
-function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): boolean {
-  return someDecodedHomeView(token, HOME_DECODE_LAYERS, (view, depth) => forms.some(form => {
+function detectsEncodedHome(token: string, forms: readonly HomeDetector[], separatorWidth: number): boolean {
+  return someDecodedHomeView(token, HOME_DECODE_LAYERS, (view, depth, width) => forms.some(form => {
     if (!form.detector.test(view)) return false;
+    if (form.windowsRoot) {
+      for (const match of view.matchAll(form.literal)) {
+        const end = match.index + match[0].length;
+        if (hasCompleteWindowsSeparators(match[0], width)
+          && windowsSeparatorEnd(view, end, width, form.escapedSeparators === true) > end) return true;
+      }
+      return false;
+    }
     const remaining = HOME_DECODE_LAYERS - depth;
-    return form.windowsRoot || !remaining || !homeComponentMatches(view, form, remaining).next().done;
-  }));
+    return !remaining || !homeComponentMatches(view, form, remaining).next().done;
+  }), separatorWidth);
 }
 
 /** Delimiters and their preceding slash runs belong to the original text. */
-function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedaction): string {
+function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedaction, separatorWidth: number): string {
   let pieces: string[] | undefined;
   let copied = 0;
   let start = 0;
   let introduced = false;
   const finish = (end: number): void => {
-    if (introduced && start < end && detectsEncodedHome(text.slice(start, end), forms)) {
+    if (introduced && start < end && detectsEncodedHome(text.slice(start, end), forms, separatorWidth)) {
       pieces ??= [];
       pieces.push(text.slice(copied, start), HOME_TOKEN_MARKER);
       copied = end;
@@ -393,7 +434,7 @@ function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedac
 function redactConfiguredHome(value: string, separatorWidth: number): string {
   if (!value || !mayContainHomePath(value)) return value;
   let text = replaceLiteralHomes(value, homeRedaction.forms, true, separatorWidth);
-  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction);
+  if (homeRedaction.forms.length && INTRODUCER.test(text)) text = replaceEncodedHomeTokens(text, homeRedaction, separatorWidth);
   return text;
 }
 

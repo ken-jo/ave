@@ -116,3 +116,24 @@ it.each(windowsRootRows)("uses the enclosing quote width for $name", async ({ ho
     }
   }
 });
+
+it.each([
+  ["D:\\", "D:/", "D:"],
+  ["\\\\srv\\share\\", "//srv/share/", "//srv/share"],
+] as const)("consumes only actual root separators before Unicode on %s", async (home, rooted, outside) => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+  const wrap = (text: string) => JSON.stringify(text);
+  for (const [prefix, expected] of [[rooted, "[home]"], [outside, outside]]) {
+    let input = `{"p":"${prefix}\\u00e9/file","other":1}`;
+    let output = `{"p":"${expected}\\u00e9/file","other":1}`;
+    expect(JSON.parse(input)).toEqual({ p: `${prefix}é/file`, other: 1 });
+    expect(redactHomePathsInText(`${prefix}é/file`)).toBe(`${expected}é/file`);
+    for (let depth = 1; depth <= 3; depth++) {
+      expect(redactHomePathsInText(input)).toBe(output);
+      input = wrap(input);
+      output = wrap(output);
+    }
+  }
+  const nativeOutside = `${home.slice(0, -1)}é/file`;
+  expect(redactHomePathsInText(nativeOutside)).toBe(nativeOutside);
+});
