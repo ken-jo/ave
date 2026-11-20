@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import { decodeHomeEscapes, type HomeEscapeFamily } from "./home-path-decode.js";
+import { bracedHomeEscapeEnd, decodeHomeEscapes, decodesHomeBackslashes, type HomeEscapeFamily } from "./home-path-decode.js";
 import { rewriteWindowsPathText } from "./home-path-quote-frames.js";
 
 export {
@@ -226,7 +226,7 @@ export function mayContainHomePath(value: string): boolean {
   return homeRedaction.trigger.test(value);
 }
 
-const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtux"].map(character => character.charCodeAt(0)));
+const ESCAPABLE_INITIAL = new Set([..."/\"'bfnrtuvx"].map(character => character.charCodeAt(0)));
 
 function windowsSeparatorEnd(text: string, start: number, width: number, escaped: boolean): number {
   let index = start;
@@ -293,8 +293,13 @@ function escapeFamilies(view: string): readonly HomeEscapeFamily[] {
   const percent = view.includes("%");
   const entities = view.includes("&");
   // One encoder can leave syntax from another family literal in a home.
-  if (percent && entities) return backslashes ? DECODE_FAMILIES : URI_AND_ENTITY_FAMILIES;
-  return backslashes && (percent || entities) ? BACKSLASH_AND_URI_FAMILIES : SINGLE_DECODE_FAMILY;
+  const mixed = backslashes && (percent || entities);
+  const families = percent && entities
+    ? backslashes ? DECODE_FAMILIES : URI_AND_ENTITY_FAMILIES
+    : mixed ? BACKSLASH_AND_URI_FAMILIES : SINGLE_DECODE_FAMILY;
+  // Only a UTF-8 lead byte can make adjacent hexadecimal escapes diverge.
+  if (!backslashes || !/\\x[c-fC-F]/u.test(view)) return families;
+  return mixed ? [...families, "full-js", "backslash-js"] : [...families, "full-js"];
 }
 
 function someDecodedHomeView(
@@ -310,7 +315,7 @@ function someDecodedHomeView(
       for (const family of escapeFamilies(text)) {
         const decoded = decodeHomeEscapes(text, family);
         if (decoded === text) continue;
-        const decodedWidth = family === "full" || family === "backslash" ? Math.max(1, width / 2) : width;
+        const decodedWidth = decodesHomeBackslashes(family) ? Math.max(1, width / 2) : width;
         const widths = seen.get(decoded) ?? 0;
         if (widths & decodedWidth) continue;
         if (match(decoded, depth, decodedWidth)) return true;
@@ -396,7 +401,10 @@ function replaceEncodedHomeTokens(text: string, { forms, boundaries }: HomeRedac
         start = index;
       } else {
         introduced = true;
-        index = end;
+        const digits = end + 2;
+        const escapedEnd = text.charCodeAt(end) === 117 && text.charCodeAt(end + 1) === 123
+          ? bracedHomeEscapeEnd(text, digits) : digits;
+        index = escapedEnd === digits ? end : escapedEnd;
       }
     } else if (boundaries.has(code)) {
       finish(index);

@@ -104,3 +104,36 @@ it("keeps literal percent syntax while detecting an entity-encoded home", async 
   }
   expect(redactHomePathsInText(input)).toBe(input);
 });
+
+const jsSourceHomes = [
+  ["linux", "/srv/fixtures/Â©"],
+  ["win32", "D:\\fixtures\\Â©"],
+  ["win32", "\\\\srv\\share\\Â©"],
+] as const;
+
+it.each(jsSourceHomes)("redacts JavaScript source string escapes on %s for %s", async (platform, home) => {
+  const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, platform);
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const prefix = JSON.stringify(home.slice(0, -2)).slice(1, -1);
+  for (const account of [
+    String.raw`\xC2\xA9`, String.raw`\u{C2}\u{0000a9}`, String.raw`\302\251`,
+    String.raw`\xC3\x82\xC2\xA9`,
+  ]) {
+    let input = `"${prefix}${account}/file"`;
+    let expected = '"[home-token]"';
+    for (let depth = 1; depth <= 3; depth++) {
+      expect(redactHomePathsInText(input), input).toBe(expected);
+      expect(redactJudgeText(input), input).toBe(expected);
+      expect(JSON.parse(serializeRuntimeAuditData(input) ?? ""), input).toBe(expected);
+      input = JSON.stringify(input);
+      expected = JSON.stringify(expected);
+    }
+  }
+});
+
+it("redacts braced astral escapes as complete units", async () => {
+  const { redactHomePathsInText } = await loadHomeRedactors("/srv/fixtures/🚀");
+  expect(redactHomePathsInText(String.raw`"/srv/fixtures/\u{1F680}/file"`)).toBe('"[home-token]"');
+  const malformed = String.raw`"/srv/fixtures/\u{11F680}/file"`;
+  expect(redactHomePathsInText(malformed)).toBe(malformed);
+});

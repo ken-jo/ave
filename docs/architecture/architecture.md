@@ -3328,6 +3328,10 @@ entity escaping, the redactor replaces its whole original token. Malformed
 escapes and deeper encodings are outside this contract. On Windows and macOS
 the home matcher uses Unicode case folding.
 
+JavaScript source in inputs and logs can use braced Unicode escapes, legacy
+octal escapes, and hexadecimal code units. Detection also supports hexadecimal
+UTF-8 byte escapes, which can decode the same bytes differently.
+
 Home spellings containing a double quote, a control character or a filename
 backslash on POSIX are unsupported. Trailing separators are normalized except
 for filesystem roots. This lets text redaction preserve the delimiters and

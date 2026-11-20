@@ -7,7 +7,7 @@ for (let digit = 0; digit < 16; digit++) {
   HEX_VALUES[character.toUpperCase().charCodeAt(0)] = digit;
 }
 const SINGLE_ESCAPES = new Int16Array(128).fill(-1);
-for (const [character, value] of [[34, 34], [39, 39], [47, 47], [92, 92], [98, 8], [102, 12], [110, 10], [114, 13], [116, 9]]) SINGLE_ESCAPES[character] = value;
+for (const [character, value] of [[34, 34], [39, 39], [47, 47], [92, 92], [98, 8], [102, 12], [110, 10], [114, 13], [116, 9], [118, 11]]) SINGLE_ESCAPES[character] = value;
 
 // The bounded trie avoids allocating a substring or result object for each escape attempt.
 const entityTrie: { value: number; next: Map<number, number> }[] = [{ value: -1, next: new Map() }];
@@ -72,14 +72,52 @@ function readByteEscape(text: string, index: number, width: number, output: Esca
   return setEscapeValue(output, value, width * count);
 }
 
+/** Shared by the decoder and token scanner so the braces of a valid escape stay in its token. */
+export function bracedHomeEscapeEnd(text: string, digits: number, output?: EscapeValue): number {
+  let cursor = digits;
+  let value = 0;
+  for (;;) {
+    const digit = hexValue(text.charCodeAt(cursor));
+    if (digit < 0) break;
+    value = value * 16 + digit;
+    if (value > 0x10ffff) return digits;
+    cursor++;
+  }
+  if (cursor === digits || text.charCodeAt(cursor) !== 125) return digits;
+  if (output) output.value = value;
+  return cursor + 1;
+}
+
+function readOctalEscape(text: string, index: number, first: number, output: EscapeValue): number {
+  let width = 2;
+  let value = first - 48;
+  const limit = first <= 51 ? 4 : 3;
+  while (width < limit) {
+    const digit = text.charCodeAt(index + width);
+    if (!(digit >= 48 && digit <= 55)) break;
+    value = value * 8 + digit - 48;
+    width++;
+  }
+  return setEscapeValue(output, value, width);
+}
+
 /** Reuse the caller’s single value slot for escape recognition. */
-function readHomeEscape(text: string, index: number, output: EscapeValue): number {
+function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex: boolean): number {
   const code = text.charCodeAt(index);
   if (code === 37) return readByteEscape(text, index, 3, output);
   if (code === 92) {
     const next = text.charCodeAt(index + 1);
-    if (next === 120) return readByteEscape(text, index, 4, output);
+    if (next === 120) {
+      if (!jsHex) return readByteEscape(text, index, 4, output);
+      const value = escapedByte(text, index, 4);
+      return value < 0 ? -1 : setEscapeValue(output, value, 4);
+    }
     if (next === 117) {
+      if (text.charCodeAt(index + 2) === 123) {
+        const digits = index + 3;
+        const end = bracedHomeEscapeEnd(text, digits, output);
+        return end === digits ? -1 : end - index;
+      }
       let value = 0;
       for (let offset = 2; offset < 6; offset++) {
         const digit = hexValue(text.charCodeAt(index + offset));
@@ -88,6 +126,7 @@ function readHomeEscape(text: string, index: number, output: EscapeValue): numbe
       }
       return setEscapeValue(output, value, 6);
     }
+    if (next >= 48 && next <= 55) return readOctalEscape(text, index, next, output);
     const value = next < 128 ? SINGLE_ESCAPES[next] : -1;
     return value >= 0 ? setEscapeValue(output, value, 2) : -1;
   }
@@ -123,13 +162,19 @@ function readHomeEscape(text: string, index: number, output: EscapeValue): numbe
 }
 
 
-export type HomeEscapeFamily = "full" | "backslash" | "percent-entity" | "percent" | "entity";
+export type HomeEscapeFamily = "full" | "backslash" | "percent-entity" | "percent" | "entity" | "full-js" | "backslash-js";
+
+export function decodesHomeBackslashes(family: HomeEscapeFamily): boolean {
+  return family === "full" || family === "backslash" || family === "full-js" || family === "backslash-js";
+}
 
 /** Apply one faithful decoding layer. Escape output is never scanned again in this layer. */
 export function decodeHomeEscapes(text: string, family: HomeEscapeFamily): string {
-  const backslashes = family === "full" || family === "backslash";
-  const percent = family !== "backslash" && family !== "entity";
-  const entity = family !== "backslash" && family !== "percent";
+  const backslashes = decodesHomeBackslashes(family);
+  const jsHex = family === "full-js" || family === "backslash-js";
+  const backslashOnly = family === "backslash" || family === "backslash-js";
+  const percent = !backslashOnly && family !== "entity";
+  const entity = !backslashOnly && family !== "percent";
   const output: EscapeValue = { value: 0 };
   let units: Uint16Array | undefined;
   let prefix = 0;
@@ -153,7 +198,7 @@ export function decodeHomeEscapes(text: string, family: HomeEscapeFamily): strin
       continue;
     }
     const width = (backslashes && code === 92 || percent && code === 37 || entity && code === 38)
-      ? readHomeEscape(text, index, output) : -1;
+      ? readHomeEscape(text, index, output, jsHex) : -1;
     if (width < 0) {
       if (units) units[length++] = code;
       index++;
