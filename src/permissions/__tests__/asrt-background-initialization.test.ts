@@ -210,6 +210,38 @@ describe("background session isolation", () => {
     }
   });
 
+  it.each(WIN32_WRAPPERS.flatMap(([entryPoint, wrap]) => [
+    { entryPoint, wrap, readback: 1, kind: "literal" },
+    { entryPoint, wrap, readback: 2, kind: "glob" },
+  ]))("refuses a worker grant when a $entryPoint wrap adds a $kind deny during readback $readback", async ({ wrap, readback, kind }) => {
+    const root = win32.join(FIXTURE_DRIVE, "fixture", "worker");
+    const initial = win32.join(root, "initial");
+    const late = win32.join(root, kind === "glob" ? "*.secret" : "late-secret");
+    await initializeAsrtSandbox({ denyRead: [initial], windows: { externalConfinement: true } });
+    pinWorkerRoot(root);
+    let reads = 0;
+    let wrapping: Promise<void> | undefined;
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => {
+      if (++reads === readback) {
+        wrapping = expect(wrap("echo late", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [late] } }))
+          .resolves.toMatchObject({ argv: ["confined"] });
+      }
+      return requests.map(() => ({
+        denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+      }));
+    });
+    try {
+      const grant = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] })
+        .then(held => { held.release(); return held; });
+      await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
+      expect(read.mock.calls.map(([targets]) => targets)).toEqual(Array.from({ length: readback }, () => [initial]));
+      expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
+      expect(wrapping).toBeDefined();
+    } finally {
+      await wrapping;
+    }
+  });
+
   it("keeps both full-isolation gates closed until a late success", async () => {
     const initialization = await initializeAsrtSandbox({ windows: { backgroundInitialization: true } });
     expect(initialization.isCurrent()).toBe(true);

@@ -205,6 +205,9 @@ describe("hosted write policy spellings", () => {
       expect(realpathSync.native(workRoot)).toBe(join(root, "MiXeD", "work"));
       expect(writeDenies).toContain(join(root, "MiXeD", "work", ".bash_profile"));
       expect(writeDenies).toContain(deniedChild);
+      // The native expander retains the spelling of an absent literal.
+      // Check the actual operand before mapping it to the simulated drive's backing directory.
+      expect(filesystem?.denyWrite).toContain(deniedChild);
       const denyWrite = expandWindowsFsPaths((filesystem?.denyWrite ?? []).map(entry =>
         typeof entry === "string" ? driveFixture.toHost(entry) : { ...entry, path: driveFixture.toHost(entry.path) }), { mode: "deny" });
       const atOrUnder = (parent: string, path: string): boolean => {

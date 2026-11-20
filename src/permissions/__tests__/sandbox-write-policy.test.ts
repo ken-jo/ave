@@ -89,9 +89,7 @@ describe("mandatory sandbox control-file writes", () => {
     const child = join(parent, "nested", "control");
     mkdirSync(join(parent, "nested"), { recursive: true });
     const entries = [parent, { path: child, literal: true as const }];
-    const driveOperands = entries.map(entry => typeof entry === "string"
-      ? entry.replaceAll("\\", "/") : { ...entry, path: entry.path.replaceAll("\\", "/") });
-    expect(withPlatform(platform, () => compactSandboxWriteDenies(entries))).toEqual(platform === "win32" ? driveOperands : entries);
+    expect(withPlatform(platform, () => compactSandboxWriteDenies(entries))).toEqual(entries);
     expect(withPlatform("darwin", () => compactSandboxWriteDenies(entries))).toEqual([sep === "\\" ? parent.replaceAll("\\", "/") : parent]);
   });
 
@@ -100,21 +98,22 @@ describe("mandatory sandbox control-file writes", () => {
       "D:/MiXeD/private/", String.raw`D:\MiXeD\private\allowed\control`,
       String.raw`D:\MiXeD\café`, String.raw`D:\MiXeD\café`];
     expect(withPlatform("win32", () => compactSandboxWriteDenies(entries))).toEqual([
-      "D:/MiXeD/private/", "D:/MiXeD/private/allowed/control", "D:/MiXeD/café", "D:/MiXeD/café",
+      "D:\\MiXeD\\private\\", String.raw`D:\MiXeD\private\allowed\control`, String.raw`D:\MiXeD\café`, String.raw`D:\MiXeD\café`,
     ]);
   });
 
   it("preserves pattern readings and opaque namespaces beside marked drive literals", () => {
     const pattern = String.raw`D:\MiXeD\[key]\control`;
-    const literal = Object.freeze({ path: pattern, literal: true as const });
+    const forwardSlashes = pattern.replaceAll("\\", "/");
+    const literal = Object.freeze({ path: forwardSlashes, literal: true as const });
     const extended = String.raw`\\?\D:\MiXeD\control`;
     const network = String.raw`\\server\share\control`;
     const entries = withPlatform("win32", () => compactSandboxWriteDenies([
       pattern, literal, extended, network, "D:relative", String.raw`D:\file:stream`,
     ]));
-    expect(entries).toEqual([pattern, { path: "D:/MiXeD/[key]/control", literal: true }, extended, network, "D:relative", String.raw`D:\file:stream`]);
+    expect(entries).toEqual([pattern, { path: pattern, literal: true }, extended, network, "D:relative", String.raw`D:\file:stream`]);
     expect(Object.isFrozen(entries[1])).toBe(true);
-    expect(literal.path).toBe(pattern);
+    expect(literal.path).toBe(forwardSlashes);
   });
 
   it.each([".claude", ".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))

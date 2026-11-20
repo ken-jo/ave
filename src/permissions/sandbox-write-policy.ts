@@ -193,8 +193,10 @@ function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly s
 function nativeWriteDenyPath(path: string): string {
   // Ordinary drive operands accept either separator. Extended and network
   // namespaces keep their own grammar; names and directory hints stay intact.
-  return (process.platform === "win32" || process.platform === "darwin" && sep === "\\") && /^[A-Za-z]:[\\/][^:]*$/u.test(path)
-    ? path.replaceAll("\\", "/") : path;
+  if (!/^[A-Za-z]:[\\/][^:]*$/u.test(path)) return path;
+  // The runtime preserves the original separators of absent deny targets.
+  if (process.platform === "win32") return path.replaceAll("/", "\\");
+  return process.platform === "darwin" && sep === "\\" ? path.replaceAll("\\", "/") : path;
 }
 
 export function windowsDenyOperandKey(path: string): string {
