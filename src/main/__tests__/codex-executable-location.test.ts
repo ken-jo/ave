@@ -1229,10 +1229,24 @@ describe("native access-rule admission", () => {
     await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate)).resolves.toBeUndefined();
   });
 
-  it("requires current-account ownership for the runtime leaf", async () => {
+  it.each(["S-1-5-18", "S-1-5-32-544"])("requires current-account ownership for the runtime leaf (owner %s)", async (owner) => {
     const fixture = windowsFixture(String.raw`C:\Tools\runtime`, true);
-    fixture.modify((paths) => { paths[2]!.owner = "S-1-5-18"; });
+    fixture.modify((paths) => { paths[2]!.owner = owner; });
     await expect(assertCodexPrivateRuntimeDirectory(fixture.candidate)).rejects.toThrow("not owned by the current account");
+  });
+
+  it("requires current-account ownership for an executable inside a private root", async () => {
+    const fixture = windowsFixture();
+    fixture.modify((paths) => {
+      for (const entry of paths) {
+        if (entry.path === fixture.candidate) entry.owner = "S-1-5-32-544";
+      }
+    });
+    await expect(assertCodexExecutableLocation(fixture.candidate, "native")).resolves.toBeUndefined();
+    await expect(assertCodexLocations([
+      { path: String.raw`C:\Tools`, kind: "private-directory", routeKind: "native" },
+      { path: fixture.candidate, kind: "executable", routeKind: "native" },
+    ])).rejects.toThrow("not owned by the current account");
   });
 
   it.each([0, 9])("rejects foreign read access on a private leaf with propagation flags %i", async (flags) => {

@@ -1,4 +1,6 @@
 import { ConversationLoop } from "../../../engine/conversation-loop.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
+import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { RoutineEngine, type Routine } from "../../../routines/routine-engine.js";
 import { ScriptedTurnProvider, makeBasicConversationLoopDeps } from "../../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { ToolRegistry } from "../../../tools/registry.js";
@@ -266,12 +268,18 @@ describe("a connected schedule's withheld session, outside the turn's async cont
 });
 
 
-it("records a recovered child stream-error and parent end_turn as done with both turns' tokens", withRoutinesStore(async ({ store }) => {
+it("records a recovered child stream-error and parent end_turn as done with both turns' tokens", withRoutinesStore(async ({ dir, store }) => {
   const item = await store.add({ ...TEST_OWNER, trigger: "schedule", execution: "llm-session", prePrompt: "Recover the child result", schedule: { at: futureIso() } });
   const fired = await store.markFired(item.id);
-  const memoryManager = new MemoryManager();
+  const memoryManager = new MemoryManager({ aveDir: dir });
+  const llm = fakeLlmSettings();
+  llm.vendors[llm.provider].contextWindow = 16_000;
   const createLoop = (events: StreamEvent[][], registry: ToolRegistry) => {
-    const loop = new ConversationLoop(makeBasicConversationLoopDeps({ memoryManager, toolRegistry: registry }));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
+      memoryManager,
+      toolRegistry: registry,
+      settingsService: { get: () => llm, getSecret: () => "test-key" },
+    }));
     loop.provider = new ScriptedTurnProvider(events);
     return loop;
   };
@@ -293,8 +301,13 @@ it("records a recovered child stream-error and parent end_turn as done with both
   ], parentRegistry);
   const engine = new RoutineEngine({ createConversationLoop: () => parent });
   const { handlers, send } = wire((input) => engine.runRoutine(input as unknown as Routine), {}, store);
+  const completion = deferred<void>();
+  send.mockImplementation((channel) => {
+    if (channel === ROUTINES.fired) completion.resolve();
+  });
   handlers.llm!({ routine: fired! as unknown as Record<string, unknown> });
-  await vi.waitFor(() => expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.anything()));
+  await completion.promise;
+  expect(send).toHaveBeenCalledWith(ROUTINES.fired, expect.objectContaining({ id: item.id, summary: "Recovered" }));
   expect(store.list()[0]!.lastFailure).toBeUndefined();
   expect(store.list()[0]!.runs![0]).toMatchObject({ status: "done", metrics: { tokens: { input: 200, output: 35, total: 235 } } });
 }));
