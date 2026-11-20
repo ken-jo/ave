@@ -3,11 +3,13 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { windowsRegressionFiles } from "../../.github/scripts/check-windows-workflow.mjs";
 import { conditionalGates } from "./windows-test-gates.js";
 import { isInventorySource, nativeBackedTestFiles } from "./windows-native-test-inventory.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
+const EMPTY_WINDOWS_WORKFLOW = "jobs: { windows-permission-tests: { runs-on: windows-latest, steps: [] } }";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
 const PERMISSION_TEST_LIST = "config/windows-permission-tests.txt";
@@ -52,28 +54,6 @@ const REQUIRED_SECURITY_SUITES = [
   // Its fixture home must stay under the test temp root, which only a restricted Windows lane checks.
   "src/boot/__tests__/bootstrap-integration.test.ts",
 ] as const;
-function windowsJobFiles(workflow: string, inventories: ReadonlyMap<string, string> = windowsTestLists): string[] {
-  const lines = workflow.split("\n");
-  const start = lines.findIndex((line) => line.trim() === `- name: ${STEP_NAME}`);
-  if (start < 0) throw new Error(`ci.yml has no "${STEP_NAME}" step`);
-  const files = new Set<string>();
-  for (let i = 0; i < lines.length; i++) {
-    if (!/^- name: Run Windows (?:permission|appearance|session persistence|native import) regressions$/.test(lines[i]?.trim() ?? "")) continue;
-    while (++i < lines.length && !/^\s*-\s/.test(lines[i] ?? "")) {
-      const line = lines[i] ?? "";
-      for (const file of line.match(/(?:src|test)\/[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?/g) ?? []) files.add(file);
-      for (const inventoryName of [NATIVE_TEST_LIST, PERMISSION_TEST_LIST]) {
-        if (!line.includes(`scripts/run-windows-test-list.mjs ${inventoryName}`)) continue;
-        const inventory = inventories.get(inventoryName);
-        if (inventory === undefined) throw new Error(`Windows test inventory is missing: ${inventoryName}`);
-        for (const file of inventory.trim().split(/\r?\n/)) files.add(file);
-      }
-    }
-    i--;
-  }
-  return [...files];
-}
-
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -86,7 +66,7 @@ function sourceFiles(dir: string): string[] {
 
 const nativeInventory = new WeakMap<ReadonlyMap<string, string>, Map<string, string[]>>();
 function listProblems(sources: Map<string, string>, workflow: string, inventories = windowsTestLists): string[] {
-  const listed = new Set(windowsJobFiles(workflow, inventories));
+  const listed = new Set(windowsRegressionFiles(workflow, inventories));
   let native = nativeInventory.get(sources);
   if (native === undefined) {
     native = nativeBackedTestFiles(sources);
@@ -105,13 +85,22 @@ function listProblems(sources: Map<string, string>, workflow: string, inventorie
 
 describe("Windows CI test list", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-  const listed = windowsJobFiles(workflow);
+  const listed = windowsRegressionFiles(workflow, windowsTestLists);
   const sources = new Map(["src", "test", "scripts", "config", ".github"].flatMap((dir) => sourceFiles(join(root, dir)))
     .map((file) => [file, readFileSync(join(root, file), "utf8")]));
 
   it("names only files that exist", () => {
     expect(listed.filter((file) => !sources.has(file))).toEqual([]);
     expect(listed).toContain("test/scripts/windows-ci-test-list.test.ts");
+  });
+
+  it("does not count test paths mentioned only in workflow comments", () => {
+    const file = "test/example.windows.test.ts";
+    const mentioned = workflow.replace(
+      "run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt",
+      `run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt # ${file}`,
+    );
+    expect(listProblems(new Map([[file, ""]]), mentioned)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
   it("names every file with win32-only cases", () => {
@@ -192,7 +181,7 @@ describe("conditional Windows gates", () => {
     expect(conditionalGates('\nit.runIf(someHelper())("case", () => {});')).toEqual([
       { line: 2, argument: "someHelper()", classification: "unclassifiable" },
     ]);
-    expect(listProblems(new Map([["test/example.test.ts", '\nit.runIf(someHelper())']]), `- name: ${STEP_NAME}\n`))
+    expect(listProblems(new Map([["test/example.test.ts", '\nit.runIf(someHelper())']]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual(["test/example.test.ts:2: unclassifiable argument: someHelper()"]);
   });
 
@@ -233,7 +222,7 @@ describe("conditional Windows gates", () => {
     ]);
     expect(listProblems(new Map([["test/example.test.ts",
       'it.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt());',
-    ]]), `- name: ${STEP_NAME}\n`))
+    ]]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual([`test/example.test.ts: missing from ${STEP_NAME}`]);
   });
 
@@ -270,7 +259,7 @@ describe("conditional Windows gates", () => {
       "const available = someHelper();",
       "const alias = available;",
       "it.skipIf(alias);",
-    ].join("\n")]]), `- name: ${STEP_NAME}\n`))
+    ].join("\n")]]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual(["test/example.test.ts:3: unclassifiable argument: alias"]);
   });
 
@@ -363,7 +352,7 @@ describe("conditional Windows gates", () => {
   });
 
   it("keeps the Windows filename convention without conditional cases", () => {
-    expect(listProblems(new Map([["test/example.windows.test.ts", ""]]), `- name: ${STEP_NAME}\n`))
+    expect(listProblems(new Map([["test/example.windows.test.ts", ""]]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual([`test/example.windows.test.ts: missing from ${STEP_NAME}`]);
   });
 

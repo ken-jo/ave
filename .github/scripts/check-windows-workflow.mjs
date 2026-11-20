@@ -3,26 +3,55 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
+import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
 import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
 
 const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
 const BARE_TEST_PATH_RE = new RegExp(String.raw`^\s*${TEST_PATH}(?![\w./\\-])`);
 const TEST_INVOCATION_RE = /\bbun[ \t]+run[ \t]+test(?::vitest)?(?=[ \t]|$)/;
 const TEST_COMMAND_RE = new RegExp(
-  String.raw`^bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)(?:[ \t]+${TEST_PATH})+$`,
+  String.raw`^bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)((?:[ \t]+${TEST_PATH})+)$`,
 );
+const REGRESSION_STEP = /^Run Windows (?:permission|appearance|session persistence|native import) regressions$/u;
+const LIST_INVOCATION = /^bun[ \t]+run[ \t]+scripts\/run-windows-test-list\.mjs[ \t]+(config\/[\w-]+\.txt)$/u;
+
 export function windowsRunSteps(workflow) {
   const { jobs, defaults } = parse(workflow);
   return Object.entries(jobs).flatMap(([jobId, job]) => {
     const runners = [job["runs-on"] ?? []].flat();
     if (!runners.some((runner) => /^windows(?:-|$)/i.test(runner))) return [];
     return (job.steps ?? []).flatMap((step, index) => step.run === undefined ? [] : [{
+      jobId,
+      stepName: step.name,
       name: `${jobId}: ${step.name ?? `step ${index + 1}`}`,
       shell: step.shell ?? job.defaults?.run?.shell ?? defaults?.run?.shell ?? "pwsh",
       run: step.run,
       lines: step.run.trimEnd().split("\n"),
     }]);
   });
+}
+
+export function windowsRegressionFiles(workflow, inventories) {
+  const files = new Set();
+  for (const { jobId, stepName, name, run } of windowsRunSteps(workflow)) {
+    if (jobId !== "windows-permission-tests" || !REGRESSION_STEP.test(stepName ?? "")) continue;
+    const invocation = run.trim();
+    const inventoryName = LIST_INVOCATION.exec(invocation)?.[1];
+    const directPaths = TEST_COMMAND_RE.exec(invocation)?.[1];
+    let list;
+    if (inventoryName !== undefined) {
+      list = inventories.get(inventoryName);
+      if (list === undefined) throw new Error(`Windows test inventory is missing: ${inventoryName}`);
+    } else if (directPaths !== undefined) {
+      list = directPaths.trim().split(/[ \t]+/u).join("\n");
+    } else {
+      throw new Error(`${name}: expected one validated test invocation`);
+    }
+    for (const args of windowsTestCommands(list).slice(1)) {
+      for (const file of args.slice(4)) files.add(file.slice(2));
+    }
+  }
+  return [...files];
 }
 
 const WORKFLOW_EXECUTABLES = [
@@ -36,8 +65,14 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $inputData = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
+function Get-ScopeChain($node) {
+  for ($ancestor = $node.Parent; $null -ne $ancestor; $ancestor = $ancestor.Parent) {
+    if ($ancestor -is [System.Management.Automation.Language.ScriptBlockAst]) { $ancestor.Extent.StartOffset }
+  }
+}
 $result = @{
   cmdlets = @((Get-Command -CommandType Cmdlet).Name)
+  aliases = @((Get-Command -CommandType Alias).Name)
   steps = @(foreach ($source in $inputData.steps) {
     $tokens = $null
     $errors = $null
@@ -45,15 +80,15 @@ $result = @{
     @{
       errors = @(foreach ($errorItem in $errors) { "line $($errorItem.Extent.StartLineNumber): $($errorItem.Message)" })
       functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-        ForEach-Object { $_.Name })
+        ForEach-Object { @{ name = $_.Name; scope = @(Get-ScopeChain $_)[0] } })
       commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
-        ForEach-Object { @{ name = $_.GetCommandName(); head = $_.CommandElements[0].Extent.Text; line = $_.Extent.StartLineNumber } })
+        ForEach-Object { @{ name = $_.GetCommandName(); head = $_.CommandElements[0].Extent.Text
+          line = $_.Extent.StartLineNumber; scopes = @(Get-ScopeChain $_) } })
     }
   })
 }
 ConvertTo-Json -InputObject $result -Depth 6 -Compress
 `;
-
 
 export function directCommandProblems(steps) {
   return steps.flatMap(({ name, lines }) => {
@@ -88,11 +123,15 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell) {
     if (editionSteps.length === 0) continue;
     const inspection = inspect(shell, editionSteps.map(step => step.run));
     if (inspection.steps.length !== editionSteps.length) throw new Error(`Incomplete ${shell} parser result`);
+    const knownCommands = new Set([...WORKFLOW_EXECUTABLES, ...inspection.cmdlets, ...inspection.aliases]
+      .map(name => name.toLowerCase()));
     for (const [index, { errors, functions, commands }] of inspection.steps.entries()) {
-      const knownCommands = new Set([...WORKFLOW_EXECUTABLES, ...inspection.cmdlets, ...functions].map(name => name.toLowerCase()));
-      const unknownCommands = commands.flatMap(({ name, head, line }) =>
-        name !== null && !TEST_COMMAND_NAME_RE.test(name) && knownCommands.has(name.toLowerCase())
-          ? [] : [`line ${line}: unrecognized command ${head}`]);
+      const unknownCommands = commands.flatMap(({ name, head, line, scopes }) => {
+        const command = name?.toLowerCase();
+        if (command && !TEST_COMMAND_NAME_RE.test(command) && (knownCommands.has(command)
+          || functions.some(fn => fn.name.toLowerCase() === command && scopes.includes(fn.scope)))) return [];
+        return [`line ${line}: unrecognized command ${head}`];
+      });
       failures.push(...[...errors, ...unknownCommands].map(problem => `${editionSteps[index].name}: ${problem}`));
     }
   }

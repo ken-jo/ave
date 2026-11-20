@@ -4,7 +4,7 @@ import { it } from "node:test";
 import { parse, stringify } from "yaml";
 import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
 import { COMMAND_LINE_BUDGET_CHARS, commandLineLength } from "../../scripts/hooks/spawn-command.mjs";
-import { checkWindowsWorkflow, directCommandProblems, windowsRunSteps } from "../../.github/scripts/check-windows-workflow.mjs";
+import { checkWindowsWorkflow, directCommandProblems, powerShellCommandProblems, windowsRunSteps } from "../../.github/scripts/check-windows-workflow.mjs";
 
 const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
 
@@ -62,4 +62,39 @@ it("routes the permission and native inventories through bounded batches", () =>
     assert.deepEqual(batches.slice(1).flatMap(args => args.slice(4)),
       [...new Set(list.trim().split(/\r?\n/u))].map(file => `./${file}`));
   }
+});
+
+it("uses the configured edition, its aliases, and the enclosing function scopes", () => {
+  const steps = [
+    { name: "core", shell: "pwsh", run: "example" },
+    { name: "desktop", shell: "powershell", run: "bob" },
+  ];
+  const calls = [];
+  const command = (name, line, scopes) => ({ name, head: name, line, scopes });
+  const problems = powerShellCommandProblems(steps, (edition, sources) => {
+    calls.push([edition, sources]);
+    return edition === "pwsh" ? {
+      cmdlets: [],
+      aliases: ["alice"],
+      steps: [{
+        errors: [],
+        functions: [{ name: "shared", scope: 0 }, { name: "example", scope: 10 }],
+        commands: [
+          command("alice", 1, [0]), command("shared", 2, [10, 0]), command("example", 3, [10, 0]),
+          command("example", 4, [15, 0]), command("example", 5, [0]), command("bob", 6, [0]),
+        ],
+      }],
+    } : {
+      cmdlets: [],
+      aliases: ["bob"],
+      steps: [{ errors: [], functions: [], commands: [command("alice", 1, [0]), command("bob", 2, [0])] }],
+    };
+  });
+  assert.deepEqual(calls, [["pwsh", ["example"]], ["powershell", ["bob"]]]);
+  assert.deepEqual(problems, [
+    "core: line 4: unrecognized command example",
+    "core: line 5: unrecognized command example",
+    "core: line 6: unrecognized command bob",
+    "desktop: line 1: unrecognized command alice",
+  ]);
 });
