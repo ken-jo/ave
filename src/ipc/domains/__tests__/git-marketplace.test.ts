@@ -20,6 +20,7 @@ import { folderService } from "../../../marketplace/__tests__/fixtures/folder-se
 import { policyLoad, policySource } from "../../../marketplace/__tests__/fixtures/policy.js";
 import { translate } from "../../../i18n/translate.js";
 import { ENTRY_SUBJECT, failureText, warningText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
+import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
 
 vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
@@ -168,6 +169,17 @@ async function setup(overrides: Record<string, unknown> = {}, window: unknown = 
 
 const setupHomes: string[] = [];
 
+async function closeFolderServicesAndRemoveRoot(root: string, ...services: { close(): Promise<void> }[]): Promise<void> {
+  try {
+    const results = await Promise.allSettled(services.map(async (service) => service.close()));
+    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Folder fixture cleanup failed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 // Registration imports the shutdown module lazily; load the mock first so every registration's hook reaches it.
 beforeAll(async () => {
   await import("../../../main/app-shutdown.js");
@@ -183,6 +195,29 @@ afterEach(() => {
 });
 
 describe("git marketplace IPC boundary", () => {
+  it("removes a shared fixture root after every close settles, even when one rejects", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ave-marketplace-shared-cleanup-"));
+    const refusal = new Error("first fixture could not close");
+    const release = deferred<void>();
+    const first = { close: vi.fn(async () => { throw refusal; }) };
+    const second = { close: vi.fn(() => release.promise) };
+    const cleanup = closeFolderServicesAndRemoveRoot(root, first, second);
+    const observed = cleanup.catch(() => undefined);
+    try {
+      await afterQueuedCallbacks();
+      expect(first.close).toHaveBeenCalledTimes(1);
+      expect(second.close).toHaveBeenCalledTimes(1);
+      expect(existsSync(root)).toBe(true);
+      release.resolve();
+      await expect(cleanup).rejects.toBe(refusal);
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      release.resolve();
+      await observed;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("removes the kept artifacts when keeping is turned off, and only then", async () => {
     // Clear the environment override to isolate the setting.
     const saved = process.env.AVE_MARKETPLACE_USE_CACHE;
@@ -563,8 +598,7 @@ describe("git marketplace IPC boundary", () => {
           ko: "Ave의 폴더 분류 도구가 없거나 손상되어 C:\\m이(가) 다른 컴퓨터에 있는지 알 수 없습니다. Ave를 다시 설치하세요.",
         });
       } finally {
-        await harness.service.close();
-        rmSync(root, { recursive: true, force: true });
+        await closeFolderServicesAndRemoveRoot(root, harness.service);
       }
     });
 
@@ -594,8 +628,7 @@ describe("git marketplace IPC boundary", () => {
         expect(sentences(same).en).toBe("/m is already added as team. Use team, or remove it before adding this folder again.");
         expect(sentences(same).ko).toBe("/m은(는) 이미 team(으)로 추가되어 있습니다. team을(를) 쓰거나, 지운 뒤 이 폴더를 다시 추가하세요.");
       } finally {
-        await harness.service.close();
-        rmSync(root, { recursive: true, force: true });
+        await closeFolderServicesAndRemoveRoot(root, harness.service);
       }
     });
 
@@ -632,8 +665,9 @@ describe("git marketplace IPC boundary", () => {
         const root = mkdtempSync(join(tmpdir(), "ave-ipc-payload-"));
         const skill = "---\nname: note\ndescription: d\n---\n";
         const harness = await folderService({ root, folders: { fs: new FakeVolume("linux").file("/m/SKILL.md", skill), platform: "linux", limits: TEST_FOLDER_LIMITS } });
-        const network = await folderService({ root: mkdtempSync(join(root, "win-")), folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
+        let network: Awaited<ReturnType<typeof folderService>> | undefined;
         try {
+          network = await folderService({ root: mkdtempSync(join(root, "win-")), folders: { fs: new FakeVolume("win32"), platform: "win32", limits: TEST_FOLDER_LIMITS }, home: "C:\\Users\\example" });
           const preview = await harness.service.previewSource({ input: "/m", auth: "none" });
           if (preview.type === "confirm") throw new Error("unexpected confirmation");
           const confirm = await network.service.previewSource({ input: "\\\\server\\share\\m", auth: "none" });
@@ -688,9 +722,7 @@ describe("git marketplace IPC boundary", () => {
             });
           }
         } finally {
-          await harness.service.close();
-          await network.service.close();
-          rmSync(root, { recursive: true, force: true });
+          await closeFolderServicesAndRemoveRoot(root, harness.service, ...(network ? [network.service] : []));
         }
       });
 
@@ -724,8 +756,7 @@ describe("git marketplace IPC boundary", () => {
           expect(entry?.key).toEqual({ sourceId: name, kind: "skill", name });
           expect(await invokeFileIpcHandler(handlers, channels.installPlan, entry!.key)).toMatchObject({ ok: true, value: { planId: expect.any(String) } });
         } finally {
-          await harness.service.close();
-          rmSync(root, { recursive: true, force: true });
+          await closeFolderServicesAndRemoveRoot(root, harness.service);
         }
       });
 
@@ -738,8 +769,7 @@ describe("git marketplace IPC boundary", () => {
           try {
             return await act(harness);
           } finally {
-            await harness.service.close();
-            rmSync(root, { recursive: true, force: true });
+            await closeFolderServicesAndRemoveRoot(root, harness.service);
           }
         };
         const noToken = (answer: unknown) => {
@@ -816,13 +846,16 @@ describe("git marketplace IPC boundary", () => {
           const volume = new FakeVolume("linux").file("/m/SKILL.md", skill).file("/n/SKILL.md", skill);
           try {
             const first = await folderService({ root, folders: { fs: volume, platform: "linux", limits: TEST_FOLDER_LIMITS } });
-            const preview = await first.service.previewSource({ input: "/m", auth: "none" });
-            if (preview.type === "confirm") throw new Error("unexpected confirmation");
-            await first.service.addSource({ previewId: preview.previewId, id: "team" });
-            const other = await first.service.previewSource({ input: "/n", auth: "none" });
-            if (other.type === "confirm") throw new Error("unexpected confirmation");
-            await first.service.addSource({ previewId: other.previewId, id: "notes" });
-            await first.service.close();
+            try {
+              const preview = await first.service.previewSource({ input: "/m", auth: "none" });
+              if (preview.type === "confirm") throw new Error("unexpected confirmation");
+              await first.service.addSource({ previewId: preview.previewId, id: "team" });
+              const other = await first.service.previewSource({ input: "/n", auth: "none" });
+              if (other.type === "confirm") throw new Error("unexpected confirmation");
+              await first.service.addSource({ previewId: other.previewId, id: "notes" });
+            } finally {
+              await first.service.close();
+            }
             const list = join(root, "marketplaces", "sources.json");
             writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(NAME_TOKEN)));
             const data = join(root, "marketplaces", NAME_TOKEN);
@@ -913,8 +946,7 @@ describe("git marketplace IPC boundary", () => {
             }
           }
         } finally {
-          await harness.service.close();
-          rmSync(root, { recursive: true, force: true });
+          await closeFolderServicesAndRemoveRoot(root, harness.service);
         }
       });
     });
@@ -934,8 +966,7 @@ describe("git marketplace IPC boundary", () => {
           ko: "ssh://git@github.com/Acme/Market은(는) 이미 acme(으)로 추가되어 있습니다. acme을(를) 쓰거나, 지운 뒤 이 저장소를 다시 추가하세요.",
         });
       } finally {
-        await harness.service.close();
-        rmSync(root, { recursive: true, force: true });
+        await closeFolderServicesAndRemoveRoot(root, harness.service);
       }
     });
 
@@ -964,8 +995,7 @@ describe("git marketplace IPC boundary", () => {
           expect(`${en}\n${ko}`).not.toContain(token);
         }
       } finally {
-        await harness.service.close();
-        rmSync(root, { recursive: true, force: true });
+        await closeFolderServicesAndRemoveRoot(root, harness.service);
       }
     });
   });
@@ -1391,9 +1421,11 @@ describe("a package installed from a source stored under a credential-shaped id 
       expect(installed).toEqual([]);
       expect(JSON.stringify(removed)).not.toContain(TOKEN);
     } finally {
-      await harness.service.close();
-      rmSync(root, { recursive: true, force: true });
-      rmSync(join(folder, ".."), { recursive: true, force: true });
+      try {
+        await closeFolderServicesAndRemoveRoot(root, harness.service);
+      } finally {
+        rmSync(join(folder, ".."), { recursive: true, force: true });
+      }
     }
   });
 });
@@ -1447,9 +1479,11 @@ describe("folder dialogs (§18.9)", () => {
     });
     afterEach(async () => {
       vi.restoreAllMocks();
-      await harness?.service.close();
-      rmSync(root, { recursive: true, force: true });
-      rmSync(parent, { recursive: true, force: true });
+      try {
+        await closeFolderServicesAndRemoveRoot(root, ...(harness ? [harness.service] : []));
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
+      }
     });
 
     async function choose(path: string): Promise<{ pick: string; display: string }> {
@@ -1557,9 +1591,11 @@ describe("folder dialogs (§18.9)", () => {
       await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, "notes")).resolves.toEqual({ ok: true, value: null });
       expect(desktop.showItemInFolder).toHaveBeenCalledExactlyOnceWith(added.path);
     } finally {
-      await harness.service.close();
-      rmSync(root, { recursive: true, force: true });
-      rmSync(join(folder, ".."), { recursive: true, force: true });
+      try {
+        await closeFolderServicesAndRemoveRoot(root, harness.service);
+      } finally {
+        rmSync(join(folder, ".."), { recursive: true, force: true });
+      }
     }
   });
 
@@ -1595,8 +1631,7 @@ describe("folder dialogs (§18.9)", () => {
         "Ave cannot tell whether C:\\m is on another computer because its folder classifier is missing or broken. Reinstall Ave.",
       );
     } finally {
-      await harness.service.close();
-      rmSync(root, { recursive: true, force: true });
+      await closeFolderServicesAndRemoveRoot(root, harness.service);
     }
   });
 });

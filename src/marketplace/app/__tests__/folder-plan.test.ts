@@ -46,9 +46,15 @@ beforeEach(async () => {
   await harness.service.addSource({ previewId: preview.previewId, id: "team" });
 });
 afterEach(async () => {
-  await harness.service.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(dirname(folder), { recursive: true, force: true });
+  try {
+    await harness.service.close();
+  } finally {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } finally {
+      rmSync(dirname(folder), { recursive: true, force: true });
+    }
+  }
 });
 
 

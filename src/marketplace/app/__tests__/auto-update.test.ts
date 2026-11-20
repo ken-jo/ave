@@ -89,9 +89,15 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await harness.service.close();
-  rmSync(root, { recursive: true, force: true });
-  rmSync(dirname(folder), { recursive: true, force: true });
+  try {
+    await harness.service.close();
+  } finally {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } finally {
+      rmSync(dirname(folder), { recursive: true, force: true });
+    }
+  }
 });
 
 async function edit(files: Record<string, string>): Promise<void> {
@@ -197,8 +203,11 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
     const observed = await folderService({ root: observedRoot, folders: sourceFolders,
       onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
     onTestFinished(async () => {
-      await observed.service.close();
-      rmSync(observedRoot, { recursive: true, force: true });
+      try {
+        await observed.service.close();
+      } finally {
+        rmSync(observedRoot, { recursive: true, force: true });
+      }
     });
     const preview = await observed.service.previewSource({ input: folder, auth: "none" });
     if (preview.type !== "marketplace") throw new Error(`expected a marketplace preview, got ${preview.type}`);
