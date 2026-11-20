@@ -1,13 +1,16 @@
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+vi.mock("node:fs", async original => {
+  const fs = (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original());
+  return { ...fs, rmSync: vi.fn(fs.rmSync) };
+});
 
 import { spawnTerminal as spawnLane, writeTerminal as writeLane, ensureConversationTerminal, conversationTerminalRef, releaseConversationTerminals, endConversationTerminalSession, typeAgentTerminalCommand, terminalTabOwnerWindow, terminalOwnedBy as rendererOwnsTerminal } from "../pty-manager.js";
 import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker, killTerminal, conversationOwnedBy as terminalOwnedBy } from "../../../__tests__/support/terminal-agent-fixture.js";
 /** Check terminal confinement wiring with mocked runtime and PTY boundaries, including fail-closed spawn and cleanup.
  * These tests do not exercise native isolation or real PTY allocation. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
@@ -26,6 +29,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approva
 import { approvalSurfaceRegistry, updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
 import * as approvalSurfaces from "../../../permissions/approval-surface-registry.js";
 import { sentApprovalCards } from "../../../__tests__/test-helpers.js";
+import { removeLinksUnder } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { TerminalObservationAdapter } from "../../../observation/terminal-adapter.js";
 import type { TerminalObservedCommand, TerminalObservationEvent } from "../../../shared/agent-observation.js";
 
@@ -310,10 +314,18 @@ beforeEach(() => {
   setTerminalEmitter(emit);
 });
 afterEach(() => {
-  setAgentTerminalObservationSink(undefined);
-  __resetTerminalsForTest();
-  rmSync(homeParent, { recursive: true, force: true });
-  if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
+  try {
+    setAgentTerminalObservationSink(undefined);
+    __resetTerminalsForTest();
+  } finally {
+    if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
+    const root = homeParent;
+    homeParent = "";
+    if (root) {
+      removeLinksUnder(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
 });
 
 describe("pty-manager fail-closed", () => {
@@ -847,11 +859,23 @@ describe("pty-manager cwd validation (write-jail anchor)", () => {
     expect(ptySpawnMock).not.toHaveBeenCalled();
   });
 
-  it("canonicalizes a user-approved project alias before matching its real subtree", async () => {
+  it("canonicalizes a user-approved project alias before matching its real subtree", async ({ onTestFinished }) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const root = homeParent;
     const project = join(homeParent, "approved-project");
     const cwd = join(project, "app");
     mkdirSync(cwd, { recursive: true });
     const alias = join(homeParent, "project-alias");
+    vi.mocked(rmSync).mockImplementation((path, options) => {
+      if (path === root && options?.recursive) {
+        expect(fs.lstatSync(alias, { throwIfNoEntry: false }), "Unlink the junction before tree removal").toBeUndefined();
+      }
+      fs.rmSync(path, options);
+    });
+    onTestFinished(() => {
+      vi.mocked(rmSync).mockReset();
+      expect(existsSync(root)).toBe(false);
+    });
     symlinkSync(project, alias, nativePlatform === "win32" ? "junction" : "dir");
     additionalProjectDirectories = [alias];
     expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd })).toMatchObject({ ok: true, session: { initialCwd: canonicalizePathForMatch(cwd) } });
