@@ -94,11 +94,13 @@ const _homeDir = configuredHome();
 const MAX_AUDIT_PATH = 256;
 
 /** File URLs can encode native separators even when generated on a different platform. */
-function homePattern(home: string, windows: boolean, fileUrl = false): string {
+function homePattern(home: string, windows: boolean, fileUrl = false, extendSeparators = true): string {
   return windows
-    ? home.split(/([\\/]+)/u).map(part => /^[\\/]/u.test(part)
-      ? (fileUrl ? String.raw`(?:[\\/]|%5[cC]){${part.length},}` : String.raw`[\\/]{${part.length},}`)
-      : escapeRegExp(part)).join("")
+    ? home.split(/([\\/]+)/u).map(part => {
+      if (!/^[\\/]/u.test(part)) return escapeRegExp(part);
+      const separator = fileUrl ? String.raw`(?:[\\/]|%5[cC])` : String.raw`[\\/]`;
+      return `${separator}{${part.length}${extendSeparators ? "," : ""}}`;
+    }).join("")
     : escapeRegExp(home);
 }
 
@@ -114,32 +116,41 @@ function compileHomePrefixes(home: string): { literal: HomePrefix[]; decoded: Ho
   const flags = windows || homePlatform === "darwin" ? "iu" : "u";
   const standard = pathToFileURL(home).href;
   const legacy = `file://${home}`;
-  const compile = (prefix: string, url: boolean, slashSuffix = false, nativeUrl = false): HomePrefix => {
+  const compile = (prefix: string, kind: "native-url" | "raw-url" | "legacy-url" | "path", decoded = false): HomePrefix => {
+    const url = kind !== "path";
+    const nativeUrl = kind === "native-url" && windows;
     const tail = /[\\/]$/u.test(prefix) ? "" : url
       ? nativeUrl ? String.raw`(?=$|[\\/?#]|%5[cC])` : String.raw`(?=$|[\\/?#])`
       : String.raw`(?=$|[\\/])`;
     return {
-      pattern: new RegExp(`^${homePattern(prefix, windows, nativeUrl)}${tail}`, flags),
+      pattern: new RegExp(`^${homePattern(prefix, windows, nativeUrl, decoded)}${tail}`, flags),
       marker: url ? "file://<home>" : "<home>",
-      slashSuffix,
+      slashSuffix: kind === "legacy-url",
     };
   };
-  const bare = compile(home, false);
-  const native = compile(legacy, true, true);
   return {
-    literal: [compile(standard, true, false, windows), native, bare],
-    decoded: [compile(decodeHomeEscapes(standard, "percent-entity"), true), native, bare],
+    literal: [compile(standard, "native-url"), compile(legacy, "legacy-url"), compile(home, "path")],
+    decoded: [
+      compile(decodeHomeEscapes(standard, "percent-entity"), "raw-url", true),
+      compile(legacy, "legacy-url", true),
+      compile(home, "path", true),
+    ],
   };
 }
 
 const homePrefixes = compileHomePrefixes(_homeDir);
 
-function replaceHomePrefix(path: string, prefixes: readonly HomePrefix[]): string | undefined {
-  const value = path.replace(/^file:/iu, "file:");
+const URL_PERCENT_ESCAPE = /%[0-9a-f]{2}/iu;
+
+function replaceHomePrefix(path: string, prefixes: readonly HomePrefix[], decodedUrlPath = false): string | undefined {
+  // Folding on macOS applies to path components. Its file scheme retains the POSIX spelling.
+  if (homePlatform === "darwin" && /^file:/iu.test(path) && !path.startsWith("file:")) return undefined;
   for (const { pattern, marker, slashSuffix } of prefixes) {
-    const match = pattern.exec(value);
+    const match = pattern.exec(path);
     if (!match) continue;
     const suffix = path.slice(match[0].length);
+    // Query and fragment boundaries also apply to encoded URL paths.
+    if ((suffix.startsWith("?") || suffix.startsWith("#")) && !decodedUrlPath && !URL_PERCENT_ESCAPE.test(match[0])) continue;
     return marker + (slashSuffix ? suffix.replace(/\\/gu, "/") : suffix);
   }
   return undefined;
@@ -148,9 +159,17 @@ function replaceHomePrefix(path: string, prefixes: readonly HomePrefix[]): strin
 /** Prefer the literal prefix. An encoded prefix is replaced in a decoded path value. */
 export function redactFsPath(path: string): string {
   if (!path) return path;
-  const out = replaceHomePrefix(path, homePrefixes.literal)
-    ?? replaceHomePrefix(decodeHomeEscapes(path, "percent-entity"), homePrefixes.decoded)
-    ?? path;
+  let out = replaceHomePrefix(path, homePrefixes.literal);
+  if (out === undefined && INTRODUCER.test(path)) {
+    const decoded = decodeHomeEscapes(path, "percent-entity");
+    if (decoded !== path) {
+      const modifier = path.search(/[?#]/u);
+      const urlPath = modifier < 0 ? "" : path.slice(0, modifier);
+      const decodedUrlPath = modifier < 0 || decodeHomeEscapes(urlPath, "percent-entity") !== urlPath;
+      out = replaceHomePrefix(decoded, homePrefixes.decoded, decodedUrlPath);
+    }
+  }
+  out ??= path;
   // Iterate code points so truncation cannot split surrogate pairs.
   const codePoints = [...out];
   return codePoints.length > MAX_AUDIT_PATH ? codePoints.slice(0, MAX_AUDIT_PATH).join("") + "…" : out;

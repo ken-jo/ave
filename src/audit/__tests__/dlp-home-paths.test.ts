@@ -519,6 +519,11 @@ describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (pla
       expect(redactFsPath(`${encoded}%2FMixed%20File`)).toBe("file://<home>/Mixed File");
       expect(redactFsPath(`${encoded}%32/other`)).toBe(`${encoded}%32/other`);
     }
+    expect(redactFsPath(encodeURIComponent(`${home}?view=1`))).toBe("file://<home>?view=1");
+    expect(redactFsPath(`${home}?q=%20`)).toBe(`${home}?q=%20`);
+    if (platform === "win32") {
+      expect(redactFsPath("D:%5Cfixtures%5C%5Chabitat/report.txt")).toBe("<home>/report.txt");
+    }
   });
   it("recognizes UTF-8 escapes and literal spaces in URL homes", async () => {
     fixture.platform = platform;
