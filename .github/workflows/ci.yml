@@ -845,10 +845,12 @@ jobs:
             Copy-Item -LiteralPath (Join-Path $repo ".github/scripts/$file") -Destination $scripts
           }
           Copy-Item -LiteralPath (Join-Path $repo 'scripts/lib/windows-powershell-env.mjs') -Destination $lib
-          node (Join-Path $scripts 'watch-windows-processes.mjs') prepare $dir
+          $node = node -p 'process.execPath'
+          if ($LASTEXITCODE -ne 0 -or !$node) { throw 'Could not resolve the diagnostic Node executable' }
+          & $node (Join-Path $scripts 'watch-windows-processes.mjs') prepare $dir
           if ($LASTEXITCODE -ne 0) { exit 0 }
           $env:AVE_PROCESS_WATCH_TRACE = '1'
-          & (Join-Path $scripts 'windows-launch-lifecycle.ps1') start $dir
+          & (Join-Path $scripts 'windows-launch-lifecycle.ps1') start $dir -NodeExecutable $node
       - name: Run Windows permission regressions
         env:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives

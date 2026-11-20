@@ -1,7 +1,8 @@
 param(
   [Parameter(Mandatory)][ValidateSet('start', 'stop', 'stop-collector')][string]$Mode,
   [Parameter(Mandatory)][string]$Directory,
-  [int]$GraceMilliseconds = 6000
+  [int]$GraceMilliseconds = 6000,
+  [string]$NodeExecutable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,19 +82,21 @@ function Stop-VerifiedProcesses($processes) {
 
 if ($Mode -eq 'start') {
   if ([IO.File]::Exists($ownership) -or [IO.File]::Exists($stop)) { throw 'Diagnostic directory already used' }
+  if (![IO.File]::Exists($NodeExecutable) -or $NodeExecutable -ne [IO.Path]::GetFullPath($NodeExecutable)) {
+    throw 'An absolute Node executable path is required to start the diagnostic'
+  }
   $env:AVE_PROCESS_WATCH_PIPE = '\\.\pipe\ave-process-watch-' + [Guid]::NewGuid().ToString('N')
   foreach ($name in 'HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP','TMPDIR','AVE_TEST_TMP_ROOT') {
     [Environment]::SetEnvironmentVariable($name, $Directory, 'Process')
   }
   Remove-Item Env:NODE_OPTIONS,Env:PSModulePath -ErrorAction SilentlyContinue
-  $node = (Get-Command node.exe -CommandType Application).Source
   $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
   $script = Join-Path $PSScriptRoot 'watch-windows-processes.mjs'
   $collectorScript = Join-Path $PSScriptRoot 'watch-windows-processes.ps1'
   $watcher = $collector = $null
   $published = $false
   try {
-    $watcher = Start-WatcherProcess $node ('"{0}" watch "{1}"' -f $script, $Directory)
+    $watcher = Start-WatcherProcess $NodeExecutable ('"{0}" watch "{1}"' -f $script, $Directory)
     $watcherIdentity = Get-Identity $watcher
     $collector = Start-WatcherProcess $powershell ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f $collectorScript)
     $collectorIdentity = Get-Identity $collector

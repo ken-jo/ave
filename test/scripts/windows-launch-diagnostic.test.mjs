@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -39,8 +39,9 @@ async function waitForPath(path, timeout = 16_000) {
 
 function control(directory, scripts, command, env = process.env, grace = 2000) {
   const executable = join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const nodeArgs = command === "start" ? ["-NodeExecutable", process.execPath] : [];
   return run(executable, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-    join(scripts, "windows-launch-lifecycle.ps1"), command, directory, "-GraceMilliseconds", String(grace)], {
+    join(scripts, "windows-launch-lifecycle.ps1"), command, directory, "-GraceMilliseconds", String(grace), ...nodeArgs], {
     cwd: directory, windowsHide: true, env, timeout: 25_000,
   });
 }
@@ -109,6 +110,37 @@ describe("Windows launch diagnostic", () => {
     const rendered = renderRunnerOutput(`${JSON.stringify(row)}\n`);
     assert.doesNotMatch(rendered, /::|##\[/u);
     assert.deepEqual(JSON.parse(rendered), row);
+  });
+
+  it("launches the watcher with the job's executable when PATH contains multiple node.exe files", WIN32_ONLY, async t => {
+    const directory = fixture(t);
+    const scripts = join(directory, "scripts");
+    mkdirSync(scripts);
+    copyFileSync(new URL("windows-launch-lifecycle.ps1", SCRIPTS), join(scripts, "windows-launch-lifecycle.ps1"));
+    const nodeDirectories = ["first node", "second node"].map(name => join(directory, name));
+    for (const path of nodeDirectories) {
+      mkdirSync(path);
+      copyFileSync(process.execPath, join(path, "node.exe"));
+    }
+    const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === "path") ?? "Path";
+    const env = { ...process.env, [pathKey]: [...nodeDirectories, process.env[pathKey]].join(delimiter) };
+    writeFileSync(join(scripts, "watch-windows-processes.mjs"), [
+      'import { existsSync, writeFileSync } from "node:fs";',
+      'writeFileSync("watcher-executable", process.execPath);',
+      'writeFileSync("watcher.ready", "");',
+      'const timer = setInterval(() => { if (existsSync("watcher.stop")) clearInterval(timer); }, 40);',
+    ].join("\n"));
+    writeFileSync(join(scripts, "watch-windows-processes.ps1"),
+      "while (!(Test-Path -LiteralPath 'watcher.stop')) { Start-Sleep -Milliseconds 40 }");
+    try {
+      await control(directory, scripts, "start", env);
+      assert.equal(readFileSync(join(directory, "watcher-executable"), "utf8"), process.execPath);
+    } finally {
+      if (existsSync(join(directory, "watcher-ownership.json"))) {
+        const { stdout } = await control(directory, scripts, "stop");
+        assert.match(stdout, /collector and watcher exits verified/);
+      }
+    }
   });
 
   for (const stall of [
