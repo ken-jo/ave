@@ -175,7 +175,7 @@ describe("withFileLock", () => {
     await expectLeafAliasLockAttempts(testFile, join(tmpDir, "SHARED.JSON"), 1);
   });
 
-  it("uses one queue for NFC and NFD leaf spellings on darwin and win32", async () => {
+  it("uses one queue key for NFC and NFD leaf spellings on darwin and win32 (lock acquisition stubbed)", async () => {
     const leaf = "shar\u00e9d.json";
     const expectedAttempts = process.platform === "darwin" || process.platform === "win32" ? 1 : 2;
     await expectLeafAliasLockAttempts(

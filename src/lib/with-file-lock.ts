@@ -17,6 +17,7 @@ const fileLockQueues = new Map<string, FileQueue>();
 /**
  * This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work.
  * Not re-entrant: awaiting a same-key call from inside `fn` waits on itself forever. Same-key work started inside `fn` must not be awaited before `fn` returns.
+ * Callers must use a single spelling per file: the key is the lexically resolved path only, so filesystem aliases of one file get separate queues.
  */
 export async function withInProcessFileQueue<T>(
   filePath: string,
@@ -78,8 +79,10 @@ export class FileLockReleaseError<T> extends Error {
 
 /**
  * Queue through release so a stale-looking local holder cannot be replaced and release its successor.
- * On `darwin` and `win32`, the queue folds leaf case and Unicode spelling. Distinct
- * names can share a queue on case-sensitive or Unicode-normalization-sensitive volumes.
+ * Callers must use a single spelling per file. The queue converges lexical forms, parent symlinks, junctions and
+ * 8.3 names (native parent realpath), and leaf case plus NFC on `darwin` and `win32`; distinct names can then share
+ * a queue on case-sensitive or normalization-sensitive volumes. Other filesystem name aliases, such as full Unicode
+ * case folding (ß/ẞ), are unsupported and may bypass same-process serialization.
  * Not re-entrant: awaiting a same-key withFileLock from inside `fn` waits on itself forever. Same-key work started inside `fn` must not be awaited before `fn` returns.
  */
 export async function withFileLock<T>(
