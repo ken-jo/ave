@@ -344,29 +344,27 @@ function NewUnverifiedPath($file) {
   @{ kind = 'restartManager'; path = $file.path; operation = 'unverified-path'; code = $null }
 }
 
-function TestCandidatePath($file) {
-  if (!$file.parentPinned) { return $false }
-  $handle = OpenRelative $file.parent $file.name $readAttributes $shareAll
-  try { return TestFileIdentity $file $handle }
-  finally { if ($handle) { $handle.Dispose() } }
+function PinCandidate($file) {
+  if (!$file.parentPinned) { return }
+  # Data access makes the handle participate in delete sharing.
+  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete
+  try {
+    if (TestFileIdentity $file $pin) {
+      $verified = $pin
+      $pin = $null
+      return $verified
+    }
+  } finally { if ($pin) { $pin.Dispose() } }
 }
 
 function ReadVerifiedHolders($file) {
-  $unverified = NewUnverifiedPath $file
-  if (!$file.parentPinned) { return $unverified }
-  # Data access activates delete-share checks. An exclusive holder can deny
-  # data access, so use metadata-only identity checks around the lookup then.
-  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete
-  $handle = $pin
+  $pin = PinCandidate $file
+  if (!$pin) { return (NewUnverifiedPath $file) }
   try {
-    if (!$handle) { $handle = OpenRelative $file.parent $file.name $readAttributes $shareAll }
-    if (!(TestFileIdentity $file $handle)) { return $unverified }
     $rows = @(FindFileHolders $file.path)
-    if ($pin) {
-      if (!(TestFileIdentity $file $pin)) { return $unverified }
-    } elseif (!(TestCandidatePath $file)) { return $unverified }
+    if (!(TestFileIdentity $file $pin)) { return (NewUnverifiedPath $file) }
     return $rows
-  } finally { if ($handle) { $handle.Dispose() } }
+  } finally { $pin.Dispose() }
 }
 
 function ReadHolderGroup([object[]]$group) {
@@ -377,20 +375,22 @@ function ReadHolderGroup([object[]]$group) {
     return
   }
   $verified = [Collections.Generic.List[object]]::new()
-  foreach ($file in $group) {
-    if (TestCandidatePath $file) { $verified.Add($file) }
-    else { NewUnverifiedPath $file }
-  }
-  if (!$verified.Count) { return }
-  if ($verified.Count -eq 1) { ReadHolderGroup $verified.ToArray(); return }
-  # Batch results only select files for individually verified lookups.
-  $rows = @(FindFileHolders ($verified | ForEach-Object { $_.path }))
-  if (!$rows.Count) {
-    foreach ($file in $verified) {
-      if (!(TestCandidatePath $file)) { NewUnverifiedPath $file }
+  $pins = [Collections.Generic.List[object]]::new()
+  try {
+    foreach ($file in $group) {
+      $pin = PinCandidate $file
+      if (!$pin) { NewUnverifiedPath $file; continue }
+      $pins.Add($pin)
+      $verified.Add($file)
     }
-    return
+    if (!$verified.Count) { return }
+    # Batch results only select files for individually verified lookups.
+    $rows = @(FindFileHolders ($verified | ForEach-Object { $_.path }))
+    if ($verified.Count -eq 1) { $rows; return }
+  } finally {
+    foreach ($pin in $pins) { $pin.Dispose() }
   }
+  if (!$rows.Count) { return }
   # Split groups with holders or native errors until each result names one file.
   $middle = $verified.Count -shr 1
   ReadHolderGroup $verified[0..($middle - 1)]

@@ -506,31 +506,45 @@ describe("Windows job root cleanup diagnostics", () => {
       rmSync(fixture, { recursive: true, force: true });
     }
   });
-  for (const stage of ["before", "during"]) {
-    it(`rejects a leaf replacement ${stage} registration`, { skip: process.platform !== "win32" }, async () => {
+  for (const stage of ["before", "during", "batch"]) {
+    it(`rejects a leaf replacement at ${stage} registration`, { skip: process.platform !== "win32" }, async () => {
       const fixture = mkdtempSync(join(tmpdir(), "ave-job-holder-swap-"));
       const root = join(fixture, "root");
       const file = join(root, "example.log");
       try {
         mkdirSync(root);
         writeFileSync(file, "original");
+        const probe = join(fixture, "probe.txt");
+        if (stage === "batch") writeFileSync(join(root, "bob.log"), "other candidate");
         const run = runInjectedQuery("", script => {
+          if (stage === "batch") return script.replace("    $operation = 'RmRegisterResources'", [
+            "    if ($paths.Length -gt 1) {",
+            `      [IO.File]::WriteAllText(${powerShellLiteral(probe)}, 'batch entered')`,
+            `      try { [IO.File]::Move(${powerShellLiteral(file)}, ${powerShellLiteral(join(fixture, "saved.log"))}) }`,
+            "      catch [IO.IOException] {}",
+            "    }",
+            "    $operation = 'RmRegisterResources'",
+          ].join("\n"));
           const lookup = script.includes("function ReadVerifiedHolders") ? "    try { ReadVerifiedHolders $file" : "      FindFileHolders $file";
-          const marker = stage === "before" ? lookup : "    $operation = 'RmRegisterResources'";
+          const marker = stage === "before" ? lookup : "  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete";
           const swap = [
             `    [IO.File]::Move(${powerShellLiteral(file)}, ${powerShellLiteral(join(fixture, "saved.log"))})`,
             `    [IO.File]::WriteAllText(${powerShellLiteral(file)}, 'replacement')`,
             "",
           ].join("\n");
-          // An exclusive opener can force the metadata-only identity check.
-          const pin = "  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete";
-          const query = stage === "during" ? script.replace(pin, "  $pin = $null") : script;
-          return query.replace(marker, swap + marker);
+          // Simulate a candidate whose metadata can be opened but whose data access cannot be pinned.
+          return script.replace(marker, swap + (stage === "during" ? "  $pin = $null" : marker));
         });
         const diagnostic = mock.fn();
         await diagnoseJobRoot(root, diagnostic, run);
-        assert.equal(readFileSync(file, "utf8"), "replacement");
-        assert.match(output({ diagnostic }), /Restart Manager lookup failed .*operation=unverified-path/);
+        if (stage === "batch") {
+          assert.equal(readFileSync(probe, "utf8"), "batch entered");
+          assert.equal(existsSync(join(fixture, "saved.log")), false);
+          assert.equal(readFileSync(file, "utf8"), "original");
+        } else {
+          assert.equal(readFileSync(file, "utf8"), "replacement");
+          assert.match(output({ diagnostic }), /Restart Manager lookup failed .*operation=unverified-path/);
+        }
       } finally { rmSync(fixture, { recursive: true, force: true }); }
     });
   }
