@@ -160,8 +160,8 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.attach.readImage, filePath),
     saveClipboardImage: (base64: string) =>
       ipcRenderer.invoke(CHANNELS.attach.saveClipboardImage, { base64 }),
-    discardClipboardImage: (filePath: string) =>
-      ipcRenderer.invoke(CHANNELS.attach.discardClipboardImage, filePath),
+    release: (paths: readonly string[]) =>
+      ipcRenderer.invoke(CHANNELS.attach.release, paths),
     openExternal: (filePath: string) =>
       ipcRenderer.invoke(CHANNELS.attach.openExternal, filePath),
     // Composer drop, step 2: echo the main-owned token; main authorizes the
@@ -214,11 +214,23 @@ export function buildAveNamespaceExtras() {
     dropPrepare: (droppedPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.dropPrepare, droppedPath),
     // Composer `@file` autocomplete over the current workspace roots.
-    searchFiles: (query: string) =>
-      ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query),
+    searchFiles: (query: string, options?: { folder: string }) =>
+      options === undefined
+        ? ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query)
+        : ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query, options),
     // Folder view "open in default app"; the gesture flag is read here, inside the click or key handler's task.
     openPath: (projectRoot: string, targetPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.openPath, { projectRoot, path: targetPath, intent: ipcUserKeyboardIntent() }),
+    // The same user-gesture report; `line` is optional.
+    openInEditor: (projectRoot: string, targetPath: string, line?: number) =>
+      ipcRenderer.invoke(CHANNELS.workspace.openInEditor, {
+        projectRoot, path: targetPath, ...(line === undefined ? {} : { line }), intent: ipcUserKeyboardIntent(),
+      }),
+    // The in-app text editor: both carry the user-gesture report, as the two hand-offs above.
+    readForEdit: (projectRoot: string, targetPath: string) =>
+      ipcRenderer.invoke(CHANNELS.workspace.readForEdit, { projectRoot, path: targetPath, intent: ipcUserKeyboardIntent() }),
+    saveEdit: (projectRoot: string, targetPath: string, baseHash: string, text: string) =>
+      ipcRenderer.invoke(CHANNELS.workspace.saveEdit, { projectRoot, path: targetPath, baseHash, text, intent: ipcUserKeyboardIntent() }),
   },
   };
 }

@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { hashAndCountLines } from "../file-read-state.js";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import {
   assertReadableFilePath,
@@ -173,5 +175,30 @@ describe("readTextFileWindow / isBinaryFile", () => {
   it("detects a NUL byte as binary", async () => {
     expect(await isBinaryFile(join(root, "bin.dat"))).toBe(true);
     expect(await isBinaryFile(join(root, "text.txt"))).toBe(false);
+  });
+
+  it("reads an open handle as it reads the path, each time from the start, and leaves the handle open", async () => {
+    const sources = {
+      "lines": "alpha\r\nbeta\ngamma\rdelta",
+      // A CRLF and a three-byte character each split across the 64 KiB read boundary.
+      "crlf at a boundary": `${"x".repeat(65_535)}\r\nbeta\r\n`,
+      "character at a boundary": `${"x".repeat(65_535)}\u20ac tail\n${"y".repeat(70_000)}`,
+      "binary": "A\u0000B",
+    };
+    for (const [label, source] of Object.entries(sources)) {
+      const path = join(root, `handle-${label.replaceAll(" ", "-")}.txt`);
+      writeFileSync(path, source);
+      const handle = await open(path, "r");
+      try {
+        // One handle serves every pass, in the order read_file makes them.
+        expect(await isBinaryFile(handle), label).toBe(await isBinaryFile(path));
+        expect(await readTextFileWindow(handle, 1, 2), label).toEqual(await readTextFileWindow(path, 1, 2));
+        expect(await readTextFileWindow(handle, 0, 5), label).toEqual(await readTextFileWindow(path, 0, 5));
+        expect(await hashAndCountLines(handle), label).toEqual(await hashAndCountLines(path));
+        expect(handle.fd, label).toBeGreaterThanOrEqual(0);
+      } finally {
+        await handle.close();
+      }
+    }
   });
 });

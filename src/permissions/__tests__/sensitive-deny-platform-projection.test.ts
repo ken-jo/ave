@@ -131,6 +131,7 @@ const MAIN_FLOOR: readonly string[] = [
   `${FIXTURE_HOME}/.ave/policy.json`,
   `${FIXTURE_HOME}/.ave/permissions/`,
   `${FIXTURE_HOME}/.ave/audit/`,
+  `${FIXTURE_HOME}/.ave/diff-cache/`,
   `${FIXTURE_HOME}/.ave/audit.log`,
   `${FIXTURE_HOME}/.ave/sessions/`,
   `${FIXTURE_HOME}/.ave/host-runtime/`,

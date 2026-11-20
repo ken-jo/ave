@@ -285,6 +285,16 @@ describe("native policy pipe lifecycle", () => {
     expect(helper.kill).toHaveBeenCalledOnce();
   });
 
+  it("rejects invalid UTF-8 in the readiness reply before binding a client", async () => {
+    const helper = helperChild();
+    vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      queueMicrotask(() => helper.stdout.end(Buffer.from([0x72, 0xff, 0x0a])));
+      return helper.child as ReturnType<typeof childProcess.spawn>;
+    });
+    await expect(openMxcPolicyPipe(Buffer.from("policy"), PIPE)).rejects.toThrow(/invalid UTF-8/i);
+    expect(helper.kill).toHaveBeenCalledOnce();
+  });
+
   it("fails closed when the private policy write is interrupted", async () => {
     const helper = helperChild();
     vi.spyOn(childProcess, "spawn").mockImplementation(() => {

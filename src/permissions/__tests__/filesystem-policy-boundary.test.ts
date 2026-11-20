@@ -1,5 +1,5 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import childProcess, { type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
@@ -133,7 +133,10 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
     const controls = vi.spyOn(writePolicy, "buildMandatorySandboxWritePolicy");
     const config = sandbox.buildSandboxConfig({ allowWrite: [target.toLowerCase()], windows: { externalConfinement: true } });
     expect(controls.mock.calls[0]![0].map(entry => typeof entry === "string" ? entry : entry.path)).toEqual([canonical]);
-    expect(config.filesystem.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path))
+    expect(config.filesystem.denyWrite.map(entry => {
+      const path = typeof entry === "string" ? entry : entry.path;
+      return /^[A-Za-z]:[\\/]/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
+    }))
       .toContain(join(canonical, ".bashrc"));
   });
 

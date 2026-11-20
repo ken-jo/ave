@@ -21,6 +21,8 @@ export interface PermissionDecisionRequest {
   // `floorSession`: a "This session" allow approved on this floor's own card in this conversation; ordinary rules never pass a floor.
   rules?: { deny?: string; ask?: string; allow?: string; remembered?: string; floorSession?: string };
   secretRead?: boolean;
+  // Display-only: what the path evidence matched, for the card's reason line. No stage reads it.
+  pathFacts?: { protectedEntry?: string; secretPattern?: string };
   fileWrite?: { insideProject: boolean; checkpointAvailable: boolean; directoryApproved?: boolean };
   shell?: { sandboxed: boolean; readOnlyProven: boolean; unproven: boolean; destructive: boolean; escalated?: boolean };
   reviewer?: { level?: "low" | "medium" | "high"; status: "success" | "error" | "abort"; breakerOpen?: boolean };

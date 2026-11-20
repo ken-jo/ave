@@ -533,7 +533,7 @@ function lastCall(stub: { mock: { calls: unknown[][] } }): unknown[] {
   if (call === undefined) throw new Error("the stand-in was never called");
   return call;
 }
-const fold = (path: string): string => path.replace(/[\\/]+$/, "").toLowerCase();
+const fold = windowsPathKey;
 const atOrUnder = (path: string, parent: string): boolean => fold(path) === fold(parent) || fold(path).startsWith(`${fold(parent)}\\`);
 
 // What a container grants at `path`: the most specific listed path at or above it decides, and a deny or read-only entry outranks a

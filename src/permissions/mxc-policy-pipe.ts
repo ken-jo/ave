@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { assertManagedChildProcessAdmissionOpen, retainUnterminatedChildProcess, trackManagedChildProcess } from "../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
 
 const MAX_POLICY_BYTES = 4 * 1024 * 1024;
 
@@ -89,13 +90,21 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   try {
     await new Promise<void>((resolve, reject) => {
       rejectReady = reject;
-      let response = "";
-      server.stdout.setEncoding("utf8");
-      server.stdout.on("data", (chunk: string) => {
+      let response = Buffer.alloc(0);
+      server.stdout.on("data", (chunk: Buffer) => {
         if (released) return;
-        response += chunk;
-        if (response === "ready\n") { ready = true; resolve(); }
-        else if (response.length > 64 || response.includes("\n")) void fail(new Error("Windows sandbox policy helper sent an invalid response"));
+        if (response.length + chunk.length > 64) {
+          void fail(new Error("Windows sandbox policy helper sent an invalid response"));
+          return;
+        }
+        response = Buffer.concat([response, chunk]);
+        if (!response.includes(0x0a)) return;
+        try {
+          if (decodeWindowsNativeReply(response) === "ready\n") { ready = true; resolve(); }
+          else void fail(new Error("Windows sandbox policy helper sent an invalid response"));
+        } catch (cause) {
+          void fail(new Error("Windows sandbox policy helper sent invalid UTF-8", { cause }));
+        }
       });
       server.stdout.once("end", () => {
         if (!ready) void fail(new Error("Windows sandbox policy helper sent an incomplete response"));

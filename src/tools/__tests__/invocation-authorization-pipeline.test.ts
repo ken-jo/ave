@@ -57,7 +57,7 @@ function fixture(options: {
     executionCwd: directory, auditCurrentToolCall: vi.fn(), auditCurrentPermissionAsk: vi.fn(),
     withHostShellExecutionPlan: (result) => result,
     abortDeps: vi.fn(), returnRationaleResumeBlock: vi.fn(), sessionId: "pipeline", startTime: Date.now(),
-    permissionResult: undefined, resolvedPluginOperation: undefined, pluginOperationPrincipal: undefined,
+    permissionResult: undefined, resolvedPluginOperation: undefined, pluginOperationPrincipal: undefined, linkedTargets: [],
   };
   return { manager, context, requestAndWait, memorySkip, allowsPolicyTransition };
 }

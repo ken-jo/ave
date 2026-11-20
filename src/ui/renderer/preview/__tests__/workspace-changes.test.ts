@@ -9,7 +9,7 @@ const files: WorkspaceFileItem[] = [
   { id: "artifact", path: "/work/notes/result.md", label: "result.md", detail: "", sourceLabel: "attachment", operation: "attachment", canOpenExternal: true },
 ];
 const review: TurnChangeReview = { sessionId: "session", turnId: "turn", files: [{ path: "src/current.ts", bytes: 4, lineCount: 1,
-  added: 2, removed: 1, operation: "modify", countsKnown: true, referenceable: false, hunks: [],
+  added: 2, removed: 1, operation: "modify", countsKnown: true, referenceable: false, decidable: true, hunks: [],
 }] };
 
 describe("workspace change derivation", () => {

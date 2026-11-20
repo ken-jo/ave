@@ -1,6 +1,7 @@
 // Search current workspace roots and recheck every result with the read guard.
 import { collectFiles } from "../../tools/file-tools.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
+import { resolvePathForPolicy } from "../../permissions/sensitive-paths.js";
 
 export const WORKSPACE_FILE_QUERY_MAX_CHARS = 200;
 const MAX_MATCHES = 50;
@@ -24,13 +25,17 @@ const listingCache = new Map<string, CachedListing>();
 // Share one cold-cache walk per root across concurrent keystrokes.
 const listingsInFlight = new Map<string, Promise<CachedListing>>();
 
-async function listRoot(root: string, now: number): Promise<CachedListing> {
-  const cached = listingCache.get(root);
+async function listRoot(nativeRoot: string, now: number): Promise<CachedListing> {
+  // Cache resolved native roots: policy folding can merge separate stored names.
+  const cached = listingCache.get(nativeRoot);
   if (cached && now - cached.at < LISTING_TTL_MS) return cached;
-  const inFlight = listingsInFlight.get(root);
+  const inFlight = listingsInFlight.get(nativeRoot);
   if (inFlight) return inFlight;
-  const walk = walkRoot(root, now).finally(() => listingsInFlight.delete(root));
-  listingsInFlight.set(root, walk);
+  const walk = walkRoot(nativeRoot, now).then((entry) => {
+    listingCache.set(nativeRoot, entry);
+    return entry;
+  }).finally(() => listingsInFlight.delete(nativeRoot));
+  listingsInFlight.set(nativeRoot, walk);
   return walk;
 }
 
@@ -43,7 +48,6 @@ async function walkRoot(root: string, now: number): Promise<CachedListing> {
         truncated: listed.value.truncated,
       }
     : { at: now, files: [], truncated: false };
-  listingCache.set(root, entry);
   return entry;
 }
 
@@ -53,6 +57,17 @@ function isSubsequence(needle: string, hay: string): boolean {
     if (hay[j] === needle[i]) i += 1;
   }
   return i === needle.length;
+}
+
+/** File names only, for a search box scoped to one folder: a path-wide subsequence match would list files whose own name
+ * has nothing to do with the query. Lower is better; null = no match. */
+function rankByName(query: string, relativePath: string): number | null {
+  const rel = relativePath.toLowerCase();
+  const base = rel.slice(rel.lastIndexOf("/") + 1);
+  if (query.length === 0) return rel.split("/").length;
+  if (base.startsWith(query)) return 0;
+  if (base.includes(query)) return 1;
+  return null;
 }
 
 /** Lower is better; null = no match. */
@@ -72,19 +87,39 @@ export async function searchWorkspaceFiles(args: {
   roots: readonly string[];
   cwd: string;
   extraAllowed: readonly string[];
+  /**
+   * Search one folder instead of every root. The caller has already proved it lies inside `root`. The folder itself is
+   * walked, fresh each time, so the walk limit and the match cap apply to that folder alone (a large sibling cannot use
+   * them up), a file created a moment ago is found, and only file names are matched.
+   */
+  folder?: { path: string; root: string };
   now?: number;
 }): Promise<{ matches: WorkspaceFileMatch[]; truncated: boolean }> {
   const query = args.query.trim().toLowerCase();
   const now = args.now ?? Date.now();
   const scored: Array<{ score: number; match: WorkspaceFileMatch }> = [];
   let truncated = false;
-  for (const root of args.roots) {
-    const listing = await listRoot(root, now);
-    truncated ||= listing.truncated;
-    for (const file of listing.files) {
-      const score = rank(query, file.relativePath);
-      if (score === null) continue;
-      scored.push({ score, match: { path: file.path, relativePath: file.relativePath, root, bytes: file.bytes } });
+  if (args.folder) {
+    const root = resolvePathForPolicy(args.folder.root);
+    const listed = await collectFiles(resolvePathForPolicy(args.folder.path), MAX_FILES_PER_ROOT);
+    if (listed.ok) {
+      truncated = listed.value.truncated;
+      for (const file of listed.value.files) {
+        const score = rankByName(query, file.relativePath);
+        if (score === null) continue;
+        scored.push({ score, match: { path: file.path, relativePath: file.relativePath, root, bytes: file.size ?? 0 } });
+      }
+    }
+  } else {
+    for (const inputRoot of args.roots) {
+      const root = resolvePathForPolicy(inputRoot);
+      const listing = await listRoot(root, now);
+      truncated ||= listing.truncated;
+      for (const file of listing.files) {
+        const score = rank(query, file.relativePath);
+        if (score === null) continue;
+        scored.push({ score, match: { path: file.path, relativePath: file.relativePath, root, bytes: file.bytes } });
+      }
     }
   }
   scored.sort((a, b) =>
@@ -98,11 +133,12 @@ export async function searchWorkspaceFiles(args: {
       truncated = true;
       break;
     }
-    if (seen.has(match.path)) continue;
-    seen.add(match.path);
+    const key = resolvePathForPolicy(match.path);
+    if (seen.has(key)) continue;
     // The read guard decides, not the walk: same answer read_file would give.
     const verdict = assertReadableFilePath(match.path, args.cwd, args.extraAllowed);
     if (!verdict.ok) continue;
+    seen.add(key);
     matches.push(match);
   }
   return { matches, truncated };

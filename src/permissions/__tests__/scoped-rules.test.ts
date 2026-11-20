@@ -111,7 +111,7 @@ describe("scoped permission rules", () => {
       kind: "edit", paths: Object.values(input),
       targets: expect.arrayContaining(Object.values(input).map((path) => ({
         filePath: join(project, path), canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(join(project, path))),
-        runtimePath: foldCanonicalPathSeparators(join(project, path)),
+        runtimePath: join(project, path),
       }))),
     });
     expect(readFileSync(join(project, "src", "secret", "keep.txt"), "utf8")).toBe("keep");

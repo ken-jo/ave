@@ -217,10 +217,12 @@ describe("App.handleAsk — image refusal on a text-only model", () => {
     readImage: ReturnType<typeof vi.fn>;
     saveClipboardImage: ReturnType<typeof vi.fn>;
     openExternal: ReturnType<typeof vi.fn>;
+    release: ReturnType<typeof vi.fn>;
   };
 
   function installImageAttachMock(): AttachMock {
     const attach: AttachMock = {
+      release: vi.fn(async () => ({ ok: true })),
       openFile: vi.fn(async () => ({
         canceled: false,
         rejected: [],

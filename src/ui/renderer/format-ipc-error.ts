@@ -2,6 +2,9 @@
 
 import { t } from "../../i18n/runtime.js";
 import { MCP_GOVERNANCE_UNAPPROVED_SERVER, stripMcpErrorCode } from "../../shared/mcp-error-code.js";
+import type { AttachmentRejection, AttachmentRejectReason } from "../../shared/attachment-rejection.js";
+import { MAX_COMPOSER_ATTACHMENT_COUNT, MAX_COMPOSER_IMAGE_BYTES } from "../../shared/composer-image-input.js";
+import { displaySafeLabel } from "../../shared/display-safe-text.js";
 
 /** Read a leading machine code after the invoke rejection wrapper, independent of localized detail. */
 export function invokeErrorCode(error: unknown): typeof MCP_GOVERNANCE_UNAPPROVED_SERVER | undefined {
@@ -266,6 +269,14 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // Folder view (workspace.listDir / workspace.openPath).
   "permission-denied": "folderView.lockedBody",
   "root-not-registered": "folderView.openRefusedScope",
+  // Folder view search (workspace.searchFiles with a folder).
+  "folder-not-allowed": "folderView.readFailedNotAllowed",
+  // Open in editor (workspace.openInEditor).
+  "not-configured": "folderView.editorNotConfigured",
+  "invalid-command": "folderView.editorInvalidCommand",
+  "launch-failed": "folderView.editorLaunchFailed",
+  // In-app edit (workspace.saveEdit): the file no longer holds what the edit started from.
+  "changed": "folderView.editChanged",
   "type-not-allowed": "folderView.openRefusedType",
   "network-target": "folderView.openRefusedOutside",
   "executable": "folderView.openRefusedExecutable",
@@ -416,8 +427,9 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // (#803 IPC convention). The snake_case shape is grandfathered until the
   // attach.ts handlers are rewritten (tracked in follow-up).
   "path_not_authorized": "formatIpcError.pathNotAuthorized",
-  "clipboard-image-not-owned": "formatIpcError.pathNotAuthorized",
   "not_image": "formatIpcError.notImage",
+  "image_too_large": "formatIpcError.imageTooLarge",
+  "clipboard_too_large": "formatIpcError.imageTooLarge",
   "invalid_payload": "formatIpcError.invalidPayloadSnake",
   "denied_extension": "formatIpcError.deniedExtension",
   "no-store": "formatIpcError.noStore",
@@ -550,6 +562,52 @@ const DEFAULT_APP_REFUSALS_WITH_OWN_MESSAGE: ReadonlySet<string> = new Set(["typ
 export function defaultAppOpenErrorKey(code: string | undefined): string {
   const key = code !== undefined && DEFAULT_APP_REFUSALS_WITH_OWN_MESSAGE.has(code) ? resolveIpcErrorKey(code) : undefined;
   return key ?? "chatPreviewRail.openDefaultAppError";
+}
+
+/** What a person is told when a pasted image could not be saved (`attach.saveClipboardImage`). A known cause gets its own
+ * sentence. Anything else, an operating-system error text included, is reported as a failed save and never shown raw. */
+export function clipboardImageErrorMessage(code: string | undefined): string {
+  if (code === "clipboard_too_large") {
+    return t("clipboardPaste.imageTooLarge", { maxMb: MAX_COMPOSER_IMAGE_BYTES / (1024 * 1024) });
+  }
+  if (code === "not_image") return t("clipboardPaste.notImage");
+  return t("clipboardPaste.imageSaveFailed");
+}
+
+const ATTACHMENT_REJECT_REASON_KEYS: Record<AttachmentRejectReason, string> = {
+  "denied-extension": "attachmentRejected.reason.deniedExtension",
+  "sensitive-path": "attachmentRejected.reason.sensitivePath",
+  "not-a-file": "attachmentRejected.reason.notAFile",
+  "not-found": "attachmentRejected.reason.notFound",
+  "too-many": "attachmentRejected.reason.tooMany",
+  "no-file-path": "attachmentRejected.reason.noFilePath",
+  "drop-expired": "attachmentRejected.reason.dropExpired",
+  "image-too-large": "attachmentRejected.reason.imageTooLarge",
+  "unreadable": "attachmentRejected.reason.unreadable",
+  "refused": "attachmentRejected.reason.refused",
+};
+
+/** How many refused files one notice names before it counts the rest. */
+const ATTACHMENT_REJECTIONS_NAMED = 3;
+const ATTACHMENT_REJECTION_NAME_MAX_CHARS = 60;
+
+/** One notice for the files an attach, drop or paste lost: each file by name with the reason it was refused. */
+export function attachmentRejectionMessage(rejections: readonly AttachmentRejection[]): string {
+  const reasonOf = (rejection: AttachmentRejection) => t(ATTACHMENT_REJECT_REASON_KEYS[rejection.reason], {
+    max: MAX_COMPOSER_ATTACHMENT_COUNT,
+    maxMb: MAX_COMPOSER_IMAGE_BYTES / (1024 * 1024),
+  });
+  const nameOf = (rejection: AttachmentRejection) => displaySafeLabel(rejection.name, ATTACHMENT_REJECTION_NAME_MAX_CHARS);
+  if (rejections.length === 1) {
+    return t("attachmentRejected.one", { name: nameOf(rejections[0]), reason: reasonOf(rejections[0]) });
+  }
+  const named = rejections.slice(0, ATTACHMENT_REJECTIONS_NAMED);
+  const unnamed = rejections.length - named.length;
+  return [
+    t("attachmentRejected.many", { count: rejections.length }),
+    ...named.map((rejection) => t("attachmentRejected.item", { name: nameOf(rejection), reason: reasonOf(rejection) })),
+    ...(unnamed > 0 ? [t("attachmentRejected.more", { count: unnamed })] : []),
+  ].join(" ");
 }
 
 export function formatIpcError(

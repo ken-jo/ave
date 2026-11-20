@@ -193,7 +193,8 @@ describe("the shared layer withholds grants under the protected floor", () => {
       for (const path of [...protectedRoots, ...ordinaryRoots]) {
         const target = join(path, ".bash_profile");
         expect(filesystem?.denyWrite?.some(entry => {
-          const base = typeof entry === "string" ? entry : entry.path;
+          const spelling = typeof entry === "string" ? entry : entry.path;
+          const base = /^[A-Za-z]:[\\/]/u.test(spelling) ? spelling.replace(/[\\/]/gu, sep) : spelling;
           return target === base || target.startsWith(base + sep);
         }), target).toBe(true);
       }

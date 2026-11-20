@@ -14,6 +14,7 @@ import {
   rename,
   stat,
   unlink,
+  type FileHandle,
 } from "node:fs/promises";
 import {
   dirname,
@@ -27,7 +28,7 @@ import { z } from "zod";
 
 import type { PathEffect } from "../permissions/allowed-directories.js";
 import { isPathAllowed } from "../permissions/allowed-directories.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
 import type { ApprovalMemoryScope } from "../shared/permissions-events.js";
 import { consumeExecutionGrantForBuiltinToolInvocation } from "../permissions/execution-router.js";
 import {
@@ -39,7 +40,8 @@ import {
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { PATCH_ENVELOPE_PATH_FIELD_SUFFIX } from "../shared/dotted-field-value.js";
 import { globToRegExp } from "../lib/glob-matcher.js";
-import { writeDiffSidecar, WRITE_DIFF_PREVIEW_LIMIT } from "./write-diff-cache.js";
+import { writeDiffSidecar } from "./write-diff-cache.js";
+import { createLogger } from "../lib/logger.js";
 import { admissionDeniedFilePattern, ensureFileAccess, sensitiveFilePattern } from "./file-access-policy.js";
 import {
   GREP_FILES_DESCRIPTION,
@@ -75,7 +77,7 @@ import { documentToolFailure, formatDocumentToolOutput } from "./document-tool-o
 import { PREVIEW_DOCUMENT_LIMITS, previewDocumentFormatOf } from "../shared/preview-document.js";
 import { previewPageFormatOf } from "../shared/preview-page-document.js";
 import { acquireParseSlot } from "./preview-document-process.js";
-import { readPreviewDocumentInput } from "./preview-document-input.js";
+import { readJudgedDocumentInput } from "./preview-document-input.js";
 import { TableDocumentError } from "./table-document-error.js";
 import { DOCUMENT_PARSE_MESSAGES } from "./preview-document-protocol.js";
 import { RENAME_FILE_LOCK_CODES, transientFsLockDelayMs } from "../lib/transient-fs-lock-retry.js";
@@ -428,12 +430,37 @@ export class ReadFileTool extends FileTool<typeof ReadFileInputSchema> {
     if (!fileStat.value.isFile()) {
       return toolError(`read_file requires a regular file: ${target}`);
     }
-    if (await isBinaryFile(target)) {
-      return toolError(`read_file refused binary file: ${target}`);
+    // The text reaches the model. It is read through one handle on the real path judged here, opened without following a
+    // link in its last name where the platform can, and counts only if that path still names the file read once the read
+    // is done (`judgedPathNamesOpenedFile`): a folder that led elsewhere only during the open is caught that way.
+    let judged: string;
+    let handle: FileHandle;
+    try {
+      judged = await realpath(target);
+      const judgedBlocked = this.ensureAllowed(judged, ctx, "read");
+      if (judgedBlocked) return judgedBlocked;
+      handle = await open(judged, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    } catch (error) {
+      return toolError(`read_file could not open ${target}: ${errorMessage(error)}`);
     }
-
-    const window = await readTextFileWindow(target, input.offset, input.limit);
-    const whole = await hashAndCountLines(target);
+    let window: Awaited<ReturnType<typeof readTextFileWindow>>;
+    let whole: Awaited<ReturnType<typeof hashAndCountLines>>;
+    try {
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile()) {
+        return toolError(`read_file requires a regular file: ${target}`);
+      }
+      if (await isBinaryFile(handle)) {
+        return toolError(`read_file refused binary file: ${target}`);
+      }
+      window = await readTextFileWindow(handle, input.offset, input.limit);
+      whole = await hashAndCountLines(handle);
+      if (!judgedPathNamesOpenedFile(judged, opened)) {
+        return toolError(`read_file: ${target} changed while it was read; read it again`);
+      }
+    } finally {
+      await handle.close();
+    }
     const shown = fitReadWindow(target, input.offset, window.lines, whole.lineCount);
     const sessionId = sessionIdOf(ctx);
     if (sessionId !== undefined) {
@@ -812,7 +839,8 @@ export class ReadDocumentTool extends FileTool<typeof ReadDocumentInputSchema> {
             return documentRouteFailure(brokerFailureResult("invalid binary document response"));
           }
         } else {
-          bytes = await readPreviewDocumentInput(target, slot.signal);
+          // The document reaches the model: its bytes count only if `target`, judged above, still names the file read.
+          bytes = await readJudgedDocumentInput(target, slot.signal);
         }
         slot.signal.throwIfAborted();
         const index = selection.kind === "sheet" ? selection.sheet : selection.kind === "page" ? selection.page - 1 : 0;
@@ -1025,6 +1053,19 @@ export class GrepFilesTool extends FileTool<typeof GrepFilesInputSchema> {
   }
 }
 
+const log = createLogger("file-tools");
+
+/**
+ * Keep the line diff of a completed write for its chat card. Calls without a session and tool-use id
+ * (tests, internal callers) have no card to serve and store nothing.
+ */
+async function storeWriteDiff(ctx: ToolExecutionContext, before: string | null, after: string): Promise<boolean> {
+  const sessionId = typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
+  const toolUseId = typeof ctx.metadata?.toolUseId === "string" ? ctx.metadata.toolUseId : "";
+  if (!sessionId || !toolUseId) return false;
+  return writeDiffSidecar(sessionId, toolUseId, before, after, message => log.warn(message));
+}
+
 export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
   readonly name = "write_file";
   readonly description =
@@ -1112,30 +1153,12 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     const written = await atomicTextWrite(target, after);
     if (readSession !== undefined) await recordOwnWrite(readSession, target, after, skipSidecar ? undefined : existing.value === null ? null : before, written);
 
-    const sessionId =
-      typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
-    const toolUseId =
-      typeof ctx.metadata?.toolUseId === "string" ? ctx.metadata.toolUseId : "";
-    let hasSidecar = false;
-    if (!skipSidecar && sessionId && toolUseId) {
-      // Sidecar failures are logged internally and remain visible through truncated UI state.
-      hasSidecar = await writeDiffSidecar(sessionId, toolUseId, before, after, () => {});
-    }
-
-    const beforeBytes = Buffer.byteLength(before, "utf8");
     const afterBytes = Buffer.byteLength(after, "utf8");
-    const truncated =
-      beforeBytes > WRITE_DIFF_PREVIEW_LIMIT || afterBytes > WRITE_DIFF_PREVIEW_LIMIT;
-
-    return {
-      output: JSON.stringify({
-        path: target,
-        bytes: afterBytes,
-        ...(truncated ? { truncated: true, hasSidecar } : {}),
-      }),
-      isError: false,
-      metadata: { path: target, ...(truncated ? { truncated: true, hasSidecar } : {}) },
-    };
+    const isNewFile = existing.value === null;
+    // A skipped pre-image (oversized or binary) has no honest diff; the card then shows the path and size only.
+    const hasSidecar = skipSidecar ? false : await storeWriteDiff(ctx, isNewFile ? null : before, after);
+    const details = { path: target, bytes: afterBytes, ...(isNewFile ? { isNewFile: true } : {}), ...(hasSidecar ? { hasSidecar: true } : {}) };
+    return { output: JSON.stringify(details), isError: false, metadata: details };
   }
 }
 
@@ -1222,11 +1245,12 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
       : current.replace(oldText, () => newText);
     const written = await atomicTextWrite(target, next);
     await recordOwnWrite(fresh.value.sessionId, target, next, bytes.toString("utf8"), written);
-    return {
-      output: JSON.stringify({ path: target, replacements: input.replaceAll ? occurrences : 1 }),
-      isError: false,
-      metadata: { path: target, replacements: input.replaceAll ? occurrences : 1 },
+    const details = {
+      path: target,
+      replacements: input.replaceAll ? occurrences : 1,
+      ...(await storeWriteDiff(ctx, current, next) ? { hasSidecar: true } : {}),
     };
+    return { output: JSON.stringify(details), isError: false, metadata: details };
   }
 }
 
@@ -1290,7 +1314,8 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
       mtimeMs: fileStat.value.mtimeMs,
     });
     if (!fresh.ok) return fresh.error;
-    let next = bytes.toString("utf8");
+    const current = bytes.toString("utf8");
+    let next = current;
     let totalReplacements = 0;
     for (const [index, replacement] of input.replacements.entries()) {
       const { oldText, newText } = resolveReplacementText(next, replacement.oldText, replacement.newText);
@@ -1311,11 +1336,12 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
 
     const written = await atomicTextWrite(target, next);
     await recordOwnWrite(fresh.value.sessionId, target, next, undefined, written);
-    return {
-      output: JSON.stringify({ path: target, replacements: totalReplacements }),
-      isError: false,
-      metadata: { path: target, replacements: totalReplacements },
+    const details = {
+      path: target,
+      replacements: totalReplacements,
+      ...(await storeWriteDiff(ctx, current, next) ? { hasSidecar: true } : {}),
     };
+    return { output: JSON.stringify(details), isError: false, metadata: details };
   }
 }
 

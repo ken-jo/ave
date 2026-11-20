@@ -78,38 +78,27 @@ test.describe("workspace drag-drop add-root (#1458)", () => {
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }
 
-  test("a real drop fires the handler + real webUtils bridge and is a safe no-op under CDP (no widen)", async () => {
+  test("a real folder drop reaches the acknowledgement panel and adds no root by itself", async () => {
     const { x, y } = await openRootsZone();
-    // Use the production file-path bridge rather than a synthetic path property.
-    const bridgeType = await page.evaluate(() => typeof window.aveDrop?.resolveDroppedPaths);
-    expect(bridgeType).toBe("function");
+    const canonicalDrop = realpathSync(dropTarget);
 
-    // Synthetic drops resolve no OS-backed path; capture the real bridge result.
-    await page.evaluate(() => {
-      const w = window as unknown as { __dropResolved?: string[] };
-      const el = document.querySelector('[data-testid="chat-side-panel-project-roots"]');
-      el?.addEventListener(
-        "drop",
-        (e) => {
-          const files = (e as DragEvent).dataTransfer?.files;
-          w.__dropResolved = files ? window.aveDrop.resolveDroppedPaths(files) : ["<no-dt>"];
-        },
-        { capture: true, once: true },
-      );
-    });
+    // A native file drag: the renderer receives an OS-backed File, the preload resolves its path, main validates it.
     const cdp = await page.context().newCDPSession(page);
     const data = { items: [], files: [dropTarget], dragOperationsMask: 1 };
     await cdp.send("Input.dispatchDragEvent", { type: "dragEnter", x, y, data });
     await cdp.send("Input.dispatchDragEvent", { type: "drop", x, y, data });
     await cdp.detach();
 
-    // No resolved path means a safe no-op without acknowledgement or scope changes.
-    await expect
-      .poll(() => page.evaluate(() => (window as unknown as { __dropResolved?: string[] }).__dropResolved))
-      .toEqual([]);
-    await page.waitForTimeout(300);
-    await expect(page.getByTestId("chat-side-panel-root-warning")).toHaveCount(0);
+    // The drop only asks: the folder is named for the person to confirm, and it is not a root until they do.
+    await expect(page.getByTestId("chat-side-panel-root-warning")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-op-error")).toHaveCount(0);
+    const pending = await page.evaluate(() => window.ave.workspace.listRoots());
+    expect((pending.roots ?? []).some((r) => r.path === canonicalDrop)).toBe(false);
+
+    await page.getByTestId("chat-side-panel-root-warning-cancel").click();
+    await expect(page.getByTestId("chat-side-panel-root-warning")).toHaveCount(0);
+    const after = await page.evaluate(() => window.ave.workspace.listRoots());
+    expect((after.roots ?? []).some((r) => r.path === canonicalDrop)).toBe(false);
   });
 
   test("real pipeline: a valid dropped folder adds as a root only after an explicit ack", async () => {

@@ -43,7 +43,7 @@ function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prepend
   const require = createRequire(import.meta.url);
   const helperUrl = pathToFileURL(require.resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")).href;
   const pure = new Set(["parseWindowsBinShell", "expandWindowsFsPaths", "rankWindowsFsAccess", "parseWindowsSandboxError",
-    "windowsInstallInstructions", "windowsStateDir", "setWindowsAclRecoveryListener"]);
+    "windowsInstallInstructions", "windowsStateDir", "setWindowsAclRecoveryListener", "expandWindowsAclDenyLists", "assertWindowsAclPolicyBudget"]);
   const substitutes: Record<string, string> = {
     resolveSrtWin: "() => fixture",
     checkWindowsDependenciesAsync: "() => Promise.resolve({ errors: [], warnings: [] })",
@@ -64,6 +64,23 @@ function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prepend
   ].join("\n"));
   return adapter;
 }
+
+it.each(["expandWindowsAclDenyLists", "assertWindowsAclPolicyBudget"] as const)("runs %s without a fixture executable", async name => {
+  const root = mkdtempSync(join(os.tmpdir(), "acl-policy-adapter-"));
+  try {
+    const srtWin = { exe: process.execPath, prependArgs: [join(root, "unused.mjs")] };
+    const adapter = await import(/* @vite-ignore */ pathToFileURL(writeFixtureWindowsAdapter(root, srtWin)).href) as typeof windowsHelpers;
+    const target = join(root, "absent-control");
+    const expected = name === "expandWindowsAclDenyLists"
+      ? { denyRead: [], denyWrite: windowsHelpers.expandWindowsFsPaths([target], { mode: "deny" }), credentialDeny: [] }
+      : undefined;
+    expect(Reflect.get(adapter, name)([], [target])).toEqual(expected);
+    expect(() => adapter.stampWindowsAcl({ sandboxUserSid: "S-1-5-21-1001", denyRead: [], denyWrite: [target] }))
+      .toThrow("Fixture srtWin required");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it("runs both recovery APIs through the guarded fixture executable", async () => {
   const root = mkdtempSync(join(os.tmpdir(), "acl-recovery-adapter-"));
@@ -138,8 +155,12 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     return vi.spyOn(manager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["echo"], env: {} });
   }
 
+  function nativeDenySpelling(path: string): string {
+    return /^[A-Za-z]:[\\/]/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
+  }
+
   function paths(entries: readonly runtime.FilesystemPathEntry[] | undefined): string[] {
-    return (entries ?? []).map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
+    return (entries ?? []).map(entry => nativeDenySpelling(typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
   }
 
   it("rejects runtime helpers that omit the fixture or resolve a bundled executable", async () => {
@@ -198,13 +219,17 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       await isolatedManager.initialize({ ...next, network: { ...next.network, httpProxyPort: 18080, socksProxyPort: 18081 } });
     });
     vi.spyOn(manager, "reset").mockImplementation(() => isolatedManager.reset());
-    await initializeAsrtSandbox({});
-    expect(paths(config?.filesystem.denyRead)).toContain(target);
-    expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([
-      { path: target, holder: String(process.pid), kind: "deny-read" },
-      { path: dirname(target), holder: String(process.pid), kind: "deny-delete-child" },
-    ]);
-    await resetAsrtSandbox();
+    try {
+      await initializeAsrtSandbox({});
+      expect(paths(config?.filesystem.denyRead)).toContain(target);
+      expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([
+        { path: target, holder: String(process.pid), kind: "deny-read" },
+        { path: dirname(target), holder: String(process.pid), kind: "deny-delete-child" },
+      ]);
+    } finally {
+      // Failed initialization already awaits the same runtime reset.
+      if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    }
     expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([]);
     expect(JSON.parse(readFileSync(calls, "utf8"))).toEqual([
       { command: "recover" },
@@ -322,15 +347,21 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const late = join(workspace, kind === "glob" ? "*.secret" : "late-secret");
     await initializeAsrtSandbox({ denyRead: [initial] });
     const read = vi.mocked(denyAcl.readWindowsDenyAcls).getMockImplementation()!;
-    let wrapping: Promise<unknown> | undefined;
+    let wrapping: Promise<void> | undefined;
     vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementationOnce(paths => {
-      wrapping = wrapToolCommand("echo late", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [late] } });
+      wrapping = expect(wrapToolCommand("echo late", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [late] } }))
+        .resolves.toMatchObject({ argv: ["echo"] });
       return read(paths, "S-1-5-21-1001");
     });
-    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] }))
-      .rejects.toThrow(/obligation|glob|changed/i);
-    await wrapping;
-    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    try {
+      const grant = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] })
+        .then(held => { held.release(); return held; });
+      await expect(grant).rejects.toThrow(/obligation|glob|changed/i);
+      expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+      expect(wrapping).toBeDefined();
+    } finally {
+      await wrapping;
+    }
   });
 
   it("does not yield between obligation readback and the native grant", async () => {
@@ -558,7 +589,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       const read = buildSandboxConfig({ denyRead: [target] });
       const write = buildSandboxConfig({ allowRead: [join(machine, "Ave")], denyWrite: [target] });
       expect(read.filesystem.denyRead).toContain(target);
-      expect(write.filesystem.denyWrite).toContain(target);
+      expect(paths(write.filesystem.denyWrite)).toContain(target);
     }
   });
 
@@ -663,9 +694,11 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const absent = join(workspace, ".git", "modules");
     const next = buildSandboxConfig({ allowWrite: [workspace], denyRead: [link + sep], denyWrite: [link + sep] });
     expect(paths(next.filesystem.denyRead)).toContain(link);
-    expect(next.filesystem.denyWrite).toContainEqual({ path: present, literal: true });
+    const denyWrite = next.filesystem.denyWrite.map(entry => typeof entry === "string"
+      ? nativeDenySpelling(entry) : { ...entry, path: nativeDenySpelling(entry.path) });
+    expect(denyWrite).toContainEqual({ path: present, literal: true });
     expect(paths(next.filesystem.denyWrite)).toContain(link);
-    expect(next.filesystem.denyWrite).toContainEqual({ path: absent, literal: true });
+    expect(denyWrite).toContainEqual({ path: absent, literal: true });
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 

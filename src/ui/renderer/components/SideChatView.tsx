@@ -6,7 +6,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { TranscriptRenderer } from "./TranscriptRenderer.js";
-import { Composer, ComposerFrame, captureComposerKeyboardIntent, type ComposerHandle } from "./Composer.js";
+import { Composer, ComposerFrame, captureComposerKeyboardIntent, composerDropZoneProps, type ComposerHandle } from "./Composer.js";
 import { BoundSurfaceChip, type BoundSurface } from "./BoundSurfaceChip.js";
 import { registerComposerTarget } from "../preview/composer-targets.js";
 import { ComposerApiKeyChip, resolveComposerRuntimeGates } from "./ChatComposerDock.js";
@@ -18,10 +18,11 @@ import { useChatScroll } from "../hooks/use-chat-scroll.js";
 import { useMessageQueue } from "../hooks/use-message-queue.js";
 import type { ComposerSendOptions } from "../hooks/use-send-message.js";
 import { useAttachmentPicker } from "../hooks/use-attachment-picker.js";
+import { useAttachmentReclaim } from "../hooks/use-attachment-reclaim.js";
 import { computeComposerPlaceholder } from "../utils/composer-placeholder.js";
 import { composeOutgoing } from "../utils/compose.js";
 import { collectPromptHistory } from "../utils/prompt-history.js";
-import { ATTACH_MAX_COUNT, type Attachment } from "../types/attachments.js";
+import { attachmentSlotsFull, type Attachment } from "../types/attachments.js";
 import type { AveApi } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { useOptionalChatContext, type ChatContextValue } from "../context/ChatContext.js";
@@ -30,7 +31,7 @@ import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
 import { ApprovalDock } from "./permissions/ApprovalDock.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { sessionOwnedBy } from "./chat-group-session-registry.js";
-import { formatIpcError } from "../format-ipc-error.js";
+import { attachmentRejectionMessage, formatIpcError } from "../format-ipc-error.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-display-level.js";
 import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
@@ -39,6 +40,7 @@ import { ComposerContextNotice } from "./ComposerContextNotice.js";
 import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
 import { NoticeLiveRegion, StatusBar } from "./StatusBar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
+import type { AttachmentRejection } from "../../../shared/attachment-rejection.js";
 
 /**
  * A sidebar row asking one tile to show a stored side chat.
@@ -214,7 +216,7 @@ function SideChatSession({
     const current = claimRef.current!;
     onSessionClaimRef.current?.(() => current.claims.isClaimCurrent(`side-chat:${next}`, current.ownsSession));
   }, [approvals.claims, hasCurrentClaim]);
-  const { persistent, visibleToast, pendingCount, upsertToast, removeToast } = useStatusNotices();
+  const { persistent, visibleToast, pendingCount, pushToast, upsertToast, removeToast } = useStatusNotices();
   const handleToastDismiss = useCallback((toast: ToastItem) => removeToast(toast.id), [removeToast]);
   const announceProviderFallback = useCallback((message: string) => {
     upsertToast("provider-fallback", { severity: "warning", message, ttlMs: DEFAULT_TOAST_TTL_MS });
@@ -321,8 +323,12 @@ function SideChatSession({
   useEffect(() => () => publishSideChatSurface?.(null), [publishSideChatSurface]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // This side chat clears its composer when it sends and never puts a draft back, so nothing needs holding during a send.
+  useAttachmentReclaim(attachments);
   const attachmentNCounter = useRef(0);
   const composerRef = useRef<ComposerHandle | null>(null);
+  // The whole side chat is the drop target, as the conversation column is for the main chat.
+  const composerDropZone = useMemo(() => composerDropZoneProps(composerRef), []);
   const shellTasksApi = useMemo(() => ({
     chatListShellTasks: sideChat.listShellTasks,
     chatControlShellTask: sideChat.controlShellTask,
@@ -461,16 +467,38 @@ function SideChatSession({
     handleComposerSend(captureComposerKeyboardIntent());
   }, [handleComposerSend]);
 
+  // Composer refusals are about this side chat, so they are drawn in its own status row, as the main chat draws its own.
+  const showComposerWarning = useCallback((message: string) => {
+    pushToast({ severity: "warning", message, ttlMs: 8000 });
+  }, [pushToast]);
+  const attachmentUnavailableProvider = subscriptionRuntimePolicy?.provider
+    ?? runtimeImageAttachmentProvider
+    ?? runtimeFileAttachmentProvider
+    ?? "subscription";
+  const emitAttachmentUnavailable = useCallback(() => {
+    showComposerWarning(t("app.subscriptionAttachmentUnsupported", { provider: attachmentUnavailableProvider }));
+  }, [attachmentUnavailableProvider, showComposerWarning, t]);
+  const emitImageAttachmentLimitExceeded = useCallback(() => {
+    showComposerWarning(t("app.subscriptionImageAttachmentLimitExceeded", { provider: attachmentUnavailableProvider }));
+  }, [attachmentUnavailableProvider, showComposerWarning, t]);
+  const emitPastedTextClipped = useCallback((info: { keptChars: number; totalChars: number }) => {
+    showComposerWarning(t("app.pastedTextClipped", { keptChars: info.keptChars, totalChars: info.totalChars }));
+  }, [showComposerWarning, t]);
+  const emitAttachmentRejected = useCallback((rejections: readonly AttachmentRejection[]) => {
+    showComposerWarning(attachmentRejectionMessage(rejections));
+  }, [showComposerWarning]);
   const { handleAttach, handleDropFiles, attachPastedText, attachImage } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion: setDraft,
     composerRef,
-    // Same channel as this surface's other composer warnings.
-    onDropRejected: (count) => console.warn(`${count} dropped item(s) were not attached`),
+    onAttachmentRejected: emitAttachmentRejected,
     imagesEnabled,
     filesEnabled,
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
+    onAttachmentUnavailable: emitAttachmentUnavailable,
+    onImageAttachmentLimitExceeded: emitImageAttachmentLimitExceeded,
+    onPastedTextClipped: emitPastedTextClipped,
   });
 
   // This side chat's composer, as a place a terminal block in the same side panel can be attached to — while it is the tab
@@ -509,7 +537,7 @@ function SideChatSession({
   }, [chatGroupId]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope>
+    <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope {...composerDropZone}>
       <div className="flex shrink-0 items-center justify-between border-b px-3 py-1.5">
         <span className="text-dense font-semibold uppercase tracking-wider text-muted-foreground">
           {t("chatPreviewRail.sideChat.title")}
@@ -616,7 +644,7 @@ function SideChatSession({
             onAttachmentsChange={setAttachments}
             allocateN={allocateN}
             saveClipboardImage={(b64) => window.ave.attach.saveClipboardImage(b64)}
-            discardClipboardImage={(filePath) => window.ave.attach.discardClipboardImage(filePath)}
+            discardClipboardImage={(filePath) => window.ave.attach.release([filePath])}
             openExternal={(p) => window.ave.attach.openExternal(p)}
             imagesEnabled={imagesEnabled}
             filesEnabled={filesEnabled}
@@ -628,7 +656,9 @@ function SideChatSession({
             onSelectPlugin={NOOP_SELECT_PLUGIN}
             disabled={composerInputDisabled}
             sendDisabled={composerSendDisabled}
-            onWarning={(message) => console.warn(message)}
+            onWarning={showComposerWarning}
+            onImageAttachmentUnavailable={emitAttachmentUnavailable}
+            onImageAttachmentLimitExceeded={emitImageAttachmentLimitExceeded}
             placeholder={computeComposerPlaceholder({
               hasApiKey,
               streaming: isStreaming,
@@ -647,7 +677,7 @@ function SideChatSession({
             <AttachButton
               onAttach={handleAttach}
               disabled={
-                attachments.length >= ATTACH_MAX_COUNT ||
+                attachmentSlotsFull(attachments) ||
                 !attachmentInputsReady ||
                 hasApiKey === false ||
                 (!imagesEnabled && !filesEnabled)

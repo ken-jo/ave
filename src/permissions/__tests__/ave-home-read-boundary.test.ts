@@ -214,7 +214,8 @@ describe.each(["linux", "darwin"] as const)("the Ave home read boundary in %s wr
       denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
     });
     for (const grant of spelled(config?.filesystem?.allowRead ?? [])) expect(reaches(grant, stagedFile()), grant).toBe(false);
-    expect(spelled(config?.filesystem?.denyWrite ?? [])).toContain(stagingDir());
+    const stagingDeny = platform === "darwin" && sep === "\\" ? stagingDir().replaceAll("\\", "/") : stagingDir();
+    expect(spelled(config?.filesystem?.denyWrite ?? [])).toContain(stagingDeny);
     if (platform === "linux") for (const root of spelled(config?.filesystem?.allowWrite ?? [])) expect(reaches(root, stagedFile()), root).toBe(false);
   });
 

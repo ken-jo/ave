@@ -8,6 +8,7 @@ import {
   AttachmentOverlay,
   PASTE_PREVIEW_MAX_CHARS,
 } from "../AttachmentChip.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import type {
   Attachment,
   ImageAttachment,
@@ -96,14 +97,14 @@ describe("AttachmentChip (single)", () => {
   it("renders paste chip with line count label", () => {
     render(<AttachmentChip attachment={paste3} total={1} />);
     const badge = screen.getByTestId("chip-count-badge");
-    expect(badge.textContent).toContain("+12 lines");
+    expect(badge.textContent).toContain(t("attachmentChip.pasteLines", { count: 12 }));
   });
 });
 
 describe("AttachmentChipCollapsed", () => {
   it("renders the stacked trigger with N/MAX", () => {
     const list: Attachment[] = [img1, file2];
-    render(<AttachmentChipCollapsed attachments={list} />);
+    render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
     expect(screen.getByTestId("attachment-chip-collapsed")).toBeTruthy();
     const badge = screen.getByTestId("chip-count-badge");
     expect(badge.textContent).toContain("2/5");
@@ -111,7 +112,7 @@ describe("AttachmentChipCollapsed", () => {
 
   it("opens the overlay when the trigger is clicked", () => {
     const list: Attachment[] = [img1, file2, paste3];
-    render(<AttachmentChipCollapsed attachments={list} />);
+    render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
     fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
     expect(screen.getByTestId("attachment-overlay")).toBeTruthy();
     const items = screen.getAllByTestId("overlay-item");
@@ -120,7 +121,7 @@ describe("AttachmentChipCollapsed", () => {
 
   it("marks the badge as full at MAX", () => {
     const list: Attachment[] = [img1, img1, img1, img1, img1];
-    render(<AttachmentChipCollapsed attachments={list} />);
+    render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
     const badge = screen.getByTestId("chip-count-badge");
     expect(badge.className).toMatch(/destructive/);
     expect(badge.textContent).toContain("5/5");
@@ -133,7 +134,7 @@ describe("AttachmentChipCollapsed", () => {
         id: `i${i}`,
         n: i + 1,
       }));
-      const { unmount } = render(<AttachmentChipCollapsed attachments={list} />);
+      const { unmount } = render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
       const stack = screen.getByTestId("chip-stack");
       expect(stack.getAttribute("data-layers")).toBe(String(count));
       unmount();
@@ -162,7 +163,7 @@ describe("AttachmentChip — single, clickable", () => {
   });
 
   it("shows no text block for attachments that are not pasted text", () => {
-    render(<AttachmentChipCollapsed attachments={[img1, file2]} />);
+    render(<AttachmentChipCollapsed attachments={[img1, file2]} slotsUsed={2} />);
     fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
     expect(screen.queryByTestId("overlay-paste-text")).toBeNull();
   });
@@ -174,7 +175,7 @@ describe("AttachmentChip — single, clickable", () => {
     expect(screen.getByTestId("attachment-overlay")).toBeTruthy();
     const items = screen.getAllByTestId("overlay-item");
     expect(items.length).toBe(1);
-    expect(screen.getByText("Image #1")).toBeTruthy();
+    expect(screen.getByText(t("attachmentChip.imageLabel", { n: 1 }))).toBeTruthy();
   });
 
   it("forwards onOpenExternal from the overlay's open button", () => {
@@ -196,9 +197,9 @@ describe("AttachmentOverlay", () => {
   it("lists each attachment with its N label and collapsed path", () => {
     const list: Attachment[] = [img1, file2, paste3];
     render(<AttachmentOverlay attachments={list} />);
-    expect(screen.getByText("Image #1")).toBeTruthy();
-    expect(screen.getByText("File #2")).toBeTruthy();
-    expect(screen.getByText("Pasted text #3")).toBeTruthy();
+    expect(screen.getByText(t("attachmentChip.imageLabel", { n: 1 }))).toBeTruthy();
+    expect(screen.getByText(t("attachmentChip.fileLabel", { n: 2 }))).toBeTruthy();
+    expect(screen.getByText(t("attachmentChip.pasteLabel", { n: 3 }))).toBeTruthy();
   });
 
   it("invokes onOpenExternal callback for non-paste items", () => {
@@ -245,5 +246,82 @@ describe("AttachmentOverlay", () => {
     render(<AttachmentOverlay attachments={[]} />);
     const body = screen.getByTestId("attachment-overlay-body");
     expect(within(body).getByText("첨부 0개")).toBeTruthy();
+  });
+});
+
+describe("attachment labels follow the app language", () => {
+  it("names each kind in English and in Korean, on the chip and in the list", () => {
+    const previousLocale = getLocale();
+    try {
+      setLocale("en");
+      const en = render(<AttachmentOverlay attachments={[img1, file2, paste3]} />);
+      expect(en.getByAltText("Image #1")).toBeTruthy();
+      expect(en.getByText("Image #1")).toBeTruthy();
+      expect(en.getByText("File #2")).toBeTruthy();
+      expect(en.getByText("Pasted text #3")).toBeTruthy();
+      expect(en.getByText(`+${paste3.lines} lines · ${paste3.chars} chars`)).toBeTruthy();
+      en.unmount();
+
+      setLocale("ko");
+      const ko = render(<AttachmentOverlay attachments={[img1, file2, paste3]} />);
+      expect(ko.getByAltText("이미지 #1")).toBeTruthy();
+      expect(ko.getByText("이미지 #1")).toBeTruthy();
+      expect(ko.getByText("파일 #2")).toBeTruthy();
+      expect(ko.getByText("붙여넣은 텍스트 #3")).toBeTruthy();
+      expect(ko.getByText(`+${paste3.lines}줄 · ${paste3.chars}자`)).toBeTruthy();
+      ko.unmount();
+
+      const chip = render(<AttachmentChip attachment={paste3} total={1} />);
+      expect(chip.getByTestId("chip-count-badge").textContent).toBe(`+${paste3.lines}줄 · 1/5`);
+      chip.unmount();
+      const stack = render(<AttachmentChipCollapsed attachments={[img1, img1, img1, img1, img1]} slotsUsed={5} />);
+      expect(stack.getByTestId("chip-count-badge").textContent).toBe("5/5 가득 참");
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+});
+
+describe("attachment remove buttons", () => {
+  it("puts a named remove button beside a single chip, not inside it", () => {
+    const onRemove = vi.fn();
+    render(<AttachmentChip attachment={file2} total={1} onRemove={onRemove} />);
+    const chip = screen.getByTestId("attachment-chip");
+    const remove = screen.getByRole("button", { name: t("attachmentChip.removeAttachment", { label: file2.name }) });
+    expect(remove).toBe(screen.getByTestId("attachment-chip-remove"));
+    // A button inside a button is invalid and unreachable by keyboard.
+    expect(chip.contains(remove)).toBe(false);
+    fireEvent.click(remove);
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    // Removing is not opening: the info popover stays closed.
+    expect(screen.queryByTestId("attachment-overlay")).toBeNull();
+  });
+
+  it("names an image and a pasted text by kind and number", () => {
+    const image = render(<AttachmentChip attachment={img1} total={1} onRemove={vi.fn()} />);
+    expect(image.getByTestId("attachment-chip-remove").getAttribute("aria-label"))
+      .toBe(t("attachmentChip.removeAttachment", { label: t("attachmentChip.imageLabel", { n: 1 }) }));
+    image.unmount();
+    render(<AttachmentChip attachment={paste3} total={1} onRemove={vi.fn()} />);
+    expect(screen.getByTestId("attachment-chip-remove").getAttribute("aria-label"))
+      .toBe(t("attachmentChip.removeAttachment", { label: t("attachmentChip.pasteLabel", { n: 3 }) }));
+  });
+
+  it("shows no remove button where nothing can remove the attachment", () => {
+    render(<AttachmentChip attachment={img1} total={1} />);
+    expect(screen.queryByTestId("attachment-chip-remove")).toBeNull();
+  });
+
+  it("gives every row of a stacked chip's list its own remove button", () => {
+    const onRemove = vi.fn();
+    render(<AttachmentChipCollapsed attachments={[img1, file2, paste3]} slotsUsed={3} onRemove={onRemove} />);
+    fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
+    const buttons = screen.getAllByTestId("overlay-item-remove");
+    expect(buttons).toHaveLength(3);
+    fireEvent.click(within(screen.getAllByTestId("overlay-item")[1]).getByRole("button", {
+      name: t("attachmentChip.removeAttachment", { label: file2.name }),
+    }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect(onRemove).toHaveBeenCalledWith(file2);
   });
 });

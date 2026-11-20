@@ -774,7 +774,7 @@ export interface ChatSidePanelProps {
   changes?: WorkspaceChanges;
   revealRequest?: FileWorkspaceReveal | null;
   onReference?: (reference: FileMentionReference) => void;
-  onFileReference?: (path: string) => void;
+  onFileReference?: (path: string) => AttachTextResult;
   selectedId: string | null;
   onSelect: (id: string) => void;
   /**

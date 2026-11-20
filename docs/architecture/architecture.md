@@ -541,6 +541,121 @@ the open. The folder view's open also requires a user gesture
 (`user-keyboard-required` otherwise). This is a user action: it emits
 no agent observation and grants no document write authority.
 
+"Open in editor" (`workspace.openInEditor`, offered by the folder view's
+viewer header and by the file rows of the folder view and the side panel's
+tree) hands a project file to the editor command the user set in
+`documents.editorCommand`. It passes the same admission as
+`workspace.openPath` and runs the same sequence with a different hand-off: a
+text editor reads a file as text, so the allowed-extension list and the
+execute-bit refusal do not apply, while the link-chain walk, the sensitive-path
+floor, project containment, the regular-file requirement and the second
+resolution all do. Main splits the command into a program and arguments
+(blanks separate, quotes group, nothing else is special), fills `{file}` and
+`{line}` in afterwards as whole arguments using the verified real path, and
+starts the program directly, never through a shell, detached and without the
+app's own environment variables. The program is an absolute path or a bare name
+found in an absolute `PATH` folder; a relative program is refused
+(`invalid-command`), because it would resolve against the app's working
+folder. With no command set the answer is `not-configured`, and the renderer
+shows that sentence with a button that opens the setting. The command is
+written only through `settings.update` from the settings screen; the settings
+file is on the sensitive floor, so no tool can write it.
+
+"Edit" in the folder view's viewer header edits a project file's text in the
+app (`workspace.readForEdit`, `workspace.saveEdit`). Both calls pass the
+admission of `workspace.openPath` and the same twice-resolved target; the last
+step reads or replaces the file in main instead of starting a program. They are
+the person's own actions: no tool, no approval card and no node in the
+permission tree. The save also passes the write guard (sensitive floor and
+project scope) on the verified real path.
+
+- **What is editable.** Main reads the file and refuses one a text box cannot
+  give back byte for byte: over 1 MiB (`too-large`), not valid UTF-8 or
+  containing NUL (`not-text`), more than one line-ending style
+  (`mixed-line-endings`), or a link, a file with a second hard link or a
+  special file (`not-editable`). The viewer shows the reason and the person's
+  editor takes the file. See [`editable-text.ts`](../../src/shared/editable-text.ts).
+- **What is saved.** The renderer holds the text with `\n` line breaks and the
+  hash of the bytes it was read at. On save main reads the file again, refuses
+  with `changed` when the hash differs (nothing is written, the draft stays),
+  and otherwise writes the text in the file's own line ending and byte order
+  mark through a staged file and a rename, keeping the file's mode. The hash,
+  the sender and the project grant are judged again immediately before the
+  rename, which is attempted once; the instant between that check and the
+  rename is the one window the platform leaves open.
+- **Checkpoints.** The save runs inside the code checkpoints' exclusive
+  section, so it never lands between a tool's capture and its write. Its effect
+  on the ledger is described in [code rewind](../design/code-rewind.md).
+- **Drafts.** Unsaved text is kept per path for the life of the window, so
+  choosing another file does not drop it. Saving or discarding ends it; neither
+  asks first. While a save is on its way the text is locked, also after
+  leaving the file and coming back, so its answer never ends a newer draft.
+
+Three host-only stores sit behind these surfaces:
+
+- **Stored write diffs.** The diff of each file write is kept under
+  `AVE_HOME/diff-cache/<session>/` for the person's diff cards and read only by
+  main. It holds lines of the changed files, so the directory is on the
+  sensitive floor and admission-denied for every tool, read and write, in every
+  mode, like the credential stores.
+- **Key-extension files.** A `.pem` or `.key` name is opened to see whether it
+  holds a private key only inside a project (the default project, the
+  additional directories and the folders live conversations work in) or when
+  it is a file the person picked, dropped or pasted, for as long as that
+  attachment is held. It is read through one handle, up to 1 MiB, opened
+  without following a link in its last name where the platform can refuse one
+  (Windows cannot). Anywhere else, and whenever the file is a link, a
+  special file, unreadable or longer than what was read, the name alone makes
+  it sensitive, whatever format its first bytes announce: an archive's stored
+  entries hold plain text. A folder under such a name is not a key. That
+  fail-closed answer is the agent's: its reads ask. What the person does
+  themselves (the folder view's listing and viewer, a dropped attachment,
+  opening the file in another program) hides or refuses only a file that was seen to
+  hold a private-key header, so a large presentation document stays listed,
+  attachable and openable. Bytes that reach the model are still the agent's
+  read: an attached image's bytes become part of the message, so the bytes
+  read are themselves judged for the agent before they leave. Where the host
+  may not look inside, the name decides for the person too. Name and location
+  rules (`.ssh`, `.gnupg`, the Ave home's `secrets/`, a key-extension name) are
+  judged on a path, but the bytes come from the file the handle opened, and a
+  folder or the last name may lead elsewhere just while it is opened. So after
+  the read, with the handle still open, the judged path is resolved again: it
+  must resolve to itself and name that very regular file (same device and file
+  number), or the bytes are refused (`changed` for an attached image,
+  `unknown` key evidence). This runs on every platform and is the only guard
+  where the open follows a link in the last name (Windows). It is two lookups,
+  because Node cannot name an open handle's path on macOS or Windows, so a path
+  switched to another file and back between them is not seen; nor is a hard
+  link that stays in an unprotected folder. The same check binds these other
+  host reads to the path they judged: a previewed file or document the agent
+  then observes, and the agent's `read_file`, `read_document` and
+  `view_image`, which read the real path they judged (`read_file` makes every
+  pass over the text through one handle), and `grep_files`. Ripgrep's search
+  of the tree only names the files that match; each is judged on its real
+  path, which must lie under the searched root's, read by the host through one
+  bound handle, and searched again by ripgrep on those bytes alone, decoded
+  and held back as binary as in a file it reads itself, so every line, count
+  and match shown comes from them. Reads that need no such binding: a
+  windowed preview, which only the person sees; the edit tools, which return
+  no file text and accept only bytes whose hash matches a bound `read_file`
+  or the tool's own last write; the current side of a turn-change excerpt,
+  compared with the hash its change recorded; a document the agent observes
+  after its own change, compared with that change's hash; a plain file
+  mention, which sends only the path for the agent's own `read_file`. Not
+  bound: the earlier side of a turn-change excerpt, captured by path just
+  before the agent's write and checked afterwards only against the hash it
+  was stored with; and the names `list_files` and `glob_files` find by
+  walking folders, since Node cannot open a name relative to an open folder. For an agent tool, the rules judged when it
+  runs are the admission and directory ones; the other secret-file rules are
+  decided before the call, by the permission tree.
+- **Clipboard images.** A pasted image is written to a per-profile private
+  directory together with a receipt of the file's identity. Release and the
+  start sweep delete only a file a receipt names and whose identity still
+  matches, taken under a fresh name first. Anything else found there is kept:
+  a hard link gives it its name back, and where none can be made it stays whole
+  under the fresh name; it is never moved back over its old name. A directory
+  without a receipt is left alone whatever it is called.
+
 `folder` is an instance view and a main-surface kind. A folder surface belongs
 to one project, is saved in the v2 main layout with its folder and selection,
 and is neither an agent tool surface nor movable to a side panel. Its listing

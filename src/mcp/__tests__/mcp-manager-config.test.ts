@@ -6,6 +6,16 @@ import { join } from "node:path";
 import { readFile, writeFile, mkdir, rm, rename, readdir } from "node:fs/promises";
 import { existsSync, promises as fileSystem } from "node:fs";
 
+const persistence = vi.hoisted(() => ({ platform: process.platform, immediateBackoff: false }));
+vi.mock("node:process", async original => {
+  const actual = await original<typeof import("node:process")>();
+  return { ...actual, get platform() { return persistence.platform; } };
+});
+vi.mock("../../shared/abortable-deadline.js", async original => {
+  const actual = await original<typeof import("../../shared/abortable-deadline.js")>();
+  return { ...actual, sleep: (...args: Parameters<typeof actual.sleep>) => persistence.immediateBackoff ? Promise.resolve() : actual.sleep(...args) };
+});
+
 vi.mock("node:fs/promises", async () => {
   const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
   return {
@@ -60,6 +70,7 @@ import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.
 import { previewStudioConnector } from "../../studio/connector.js";
 import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey } from "../bundled-credential.js";
 import { studioExportFiles } from "../../studio/package.js";
+import { BACKGROUND_ATTEMPTS } from "../../lib/transient-fs-lock-retry.js";
 
 const testDir = join(tmpdir(), `ave-mcp-test-${process.pid}`);
 const testConfigPath = join(testDir, "mcp-servers.json");
@@ -87,6 +98,8 @@ async function makeManager(bundledSecrets?: { getSecret(key: string): string | n
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  persistence.platform = process.platform;
+  persistence.immediateBackoff = false;
   storedSecrets.clear();
   secretStore.setSecret.mockImplementation(async (key, value) => { storedSecrets.set(key, value); });
   mockValidateServer.mockImplementation(() => ({ valid: true as const }));
@@ -759,18 +772,23 @@ describe("McpManager encrypted user credentials", () => {
     expect(await readFile(testConfigPath, "utf-8")).toBe(content);
   });
 
-  it("preserves legacy bytes when the scrub write fails after storing the secret", async () => {
+  it.each(["host", "win32"] as const)("preserves legacy bytes when the scrub write fails after storing the secret under %s semantics", async platform => {
     const content = JSON.stringify({ servers: [{ ...server, apiKey: "throwaway-legacy-key" }] });
     await writeFile(testConfigPath, content);
-    const renameSpy = vi.spyOn(fileSystem, "rename").mockRejectedValueOnce(Object.assign(new Error("File write refused"), { code: "EACCES" }));
+    const renameSpy = vi.spyOn(fileSystem, "rename").mockRejectedValue(Object.assign(new Error("File write refused"), { code: "EACCES" }));
     try {
+      persistence.platform = platform === "win32" ? "win32" : process.platform;
+      persistence.immediateBackoff = true;
       const manager = await makeManager();
       await expect(manager.loadFromConfig()).rejects.toMatchObject({ code: "mcp-credential-migration-failed" });
       expect(await readFile(testConfigPath, "utf-8")).toBe(content);
       expect(storedSecrets.get("mcp.server.apiKey.private-server")).toBe("throwaway-legacy-key");
       expect(mockConnect).not.toHaveBeenCalled();
+      expect(renameSpy).toHaveBeenCalledTimes(persistence.platform === "win32" ? BACKGROUND_ATTEMPTS : 1);
     } finally {
       renameSpy.mockRestore();
+      persistence.platform = process.platform;
+      persistence.immediateBackoff = false;
     }
   });
 

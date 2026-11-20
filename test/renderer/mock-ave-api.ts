@@ -637,6 +637,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     chatSessionUpdate: vi.fn(async () => ({ ok: true as const })),
     chatGetTurnReview: vi.fn(async (sessionId: string): Promise<TurnReviewResult> => typeof overrides.turnReview === "function"
       ? overrides.turnReview(sessionId) : overrides.turnReview ?? { ok: false, error: "turn-review-unavailable" }),
+    chatDecideTurnReview: vi.fn(async (): Promise<TurnReviewResult> => ({ ok: false, error: "turn-review-unavailable" })),
     chatCompact: vi.fn(async () => ({ compacted: false, compactedAt: null, summary: "불필요", removedMessageCount: 0 })),
     chatMainActiveState: vi.fn(async () => mainActiveState),
     chatGetHistory: vi.fn(async () => {

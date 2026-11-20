@@ -8,11 +8,30 @@ import { dirname, join, resolve } from "node:path";
 
 if (process.platform !== "win32") throw new Error("This test requires Windows");
 const helper = resolve(`resources/windows-path-kind/${process.arch}/ave-path-kind.exe`);
+const replyDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+function runWithInput(args, input) {
+  const result = spawnSync(helper, args, { input, windowsHide: true, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+  if (result.error) throw result.error;
+  return { code: result.status, stdout: replyDecoder.decode(result.stdout), stderr: replyDecoder.decode(result.stderr) };
+}
 
 function run(...args) {
-  const result = spawnSync(helper, args, { encoding: "utf8", windowsHide: true, timeout: 10_000 });
-  if (result.error) throw result.error;
-  return { code: result.status, stdout: result.stdout, stderr: result.stderr };
+  return runWithInput(args);
+}
+
+function uint32(value) {
+  const bytes = Buffer.alloc(4);
+  bytes.writeUInt32LE(value);
+  return bytes;
+}
+
+function daclFrame(operands) {
+  const body = Buffer.concat([uint32(operands.length), ...operands.flatMap(path => {
+    const bytes = Buffer.from(path, "utf8");
+    return [uint32(bytes.length), bytes];
+  })]);
+  return Buffer.concat([uint32(body.length), body]);
 }
 
 const systemDirectoryResult = run("--system-directory");
@@ -21,12 +40,12 @@ assert.equal(systemDirectoryResult.stderr, "");
 assert.match(systemDirectoryResult.stdout, /^[a-z]:\\[^\r\n]+\r?\n$/iu);
 const systemDirectory = systemDirectoryResult.stdout.replace(/\r?\n$/u, "");
 const spoofedDirectory = spawnSync(helper, ["--system-directory"], {
-  encoding: "utf8", windowsHide: true, shell: false, timeout: 10_000,
+  windowsHide: true, shell: false, timeout: 10_000,
   env: { SystemRoot: "Z:\\untrusted-root", WINDIR: "Y:\\untrusted-root", PATH: "X:\\untrusted-path" },
 });
 assert.ifError(spoofedDirectory.error);
-assert.equal(spoofedDirectory.status, 0, spoofedDirectory.stderr);
-assert.equal(spoofedDirectory.stdout, systemDirectoryResult.stdout, "parent system variables cannot change the OS directory answer");
+assert.equal(spoofedDirectory.status, 0, replyDecoder.decode(spoofedDirectory.stderr));
+assert.equal(replyDecoder.decode(spoofedDirectory.stdout), systemDirectoryResult.stdout, "parent system variables cannot change the OS directory answer");
 const runtimeSystemDirectory = execFileSync(join(systemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe"),
   ["-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write([Environment]::SystemDirectory)"],
   { encoding: "utf8", windowsHide: true, shell: false, timeout: 10_000,
@@ -281,6 +300,33 @@ public static class FixtureReparse {
   assert.equal(typeof dacl.owner, "string");
   assert.ok(Array.isArray(dacl.aces));
   assert.ok(dacl.parent);
+
+  const bulkPaths = Array.from({ length: 160 }, (_, index) => join(fixture, `absent ${index} é`).padEnd(253, "x"));
+  assert.ok(bulkPaths.every(path => path.length === 253));
+  assert.ok(bulkPaths.reduce((length, path) => length + path.length, 0) > 32_767);
+  const request = [file, ...bulkPaths];
+  const args = ["--dacl", "--parent", "--stdin"];
+  const framed = runWithInput(args, daclFrame(request));
+  assert.equal(framed.code, 0, framed.stderr);
+  const framedRows = JSON.parse(framed.stdout);
+  assert.deepEqual(framedRows.map(({ requestPath }) => requestPath), request);
+  assert.deepEqual(framedRows[0].identity, dacl.identity);
+  assert.deepEqual(framedRows[0].parent, dacl.parent);
+  assert.ok(framedRows.slice(1).every(row => row.exists === false && row.parent !== null));
+
+  const complete = daclFrame([file]);
+  for (const input of [complete.subarray(0, -1), Buffer.concat([complete, Buffer.from([0])]),
+    Buffer.concat([uint32(4), uint32(2049)]), uint32(1024 * 1024 + 1),
+    daclFrame([Buffer.from([0xc0, 0x80])]), daclFrame([`${file}\0suffix`])]) {
+    const invalid = runWithInput(args, input);
+    assert.equal(invalid.code, 2, "malformed frames are refused");
+    assert.equal(invalid.stdout, "", "malformed frames emit no facts");
+  }
+  assert.equal(runWithInput([...args, file], complete).code, 2, "stdin and argv cannot be mixed");
+  const lateFailure = runWithInput(args, daclFrame([file, join(fixture, "invalid|target")]));
+  assert.equal(lateFailure.code, 4);
+  assert.equal(lateFailure.stdout, "", "a failed late snapshot emits no partial batch");
+
   const writer = openSync(file, "r+");
   try {
     const locked = run("--dacl", "--parent", "--content", file);

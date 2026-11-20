@@ -21,7 +21,7 @@ vi.mock("electron", () => ({
 }));
 
 const mockReadDiffSidecar = vi.fn<
-  (sessionId: string, toolUseId: string) => Promise<{ before: string; after: string } | null>
+  (sessionId: string, toolUseId: string) => Promise<import("../../../shared/line-diff.js").WriteDiffRecord | null>
 >();
 
 vi.mock("../../../tools/write-diff-cache.js", () => ({
@@ -149,13 +149,14 @@ describe("ave:chat:get-write-diff", () => {
     mockReadDiffSidecar.mockReset();
   });
 
-  it("returns { before, after } when sidecar exists and sessionId matches", async () => {
+  it("returns the stored diff record when the sidecar exists", async () => {
     const loop = makeConversationLoop(SESSION_ID);
     await setupHandlers(loop);
-    mockReadDiffSidecar.mockResolvedValue({ before: "old content", after: "new content" });
+    const record = { version: 2 as const, isNewFile: false, view: { hunks: [], added: 0, removed: 0, truncated: false } };
+    mockReadDiffSidecar.mockResolvedValue(record);
 
     const result = await invokeRegisteredHandler(handlers, CHANNEL, { sessionId: SESSION_ID, toolUseId: TOOL_USE_ID });
-    expect(result).toEqual({ before: "old content", after: "new content" });
+    expect(result).toEqual(record);
     expect(mockReadDiffSidecar).toHaveBeenCalledWith(SESSION_ID, TOOL_USE_ID);
   });
 

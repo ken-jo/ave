@@ -3,6 +3,7 @@ import { ThemeWrapper } from "./mcp-app-test-helpers.js";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { notifyWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
 import { useLayoutEffect, useState, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalRequest, AveApi } from "../../types.js";
@@ -32,6 +33,7 @@ import type { SideChatOpenRequest } from "../SideChatView.js";
 import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../../../shared/subagent-transcript.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
+import { handleFolderViewAtRequests, handleSettingsSectionRequests } from "../../utils/app-shell-requests.js";
 
 type ChildTranscriptResult = Awaited<ReturnType<NonNullable<AveApi["chatGetSubAgentTranscript"]>>>;
 
@@ -54,11 +56,6 @@ let previousWindowAve: unknown;
 const showNativeContextMenu = vi.fn(async (_payload: NativeContextMenuPayload) => ({
   ok: true as const,
 }));
-function emitLastNativeContextCommand(command: NativeContextMenuAction["command"]) {
-  const payload = showNativeContextMenu.mock.calls.at(-1)?.[0];
-  if (!payload) throw new Error("native context menu was not requested");
-  nativeContextActionHandler?.({ requestId: payload.requestId, command });
-}
 
 function api(native = nativeSurfaceFixture()): AveApi {
   return {
@@ -156,8 +153,10 @@ function HarnessPanel({
   sideChatPendingAnswer,
   sideChatWorking,
   sideChatOpenRequest,
+  onFileReference,
   pendingApprovals,
 }: {
+  onFileReference?: (path: string) => boolean | "no-composer";
   api: AveApi;
   sessionId?: string;
   targets: ChatPreviewTarget[];
@@ -183,6 +182,7 @@ function HarnessPanel({
   if (!panelMounted) return null;
   return (
     <ChatSidePanel
+      onFileReference={onFileReference}
       api={api}
       {...(pendingApprovals === undefined ? {} : { pendingApprovals })}
       sessionId={sessionId}
@@ -1260,7 +1260,7 @@ describe("ChatSidePanel", () => {
       removed: "/ws/proj",
       roots: [{ path: "/ws", isDefault: true }],
     }));
-    const writeText = vi.fn();
+    const writeText = vi.fn(async (_text: string) => undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText }, platform: "MacIntel" });
     const currentAve =
       (window as unknown as { ave?: Record<string, unknown> }).ave ?? {};
@@ -1373,6 +1373,36 @@ describe("ChatSidePanel", () => {
     expect(items[2]).toHaveFocus();
   });
 
+  it.each([
+    ["no-composer" as const, "folderView.addToContextNoComposer"],
+    [false, "folderView.addToContextFull"],
+  ])("says so when the row's add-to-chat was not done (%s)", async (outcome, messageKey) => {
+    stubRichWorkspace();
+    const onFileReference = vi.fn(() => outcome);
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} onFileReference={onFileReference} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const fileRow = await screen.findByText("readme.md");
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-add-to-chat"));
+    expect(onFileReference).toHaveBeenCalledWith("/ws/readme.md");
+    expect(await screen.findByText(t(messageKey))).toBeInTheDocument();
+  });
+
+  it("reports nothing when the row's add-to-chat put the reference in the composer", async () => {
+    stubRichWorkspace();
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} onFileReference={() => true} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const fileRow = await screen.findByText("readme.md");
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-add-to-chat"));
+    expect(screen.queryByText(t("folderView.addToContextNoComposer"))).toBeNull();
+    expect(screen.queryByText(t("folderView.addToContextFull"))).toBeNull();
+  });
+
   it("right-click Reveal calls workspace.reveal with the row path (never opens the file)", async () => {
     const { reveal } = stubRichWorkspace();
     renderPanel(
@@ -1381,17 +1411,50 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const fileRow = await screen.findByText("readme.md");
     fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
-    expect(showNativeContextMenu).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "workspace-entry",
-      commands: expect.arrayContaining([
-        "workspace.open",
-        "workspace.reveal",
-        "workspace.copy-path",
-        "workspace.copy-relative-path",
-      ]),
-    }));
-    emitLastNativeContextCommand("workspace.reveal");
+    // The same row actions the folder view offers, drawn in the page; this host has no composer to add to.
+    expect(within(screen.getByTestId("file-row-menu")).getAllByRole("menuitem").map((item) => item.getAttribute("data-testid")))
+      .toEqual(["file-row-action-open", "file-row-action-open-in-editor", "file-row-action-show-in-folder-view", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
+        "file-row-action-open-terminal"]);
+    expect(showNativeContextMenu).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("file-row-action-reveal"));
     await waitFor(() => expect(reveal).toHaveBeenCalledWith("/ws/readme.md"));
+  });
+
+  it("lists its folders again, replacing them wholesale, on the files-changed signal and from its reload button", async () => {
+    const { listDir } = stubRichWorkspace();
+    renderPanel(<HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />);
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    await screen.findByText("readme.md");
+    listDir.mockImplementation(async (p: string) => ({
+      ok: true as const, path: p, truncated: false,
+      entries: [{ name: "created-later.md", path: "/ws/created-later.md", type: "file" as const }],
+    }));
+    act(() => notifyWorkspaceFilesChanged("tool"));
+    await screen.findByText("created-later.md");
+    expect(screen.queryByText("readme.md")).toBeNull();
+    listDir.mockImplementation(async (p: string) => ({
+      ok: true as const, path: p, truncated: true, omitted: 12,
+      entries: [{ name: "from-button.md", path: "/ws/from-button.md", type: "file" as const }],
+    }));
+    fireEvent.click(screen.getByTestId("chat-side-panel-files-reload"));
+    await screen.findByText("from-button.md");
+    expect(screen.queryByText("created-later.md")).toBeNull();
+    expect(screen.getByTestId("chat-side-panel-fs-truncated").textContent).toContain("12");
+  });
+
+  it("moves to the row whose name is typed and opens the row menu from the keyboard", async () => {
+    stubRichWorkspace();
+    renderPanel(<HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />);
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const tree = (await screen.findByText("readme.md")).closest('[role="tree"]') as HTMLElement;
+    const rows = () => within(tree).getAllByRole("treeitem");
+    (rows()[0] as HTMLElement).focus();
+    fireEvent.keyDown(tree, { key: "r" });
+    await waitFor(() => expect(document.activeElement?.textContent).toContain("readme.md"));
+    fireEvent.keyDown(tree, { key: "Home" });
+    await waitFor(() => expect(document.activeElement?.textContent).toContain("alpha"));
+    fireEvent.keyDown(tree, { key: "F10", shiftKey: true });
+    expect(within(screen.getByTestId("file-row-menu")).getAllByRole("menuitem").length).toBeGreaterThan(0);
   });
 
   it("right-click Copy path writes the absolute path to the clipboard", async () => {
@@ -1402,7 +1465,7 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const fileRow = await screen.findByText("readme.md");
     fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
-    emitLastNativeContextCommand("workspace.copy-path");
+    fireEvent.click(screen.getByTestId("file-row-action-copy-path"));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("/ws/readme.md"));
   });
 
@@ -1500,8 +1563,51 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const fileRow = await screen.findByText("readme.md");
     fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
-    emitLastNativeContextCommand("workspace.reveal");
+    fireEvent.click(screen.getByTestId("file-row-action-reveal"));
     await screen.findByTestId("chat-side-panel-op-error");
+  });
+
+  it("asks the shell for a folder view with the row's file selected", async () => {
+    stubRichWorkspace();
+    const shown = vi.fn();
+    const unregister = handleFolderViewAtRequests(shown);
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const fileRow = await screen.findByText("readme.md");
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-show-in-folder-view"));
+    expect(shown).toHaveBeenCalledTimes(1);
+    const request = shown.mock.calls[0]?.[0] as { path: string; projectRoot: string };
+    expect(request.path).toMatch(/readme\.md$/u);
+    expect(request.path.startsWith(request.projectRoot)).toBe(true);
+    unregister();
+    // With no shell to ask, the row says so.
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-show-in-folder-view"));
+    expect((await screen.findByTestId("chat-side-panel-op-error")).textContent).toContain("폴더 보기를 열지 못했습니다.");
+  });
+
+  it("asks for the user's editor from a file row, and offers the setting when no editor is set", async () => {
+    const openInEditor = vi.fn(async () => ({ ok: false as const, error: "not-configured" as const }));
+    stubRichWorkspace({ openInEditor });
+    const shown = vi.fn();
+    const unregister = handleSettingsSectionRequests(shown);
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const fileRow = await screen.findByText("readme.md");
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-open-in-editor"));
+    expect(openInEditor).toHaveBeenCalledTimes(1);
+    expect((openInEditor.mock.calls[0] as unknown as string[])[1]).toMatch(/readme\.md$/u);
+    const alert = await screen.findByTestId("chat-side-panel-op-error");
+    expect(alert.textContent).toContain("편집기 명령이 아직 없습니다.");
+    fireEvent.click(within(alert).getByTestId("file-action-open-settings"));
+    expect(shown).toHaveBeenCalledWith({ tab: "about", section: "chat-documents" });
+    unregister();
   });
 
   it("file tab keeps zero-count filters available on the same directory tree", async () => {
@@ -2765,8 +2871,8 @@ describe("ChatSidePanel", () => {
     const files: WorkspaceFileItem[] = [{ id: "changed-file", path: target.path, label: target.title, detail: target.path,
       sourceLabel: "search", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
     const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/ws", review: { sessionId: "indexed", turnId: "latest",
-      files: [{ path: "readme.md", bytes: 6, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: true,
-        hunks: [{ id: "latest-hunk", oldText: "before\n", newText: "after\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 }] }] } });
+      files: [{ path: "readme.md", bytes: 6, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: true, decidable: true,
+        hunks: [{ id: "latest-hunk", oldText: "before\n", newText: "after\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1, kept: false }] }] } });
     renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="indexed" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
     expect(await screen.findByTestId("turn-change-detail")).toHaveTextContent("after");
     expect(screen.queryByText("Older indexed preview")).toBeNull();
@@ -2778,7 +2884,7 @@ describe("ChatSidePanel", () => {
     vi.stubGlobal("ave", { ...window.ave, preview: { ...makeMockAveNamespace().ns.preview, ...window.ave.preview, readFile } });
     const changes = deriveWorkspaceChanges({ files: [], targets: [], workspaceRoot: "/ws", review: {
       sessionId: "image-session", turnId: "latest", files: [{ path: "source.png", bytes: 8, lineCount: 0,
-        added: 8, removed: 2, operation: "modify", countsKnown: true, referenceable: false, hunks: [] }],
+        added: 8, removed: 2, operation: "modify", countsKnown: true, referenceable: false, decidable: true, hunks: [] }],
     } });
     renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="image-session" files={[]} changes={changes} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "/ws/source.png" }} />);
     expect(await screen.findByTestId("file-preview-image")).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
