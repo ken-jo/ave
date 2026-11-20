@@ -1,6 +1,6 @@
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import { getLocale, setLocale } from "../../src/i18n/index.js";
@@ -70,15 +70,24 @@ describe("settings in-place editor", () => {
         expect(requiredFixture(view.container.querySelector<HTMLElement>('[data-settings-section="web-search-engine"]')).hidden, query).toBe(true);
       });
     }
-    fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
-    fireEvent.click(view.getByRole("button", { name: "Modified settings" }));
     const row = (id: string) => requiredFixture(terminal().querySelector<HTMLElement>(`[data-setting-id="${id}"]:not([data-setting-registered])`));
-    await waitFor(() => {
+    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
+    try {
+      await act(async () => {
+        fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
+      });
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Modified settings" }));
+      });
+      // The filter rescans after the remounted panels commit and the mutation observer queues a frame.
+      await act(async () => { vi.advanceTimersToNextFrame(); });
       expect(row("appearance.terminal.scrollback").hidden).toBe(false);
       expect(row("appearance.terminal.cursorStyle").hidden).toBe(true);
       expect(row("appearance.terminal.copyOnSelect").hidden).toBe(true);
       expect(row("appearance.terminal.shell").hidden).toBe(true);
-    });
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("fills the directory draft from the picker without granting access", async () => {
     const view = await renderSettings();
