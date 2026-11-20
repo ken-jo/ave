@@ -94,6 +94,7 @@ import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { isOwnerAwayAutoSkipMinutes, DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
+import { isAddressSearchEngine, type AddressSearchEngine } from "../shared/browser-address.js";
 import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode, type AccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import {
   marketplaceProviderPresetSecretInvalidationIds,
@@ -575,6 +576,8 @@ export type WebViewPreferredFlow = "in-app" | "system-browser";
 
 export interface WebViewSettings {
   preferredFlow: WebViewPreferredFlow;
+  /** Where browser address-row text that is not an address is sent (`../shared/browser-address.js`). */
+  addressSearchEngine: AddressSearchEngine;
 }
 
 export type SystemCloseBehavior = "hide-to-tray" | "quit";
@@ -1193,6 +1196,7 @@ export class SettingsService {
       const nextWebView: WebViewSettings = { ...this.settings.webView };
       const rawFlow = partial.webView.preferredFlow;
       acceptField(nextWebView, "preferredFlow", rawFlow, isWebViewPreferredFlow, "webView", PATCHED_FIELD);
+      acceptField(nextWebView, "addressSearchEngine", partial.webView.addressSearchEngine, isAddressSearchEngine, "webView", PATCHED_FIELD);
       this.settings.webView = nextWebView;
     }
     if (partial.system) {

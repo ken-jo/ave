@@ -26,7 +26,7 @@ vi.mock("node:fs", async original => {
 
 // The sandbox read deny covers the Ave home as one directory: no per-file rows, every child denied unless re-allowed.
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -178,6 +178,23 @@ describe.each(["linux", "darwin", "win32"] as const)("the Ave home read boundary
   });
 });
 
+// The browser's download staging folder holds a page's file until the user picks where to save it: no confined lane may read, list or write it.
+const stagingDir = (): string => join(aveHome(), "browser-downloads");
+const stagedFile = (): string => join(stagingDir(), "0123456789abcdef0123456789abcdef");
+// A grant reaches the staged file when it names the folder, a path in it, or a directory holding it.
+const reaches = (grant: string, path: string): boolean => path === trim(grant) || path.startsWith(`${trim(grant)}${sep}`);
+
+describe.each(["linux", "darwin", "win32"] as const)("the browser download staging folder on %s", (platform) => {
+  it("is covered by the read floor, named on the write floor, and never granted to a sandboxed shell", () => {
+    setProcessPlatform(platform);
+    expect(trim(aveHomeReadBoundaryCovering(stagedFile()) ?? "")).toBe(trim(aveHome()));
+    expect(spelled(getDefaultSensitiveWriteDenyPaths())).toContain(stagingDir());
+    const policy = getBuiltinShellReadPolicy([stagingDir(), stagedFile(), aveHome()], homedir());
+    for (const grant of spelled(policy.allowRead)) expect(reaches(grant, stagedFile()), grant).toBe(false);
+    expect(spelled(policy.denyRead)).toContain(trim(aveHome()));
+  });
+});
+
 describe.each(["linux", "darwin"] as const)("the Ave home read boundary in %s wraps", (platform) => {
   it("withholds a per-command read grant outside the re-allowed children", () => {
     setProcessPlatform(platform);
@@ -188,6 +205,17 @@ describe.each(["linux", "darwin"] as const)("the Ave home read boundary in %s wr
     const granted = spelled(config?.filesystem?.allowRead ?? []);
     for (const path of reallowed()) expect(granted).toContain(trim(path));
     for (const path of withheld()) expect(granted).not.toContain(trim(path));
+  });
+
+  it("withholds a per-command read or write grant on the browser download staging folder", () => {
+    setProcessPlatform(platform);
+    const config = buildPerCommandSandboxCustomConfig({
+      allowRead: [stagingDir(), stagedFile()], allowWrite: [stagingDir()],
+      denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    });
+    for (const grant of spelled(config?.filesystem?.allowRead ?? [])) expect(reaches(grant, stagedFile()), grant).toBe(false);
+    expect(spelled(config?.filesystem?.denyWrite ?? [])).toContain(stagingDir());
+    if (platform === "linux") for (const root of spelled(config?.filesystem?.allowWrite ?? [])) expect(reaches(root, stagedFile()), root).toBe(false);
   });
 
   it.runIf(platform === "linux")("withholds a Linux write root outside the re-allowed children", () => {
@@ -273,6 +301,15 @@ describe("a profile-child Ave home on Windows", () => {
     readdirFault.path = original;
     readdirFault.code = code;
     for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+  });
+
+  it("denies the browser download staging folder as a top-level child once it exists, and never grants it to a shell", () => {
+    const staging = join(original, "browser-downloads");
+    mkdirSync(staging);
+    expect(spelled(getDefaultSensitiveReadDenyPaths())).toContain(staging);
+    expect(spelled(getDefaultSensitiveWriteDenyPaths())).toContain(staging);
+    const policy = getBuiltinShellReadPolicy([staging, join(staging, "0123456789abcdef0123456789abcdef")], profile);
+    for (const grant of spelled(policy.allowRead)) expect(reaches(grant, join(staging, "0123456789abcdef0123456789abcdef")), grant).toBe(false);
   });
 
   it("refuses when a relocated active home leaves a readable profile home that cannot be enumerated", () => {
@@ -468,6 +505,40 @@ describe.runIf(HOST_PLATFORM === "darwin")("the Ave home read boundary in a macO
     expect(run.stdout).toContain("CHILD");
     expect(run.stdout).not.toContain("OTHER");
     expect(readFileSync(join(other, "b.log"), "utf8")).toBe("OTHER");
+  });
+});
+
+describe.runIf(HOST_PLATFORM === "darwin" || HOST_PLATFORM === "linux")("the browser download staging folder in a real sandboxed shell", () => {
+  afterEach(async () => { if (isAsrtSandboxActive()) await resetAsrtSandbox(); });
+
+  it("cannot read, list or add to the folder even when the shell asks to read it", async () => {
+    if (!(await asrtCanInitialize())) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+      return;
+    }
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const workspace = join(aveHome(), "workspace", "alice-project");
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(stagingDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(stagedFile(), "STAGED");
+    writeFileSync(join(workspace, "a.txt"), "CHILD");
+    // The read policy a sandboxed agent shell gets when its command names the staging folder, and the write floor every wrap restates.
+    const policy = getBuiltinShellReadPolicy([workspace, stagingDir()], homedir());
+    const { argv, env } = await wrapWorkerCommand(
+      `cat ${join(workspace, "a.txt")}; cat ${stagedFile()}; ls ${stagingDir()}; echo planted > ${join(stagingDir(), "planted")}; echo done`, {
+        commandId: TEST_COMMAND_ID,
+        filesystem: { allowRead: [...policy.allowRead], denyRead: [...policy.denyRead], allowWrite: [workspace], denyWrite: getDefaultSensitiveWriteDenyPaths() },
+      });
+    const [command, ...args] = argv;
+    if (command === undefined) throw new Error("sandboxed argv is empty");
+    const run = spawnSync(command, args, { env, encoding: "utf-8", timeout: 30_000 });
+    await cleanupAsrtSandboxAfterCommand();
+    expect(run.stdout).toContain("CHILD");
+    expect(run.stdout).toContain("done");
+    expect(run.stdout).not.toContain("STAGED");
+    expect(run.stdout).not.toContain("0123456789abcdef0123456789abcdef");
+    expect(existsSync(join(stagingDir(), "planted"))).toBe(false);
+    expect(readFileSync(stagedFile(), "utf8")).toBe("STAGED");
   });
 });
 

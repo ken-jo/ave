@@ -45,6 +45,7 @@ export const SECTION_SETTING_CONTROLS: Readonly<Record<string, readonly SettingC
   "notifications-delivery": [{ path: "alerts.osNotificationsEnabled", label: "alerts.osMaster" }],
   "web-search-engine": [{ path: "webSearch.provider", label: "webTab.searchEngineTitle" }],
   "web-view-flow": [{ path: "webView.preferredFlow", label: "appearanceTab.webViewSectionTitle" }],
+  "web-address-search": [{ path: "webView.addressSearchEngine", label: "webTab.addressSearchTitle" }],
   "startup-shortcut": [{ path: "shortcuts.enabled", label: "startupTab.shortcutEnabledLabel" }, { path: "shortcuts.toggleWindow", label: "startupTab.shortcutAcceleratorLabel" }],
   "startup-launch": [{ path: "system.launchAtStartup", label: "startupTab.launchAtStartupLabel" }, { path: "system.launchMinimized", label: "startupTab.launchMinimizedLabel" }],
   "startup-rendering": [{ path: "system.hardwareAcceleration", label: "startupTab.hardwareAccelerationLabel" }],

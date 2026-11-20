@@ -1,8 +1,8 @@
 // Drive classification accepts only X:, follows substituted drives and fails closed on unmapped drives.
 // Output must contain only the resolved mapping.
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -113,6 +113,100 @@ try {
   assert.equal(run(free).code, 1);
 } finally {
   rmSync(target, { recursive: true, force: true });
+}
+// Held directory operations (dir-ops.h): each step names files only through handles held on its folders, and a held folder and
+// every folder above it cannot be renamed until the step ends.
+const dirOps = mkdtempSync(join(tmpdir(), "ave dir ops "));
+try {
+  const from = join(dirOps, "staging");
+  const above = join(dirOps, "chosen");
+  const to = join(above, "inner");
+  mkdirSync(from);
+  mkdirSync(to, { recursive: true });
+  const held = (path) => {
+    const info = lstatSync(path, { bigint: true });
+    return [path, info.dev.toString(), info.ino.toString()];
+  };
+  const answered = (args, input) => {
+    const result = spawnSync(helper, args, { input, encoding: "utf8", windowsHide: true, shell: false, env: {}, timeout: 10_000 });
+    if (result.error) throw result.error;
+    return { code: result.status, lines: result.stdout.split(/\r?\n/u).filter(Boolean), stderr: result.stderr };
+  };
+
+  writeFileSync(join(from, "a"), "staged a");
+  let result = answered(["--dir-rename", ...held(from), "a", ...held(to), "report.pdf"], "c");
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.lines, ["ready", "committed"]);
+  assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
+
+  writeFileSync(join(from, "b"), "staged b");
+  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "report.pdf"], "");
+  assert.deepEqual(result.lines, ["ready", "cancelled"], "the end of input at a step stops it");
+  assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
+
+  const [path, volume, index] = held(to);
+  result = answered(["--dir-rename", ...held(from), "b", path, volume, (BigInt(index) + 1n).toString(), "report.pdf"], "c");
+  assert.equal(result.code, 3);
+  assert.deepEqual(result.lines, ["refused to"], "another directory at the checked path is refused before anything is asked");
+  const [fromPath, fromVolume, fromIndex] = held(from);
+  result = answered(["--dir-remove", fromPath, fromVolume, (BigInt(fromIndex) + 1n).toString(), "b"], "c");
+  assert.deepEqual(result.lines, ["refused from"]);
+
+  // Junctions point at an empty folder inside the fixture, and are unlinked on their own before the fixture is removed.
+  const elsewhere = join(dirOps, "elsewhere");
+  mkdirSync(elsewhere);
+  symlinkSync(elsewhere, join(to, "junction.pdf"), "junction");
+  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "junction.pdf"], "c");
+  assert.deepEqual(result.lines, ["ready", "refused target"]);
+  assert.ok(existsSync(join(from, "b")));
+
+  result = answered(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part"], "cc");
+  assert.deepEqual(result.lines, ["ready", "cancelled"], "input that arrives while bytes are copied stops the copy");
+  assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
+  const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part"], { windowsHide: true, shell: false, env: {} });
+  const copied = await new Promise((resolveCopy, rejectCopy) => {
+    let output = "";
+    copy.once("error", rejectCopy);
+    copy.stdout.setEncoding("utf8");
+    copy.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.endsWith("ready\n") || output.endsWith("ready\r\n")) copy.stdin.write("c");
+      if (/copied\r?\n$/u.test(output)) {
+        // The copy is complete in the held folder, under its temporary name, and the folders it holds cannot be renamed.
+        assert.ok(existsSync(join(to, ".0123.part")));
+        assert.throws(() => renameSync(to, `${to}-moved`), /EBUSY|EPERM|EACCES/u);
+        assert.throws(() => renameSync(above, `${above}-moved`), /EBUSY|EPERM|EACCES/u);
+        assert.throws(() => renameSync(from, `${from}-moved`), /EBUSY|EPERM|EACCES/u);
+        copy.stdin.end("c");
+      }
+    });
+    copy.once("close", (code) => resolveCopy({ code, output }));
+  });
+  assert.equal(copied.code, 0);
+  // One chunk of "staged b": the copy reports its progress once before it is complete.
+  assert.deepEqual(copied.output.split(/\r?\n/u).filter(Boolean), ["ready", "progress 8", "copied", "committed"]);
+  assert.equal(readFileSync(join(to, "copied.pdf"), "utf8"), "staged b");
+  assert.ok(!existsSync(join(to, ".0123.part")));
+
+  result = answered(["--dir-remove", ...held(from), "b"], "c");
+  assert.deepEqual(result.lines, ["ready", "removed"]);
+  result = answered(["--dir-remove", ...held(from), "b"], "c");
+  assert.deepEqual(result.lines, ["ready", "absent"]);
+
+  writeFileSync(join(from, "left"), "left by a crash");
+  mkdirSync(join(from, "kept"));
+  symlinkSync(elsewhere, join(from, "linked"), "junction");
+  result = answered(["--dir-sweep", ...held(from)], "c");
+  assert.deepEqual(result.lines, ["ready", "swept 2"], "a sweep removes files and links, never a directory");
+  assert.deepEqual(readdirSync(from), ["kept"]);
+  assert.ok(existsSync(elsewhere), "removing a junction leaves what it pointed to");
+  assert.deepEqual(readdirSync(to).sort(), ["copied.pdf", "junction.pdf", "report.pdf"]);
+  console.log("held directory operations: ok");
+} finally {
+  for (const junction of [join(dirOps, "chosen", "inner", "junction.pdf"), join(dirOps, "staging", "linked")]) {
+    if (existsSync(junction)) rmSync(junction);
+  }
+  rmSync(dirOps, { recursive: true, force: true });
 }
 console.log("windows-path-kind: ok");
 

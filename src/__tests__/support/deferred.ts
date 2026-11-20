@@ -6,3 +6,8 @@ export function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => voi
   });
   return { promise, resolve };
 }
+
+/** Resolve once the callbacks already queued (promise jobs and I/O completions) have run, so a test can observe their effects. */
+export function afterQueuedCallbacks(): Promise<void> {
+  return new Promise((resolve) => { setImmediate(resolve); });
+}

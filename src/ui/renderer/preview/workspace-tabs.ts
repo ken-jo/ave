@@ -101,6 +101,8 @@ export interface WorkspaceTabsStore {
   openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean, owner: string) => string | null;
   /** A new browser tab the user opened at `url` (a link clicked in the terminal), made the active tab. Null for a URL that is not http or https. */
   openBrowserTab: (url: string) => string | null;
+  /** A user's browser tab already pointed at `url`, placed right after `afterTabId`. */
+  openBrowserTabAt: (url: string, afterTabId: string, active: boolean) => void;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -354,6 +356,16 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     return id;
   }, []);
 
+  const openBrowserTabAt = useCallback((url: string, afterTabId: string, active: boolean) => {
+    setState((prev) => {
+      const id = mintTabId("browser");
+      const tab: WorkspaceTab = { id, kind: "browser", ordinal: nextOrdinalRef.current.browser++, mode: "pinned", content: null };
+      const index = prev.tabs.findIndex((each) => each.id === afterTabId);
+      const tabs = index < 0 ? [...prev.tabs, tab] : [...prev.tabs.slice(0, index + 1), tab, ...prev.tabs.slice(index + 1)];
+      return { ...prev, tabs, activeTabId: active ? id : prev.activeTabId, browserUrlByTab: { ...prev.browserUrlByTab, [id]: url } };
+    });
+  }, []);
+
   const setBrowserTabUrl = useCallback((tabId: string, url: string | null) => {
     setState((prev) => {
       if (url == null) {
@@ -412,7 +424,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       hasTab,
       openAgentBrowserTab,
       openBrowserTab,
+      openBrowserTabAt,
     }),
-    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab, hasTab, openAgentBrowserTab, openBrowserTab],
+    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab, hasTab, openAgentBrowserTab, openBrowserTab, openBrowserTabAt],
   );
 }

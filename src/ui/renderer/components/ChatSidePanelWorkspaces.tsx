@@ -3,27 +3,22 @@ import { createElement, useCallback, useEffect, useMemo, useRef, useState, type 
 import { cn } from "../../../lib/utils.js";
 import {
   ArrowLeft,
-  ArrowRight,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
-  ExternalLink,
   FolderPlus,
-  Globe,
   RefreshCw,
-  RotateCw,
   X,
 } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
-import { Input } from "../../../components/ui/input.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
-import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
-import type { AveApi } from "../types.js";
+import type { ApprovalRequest, AveApi } from "../types.js";
 import { type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
+import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS } from "./BrowserAddressRow.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { useFileTreeWidth } from "../hooks/use-file-tree-width.js";
 import { useEdgeResize, useMeasuredSize } from "../hooks/use-edge-resize.js";
@@ -980,14 +975,22 @@ export function VisitedSites({
   api,
   targets,
   onOpen,
+  pendingApprovals = [],
 }: {
   api: AveApi;
   targets: ChatPreviewTarget[];
   /** Open the picked page (a url or an html document) in a tab. */
   onOpen: (target: ChatPreviewTarget) => void;
+  /** The approvals waiting for the user; a site approval marks the pages its tool call is waiting to open. */
+  pendingApprovals?: readonly ApprovalRequest[];
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  // A page waits for the site approval raised by its own tool call, and only while that call runs.
+  const awaitingApproval = useCallback((target: ChatPreviewTarget): boolean => {
+    if (target.kind !== "url" || target.status !== "running" || target.toolUseId === undefined) return false;
+    return pendingApprovals.some((request) => request.browserSite !== undefined && request.toolUseId === target.toolUseId);
+  }, [pendingApprovals]);
   const visitedTargets = useMemo(
     () => targets
       .filter((target) => matchesQuery(query, target.title, target.subtitle, target.sourceLabel, target.kind === "url" ? target.url : undefined))
@@ -1007,6 +1010,7 @@ export function VisitedSites({
           <TargetRows
             targets={visitedTargets}
             rowTestId="chat-side-panel-browser-row"
+            awaitingApproval={awaitingApproval}
             onSelect={(id) => {
               const target = visitedTargets.find((each) => each.id === id);
               if (target) onOpen(target);
@@ -1045,10 +1049,6 @@ export function BrowserWorkspace({
   composerGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
-  const guest = useBrowserSurface(tabId);
-  const navigation = useGuestNavigation(guest);
-  const [addressDraft, setAddressDraft] = useState("");
-  const [addressError, setAddressError] = useState<string | null>(null);
   const latestTarget = useMemo(
     () => targets.reduce<ChatPreviewTarget | null>(
       (latest, target) => (latest === null || target.createdOrder > latest.createdOrder ? target : latest),
@@ -1056,30 +1056,6 @@ export function BrowserWorkspace({
     ),
     [targets],
   );
-
-  // The tab whose address row holds text the user is typing and has not submitted. While the field has focus, a page that
-  // reports a new address (its first load finishing or failing, a redirect) must not erase the draft, as in any browser.
-  // The draft lives only that long: leaving the field, Escape, and back, forward or reload put the page's real address back,
-  // so the row never shows a typed address for a page it is not showing.
-  const draftEditedForTab = useRef<string | null>(null);
-  const addressInputRef = useRef<HTMLInputElement | null>(null);
-  const goButtonRef = useRef<HTMLButtonElement | null>(null);
-  const currentAddress = navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : "");
-  const discardDraft = () => {
-    draftEditedForTab.current = null;
-    setAddressDraft(currentAddress);
-    setAddressError(null);
-  };
-  useEffect(() => {
-    if (draftEditedForTab.current === tabId) return;
-    draftEditedForTab.current = null;
-    setAddressDraft(currentAddress);
-    setAddressError(null);
-  }, [currentAddress, tabId]);
-  const navigate = (action: () => void) => {
-    discardDraft();
-    void navigateBrowserTabAsUser(api, tabId, action);
-  };
 
   const manualTarget = useMemo<Extract<ChatPreviewTarget, { kind: "url" }> | null>(() => {
     if (!manualUrl) return null;
@@ -1101,121 +1077,15 @@ export function BrowserWorkspace({
     };
   }, [manualUrl, t, tabId]);
   const displayedTarget = manualTarget ?? latestTarget;
-  const shownUrl = navigation.url ?? (displayedTarget?.kind === "url" ? displayedTarget.url : null);
-
-  const submitAddress = () => {
-    const normalized = normalizeBrowserNavigationUrl(addressDraft);
-    if (!normalized) {
-      setAddressError(t("chatPreviewRail.browserInvalidUrl"));
-      return;
-    }
-    draftEditedForTab.current = null;
-    setAddressDraft(normalized);
-    setAddressError(null);
-    void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, normalized));
-  };
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden" data-testid="chat-side-panel-browser-workspace">
-      {/*
-        Single address bar (#11): the browser tab owns ONE address row here and
-        the viewer's own header is suppressed (UrlDocumentViewer showHeader=false)
-        so there is no duplicate URL band nesting.
-      */}
-      <form
-        data-native-page-chrome="background"
-        className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
-        onBlur={(event) => {
-          // The draft lives while focus stays on the field or the Go button that submits it; focus going anywhere else,
-          // from either of them, drops it. Switching away from the whole window is not leaving the edit: focus comes back to
-          // the field when the window does, so the draft stays, as in Chrome.
-          const left: EventTarget = event.target;
-          const next: EventTarget | null = event.relatedTarget;
-          if (left !== addressInputRef.current && left !== goButtonRef.current) return;
-          if (next === addressInputRef.current || next === goButtonRef.current) return;
-          if (next === null && !document.hasFocus()) return;
-          discardDraft();
-        }}
-        onSubmit={(event) => {
-          event.preventDefault();
-          submitAddress();
-        }}
-      >
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
-          aria-label={t("mainPanels.back")} disabled={!navigation.canGoBack}
-          onClick={() => navigate(() => navigateBrowserSurface(guest, "back"))} data-testid="browser-back">
-          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
-          aria-label={t("mainPanels.forward")} disabled={!navigation.canGoForward}
-          onClick={() => navigate(() => navigateBrowserSurface(guest, "forward"))} data-testid="browser-forward">
-          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
-          aria-label={t("mainPanels.reload")} disabled={!guest || !navigation.url}
-          onClick={() => navigate(() => navigateBrowserSurface(guest, "reload"))} data-testid="browser-reload">
-          <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
-        <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <Input
-          ref={addressInputRef}
-          data-testid="chat-side-panel-browser-address"
-          value={addressDraft}
-          onChange={(event) => {
-            draftEditedForTab.current = tabId;
-            setAddressDraft(event.target.value);
-            if (addressError) setAddressError(null);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") discardDraft();
-          }}
-          placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
-          className="h-8 min-w-0 flex-1 text-xs"
-        />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="submit"
-              size="icon"
-              variant="ghost"
-              className="h-8 w-8 shrink-0"
-              ref={goButtonRef}
-              aria-label={t("chatPreviewRail.browserGo")}
-              data-testid="chat-side-panel-browser-go"
-            >
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{t("chatPreviewRail.browserGo")}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="h-8 w-8 shrink-0"
-              aria-label={t("chatPreviewRail.openUrl")}
-              data-testid="chat-side-panel-browser-open-external"
-              disabled={!shownUrl}
-              onClick={() => {
-                const safe = shownUrl ? normalizeBrowserNavigationUrl(shownUrl) : null;
-                if (safe) void api.openExternalUrl(safe);
-              }}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{t("chatPreviewRail.openUrl")}</TooltipContent>
-        </Tooltip>
-      </form>
+      {/* The tab owns the one address row; the viewer's own header is suppressed (showHeader=false). */}
+      <BrowserAddressRow api={api} tabId={tabId} chrome="background" testIds={SIDE_PANEL_ADDRESS_ROW_TEST_IDS}
+        fallbackUrl={manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : null)}
+        onNavigate={(url) => onManualUrlChange(tabId, url)} />
       <BrowserSurfaceTools api={api} tabId={tabId} composerGroupId={composerGroupId}
         onOpenUrl={(url) => { void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, url)); }} />
-      {addressError ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid="chat-side-panel-browser-address-error">
-          {addressError}
-        </div>
-      ) : null}
       <div className="min-h-0 w-full min-w-0 flex-1 overflow-hidden">
         {displayedTarget?.kind === "html" ? (
           <BrowserDocumentViewer target={displayedTarget} />

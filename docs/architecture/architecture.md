@@ -150,7 +150,7 @@ field descriptions are redacted. URL metadata omits embedded credentials, query 
 and fragments before entering delivery or retention buffers. Observation
 does not copy ordinary browser history or download destinations.
 
-Download admission uses the existing native Save-admitted callback and only an
+Download admission uses the existing Save-admitted callback and only an
 active command receipt for the exact guest, actor and current control lease.
 Recognized takeover, caller cancellation and unrelated guests cannot supply
 that receipt. The item's URL chain must also match the approved navigation URL
@@ -1131,11 +1131,49 @@ Important rules:
   windows of the owning main window, so they close with it, on the same
   session with no preload, sandboxed, context-isolated, guarded recursively),
   downloads, and a Chromium/Edge user agent so sign-in pages accept it.
-  Downloads always go through the native Save dialog (no save path is ever
-  preset and nothing opens a saved file); one Save dialog may be pending per
-  side browser, and a page origin gets at most 3 download prompts a minute —
-  requests beyond either limit are cancelled and logged. Other schemes stay
-  blocked. Site capability decisions are separate from agent control and
+  Downloads always go through the native Save dialog, and the user picks every
+  final path: Ave never chooses one and nothing opens a saved file. Each
+  download is written to a private staging file under the Ave home
+  (`browser-downloads/`, an unguessable name, a host-only 0700 directory that
+  tools and confined processes are denied) and paused until its dialog is
+  answered; the staging location is private staging only, never a
+  destination. The folder is verified at start (a plain directory owned by
+  the user, resolving inside the canonical Ave home); when it cannot be
+  verified, or the native file helper below is missing or broken, every
+  download is refused with a notice. Setup errors allow startup to continue
+  only once that refusal handler is registered; incomplete policy installation
+  fails through the startup error handler. The asynchronous boot sweep finishes
+  or reaches its bounded kill-confirmation ceiling before bootstrap; an
+  unconfirmed sweep leaves downloads refused. The folder is created before
+  bootstrap starts any confined process, so a Windows projection that denies the Ave home's
+  existing children per snapshot already sees it. A page's Save dialogs show one at a time, so a
+  download that starts while one is open waits for its own dialog instead of
+  being lost. The chosen path is bound when the dialog answers: its folder's
+  identity and the final name. The file is put there by a rename or, across
+  volumes, through an exclusive temporary file and an atomic rename, which is
+  the commit point a cancel is serialized against; the name must not be a
+  link. Every step that creates, moves or removes a file (publication, the
+  temporary file and its commit, and every cleanup) opens the staging folder
+  and the chosen folder, refuses one that is not the verified or bound
+  folder, and names files only relative to those open folders until it ends,
+  so a folder moved or replaced by a link after its check is never written
+  through. Linux reaches files through the held descriptor; on macOS and
+  Windows a helper shipped with Ave performs each step
+  (`native/macos-dir-ops`, `native/windows-path-kind`), and on Windows it also
+  holds every folder above them so none can be renamed meanwhile. A helper
+  that says nothing for `browserDownloadHelperStallMs`, or does not end that
+  long after a cancel, is killed and its exit awaited before the step fails;
+  a killed copy's temporary file is removed through the chosen folder, held
+  anew, and the log names any that may remain (README in
+  `native/macos-dir-ops`). A closed dialog, a failed download or a failed
+  move removes the staged file and is reported cancelled or failed.
+  Staged files a crash left behind are removed at the next start. At most 4
+  downloads wait for a dialog at once, and a waiting one that writes more
+  than 8 MiB is stopped. A page origin gets at most 3 Save dialogs a minute
+  that the user did not save from. Each refusal is cancelled, logged and
+  reported in the tab. A same-user process outside every sandbox can still
+  read the bytes already in flight when a download is paused. Other schemes
+  stay blocked. Site capability decisions are separate from agent control and
   origin approval; see [Browser And Terminal Workspace](#browser-and-terminal-workspace).
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
@@ -1914,7 +1952,9 @@ site decisions, download status, and tab-card previews. Persistent bookmarks,
 history, and site decisions use `openFeatureNamespace("browser-workspace")`;
 invalid stored state cannot become a permission grant. Download paths and
 history are not disclosed by browser tools merely because the UI lists them.
-Downloads retain native Save consent and prompt-rate limits, with no auto-open.
+Downloads retain native Save consent, one dialog at a time per page, and
+prompt-rate limits, with no auto-open and no automatic final path; their
+private staging files never leave the host.
 
 Site capability checks bind the current requesting origin and owned guest.
 `clipboard-sanitized-write` retains its safe baseline for a known guest. Camera,
@@ -3269,7 +3309,12 @@ in its directory.
   exists, and grants that do not exist are dropped. Measured: a more specific
   grant wins over a denied parent, a missing `denied` file path still blocks its
   creation, and a missing `readonly` directory does not block its creation, so
-  a `denyWrite` path that does not exist is written as `denied`.
+  a `denyWrite` path that does not exist is written as `denied`. An existing
+  `denyWrite` path strictly inside a writable grant is written as `readonly`,
+  except where a read deny is the nearest rule at or above it (an Ave home
+  moved into a writable project): a read-only entry, being more specific,
+  would re-open that deny, so the path is written as `denied`, and stays
+  read-only only under a grant more specific than the deny.
   Missing nested denies are raised to the first missing component strictly
   inside a writable grant; raising onto a grant root or outside all writable
   grants fails closed. The shell cannot create that missing directory during

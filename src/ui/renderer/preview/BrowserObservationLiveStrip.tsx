@@ -1,5 +1,5 @@
 import { useTranslation } from "../../../i18n/react.js";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { BrowserObservationAction } from "../../../shared/agent-observation.js";
 import { useBrowserObservation } from "./browser-observation-bridge.js";
 import { PreviewDocumentLiveStrip } from "./preview-document-chrome.js";
@@ -29,11 +29,22 @@ const DOWNLOAD_STATE_KEYS = {
   interrupted: "agentBrowser.observationDownloadInterrupted",
 } as const;
 
-/** Reserved chrome keeps native input coordinates stable; only agent events fill it. */
-export function BrowserObservationLiveStrip({ tabId, sessionId }: { tabId: string; sessionId?: string }) {
+/**
+ * Reserved chrome keeps native input coordinates stable; only agent events fill it. With `reserve` false the strip takes no
+ * space until it has activity to show and no action holds the tab (`actionInFlight`), so it never moves the page under an
+ * action; from then on it keeps its place for as long as it is mounted.
+ */
+export function BrowserObservationLiveStrip({ tabId, sessionId, reserve = true, actionInFlight = false }: {
+  tabId: string; sessionId?: string; reserve?: boolean; actionInFlight?: boolean;
+}) {
   const { t } = useTranslation();
   const event = useBrowserObservation(tabId, sessionId);
   const idle = !event || (event.kind === "status" && event.after.code === "session-cleared");
+  // Placement belongs to one tab: a pane that switches to another tab starts unplaced again.
+  const [placedTab, setPlacedTab] = useState<string | null>(null);
+  const placed = placedTab === tabId;
+  if (!reserve && !placed && !idle && !actionInFlight) setPlacedTab(tabId);
+  if (!reserve && !placed) return null;
   const slot = (content: ReactNode = null) => <div data-testid="browser-observation-slot" data-native-page-chrome="background"
     aria-hidden={idle ? true : undefined} className="h-7 shrink-0">{content}</div>;
   if (!event) return slot();

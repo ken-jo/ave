@@ -84,6 +84,46 @@ describe("guest binding", () => {
     frame.remove();
   });
 
+  it("binds a guest that cannot be named yet right after main's next answer, with no page event and no timer", async () => {
+    vi.useFakeTimers();
+    try {
+      let named = false;
+      let answer: () => void = () => undefined;
+      const getState = vi.fn(() => new Promise<void>((resolve) => { answer = resolve; }));
+      const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => { if (!named) throw new Error("not attached"); return 44; } });
+      const bindTab = vi.fn(async () => ({ ok: true }));
+      const unbind = bindGuestToTab({ browserTabs: { bindTab, getState } } as unknown as AveApi, guest, "browser:held", undefined);
+      // The guest is attached but unnamed: one request goes to main, and nothing binds until it is answered.
+      expect(getState).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(bindTab).not.toHaveBeenCalled();
+      // Main's answer to the earlier attach request named the guest; the answer to ours comes after it.
+      named = true;
+      answer();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bindTab).toHaveBeenCalledTimes(1);
+      expect(bindTab).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "browser:held", webContentsId: 44 }));
+      // The page never becomes ready (the server holds the load); nothing more is needed, and nothing asks again.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(bindTab).toHaveBeenCalledTimes(1);
+      expect(getState).toHaveBeenCalledTimes(1);
+      unbind();
+    } finally { vi.useRealTimers(); }
+  });
+  it("asks main once per attach and never loops when the guest still has no name", async () => {
+    const getState = vi.fn(async () => undefined);
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: (): number => { throw new Error("not attached"); } });
+    const bindTab = vi.fn();
+    const unbind = bindGuestToTab({ browserTabs: { bindTab, getState } } as unknown as AveApi, guest, "browser:never", undefined);
+    await Promise.resolve(); await Promise.resolve();
+    expect(getState).toHaveBeenCalledTimes(1);
+    guest.dispatchEvent(new Event("did-attach"));
+    await Promise.resolve(); await Promise.resolve();
+    expect(getState).toHaveBeenCalledTimes(2);
+    expect(bindTab).not.toHaveBeenCalled();
+    unbind();
+  });
+
   it("shares data-only favicon metadata for every bound guest and clears it on main-frame navigation", () => {
     const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
     const unbind = bindGuestToTab({ browserTabs: { bindTab: vi.fn().mockResolvedValue({ ok: true }) } } as unknown as AveApi, guest, "browser:icon", undefined);
@@ -142,7 +182,7 @@ describe("guest binding", () => {
     }
   });
 
-  it("cancels an attach retry when dom-ready successfully binds the guest first", async () => {
+  it("never waits or tries again on a timer: a guest main reports not live binds on its next own event", async () => {
     vi.useFakeTimers();
     const bindTab = vi.fn()
       .mockResolvedValueOnce({ ok: false, error: "guest-not-live" })
@@ -151,8 +191,10 @@ describe("guest binding", () => {
     const unbind = bindGuestToTab({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:early", undefined);
     try {
       await Promise.resolve();
-      guest.dispatchEvent(new Event("dom-ready"));
       await Promise.resolve();
+      expect(bindTab).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      guest.dispatchEvent(new Event("dom-ready"));
       expect(bindTab).toHaveBeenCalledTimes(2);
       await vi.runAllTimersAsync();
       expect(bindTab).toHaveBeenCalledTimes(2);
@@ -161,6 +203,7 @@ describe("guest binding", () => {
       vi.useRealTimers();
     }
   });
+
 });
 
 describe("routeBrowserTabOp", () => {

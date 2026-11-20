@@ -143,5 +143,11 @@ describe("private browser and terminal preload boundaries", () => {
     api.onChanged(receive);
     expect(() => listeners.get(CHANNELS.browserWorkspace.changed)!(undefined, {})).toThrow("invalid-browser-workspace-state");
     expect(receive).not.toHaveBeenCalled();
+    api.onAttachBlocked(receive);
+    const attachBlocked = listeners.get(CHANNELS.browserWorkspace.attachBlocked);
+    expect(() => attachBlocked?.(undefined, { src: 1 })).toThrow("invalid-browser-attach-blocked");
+    expect(receive).not.toHaveBeenCalled();
+    attachBlocked?.(undefined, { src: "https://refused.example/" });
+    expect(receive).toHaveBeenCalledWith({ src: "https://refused.example/" });
   });
 });

@@ -24,6 +24,17 @@ describe("ToolApprovalContent site scope", () => {
     expect(decide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { browserSiteChoice: choice });
     expect(screen.queryByTestId("approval-decision-bar")).toBeNull();
   });
+  it("says in plain words what is asked, shows the origin, and states what allowing any site means", () => {
+    renderApproval(REQUEST, vi.fn());
+    const card = screen.getByTestId("browser-site-approval-card");
+    expect(card.textContent).toContain(t("toolApprovalDialog.siteRequest"));
+    expect(screen.getByTestId("browser-site-approval-origin").textContent).toBe("https://a.example");
+    expect(screen.getByTestId("browser-site-approval-any-consequence").textContent).toBe(t("toolApprovalDialog.siteAllowAnyConsequence"));
+    // The tool's internal name is not what the user is deciding about.
+    expect(card.textContent).not.toContain("browser_navigate");
+    // The choices and their order are unchanged.
+    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual([t("toolApprovalDialog.siteAllow"), t("toolApprovalDialog.siteAllowAny"), t("toolApprovalDialog.decisionDeny")]);
+  });
   it("denies dismissal by default", () => {
     const decide = vi.fn();
     renderApproval(REQUEST, decide);

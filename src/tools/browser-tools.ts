@@ -67,7 +67,8 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   screenshot(target: BrowserActionTab<G>, options?: BrowserScreenshotOptions): Promise<BrowserScreenshot>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
-  waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number }): Promise<{ found: boolean; waitedMs: number }>;
+  /** With `download`, ends when a download of the page ends that no result has reported yet. */
+  waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number; download?: boolean }): Promise<{ found: boolean; waitedMs: number }>;
   click(target: BrowserActionTab<G>, ref: string): Promise<void>;
   hover(target: BrowserActionTab<G>, ref: string): Promise<void>;
   drag(target: BrowserActionTab<G>, sourceRef: string, targetRef: string): Promise<void>;
@@ -338,6 +339,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
         tabId: tabIdProperty,
         text: { type: "string", description: t("be_browserTools.waitTextDescription") },
         timeMs: { type: "integer", minimum: 1, maximum: MAX_WAIT_MS, description: t("be_browserTools.waitTimeDescription") },
+        download: { type: "boolean", description: t("be_browserTools.waitDownloadDescription") },
       }),
       execute: execute(BROWSER_TOOL.wait),
     }),

@@ -229,7 +229,7 @@ test("shared workspace reset clears persisted permission rules and queued writes
   expect(app.process().pid).toBe(pid);
   const clean = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.permissionState());
   await fs.writeFile(testInfo.outputPath("workspace-permission-reset.json"), JSON.stringify({ pid, afterPid: app.process().pid, pending, dirty, dirtyAssertion, clean }, null, 2));
-  expect(clean.disk).toEqual({ version: 1, bookmarks: [], history: [], sitePermissions: [] });
+  expect(clean.disk).toEqual({ version: 2, bookmarks: [], history: [], sitePermissions: [] });
   expect(clean.live).toEqual({ storageStatus: "ready", bookmarks: [], history: [], sitePermissions: [] });
   expect(clean.reloaded).toEqual(clean.live);
   expect(dirtyAssertion).toContain("persisted workspace");

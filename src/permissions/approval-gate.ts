@@ -168,6 +168,8 @@ export interface PendingApprovalSummary {
 
 export interface ApprovalRequest {
   browserSite?: string;
+  // Display-only: the tool call a site request asks about, so the panel can mark that call's page. Never an approval capability.
+  toolUseId?: string;
   // Display-only title derived from host-tracked child provenance.
   requestingAgentTitle?: string;
   id: string;

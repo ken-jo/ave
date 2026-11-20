@@ -766,7 +766,7 @@ export async function executeAuthorizedToolInvocation(
         }
         const decision = await gate.requestAndWait({
           id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network",
-          browserSite: origin, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
+          browserSite: origin, toolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
           sessionId, abortSignal: siteSignal, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
           forceExplicit: true, durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
         });

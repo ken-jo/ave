@@ -274,6 +274,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   },
   { anchor: "ave-home", segments: ["sessions"], kind: "dir", access: "read-only", why: "saved conversation integrity" },
   { anchor: "ave-home", segments: ["host-runtime"], kind: "dir", why: "process ownership lock (replacement creates a second writer)" },
+  { anchor: "ave-home", segments: ["browser-downloads"], kind: "dir", why: "browser downloads staged until the user picks where to save them (host-only; a page's file, not the agent's)" },
   { anchor: "ave-home", segments: ["routine"], kind: "dir", why: "routine session history" },
   { anchor: "ave-home", segments: ["terminal-state"], kind: "dir", why: "host terminal output kept for restoring a tab: the user's own screen, never an agent's to read" },
   {
@@ -418,7 +419,7 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
 function isAdmissionEntry(entry: SensitiveEntry): boolean {
   const [first, second, third] = entry.segments;
   // `terminal-state` is the user's own terminal screen kept for restoring a tab: no rule, remembered grant, reviewer or mode opens it to a tool.
-  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime", "terminal-state", "diff-cache"].includes(first!)
+  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime", "terminal-state", "diff-cache", "browser-downloads"].includes(first!)
     || (first === "plugins" && second === "auth-partitions.json");
   if (entry.anchor === "root") return second === "shadow";
   if (["Library", "AppData", ".mozilla", ".thunderbird", "snap", ".var", ".password-store"].includes(first!)) return true;
