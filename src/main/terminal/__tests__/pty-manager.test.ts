@@ -10,7 +10,7 @@ import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, veri
 /** Check terminal confinement wiring with mocked runtime and PTY boundaries, including fail-closed spawn and cleanup.
  * These tests do not exercise native isolation or real PTY allocation. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
@@ -313,10 +313,10 @@ beforeEach(() => {
   __resetTerminalsForTest();
   setTerminalEmitter(emit);
 });
-afterEach(() => {
+function tearDownTerminalFixture(reset = __resetTerminalsForTest): void {
   try {
     setAgentTerminalObservationSink(undefined);
-    __resetTerminalsForTest();
+    reset();
   } finally {
     if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
     const root = homeParent;
@@ -326,7 +326,8 @@ afterEach(() => {
       rmSync(root, { recursive: true, force: true });
     }
   }
-});
+}
+afterEach(() => tearDownTerminalFixture());
 
 describe("pty-manager fail-closed", () => {
   it("refuses to spawn when the gate is inactive", async () => {
@@ -885,6 +886,19 @@ describe("pty-manager cwd validation (write-jail anchor)", () => {
     additionalProjectDirectories = [homedir()];
     expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: homedir() })).toMatchObject({ ok: false, reason: "bad-request" });
     expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("removes the fixture links and home even when terminal reset throws", () => {
+    const root = homeParent;
+    const target = join(root, "project");
+    const alias = join(root, "project-alias");
+    mkdirSync(target);
+    symlinkSync(target, alias, nativePlatform === "win32" ? "junction" : "dir");
+
+    const failure = new Error("Terminal reset failed");
+    expect(() => tearDownTerminalFixture(() => { throw failure; })).toThrow(failure);
+    expect(lstatSync(alias, { throwIfNoEntry: false })).toBeUndefined();
+    expect(existsSync(root)).toBe(false);
   });
 
   it("rejects a relative (non-absolute) cwd", async () => {
