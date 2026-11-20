@@ -3564,8 +3564,10 @@ with its own owner rule:
   The copy's `exit` handler, registered at import and so run before the
   runtime's own, retires the verified directory with a same-parent rename only
   after a successful release. It then removes the retired directory. The next
-  startup can reclaim a partial retired directory under the temp root after
-  checking its name, owner and ACL. The sweep never traverses reparse points.
+  startup can reclaim a retired copy only through its private allocation record.
+  The host flushes the record in its protected runtime directory before provisioning
+  begins and records the filesystem identity upon creation. The sweep ignores
+  unrecorded paths and refuses an identity mismatch.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL

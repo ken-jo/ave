@@ -7,9 +7,18 @@ import { cleanupAfterClosing } from "./support/fixture-cleanup.js";
 import { installWindowsNativeTripwire } from "./support/windows-native-tripwire.js";
 
 const srtWinCopyDisposers = vi.hoisted(() => new Map<string, () => void>());
+let srtWinLedgerRoot: string | undefined;
 vi.mock("../permissions/srt-win-copy-owner.js", () => ({
   _registerSrtWinCopyForTest(directory: string, dispose: () => void): void {
     srtWinCopyDisposers.set(directory, dispose);
+  },
+  _srtWinLedgerRootForTest(): string {
+    if (srtWinLedgerRoot === undefined) {
+      const root = process.env.AVE_TEST_RUN_HOME;
+      if (root === undefined) throw new Error("Test run home is unavailable");
+      srtWinLedgerRoot = getBuiltinModule("node:fs").mkdtempSync(join(root, "srt-"));
+    }
+    return srtWinLedgerRoot;
   },
 }));
 

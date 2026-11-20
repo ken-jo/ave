@@ -17,6 +17,8 @@ const { markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWi
 const [source, resultPath, mode] = process.argv.slice(2);
 if (!source || !resultPath || !mode) throw new Error("usage: <source> <result> <runtime-pending|runtime-reset|no-runtime>");
 
+const { ensureAveHomePrivate } = await import("../../../shared/ave-home.js");
+if (ensureAveHomePrivate().enforcement === "none") throw new Error("Test home is not private");
 const executable = prepareSrtWinExecutable(source);
 if (mode !== "no-runtime") {
   markSrtWinRuntimeReleasePending();

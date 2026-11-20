@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, type } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { renamePathOnceSync } from "../lib/transient-fs-lock-retry.js";
 import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
+import { allocationIdentity, allocationOwnerIsLive, beginSrtWinAllocation, confirmSrtWinAllocation, forgetSrtWinAllocation, retireSrtWinAllocation, srtWinAllocations, type SrtWinAllocation } from "./srt-win-allocation-ledger.js";
 import SRT_WIN_BUILD_RECEIPTS from "./generated/srt-win-build-receipts.js";
 import { _registerSrtWinCopyForTest } from "./srt-win-copy-owner.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
@@ -105,57 +106,13 @@ const PRIVATE_DIRECTORY_SCRIPT = [
 const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
 
 const TEMP_ROOT_ACL_DIAGNOSTIC = "srt-win-temp-root-acl-owner-action-required";
-const TOMBSTONE_NAME = /^ave-srt-win-[a-f0-9]{32}\.delete-[a-f0-9]{32}$/;
-
-// A live name requires a verified marker and image. A tombstone records ownership after that evidence can be removed.
-const SWEEP_SCRIPT = [
+const CHECK_TEMP_ROOT_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
-  "$root = [System.IO.Path]::GetFullPath($env:AVE_SRT_TEMP_ROOT).TrimEnd('\\')",
-  "$reparse = [System.IO.FileAttributes]::ReparsePoint",
-  "function removePrivateTree($path) { $attributes = [System.IO.File]::GetAttributes($path); if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { if (($attributes -band $reparse) -eq 0) { foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($path)) { removePrivateTree $entry } }; [System.IO.Directory]::Delete($path, $false) } else { [System.IO.File]::Delete($path) } }",
-  "if (([System.IO.File]::GetAttributes($root) -band $reparse) -ne 0) { exit }",
-  "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
-  // Diagnose the installed account's legacy temp-root ACEs without changing any descriptor.
+  "$root = [System.IO.Path]::GetFullPath($env:AVE_SRT_TEMP_ROOT)",
+  "if (([System.IO.File]::GetAttributes($root) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { exit }",
   `try { $sandboxSid = (New-Object System.Security.Principal.NTAccount('srt-sandbox')).Translate([System.Security.Principal.SecurityIdentifier]); $rootAcl = [System.IO.Directory]::GetAccessControl($root); if (@($rootAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference -eq $sandboxSid }).Count -ne 0) { [Console]::Out.WriteLine('${TEMP_ROOT_ACL_DIAGNOSTIC}') } } catch { }`,
-  "$ownDirectories = ConvertFrom-Json -InputObject $env:AVE_SRT_OWN_DIRECTORIES",
-  "foreach ($directory in [System.IO.Directory]::GetDirectories($root, 'ave-srt-win-*', [System.IO.SearchOption]::TopDirectoryOnly)) { try {",
-  "if ($directory -in $ownDirectories -or [System.IO.Path]::Combine($directory, 'bin') -in $ownDirectories) { continue }",
-  "if ([System.IO.Path]::GetDirectoryName($directory) -ne $root) { continue }",
-  "$attributes = [System.IO.File]::GetAttributes($directory)",
-  "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { continue }",
-  "$modify = [System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'",
-  "$acl = [System.IO.Directory]::GetAccessControl($directory)",
-  "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or !$acl.AreAccessRulesProtected) { continue }",
-  "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
-  `if ([System.IO.Path]::GetFileName($directory) -cmatch '${TOMBSTONE_NAME.source}') { removePrivateTree $directory; continue }`,
-  "$entries = @([System.IO.Directory]::GetFileSystemEntries($directory))",
-  "$imageDirectory = $directory",
-  "if ($entries.Count -eq 1 -and [System.IO.Path]::GetFileName($entries[0]) -eq 'bin') {",
-  "$imageDirectory = $entries[0]; $attributes = [System.IO.File]::GetAttributes($imageDirectory)",
-  "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { continue }",
-  "$acl = [System.IO.Directory]::GetAccessControl($imageDirectory)",
-  "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or !$acl.AreAccessRulesProtected) { continue }",
-  "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
-  "$entries = @([System.IO.Directory]::GetFileSystemEntries($imageDirectory))",
-  "}",
-  "if ($entries.Count -ne 2) { continue }",
-  "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0 -or [System.IO.Path]::GetFileName($entry) -notin @('owner.json', 'srt-win.exe')) { $plain = $false } }",
-  "if (!$plain) { continue }",
-  "$marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json')",
-  "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
-  "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
-  "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
-  "if ($live) { continue }",
-  "$image = [System.IO.Path]::Combine($imageDirectory, 'srt-win.exe')",
-  // A running image or incompatible handle prevents this write open. The stale owner is gone before the copy can be retired.
-  "$handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete)",
-  "$handle.Dispose()",
-  "$tombstone = [System.IO.Path]::Combine($root, ('ave-srt-win-' + [Guid]::NewGuid().ToString('N') + '.delete-' + [Guid]::NewGuid().ToString('N')))",
-  "[System.IO.Directory]::Move($directory, $tombstone)",
-  "removePrivateTree $tombstone",
-  "} catch { continue } }",
 ].join("; ");
-const SWEEP_COMMAND = Buffer.from(SWEEP_SCRIPT, "utf16le").toString("base64");
+const CHECK_TEMP_ROOT_COMMAND = Buffer.from(CHECK_TEMP_ROOT_SCRIPT, "utf16le").toString("base64");
 
 function runDirectoryCommand(command: string, env: Record<string, string>): Buffer {
   const root = windowsSystemRoot();
@@ -171,18 +128,21 @@ function runDirectoryCommand(command: string, env: Record<string, string>): Buff
   return output;
 }
 
-// Keep uncertain entries, including unmarked copies left by older releases.
+// Only a durable allocation record authorizes cleanup. Names and markers are not provenance.
 export function sweepStaleSrtWinDirectories(): void {
+  if (type() === "Windows_NT") {
+    try { runDirectoryCommand(CHECK_TEMP_ROOT_COMMAND, { AVE_SRT_TEMP_ROOT: tmpdir() }); }
+    catch { /* The temp-root diagnostic is independent of reclamation. */ }
+  }
   try {
-    if (type() !== "Windows_NT") {
-      sweepLocalTombstones(tmpdir());
-      return;
+    for (const allocation of srtWinAllocations()) {
+      if (!allocation.disposing && allocationOwnerIsLive(allocation.pid)) continue;
+      try {
+        if (isAllocationDirectory(allocation.retired, allocation.identity)) removePrivateCopy(allocation.retired);
+        forgetIfGone(allocation);
+      } catch { /* Keep the record and continue with independent allocations. */ }
     }
-    runDirectoryCommand(SWEEP_COMMAND, {
-      AVE_SRT_TEMP_ROOT: tmpdir(),
-      AVE_SRT_OWN_DIRECTORIES: JSON.stringify(srtWinPrivateDirectories()),
-    });
-  } catch { /* Cleanup is best effort. */ }
+  } catch { /* Missing or untrusted storage cannot authorize cleanup. */ }
 }
 
 // The bundled helper supports two architectures; 32-bit hosts use x64.
@@ -195,51 +155,40 @@ let swept = false;
 const copies = new Map<string, { readonly executable: string; readonly arch: string }>();
 const copyDisposers = new Set<() => void>();
 
-function ownPrivateCopy(directory: string): () => void {
-  const identity = lstatSync(directory, { bigint: true });
-  if (!identity.isDirectory()) throw new Error("Private directory is not a plain directory");
+function isAllocationDirectory(path: string, identity: string | undefined): boolean {
+  if (identity === undefined) return false;
+  const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  return entry !== undefined && entry.isDirectory() && allocationIdentity(entry) === identity;
+}
+
+function forgetIfGone(allocation: SrtWinAllocation): void {
+  if (lstatSync(allocation.path, { throwIfNoEntry: false }) === undefined
+    && lstatSync(allocation.retired, { throwIfNoEntry: false }) === undefined) forgetSrtWinAllocation(allocation);
+}
+
+function ownPrivateCopy(allocation: SrtWinAllocation): () => void {
+  const directory = allocation.path;
+  const info = lstatSync(directory, { bigint: true });
+  if (!info.isDirectory()) throw new Error("Private directory is not a plain directory");
+  confirmSrtWinAllocation(allocation, allocationIdentity(info));
   const dispose = (): void => {
     if (!copyDisposers.has(dispose)) return;
-    const current = lstatSync(directory, { bigint: true, throwIfNoEntry: false });
-    if (current === undefined) {
+    if (lstatSync(directory, { throwIfNoEntry: false }) === undefined) {
+      forgetIfGone(allocation);
       copyDisposers.delete(dispose);
       return;
     }
-    if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino || current.birthtimeNs !== identity.birthtimeNs) {
-      throw new Error("Private directory identity changed");
-    }
-    // Retire the name before deleting anything. A partial tombstone is eligible for the next startup sweep.
-    const tombstone = `${directory}.delete-${randomBytes(16).toString("hex")}`;
-    renamePathOnceSync(directory, tombstone);
+    if (!isAllocationDirectory(directory, allocation.identity)) throw new Error("Private directory identity changed");
+    retireSrtWinAllocation(allocation);
+    renamePathOnceSync(directory, allocation.retired);
     copyDisposers.delete(dispose);
-    removePrivateCopy(tombstone);
+    if (!isAllocationDirectory(allocation.retired, allocation.identity)) throw new Error("Retired directory identity changed");
+    removePrivateCopy(allocation.retired);
+    forgetIfGone(allocation);
   };
   copyDisposers.add(dispose);
   _registerSrtWinCopyForTest(directory, dispose);
   return dispose;
-}
-
-function sweepLocalTombstones(root: string): void {
-  if (!lstatSync(root).isDirectory()) return;
-  const uid = process.getuid?.();
-  for (const name of readdirSync(root)) {
-    if (!TOMBSTONE_NAME.test(name)) continue;
-    try {
-      const path = join(root, name);
-      const entry = lstatSync(path);
-      if (!entry.isDirectory() || (uid !== undefined && (entry.uid !== uid || (entry.mode & 0o022) !== 0))) continue;
-      removeLocalTree(path);
-    } catch { /* Continue with independent tombstones. */ }
-  }
-}
-
-function removeLocalTree(path: string): void {
-  if (!lstatSync(path).isDirectory()) {
-    unlinkSync(path);
-    return;
-  }
-  for (const name of readdirSync(path)) removeLocalTree(join(path, name));
-  rmdirSync(path);
 }
 
 function readHelper(path: string): Buffer {
@@ -268,11 +217,15 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
     return cached.executable;
   }
   // A fresh, unpublished name: on Windows the protecting step creates it, and anything already at the path refuses creation.
-  const temp = tmpdir();
-  const directory = join(temp, `ave-srt-win-${randomBytes(16).toString("hex")}`);
+  const temp = resolve(tmpdir());
+  const id = randomBytes(16).toString("hex");
+  const directory = join(temp, `ave-srt-win-${id}`);
+  const retired = `${directory}.delete-${randomBytes(16).toString("hex")}`;
   const bin = join(directory, "bin");
   let dispose: (() => void) | undefined;
+  let allocation: SrtWinAllocation | undefined;
   try {
+    allocation = beginSrtWinAllocation(id, directory, retired);
     const executable = join(bin, "srt-win.exe");
     // POSIX modes do not enforce a Windows boundary. On Windows both directories and the empty image are created with their protected DACL and the current user as owner before any executable byte exists; this needs no elevation, and the bytes go into the file that step made.
     const windows = type() === "Windows_NT";
@@ -286,13 +239,13 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
         throw error;
       } finally {
         if (Buffer.isBuffer(output) && output.toString("utf8").split(/\r?\n/).includes(PRIVATE_DIRECTORY_CREATED)) {
-          dispose = ownPrivateCopy(directory);
+          dispose = ownPrivateCopy(allocation);
         }
       }
       if (dispose === undefined) throw new Error("Private directory creation was not confirmed");
     } else {
       mkdirSync(directory, { mode: 0o700 });
-      dispose = ownPrivateCopy(directory);
+      dispose = ownPrivateCopy(allocation);
       mkdirSync(bin, { mode: 0o700 });
     }
     // Write the bytes that were hashed, rather than re-opening the source to copy.
@@ -301,7 +254,10 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
     copies.set(key, { executable, arch });
     return executable;
   } catch (error) {
-    try { dispose?.(); } catch { /* The exit handler still owns the copy. */ }
+    try {
+      if (dispose !== undefined) dispose();
+      else if (allocation !== undefined) forgetIfGone(allocation);
+    } catch { /* The allocation remains recorded until deletion is confirmed. */ }
     if (error instanceof SrtWinIntegrityError) throw error;
     throw new SrtWinIntegrityError("srt-win-integrity-mismatch", { cause: error });
   }

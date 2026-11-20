@@ -43,6 +43,19 @@ afterEach(() => {
 });
 
 describe("Windows helper integrity", () => {
+  it("retains an exact-format tombstone without an allocation record", () => {
+    const { source } = fixture();
+    const root = dirname(source);
+    for (const name of ["TEMP", "TMP", "TMPDIR"]) vi.stubEnv(name, root);
+    const tombstone = join(root, `ave-srt-win-${"a".repeat(32)}.delete-${"b".repeat(32)}`);
+    mkdirSync(tombstone, { mode: 0o700 });
+    const sentinel = join(tombstone, "keep");
+    writeFileSync(sentinel, "unowned");
+
+    sweepStaleSrtWinDirectories();
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
   it("selects generated receipts before adjacent receipts and verifies their bytes", () => {
     expect(selectSrtWinTestReceipts(BUILD_RECEIPTS, vendor)).toEqual(BUILD_RECEIPTS);
     expect(() => selectSrtWinTestReceipts({
@@ -157,16 +170,16 @@ describe("Windows helper integrity", () => {
       writeFileSync(join(directory, "owner.json"), JSON.stringify({ pid: 2147483647, started: "1" }));
     }
 
-    it.each(["single-level", "two-level"] as const)("removes only a verified stale %s copy", (layout) => {
+    it.each(["single-level", "two-level"] as const)("retains an unrecorded legacy %s copy even with a stale marker", (layout) => {
       isolateTemp();
       const directory = stage(layout);
       abandon(directory);
       const outer = layout === "two-level" ? dirname(directory) : directory;
       sweepStaleSrtWinDirectories();
-      expect(existsSync(outer)).toBe(false);
+      expect(existsSync(outer)).toBe(true);
     });
 
-    it("removes a dead owner's image but retains the current process even with a reused PID marker", () => {
+    it("neither claims an unrecorded image nor trusts a changed marker over a live allocation", () => {
       isolateTemp();
       const stale = stage();
       abandon(stale);
@@ -178,7 +191,7 @@ describe("Windows helper integrity", () => {
       expect(JSON.parse(readFileSync(join(current, "owner.json"), "utf8"))).toMatchObject({ pid: process.pid, started: expect.any(String) });
       writeFileSync(join(current, "owner.json"), JSON.stringify({ pid: process.pid, started: "1" }));
       sweepStaleSrtWinDirectories();
-      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(stale)).toBe(true);
       expect(existsSync(current)).toBe(true);
       expect(existsSync(cached)).toBe(true);
     });
@@ -195,13 +208,13 @@ describe("Windows helper integrity", () => {
       expect(existsSync(join(directory, "srt-win.exe"))).toBe(true);
     });
 
-    it("sweeps an owned partial tombstone without following its links or admitting a lookalike", () => {
+    it("retains exact-format unrecorded tombstones with the same protected descriptors as owned copies", () => {
       isolateTemp();
       const bin = stage();
       const original = dirname(bin);
       const stem = basename(original).replace(/-abandoned$/, "");
       const tombstone = join(tmpdir(), `${stem}.delete-${"a".repeat(32)}`);
-      const lookalike = `${tombstone}-extra`;
+      const lookalike = join(tmpdir(), `${stem}.delete-${"b".repeat(32)}`);
       const target = join(tmpdir(), "outside-tombstone");
       mkdirSync(target);
       writeFileSync(join(target, "sentinel"), "keep");
@@ -214,9 +227,10 @@ describe("Windows helper integrity", () => {
       renameSync(dirname(unrelated), lookalike);
 
       sweepStaleSrtWinDirectories();
-      expect(existsSync(tombstone)).toBe(false);
+      expect(existsSync(tombstone)).toBe(true);
       expect(existsSync(lookalike)).toBe(true);
       expect(readFileSync(join(target, "sentinel"), "utf8")).toBe("keep");
+      rmdirSync(join(tombstone, "bin", "extra", "alias"));
     });
 
     it("never traverses a junction or a linked directory entry", (context) => {
@@ -282,7 +296,7 @@ describe("Windows helper integrity", () => {
       expect(existsSync(join(directory, "owner.json"))).toBe(true);
     });
 
-    it("keeps a live owner, rejects PID reuse, and keeps a dead owner's image while another process holds it", async () => {
+    it("keeps unrecorded images regardless of marker liveness and image sharing", async () => {
       isolateTemp();
       const live = stage();
       const reused = stage();
@@ -310,7 +324,7 @@ describe("Windows helper integrity", () => {
         writeFileSync(join(reused, "owner.json"), JSON.stringify({ ...marker, started: "1" }));
         sweepStaleSrtWinDirectories();
         expect(existsSync(live)).toBe(true);
-        expect(existsSync(reused)).toBe(false);
+        expect(existsSync(reused)).toBe(true);
         expect(existsSync(join(held, "srt-win.exe"))).toBe(true);
         expect(existsSync(join(held, "owner.json"))).toBe(true);
       } finally {
@@ -318,8 +332,8 @@ describe("Windows helper integrity", () => {
         await exited;
       }
       sweepStaleSrtWinDirectories();
-      expect(existsSync(live)).toBe(false);
-      expect(existsSync(held)).toBe(false);
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(held)).toBe(true);
     });
 
     it("retains a directory with inherited modification grants", () => {
