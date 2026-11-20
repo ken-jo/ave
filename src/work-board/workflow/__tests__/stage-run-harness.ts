@@ -33,10 +33,10 @@ type IntegrateResult = { ok: true } | { ok: false; conflict: JoinConflict };
 /** What a test looks at: the board row, with the stage runs and joins of the run the row names taken from the run file. */
 export type StageRunView = WorkItemResolved & { stageRuns: WorkItemStageRun[]; stageJoins: StageJoin[]; record: RunRecord | null };
 type WorkflowDeps = NonNullable<WorkBoardEngineDeps["workflow"]>;
+type ObservedLaunch = { linked(): void; resume(): void };
 
-function observeRunWork() {
+function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
   const pending = new Set<Promise<unknown>>();
-  const launches = new AsyncLocalStorage<{ linked(): void; resume(): void }>();
   function track(work: Promise<unknown>): void {
     pending.add(work);
     const remove = () => { pending.delete(work); };
@@ -55,7 +55,7 @@ function observeRunWork() {
   async function drain(): Promise<void> {
     while (pending.size > 0) await Promise.allSettled(pending);
   }
-  return { observe, drain, currentLaunch: () => launches.getStore() };
+  return { observe, drain };
 }
 
 /** A real board, run file and template store in a temp folder, a runner whose children end when the test says so, and a workspace provider that
@@ -69,6 +69,7 @@ export async function stageRunHarness(opts: {
   integrate?: () => IntegrateResult | Promise<IntegrateResult>;
   /** Replaces a part of the workspace provider. */
   workspace?: Partial<StageWorkspaceProvider>;
+  /** Track detached work for the current engine. */
   observeRunWork?: boolean;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
@@ -84,14 +85,16 @@ export async function stageRunHarness(opts: {
   /** The run ids each boot sweep kept. */
   const sweeps: string[][] = [];
   const registry = boardParentToolRegistry();
-  const runWork = opts.observeRunWork ? observeRunWork() : undefined;
+  const launches = new AsyncLocalStorage<ObservedLaunch>();
+  const observeEngineWork = () => opts.observeRunWork ? observeRunWork(launches) : undefined;
+  let runWork = observeEngineWork();
   const childChanges = new Set<() => void>();
   const progressChanges = new Set<() => void>();
 
   const runner = {
     async spawn(input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }): Promise<SubAgentSpawnResult> {
       const sessionId = `child-${children.length + 1}`;
-      const launch = runWork?.currentLaunch();
+      const launch = launches.getStore();
       let end: (result: SubAgentSpawnResult) => void = () => undefined;
       const done = new Promise<SubAgentSpawnResult>(resolve => { end = resolve; });
       const child: FakeChild = {
@@ -170,6 +173,7 @@ export async function stageRunHarness(opts: {
   /** The next process over the same files: a new board store and a new engine. The first engine is left as a crash leaves it. */
   const makeEngine = () => {
     board = new WorkBoardStore(boardPath);
+    runWork = observeEngineWork();
     engine = engineOn(board);
     return engine;
   };

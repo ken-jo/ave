@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
@@ -70,18 +71,23 @@ it.each(["event", "restart"] as const)("a notification failure resumes sealing a
 });
 
 it("resuming a parked join does not spawn the next step at boot", async () => {
-  let abandoned = false;
-  const h = await stageRunHarness({ integrate: () => abandoned ? { ok: true } : new Promise(() => undefined) });
+  const firstIntegration = deferred<void>();
+  const integrate = vi.fn(async () => ({ ok: true } as const)).mockImplementationOnce(() => {
+    firstIntegration.resolve();
+    return new Promise(() => undefined);
+  });
+  const h = await stageRunHarness({ observeRunWork: true, integrate });
   try {
     const version = await h.confirm([autoStageOf("a"), stageOf("b", { inputs: ["a"] })]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     (await h.untilLive(1))[0].finish();
-    await h.until(id, item => item.stageJoins[0]?.status === "integrating");
-    abandoned = true;
+    await firstIntegration.promise;
+    expect((await h.item(id)).stageJoins[0]?.status).toBe("integrating");
     h.makeEngine();
     await h.engine.adoptParkedTemplateRuns();
     await h.until(id, item => item.stageJoins[0]?.status === "integrated");
+    await h.drainRunWork();
     expect((await h.stageRun(id, "b")).status).toBe("waiting");
     expect(h.children).toHaveLength(1);
   } finally { await h.cleanup(); }
