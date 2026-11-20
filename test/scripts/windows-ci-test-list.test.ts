@@ -1,22 +1,14 @@
 /** Windows-only test cases run in CI only when their file is named in the Windows permission job (.github/workflows/ci.yml); the Linux and macOS shards skip them. A file that gates
  * cases on win32 but is missing from that list never runs anywhere, so this pins the list against the tree. */
-import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parse } from "yaml";
 import { conditionalGates } from "./windows-test-gates.js";
 import { isInventorySource, nativeBackedTestFiles } from "./windows-native-test-inventory.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
-const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
-const BARE_TEST_PATH_RE = new RegExp(String.raw`^\s*${TEST_PATH}(?![\w./\\-])`);
-const TEST_INVOCATION_RE = /\bbun[ \t]+run[ \t]+test(?::vitest)?(?=[ \t]|$)/;
-const TEST_COMMAND_RE = new RegExp(
-  String.raw`^bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)(?:[ \t]+${TEST_PATH})+$`,
-);
 const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
 const nativeTestLists = new Map([[NATIVE_TEST_LIST, readFileSync(join(root, NATIVE_TEST_LIST), "utf8")]]);
 const REQUIRED_SECURITY_SUITES = [
@@ -108,132 +100,11 @@ function listProblems(sources: Map<string, string>, workflow: string): string[] 
   }).sort();
 }
 
-type WorkflowJob = {
-  "runs-on"?: string | string[];
-  defaults?: { run?: { shell?: string } };
-  steps?: { name?: string; run?: string; shell?: string }[];
-};
-
-function windowsRunSteps(workflow: string) {
-  const { jobs, defaults } = parse(workflow) as {
-    jobs: Record<string, WorkflowJob>;
-    defaults?: WorkflowJob["defaults"];
-  };
-  return Object.entries(jobs).flatMap(([jobId, job]) => {
-    const runners = [job["runs-on"] ?? []].flat();
-    if (!runners.some((runner) => /^windows(?:-|$)/i.test(runner))) return [];
-    return (job.steps ?? []).flatMap((step, index) => step.run === undefined ? [] : [{
-      name: `${jobId}: ${step.name ?? `step ${index + 1}`}`,
-      shell: step.shell ?? job.defaults?.run?.shell ?? defaults?.run?.shell ?? "pwsh",
-      run: step.run,
-      lines: step.run.trimEnd().split("\n"),
-    }]);
-  });
-}
-
-const WORKFLOW_EXECUTABLES = [
-  "bun", "node", "powershell.exe",
-  "./node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe",
-];
-const TEST_COMMAND_NAME_RE = /\.(?:ts|tsx|mjs)$|\.test\./i;
-const INSPECT_POWERSHELL_AST = `
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$inputData = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
-$result = @{
-  cmdlets = @((Get-Command -CommandType Cmdlet).Name)
-  steps = @(foreach ($source in $inputData.steps) {
-    $tokens = $null
-    $errors = $null
-    $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
-    @{
-      errors = @(foreach ($errorItem in $errors) { "line $($errorItem.Extent.StartLineNumber): $($errorItem.Message)" })
-      functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
-        ForEach-Object { $_.Name })
-      commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
-        ForEach-Object { @{ name = $_.GetCommandName(); head = $_.CommandElements[0].Extent.Text; line = $_.Extent.StartLineNumber } })
-    }
-  })
-}
-ConvertTo-Json -InputObject $result -Depth 6 -Compress
-`;
-
-type PowerShellInspection = {
-  cmdlets: string[];
-  steps: {
-    errors: string[];
-    functions: string[];
-    commands: { name: string | null; head: string; line: number }[];
-  }[];
-};
-
-function inspectPowerShell(steps: string[]): PowerShellInspection | undefined {
-  const encoded = Buffer.from(INSPECT_POWERSHELL_AST, "utf16le").toString("base64");
-  let launchError: Error | undefined;
-  for (const shell of ["pwsh", "powershell"]) {
-    const result = spawnSync(shell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
-      input: JSON.stringify({ steps }), encoding: "utf8", windowsHide: true, timeout: 15_000,
-    });
-    const error = result.error as NodeJS.ErrnoException | undefined;
-    if (error?.code === "ENOENT") continue;
-    if (error?.code === "EACCES" || error?.code === "EPERM") {
-      launchError = error;
-      continue;
-    }
-    if (error) throw error;
-    expect(result.status, `${shell} parser failed: ${result.stderr}`).toBe(0);
-    return JSON.parse(result.stdout) as PowerShellInspection;
-  }
-  if (launchError) throw launchError;
-  return undefined;
-}
-
 describe("Windows CI test list", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
   const listed = windowsJobFiles(workflow);
-  const runSteps = windowsRunSteps(workflow);
   const sources = new Map(["src", "test", "scripts", "config", ".github"].flatMap((dir) => sourceFiles(join(root, dir)))
     .map((file) => [file, readFileSync(join(root, file), "utf8")]));
-
-  it("keeps each direct Windows test list in one command", () => {
-    const brokenSteps = runSteps.filter(({ lines }) => {
-      const commands = lines.filter((line) => TEST_INVOCATION_RE.test(line));
-      if (commands.length === 0) return false;
-      const command = commands[0]?.trim() ?? "";
-      if (commands.length !== 1 || !TEST_COMMAND_RE.test(command)) return true;
-      return !command.includes("test:vitest") && commands[0] !== lines.at(-1);
-    });
-    expect(brokenSteps.map(({ name }) => name)).toEqual([]);
-  });
-
-  it("keeps bare test paths off Windows command lines", () => {
-    const barePaths = runSteps.flatMap(({ name, lines }) => lines.flatMap((line) => {
-      const path = BARE_TEST_PATH_RE.exec(line)?.[0].trim();
-      return path === undefined ? [] : [`${name}: ${path}`];
-    }));
-    expect(barePaths).toEqual([]);
-  });
-
-  it("parses Windows PowerShell steps and resolves their command names", ({ skip }) => {
-    const steps = runSteps.filter(({ shell }) => /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i.test(shell));
-    expect(steps.map(({ name }) => name)).toContain(`windows-permission-tests: ${STEP_NAME}`);
-    const inspection = inspectPowerShell(steps.map(({ run }) => run));
-    if (inspection === undefined) return skip("PowerShell is unavailable");
-
-    expect(inspection.steps).toHaveLength(steps.length);
-    const failures = inspection.steps.flatMap(({ errors, functions, commands }, index) => {
-      const knownCommands = new Set([...WORKFLOW_EXECUTABLES, ...inspection.cmdlets, ...functions]
-        .map((name) => name.toLowerCase()));
-      const unknownCommands = commands.flatMap(({ name, head, line }) => (
-        name !== null && !TEST_COMMAND_NAME_RE.test(name) && knownCommands.has(name.toLowerCase())
-          ? [] : [`line ${line}: unrecognized command ${head}`]
-      ));
-      return [...errors, ...unknownCommands].map((problem) => `${steps[index]?.name}: ${problem}`);
-    });
-    expect(failures).toEqual([]);
-  }, 20_000);
 
   it("names only files that exist", () => {
     expect(listed.filter((file) => !sources.has(file))).toEqual([]);

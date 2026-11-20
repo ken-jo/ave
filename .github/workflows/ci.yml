@@ -680,6 +680,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      - name: Validate Windows workflow commands
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/check-windows-workflow.mjs
       - name: Ensure uv toolchain
         env:
           GITHUB_TOKEN: ${{ github.token }}
