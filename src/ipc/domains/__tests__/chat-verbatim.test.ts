@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, it, expect, vi, beforeEach } 
 import { configureHostResources } from "../../../main/host-resources.js";
 import path from "node:path";
 import os from "node:os";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
@@ -47,12 +47,11 @@ vi.mock("../../../shared/chat-history.js", () => ({
 }));
 // Authorize an explicit project so metadata tests exercise the real workspace authority.
 let explicitTestProjectRoot: string | undefined;
-beforeAll(() => {
-  configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false });
-  explicitTestProjectRoot = mkdtempSync(path.join(os.tmpdir(), "ave-explicit-project-fixture-"));
-});
-afterAll(async () => {
-  if (explicitTestProjectRoot !== undefined) await cleanupTmpDir(explicitTestProjectRoot);
+beforeAll(() => configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false }));
+afterAll(() => {
+  if (explicitTestProjectRoot !== undefined) {
+    expect(existsSync(explicitTestProjectRoot), "Explicit project fixture must be removed").toBe(false);
+  }
 });
 
 vi.mock("../../../permissions/permission-settings-store.js", async (importOriginal) => {
@@ -660,6 +659,13 @@ describe("ave:chat:get-sub-agent-transcript", () => {
 });
 
 describe("ave:chat active main state", () => {
+  beforeAll(() => {
+    explicitTestProjectRoot = mkdtempSync(path.join(os.tmpdir(), "ave-explicit-project-fixture-"));
+  });
+  afterAll(async () => {
+    if (explicitTestProjectRoot !== undefined) await cleanupTmpDir(explicitTestProjectRoot);
+  });
+
   it("marks fresh state when a new main chat starts", async () => {
     const loop = makeConversationLoop("d1c00b95-b0af-4bd6-8179-4210161fffc3", []);
     const deps = await setupHandlers(loop);
