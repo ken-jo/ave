@@ -2,7 +2,8 @@ import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizePath } from "vite";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+import { windowsTestFileMarkers } from "../.github/scripts/windows-test-file-markers.mjs";
 import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-electron.mjs";
 import { documentGuardImportArgument } from "../scripts/lib/document-consumer-node-options.mjs";
 import { assertAllowedDocumentRead } from "../scripts/lib/document-consumer-guard.mjs";
@@ -10,6 +11,7 @@ import BoundarySequencer from "./vitest-sequencer.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
+const fileMarkers = windowsTestFileMarkers();
 
 const testFileGlob = "**/*.{test,spec}.{ts,tsx}";
 const baseExclude = [
@@ -83,6 +85,7 @@ export default defineConfig({
     },
   }],
   test: {
+    ...(fileMarkers && { reporters: [...configDefaults.reporters, fileMarkers] }),
     // Dependency directories can be shared by worktrees with different lockfiles.
     // Keep cache invalidation local so one checkout cannot remove another's modules.
     fsModuleCachePath: rootPath(".cache/vitest/modules"),

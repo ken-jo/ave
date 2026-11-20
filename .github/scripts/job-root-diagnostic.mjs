@@ -155,6 +155,33 @@ function runJobRootQuery(command, args, options, done) {
   return execFile(executable, args, options, done);
 }
 
+function jobRootArgumentPattern(root) {
+  const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(String.raw`(?<![\w:\\])(?:\\\\\?\\)?` + escapedRoot +
+    String.raw`(?:\\[^\s"'<>|;&=,)]*)?(?=$|[\s"'<>|;&=,):])`, "gi");
+}
+
+export function isJobRootPath(path, root) {
+  if (!path) return false;
+  const drivePath = path.replaceAll("/", "\\").replace(/^\\\\\?\\/, "");
+  if (!/^[a-z]:\\/i.test(drivePath)) return false;
+  const full = win32.normalize(drivePath).replace(/\\+$/, "").toLowerCase();
+  const base = root.toLowerCase();
+  return full === base || full.startsWith(base + "\\");
+}
+
+export function maskJobRootArguments(commandLine, root) {
+  if (commandLine == null) return null;
+  let masked = "";
+  let end = 0;
+  for (const match of commandLine.replaceAll("/", "\\").matchAll(jobRootArgumentPattern(root))) {
+    if (!isJobRootPath(match[0], root)) continue;
+    masked += commandLine.slice(end, match.index) + "[job-root]";
+    end = match.index + match[0].length;
+  }
+  return masked + commandLine.slice(end);
+}
+
 const EVIDENCE_WRITER = String.raw`
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -436,8 +463,7 @@ function ReadHolderGroup([object[]]$group) {
 }
 
 function FindJobProcesses {
-  $rootPattern = '(?<![\w:\\])(?:\\\\\?\\)?' + [regex]::Escape($root) +
-    '(?:\\[^\s"''<>|;&=,)]*)?(?=$|[\s"''<>|;&=,):])'
+  $rootPattern = '${jobRootArgumentPattern(root).source.replaceAll("'", "''")}'
   $pattern = [regex]::new($rootPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
   $inspected = 0
   $matched = 0

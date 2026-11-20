@@ -829,9 +829,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
+      - name: Start Windows launch diagnostic
+        if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
+        continue-on-error: true
+        shell: powershell
+        working-directory: ${{ runner.temp }}
+        run: |
+          $repo = Join-Path $env:GITHUB_WORKSPACE 'ave'
+          $dir = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic'
+          $scripts = Join-Path $dir '.github/scripts'
+          $lib = Join-Path $dir 'scripts/lib'
+          New-Item -ItemType Directory -Force -Path $scripts, $lib | Out-Null
+          foreach ($file in 'watch-windows-processes.mjs', 'watch-windows-processes.ps1', 'job-root-diagnostic.mjs') {
+            Copy-Item -LiteralPath (Join-Path $repo ".github/scripts/$file") -Destination $scripts
+          }
+          Copy-Item -LiteralPath (Join-Path $repo 'scripts/lib/windows-powershell-env.mjs') -Destination $lib
+          node (Join-Path $scripts 'watch-windows-processes.mjs') start
       - name: Run Windows permission regressions
         env:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
+          AVE_CI_WINDOWS_TEST_FILE_MARKERS: '1'
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
@@ -1275,6 +1292,22 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
+      - name: Stop Windows launch diagnostic and print evidence
+        if: always() && steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
+        continue-on-error: true
+        shell: powershell
+        working-directory: ${{ runner.temp }}
+        run: |
+          $script = Join-Path $env:RUNNER_TEMP 'windows-launch-diagnostic/.github/scripts/watch-windows-processes.mjs'
+          if (Test-Path -LiteralPath $script) { node $script stop }
+      - name: Upload Windows launch evidence
+        if: always() && steps.docs-impact.outputs.docs_only != 'true' && env.AVE_CI_JOB_ROOT != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-launch-diagnostic
+          path: ${{ runner.temp }}/windows-launch-diagnostic/*.jsonl
+          if-no-files-found: ignore
       - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
