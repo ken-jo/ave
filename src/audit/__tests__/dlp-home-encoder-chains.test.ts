@@ -148,6 +148,66 @@ const wrappedChains = wrapperNames.flatMap(a => [
   [a], ...wrapperNames.flatMap(b => [[a, b], ...wrapperNames.map(c => [a, b, c])]),
 ]);
 
+const separatorMatrixEncoders = {
+  ...wrappedEncoders,
+  array: {
+    encode: (text: string) => JSON.stringify([1, text]),
+    decode: (text: string) => {
+      const [retained, value] = JSON.parse(text) as [number, string];
+      expect(retained).toBe(1);
+      return value;
+    },
+    json: true,
+  },
+  slash: { encode: (text: string) => `"${encoders.jsonSlash(text)}"`, decode: wrappedEncoders.string.decode, json: true },
+  hexEntity: { encode: (text: string) => escapeHtml(text).replace(/[^\x00-\x7f]/gu, c => `&#x${c.codePointAt(0)?.toString(16)};`), decode: wrappedEncoders.html.decode, json: false },
+  hexUtf8: { encode: (text: string) => utf8(text).map(byte => byte < 0x80 ? String.fromCharCode(byte) : `\\x${hex2(byte)}`).join(""), decode: decoders.hexBytes, json: false },
+};
+
+type SeparatorEncoder = keyof typeof separatorMatrixEncoders;
+const separatorNames = Object.keys(separatorMatrixEncoders) as SeparatorEncoder[];
+const uriChains = separatorNames.flatMap(a => [
+  [a], ...separatorNames.flatMap(b => [[a, b], ...separatorNames.map(c => [a, b, c])]),
+]).filter(chain => chain.includes("uri"));
+
+it.each([String.raw`D:\fixtures\habitat`, String.raw`\\srv\share\habitat`, String.raw`E:\temp\ted`])(
+  "preserves literal descendants next to separately encoded paths through three layers for %s", async home => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
+    const slashHome = home.replaceAll("\\", "/");
+    for (const [before, suffix, after, descendant] of [
+      ["", "/one", "?from=", "two"], ["", "/one", " ", "two"], ["copy ", "/a", " ", "b"],
+    ] as const) {
+      const literalPath = slashHome + suffix;
+      let count = 0;
+      const failures: string[] = [];
+      for (const chain of uriChains) {
+        const encode = (value: string) => chain.reduce((text, codec) => separatorMatrixEncoders[codec].encode(text), value);
+        const prefix = before + literalPath + after;
+        const input = encode(`${prefix}${home}\\${descendant}`);
+        if (!input.includes(literalPath)) continue;
+        count++;
+        const separate = "nextPath";
+        const reference = encode(prefix + separate);
+        const literalStart = reference.indexOf(literalPath);
+        const separatorEnd = reference.indexOf(separate, literalStart + literalPath.length);
+        const expected = `[home]${reference.slice(literalStart + slashHome.length, separatorEnd)}[home-token]`;
+        const output = redactHomePathsInText(input);
+        if (!output.includes(expected) || output.toLowerCase().includes(home.split("\\").at(-1)?.toLowerCase() ?? "")) {
+          failures.push(`${chain.join(">")}: ${output} (expected ${expected})`);
+        }
+        let outer = output;
+        for (const name of chain.toReversed()) {
+          const codec = separatorMatrixEncoders[name];
+          if (!codec.json) break;
+          outer = codec.decode(outer);
+        }
+      }
+      expect(count).toBe(185);
+      expect(failures.length, failures.slice(0, 5).join("\n")).toBe(0);
+    }
+  },
+);
+
 it("replaces the whole encoded object token while preserving an outer JSON layer", async () => {
   const home = String.raw`E:\temp\ted`;
   const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");

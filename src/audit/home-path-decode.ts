@@ -90,7 +90,7 @@ function readByteEscape(text: string, index: number, width: number, output: Esca
 }
 
 /** Reuse the caller’s single value slot for escape recognition. */
-function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex: boolean): number {
+export function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex = false): number {
   const code = text.charCodeAt(index);
   if (code === 37) return readByteEscape(text, index, 3, output);
   if (code === 92) {
@@ -116,7 +116,7 @@ function readHomeEscape(text: string, index: number, output: EscapeValue, jsHex:
 }
 
 /** Read one complete HTML reference starting at its ampersand. */
-export function readHomeEntity(text: string, index: number, output: EscapeValue): number {
+function readHomeEntity(text: string, index: number, output: EscapeValue): number {
   if (text.charCodeAt(index + 1) === 35) {
     let cursor = index + 2;
     const radix = text.charCodeAt(cursor) === 120 || text.charCodeAt(cursor) === 88 ? 16 : 10;

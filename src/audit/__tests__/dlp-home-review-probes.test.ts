@@ -48,6 +48,14 @@ add("keeps a literal suffix before a separate encoded path", WINDOWS_HOME, MIXED
 add("keeps a literal suffix and its entity before a separate encoded path", WINDOWS_HOME,
   MIXED_PATH_LIST.replace("/one;", "/one&amp;;"), "[home]/one&amp;;[home-token]", "win32");
 
+for (const home of [WINDOWS_HOME, win32.normalize(WINDOWS_HOME), String.raw`C:\Users\bob`, COMMAND_HOME]) {
+  for (const separator of [";", " ", "?", "&", "=", ":", "+", "$", "!", "*", "@", "#", "~", " to ", "?from="]) {
+    const path = `${home.replaceAll("\\", "/")}/one${separator}${win32.normalize(home)}\\two`;
+    add(`keeps the literal descendant before ${JSON.stringify(separator)} on ${home}`, home,
+      encodeURI(path), `[home]/one${encodeURI(separator)}[home-token]`, "win32");
+  }
+}
+
 for (const { character, tail, count } of [
   { character: '"', tail: '"' }, { character: "\n", tail: "n" }, { character: "\t", tail: "t" },
   { character: "\b", tail: "b" }, { character: "\f", tail: "f" }, { character: "\r", tail: "r" },

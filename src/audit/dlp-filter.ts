@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 
 import { PII_PATTERNS } from "../shared/dlp.js";
 import { escapeRegExp } from "../shared/escape-reg-exp.js";
-import { decodeHomeEscapes, type HomeEscapeFamily, mayDecodeHomeCharacter, readHomeEntity } from "./home-path-decode.js";
+import { decodeHomeEscapes, type HomeEscapeFamily, mayDecodeHomeCharacter, readHomeEscape } from "./home-path-decode.js";
 
 export {
   initPiiRedactionPolicy,
@@ -199,6 +199,7 @@ interface HomeRedaction {
   forms: readonly HomeDetector[];
   trigger: RegExp;
   boundaries: ReadonlySet<number>;
+  componentCharacters: ReadonlySet<number>;
   requiredPathCharacter: string;
 }
 
@@ -229,8 +230,12 @@ function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform
   const anchors = new Set(slashHomes.map(spelling => spelling.slice(spelling.lastIndexOf("/") + 1)));
   const trigger = new RegExp([String.raw`[\\%&]|users|home`, ...[...anchors].map(escapeRegExp)].join("|"), "iu");
   const boundaries = new Set([...BOUNDARY_CHARACTERS].map(character => character.charCodeAt(0)));
+  const componentCharacters = new Set<number>();
   for (const spelling of spellings) {
-    for (const character of spelling) if (character !== '"') boundaries.delete(character.charCodeAt(0));
+    for (const character of windows ? spelling.replace(/^[a-z]:/iu, "") : spelling) {
+      componentCharacters.add(character.codePointAt(0) ?? 0);
+      if (character !== '"') boundaries.delete(character.charCodeAt(0));
+    }
   }
   const requiredPathCharacter = windows ? /^[a-z]:/iu.test(spellings[0] ?? "") ? ":" : "" : spellings[0]?.startsWith("/") ? "/" : "";
   const urls = new Set(slashHomes.map(spelling => `file://${spelling}`));
@@ -245,7 +250,7 @@ function compileHomeRedaction({ spellings, nativeUrl }: ConfiguredHome, platform
     ...[...urls].map(spelling => compile(spelling, "file://[home]")),
     ...slashHomes.map(spelling => compile(spelling, "[home]")),
   ];
-  return { forms, trigger, boundaries, requiredPathCharacter };
+  return { forms, trigger, boundaries, componentCharacters, requiredPathCharacter };
 }
 
 const homeRedaction = compileHomeRedaction(home, homePlatform);
@@ -342,9 +347,58 @@ function detectsEncodedHome(token: string, forms: readonly HomeDetector[]): bool
   return false;
 }
 
+const TOKEN_SEPARATOR = /[\p{White_Space}\p{P}\p{S}]/u;
+const NESTED_PERCENT_BYTE = /%(?:25){1,2}([0-9a-f]{2})/iy;
+
+function isPathSeparator(code: number): boolean {
+  return code === 47 || code === 92;
+}
+
+function isEscapeIntroducer(code: number): boolean {
+  return code === 37 || code === 38 || code === 92;
+}
+
+/** Find a separate candidate after a literal marker using whole raw lexemes. */
+function separateTokenStart(
+  token: string, componentCharacters: ReadonlySet<number>, containsEncodedHome: (candidate: string) => boolean,
+): number {
+  let start = 0;
+  let introduced = false;
+  let driveLetterEnd = -1;
+  const escape = { value: 0 };
+  for (let index = 0; index < token.length;) {
+    const source = token.codePointAt(index) ?? 0;
+    const introducer = isEscapeIntroducer(source);
+    let width = introducer ? readHomeEscape(token, index, escape) : -1;
+    let code = width > 0 ? escape.value : source;
+    if (source === 37 && code === 37 && width > 0) {
+      // URI encoding repeats the percent byte without escaping the final hex digits.
+      NESTED_PERCENT_BYTE.lastIndex = index;
+      const nested = NESTED_PERCENT_BYTE.exec(token);
+      if (nested) { width = nested[0].length; code = Number.parseInt(nested[1], 16); }
+    }
+    const end = index + (width > 0 ? width : source > 0xffff ? 2 : 1);
+    const next = token.charCodeAt(end);
+    const driveColon = homePlatform === "win32" && index === driveLetterEnd && code === 58
+      && (isPathSeparator(next) || isEscapeIntroducer(next));
+    // Test disjoint candidates. A separator may be a raw character or one
+    // complete escape. Its source width determines the cut.
+    if (!driveColon && !isPathSeparator(code) && !componentCharacters.has(code) && TOKEN_SEPARATOR.test(String.fromCodePoint(code))) {
+      if (start && introduced && containsEncodedHome(token.slice(start, index))) return start;
+      start = end;
+      introduced = false;
+    } else {
+      introduced ||= introducer;
+      if (index === start && ((code | 32) >= 97 && (code | 32) <= 122)) driveLetterEnd = end;
+    }
+    index = end;
+  }
+  return start && introduced && containsEncodedHome(token.slice(start)) ? start : 0;
+}
+
 /** Delimiters and their preceding slash runs belong to the original text. */
 function replaceEncodedHomeTokens(
-  text: string, { forms, boundaries, requiredPathCharacter }: HomeRedaction, markers: readonly LiteralMarker[],
+  text: string, { forms, boundaries, componentCharacters, requiredPathCharacter }: HomeRedaction, markers: readonly LiteralMarker[],
 ): string {
   let pieces: string[] | undefined;
   let copied = 0;
@@ -353,32 +407,26 @@ function replaceEncodedHomeTokens(
   let markerIndex = 0;
   let markerStart = markers[0]?.start ?? Infinity;
   let literalSuffix = false;
-  let separatorEnd = 0;
-  let escapedSuffix = false;
-  const entityValue = { value: 0 };
   const containsEncodedHome = (token: string): boolean => {
     if (requiredPathCharacter && token.length >= LARGE_ESCAPE_TOKEN && !token.includes(requiredPathCharacter)
       && !mayDecodeHomeCharacter(token, requiredPathCharacter.charCodeAt(0), HOME_DECODE_LAYERS)) return false;
     return detectsEncodedHome(token, forms);
   };
   const finish = (end: number): void => {
-    let replaceFrom = start;
-    // A literal descendant can end at a raw list separator. Prefer the
-    // separate token, with the original candidate as the fallback.
-    if (introduced && separatorEnd > start && separatorEnd < end
-      && containsEncodedHome(text.slice(separatorEnd, end))
-      && (!escapedSuffix || !containsEncodedHome(text.slice(start, separatorEnd)))) {
-      replaceFrom = separatorEnd;
-    }
-    literalSuffix = false;
-    separatorEnd = 0;
-    if (introduced && start < end) {
-      introduced = false;
-      if (replaceFrom === start && !containsEncodedHome(text.slice(start, end))) return;
+    const token = introduced && start < end ? text.slice(start, end) : "";
+    let separate = 0;
+    if (token && containsEncodedHome(token)) {
+      if (literalSuffix) separate = separateTokenStart(token, componentCharacters, containsEncodedHome);
+      // Keep the original token when narrowing could expose a second home in its prefix.
+      if (separate) {
+        const prefix = token.slice(0, separate);
+        if (INTRODUCER.test(prefix) && containsEncodedHome(prefix)) separate = 0;
+      }
       pieces ??= [];
-      pieces.push(text.slice(copied, replaceFrom), HOME_TOKEN_MARKER);
+      pieces.push(text.slice(copied, start + separate), HOME_TOKEN_MARKER);
       copied = end;
     }
+    literalSuffix = false;
     introduced = false;
   };
   for (let index = 0; index < text.length;) {
@@ -407,14 +455,8 @@ function replaceEncodedHomeTokens(
       index++;
       start = index;
     } else {
-      if (literalSuffix && code === 59) {
-        separatorEnd = index + 1;
-        escapedSuffix = introduced;
-        literalSuffix = false;
-      }
       if (code === 37 || code === 38) introduced = true;
-      // A reference's terminating semicolon is part of the escape.
-      index += literalSuffix && code === 38 ? Math.max(1, readHomeEntity(text, index, entityValue)) : 1;
+      index++;
     }
   }
   finish(text.length);
