@@ -1,4 +1,5 @@
 import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
+import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -572,6 +573,42 @@ describe("Windows helper integrity", () => {
     if (process.platform === "win32") {
       expect(() => assertSrtWinSpawnIntegrity(executable)).toThrow(expect.objectContaining({ code: "srt-win-integrity-mismatch" }));
       expect(() => assertSrtWinSpawnIntegrity(source)).toThrow(expect.objectContaining({ code: "srt-win-integrity-mismatch" }));
+    }
+  });
+
+  it("removes an incomplete copy at exit if its immediate rollback fails", async () => {
+    const { source } = fixture();
+    const earlierExitHandlers = new Set(process.listeners("exit"));
+    const writeError = new Error("Image write failed");
+    const remove = vi.fn(rmSync).mockImplementationOnce(() => { throw new Error("Image was busy"); });
+    const write = vi.fn<typeof writeFileSync>().mockImplementation(() => { throw writeError; });
+    vi.resetModules();
+    vi.doMock("node:os", async (original) => ({
+      ...await original<typeof import("node:os")>(), type: () => "Darwin", tmpdir: () => dirname(source),
+    }));
+    vi.doMock("node:fs", async (original) => ({
+      ...await original<typeof import("node:fs")>(), writeFileSync: write, rmSync: remove,
+    }));
+    try {
+      const integrity = await import("../srt-win-integrity.js");
+      const exitHandlers = process.listeners("exit").filter((handler) => !earlierExitHandlers.has(handler));
+      expect(exitHandlers).toHaveLength(1);
+      const [onExit] = exitHandlers;
+      assert(onExit);
+      process.removeListener("exit", onExit);
+
+      expect(() => integrity.prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ cause: writeError }));
+      expect(remove).toHaveBeenCalledTimes(1);
+      const executable = write.mock.calls[0]?.[0];
+      assert(typeof executable === "string");
+      const directory = dirname(dirname(executable));
+      expect(existsSync(directory)).toBe(true);
+      onExit(0);
+      expect(existsSync(directory)).toBe(false);
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.doUnmock("node:os");
+      vi.resetModules();
     }
   });
 

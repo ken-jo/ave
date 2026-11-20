@@ -8,6 +8,7 @@ import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import SRT_WIN_BUILD_RECEIPTS from "./generated/srt-win-build-receipts.js";
+import { _registerSrtWinCopyForTest } from "./srt-win-copy-owner.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
 
 export class SrtWinIntegrityError extends Error {
@@ -161,7 +162,18 @@ export function getSrtWinArchitecture(arch: string = process.arch): "arm64" | "x
 
 let swept = false;
 
-const copies = new Map<string, { readonly directory: string; readonly executable: string; readonly arch: string }>();
+const copies = new Map<string, { readonly executable: string; readonly arch: string }>();
+const copyDisposers = new Set<() => void>();
+
+function ownPrivateCopy(directory: string): () => void {
+  const dispose = (): void => {
+    removePrivateCopy(directory);
+    copyDisposers.delete(dispose);
+  };
+  copyDisposers.add(dispose);
+  _registerSrtWinCopyForTest(directory, dispose);
+  return dispose;
+}
 
 function readHelper(path: string): Buffer {
   try {
@@ -192,7 +204,7 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
   const directory = join(tmpdir(), `ave-srt-win-${randomBytes(16).toString("hex")}`);
   const bin = join(directory, "bin");
   // A refused creation leaves nothing of ours: the step removes what it made, and whatever was already at the path is not ours to delete.
-  let created = false;
+  let dispose: (() => void) | undefined;
   try {
     const executable = join(bin, "srt-win.exe");
     // POSIX modes do not enforce a Windows boundary. On Windows both directories and the empty image are created with their protected DACL and the current user as owner before any executable byte exists; this needs no elevation, and the bytes go into the file that step made.
@@ -203,16 +215,14 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
       try { mkdirSync(bin, { mode: 0o700 }); }
       catch (error) { rmdirSync(directory); throw error; }
     }
-    created = true;
+    dispose = ownPrivateCopy(directory);
     // Write the bytes that were hashed, rather than re-opening the source to copy.
     writeFileSync(executable, bytes, windows ? { flag: "r+" } : { flag: "wx", mode: 0o700 });
     assertSrtWinDigest(readHelper(executable), arch);
-    copies.set(key, { directory, executable, arch });
+    copies.set(key, { executable, arch });
     return executable;
   } catch (error) {
-    if (created) {
-      try { removePrivateCopy(directory); } catch { /* A leftover copy is the stale-copy sweep's. */ }
-    }
+    try { dispose?.(); } catch { /* The exit handler still owns the copy. */ }
     if (error instanceof SrtWinIntegrityError) throw error;
     throw new SrtWinIntegrityError("srt-win-integrity-mismatch", { cause: error });
   }
@@ -269,13 +279,13 @@ export function isSrtWinRuntimeReleasePending(): boolean {
 }
 
 process.once("exit", () => {
-  if (copies.size === 0) return;
+  if (copyDisposers.size === 0) return;
   if (runtimeReleasePending) {
     // The runtime's exit handler runs next and still finds the copy; the next boot's stale-copy sweep removes it, and its ACL recovery covers a crash.
     writeExitDiagnostic("srt-win: sandbox session was not released before exit; the private helper copy is kept for the runtime's exit handler, the next boot's sweep and ACL recovery");
     return;
   }
-  for (const { directory } of copies.values()) {
-    try { removePrivateCopy(directory); } catch { /* An active helper may still hold the image. */ }
+  for (const dispose of copyDisposers) {
+    try { dispose(); } catch { /* An active helper may still hold the image. */ }
   }
 });

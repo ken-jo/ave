@@ -1,16 +1,12 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
-const srtWinCopies = vi.hoisted(() => new Set<string>());
-vi.mock("../srt-win-integrity.js", async original =>
-  (await import("../../__tests__/support/srt-win-copies.js")).recordSrtWinCopies(await original(), srtWinCopies));
 
 // Force the platform to test partial-confinement logic; live installation, elevation and network enforcement require native verification.
-import { existsSync } from "node:fs";
-import { dirname, resolve, win32 as win32Path } from "node:path";
+import { resolve, win32 as win32Path } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
@@ -38,8 +34,6 @@ import {
 } from "@anthropic-ai/sandbox-runtime";
 import { parseWindowsBinShell, rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { setProcessPlatform as forcePlatform } from "../../__tests__/test-helpers.js";
-import { removeSrtWinCopies } from "../../__tests__/support/srt-win-copies.js";
-import { srtWinPrivateDirectories } from "../srt-win-integrity.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 
@@ -71,11 +65,6 @@ afterEach(() => {
   });
   vi.unstubAllEnvs();
 });
-afterAll(async () => {
-  await removeSrtWinCopies(srtWinCopies);
-  expect(srtWinPrivateDirectories().map(dirname).filter(existsSync)).toEqual([]);
-});
-
 describe("windows sandbox — mirrored constants pinned against ASRT", () => {
   it("DEFAULT_WINDOWS_PROXY_PORT_RANGE mirrors ASRT's exported value", () => {
     expect(DEFAULT_WINDOWS_PROXY_PORT_RANGE).toEqual([60080, 60089]);
