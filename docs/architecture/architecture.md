@@ -3342,6 +3342,9 @@ and POSIX `/`. The generic users/home text rules still apply for those homes.
 Home paths joined without a separating delimiter are unsupported. This includes
 directly adjacent native and slash spellings, a file URL joined to another
 home path, and copies joined with a dot. An earlier copy can remain visible.
+In these joins, the redactor can replace an entire token containing only literal
+homes with `[home-token]`, removing its suffix. This is an exception to the
+literal-only suffix rule above.
 For supported homes the redactor matches both the configured spelling, with
 trailing separators removed, and the normalized spelling. Platform path
 normalization collapses dot segments and duplicate separators without
