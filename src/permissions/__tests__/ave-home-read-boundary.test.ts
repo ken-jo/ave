@@ -12,6 +12,9 @@ vi.mock("../../shared/windows-path-facts.js", async original => {
 });
 vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+const srtWinCopies = vi.hoisted(() => new Set<string>());
+vi.mock("../srt-win-integrity.js", async original =>
+  (await import("../../__tests__/support/srt-win-copies.js")).recordSrtWinCopies(await original(), srtWinCopies));
 const readdirFault = vi.hoisted(() => ({ path: undefined as string | undefined, code: "EACCES" }));
 vi.mock("node:fs", async original => {
   const fs = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original());
@@ -28,8 +31,8 @@ vi.mock("node:fs", async original => {
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dirname, join, sep } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fakeHome = vi.hoisted(() => ({ value: undefined as string | undefined }));
 vi.mock("node:os", async (importOriginal) => {
@@ -49,6 +52,7 @@ vi.mock("../../shared/policy-home.js", async (importOriginal) => {
 
 import { aveHome } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { removeSrtWinCopies } from "../../__tests__/support/srt-win-copies.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { AVE_HOME_READ_REALLOWS, isAveHomeReadReallowed } from "../ave-home-read-boundary.js";
@@ -67,6 +71,7 @@ import {
   wrapWorkerCommand,
 } from "../asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
+import { srtWinPrivateDirectories } from "../srt-win-integrity.js";
 import { SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { windowsReadDenyEvidence, windowsReadDenyKey } from "../../shared/windows-read-deny-evidence.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
@@ -112,6 +117,10 @@ const withheld = (): string[] => [
 ];
 
 afterEach(() => setProcessPlatform(HOST_PLATFORM));
+afterAll(async () => {
+  await removeSrtWinCopies(srtWinCopies);
+  expect(srtWinPrivateDirectories().map(dirname).filter(existsSync)).toEqual([]);
+});
 
 describe("the Ave home re-allow table", () => {
   it("re-opens only named children, never the root or a sibling file", () => {
