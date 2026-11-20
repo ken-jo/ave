@@ -51,8 +51,13 @@ export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
   }
 }
 
-function createOwnedJobRoot(prefix, create, readIdentity) {
+function createOwnedJobRoot(prefix, create, readIdentity, publish) {
   const root = create(prefix);
+  try {
+    publish({ AVE_CI_JOB_ROOT: root, AVE_CI_JOB_ROOT_IDENTITY: "unknown" });
+  } catch (cause) {
+    throw new Error(`Cannot publish cleanup for the new job root. Directory left at ${root}`, { cause });
+  }
   try {
     const identity = readIdentity(root);
     if (!isJobRootIdentity(identity)) throw new Error("Invalid directory identity");
@@ -69,7 +74,7 @@ export function isolationAssignments(
   const windows = platform === "win32";
   const paths = windows ? win32 : posix;
   const { root, identity } = windows
-    ? createOwnedJobRoot(paths.join(systemVolume(systemRoot), "ave-ci-"), create, readIdentity)
+    ? createOwnedJobRoot(paths.join(systemVolume(systemRoot), "ave-ci-"), create, readIdentity, publish)
     : { root: runnerTemp };
   try {
     if (windows) harden(root);
@@ -126,8 +131,17 @@ function isJobRootIdentity(identity) {
 }
 
 function assertOwnedRoot(root, identity, readIdentity) {
-  if (!isJobRootIdentity(identity) || readIdentity(root) !== identity) {
-    throw new Error("Cleanup requires an unchanged isolated job root");
+  if (!isJobRootIdentity(identity)) {
+    throw new Error(`Cannot clean up job root ${root}: directory identity is unknown or invalid`);
+  }
+  let currentIdentity;
+  try {
+    currentIdentity = readIdentity(root);
+  } catch (cause) {
+    throw new Error(`Cleanup requires an unchanged isolated job root. Could not read directory identity at ${root}`, { cause });
+  }
+  if (currentIdentity !== identity) {
+    throw new Error(`Cleanup requires an unchanged isolated job root. Directory identity changed at ${root}`);
   }
 }
 

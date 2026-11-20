@@ -8,6 +8,7 @@ import { PassThrough } from "node:stream";
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { describe, it, mock } from "node:test";
+import { parse } from "yaml";
 import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
 import { diagnoseJobRoot } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { cleanupWindowsJobRoot as cleanupJobRoot, diagnoseCleanupFailure, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
@@ -15,7 +16,9 @@ import { cleanupWindowsJobRoot as cleanupJobRoot, diagnoseCleanupFailure, harden
 describe("job home isolation", () => {
   it("places Windows fixtures on the system volume instead of the runner temp volume", () => {
     const create = mock.fn(() => "C:\\ave-ci-abc123");
-    const values = isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot: "C:\\Windows" }, create, mock.fn(), () => "1:2:3");
+    const publish = mock.fn();
+    const values = isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot: "C:\\Windows" },
+      create, mock.fn(), () => "1:2:3", publish);
     assert.deepEqual(create.mock.calls.map(call => call.arguments), [["C:\\ave-ci-"]]);
     assert.deepEqual(values, {
       HOME: "C:\\ave-ci-abc123\\home", USERPROFILE: "C:\\ave-ci-abc123\\home",
@@ -25,30 +28,55 @@ describe("job home isolation", () => {
       LOCALAPPDATA: "C:\\ave-ci-abc123\\home\\local-app-data", APPDATA: "C:\\ave-ci-abc123\\home\\app-data",
       AVE_CI_JOB_ROOT: "C:\\ave-ci-abc123", AVE_CI_JOB_ROOT_IDENTITY: "1:2:3",
     });
+    assert.deepEqual(publish.mock.calls.map(call => call.arguments), [
+      [{ AVE_CI_JOB_ROOT: "C:\\ave-ci-abc123", AVE_CI_JOB_ROOT_IDENTITY: "unknown" }], [values],
+    ]);
   });
   it("leaves room for socket paths before publishing environment changes", () => {
     assert.throws(() => isolationAssignments({ platform: "darwin", runnerTemp: "/".padEnd(81, "a") }), /socket path/);
   });
 
-  it("reports and preserves the new directory when its identity cannot be read", t => {
+  it("publishes the unverified job root for cleanup and preserves it when its identity cannot be read", async t => {
     const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "example-")));
     t.after(() => rmSync(parent, { recursive: true, force: true }));
-    const root = join(parent, "ave-ci-abc123");
+    const root = "C:\\ave-ci-abc123";
+    const localRoot = join(parent, win32.basename(root));
+    const sentinel = join(parent, "shared");
+    writeFileSync(sentinel, "preserve");
     const identityError = new Error("Could not read directory identity");
-    const create = () => { mkdirSync(root); return root; };
+    const create = () => { mkdirSync(localRoot); return root; };
     const harden = mock.fn();
-    const publish = mock.fn();
+    const events = [];
+    const env = {};
+    const publish = assignments => { events.push("publish"); Object.assign(env, assignments); };
 
     assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, create, harden,
-      () => { throw identityError; }, publish), error => {
+      () => { events.push("read"); throw identityError; }, publish), error => {
       assert.match(error.message, /Directory left at /);
       assert.ok(error.message.includes(root));
       assert.equal(error.cause, identityError);
       return true;
     });
-    assert.deepEqual(readdirSync(root), []);
+    assert.deepEqual(readdirSync(localRoot), []);
     assert.equal(harden.mock.callCount(), 0);
-    assert.equal(publish.mock.callCount(), 0);
+    assert.deepEqual(events, ["publish", "read"]);
+    assert.deepEqual(env, { AVE_CI_JOB_ROOT: root, AVE_CI_JOB_ROOT_IDENTITY: "unknown" });
+
+    const workflow = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"));
+    const cleanup = workflow.jobs["windows-permission-tests"].steps
+      .find(step => step.name === "Remove isolated system-volume job directory");
+    assert.equal(cleanup.if, "steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''");
+    assert.equal(cleanup.run, "node ave/.github/scripts/isolate-job-home.mjs --cleanup");
+
+    const readIdentity = mock.fn(() => fixtureIdentity(localRoot));
+    const rename = mock.fn();
+    const remove = mock.fn();
+    await assert.rejects(cleanupJobRoot(env.AVE_CI_JOB_ROOT, {
+      systemRoot: "C:\\Windows", identity: env.AVE_CI_JOB_ROOT_IDENTITY, readIdentity, rename, remove,
+    }), { message: `Cannot clean up job root ${root}: directory identity is unknown or invalid` });
+    for (const operation of [readIdentity, rename, remove]) assert.equal(operation.mock.callCount(), 0);
+    assert.deepEqual(readdirSync(localRoot), []);
+    assert.equal(readFileSync(sentinel, "utf8"), "preserve");
   });
 
   it("keeps non-Windows homes under runner temp", () => {
@@ -213,7 +241,7 @@ describe("Windows cleanup root ownership", () => {
     const remove = mock.fn();
     await assert.rejects(cleanupJobRoot(root, {
       systemRoot: "C:\\Windows", identity: "1:2:3", readIdentity: () => "1:4:5", remove,
-    }), /unchanged isolated job root/);
+    }), { message: `Cleanup requires an unchanged isolated job root. Directory identity changed at ${root}` });
     assert.equal(remove.mock.callCount(), 0);
   });
 
@@ -852,14 +880,15 @@ describe("Windows job root hardening", () => {
     it(`rolls back the new root on ${stage} failure`, () => {
       const root = mkdtempSync(join(tmpdir(), "ave-job-publish-"));
       const error = new Error(`Could not finish ${stage}`);
-      const publish = mock.fn(() => {
+      const publish = mock.fn(assignments => {
+        if (assignments.HOME === undefined) return;
         mkdirSync(join(root, "home"));
         throw error;
       });
       try {
         assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" },
           () => root, mock.fn(), () => "1:2:3", publish), caught => caught === error);
-        assert.equal(publish.mock.callCount(), 1);
+        assert.equal(publish.mock.callCount(), 2);
         assert.equal(existsSync(root), false);
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
