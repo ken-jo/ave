@@ -3,7 +3,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { deferred } from "../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 
 const calls: string[] = [];
 const hostExit = vi.fn();
@@ -242,6 +242,35 @@ describe("OS sandbox release at quit", () => {
 });
 
 describe("runAppShutdownCleanup ordering (critic M1)", () => {
+  it.each(["normal", "incomplete"] as const)("waits for marketplace cleanup before the %s child drain", async (mode) => {
+    getServices.mockReturnValue(mode === "normal" ? makeServices() : undefined);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const close = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+      calls.push("marketplaceClosed");
+    });
+    shutdown.registerMarketplaceShutdown(close);
+    shutdown.runShutdownHooks();
+    const stopping = mode === "normal"
+      ? shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
+      : shutdown.runIncompleteBootShutdown();
+    try {
+      await entered.promise;
+      await afterQueuedCallbacks();
+      expect(calls).not.toContain("drainManagedChildren");
+    } finally {
+      release.resolve();
+      await stopping;
+    }
+    expect(await stopping).toBe("completed");
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(calls.indexOf("marketplaceClosed")).toBeLessThan(calls.indexOf("drainManagedChildren"));
+  });
+
   it.each(["normal", "incomplete"] as const)("retries retained native cleanup before the %s generic child drain", async (mode) => {
     const services = makeServices();
     getServices.mockReturnValue(mode === "normal" ? services : undefined);

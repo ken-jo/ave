@@ -563,7 +563,7 @@ describe("git marketplace IPC boundary", () => {
           ko: "Ave의 폴더 분류 도구가 없거나 손상되어 C:\\m이(가) 다른 컴퓨터에 있는지 알 수 없습니다. Ave를 다시 설치하세요.",
         });
       } finally {
-        harness.service.close();
+        await harness.service.close();
         rmSync(root, { recursive: true, force: true });
       }
     });
@@ -594,7 +594,7 @@ describe("git marketplace IPC boundary", () => {
         expect(sentences(same).en).toBe("/m is already added as team. Use team, or remove it before adding this folder again.");
         expect(sentences(same).ko).toBe("/m은(는) 이미 team(으)로 추가되어 있습니다. team을(를) 쓰거나, 지운 뒤 이 폴더를 다시 추가하세요.");
       } finally {
-        harness.service.close();
+        await harness.service.close();
         rmSync(root, { recursive: true, force: true });
       }
     });
@@ -688,8 +688,8 @@ describe("git marketplace IPC boundary", () => {
             });
           }
         } finally {
-          harness.service.close();
-          network.service.close();
+          await harness.service.close();
+          await network.service.close();
           rmSync(root, { recursive: true, force: true });
         }
       });
@@ -724,7 +724,7 @@ describe("git marketplace IPC boundary", () => {
           expect(entry?.key).toEqual({ sourceId: name, kind: "skill", name });
           expect(await invokeFileIpcHandler(handlers, channels.installPlan, entry!.key)).toMatchObject({ ok: true, value: { planId: expect.any(String) } });
         } finally {
-          harness.service.close();
+          await harness.service.close();
           rmSync(root, { recursive: true, force: true });
         }
       });
@@ -738,7 +738,7 @@ describe("git marketplace IPC boundary", () => {
           try {
             return await act(harness);
           } finally {
-            harness.service.close();
+            await harness.service.close();
             rmSync(root, { recursive: true, force: true });
           }
         };
@@ -822,7 +822,7 @@ describe("git marketplace IPC boundary", () => {
             const other = await first.service.previewSource({ input: "/n", auth: "none" });
             if (other.type === "confirm") throw new Error("unexpected confirmation");
             await first.service.addSource({ previewId: other.previewId, id: "notes" });
-            first.service.close();
+            await first.service.close();
             const list = join(root, "marketplaces", "sources.json");
             writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(NAME_TOKEN)));
             const data = join(root, "marketplaces", NAME_TOKEN);
@@ -877,7 +877,7 @@ describe("git marketplace IPC boundary", () => {
               expect(after.value.map((source) => source.id)).toContain("notes");
               expect(readFileSync(list, "utf8")).not.toContain(NAME_TOKEN);
             } finally {
-              harness.service.close();
+              await harness.service.close();
             }
           } finally {
             rmSync(root, { recursive: true, force: true });
@@ -913,7 +913,7 @@ describe("git marketplace IPC boundary", () => {
             }
           }
         } finally {
-          harness.service.close();
+          await harness.service.close();
           rmSync(root, { recursive: true, force: true });
         }
       });
@@ -934,7 +934,7 @@ describe("git marketplace IPC boundary", () => {
           ko: "ssh://git@github.com/Acme/Market은(는) 이미 acme(으)로 추가되어 있습니다. acme을(를) 쓰거나, 지운 뒤 이 저장소를 다시 추가하세요.",
         });
       } finally {
-        harness.service.close();
+        await harness.service.close();
         rmSync(root, { recursive: true, force: true });
       }
     });
@@ -964,7 +964,7 @@ describe("git marketplace IPC boundary", () => {
           expect(`${en}\n${ko}`).not.toContain(token);
         }
       } finally {
-        harness.service.close();
+        await harness.service.close();
         rmSync(root, { recursive: true, force: true });
       }
     });
@@ -1354,7 +1354,7 @@ describe("a package installed from a source stored under a credential-shaped id 
       const preview = await harness.service.previewSource({ input: folder, auth: "none" });
       if (preview.type === "confirm") throw new Error("a local folder needs no confirmation");
       await harness.service.addSource({ previewId: preview.previewId, id: "notes" });
-      harness.service.close();
+      await harness.service.close();
       const marketplaces = join(root, "marketplaces");
       const list = join(marketplaces, "sources.json");
       writeFileSync(list, readFileSync(list, "utf8").replaceAll('"notes"', JSON.stringify(TOKEN)));
@@ -1391,7 +1391,7 @@ describe("a package installed from a source stored under a credential-shaped id 
       expect(installed).toEqual([]);
       expect(JSON.stringify(removed)).not.toContain(TOKEN);
     } finally {
-      harness.service.close();
+      await harness.service.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(join(folder, ".."), { recursive: true, force: true });
     }
@@ -1445,9 +1445,9 @@ describe("folder dialogs (§18.9)", () => {
         new AbortController(),
       );
     });
-    afterEach(() => {
+    afterEach(async () => {
       vi.restoreAllMocks();
-      harness?.service.close();
+      await harness?.service.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(parent, { recursive: true, force: true });
     });
@@ -1557,7 +1557,7 @@ describe("folder dialogs (§18.9)", () => {
       await expect(invokeFileIpcHandler(handlers, channels.sourcesReveal, "notes")).resolves.toEqual({ ok: true, value: null });
       expect(desktop.showItemInFolder).toHaveBeenCalledExactlyOnceWith(added.path);
     } finally {
-      harness.service.close();
+      await harness.service.close();
       rmSync(root, { recursive: true, force: true });
       rmSync(join(folder, ".."), { recursive: true, force: true });
     }
@@ -1595,7 +1595,7 @@ describe("folder dialogs (§18.9)", () => {
         "Ave cannot tell whether C:\\m is on another computer because its folder classifier is missing or broken. Reinstall Ave.",
       );
     } finally {
-      harness.service.close();
+      await harness.service.close();
       rmSync(root, { recursive: true, force: true });
     }
   });

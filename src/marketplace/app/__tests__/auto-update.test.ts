@@ -88,8 +88,8 @@ beforeEach(async () => {
   await setUp(ownership);
 });
 
-afterEach(() => {
-  harness.service.close();
+afterEach(async () => {
+  await harness.service.close();
   rmSync(root, { recursive: true, force: true });
   rmSync(dirname(folder), { recursive: true, force: true });
 });
@@ -196,8 +196,8 @@ describe("required and superseded updates (§18.7.2, §18.7.4)", () => {
     const observedRoot = mkdtempSync(join(tmpdir(), "ave-auto-update-idle-"));
     const observed = await folderService({ root: observedRoot, folders: sourceFolders,
       onPackageTransactionsIdle: () => idle.push(observed.service.packageTransactionsIdle) });
-    onTestFinished(() => {
-      observed.service.close();
+    onTestFinished(async () => {
+      await observed.service.close();
       rmSync(observedRoot, { recursive: true, force: true });
     });
     const preview = await observed.service.previewSource({ input: folder, auth: "none" });
@@ -340,7 +340,7 @@ describe("a quarantined source (§18.8)", () => {
     await edit({ "plugins/alpha/dist/index.js": "export default { version: 2 };\n" });
     expect(await harness.service.updates()).toHaveLength(1);
     const item = harness.installed.get("alpha")!;
-    harness.service.close();
+    await harness.service.close();
     const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
     const list = join(root, "marketplaces", "sources.json");
     writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));
@@ -364,7 +364,7 @@ describe("a quarantined source (§18.8)", () => {
   });
   async function quarantineTeam(): Promise<string> {
     const item = harness.installed.get("alpha")!;
-    harness.service.close();
+    await harness.service.close();
     const quarantinedId = `glp${"at-"}${"abcd1234".repeat(3)}`;
     const list = join(root, "marketplaces", "sources.json");
     writeFileSync(list, readFileSync(list, "utf8").replace('"team"', JSON.stringify(quarantinedId)));

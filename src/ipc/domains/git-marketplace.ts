@@ -398,8 +398,11 @@ async function createGitMarketplaceService(
   return {
     service,
     close: async () => {
-      service.close();
-      await git.close();
+      try {
+        await service.close();
+      } finally {
+        await git.close();
+      }
     },
   };
 }
@@ -604,10 +607,8 @@ const UNAUTHORIZED: GitMarketplaceResult<never> = Object.freeze({ ok: false, cod
 
 async function closeOnQuit(close: () => Promise<void>): Promise<void> {
   // Load shutdown wiring lazily because it imports app servers.
-  const { registerShutdownHook } = await import("../../main/app-shutdown.js");
-  registerShutdownHook("git-marketplace", () => {
-    close().catch((error: unknown) => log.warn({ err: errorMessage(error) }, "git marketplace close failed"));
-  });
+  const { registerMarketplaceShutdown } = await import("../../main/app-shutdown.js");
+  registerMarketplaceShutdown(close);
 }
 
 // The apply queue shares the main conversation's activity coordinator with every surface.
