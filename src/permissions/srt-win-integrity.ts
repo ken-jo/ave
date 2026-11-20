@@ -37,7 +37,29 @@ const POWERSHELL_PROLOGUE = [
   "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')",
 ];
 
-// Create random unpublished directories/files with final user ownership and protected DACLs; elevated defaults may assign administrator ownership. Refuse existing paths/links, verify descriptors and file owners on the same creation handle, write bytes afterward and remove created objects on failure. Never modify existing ACLs (docs/architecture/architecture.md).
+// The managed CreateDirectory API can succeed on an existing directory. Claim the path exclusively with the final descriptor.
+const PRIVATE_DIRECTORY_API = [
+  "using System;",
+  "using System.ComponentModel;",
+  "using System.Runtime.InteropServices;",
+  "public static class PrivateDirectory {",
+  "  [StructLayout(LayoutKind.Sequential)]",
+  "  private struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int InheritHandle; }",
+  '  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]',
+  "  [return: MarshalAs(UnmanagedType.Bool)]",
+  "  private static extern bool CreateDirectoryW(string path, ref SecurityAttributes attributes);",
+  "  public static void Create(string path, byte[] descriptor) {",
+  "    GCHandle pinned = GCHandle.Alloc(descriptor, GCHandleType.Pinned);",
+  "    try {",
+  "      SecurityAttributes attributes = new SecurityAttributes { Length = Marshal.SizeOf(typeof(SecurityAttributes)), Descriptor = pinned.AddrOfPinnedObject(), InheritHandle = 0 };",
+  "      if (!CreateDirectoryW(path, ref attributes)) throw new Win32Exception(Marshal.GetLastWin32Error());",
+  "    } finally { pinned.Free(); }",
+  "  }",
+  "}",
+].join("\n");
+const PRIVATE_DIRECTORY_CREATED = "private-sandbox-directory-created";
+
+// Set the protected descriptor at creation. Confirm the outer allocation before provisioning its contents.
 const PRIVATE_DIRECTORY_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$outer = $env:AVE_SRT_PRIVATE_DIRECTORY",
@@ -53,12 +75,13 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$security.SetAccessRuleProtection($true, $false)",
   "$security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))",
   "foreach ($id in $readers) { $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
-  "$null = [System.IO.Directory]::CreateDirectory($outer, $security)",
-  // From here on the directory is this step's own: a failure removes what it made.
-  "try {",
-  "$createdBin = $false",
+  `Add-Type -TypeDefinition '${PRIVATE_DIRECTORY_API}'`,
+  "$descriptor = $security.GetSecurityDescriptorBinaryForm()",
+  "[PrivateDirectory]::Create($outer, $descriptor)",
+  `[Console]::Out.WriteLine('${PRIVATE_DIRECTORY_CREATED}')`,
+  "[Console]::Out.Flush()",
   "foreach ($directory in @($outer, $bin)) {",
-  "if ($directory -eq $bin) { $present = $true; try { $null = [System.IO.File]::GetAttributes($bin) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { $present = $false }; if ($present) { throw 'Private directory already exists' }; $null = [System.IO.Directory]::CreateDirectory($bin, $security); $createdBin = $true }",
+  "if ($directory -eq $bin) { [PrivateDirectory]::Create($bin, $descriptor) }",
   "$attributes = [System.IO.File]::GetAttributes($directory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { throw 'Private directory is not a plain directory' }",
   "$check = [System.IO.Directory]::GetAccessControl($directory)",
@@ -78,7 +101,6 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $owner.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
   "$contents = @{ 'srt-win.exe' = [byte[]]@(); 'owner.json' = (New-Object System.Text.UTF8Encoding($false)).GetBytes($marker) }",
   "foreach ($name in @('srt-win.exe', 'owner.json')) { $stream = New-Object System.IO.FileStream([System.IO.Path]::Combine($bin, $name), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity); try { $bytes = $contents[$name]; $stream.Write($bytes, 0, $bytes.Length); if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } } finally { $stream.Dispose() } }",
-  "} catch { if ($createdBin) { foreach ($name in @('srt-win.exe', 'owner.json')) { $file = [System.IO.Path]::Combine($bin, $name); if ([System.IO.File]::Exists($file)) { [System.IO.File]::Delete($file) } }; [System.IO.Directory]::Delete($bin, $false) }; [System.IO.Directory]::Delete($outer, $false); throw }",
 ].join("; ");
 const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
 
@@ -135,7 +157,7 @@ const SWEEP_SCRIPT = [
 ].join("; ");
 const SWEEP_COMMAND = Buffer.from(SWEEP_SCRIPT, "utf16le").toString("base64");
 
-function runDirectoryCommand(command: string, env: Record<string, string>): void {
+function runDirectoryCommand(command: string, env: Record<string, string>): Buffer {
   const root = windowsSystemRoot();
   const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", command,
@@ -146,6 +168,7 @@ function runDirectoryCommand(command: string, env: Record<string, string>): void
   if (output.toString("utf8").includes(TEMP_ROOT_ACL_DIAGNOSTIC)) {
     console.warn(`[${TEMP_ROOT_ACL_DIAGNOSTIC}] Sandbox account ACEs exist on the temporary root; owner review and an explicitly authorized ACL repair are required. No temporary-root ACL was changed.`);
   }
+  return output;
 }
 
 // Keep uncertain entries, including unmarked copies left by older releases.
@@ -245,21 +268,33 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
     return cached.executable;
   }
   // A fresh, unpublished name: on Windows the protecting step creates it, and anything already at the path refuses creation.
-  const directory = join(tmpdir(), `ave-srt-win-${randomBytes(16).toString("hex")}`);
+  const temp = tmpdir();
+  const directory = join(temp, `ave-srt-win-${randomBytes(16).toString("hex")}`);
   const bin = join(directory, "bin");
-  // A refused creation leaves nothing of ours: the step removes what it made, and whatever was already at the path is not ours to delete.
   let dispose: (() => void) | undefined;
   try {
     const executable = join(bin, "srt-win.exe");
     // POSIX modes do not enforce a Windows boundary. On Windows both directories and the empty image are created with their protected DACL and the current user as owner before any executable byte exists; this needs no elevation, and the bytes go into the file that step made.
     const windows = type() === "Windows_NT";
-    if (windows) runDirectoryCommand(PRIVATE_DIRECTORY_COMMAND, { AVE_SRT_PRIVATE_DIRECTORY: directory });
-    else {
+    if (windows) {
+      let output: unknown;
+      try {
+        output = runDirectoryCommand(PRIVATE_DIRECTORY_COMMAND, { AVE_SRT_PRIVATE_DIRECTORY: directory, TEMP: temp, TMP: temp });
+      } catch (error) {
+        // The sync command retains stdout written before failure, including on timeout.
+        if (error instanceof Error && "stdout" in error) output = error.stdout;
+        throw error;
+      } finally {
+        if (Buffer.isBuffer(output) && output.toString("utf8").split(/\r?\n/).includes(PRIVATE_DIRECTORY_CREATED)) {
+          dispose = ownPrivateCopy(directory);
+        }
+      }
+      if (dispose === undefined) throw new Error("Private directory creation was not confirmed");
+    } else {
       mkdirSync(directory, { mode: 0o700 });
-      try { mkdirSync(bin, { mode: 0o700 }); }
-      catch (error) { rmdirSync(directory); throw error; }
+      dispose = ownPrivateCopy(directory);
+      mkdirSync(bin, { mode: 0o700 });
     }
-    dispose = ownPrivateCopy(directory);
     // Write the bytes that were hashed, rather than re-opening the source to copy.
     writeFileSync(executable, bytes, windows ? { flag: "r+" } : { flag: "wx", mode: 0o700 });
     assertSrtWinDigest(readHelper(executable), arch);

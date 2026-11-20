@@ -481,6 +481,7 @@ describe("Windows helper integrity", () => {
           mkdirSync(directory);
           mkdirSync(join(directory, "bin"));
           writeFileSync(join(directory, "bin", "srt-win.exe"), "");
+          return Buffer.from("private-sandbox-directory-created\r\n");
         }
         return Buffer.alloc(0);
       },
@@ -502,7 +503,7 @@ describe("Windows helper integrity", () => {
     const scripts = await captureScripts();
     const modules: Record<string, string> = {
       "Import-Module": "Core", "Where-Object": "Core",
-      "New-Object": "Utility", "ConvertTo-Json": "Utility", "ConvertFrom-Json": "Utility",
+      "Add-Type": "Utility", "New-Object": "Utility", "ConvertTo-Json": "Utility", "ConvertFrom-Json": "Utility",
     };
     for (const script of scripts) {
       expect(script.split("; ").slice(0, 3)).toEqual([
@@ -518,13 +519,19 @@ describe("Windows helper integrity", () => {
 
   it("creates the private copy with its final descriptor and never changes an existing object's", async () => {
     const [, script] = await captureScripts();
+    assert(script);
     // No step sets an owner or a DACL on a path: only new descriptors get an owner.
     expect(script).not.toMatch(/SetAccessControl\(/);
     expect(script.match(/\$\w+\.SetOwner\(/g)).toEqual(["$security.SetOwner(", "$fileSecurity.SetOwner("]);
     // Anything already at the path refuses creation, before the create call.
-    const refusal = script!.indexOf("throw 'Private directory already exists'");
+    const refusal = script.indexOf("throw 'Private directory already exists'");
     expect(refusal).toBeGreaterThan(-1);
-    expect(refusal).toBeLessThan(script!.indexOf("[System.IO.Directory]::CreateDirectory($outer, $security)"));
+    const create = script.indexOf("[PrivateDirectory]::Create($outer, $descriptor)");
+    expect(create).toBeGreaterThan(refusal);
+    expect(script).toContain("if (!CreateDirectoryW(path, ref attributes)) throw new Win32Exception");
+    const receipt = script.indexOf("[Console]::Out.WriteLine('private-sandbox-directory-created')");
+    expect(receipt).toBeGreaterThan(create);
+    expect(receipt).toBeLessThan(script.indexOf("[PrivateDirectory]::Create($bin, $descriptor)"));
     expect(script).toContain("[System.IO.FileMode]::CreateNew");
     expect(script).toContain("$fileSecurity)");
     expect(script).toContain("$stream.GetAccessControl().GetOwner(");
@@ -684,6 +691,57 @@ describe("Windows helper integrity", () => {
       vi.resetModules();
     }
   });
+
+  it.each(["EPERM", "ETIMEDOUT", "EEXIST"])("handles protected provisioning failure %s without claiming an unconfirmed directory", async (code) => {
+    const { source } = fixture();
+    const root = join(dirname(source), "copies");
+    mkdirSync(root);
+    const confirmed = code !== "EEXIST";
+    const error = Object.assign(new Error(`Provisioning failed: ${code}`), {
+      code,
+      stdout: Buffer.from(confirmed ? "private-sandbox-directory-created\r\n" : ""),
+    });
+    let allocated: string | undefined;
+    const retire = vi.fn(renameSync);
+    vi.stubEnv("SystemRoot", process.env.SystemRoot ?? "C:\\Windows");
+    vi.resetModules();
+    vi.doMock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>(), renameSync: retire }));
+    vi.doMock("node:os", async (original) => ({
+      ...await original<typeof import("node:os")>(), type: () => "Windows_NT", tmpdir: () => root,
+    }));
+    vi.doMock("node:child_process", async (original) => ({
+      ...await original<typeof import("node:child_process")>(),
+      execFileSync: (_: string, _args: string[], options: { env: Record<string, string> }) => {
+        allocated = options.env.AVE_SRT_PRIVATE_DIRECTORY;
+        if (!allocated) return Buffer.alloc(0);
+        mkdirSync(allocated);
+        if (code === "EPERM") {
+          mkdirSync(join(allocated, "bin"));
+          writeFileSync(join(allocated, "bin", "owner.json"), "partial marker");
+        }
+        if (!confirmed) writeFileSync(join(allocated, "sentinel"), "keep");
+        throw error;
+      },
+    }));
+    try {
+      const integrity = await import("../srt-win-integrity.js");
+      expect(() => integrity.prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ cause: error }));
+      assert(allocated);
+      if (confirmed) {
+        expect(readdirSync(root)).toEqual([]);
+        expect(retire).toHaveBeenCalledExactlyOnceWith(allocated, expect.stringMatching(/\.delete-[a-f0-9]{32}$/));
+      } else {
+        expect(retire).not.toHaveBeenCalled();
+        expect(readFileSync(join(allocated, "sentinel"), "utf8")).toBe("keep");
+      }
+    } finally {
+      vi.doUnmock("node:child_process");
+      vi.doUnmock("node:fs");
+      vi.doUnmock("node:os");
+      vi.resetModules();
+    }
+  });
+
 
   it.skipIf(process.platform !== "win32" || !hasNativeSrtWinBuildReceipt())("executes the private snapshot when the checked source is swapped before spawn", () => {
     const { source, bytes } = fixture();
