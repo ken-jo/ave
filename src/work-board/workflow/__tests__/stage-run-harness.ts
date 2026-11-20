@@ -140,7 +140,7 @@ export async function stageRunHarness(opts: {
 
   const actor = { who: "alice", origin: "local-desktop" } as const;
   /** Confirm a new template, or the next version of `id`. Edges follow the inputs of each stage. */
-  async function confirm(stages: TemplateStage[], over: { id?: string; scope?: TemplateScope; setupCommands?: string[] } = {}): Promise<TemplateVersion> {
+  async function confirmTemplate(stages: TemplateStage[], over: { id?: string; scope?: TemplateScope; setupCommands?: string[] } = {}): Promise<TemplateVersion> {
     const edges = stages.flatMap(stage => stage.inputs.map(from => ({ from, to: stage.id })));
     const record = await templates.draft(over.id ?? null, { name: "Template", scope: over.scope ?? { kind: "all" }, stages, edges, ...(over.setupCommands ? { setupCommands: over.setupCommands } : {}) });
     if (!record.draft) throw new Error("no draft");
@@ -220,7 +220,7 @@ export async function stageRunHarness(opts: {
 
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
-    confirm, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, live, decide, statusOf, start,
+    confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, live, decide, statusOf, start,
     cleanup: () => cleanupTmpDir(dir),
   };
 }
