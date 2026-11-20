@@ -3,6 +3,17 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
+vi.mock("../../shared/ave-home-test-guard.js", async original => {
+  const actual = await original<typeof import("../../shared/ave-home-test-guard.js")>();
+  return { ...actual, checkSandboxStampTargets: (paths: readonly string[]) => {
+    actual.checkSandboxStampTargets(paths);
+    if (ORIGINAL_PLATFORM !== "win32") {
+      // Model the host treating Windows drive operands as relative strings under the checkout.
+      const drives = paths.filter(path => /^[A-Za-z]:[\\/]/u.test(path));
+      withProvidedContext("realAccountHome", checkout, () => actual.checkSandboxStampTargets(drives));
+    }
+  } };
+});
 vi.mock("../../shared/policy-home.js", async original => {
   return {
     ...(await original<typeof import("../../shared/policy-home.js")>()),
@@ -16,9 +27,12 @@ vi.mock("../../shared/policy-home.js", async original => {
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve, win32 } from "node:path";
+import { realpathSync } from "node:fs";
 import { WindowsSandboxError } from "@anthropic-ai/sandbox-runtime";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { withProvidedContext } from "../../__tests__/support/provided-context.js";
+import { useTempDirs as trackTempDirs } from "../../__tests__/test-helpers.js";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { t } from "../../i18n/index.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -57,8 +71,10 @@ vi.mock("../srt-win-integrity.js", async original => ({
 
 installVerifiedAveHomePrivacy();
 const ORIGINAL_PLATFORM = process.platform;
-const FIXTURE_DRIVE = ORIGINAL_PLATFORM === "win32" ? win32.parse(process.cwd()).root : "D:\\";
+const checkout = process.cwd();
+const makeScratch = trackTempDirs("sandbox-background-");
 const WIN32_WRAPPERS = [["tool", wrapToolCommand], ["worker", wrapWorkerCommand]] as const;
+let fixtureRoot: string;
 let succeed: () => void;
 let fail: (error: Error) => void;
 
@@ -67,7 +83,7 @@ function wrapWriteDenies(wrap: typeof wrapToolCommand, denyWrite: string[]) {
 }
 
 function denyPatterns(prefix: string, count: number): string[] {
-  return Array.from({ length: count }, (_, index) => win32.join(FIXTURE_DRIVE, "fixture", prefix, `${index}-*.deny`));
+  return Array.from({ length: count }, (_, index) => win32.join(fixtureRoot, prefix, `${index}-*.deny`));
 }
 
 function pinWorkerRoot(root: string): void {
@@ -84,7 +100,11 @@ function pinWorkerRoot(root: string): void {
 }
 
 beforeEach(() => {
-  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  configureHostResources({ resourcePath: resolve(checkout, "resources"), isPackaged: false });
+  const scratch = realpathSync.native(makeScratch());
+  // A foreign drive operand resolves against the host's cwd in the real guard.
+  process.chdir(scratch);
+  fixtureRoot = win32.join(ORIGINAL_PLATFORM === "win32" ? scratch : "D:\\", "fixture");
   setProcessPlatform("win32");
   setPluginWorkerConfinementRequestedAtBoot(true);
   manager.initializeWindowsIsolation.mockImplementation(() => new Promise<void>((resolve, reject) => {
@@ -94,11 +114,15 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await resetAsrtSandbox();
-  __resetSandboxRequestedAtBootForTest();
-  setProcessPlatform(ORIGINAL_PLATFORM);
-  vi.restoreAllMocks();
-  vi.clearAllMocks();
+  try {
+    await resetAsrtSandbox();
+  } finally {
+    process.chdir(checkout);
+    __resetSandboxRequestedAtBootForTest();
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  }
 });
 
 describe("background session isolation", () => {
@@ -111,8 +135,8 @@ describe("background session isolation", () => {
   });
 
   it.each(["absolute", "drive-relative"] as const)("admits a read-deny stamp with equivalent drive spellings (%s)", async (kind) => {
-    const drive = FIXTURE_DRIVE.toUpperCase();
-    const denyRoot = kind === "absolute" ? win32.join(drive, "fixture", "worker") : `${drive.slice(0, 2)}fixture\\worker`;
+    const drive = win32.parse(fixtureRoot).root.slice(0, 2).toUpperCase();
+    const denyRoot = kind === "absolute" ? win32.join(fixtureRoot, "worker") : `${drive}fixture\\worker`;
     const root = win32.resolve(denyRoot);
     const directory = win32.join(denyRoot, "absent-dir");
     const paths = Array.from({ length: 253 }, (_, index) => win32.join(denyRoot, `denied-${index}`));
@@ -137,7 +161,7 @@ describe("background session isolation", () => {
   });
 
   it("verifies and stamps a valid worker policy once per distinct target", async () => {
-    const root = win32.join(FIXTURE_DRIVE, "fixture", "worker");
+    const root = win32.join(fixtureRoot, "worker");
     const paths = Array.from({ length: 510 }, (_, index) => win32.join(root, `denied-${index}`));
     paths.push(win32.join(root, "Case"), win32.join(root, "case"), `${win32.join(root, "absent-dir")}\\`);
     await initializeAsrtSandbox({ denyWrite: paths, windows: { externalConfinement: true } });
@@ -154,7 +178,7 @@ describe("background session isolation", () => {
   });
 
   it("refuses cumulative retained deny growth without recording the rejected request", async () => {
-    const paths = (prefix: string, length = 600) => Array.from({ length }, (_, index) => `D:/retained/${prefix}/${index}`);
+    const paths = (prefix: string, length = 600) => Array.from({ length }, (_, index) => win32.join(fixtureRoot, "retained", prefix, String(index)));
     const base = paths("base", 300);
     await initializeAsrtSandbox({ denyWrite: base, windows: { externalConfinement: true } });
     const wrap = (denyWrite: string[]) => wrapToolCommand("echo safe", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [], denyWrite } });
@@ -187,7 +211,7 @@ describe("background session isolation", () => {
   });
 
   it("keeps an in-progress worker verification on the same deny revision when a wrap is refused", async () => {
-    const root = win32.join(FIXTURE_DRIVE, "fixture", "worker");
+    const root = win32.join(fixtureRoot, "worker");
     const protectedPath = win32.join(root, "protected");
     await initializeAsrtSandbox({ denyWrite: [protectedPath], windows: { externalConfinement: true } });
     pinWorkerRoot(root);
@@ -214,7 +238,7 @@ describe("background session isolation", () => {
     { entryPoint, wrap, readback: 1, kind: "literal" },
     { entryPoint, wrap, readback: 2, kind: "glob" },
   ]))("refuses a worker grant when a $entryPoint wrap adds a $kind deny during readback $readback", async ({ wrap, readback, kind }) => {
-    const root = win32.join(FIXTURE_DRIVE, "fixture", "worker");
+    const root = win32.join(fixtureRoot, "worker");
     const initial = win32.join(root, "initial");
     const late = win32.join(root, kind === "glob" ? "*.secret" : "late-secret");
     await initializeAsrtSandbox({ denyRead: [initial], windows: { externalConfinement: true } });
