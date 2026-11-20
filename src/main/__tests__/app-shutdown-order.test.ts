@@ -48,7 +48,7 @@ const waitForAllBrokerCleanup = vi.fn(async () => {
   return brokerCleanupReports;
 });
 
-vi.mock("electron", () => ({ app: { exit: vi.fn() } }));
+vi.mock("electron", () => ({ app: { exit: vi.fn() }, ipcMain: { handle: vi.fn() } }));
 vi.mock("../../lib/logger.js", () => ({
   createLogger: () => ({ info: vi.fn(), warn: (...a: unknown[]) => logWarn(...a), error: (...a: unknown[]) => logError(...a), debug: vi.fn() }),
   logger: { flush: (cb: () => void) => cb() },
@@ -112,6 +112,8 @@ const getServices = vi.fn();
 let shutdownCompleted = false;
 vi.mock("../app-state.js", () => ({
   getServices: (...a: unknown[]) => getServices(...a),
+  takePendingGitMarketplaceLink: vi.fn(),
+  getBootInstallNotice: vi.fn(),
   isAppShutdownCompleted: () => shutdownCompleted,
   setAppShutdownCompleted: (v: boolean) => {
     shutdownCompleted = v;
@@ -242,6 +244,54 @@ describe("OS sandbox release at quit", () => {
 });
 
 describe("runAppShutdownCleanup ordering (critic M1)", () => {
+  it.each(["normal", "incomplete"] as const)("waits for marketplace construction and close during %s shutdown", async (mode) => {
+    getServices.mockReturnValue(mode === "normal" ? makeServices() : undefined);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    const { registerGitMarketplaceHandlers } = await import("../../ipc/domains/git-marketplace.js");
+    const building = deferred<void>();
+    const finishBuild = deferred<void>();
+    const closing = deferred<void>();
+    const finishClose = deferred<void>();
+    const close = vi.fn(async () => {
+      closing.resolve();
+      await finishClose.promise;
+      calls.push("marketplaceClosed");
+    });
+    const build = vi.fn(async () => {
+      building.resolve();
+      await finishBuild.promise;
+      return { service: {} as never, close };
+    });
+    const lifetime = new AbortController();
+    const registration = registerGitMarketplaceHandlers({} as never, async () => null, build, undefined, undefined, lifetime);
+    const request = registration.getService();
+    const observed = request.catch(() => undefined);
+    await building.promise;
+    shutdown.runShutdownHooks();
+    const stopping = mode === "normal"
+      ? shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })
+      : shutdown.runIncompleteBootShutdown();
+    try {
+      await afterQueuedCallbacks();
+      expect(calls).not.toContain("drainManagedChildren");
+      finishBuild.resolve();
+      await closing.promise;
+      await afterQueuedCallbacks();
+      expect(calls).not.toContain("drainManagedChildren");
+      await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      finishBuild.resolve();
+      finishClose.resolve();
+      await Promise.all([observed, stopping]);
+    }
+    expect(await stopping).toBe("completed");
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(calls.indexOf("marketplaceClosed")).toBeLessThan(calls.indexOf("drainManagedChildren"));
+    await expect(registration.getService()).rejects.toMatchObject({ name: "AbortError" });
+    expect(build).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["normal", "incomplete"] as const)("waits for marketplace cleanup before the %s child drain", async (mode) => {
     getServices.mockReturnValue(mode === "normal" ? makeServices() : undefined);
     vi.resetModules();

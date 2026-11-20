@@ -605,12 +605,6 @@ function directMcpRequest(value: unknown): DirectMcpPreviewRequest {
 
 const UNAUTHORIZED: GitMarketplaceResult<never> = Object.freeze({ ok: false, code: "unauthorized-frame", message: "unauthorized-frame" });
 
-async function closeOnQuit(close: () => Promise<void>): Promise<void> {
-  // Load shutdown wiring lazily because it imports app servers.
-  const { registerMarketplaceShutdown } = await import("../../main/app-shutdown.js");
-  registerMarketplaceShutdown(close);
-}
-
 // The apply queue shares the main conversation's activity coordinator with every surface.
 function conversationActivity(deps: IpcDeps): { isBusy(): boolean; onIdle(listener: () => void): () => void } {
   const runtime = deps.conversationSurfaceRuntime;
@@ -642,7 +636,7 @@ export function registerGitMarketplaceHandlers(
   deps: IpcDeps,
   content: () => Promise<InstalledContentRuntime | null>,
   create?: () => Promise<{ service: GitMarketplacePort; close: () => Promise<void> }>,
-  onBuilt: (close: () => Promise<void>) => Promise<void> = closeOnQuit,
+  onBuilt?: (close: () => Promise<void>) => Promise<void>,
   home: string = aveHome(),
   shutdown: AbortController = getMarketplaceLifetime(),
 ): GitMarketplaceRegistration {
@@ -650,20 +644,32 @@ export function registerGitMarketplaceHandlers(
   // Close the event boundary and stop the scheduler together at shutdown.
   const gated = whileRunning(shutdown.signal);
   shutdown.signal.addEventListener("abort", () => background?.stop(), { once: true });
-  // Share lifetime from registration, before lazy marketplace construction; import shutdown wiring only when needed.
-  void import("../../main/app-shutdown.js")
-    .then(({ registerShutdownHook }) => registerShutdownHook("git-marketplace-events", () => shutdown.abort()))
-    .catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace shutdown hook failed"));
   const build = create ?? (() => createGitMarketplaceService(deps, content, home, shutdown.signal, () => void background?.recheck()));
   let ready: Promise<{ service: GitMarketplacePort; close: () => Promise<void> }> | null = null;
   let current: GitMarketplacePort | null = null;
-  const loaded = () => {
-    ready ??= (async () => {
+  // Register cleanup before lazy construction so ordered shutdown can join an in-flight build.
+  const shutdownWired = import("../../main/app-shutdown.js").then(({ registerShutdownHook, registerMarketplaceShutdown }) => {
+    registerShutdownHook("git-marketplace-events", () => shutdown.abort());
+    if (onBuilt === undefined) {
+      registerMarketplaceShutdown(async () => {
+        shutdown.abort();
+        const built = await ready?.catch(() => undefined);
+        await built?.close();
+      });
+    }
+  });
+  void shutdownWired.catch((error: unknown) => log.warn({ err: errorMessage(error) }, "marketplace shutdown hook failed"));
+  const loaded = async () => {
+    if (onBuilt === undefined) {
+      await shutdownWired;
+      shutdown.signal.throwIfAborted();
+    }
+    ready ??= Promise.resolve().then(async () => {
       const built = await build();
       // Read install state immediately; onBuilt may already hold its package lock.
       current = built.service;
       try {
-        await onBuilt(built.close);
+        await onBuilt?.(built.close);
       } catch (error) {
         current = null;
         // Close unreachable services so they cannot leak before a later rebuild.
@@ -671,12 +677,14 @@ export function registerGitMarketplaceHandlers(
         throw error;
       }
       return built;
-    })().catch((error: unknown) => {
+    }).catch((error: unknown) => {
       // Retry construction on the next request after transient directory or read failures.
       ready = null;
       throw error;
     });
-    return ready;
+    const built = await ready;
+    if (onBuilt === undefined) shutdown.signal.throwIfAborted();
+    return built;
   };
 
   const failure = <T>(channel: string, error: unknown): GitMarketplaceResult<T> => {
