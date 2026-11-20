@@ -344,7 +344,9 @@ function handEdit(name: string, step: number, pick: (count: number) => number, f
   return "board";
 }
 
-async function sequence(seed: number, tally: (key: string) => void): Promise<void> {
+type AtomicWrite = typeof namespace.writeFileAtomicAtPath;
+
+async function sequence(seed: number, tally: (key: string) => void, boardWrites: Map<string, AtomicWrite>, write: AtomicWrite): Promise<void> {
   const pick = prng(seed);
   const dir = mkdtempSync(join(tmpdir(), "ave-wb-sequence-"));
   const files = { board: join(dir, "board.json"), runs: join(dir, "workflow-runs.json") };
@@ -352,23 +354,20 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
   // write may be made to fail before or after it replaces the file.
   const inject: { when?: "before" | "after" } = {};
   const unordered: string[] = [];
-  const write = namespace.writeFileAtomicAtPath;
-  vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
-    if (target === files.board) {
-      const prior = heldBy(readFileSync(target, "utf8"));
-      const next = heldBy(typeof body === "string" ? body : Buffer.from(body).toString("utf8"));
-      const runs = readFileSync(files.runs);
-      const intents = intentsIn(runs);
-      for (const [runId, { itemId }] of liveIn(runs)) {
-        if (!prior(runId) || next(runId)) continue;
-        if (intents.includes(`${itemId}|${runId}`)) tally("ordered");
-        else unordered.push(runId);
-      }
-      const { when } = inject;
-      inject.when = undefined;
-      if (when === "after") await write(target, body);
-      if (when !== undefined) throw new Injected(when);
+  boardWrites.set(files.board, async (target, body) => {
+    const prior = heldBy(readFileSync(target, "utf8"));
+    const next = heldBy(typeof body === "string" ? body : Buffer.from(body).toString("utf8"));
+    const runs = readFileSync(files.runs);
+    const intents = intentsIn(runs);
+    for (const [runId, { itemId }] of liveIn(runs)) {
+      if (!prior(runId) || next(runId)) continue;
+      if (intents.includes(`${itemId}|${runId}`)) tally("ordered");
+      else unordered.push(runId);
     }
+    const { when } = inject;
+    inject.when = undefined;
+    if (when === "after") await write(target, body);
+    if (when !== undefined) throw new Injected(when);
     return write(target, body);
   });
   try {
@@ -543,14 +542,27 @@ async function sequence(seed: number, tally: (key: string) => void): Promise<voi
       }
     }
   } finally {
-    vi.restoreAllMocks();
+    boardWrites.delete(files.board);
     await cleanupTmpDir(dir);
   }
 }
 
 it("no op sequence has a store write take out of board.json the id of a stored run that is not settled without its row's delete and intent stored first, end a run whose id the file holds, or write over bytes it did not write or a key given twice", async () => {
   const counts: Record<string, number> = {};
-  for (let seed = 1; seed <= SEEDS; seed += 1) await sequence(seed, key => { counts[key] = (counts[key] ?? 0) + 1; });
+  const boardWrites = new Map<string, AtomicWrite>();
+  const write = namespace.writeFileAtomicAtPath;
+  const spy = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation((target, body) => (boardWrites.get(target) ?? write)(target, body));
+  const tally = (key: string) => { counts[key] = (counts[key] ?? 0) + 1; };
+  const concurrency = 4;
+  try {
+    for (let seed = 1; seed <= SEEDS; seed += concurrency) {
+      const batch = Array.from({ length: Math.min(concurrency, SEEDS - seed + 1) }, (_, index) => sequence(seed + index, tally, boardWrites, write));
+      const results = await Promise.allSettled(batch);
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    }
+  } finally {
+    spy.mockRestore();
+  }
   // Every store op wrote, and the draw reached every state the oracle judges.
   expect(Object.keys(STORE_OPS).filter(name => !counts[`wrote:${name}`])).toEqual([]);
   const reached = ["released", "refused:work-board-run-id-held", "refused:work-board-runs-unreadable", "refused:work-board-duplicate-key", "refused:workflow-runs-duplicate-key",

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { en } from "../../i18n/messages/en.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { ko } from "../../i18n/messages/ko.js";
@@ -22,7 +23,8 @@ type Options = NonNullable<Parameters<typeof stageRunHarness>[0]>;
 async function withHarness(run: (h: Harness) => Promise<void>, opts: (h: () => Harness) => Options = () => ({})): Promise<void> {
   // The options may need the harness they configure (its template store, its board).
   const made: { h?: Harness } = {};
-  const h = await stageRunHarness(opts(() => { if (!made.h) throw new Error("harness not ready"); return made.h; }));
+const options = opts(() => { if (!made.h) throw new Error("harness not ready"); return made.h; });
+  const h = await stageRunHarness({ ...options, observeRunWork: true });
   made.h = h;
   try {
     await run(h);
@@ -515,6 +517,7 @@ it("a run ended without its graph whose end cannot be written keeps its workspac
 
 it("while a run end is unconfirmed, starts are refused and nothing is pruned or swept beside a start that has opened its workspace", () => {
   const released: string[] = [];
+  const firstRelease = deferred<void>();
   return withHarness(async (h) => {
     const version = await h.confirm([stageOf("a")]);
     const first = await h.addItem(version);
@@ -555,7 +558,7 @@ it("while a run end is unconfirmed, starts are refused and nothing is pruned or 
     // A reader writes the end; nothing else is pruned or swept, and the held start's workspace is never touched.
     failing.mockRestore();
     await h.engine.projectTemplateRuns([await h.item(first)]);
-    for (let i = 0; i < 400 && released.length === 0 && h.sweeps.length === swept; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    await firstRelease.promise;
     expect(prune).not.toHaveBeenCalled();
     expect(h.sweeps).toHaveLength(swept);
     expect(released).toEqual([firstRun]);
@@ -568,7 +571,7 @@ it("while a run end is unconfirmed, starts are refused and nothing is pruned or 
     expect(released).not.toContain(secondRun);
     expect(h.engine.cancelRun(second)).toEqual({ ok: true });
     expect(await runSecond).toMatchObject({ status: "cancelled" });
-  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); } } }));
+  }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); firstRelease.resolve(); } } }));
 });
 
 it("an unconfirmed run end refuses only that run's decisions: a decision on another run goes ahead", () => withHarness(async (h) => {
@@ -623,8 +626,7 @@ it("a takeover a reader asks for that fails is logged, never left as an unhandle
       write.mockRestore();
       failing = true;
       await h.engine.projectTemplateRuns([await row(h, id)]);
-      for (let i = 0; i < 400 && (await h.runOf(runId))?.settled === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-      await new Promise(resolve => setTimeout(resolve, 20));
+      await h.drainRunWork();
       expect((await h.runOf(runId))?.settled?.status).toBe("error");
       expect(unhandled).toEqual([]);
     } finally {
@@ -784,7 +786,7 @@ for (const how of ["a Stop", "an unconfirmed end written again"] as const) {
       before = h.events.length;
       expect(h.engine.cancelRun(id)).toEqual({ ok: true });
       a.finish();
-      for (let i = 0; i < 40; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+      await run;
     } else {
       const updateRun = h.board.updateRun.bind(h.board);
       const failing = vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
@@ -1039,7 +1041,7 @@ async function waitsThroughDamage(h: Harness, live: Awaited<ReturnType<typeof li
   await h.addItem(live.version);
   expect(rows.mock.calls.length).toBeGreaterThan(checks);
   const classOf = await rows.mock.results[checks].value;
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.drainRunWork();
   expect(typeof classOf === "function" && classOf({ itemId: live.id, runId: live.runId })).toBe("unreadable");
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
@@ -1088,7 +1090,7 @@ it("a live run whose row was moved by hand from the items list under another top
   await h.addItem(live.version);
   expect(rows.mock.calls.length).toBeGreaterThan(checks);
   const classOf = await rows.mock.results[checks].value;
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.drainRunWork();
   expect(typeof classOf === "function" && classOf({ itemId: live.id, runId: live.runId })).toBe("unreadable");
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
@@ -1109,7 +1111,7 @@ it("a live run whose row was put by hand in a first items key a second one shado
   expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("unreadable");
   await expect(h.board.create({ title: "Unrelated" })).resolves.toEqual({ status: "invalid", reason: "work-board-duplicate-key" });
   expect(readFileSync(h.boardPath, "utf8")).toBe(text);
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.drainRunWork();
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
   expect(await h.runOf(live.runId)).toEqual(live.record);
@@ -1124,7 +1126,7 @@ it("a live run whose row was moved by hand under another top-level key as an esc
   writeFileSync(h.boardPath, JSON.stringify({ ...file, items: file.items.filter(row => row.id !== live.id), archive }));
   expect(await h.board.runRowsOnDisk().then(standing => standing?.({ itemId: live.id, runId: live.runId }))).toBe("unreadable");
   await h.addItem(live.version);
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.drainRunWork();
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
   expect(await h.runOf(live.runId)).toEqual(live.record);
@@ -1225,7 +1227,7 @@ it("a user's delete of a listed row whose twin with its id does not validate can
   expect(rows.mock.calls.length).toBeGreaterThan(checks);
   const classOf = await rows.mock.results[checks].value;
   expect(typeof classOf === "function" && classOf({ itemId: live.id, runId: live.runId })).toBe("unreadable");
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.drainRunWork();
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
   expect(await h.runOf(live.runId)).toEqual(live.record);
@@ -1279,7 +1281,7 @@ it("a user's delete of the listed row of a run a restart left parked waits while
   const reads = await Promise.all(split.mock.results.map(result => result.value));
   expect(reads.length).toBeGreaterThan(0);
   for (const read of reads) expect(read).toEqual({ due: [], waiting: [{ itemId: id, runId }] });
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.drainRunWork();
   expect(h.events.slice(before).some(event => event.phase === "cancelled" || event.phase === "error")).toBe(false);
   expect((await h.runOf(runId))?.settled).toBeUndefined();
 
@@ -1456,8 +1458,8 @@ it("a deleted row's run whose takeover write fails keeps its delete intent, and 
   const update = vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (...args) => update.mock.calls.length === 1 ? { status: "too-large" } : write(...args));
   const before = h.events.length;
   expect(await h.board.remove(live.id, row.mutationRevision)).toEqual({ status: "deleted", itemId: live.id, runId: live.runId });
-  for (let i = 0; i < 400 && update.mock.calls.length === 0; i += 1) await tick();
-  for (let i = 0; i < 4; i += 1) await tick();
+  await h.drainRunWork();
+  expect(update).toHaveBeenCalledTimes(1);
   const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
   expect(ended()).toBeUndefined();
   expect(intentsOf(h)).toEqual([{ itemId: live.id, runId: live.runId }]);
@@ -1492,7 +1494,7 @@ it("a delete whose board write fails after its delete intent is stored takes its
   const next = h.makeEngine();
   const before = h.events.length;
   await next.adoptParkedTemplateRuns();
-  for (let i = 0; i < 20; i += 1) await tick();
+  await h.drainRunWork();
   const ended = () => h.events.slice(before).find(event => event.phase === "cancelled" || event.phase === "error");
   expect(ended()).toBeUndefined();
   expect((await h.runOf(runId))?.settled).toBeUndefined();
@@ -1519,7 +1521,7 @@ it.each(["live", "parked at boot"] as const)("a user's delete of a %s run's row 
   expect(await h.board.create({ title: "another row" })).toMatchObject({ status: "created" });
   await h.engine.projectTemplateRuns([]);
   await h.engine.adoptParkedTemplateRuns();
-  for (let i = 0; i < 20; i += 1) await tick();
+  await h.drainRunWork();
   expect(h.events.slice(before).filter(event => event.phase === "cancelled" || event.phase === "error")).toEqual([]);
   expect(h.interrupts).toEqual([]);
   expect((await h.runOf(runId))?.settled).toBeUndefined();
@@ -1535,7 +1537,7 @@ it.each(["a reader", "an adoption", "a start"] as const)("a delete intent left w
   expect(await new WorkBoardStore(h.boardPath).remove(id, (await h.item(id)).mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
   const before = h.events.length;
   await h.makeEngine().adoptParkedTemplateRuns();
-  for (let i = 0; i < 20; i += 1) await tick();
+  await h.drainRunWork();
   const ended = () => h.events.slice(before).find(event => event.itemId === id && (event.phase === "cancelled" || event.phase === "error"));
   expect(ended()).toBeUndefined();
   const { archive: _, ...unheld } = JSON.parse(readFileSync(h.boardPath, "utf8")) as Record<string, unknown>;
@@ -1591,7 +1593,7 @@ it("discarding unreadable run records, ones naming the live run's row included, 
   const cards = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
   expect(cards.map(card => card.itemId)).toEqual([live.id, live.id]);
   for (const card of [...cards].reverse()) expect(await h.board.discardUnreadableRun(card, () => true)).toEqual({ status: "deleted" });
-  await new Promise(resolve => setTimeout(resolve, 0));
+  await h.drainRunWork();
   expect(h.interrupts).toEqual([]);
   expect(h.live()).toEqual([live.child]);
   expect(await h.runOf(live.runId)).toEqual(live.record);
@@ -1724,9 +1726,8 @@ it("a live run whose row stops naming it while its delete intent is open is held
   writeFileSync(runsFile(h), JSON.stringify({ ...runs, deleteIntents: [{ itemId: live.id, runId: live.runId }] }));
   const update = vi.spyOn(h.board, "updateRun");
   live.child.finish();
-  for (let i = 0; i < 400 && update.mock.results.length === 0; i += 1) await tick();
+  await h.drainRunWork();
   expect(await update.mock.results[0]?.value).toEqual({ status: "row-lost" });
-  for (let i = 0; i < 40; i += 1) await tick();
   expect(h.events.filter(event => event.itemId === live.id && (event.phase === "cancelled" || event.phase === "error"))).toEqual([]);
   expect((await h.runOf(live.runId))?.settled).toBeUndefined();
   expect(intentsOf(h)).toEqual([{ itemId: live.id, runId: live.runId }]);
