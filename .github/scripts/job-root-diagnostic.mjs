@@ -9,13 +9,11 @@ const WRITER_SCAN_LIMIT = 4096;
 const DENY_LIMIT = 8;
 const PROCESS_SCAN_LIMIT = 512;
 const PROCESS_PATH_LIMIT = 256;
-const PROCESS_ATTESTATION_SCOPES = [
-  "identity-unknown", "session-unknown", "session-current", "owner-unknown", "owner-current", "other-session-other-owner",
-];
 const MAX_HOLDERS = 128;
 const FILE_OUTPUT_LIMIT = 32 * 1024;
 const HOLDER_OUTPUT_LIMIT = 52 * 1024;
 const STATUS_RESERVE = 1024;
+const PROCESS_MATCH_RESERVE = 2048;
 const QUERY_VARIABLE = "AVE_CI_JOB_ROOT_QUERY";
 const QUERY_COMMAND = `$query = [Environment]::GetEnvironmentVariable('${QUERY_VARIABLE}'); & ([ScriptBlock]::Create($query))`;
 
@@ -47,7 +45,6 @@ ImportReadMethod kernel32.dll OpenProcess $processHandleType @([uint32], [bool],
 ImportReadMethod ntdll.dll NtQueryInformationProcess ([int]) @($processHandleType, [int], [byte[]], [uint32], [IntPtr])
 ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [IntPtr], [byte[]], [IntPtr], [IntPtr])
 ImportReadMethod kernel32.dll QueryFullProcessImageNameW ([bool]) @($processHandleType, [uint32], [Text.StringBuilder], $outLength)
-ImportReadMethod advapi32.dll OpenProcessToken ([bool]) @($processHandleType, [uint32], $outPointer)
 $fileTime = [long].MakeByRefType()
 ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
 $native = $interop.CreateType()
@@ -284,34 +281,6 @@ function FindProcessReference($row, $pattern, $failures) {
   elseif (TestJobPath $cwd.path 'cwd' $failures) { return 'cwd' }
 }
 
-function ReadProcessOwnerSid($row) {
-  # PROCESS_QUERY_LIMITED_INFORMATION and TOKEN_QUERY.
-  $process = $native::OpenProcess(0x1000, $false, $row.ProcessId)
-  try {
-    if ($process.IsInvalid -or !$row.CreationDate) { return }
-    $created = $exited = $kernel = $user = 0L
-    if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user)) { return }
-    # CIM creation time has microsecond precision. Bind the SID to the same process instance.
-    if ([Math]::Abs(([DateTime]::FromFileTimeUtc($created) - $row.CreationDate.ToUniversalTime()).Ticks) -gt 9) { return }
-    $raw = [IntPtr]::Zero
-    if (!$native::OpenProcessToken($process, 8, [ref]$raw)) { return }
-    $token = [Microsoft.Win32.SafeHandles.SafeAccessTokenHandle]::new($raw)
-    try {
-      $identity = [Security.Principal.WindowsIdentity]::new($token.DangerousGetHandle())
-      try { return $identity.User.Value } finally { $identity.Dispose() }
-    } finally { $token.Dispose() }
-  } finally { $process.Dispose() }
-}
-
-function GetProcessScope($row, $session, $ownerSid) {
-  if ($null -eq $row.SessionId) { return 'session-unknown' }
-  if ($row.SessionId -eq $session) { return 'session-current' }
-  $sid = try { ReadProcessOwnerSid $row } catch { $null }
-  if (!$sid -or !$ownerSid) { return 'owner-unknown' }
-  if ($sid -eq $ownerSid) { return 'owner-current' }
-  return 'other-session-other-owner'
-}
-
 function ReadHolderMetadata($record) {
   $process = $native::OpenProcess(0x1000, $false, $record.pid)
   try {
@@ -385,18 +354,14 @@ function FindJobProcesses {
   $inspected = 0
   $matched = 0
   $sawQueryProcess = $false
-  $self = [Diagnostics.Process]::GetCurrentProcess()
-  try { $session = $self.SessionId } finally { $self.Dispose() }
-  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  try { $ownerSid = $identity.User.Value } finally { $identity.Dispose() }
-  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name,SessionId |
+  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name |
     Sort-Object CreationDate -Descending | Select-Object -First ${PROCESS_SCAN_LIMIT + 1} | ForEach-Object {
     if (++$inspected -gt ${PROCESS_SCAN_LIMIT}) { $script:processLimited = $true; return }
     if ($matched -gt ${RESULT_LIMIT}) { return }
     $row = $_
     if ($row.ProcessId -eq $PID) { $sawQueryProcess = $true; return }
     if ($null -eq $row.ProcessId) {
-      @{ kind = 'processAttestation'; pid = $null; scope = 'identity-unknown'; reason = 'missing CIM ProcessId' }
+      @{ kind = 'processUnreadable'; pid = $null; reason = 'missing CIM ProcessId' }
       return
     }
     # The idle pseudo-process has no user-mode process to inspect.
@@ -410,10 +375,9 @@ function FindJobProcesses {
       if (!$record.image) { $record.image = LimitProcessPath $row.Name }
       $record.reason = $reason
       $record
-    } elseif ($failures.Count) {
-      $scope = GetProcessScope $row $session $ownerSid
-      if ($scope -eq 'other-session-other-owner') { $script:processSkipped++ }
-      @{ kind = 'processAttestation'; pid = $row.ProcessId; scope = $scope; reason = $failures -join '; ' }
+    }
+    if ($failures.Count) {
+      @{ kind = 'processUnreadable'; pid = $row.ProcessId; reason = $failures -join '; ' }
     }
   }
   if ($preflight -and !$sawQueryProcess) { $script:processFailed = $true }
@@ -598,14 +562,16 @@ try {
 $null = WriteEvidence @{ kind = 'holders'; limited = $holderLimited; failed = $script:holderFailed } ${HOLDER_OUTPUT_LIMIT + 256}
 $script:processFailed = $false
 $script:processLimited = $false
-$script:processSkipped = 0
 try {
   FindJobProcesses | ForEach-Object {
-    if (!(WriteEvidence $_ ${OUTPUT_LIMIT - STATUS_RESERVE})) { $script:processLimited = $true }
+    # Leave room for a positive match even when unreadable references fill the report.
+    $limit = if ($_.kind -eq 'processUnreadable') { ${OUTPUT_LIMIT - STATUS_RESERVE - PROCESS_MATCH_RESERVE} }
+      else { ${OUTPUT_LIMIT - STATUS_RESERVE} }
+    if (!(WriteEvidence $_ $limit)) { $script:processLimited = $true }
   }
 } catch { $script:processFailed = $true }
 $null = WriteEvidence @{
-  kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited; skipped = $script:processSkipped
+  kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited
 } ${OUTPUT_LIMIT}
 `;
 }
@@ -649,7 +615,7 @@ function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, a
   return `${base} match=${reason} ${started}`;
 }
 
-function collectQuery(script, timeout, maxBuffer, readRecord, run) {
+function collectQuery(script, timeout, maxBuffer, readRecord, invalidRecord, run) {
   if (timeout <= 0) return Promise.resolve(false);
   const args = ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(QUERY_COMMAND, "utf16le").toString("base64")];
   const options = {
@@ -679,7 +645,10 @@ function collectQuery(script, timeout, maxBuffer, readRecord, run) {
       pending = lines.pop();
       for (const line of lines) {
         try { readRecord(JSON.parse(line)); }
-        catch { failed = true; }
+        catch {
+          failed = true;
+          invalidRecord();
+        }
       }
     }
 
@@ -742,7 +711,6 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   let processesComplete = false;
   let fileCount = 0;
   let processCount = 0;
-  let skippedProcesses = 0;
   let writerFound = false;
   let holdersOutputEnd = 0;
   function incomplete(row, ...flags) {
@@ -765,7 +733,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
     } else if (filesComplete && !holdersComplete) {
       if (row.kind === "holders") {
         holdersComplete = true;
-        failed ||= preflight ? incomplete(row, "failed", "limited") : row.failed;
+        failed ||= preflight ? incomplete(row, "failed", "limited") || outputLimited : row.failed;
         if (row.failed) emit("Native file holder lookup was incomplete");
         if (row.limited) emit("Native file holder output reached its reporting limit");
       } else if (!preflight && row.kind === "holderFailure") {
@@ -786,36 +754,31 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
     } else if (holdersComplete && !processesComplete) {
       if (row.kind === "processes") {
         processesComplete = true;
-        if (preflight) failed ||= incomplete(row, "failed", "limited");
         if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");
         if (row.failed) emit("Cleanup process scan was incomplete");
-        const skipped = row.skipped ?? 0;
-        if (!Number.isSafeInteger(skipped) || skipped < 0 || skipped > PROCESS_SCAN_LIMIT ||
-            (!row.limited && skipped !== skippedProcesses)) throw new Error("Invalid skipped process count");
-        if (skipped) emit(`Cleanup process scan skipped ${skipped} other-session, other-owner process${skipped === 1 ? "" : "es"}`, OUTPUT_LIMIT);
       } else if (row.kind === "process") {
+        const line = formatProcess(row);
         writerFound = true;
-        if (processCount++ < RESULT_LIMIT) emit(formatProcess(row));
-        else failed ||= preflight;
-      } else if (row.kind === "processAttestation") {
-        const { pid, scope, reason } = row;
-        if (!PROCESS_ATTESTATION_SCOPES.includes(scope) ||
-            (scope === "identity-unknown" ? pid !== null : !Number.isSafeInteger(pid) || pid <= 0) ||
-            typeof reason !== "string" || !reason) throw new Error("Invalid process attestation");
-        const skip = scope === "other-session-other-owner";
-        if (skip) skippedProcesses++;
-        else failed ||= preflight;
-        emit(`process ${skip ? "skipped" : "cannot attest"} pid=${pid ?? '"not determined"'} scope=${scope} reason=${formatOptionalText(reason, PROCESS_PATH_LIMIT)}`);
+        if (processCount++ < RESULT_LIMIT) emit(line);
+      } else if (row.kind === "processUnreadable") {
+        const { pid, reason } = row;
+        if ((pid !== null && (!Number.isSafeInteger(pid) || pid <= 0)) ||
+            typeof reason !== "string" || !reason) throw new Error("Invalid unreadable process record");
+        emit(`process unreadable pid=${pid ?? '"not determined"'} reason=${formatOptionalText(reason, PROCESS_PATH_LIMIT)}`,
+          OUTPUT_LIMIT - STATUS_RESERVE - PROCESS_MATCH_RESERVE);
       } else {
         throw new Error("Unexpected process record");
       }
     } else {
       throw new Error("Unexpected cleanup record");
     }
-  }, run);
+  }, () => { failed ||= !holdersComplete; }, run);
   if (filesComplete && !holdersComplete) emit("Native file holder lookup was incomplete");
+  const processQueryIncomplete = !queryOk || !processesComplete;
+  // The holder status closes the authoritative scan before process probes begin.
+  if (preflight && holdersComplete && processQueryIncomplete) emit("Cleanup process scan was incomplete");
   if (outputLimited) emit("Cleanup diagnostic output reached its byte limit", OUTPUT_LIMIT);
-  if (!queryOk || failed || !filesComplete || !processesComplete || (preflight && (!holdersComplete || outputLimited))) {
+  if (failed || !filesComplete || !holdersComplete || (!preflight && processQueryIncomplete)) {
     throw new Error("Cleanup query was incomplete");
   }
   return writerFound;

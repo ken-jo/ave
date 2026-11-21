@@ -71,11 +71,10 @@ function createOwnedJobRoot(prefix, create, readIdentity, publish) {
 /**
  * Setup rollback requires every job process to have exited. With no concurrent
  * writers, identity verification and tombstone rename suffice for recursive
- * pathname removal. The scan attests every writer with an observable reference.
- * An idle out-of-process COM server exposes no handle, cwd, or command-line
- * reference to a non-killing probe. The residual consequence is a reported
- * cleanup failure, with deletion bounded to the root. The 2026-11-21 owner
- * decision excludes recursion TOCTOU and handle-bound removal.
+ * pathname removal. Any holder or incomplete entry handle scan blocks rollback.
+ * Process probes also block on a positive reference and report unreadable values.
+ * An idle out-of-process COM server can access the root later without exposing
+ * a reference at scan time, which can cause a reported rollback failure.
  */
 export async function isolationAssignments(
   { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
@@ -186,11 +185,10 @@ function writeCleanupLog(lines) {
 /**
  * Every job process must have exited. With no concurrent writers, identity
  * verification and tombstone rename suffice for recursive pathname removal.
- * The scan attests every writer with an observable reference. An idle
- * out-of-process COM server exposes no handle, cwd, or command-line reference to
- * a non-killing probe. The residual consequence is a reported cleanup failure,
- * with deletion bounded to the root. The 2026-11-21 owner decision excludes
- * recursion TOCTOU and handle-bound removal.
+ * Any holder or incomplete entry handle scan blocks cleanup. Process probes
+ * also block on a positive reference and report unreadable values.
+ * An idle out-of-process COM server can access the root later without exposing
+ * a reference at scan time, which can cause a reported cleanup failure.
  */
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,

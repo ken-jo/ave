@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep, win32 } from "node:path";
 import { PassThrough } from "node:stream";
@@ -257,6 +257,24 @@ describe("Windows job root writer precondition", () => {
   });
 
   if (process.platform === "win32") {
+    it("refuses an unsupported native handle query for a job entry", async t => {
+      const job = fixture(t);
+      const run = runInjectedQuery("", script => script
+        .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`)
+        .replace("function ReadFileHolders($handle, $path) {", `$&
+  if ($path -eq ${powerShellLiteral(job.held)}) {
+    @{ kind = 'handleQuery'; path = $path; status = -1073741821; limited = $false }
+    return
+  }`));
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
+        assertReportedRoot(error, root);
+        assert.match(error.message, /writer evidence is incomplete/i);
+        assert.ok(error.message.includes(`Native file holder lookup failed path=${JSON.stringify(job.held)} status=-1073741821`));
+        return true;
+      });
+      job.assertPreserved();
+    });
+
     const processCases = [
       { name: "an invalid OpenProcess handle", nativeFailure: "OpenProcess failed" },
       { name: "a failed NtQueryInformationProcess call", nativeFailure: "NtQueryInformationProcess failed" },
@@ -264,58 +282,92 @@ describe("Windows job root writer precondition", () => {
       { name: "a cwd over the byte limit", nativeFailure: "cwd exceeds 4096 bytes" },
       { name: "a missing CIM ExecutablePath", field: "ExecutablePath", value: "$null", reason: "missing CIM ExecutablePath" },
       { name: "a missing CIM CommandLine", field: "CommandLine", value: "$null", reason: "missing CIM CommandLine" },
-      { name: "a missing CIM ProcessId", field: "ProcessId", value: "$null", reason: "missing CIM ProcessId", scope: "identity-unknown" },
+      { name: "a missing CIM ProcessId", field: "ProcessId", value: "$null", reason: "missing CIM ProcessId" },
       { name: "a path conversion error", field: "ExecutablePath", value: '"C:\\example`0.exe"', reason: "path conversion failed (image)" },
-      { name: "our owner in another session", nativeFailure: "OpenProcess failed", session: "other", owner: "current", scope: "owner-current" },
-      { name: "an undeterminable session and owner", nativeFailure: "OpenProcess failed", session: "unknown", scope: "session-unknown" },
-      { name: "an undeterminable owner in another session", nativeFailure: "OpenProcess failed", session: "other", scope: "owner-unknown" },
-      { name: "another owner in another session", nativeFailure: "OpenProcess failed", session: "other", owner: "other", scope: "other-session-other-owner" },
     ];
-    for (const { name, nativeFailure, field, value, reason = nativeFailure, session, owner, scope = "session-current" } of processCases) {
-      it(`attests writer scope for ${name}`, async t => {
+    for (const { name, nativeFailure, field, value, reason = nativeFailure } of processCases) {
+      it(`reports ${name} without refusing cleanup`, async t => {
         const job = fixture(t);
-        const pid = 2147483647;
-        const row = {
-          ProcessId: pid, SessionId: "$session", ExecutablePath: "'C:\\example.exe'", CommandLine: "'example.exe'",
-        };
-        if (field) row[field] = value;
-        const sessionValue = session === "unknown" ? "$null" : session === "other" ? "$session + 1" : "$session";
-        const ownerValue = owner === "current" ? "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
-          : owner === "other" ? "'S-1-5-21-1-2-3-1001'" : "$null";
-        const run = runInjectedQuery(`
-function Get-CimInstance {
-  $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
-  [pscustomobject]@{ ProcessId = $PID; SessionId = $session }
-  $session = ${sessionValue}
-  [pscustomobject]@{ ${Object.entries(row).map(([key, raw]) => `${key} = ${raw}`).join("; ")} }
-}
-`, script => script.replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`)
-          .replace("$script:processFailed = $false", `
-function ReadCurrentDirectory {
-  @{ path = 'C:\\example'; reason = ${nativeFailure ? powerShellLiteral(nativeFailure) : "$null"} }
-}
-function ReadProcessOwnerSid { ${ownerValue} }
-$script:processFailed = $false
-`));
-        const displayedPid = field === "ProcessId" ? '"not determined"' : pid;
-        if (scope === "other-session-other-owner") {
-          const diagnostic = mock.fn();
-          await diagnoseJobRoot(job.localRoot, diagnostic, run);
-          const lines = output({ diagnostic }).split("\n");
-          assert.ok(lines.includes(`process skipped pid=${displayedPid} scope=${scope} reason=${JSON.stringify(reason)}`));
-          assert.ok(lines.includes("Cleanup process scan skipped 1 other-session, other-owner process"));
-          await cleanupJobRoot(root, { ...job.options, run });
-          assert.equal(existsSync(job.localRoot), false);
-          assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
-        } else {
-          await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
-            assert.match(error.message, /writer evidence is incomplete/i);
-            assert.ok(error.message.split("\n").includes(
-              `process cannot attest pid=${displayedPid} scope=${scope} reason=${JSON.stringify(reason)}`,
-            ), error.message);
+        const run = runInjectedQuery("", script => {
+          script = script.replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`);
+          if (nativeFailure) {
+            return script.replace("function ReadCurrentDirectory($id) {", `$&
+  if ($id -eq ${process.pid}) { return @{ reason = ${powerShellLiteral(nativeFailure)} } }`);
+          }
+          return script.replace("    $row = $_", `$&
+    if ($row.ProcessId -eq ${process.pid}) {
+      $row = $row | Select-Object -Property *
+      $row.${field} = ${value}
+    }`);
+        });
+        await cleanupJobRoot(root, { ...job.options, run });
+        assert.equal(existsSync(job.localRoot), false);
+        assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
+        mkdirSync(job.localRoot);
+        const diagnostic = mock.fn();
+        await diagnoseJobRoot(job.localRoot, diagnostic, run);
+        const displayedPid = field === "ProcessId" ? '"not determined"' : process.pid;
+        const lines = output({ diagnostic });
+        assert.ok(lines.split("\n").some(line => line.startsWith(`process unreadable pid=${displayedPid} reason=`)
+          && line.includes(reason)), lines);
+      });
+    }
+
+    for (const reference of ["cwd", "image", "module", "argument"]) {
+      it(`refuses rollback for a live ${reference} reference`, async t => {
+        const job = fixture(t);
+        let executable = process.execPath;
+        let path = join(job.localRoot, "shared");
+        let args = ["-e", "process.stdin.resume(); console.log('ready')"];
+        if (reference === "cwd") mkdirSync(path);
+        if (reference === "argument") args.push("--", path);
+        if (reference === "image") {
+          path = join(job.localRoot, "example.exe");
+          copyFileSync(process.execPath, path);
+          executable = path;
+        }
+        if (reference === "module") {
+          path = join(job.localRoot, "example.dll");
+          copyFileSync(join(process.env.SystemRoot, "System32", "xinput1_4.dll"), path);
+          executable = windowsPowerShellPath();
+          const script = [
+            "$ErrorActionPreference = 'Stop'",
+            "Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\", CharSet=CharSet.Unicode)] public static extern IntPtr LoadLibrary(string path);' -Name Loader -Namespace Example",
+            "if ([Example.Loader]::LoadLibrary($env:EXAMPLE_DLL) -eq [IntPtr]::Zero) { throw 'DLL was not loaded' }",
+            "[Console]::WriteLine('ready'); [Console]::In.ReadToEnd() | Out-Null",
+          ].join("\n");
+          args = ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
+        }
+        const child = spawn(executable, args, {
+          cwd: reference === "cwd" ? path : job.parent,
+          env: { ...windowsPowerShellEnv(), EXAMPLE_DLL: path }, windowsHide: true, stdio: "pipe",
+        });
+        const exited = once(child, "exit");
+        try {
+          const [ready] = await Promise.race([
+            once(child.stdout, "data"), exited.then(() => { throw new Error("Reference fixture exited early"); }),
+          ]);
+          assert.equal(ready.toString().trim(), "ready");
+          const setupError = new Error("Could not publish job environment");
+          await assert.rejects(isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
+            () => {}, fixtureIdentity, assignments => { if (assignments.HOME) throw setupError; }), error => {
+            assert.ok(error instanceof AggregateError);
+            assert.equal(error.errors[0], setupError);
+            const refusal = error.errors[1];
+            assertReportedRoot(refusal, job.localRoot);
+            const expected = reference === "argument" ? [`process pid=${child.pid} `, "match=argument"]
+              : [`holder pid=${child.pid} `, `path=${JSON.stringify(path)}`];
+            assert.ok(refusal.message.split("\n").some(line => line.startsWith(expected[0]) && line.includes(expected[1])),
+              refusal.message);
+            assert.match(refusal.message, /live processes can still access the job root/i);
             return true;
           });
-          job.assertPreserved();
+          assert.equal(readFileSync(job.held, "utf8"), "example");
+          assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
+        } finally {
+          child.stdin.end();
+          const [code] = await exited;
+          assert.equal(code, 0);
         }
       });
     }

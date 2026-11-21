@@ -857,11 +857,10 @@ jobs:
 
       # Every job process must have exited. With no concurrent writers, identity
       # verification and tombstone rename suffice for recursive pathname removal.
-      # The scan attests every writer with an observable reference. An idle
-      # out-of-process COM server exposes no handle, cwd, or command-line reference
-      # to a non-killing probe. The residual consequence is a reported cleanup
-      # failure, with deletion bounded to the root. The 2026-11-21 owner decision
-      # excludes recursion TOCTOU and handle-bound removal.
+      # Any holder or incomplete entry handle scan blocks cleanup. Process probes
+      # also block on a positive reference and report unreadable values.
+      # An idle out-of-process COM server can access the root later without exposing
+      # a reference at scan time, which can cause a reported cleanup failure.
       - name: Remove isolated system-volume job directory
         if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         shell: powershell
