@@ -863,13 +863,19 @@ jobs:
       # A missing, foreign or unproven receipt refuses cleanup, so a job that
       # stops before every contained step ran also fails here. Receipts target
       # accidental lingering writers, not forgery by a test running as the CI
-      # account. One pass over every process (image, command line, cwd) refuses
-      # on a match or an unfinished scan and lists unreadable values.
-      # The verified root is renamed to <root>.cleanup-<uuid>, re-verified and
-      # removed; a rename or removal failure refuses with its error.
+      # account. A receipt covers only the step's descendants. The sandbox
+      # helper's runner and payload start through the logon service in jobs of
+      # their own, so the process scan is the authoritative check for them: the
+      # runner's image is the helper copy in TEMP under the root, and the payload
+      # matches by cwd or argument. One pass over every process (image, command
+      # line, cwd) refuses on a match or an unfinished scan and lists unreadable
+      # values. The verified root is renamed to <root>.cleanup-<uuid>,
+      # re-verified and removed; a rename or removal failure refuses with its error.
       # Residual: a DCOM-launched process that holds only data files under the root
       # with delete sharing, and has no image, cwd or argument reference there, is
-      # not detected. Its only consequence is a reported cleanup failure, never a
+      # not detected; nor is a sandbox payload that outlives its runner while its
+      # image and arguments are outside the root and its cwd is outside or
+      # unreadable. Their only consequence is a reported cleanup failure, never a
       # deletion outside the root.
       - name: Remove isolated system-volume job directory
         if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''

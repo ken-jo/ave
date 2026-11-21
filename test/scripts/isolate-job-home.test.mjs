@@ -701,6 +701,58 @@ describe("Windows job root writer precondition", () => {
       });
     }
 
+    // A service creates this process, as the logon service creates a sandbox runner: it is in no step's job.
+    const CREATE_OUTSIDE_JOB = [
+      "$ErrorActionPreference = 'Stop'",
+      "$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }",
+      "$created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{",
+      "  CommandLine = $env:EXAMPLE_COMMAND; CurrentDirectory = $env:EXAMPLE_CWD; ProcessStartupInformation = $startup }",
+      "if ($created.ReturnValue -ne 0) { throw \"Win32_Process.Create returned $($created.ReturnValue)\" }",
+      "$process = [Diagnostics.Process]::GetProcessById([int]$created.ProcessId)",
+      "try {",
+      "  $null = $process.Handle",
+      "  $parent = (Get-CimInstance Win32_Process -Filter \"ProcessId = $($created.ProcessId)\").ParentProcessId",
+      "  [Console]::WriteLine(\"$($created.ProcessId) $((Get-Process -Id $parent).ProcessName)\")",
+      "  [Console]::In.ReadToEnd() | Out-Null",
+      "} finally { $process.Kill(); if (-not $process.WaitForExit(10000)) { throw 'Created process did not exit' } }",
+    ].join("\n");
+    for (const reference of ["cwd", "image"]) {
+      it(`refuses cleanup while a service-created process has its ${reference} under the root`, async t => {
+        const job = fixture(t);
+        const image = reference === "image" ? join(job.localRoot, "example.exe") : process.execPath;
+        const cwd = reference === "cwd" ? join(job.localRoot, "tmp") : job.parent;
+        if (reference === "cwd") mkdirSync(cwd);
+        if (reference === "image") copyFileSync(process.execPath, image);
+        const creator = spawn(windowsPowerShellPath(), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+          Buffer.from(CREATE_OUTSIDE_JOB, "utf16le").toString("base64")], {
+          cwd: job.parent, windowsHide: true, stdio: "pipe",
+          env: { ...windowsPowerShellEnv(), EXAMPLE_COMMAND: `"${image}" -e "setInterval(() => {}, 1000)"`, EXAMPLE_CWD: cwd },
+        });
+        const exited = once(creator, "exit");
+        try {
+          const [line] = await Promise.race([
+            once(creator.stdout, "data"), exited.then(() => { throw new Error("Process creator exited early"); }),
+          ]);
+          const [id, parent] = line.toString().trim().split(" ");
+          const pid = Number(id);
+          assert.ok(Number.isInteger(pid) && pid > 0, line.toString());
+          assert.equal(parent.toLowerCase(), "wmiprvse");
+          await assert.rejects(cleanupJobRoot(root, { ...job.options, run: scanLocalRoot(job) }), error => {
+            assertReportedRoot(error, root);
+            assert.match(error.message, /live processes can still access the job root/);
+            assert.ok(error.message.split("\n").some(entry => entry.startsWith(`process pid=${pid} `)
+              && entry.includes(` match=${reference} `)), error.message);
+            return true;
+          });
+          job.assertPreserved();
+        } finally {
+          creator.stdin.end();
+          const [code] = await exited;
+          assert.equal(code, 0);
+        }
+      });
+    }
+
     for (const scenario of ["cwd", "image", "module", "argument", "argument with invalid creation time"]) {
       const invalidCreationTime = scenario === "argument with invalid creation time";
       const reference = invalidCreationTime ? "argument" : scenario;

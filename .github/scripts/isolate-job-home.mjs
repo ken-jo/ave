@@ -249,13 +249,20 @@ function writeCleanupDiagnostics(lines, diagnostic) {
  * entry, each naming its step and this job root and proving its closed
  * kill-on-close job empty; anything else refuses. Receipts target accidental
  * lingering writers; deliberate forgery by a test running as the same CI
- * account is out of scope. One pass over every process (image, command line,
- * cwd) refuses on a match or an unfinished scan and lists unreadable values.
- * The verified root is renamed to <root>.cleanup-<uuid>, re-verified and
- * removed; a rename or removal failure refuses with its error.
+ * account is out of scope. A receipt attests only to the step's descendants.
+ * The sandbox helper's runner and payload start through the logon service in
+ * jobs of their own, so the process scan is the authoritative check for
+ * service-created processes: the runner's image is the helper copy in TEMP
+ * under the root, and the payload matches by cwd or argument. One pass over
+ * every process (image, command line, cwd) refuses on a match or an unfinished
+ * scan and lists unreadable values. The verified root is renamed to
+ * <root>.cleanup-<uuid>, re-verified and removed; a rename or removal failure
+ * refuses with its error.
  * Residual: a DCOM-launched process that holds only data files under the root
  * with delete sharing, and has no image, cwd or argument reference there, is
- * not detected. Its only consequence is a reported cleanup failure, never a
+ * not detected; nor is a sandbox payload that outlives its runner while its
+ * image and arguments are outside the root and its cwd is outside or
+ * unreadable. Their only consequence is a reported cleanup failure, never a
  * deletion outside the root.
  */
 export async function cleanupWindowsJobRoot(root, {
