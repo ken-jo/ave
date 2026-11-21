@@ -509,10 +509,10 @@ describe("Windows job root writer precondition", () => {
     for (const reference of ["cwd", "image"]) {
       it(`refuses cleanup while an uncontained process has its ${reference} under the root`, async t => {
         const job = fixture(t);
-        let executable = process.execPath;
-        let cwd = job.parent;
-        if (reference === "cwd") mkdirSync(cwd = join(job.localRoot, "tmp"));
-        if (reference === "image") copyFileSync(process.execPath, executable = join(job.localRoot, "example.exe"));
+        const executable = reference === "image" ? join(job.localRoot, "example.exe") : process.execPath;
+        const cwd = reference === "cwd" ? join(job.localRoot, "tmp") : job.parent;
+        if (reference === "cwd") mkdirSync(cwd);
+        if (reference === "image") copyFileSync(process.execPath, executable);
         const child = spawn(executable, ["-e", "process.stdin.resume(); console.log('ready')"],
           { cwd, windowsHide: true, stdio: "pipe" });
         const exited = once(child, "exit");
