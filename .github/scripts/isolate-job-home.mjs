@@ -73,9 +73,9 @@ function createOwnedJobRoot(prefix, create, readIdentity, publish) {
  * Setup rollback runs before any contained step, so it skips the receipt ledger
  * and otherwise shares the cleanup quarantine: the process scan refuses on a
  * match or an unfinished scan, then the root is renamed to a tombstone,
- * re-verified and removed. The cleanup residual applies: an undetected
- * DCOM-launched data-file holder can only cause a reported rollback failure,
- * never a deletion outside the root.
+ * re-verified and removed. The cleanup residual applies: deletion stays scoped
+ * to the verified root, and a successful rollback does not prove that every
+ * external holder has exited.
  */
 export async function isolationAssignments(
   { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
@@ -258,8 +258,10 @@ function writeCleanupDiagnostics(lines, diagnostic) {
  * with delete sharing, and has no image, cwd or argument reference there, is
  * not detected; nor is a sandbox payload that outlives its runner while its
  * image and arguments are outside the root and its cwd is outside or
- * unreadable. Their only consequence is a reported cleanup failure, never a
- * deletion outside the root.
+ * unreadable. Such a writer can keep running while its files are marked for
+ * deletion or unlinked, so a successful cleanup does not prove that every
+ * external holder has exited. Under this model deletion stays scoped to the
+ * verified job root.
  */
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,
