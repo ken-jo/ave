@@ -2,7 +2,7 @@ import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { randomBytes } from "node:crypto";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
@@ -13,6 +13,7 @@ import { hasNativeSrtWinBuildReceipt, readSrtWinTestInput, selectSrtWinTestRecei
 import BUILD_RECEIPTS from "../generated/srt-win-build-receipts.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
+import { runWindowsSrtWinParent } from "../srt-win-private-parent.js";
 
 const require = createRequire(import.meta.url);
 const { assertSrtWinVendor: assertVendor, readUpstreamSrtWinInput } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
@@ -164,7 +165,7 @@ describe("Windows helper integrity", () => {
     expect(existsSync(executable)).toBe(true);
   });
 
-  it("parses the generated PowerShell and checks the exact parent ACL and independent sweeps", async (context) => {
+  it("parses the generated PowerShell and verifies parent ownership, ACLs and sweep dispatch", async (context) => {
     const programs: string[] = [];
     vi.resetModules();
     vi.doMock("node:child_process", async (load) => ({
@@ -212,6 +213,17 @@ describe("Windows helper integrity", () => {
         "try { Assert-TempAncestor $ancestor 'S-1-5-21-1-2-3-1001' $true; [Console]::WriteLine('allowed planting') } catch { [Console]::WriteLine($_.Exception.Message) }",
         "$ace.AccessMask = 0x40",
         "try { Assert-TempAncestor $ancestor 'S-1-5-21-1-2-3-1001'; [Console]::WriteLine('allowed replacement') } catch { [Console]::WriteLine($_.Exception.Message) }",
+        "$parentCheck = $program.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-PrivateParent' }, $false)",
+        "Invoke-Expression $parentCheck.Extent.Text",
+        "$hostOwner = 'S-1-5-21-1-2-3-1001'",
+        "$acl = @([pscustomobject]@{ AceType = 'AccessAllowed'; AceFlags = 3; SecurityIdentifier = @{ Value = $hostOwner }; AccessMask = 0x1f01ff })",
+        "foreach ($id in @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545')) { $acl += [pscustomobject]@{ AceType = 'AccessAllowed'; AceFlags = 0; SecurityIdentifier = @{ Value = $id }; AccessMask = 0x20 } }",
+        "$expected = [pscustomobject]@{ Owner = $hostOwner; ControlFlags = 0x1000; DiscretionaryAcl = $acl }",
+        "Assert-PrivateParent $expected $expected",
+        "foreach ($id in @('S-1-5-32-544', 'S-1-5-18')) {",
+        "  $actual = [pscustomobject]@{ Owner = $id; ControlFlags = $expected.ControlFlags; DiscretionaryAcl = $expected.DiscretionaryAcl }",
+        "  try { Assert-PrivateParent $actual $expected; [Console]::WriteLine($id + ' accepted') } catch { [Console]::WriteLine($id + ' ' + $_.Exception.Message) }",
+        "}",
         "$sweep = [System.Management.Automation.Language.Parser]::ParseInput($programs[7], [ref]$null, [ref]$null)",
         "$legacy = $sweep.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-LegacySweep' }, $false)",
         "if (!$legacy) { throw 'Expected an independent legacy sweep in the generated program' }",
@@ -235,6 +247,8 @@ describe("Windows helper integrity", () => {
       "O:S-1-5-18D:P(A;OICI;FA;;;S-1-5-18)(A;;0x20;;;S-1-5-32-544)(A;;0x20;;;S-1-5-32-545)",
       "Temporary ancestor grants replacement rights",
       "Temporary ancestor grants replacement rights",
+      "S-1-5-32-544 Private helper parent is not protected",
+      "S-1-5-18 Private helper parent is not protected",
       "legacy sweep", "temp-root diagnostic", "private sweep",
     ]);
   });
@@ -683,7 +697,7 @@ describe("Windows helper integrity", () => {
     expect(output.trim()).toBe("private-image-protected");
   });
 
-  it.runIf(process.platform === "win32").for(["unprotected", "foreign-owned", "junction"])(
+  it.runIf(process.platform === "win32").for(["unprotected", "Administrators-owned", "SYSTEM-owned", "junction"])(
     "refuses an existing %s Windows parent and leaves it untouched",
     (kind, context) => {
       const { source } = fixture();
@@ -692,17 +706,30 @@ describe("Windows helper integrity", () => {
       const sid = nativePowerShell("[Console]::WriteLine([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)", {}).trim();
       const parent = join(temp, `ave-srt-win.${sid}`);
       const target = kind === "junction" ? join(temp, "target") : parent;
-      if (kind === "foreign-owned") {
-        const result = nativePowerShell([
+      if (kind === "Administrators-owned" || kind === "SYSTEM-owned") {
+        const foreignOwner = kind === "Administrators-owned" ? "S-1-5-32-544" : "S-1-5-18";
+        if (foreignOwner === sid) return context.skip("The requested fixture owner is the current token user");
+        const createParent = (owner: string) => nativePowerShell([
           "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-          "$raw = [System.Security.AccessControl.RawSecurityDescriptor]::new('O:BAD:P(A;OICI;FA;;;' + $sid + ')(A;OICI;FA;;;SY)')",
+          "$rules = \"(A;OICI;FA;;;$sid)\"",
+          "foreach ($principal in @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545')) { if ($principal -ne $sid) { $rules += \"(A;;0x20;;;$principal)\" } }",
+          "$raw = [System.Security.AccessControl.RawSecurityDescriptor]::new('O:' + $env:AVE_TEST_OWNER + 'D:P' + $rules)",
           "$bytes = [byte[]]::new($raw.BinaryLength); $raw.GetBinaryForm($bytes, 0)",
           "$acl = [System.Security.AccessControl.DirectorySecurity]::new(); $acl.SetSecurityDescriptorBinaryForm($bytes)",
-          "try { $null = [System.IO.Directory]::CreateDirectory($env:AVE_TEST_PARENT, $acl) } catch [System.UnauthorizedAccessException], [System.Security.AccessControl.PrivilegeNotHeldException] { return } catch [System.IO.IOException] { if (($_.Exception.HResult -band 0xffff) -eq 1307) { return }; throw }",
-          "$owner = [System.IO.Directory]::GetAccessControl($env:AVE_TEST_PARENT).GetOwner([System.Security.Principal.SecurityIdentifier]).Value",
-          "if ($owner -ne $sid) { [Console]::WriteLine('foreign') }",
-        ].join("\n"), { AVE_TEST_PARENT: parent });
-        if (result.trim() !== "foreign") return context.skip("Token cannot create a directory with a different owner");
+          "try { $null = [System.IO.Directory]::CreateDirectory($env:AVE_TEST_PARENT, $acl) } catch [System.UnauthorizedAccessException], [System.Security.AccessControl.PrivilegeNotHeldException] { [Console]::WriteLine('owner assignment refused'); return } catch [System.IO.IOException] { if (($_.Exception.HResult -band 0xffff) -eq 1307) { [Console]::WriteLine('owner assignment refused'); return }; throw }",
+          "$written = [System.IO.Directory]::GetAccessControl($env:AVE_TEST_PARENT)",
+          "$actual = [System.Security.AccessControl.RawSecurityDescriptor]::new($written.GetSecurityDescriptorBinaryForm(), 0)",
+          "$entries = { param($value) @($value.DiscretionaryAcl | ForEach-Object { [string]$_.AceType + ':' + [int]$_.AceFlags + ':' + $_.AccessMask + ':' + $_.SecurityIdentifier.Value } | Sort-Object) -join ';' }",
+          "if (!$written.AreAccessRulesProtected -or (& $entries $actual) -cne (& $entries $raw)) { throw 'The fixture DACL differs from the expected DACL' }",
+          "[Console]::WriteLine($actual.Owner.Value)",
+        ].join("\n"), { AVE_TEST_PARENT: parent, AVE_TEST_OWNER: owner }).trim();
+        // Prove that the exact DACL and path pass with the correct owner first.
+        expect(createParent(sid)).toBe(sid);
+        runWindowsSrtWinParent("verify", realpathSync.native(temp));
+        rmdirSync(parent);
+        const observed = createParent(foreignOwner);
+        if (observed === "owner assignment refused") return context.skip("Token cannot assign the requested owner");
+        expect(observed).toBe(foreignOwner);
       } else {
         mkdirSync(target);
         if (kind === "junction") symlinkSync(target, parent, "junction");
