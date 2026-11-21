@@ -314,15 +314,23 @@ describe("Windows job root writer precondition", () => {
     });
   }
 
-  it("reports an incomplete process scan on successful cleanup", async t => {
-    const job = fixture(t);
-    const diagnostic = mock.fn();
-    const run = queryResult({ processScanFailed: true });
-    await cleanupJobRoot(root, { ...job.options, run, diagnostic });
-    assert.deepEqual(readdirSync(job.parent), ["shared"]);
-    assert.equal(run.mock.callCount(), 1);
-    assert.match(output({ diagnostic }), /Cleanup process scan was incomplete/);
-  });
+  for (const [name, records] of [
+    ["failed", queryRecords({ processScanFailed: true })],
+    ["limited", queryRecords({ processLimited: true })],
+    ["missing its status", queryRecords().replace(/^.*"kind":"processes".*\n/m, "")],
+  ]) {
+    it(`refuses cleanup when the process scan is ${name}`, async t => {
+      const job = fixture(t);
+      const run = (_command, _args, _options, done) => done(null, records);
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
+        assertReportedRoot(error, root);
+        assert.match(error.message, /writer evidence is incomplete/);
+        assert.match(error.message, /^Cleanup process scan was incomplete$/m);
+        return true;
+      });
+      job.assertPreserved();
+    });
+  }
 
   const RECEIPT = "00000000-0000-4000-8000-000000000000.receipt";
   for (const [name, readReceipts, expected] of [
@@ -343,28 +351,28 @@ describe("Windows job root writer precondition", () => {
     });
   }
 
-  if (process.platform === "win32") {
-    function localReceipts(directory) {
-      return readdirSync(directory, { withFileTypes: true }).map(entry => ({
-        name: entry.name, text: entry.isFile() ? readFileSync(join(directory, entry.name), "utf8") : undefined,
-      }));
-    }
-    const helpers = fileURLToPath(new URL(`../../resources/windows-job/${process.arch}/`, import.meta.url));
-    function containedChild(job, launcher = join(helpers, "ave-job.exe")) {
-      const receipts = join(job.localRoot, JOB_RECEIPTS);
-      const cwd = join(job.localRoot, "tmp");
-      const pidFile = join(job.localRoot, "example.pid");
-      mkdirSync(receipts);
-      mkdirSync(cwd);
-      assert.ok(existsSync(launcher), "Build the Windows job launcher and its fixtures first");
-      // The root exits at once; its detached child keeps a cwd under the job root.
-      const script = "const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],"
-        + " { cwd: process.argv[1], detached: true, stdio: 'ignore' }); child.unref(); require('node:fs').writeFileSync(process.argv[2], String(child.pid));";
-      return { receipts, pidFile, done: runInJob(process.execPath, ["-e", script, cwd, pidFile], { root: job.localRoot, launcher }) };
-    }
-    const scanLocalRoot = job => runInjectedQuery("", script => script
-      .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`));
+  function localReceipts(directory) {
+    return readdirSync(directory, { withFileTypes: true }).map(entry => ({
+      name: entry.name, text: entry.isFile() ? readFileSync(join(directory, entry.name), "utf8") : undefined,
+    }));
+  }
+  const helpers = fileURLToPath(new URL(`../../resources/windows-job/${process.arch}/`, import.meta.url));
+  function containedChild(job, launcher = join(helpers, "ave-job.exe")) {
+    const receipts = join(job.localRoot, JOB_RECEIPTS);
+    const cwd = join(job.localRoot, "tmp");
+    const pidFile = join(job.localRoot, "example.pid");
+    mkdirSync(receipts);
+    mkdirSync(cwd);
+    assert.ok(existsSync(launcher), "Build the Windows job launcher and its fixtures first");
+    // The root exits at once; its detached child keeps a cwd under the job root.
+    const script = "const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],"
+      + " { cwd: process.argv[1], detached: true, stdio: 'ignore' }); child.unref(); require('node:fs').writeFileSync(process.argv[2], String(child.pid));";
+    return { receipts, pidFile, done: runInJob(process.execPath, ["-e", script, cwd, pidFile], { root: job.localRoot, launcher }) };
+  }
+  const scanLocalRoot = job => runInjectedQuery("", script => script
+    .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`));
 
+  if (process.platform === "win32") {
     it("removes the root after the job close kills a live contained child", async t => {
       const job = fixture(t);
       const { receipts, pidFile, done } = containedChild(job);
@@ -465,23 +473,73 @@ describe("Windows job root writer precondition", () => {
       });
     }
 
-    it("reports unreadable and limited process evidence on successful rollback", async t => {
+    it("reports unreadable process evidence on successful rollback", async t => {
       const job = fixture(t);
       const setupError = new Error("DACL readback failed");
       const diagnostic = mock.fn();
       const run = runInjectedQuery("", script => script
         .replace("function ReadCurrentDirectory($id) {", `$&
-  if ($id -eq ${process.pid}) { return @{ reason = 'OpenProcess failed' } }`)
-        .replace("kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited",
-          "kind = 'processes'; failed = $script:processFailed; limited = $true"));
+  if ($id -eq ${process.pid}) { return @{ reason = 'OpenProcess failed' } }`));
       await assert.rejects(isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
         () => { throw setupError; }, fixtureIdentity, undefined, run, diagnostic), error => error === setupError);
       assert.deepEqual(readdirSync(job.parent), ["shared"]);
       const lines = output({ diagnostic });
       assert.ok(lines.includes(`process unreadable pid=${process.pid} reason="OpenProcess failed"`), lines);
-      assert.match(lines, /Cleanup process scan reached its inspection or reporting limit/);
-      assert.match(lines, /Cleanup process scan was incomplete/);
+      assert.match(lines, /^Cleanup process scan inspected \d+ process rows in \d+ ms$/m);
     });
+
+    it("refuses rollback when the real process scan reaches its limit", async t => {
+      const job = fixture(t);
+      const setupError = new Error("DACL readback failed");
+      const run = runInjectedQuery("", script => script
+        .replace("kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited",
+          "kind = 'processes'; failed = $script:processFailed; limited = $true"));
+      await assert.rejects(isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
+        () => { throw setupError; }, fixtureIdentity, undefined, run), error => {
+        assert.ok(error instanceof AggregateError);
+        assert.equal(error.errors[0], setupError);
+        assertReportedRoot(error.errors[1], job.localRoot);
+        assert.match(error.errors[1].message, /Cleanup process scan reached its inspection or reporting limit/);
+        assert.match(error.errors[1].message, /^Cleanup process scan was incomplete$/m);
+        return true;
+      });
+      job.assertPreserved();
+    });
+
+    for (const reference of ["cwd", "image"]) {
+      it(`refuses cleanup while an uncontained process has its ${reference} under the root`, async t => {
+        const job = fixture(t);
+        let executable = process.execPath;
+        let cwd = job.parent;
+        if (reference === "cwd") mkdirSync(cwd = join(job.localRoot, "tmp"));
+        if (reference === "image") copyFileSync(process.execPath, executable = join(job.localRoot, "example.exe"));
+        const child = spawn(executable, ["-e", "process.stdin.resume(); console.log('ready')"],
+          { cwd, windowsHide: true, stdio: "pipe" });
+        const exited = once(child, "exit");
+        try {
+          const [ready] = await Promise.race([
+            once(child.stdout, "data"), exited.then(() => { throw new Error("Reference fixture exited early"); }),
+          ]);
+          assert.equal(ready.toString().trim(), "ready");
+          await assert.rejects(cleanupJobRoot(root, { ...job.options, run: scanLocalRoot(job) }), error => {
+            assertReportedRoot(error, root);
+            assert.match(error.message, /live processes can still access the job root/);
+            const lines = error.message.split("\n");
+            assert.ok(lines.some(line => line.startsWith(`process pid=${child.pid} `) && line.includes(` match=${reference} `)),
+              error.message);
+            const timing = lines.find(line => /^Cleanup process scan inspected \d+ process rows in \d+ ms$/.test(line));
+            assert.ok(timing, error.message);
+            t.diagnostic(timing);
+            return true;
+          });
+          job.assertPreserved();
+        } finally {
+          child.stdin.end();
+          const [code] = await exited;
+          assert.equal(code, 0);
+        }
+      });
+    }
 
     for (const scenario of ["cwd", "image", "module", "argument", "argument with invalid creation time"]) {
       const invalidCreationTime = scenario === "argument with invalid creation time";

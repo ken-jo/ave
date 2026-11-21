@@ -380,6 +380,7 @@ function FindJobProcesses {
       @{ kind = 'processUnreadable'; pid = $row.ProcessId; reason = $failures -join '; ' }
     }
   }
+  $script:processInspected = $inspected
   if ($preflight -and !$sawQueryProcess) { $script:processFailure = 'query process missing from process rows' }
 }
 
@@ -607,6 +608,8 @@ $script:processFailure = $null
 $script:processRowLimited = $false
 $script:processMatchLimited = $false
 $script:processByteLimited = $false
+$script:processInspected = 0
+$processWatch = [Diagnostics.Stopwatch]::StartNew()
 try {
   FindJobProcesses | ForEach-Object {
     # Leave room for a positive match even when unreadable references fill the report.
@@ -621,6 +624,7 @@ $null = WriteEvidence @{
   kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited
   reason = $script:processFailure; rowLimited = $script:processRowLimited;
   matchLimited = $script:processMatchLimited; byteLimited = $script:processByteLimited
+  inspected = $script:processInspected; elapsedMs = $processWatch.ElapsedMilliseconds
 } ${OUTPUT_LIMIT}
 `;
 }
@@ -823,6 +827,9 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
         if (row.matchLimited) emit(`Cleanup process scan exceeded ${RESULT_LIMIT} process matches`);
         if (row.byteLimited) emit(`Cleanup process output reached its ${OUTPUT_LIMIT}-byte budget`);
         if (row.reason) emit(`Cleanup process scan failed: ${row.reason}`);
+        if (Number.isSafeInteger(row.inspected) && Number.isSafeInteger(row.elapsedMs)) {
+          emit(`Cleanup process scan inspected ${row.inspected} process rows in ${row.elapsedMs} ms`);
+        }
         processScanIncomplete = preflight ? incomplete(row, "failed", "limited") : row.failed;
       } else if (row.kind === "process") {
         const { pid, reason } = row;
@@ -866,7 +873,9 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
     emit("Cleanup process scan was incomplete");
   }
   if (outputLimited) emit("Cleanup diagnostic output reached its byte limit", OUTPUT_LIMIT);
-  if (failed || !filesComplete || !holdersComplete || (!preflight && processQueryIncomplete)) {
+  // Process references are the precondition's live-reference evidence: an unfinished scan without a match refuses.
+  if (failed || !filesComplete || !holdersComplete || processQueryIncomplete
+    || (preflight && processScanIncomplete && !writerFound)) {
     throw new Error("Cleanup query was incomplete");
   }
   return writerFound;
