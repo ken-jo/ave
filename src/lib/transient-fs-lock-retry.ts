@@ -1,4 +1,3 @@
-import { renameSync } from "node:fs";
 import { rename as fsRename } from "node:fs/promises";
 import { sleep } from "../shared/abortable-deadline.js";
 
@@ -114,9 +113,4 @@ export function renameFile(from: string, to: string): Promise<void> {
  */
 export function renameFileOnce(from: string, to: string): Promise<void> {
   return fsRename(from, to);
-}
-
-/** Commit a synchronous rename once, including during process exit. */
-export function renamePathOnceSync(from: string, to: string): void {
-  renameSync(from, to);
 }

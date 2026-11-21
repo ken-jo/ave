@@ -1,6 +1,6 @@
 /** Private feature storage; Windows boundary creation belongs to boot. */
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fsyncSync, lstatSync, openSync, promises as fs } from "node:fs";
+import { constants, promises as fs } from "node:fs";
 import { join, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { FileHandle } from "node:fs/promises";
 import { platform } from "node:process";
@@ -211,20 +211,6 @@ export interface FeatureNamespaceHandle {
   childDir(name: string, options?: { exclusive?: boolean }): Promise<string>;
   /** Create an exclusive 0o600 file below existing non-linked namespace directories. The caller owns streaming, sync and close. */
   createFile(name: string): Promise<FileHandle>;
-}
-
-/** Create an exclusive private record in a prepared namespace for synchronous lifecycle code. */
-export function createNamespaceRecordSync(namespace: Pick<FeatureNamespaceHandle, "dir">, name: string): number {
-  if (!name || name === "." || name === ".." || /[/\\:\0]/u.test(name)) throw new Error("Invalid namespace record name");
-  if (!lstatSync(namespace.dir).isDirectory()) throw new Error("Namespace record parent is not a plain directory");
-  return openSync(join(namespace.dir, name), "wx", PRIVATE_FILE_MODE);
-}
-
-export function syncNamespaceDirectorySync(namespace: Pick<FeatureNamespaceHandle, "dir">): void {
-  if (platform === "win32") return;
-  const directory = openSync(namespace.dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { fsyncSync(directory); }
-  finally { closeSync(directory); }
 }
 
 /**

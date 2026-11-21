@@ -3525,22 +3525,21 @@ group rather than by the user. Admission (`assertCodexLocations` in
 Two other places create or protect owner-sensitive objects themselves, each
 with its own owner rule:
 
-- **The Windows sandbox helper copy is created with its final security
-  descriptor.** `prepareSrtWinExecutable` in
-  `src/permissions/srt-win-integrity.ts` picks a random, unpublished
-  `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
-  both directories with the token user as owner and a protected DACL: full control for the user,
-  read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at either directory path, a link included, refuses exclusive creation. It flushes
-  the outer identity before provisioning `bin` and records `bin` independently. The empty image and
-  the owner marker are then created new inside `bin`, each with its own
-  descriptor, and each identity and owner is read on the handle that created the file. No
-  step changes the owner or DACL of an object that already exists. The image's
-  bytes are written only after that step. On an error or timeout the host reads
-  the flushed receipts and uses the same cleanup as shutdown. Only individually
-  recorded entries can be removed. Cleanup holds Windows ancestors without
-  delete sharing, opens each claimed entry without following a reparse point,
-  and removes by handle without a recursive walk. A colliding `bin` remains in place.
+- **The Windows sandbox helper copies share one private parent in temporary
+  storage.** `prepareSrtWinExecutable` in `src/permissions/srt-win-integrity.ts`
+  uses `ave-srt-win.<user SID>/copy-<pid>-<random>/bin/srt-win.exe` under the
+  canonical temp root. The confinement read floor covers Ave home, so the
+  helper lives outside that boundary. The parent is created atomically with
+  the token user as owner and a protected DACL granting full control to that
+  user and SYSTEM. Each use checks the owner, exact access entries and absence
+  of reparse points. Windows holds the path through the parent without delete
+  sharing during allocation and cleanup. A pre-existing parent that fails
+  verification is left in place. On POSIX the parent uses the effective UID
+  and mode `0700` under a private or sticky temp hierarchy.
+  Each copy and its `bin` directory are created exclusively. Their protected
+  Windows DACLs and the image's DACL allow SYSTEM and the built-in users and
+  administrators groups to read and execute. Only the token user can modify
+  the image. The file is filled with the bytes already verified by the host.
   The write-deny target is `bin`, so its parent's inheritable delete-child deny
   lands on the private outer directory, never `%TEMP%`. Grants inside or writable
   grants covering that outer directory are refused. Session reset or holder
@@ -3565,13 +3564,12 @@ with its own owner rule:
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
   The copy's `exit` handler, registered at import and so run before the
-  runtime's own, retires the verified directory with a same-parent rename only
-  after a successful release. It then removes the retired directory. The next
-  startup reclaims the recorded copy at either its original or retired name,
-  including when shutdown could not commit the rename.
-  The host flushes the record in its protected runtime directory before provisioning
-  begins and records the filesystem identity upon creation. The sweep ignores
-  unrecorded paths and refuses an identity mismatch.
+  runtime's own, calls the same disposer as test teardown after release. It
+  attempts removal once at the original path. Startup sweeps the verified
+  parent, including partial directories and links as entries. A live PID in
+  a copy name defers removal and a reused PID can defer it until a later boot.
+  The legacy sweep still handles direct `ave-srt-win-*` temp entries with the
+  original two-file shape, DACL checks and dead-owner check.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL
