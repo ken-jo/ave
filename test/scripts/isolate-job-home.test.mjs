@@ -739,6 +739,24 @@ describe("Windows job root writer precondition", () => {
       });
     }
 
+    it("sees the query process after the process match limit", async t => {
+      const job = fixture(t);
+      const matches = [
+        "function Get-CimInstance($Class, $Property) {",
+        `  1..21 | ForEach-Object { [pscustomobject]@{ ProcessId = 900000 + $_; ExecutablePath = ${powerShellLiteral(join(job.localRoot, "example.exe"))} } }`,
+        "  CimCmdlets\\Get-CimInstance -ClassName $Class -Property $Property",
+        "}",
+      ].join("\n");
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, run: scanLocalRoot(job, matches) }), error => {
+        assertReportedRoot(error, root);
+        assert.match(error.message, /live processes can still access the job root/);
+        assert.match(error.message, /^Cleanup process scan exceeded 20 process matches$/m);
+        assert.doesNotMatch(error.message, /query process missing/);
+        return true;
+      });
+      job.assertPreserved();
+    });
+
     // A service creates this process, as the logon service creates a sandbox runner: it is in no step's job.
     const CREATE_OUTSIDE_JOB = [
       "$ErrorActionPreference = 'Stop'",

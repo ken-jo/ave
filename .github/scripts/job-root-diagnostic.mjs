@@ -373,9 +373,9 @@ function FindJobProcesses {
   # Rows stream unsorted; the deadline and the byte budget bound the scan.
   Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name | ForEach-Object {
     $inspected++
-    if ($matched -gt ${RESULT_LIMIT}) { return }
     $row = $_
     if ($row.ProcessId -eq $PID) { $sawQueryProcess = $true; return }
+    if ($matched -gt ${RESULT_LIMIT}) { return }
     if ($null -eq $row.ProcessId) { $script:processFailure = 'process row without ProcessId'; return }
     # The idle pseudo-process has no user-mode process to inspect.
     if ($row.ProcessId -eq 0) { return }
