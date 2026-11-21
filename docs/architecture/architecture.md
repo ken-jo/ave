@@ -3600,8 +3600,10 @@ with its own owner rule:
   The stale-copy sweep checks both directory owners and DACLs and accepts the
   earlier layouts with the marker inside `bin` or both files in the outer
   directory. Partial copies and the marker-first layout require a generated
-  32-hex name and singly linked files. Every candidate needs a valid marker
-  whose owner has exited.
+  32-hex name and singly linked files. Allocation and the sweep use the same
+  Windows process creation time as decimal UTC ticks. The sweep requires a
+  valid marker and compares the full stamp exactly for a live PID. A different
+  stamp identifies PID reuse.
   For new copies, exit and startup remove the image, `bin`, marker and outer
   directory in that order, without recursion. If the last removal fails, the
   sweep leaves the empty outer directory alone. A sandbox-account ACE found on

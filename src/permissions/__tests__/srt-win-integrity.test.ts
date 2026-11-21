@@ -481,9 +481,13 @@ describe("Windows helper integrity", () => {
     return result.stdout;
   }
 
+  // Linux StartTime adds a wall-clock boot estimate sampled independently in each runtime. Use the kernel's boot-relative field 22 on both sides.
+  const linuxOwnerStart = "$stat = [System.IO.File]::ReadAllText('/proc/' + $process.Id + '/stat'); $stat.Substring($stat.LastIndexOf(')') + 2).Split(' ')[19]";
+
   async function sweepFixture(root: string, protectedAcl = true): Promise<boolean> {
     const [sweep] = await captureScripts();
     if (!sweep) throw new Error("The helper sweep was not captured");
+    const fixtureSweep = process.platform === "linux" ? sweep.replace(/\$readOwnerStart = \{[^}]+\}/, `$readOwnerStart = { param($process); ${linuxOwnerStart} }`) : sweep;
     // Use the actual decisions and filesystem. On POSIX, simulate Windows ACLs and the Windows PowerShell JSON integer type.
     const script = process.platform === "win32" ? sweep : [
       "function Get-FixtureAcl {",
@@ -491,7 +495,7 @@ describe("Windows helper integrity", () => {
       "  Add-Member -InputObject $acl -MemberType ScriptMethod -Name GetOwner -Value { param($type) 'fixture-user' }",
       "  return $acl",
       "}",
-      sweep.replace("[System.Security.Principal.WindowsIdentity]::GetCurrent().User", "'fixture-user'")
+      fixtureSweep.replace("[System.Security.Principal.WindowsIdentity]::GetCurrent().User", "'fixture-user'")
         .replace(/\[System\.IO\.Directory\]::GetAccessControl\(\$(?:directory|imageDirectory)\)/g, "Get-FixtureAcl")
         .replaceAll("\\Modules\\Microsoft.PowerShell.Utility\\", "/Modules/Microsoft.PowerShell.Utility/")
         .replace("::ReadAllText($marker) | ConvertFrom-Json;", "::ReadAllText($marker) | ConvertFrom-Json; if ($owner.pid -is [long] -and $owner.pid -le [int]::MaxValue -and $owner.pid -ge [int]::MinValue) { $owner.pid = [int]$owner.pid };"),
@@ -538,7 +542,11 @@ describe("Windows helper integrity", () => {
       mkdirSync(copy);
       if (shape === "empty bin without a marker") mkdirSync(bin);
       if (shape === "live marker") {
-        const started = runFixturePowerShell("[Console]::WriteLine([System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID).StartTime.ToUniversalTime().Ticks)", {
+        const readStarted = process.platform === "linux" ? linuxOwnerStart : "$process.StartTime.ToUniversalTime().Ticks";
+        const started = runFixturePowerShell([
+          "$process = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
+          `[Console]::WriteLine((& { ${readStarted} }))`,
+        ].join("; "), {
           AVE_SRT_OWNER_PID: String(process.pid),
         });
         if (started === undefined) return context.skip("PowerShell unavailable");
@@ -550,7 +558,9 @@ describe("Windows helper integrity", () => {
     if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
     expect(existsSync(copy)).toBe(true);
     if (shape === "live marker") {
-      writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+      const owner = JSON.parse(readFileSync(marker, "utf8")) as { pid: number; started: string };
+      // A different creation stamp must establish PID reuse even when the stamps are only one tick apart.
+      writeFileSync(marker, JSON.stringify({ ...owner, started: (BigInt(owner.started) + 1n).toString() }));
       await sweepFixture(root);
       expect(existsSync(copy)).toBe(false);
     }
@@ -703,6 +713,15 @@ describe("Windows helper integrity", () => {
       ].join("; "), { AVE_TEST_SCRIPT: script });
       if (result === undefined) return context.skip("PowerShell unavailable");
     }
+  });
+
+  it("reads the same creation stamp when writing and checking the marker", async () => {
+    const [sweep, allocation] = await captureScripts();
+    const reader = allocation?.match(/\$readOwnerStart = \{[^}]+\}/)?.[0];
+    expect(reader).toBeDefined();
+    expect(sweep).toContain(reader);
+    expect(allocation).toContain("$started = & $readOwnerStart $owner");
+    expect(sweep).toContain("[string]::Equals($owner.started, (& $readOwnerStart $p), [StringComparison]::Ordinal)");
   });
 
   it("creates the private copy with its final descriptor and never changes an existing object's", async () => {

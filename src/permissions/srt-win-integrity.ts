@@ -34,6 +34,8 @@ const POWERSHELL_PROLOGUE = [
   "$ErrorActionPreference = 'Stop'",
   "$PSModuleAutoLoadingPreference = 'None'",
   "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')",
+  // Both Windows commands use the kernel creation time as invariant decimal UTC ticks, compatible with existing markers.
+  "$readOwnerStart = { param($process); $process.StartTime.ToUniversalTime().Ticks.ToString([System.Globalization.CultureInfo]::InvariantCulture) }",
 ];
 
 // Create directories and files with final user ownership and protected DACLs. Refuse existing paths, verify descriptors, and remove created objects on failure. Never modify existing ACLs (docs/architecture/architecture.md).
@@ -80,7 +82,8 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "try {",
   "& $verifyDirectory $outer",
   "$owner = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
-  "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $owner.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
+  "try { $started = & $readOwnerStart $owner } finally { $owner.Dispose() }",
+  "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $started } | ConvertTo-Json -Compress",
   "& $writeNewFile $markerPath ((New-Object System.Text.UTF8Encoding($false)).GetBytes($marker))",
   "$createdMarker = $true",
   "$present = $true; try { $null = [System.IO.File]::GetAttributes($bin) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { $present = $false }",
@@ -145,7 +148,8 @@ const SWEEP_SCRIPT = [
   "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
   // Conservatively keep copies marked with this process's PID, even if PID reuse leaves a stale copy behind.
   "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
-  "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
+  // Compare the full creation stamp exactly so a reused PID does not look live.
+  "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); try { $live = [string]::Equals($owner.started, (& $readOwnerStart $p), [StringComparison]::Ordinal) } finally { $p.Dispose() } } catch [System.ArgumentException] { $live = $false }",
   "if ($live) { continue }",
   // A running image or an incompatible open handle prevents this write open. Hold the handle through deletion; sharing permits only deletion, not spawn.
   "if ($hasImage) { $handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete); try { [System.IO.File]::Delete($image) } finally { $handle.Dispose() } }",
