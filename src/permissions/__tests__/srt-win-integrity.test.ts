@@ -473,6 +473,48 @@ describe("Windows helper integrity", () => {
     return scripts;
   }
 
+  async function sweepFixture(root: string, protectedAcl = true): Promise<boolean> {
+    const [sweep] = await captureScripts();
+    if (!sweep) throw new Error("The helper sweep was not captured");
+    const windows = process.platform === "win32";
+    const parser = windows ? win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : process.env.AVE_TEST_PWSH ?? "pwsh";
+    // Use the actual decisions and filesystem. On POSIX, simulate Windows ACLs and the Windows PowerShell JSON integer type.
+    const script = windows ? sweep : [
+      "function Get-FixtureAcl {",
+      "  $acl = [pscustomobject]@{ AreAccessRulesProtected = $env:AVE_TEST_ACL -eq 'protected'; Access = @() }",
+      "  Add-Member -InputObject $acl -MemberType ScriptMethod -Name GetOwner -Value { param($type) 'fixture-user' }",
+      "  return $acl",
+      "}",
+      sweep.replace("[System.Security.Principal.WindowsIdentity]::GetCurrent().User", "'fixture-user'")
+        .replace(/\[System\.IO\.Directory\]::GetAccessControl\(\$(?:directory|imageDirectory)\)/g, "Get-FixtureAcl")
+        .replaceAll("\\Modules\\Microsoft.PowerShell.Utility\\", "/Modules/Microsoft.PowerShell.Utility/")
+        .replace("::ReadAllText($marker) | ConvertFrom-Json;", "::ReadAllText($marker) | ConvertFrom-Json; if ($owner.pid -is [long] -and $owner.pid -le [int]::MaxValue -and $owner.pid -ge [int]::MinValue) { $owner.pid = [int]$owner.pid };"),
+    ].join("\n");
+    const result = spawnSync(parser, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+      env: { ...process.env, TEMP: root, TMP: root, TMPDIR: root, AVE_SRT_TEMP_ROOT: root, AVE_SRT_OWNER_PID: String(process.pid),
+        AVE_SRT_OWN_DIRECTORIES: "[]", AVE_TEST_ACL: protectedAcl ? "protected" : "inherited" },
+      encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+    });
+    if (parser === "pwsh" && (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return false;
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    return true;
+  }
+
+  it("keeps a partial copy with an unprotected DACL", async (context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
+    mkdirSync(copy);
+    const marker = join(copy, "owner.json");
+    writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+    if (!await sweepFixture(root, false)) return context.skip("PowerShell unavailable");
+    expect(existsSync(marker)).toBe(true);
+    if (process.platform !== "win32") {
+      await sweepFixture(root);
+      expect(existsSync(copy)).toBe(false);
+    }
+  });
+
   it("names every module its PowerShell steps use", async () => {
     const scripts = await captureScripts();
     const modules: Record<string, string> = {
@@ -594,18 +636,31 @@ describe("Windows helper integrity", () => {
   describe("exit order with the sandbox runtime's release", () => {
     const exitOrderChild = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/srt-win-exit-order-child.ts");
     const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-    function runChild(mode: "runtime-pending" | "runtime-reset" | "no-runtime"): { executable: string; presentAtRuntimeRelease?: boolean; stderr: string } {
+    function runChild(mode: "runtime-pending" | "runtime-reset" | "no-runtime", lockedEntry?: string): {
+      executable: string; presentAtRuntimeRelease?: boolean; lockAttempts?: number; stderr: string;
+    } {
       const { source } = fixture();
-      const resultPath = join(dirname(source), "result.json");
-      const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode], {
-        cwd: repoRoot, env: tsxChildEnv({ AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }), encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+      const temp = dirname(source);
+      const resultPath = join(temp, "result.json");
+      const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode, ...(lockedEntry ? [lockedEntry] : [])], {
+        cwd: repoRoot, env: tsxChildEnv({ TEMP: temp, TMP: temp, TMPDIR: temp, AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }),
+        encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
       });
       expect(child.error).toBeUndefined();
       expect(child.status, child.stderr).toBe(0);
-      const result = JSON.parse(readFileSync(resultPath, "utf8")) as { executable: string; presentAtRuntimeRelease?: boolean };
-      directories.push(dirname(dirname(result.executable)));
+      const result = JSON.parse(readFileSync(resultPath, "utf8")) as { executable: string; presentAtRuntimeRelease?: boolean; lockAttempts?: number };
       return { ...result, stderr: child.stderr };
     }
+
+    it.for(["image", "marker", "bin", "outer"])("recovers the copy at restart after EPERM on %s during exit", async (entry, context) => {
+      const { executable, lockAttempts } = runChild("no-runtime", entry);
+      const bin = dirname(executable);
+      const copy = dirname(bin);
+      expect(lockAttempts).toBe(1);
+      expect(existsSync(copy)).toBe(true);
+      if (!await sweepFixture(dirname(copy))) return context.skip("PowerShell unavailable");
+      expect(existsSync(copy)).toBe(false);
+    });
 
     it("keeps the private copy for a runtime release still pending at exit, which runs after this module's handler", () => {
       const { executable, presentAtRuntimeRelease, stderr } = runChild("runtime-pending");

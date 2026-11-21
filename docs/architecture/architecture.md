@@ -3560,8 +3560,14 @@ with its own owner rule:
   code. An unconfirmed one seals the session against further confinement until
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
+  At the first helper preparation, the Windows sweep also reclaims partial copies
+  whose names have the generated hexadecimal suffix. The directories must
+  pass the same ownership and DACL checks as a complete copy and may contain
+  only plain entries from the existing layouts. A surviving marker must name
+  a dead owner, and a surviving image must pass the existing sharing check.
   The copy's `exit` handler, registered at import and so run before the
-  runtime's own, removes the copy only after a successful release.
+  runtime's own, removes the copy only after a successful release. It shares
+  its one-attempt disposer with test teardown.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL

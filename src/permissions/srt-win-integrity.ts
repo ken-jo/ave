@@ -112,19 +112,23 @@ const SWEEP_SCRIPT = [
   "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
   "$entries = @([System.IO.Directory]::GetFileSystemEntries($imageDirectory))",
   "}",
-  "if ($entries.Count -ne 2) { continue }",
-  "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0 -or [System.IO.Path]::GetFileName($entry) -notin @('owner.json', 'srt-win.exe')) { $plain = $false } }",
-  "if (!$plain) { continue }",
   "$marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json')",
+  "$image = [System.IO.Path]::Combine($imageDirectory, 'srt-win.exe')",
+  "$hasMarker = $marker -in $entries; $hasImage = $image -in $entries",
+  "if ($entries.Count -ne ([int]$hasMarker + [int]$hasImage)) { continue }",
+  // Partial copies keep the generated name. The complete shape also supports older names.
+  "if ($entries.Count -ne 2 -and [System.IO.Path]::GetFileName($directory) -notmatch '^ave-srt-win-[0-9a-f]+$') { continue }",
+  "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false } }",
+  "if (!$plain) { continue }",
+  "if ($hasMarker) {",
   "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
   "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
   "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
   "if ($live) { continue }",
-  "$image = [System.IO.Path]::Combine($imageDirectory, 'srt-win.exe')",
+  "}",
   // A running image or an incompatible open handle prevents this write open. Hold the handle through deletion; sharing permits only deletion, not spawn.
-  "$handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete)",
-  "try { [System.IO.File]::Delete($image) } finally { $handle.Dispose() }",
-  "[System.IO.File]::Delete($marker)",
+  "if ($hasImage) { $handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete); try { [System.IO.File]::Delete($image) } finally { $handle.Dispose() } }",
+  "if ($hasMarker) { [System.IO.File]::Delete($marker) }",
   "if ($imageDirectory -ne $directory) { [System.IO.Directory]::Delete($imageDirectory, $false) }",
   "[System.IO.Directory]::Delete($directory, $false)",
   "} catch { continue } }",
@@ -144,7 +148,7 @@ function runDirectoryCommand(command: string, env: Record<string, string>): void
   }
 }
 
-// Keep uncertain entries, including unmarked copies left by older releases.
+// Older names still require the complete shape and a valid owner marker.
 export function sweepStaleSrtWinDirectories(): void {
   if (type() !== "Windows_NT") return;
   try {
