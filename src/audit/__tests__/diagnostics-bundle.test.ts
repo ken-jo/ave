@@ -334,3 +334,22 @@ describe("buildDiagnosticsBundle — default window over the local/UTC split", (
     expect(allText).not.toContain("OUTSIDE-MARKER");
   });
 });
+
+it("redacts literal and encoded homes in exported audit output and log lines", async () => {
+  const { homedir } = await import("node:os");
+  const home = homedir();
+  const payload = JSON.stringify({ literal: `${home}/literal`, encoded: `${encodeURIComponent(home)}/encoded` });
+  const logger = new AuditLogger(auditDir);
+  logger.log({ timestamp: new Date().toISOString(), sessionId: "home-audit", type: "info", output: payload });
+  writeLogLines("ave-2025-06-01.log", [payload]);
+  const bytes = await build({ auditLogger: logger });
+  const zip = new AdmZip(bytes);
+  const audit = zip.getEntries().filter(entry => entry.entryName.includes("audit") && entry.entryName.endsWith(".jsonl"));
+  expect(audit.length).toBeGreaterThan(0);
+  const records = audit.flatMap(entry => entry.getData().toString("utf8").trim().split("\n").map(line => JSON.parse(line) as { sessionId: string; output?: string }));
+  const output = records.find(entry => entry.sessionId === "home-audit")?.output ?? "";
+  expect(JSON.parse(output)).toEqual({ literal: "[home]/literal", encoded: "[home-token]" });
+  const { allText } = unzipToText(bytes);
+  expect(allText).not.toContain(home);
+  expect(allText).not.toContain(encodeURIComponent(home));
+});

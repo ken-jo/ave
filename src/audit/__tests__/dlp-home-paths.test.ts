@@ -3,7 +3,7 @@ import { posix, win32 } from "node:path";
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { judgeInvocation, judgeRequest } from "../../permissions/judge/__tests__/judge-request-fixture.js";
-const fixture = vi.hoisted(() => ({ home: `D:/fixtures/${"long-root/".repeat(18)}home`, platform: "win32" as "win32" | "linux" }));
+const fixture = vi.hoisted(() => ({ home: `D:/fixtures/${"long-root/".repeat(18)}home`, platform: "win32" as "win32" | "linux" | "darwin" }));
 const WINDOWS_HOME = fixture.home;
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
@@ -35,7 +35,8 @@ describe("home paths with mixed Windows spellings", () => {
     `${home}${suffix}\\Output`, `${home}${suffix}/Output`, `file://${home}${suffix}\\Output`, `${pathToFileURL(home + suffix)}/Output`,
   ])))];
   it.each(siblings)("preserves a sibling component in both redactors: %s", (sibling) => {
-    expect(redactFsPath(sibling)).toBe(sibling);
+    const bounded = [...sibling];
+    expect(redactFsPath(sibling)).toBe(bounded.length > 256 ? `${bounded.slice(0, 256).join("")}…` : sibling);
     expect(redactHomePathsInText(`Target ${sibling}`)).toBe(`Target ${sibling}`);
   });
   it.each(spellings)("redacts the bare home and preserves descendant spelling: %s", (home) => {
@@ -270,7 +271,7 @@ describe.each([
     };
     // Reject slow small inputs before attempting the large scaling samples.
     for (const value of inputs(2 * 1024)) measure(value);
-    const timings = [100, 200, 400].map(kib => {
+    const timings = [100, 200, 400, 800].map(kib => {
       const values = inputs(kib * 1024);
       const samples = Array.from({ length: 5 }, () => values.reduce((total, value) => total + measure(value), 0));
       samples.sort((a, b) => a - b);
@@ -280,6 +281,401 @@ describe.each([
     expect(timings[1]).toBeLessThan(Math.max(timings[0], 1) * 4);
     expect(timings[2]).toBeLessThan(Math.max(timings[1], 1) * 4);
     expect(timings[2]).toBeLessThan(Math.max(timings[0], 1) * 8);
-    console.info("home redaction scaling", { shape, kib: [100, 200, 400], milliseconds: timings });
+    expect(timings[3]).toBeLessThan(Math.max(timings[2], 1) * 4);
+    expect(timings[3]).toBeLessThan(Math.max(timings[0], 1) * 16);
+    console.info("home redaction scaling", { shape, kib: [100, 200, 400, 800], milliseconds: timings });
   });
+});
+
+describe.each(["win32", "linux"] as const)("reversible home encodings on %s", (platform) => {
+  async function load(home?: string) {
+    fixture.platform = platform;
+    fixture.home = home ?? (platform === "win32" ? "D:/fixtures/habitat" : "/srv/fixtures/habitat");
+    vi.resetModules();
+    return { ...await import("../dlp-filter.js"), ...await import("../../permissions/judge/judge-redaction.js") };
+  }
+  const home = platform === "win32" ? "D:/fixtures/habitat" : "/srv/fixtures/habitat";
+  const json = (path: string): string => JSON.stringify({ path, other: 1 });
+  it.each(["\\/", "\\u002f", "%2F", "&#47;", "&#x2F;", "&sol;"])("redacts single-layer separators %s", async (separator) => {
+    const { redactJudgeText } = await load();
+    const input = separator.startsWith("\\") ? json(`${home}/file`).replaceAll("/", separator) : json(`${home.replaceAll("/", separator)}/file`);
+    const output = redactJudgeText(input);
+    expect(JSON.parse(output)).toEqual({ path: platform === "win32" && separator === "\\/" ? "[home]/file" : "[home-token]", other: 1 });
+    expect(output).not.toMatch(/habitat/iu);
+  });
+  it("redacts complete tokens for encoded letters and byte separators", async () => {
+    const { redactJudgeText, redactHomePathsInText } = await load();
+    expect(JSON.parse(redactJudgeText(json(`${home}/file`).replace("habitat", "\\u0068abitat")))).toEqual({ path: "[home-token]", other: 1 });
+    expect(redactJudgeText(json(`${home}/file`).replaceAll("/", "\\x2f"))).toBe('{"path":"[home-token]","other":1}');
+    const mixed = home.replaceAll("/", "%2F").replace("habitat", "\\u0068abit&#97;t");
+    expect(redactHomePathsInText(`a ${mixed}%2Ffile b`)).toBe("a [home-token] b");
+  });
+  it.each(["%252F", "%25252F", "&amp;#47;", "&amp;amp;#47;"])("redacts deeper home tokens %s", async (separator) => {
+    const { redactJudgeText } = await load();
+    expect(JSON.parse(redactJudgeText(json(`${home.replaceAll("/", separator)}/file`)))).toEqual({ path: "[home-token]", other: 1 });
+  });
+  it("finds percent escapes inside character escapes and nested serialized strings", async () => {
+    const { redactHomePathsInText } = await load();
+    const input = json(`${home.replaceAll("/", "%2F")}/file`).replaceAll("%", "\\u0025");
+    expect(JSON.parse(redactHomePathsInText(input))).toEqual({ path: "[home-token]", other: 1 });
+    const nested = JSON.stringify(JSON.stringify({ p: `${home.replaceAll("/", "%252F")}/file`, q: 2 }));
+    expect(JSON.parse(JSON.parse(redactHomePathsInText(nested)) as string)).toEqual({ p: "[home-token]", q: 2 });
+  });
+  it("preserves ordinary text and escapes without a matching home", async () => {
+    const { redactHomePathsInText } = await load();
+    for (const token of ["%2525252F", "&amp;amp;amp;sol;", `${"\\".repeat(8)}u002f`]) {
+      expect(redactHomePathsInText(`a ${token} b`)).toBe(`a ${token} b`);
+    }
+    for (const text of ["ordinary text", "100% complete", "abc & unknown;", `${"\\".repeat(32)}near-miss`, "a\\nb", "\\u{2f}", "&unknown;"]) expect(redactHomePathsInText(text)).toBe(text);
+  });
+  it.each(["%7", "%G1", "\\u12", "\\xG1", "&#;", "&unknown;", "&unterminated", "&averylongunknownentityname;"])("preserves malformed candidates and redacts adjacent literal homes %s", async (bad) => {
+    const { redactHomePathsInText } = await load();
+    for (const candidate of [home.slice(0, -1) + bad, home.replace("habitat", `habit${bad}t`), home.replace("fixtures", `fixt${bad}res`), home.replace(platform === "win32" ? "D:" : "srv", platform === "win32" ? `D${bad}` : `s${bad}v`), home + bad, bad + home]) {
+      expect(redactHomePathsInText(`a ${candidate} b`), candidate).toBe(`a ${candidate.replace(home, "[home]")} b`);
+    }
+    expect(redactHomePathsInText(`a unrelated${bad} b`)).toBe(`a unrelated${bad} b`);
+    expect(redactHomePathsInText(`a unrelated${bad}t b`)).toBe(`a unrelated${bad}t b`);
+  });
+  it("retains encoded siblings and original token delimiters", async () => {
+    const { redactHomePathsInText } = await load();
+    const encoded = home.replaceAll("/", "%2F");
+    for (const suffix of ["2", "_old", "-x", ".ext", ".é"]) expect(redactHomePathsInText(`${encoded + suffix}/file`)).toBe(`${encoded + suffix}/file`);
+    for (const suffix of ["", "/", "\\", "/Mixed/FiLe.TXT", ":", ".", ". Next", ",backup/Output", "(old)", "[copy]", ";x", ", backup/Output", '"', "'", ">", "\tNext", "\nNext", "\\ud83d"]) {
+      const boundary = suffix.search(/[\s"'<>()[\],]/u);
+      expect(redactHomePathsInText(encoded + suffix), suffix).toBe(`[home-token]${boundary < 0 ? "" : suffix.slice(boundary)}`);
+    }
+    for (const separator of ["/", "\\/"]) {
+      const input = (`${home}/one ${home}/two ${home}2/file`).replaceAll("/", separator);
+      const siblings = (`${home}2/file`).replaceAll("/", separator);
+      const prefix = platform === "linux" && separator !== "/" ? "[home-token] [home-token]" : `[home]${separator}one [home]${separator}two`;
+      expect(redactHomePathsInText(input)).toBe(`${prefix} ${siblings}`);
+    }
+  });
+  it.each([
+    { name: "김철수", encodings: ["%EA%B9%80%EC%B2%A0%EC%88%98", "\\uae40\\ucca0\\uc218"] },
+    { name: "José", encodings: ["Jos&eacute;", "Jos%E9", "Jos%C3%A9", "Jos\\xC3\\xA9"] },
+    { name: "a😀", encodings: ["a\\ud83d\\ude00", "a%F0%9F%98%80", "a&#128512;", "a\\xF0\\x9F\\x98\\x80"] },
+    { name: "O'Brien", encodings: ["O\\'Brien", "O&apos;Brien"] },
+  ])("decodes account characters in $name", async ({ name, encodings }) => {
+    const { redactHomePathsInText } = await load(home.replace("habitat", name));
+    for (const encoded of encodings) expect(redactHomePathsInText(`${home.replace("habitat", encoded)}/x`), encoded).toBe("[home-token]");
+  });
+  it("handles native encoded separators and escape-start ambiguity", async () => {
+    if (platform === "linux") {
+      const { redactHomePathsInText } = await load("/home/user");
+      expect(redactHomePathsInText("/home/u%73er/file")).toBe("[home-token]");
+      return;
+    }
+    const { redactHomePathsInText } = await load(String.raw`D:\fixtures\habitat`);
+    expect(redactHomePathsInText("D:%5Cfixtures%5Chabitat/file")).toBe("[home-token]");
+    expect(redactHomePathsInText(String.raw`D:\fixtures\habit&#97;t\x`)).toBe("[home-token]");
+    const once = "D:\\\\fixtures\\\\\\u0068abitat";
+    expect(redactHomePathsInText(once)).toBe("[home-token]");
+    expect(redactHomePathsInText(once.replaceAll("\\", "\\\\"))).toBe("[home-token]");
+  });
+});
+
+it("keeps the generated entity subset complete and bounded", async () => {
+  const { HOME_NAMED_ENTITIES } = await import("../home-named-entities.js");
+  expect(Object.keys(HOME_NAMED_ENTITIES)).toHaveLength(158);
+  for (const codePoint of Object.values(HOME_NAMED_ENTITIES)) expect(codePoint).toBeLessThanOrEqual(255);
+  expect(HOME_NAMED_ENTITIES).toMatchObject({ sol: 47, bsol: 92, colon: 58, period: 46, lowbar: 95, amp: 38, percnt: 37, apos: 39, eacute: 233 });
+});
+
+const MIXED_ESCAPE_FRAGMENT = String.raw`%252541&amp;amp;amp;B\u0043`;
+
+describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros", MIXED_ESCAPE_FRAGMENT])("decoder scaling for %s", (shape) => {
+  it("scans adversarial runs with linear scaling", async () => {
+    const { redactHomePathsInText } = await loadHomeRedactor("linux");
+    const input = (size: number): string => shape === "peeling" ? `%${"25".repeat(Math.floor(size / 2))}2F` : shape === "zeros" ? `&#${"0".repeat(size)}47;` : shape.repeat(Math.ceil(size / shape.length));
+    const measure = (size: number): number => {
+      const text = input(size);
+      const samples = Array.from({ length: 5 }, () => {
+        const start = performance.now();
+        const output = redactHomePathsInText(text);
+        const elapsed = performance.now() - start;
+        expect(elapsed).toBeLessThan(2_000);
+        if (shape === MIXED_ESCAPE_FRAGMENT) expect(output).toBe(text);
+        return elapsed;
+      });
+      return samples.sort((a, b) => a - b)[2];
+    };
+    measure(2 * 1024);
+    const timings = [100, 200, 400, 800].map(kib => measure(kib * 1024));
+    expect(timings[1]).toBeLessThan(Math.max(timings[0], 1) * 4);
+    expect(timings[2]).toBeLessThan(Math.max(timings[1], 1) * 4);
+    expect(timings[2]).toBeLessThan(Math.max(timings[0], 1) * 8);
+    expect(timings[3]).toBeLessThan(Math.max(timings[2], 1) * 4);
+    expect(timings[3]).toBeLessThan(Math.max(timings[0], 1) * 16);
+    console.info("decoder scaling", { shape, kib: [100, 200, 400, 800], milliseconds: timings });
+  });
+});
+
+it("checks a long mixed token when a necessary path character is synthesized in later layers", async () => {
+  const { redactHomePathsInText } = await loadHomeRedactor("linux");
+  const root = "%26%23%34%37%3B";
+  const encodedHome = fixture.home.replaceAll("/", root);
+  const noise = MIXED_ESCAPE_FRAGMENT.repeat(400);
+  expect(redactHomePathsInText(noise)).toBe(noise);
+  expect(redactHomePathsInText(`${noise}${encodedHome}${root}file`)).toBe("[home-token]");
+});
+
+it("preserves input marker text without manufacturing home evidence", async () => {
+  const { redactHomePathsInText } = await loadHomeRedactor("linux");
+  for (const value of ["[home]%G1", "file://[home]\\u12", "[home]&unknown;"]) {
+    expect(redactHomePathsInText(value)).toBe(value);
+    expect(redactHomePathsInText(`${fixture.home}/x ${value}`)).toBe(`[home]/x ${value}`);
+  }
+});
+
+it("preserves malformed and non-normalized spellings", async () => {
+  fixture.platform = "win32";
+  fixture.home = "D:/fixtures/İhabitat";
+  vi.resetModules();
+  const { redactHomePathsInText, redactFsPath } = await import("../dlp-filter.js");
+  expect(redactHomePathsInText("a D:/fixtures/İhabita%7 b")).toBe("a D:/fixtures/İhabita%7 b");
+  const spelling = pathToFileURL(fixture.home).toString().replace("%C4%B0", "i%CC%87");
+  expect(redactFsPath(`${spelling}/x`)).toBe(`${spelling}/x`);
+});
+
+describe.each(["win32", "linux"] as const)("distributed malformed home characters on %s", (platform) => {
+  it("leaves distributed malformed escapes in place", async () => {
+    fixture.platform = platform;
+    fixture.home = platform === "win32" ? "D:/fixtures/habitat" : "/srv/fixtures/habitat";
+    vi.resetModules();
+    const { redactHomePathsInText } = await import("../dlp-filter.js");
+    const candidate = fixture.home.replace("srv", "s%G1v").replace("fixtures", "f%G1xtu%G1es").replace("habitat", "h%G1bi%G1at");
+    expect(redactHomePathsInText(`a ${candidate} b`)).toBe(`a ${candidate} b`);
+  });
+});
+
+it("preserves malformed candidates for short homes", async () => {
+  fixture.platform = "linux";
+  fixture.home = "/a";
+  vi.resetModules();
+  const { redactHomePathsInText } = await import("../dlp-filter.js");
+  expect(redactHomePathsInText("a /%G1a b")).toBe("a /%G1a b");
+  expect(redactHomePathsInText("a /%G1 b")).toBe("a /%G1 b");
+});
+
+describe.each([
+  String.raw`D:\fixtures\habitat`,
+  String.raw`\\server\share\habitat`,
+  String.raw`\\?\D:\fixtures\habitat`,
+  String.raw`\\?\UNC\server\share\habitat`,
+])("native malformed home candidates for %s", (home) => {
+  it("retains native paths with malformed spellings", async () => {
+    fixture.platform = "win32";
+    fixture.home = home;
+    vi.resetModules();
+    const { redactHomePathsInText } = await import("../dlp-filter.js");
+    for (const candidate of [home.slice(0, -1) + String.raw`\u12`, home.replace("habitat", String.raw`habit\xG1t`), home.replace("habitat", "habit&unterminatedt")]) {
+      expect(redactHomePathsInText(`a ${candidate} b`), candidate).toBe(`a ${candidate} b`);
+    }
+    const other = home.replace("habitat", String.raw`other\u12`);
+    expect(redactHomePathsInText(other)).toBe(other);
+  });
+});
+
+it("folds home case on macOS while retaining POSIX separators", async () => {
+  fixture.platform = "darwin";
+  fixture.home = "/srv/fixtures/a𐐀b";
+  vi.resetModules();
+  const { redactHomePathsInText } = await import("../dlp-filter.js");
+  expect(redactHomePathsInText("/SRV/FIXTURES/a𐐨b/end")).toBe("[home]/end");
+  expect(redactHomePathsInText("/SRV/FIXTURES/a%F0%90%90%A8b/end")).toBe("[home-token]");
+  expect(redactHomePathsInText(String.raw`\SRV\FIXTURES\a𐐨b/end`)).toBe(String.raw`\SRV\FIXTURES\a𐐨b/end`);
+});
+
+it("preserves each structured judge argument value when keys redact to the same name", async () => {
+  await loadHomeRedactor("linux");
+  const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");
+  const argument = { [fixture.home]: `${fixture.home}/file`, "[home]": 2, encoded: encodeURIComponent(fixture.home) };
+  const result = redactJudgeRequest(judgeRequest({ invocation: judgeInvocation({ finalInput: { argument } }) }));
+  expect(JSON.parse(result.tool.input.argument)).toEqual({ "[home]#2": "[home]/file", "[home]": 2, encoded: "[home-token]" });
+});
+describe.each(["win32", "linux"] as const)("frame URL home encoding on %s", (platform) => {
+  it("redacts a canonical URL when the configured home contains dot segments", async () => {
+    fixture.platform = platform;
+    const home = platform === "win32" ? "D:/fixtures/alice" : "/srv/fixtures/alice";
+    for (const configured of [`${home}/.`, `${home}/staging/../`, home.replace("fixtures/", "fixtures//")]) {
+      fixture.home = configured;
+      vi.resetModules();
+      const { redactHomePathsInText, redactFsPath } = await import("../dlp-filter.js");
+      const url = pathToFileURL(`${configured}/readme`).href;
+      expect(url).toBe(pathToFileURL(`${home}/readme`).href);
+      expect(redactHomePathsInText(url), configured).toBe("file://[home]/readme");
+      expect(redactFsPath(url), configured).toBe("file://<home>/readme");
+    }
+  });
+  it("redacts equivalent URL encodings and decodes descendants in the fallback", async () => {
+    fixture.platform = platform;
+    fixture.home = platform === "win32" ? "D:/fixtures/habitat" : "/srv/fixtures/habitat";
+    vi.resetModules();
+    const { redactFsPath } = await import("../dlp-filter.js");
+    const home = pathToFileURL(fixture.home).toString();
+    for (const encoded of [home.replace("fixtures", "%66ixtures"), home.replaceAll("/", "%2f").replace("file:%2f%2f", "file://")]) {
+      expect(redactFsPath(`${encoded}/Mixed%20File`)).toBe("file://<home>/Mixed File");
+      expect(redactFsPath(`${encoded}%2FMixed%20File`)).toBe("file://<home>/Mixed File");
+      expect(redactFsPath(`${encoded}%32/other`)).toBe(`${encoded}%32/other`);
+    }
+    expect(redactFsPath(encodeURIComponent(`${home}?view=1`))).toBe("file://<home>?view=1");
+    expect(redactFsPath(`${home}?q=%20`)).toBe(`${home}?q=%20`);
+    if (platform === "win32") {
+      expect(redactFsPath("D:%5Cfixtures%5C%5Chabitat/report.txt")).toBe("<home>/report.txt");
+    }
+  });
+  it("recognizes UTF-8 escapes and literal spaces in URL homes", async () => {
+    fixture.platform = platform;
+    fixture.home = platform === "win32" ? "D:/fixtures/김 test%root" : "/srv/fixtures/김 test%root";
+    vi.resetModules();
+    const { redactFsPath } = await import("../dlp-filter.js");
+    const home = pathToFileURL(fixture.home).toString();
+    expect(redactFsPath(`${home.replaceAll("%20", " ").replaceAll("%EA", "%ea")}/x`)).toBe("file://<home>/x");
+    expect(redactFsPath(`${home}?view=1`)).toBe("file://<home>?view=1");
+    expect(redactFsPath(`${home}#page`)).toBe("file://<home>#page");
+  });
+});
+
+it("keeps the plain-text fast path when a configured home ends in a dot segment", async () => {
+  fixture.platform = "linux";
+  fixture.home = "/srv/fixtures/habitat/.";
+  vi.resetModules();
+  const { mayContainHomePath, redactHomePathsInText } = await import("../dlp-filter.js");
+  expect(mayContainHomePath("Sentence without a path. Another sentence.")).toBe(false);
+  expect(redactHomePathsInText(`${fixture.home}/file`)).toBe("[home]/file");
+});
+
+it.each([
+  ["linux", "/srv//fixtures/habitat", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/x/../habitat", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/./habitat", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/habitat/.", "/srv/fixtures/habitat"],
+  ["linux", "/srv/fixtures/alice/.", "/srv/fixtures/alice"],
+  ["linux", "//srv/fixtures/habitat", "/srv/fixtures/habitat"],
+  ["darwin", "/Users//bob", "/Users/bob"],
+  ["darwin", "//Users/bob", "/Users/bob"],
+  ["win32", String.raw`D:\fixtures\x\..\habitat`, String.raw`D:\fixtures\habitat`],
+  ["win32", String.raw`D:\fixtures\.\habitat`, String.raw`D:\fixtures\habitat`],
+] as const)("redacts the configured and normalized home spellings on %s (%s)", async (platform, configured, normalized) => {
+  fixture.platform = platform;
+  fixture.home = configured;
+  vi.resetModules();
+  const { redactHomePathsInText, redactFsPath } = await import("../dlp-filter.js");
+  const { redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+  for (const spelling of [configured, normalized]) {
+    const path = `${spelling}/file`;
+    expect(redactHomePathsInText(`see ${path} now`)).toBe("see [home]/file now");
+    expect(JSON.parse(redactHomePathsInText(JSON.stringify({ p: path })))).toEqual({ p: "[home]/file" });
+    expect(redactFsPath(path)).toBe("<home>/file");
+    expect(redactJudgeText(path)).toBe("[home]/file");
+    const legacyUrl = `file://${path.replaceAll("\\", "/")}`;
+    expect(redactHomePathsInText(legacyUrl)).toBe("file://[home]/file");
+    expect(redactHomePathsInText(encodeURIComponent(path))).toBe("[home-token]");
+  }
+  const url = pathToFileURL(`${configured}/file`).href;
+  expect(redactHomePathsInText(url)).toBe("file://[home]/file");
+  expect(redactFsPath(url)).toBe("file://<home>/file");
+});
+
+it.each([
+  ["linux", "synthetic-account/./home", "synthetic-account/home"],
+  ["win32", "D:synthetic-account/./home", "D:synthetic-account/home"],
+] as const)("keeps relative spellings independent of the working directory on %s", async (platform, configured, normalized) => {
+  fixture.platform = platform;
+  fixture.home = configured;
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  const paths = platform === "win32" ? win32 : posix;
+  const absolute = paths.resolve(configured, "file");
+  expect(redactFsPath(absolute)).toBe(absolute);
+  for (const home of [configured, normalized]) expect(redactFsPath(`${home}/file`)).toBe("<home>/file");
+});
+
+it.each(["D:", "D:."])("does not treat the drive-relative spelling %s as a configured home", async home => {
+  fixture.platform = "win32";
+  fixture.home = home;
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  const absolute = win32.resolve(home, "file");
+  expect(redactFsPath(absolute)).toBe(absolute);
+  expect(redactFsPath(`${home}file`)).toBe(`${home}file`);
+});
+
+it("redacts emitted proxy properties without invoking their prototype trap", async () => {
+  await loadHomeRedactor("linux");
+  const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const { stringifyHomeRedacted } = await import("../home-path-json.js");
+  const home = fixture.home;
+  const trap = vi.fn((): never => { throw new RangeError("application prototype trap"); });
+  for (const [target, expected] of [
+    [{ [home]: `${home}/file` }, { "[home]": "[home]/file" }],
+    [{ [home]: `${home}/file`, "[home]": 2, other: 1 }, { "[home]#2": "[home]/file", "[home]": 2, other: 1 }],
+  ]) {
+    const proxy = new Proxy(target, { getPrototypeOf: trap });
+    expect(JSON.parse(JSON.stringify(proxy))).toEqual(target);
+    expect(trap).not.toHaveBeenCalled();
+    const request = judgeRequest({ invocation: judgeInvocation({ finalInput: { argument: proxy } }) });
+    expect(JSON.parse(redactJudgeRequest(request).tool.input.argument)).toEqual(expected);
+    expect(JSON.parse(stringifyHomeRedacted(proxy) ?? "")).toEqual(expected);
+    expect(JSON.parse(serializeRuntimeAuditData(proxy) ?? "")).toEqual(expected);
+    expect(trap).not.toHaveBeenCalled();
+  }
+});
+
+it("keeps a descendant file URL when the configured home is an unsupported POSIX root", async () => {
+  fixture.platform = "linux";
+  fixture.home = "/";
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  expect(redactFsPath("file:///etc/config")).toBe("file:///etc/config");
+});
+
+it("keeps encoded descendant bytes for a canonical UNC file URL", async () => {
+  fixture.platform = "win32";
+  fixture.home = String.raw`\\server\share\habitat`;
+  vi.resetModules();
+  const { redactFsPath } = await import("../dlp-filter.js");
+  const url = pathToFileURL(fixture.home).href;
+  expect(url).toBe("file://server/share/habitat");
+  expect(redactFsPath(`${url}/Mixed%20File`)).toBe("file://<home>/Mixed%20File");
+});
+
+it("scrubs boxed strings and non-plain serialized keys before sending judge arguments", async () => {
+  const { redactHomePathsInText } = await loadHomeRedactor("linux");
+  const { redactJudgeRequest, redactJudgeText } = await import("../../permissions/judge/judge-redaction.js");
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const home = fixture.home;
+  class Argument {
+    constructor() {
+      Object.defineProperty(this, home, { enumerable: true, value: `${home}/file` });
+    }
+  }
+  const boxed = Object(`${home}/file`);
+  const { rawJSON } = JSON as typeof JSON & { rawJSON(value: string): object };
+  const raw = rawJSON(JSON.stringify(`${home}/file`));
+  const finalInput = { boxed, nested: [new Argument(), raw], raw };
+  const request = judgeRequest({ invocation: judgeInvocation({ finalInput }) });
+  const inputs = redactJudgeRequest(request).tool.input;
+  for (const [key, value] of Object.entries(finalInput)) {
+    expect(inputs[key]).toBe(redactJudgeText(JSON.stringify(value)));
+    expect(inputs[key]).not.toContain(home);
+  }
+  expect(serializeRuntimeAuditData(boxed)).toBe(JSON.stringify(redactHomePathsInText(`${home}/file`)));
+  expect(serializeRuntimeAuditData(raw)).toBe(JSON.stringify(`${home}/file`));
+});
+
+it("propagates application RangeErrors through structured judge arguments", async () => {
+  const { redactJudgeRequest } = await import("../../permissions/judge/judge-redaction.js");
+  const { serializeRuntimeAuditData } = await import("../runtime-audit-json.js");
+  const failure = new RangeError("application serialization error");
+  const reject = () => { throw failure; };
+  for (const argument of [{ get p() { return reject(); } }, { p: { toJSON: reject } }]) {
+    const request = judgeRequest({ invocation: judgeInvocation({ finalInput: { argument } }) });
+    let caught: unknown;
+    try { redactJudgeRequest(request); } catch (error) { caught = error; }
+    expect(caught).toBe(failure);
+    expect(serializeRuntimeAuditData(argument)).toBe('{"unserializable":true}');
+  }
 });

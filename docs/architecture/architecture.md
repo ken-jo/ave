@@ -3480,6 +3480,36 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Home path redaction
+
+The redactor identifies tokens in the original audit or display text. It
+replaces literal-only home paths in place and keeps their suffixes. If a token
+contains a home occurrence visible only after up to three layers of supported
+escaping, the redactor replaces the entire token with `[home-token]`. This
+includes mixed tokens that also contain a literal home path. Neighbouring
+text within a mixed token is removed with it. Malformed escapes and deeper
+encodings are outside this contract. On Windows and macOS the home matcher
+uses Unicode case folding.
+
+Detection supports JSON string escapes, percent encodings, the supported HTML
+entities, and hexadecimal `\xHH` escapes as UTF-8 bytes or JavaScript code
+units. Braced Unicode and octal escapes are outside the supported families.
+
+Home spellings containing a double quote, a control character or a filename
+backslash on POSIX are unsupported. A configured home that is itself a
+filesystem root is also unsupported, including drive roots, UNC share roots
+and POSIX `/`. The generic users/home text rules still apply for those homes.
+Home paths joined without a separating delimiter are unsupported. This includes
+directly adjacent native and slash spellings, a file URL joined to another
+home path, and copies joined with a dot. An earlier copy can remain visible.
+In these joins, the redactor can replace an entire token containing only literal
+homes with `[home-token]`, removing its suffix. This is an exception to the
+literal-only suffix rule above.
+For supported homes the redactor matches both the configured spelling, with
+trailing separators removed, and the normalized spelling. Platform path
+normalization collapses dot segments and duplicate separators without
+consulting the working directory.
+
 ### Windows object ownership
 
 An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)
