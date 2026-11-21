@@ -9,6 +9,9 @@ const WRITER_SCAN_LIMIT = 4096;
 const DENY_LIMIT = 8;
 const PROCESS_SCAN_LIMIT = 512;
 const PROCESS_PATH_LIMIT = 256;
+const PROCESS_ATTESTATION_SCOPES = [
+  "identity-unknown", "session-unknown", "session-current", "owner-unknown", "owner-current", "other-session-other-owner",
+];
 const MAX_HOLDERS = 128;
 const FILE_OUTPUT_LIMIT = 32 * 1024;
 const HOLDER_OUTPUT_LIMIT = 52 * 1024;
@@ -44,6 +47,7 @@ ImportReadMethod kernel32.dll OpenProcess $processHandleType @([uint32], [bool],
 ImportReadMethod ntdll.dll NtQueryInformationProcess ([int]) @($processHandleType, [int], [byte[]], [uint32], [IntPtr])
 ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [IntPtr], [byte[]], [IntPtr], [IntPtr])
 ImportReadMethod kernel32.dll QueryFullProcessImageNameW ([bool]) @($processHandleType, [uint32], [Text.StringBuilder], $outLength)
+ImportReadMethod advapi32.dll OpenProcessToken ([bool]) @($processHandleType, [uint32], $outPointer)
 $fileTime = [long].MakeByRefType()
 ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
 $native = $interop.CreateType()
@@ -190,40 +194,50 @@ function ReadProcessPointer($bytes, $offset, $size) {
 }
 
 function ReadCurrentDirectory($id) {
-  # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ. Skip inaccessible or exited processes.
+  # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ.
   $process = $native::OpenProcess(0x410, $false, $id)
   try {
-    if ($process.IsInvalid) { return }
+    if ($process.IsInvalid) { return @{ reason = 'OpenProcess failed' } }
     $size = $pointerSize
     $peb = [IntPtr]::Zero
     if ($size -eq 8) {
       # ProcessWow64Information supplies the 32-bit PEB for a WOW64 process.
       $info = [byte[]]::new(8)
-      if ($native::NtQueryInformationProcess($process, 26, $info, $info.Length, 0) -ne 0) { return }
+      if ($native::NtQueryInformationProcess($process, 26, $info, $info.Length, 0) -ne 0) {
+        return @{ reason = 'NtQueryInformationProcess failed' }
+      }
       $peb = ReadProcessPointer $info 0 8
       if ($peb -ne [IntPtr]::Zero) { $size = 4 }
     }
     if ($peb -eq [IntPtr]::Zero) {
       # ProcessBasicInformation.
       $info = [byte[]]::new(6 * $size)
-      if ($native::NtQueryInformationProcess($process, 0, $info, $info.Length, 0) -ne 0) { return }
+      if ($native::NtQueryInformationProcess($process, 0, $info, $info.Length, 0) -ne 0) {
+        return @{ reason = 'NtQueryInformationProcess failed' }
+      }
       $peb = ReadProcessPointer $info $size $size
     }
     # Read only PEB.ProcessParameters and the CurrentDirectory UNICODE_STRING.
     $parametersOffset = if ($size -eq 8) { 0x20 } else { 0x10 }
     $directoryOffset = if ($size -eq 8) { 0x38 } else { 0x24 }
     $pointer = [byte[]]::new($size)
-    if (!$native::ReadProcessMemory($process, [IntPtr]::Add($peb, $parametersOffset), $pointer, $size, 0)) { return }
+    if (!$native::ReadProcessMemory($process, [IntPtr]::Add($peb, $parametersOffset), $pointer, $size, 0)) {
+      return @{ reason = 'ReadProcessMemory failed' }
+    }
     $parameters = ReadProcessPointer $pointer 0 $size
     $directory = [byte[]]::new(2 * $size)
-    if (!$native::ReadProcessMemory($process, [IntPtr]::Add($parameters, $directoryOffset), $directory, $directory.Length, 0)) { return }
+    if (!$native::ReadProcessMemory($process, [IntPtr]::Add($parameters, $directoryOffset), $directory, $directory.Length, 0)) {
+      return @{ reason = 'ReadProcessMemory failed' }
+    }
     $length = [BitConverter]::ToUInt16($directory, 0)
-    if ($length -eq 0 -or $length -gt 4096 -or ($length % 2)) { return }
+    if ($length -gt 4096) { return @{ reason = 'cwd exceeds 4096 bytes' } }
+    if ($length -eq 0 -or ($length % 2)) { return @{ reason = 'invalid cwd length' } }
     $buffer = ReadProcessPointer $directory $size $size
     $bytes = [byte[]]::new($length)
-    if ($native::ReadProcessMemory($process, $buffer, $bytes, $length, 0)) {
-      [Text.Encoding]::Unicode.GetString($bytes)
+    if (!$native::ReadProcessMemory($process, $buffer, $bytes, $length, 0)) {
+      return @{ reason = 'ReadProcessMemory failed' }
     }
+    return @{ path = [Text.Encoding]::Unicode.GetString($bytes) }
   } finally { $process.Dispose() }
 }
 `;
@@ -242,14 +256,60 @@ ${PROCESS_RECORDS}
 
 ${CURRENT_DIRECTORY_PROBE}
 
-function TestJobPath($path) {
-  if (!$path) { return $false }
+function TestJobPath($path, $source, $failures) {
   try {
     $path = $path.Replace('/', '\') -replace '^\\\\\?\\', ''
-    if ($path -notmatch '^[a-z]:\\') { return $false }
+    if ($path -notmatch '^[a-z]:\\') { throw 'Expected an absolute drive path' }
     $full = [IO.Path]::GetFullPath($path).TrimEnd('\')
     return $full -eq $root -or $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
-  } catch { return $false }
+  } catch {
+    $failure = "path conversion failed ($source)"
+    if (!$failures.Contains($failure)) { $failures.Add($failure) }
+    return $false
+  }
+}
+
+function FindProcessReference($row, $pattern, $failures) {
+  if (!$row.ExecutablePath) { $failures.Add('missing CIM ExecutablePath') }
+  elseif (TestJobPath $row.ExecutablePath 'image' $failures) { return 'image' }
+
+  if (!$row.CommandLine) { $failures.Add('missing CIM CommandLine') }
+  else {
+    foreach ($match in $pattern.Matches($row.CommandLine.Replace('/', '\'))) {
+      if (TestJobPath $match.Value 'argument' $failures) { return 'argument' }
+    }
+  }
+  $cwd = ReadCurrentDirectory $row.ProcessId
+  if ($cwd.reason) { $failures.Add($cwd.reason) }
+  elseif (TestJobPath $cwd.path 'cwd' $failures) { return 'cwd' }
+}
+
+function ReadProcessOwnerSid($row) {
+  # PROCESS_QUERY_LIMITED_INFORMATION and TOKEN_QUERY.
+  $process = $native::OpenProcess(0x1000, $false, $row.ProcessId)
+  try {
+    if ($process.IsInvalid -or !$row.CreationDate) { return }
+    $created = $exited = $kernel = $user = 0L
+    if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user)) { return }
+    # CIM creation time has microsecond precision. Bind the SID to the same process instance.
+    if ([Math]::Abs(([DateTime]::FromFileTimeUtc($created) - $row.CreationDate.ToUniversalTime()).Ticks) -gt 9) { return }
+    $raw = [IntPtr]::Zero
+    if (!$native::OpenProcessToken($process, 8, [ref]$raw)) { return }
+    $token = [Microsoft.Win32.SafeHandles.SafeAccessTokenHandle]::new($raw)
+    try {
+      $identity = [Security.Principal.WindowsIdentity]::new($token.DangerousGetHandle())
+      try { return $identity.User.Value } finally { $identity.Dispose() }
+    } finally { $token.Dispose() }
+  } finally { $process.Dispose() }
+}
+
+function GetProcessScope($row, $session, $ownerSid) {
+  if ($null -eq $row.SessionId) { return 'session-unknown' }
+  if ($row.SessionId -eq $session) { return 'session-current' }
+  $sid = try { ReadProcessOwnerSid $row } catch { $null }
+  if (!$sid -or !$ownerSid) { return 'owner-unknown' }
+  if ($sid -eq $ownerSid) { return 'owner-current' }
+  return 'other-session-other-owner'
 }
 
 function ReadHolderMetadata($record) {
@@ -325,29 +385,36 @@ function FindJobProcesses {
   $inspected = 0
   $matched = 0
   $sawQueryProcess = $false
-  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name |
+  $self = [Diagnostics.Process]::GetCurrentProcess()
+  try { $session = $self.SessionId } finally { $self.Dispose() }
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  try { $ownerSid = $identity.User.Value } finally { $identity.Dispose() }
+  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name,SessionId |
     Sort-Object CreationDate -Descending | Select-Object -First ${PROCESS_SCAN_LIMIT + 1} | ForEach-Object {
     if (++$inspected -gt ${PROCESS_SCAN_LIMIT}) { $script:processLimited = $true; return }
     if ($matched -gt ${RESULT_LIMIT}) { return }
     $row = $_
     if ($row.ProcessId -eq $PID) { $sawQueryProcess = $true; return }
+    if ($null -eq $row.ProcessId) {
+      @{ kind = 'processAttestation'; pid = $null; scope = 'identity-unknown'; reason = 'missing CIM ProcessId' }
+      return
+    }
+    # The idle pseudo-process has no user-mode process to inspect.
     if ($row.ProcessId -eq 0) { return }
-    try {
-      $reason = $null
-      if (TestJobPath $row.ExecutablePath) { $reason = 'image' }
-      elseif ($row.CommandLine) {
-        foreach ($match in $pattern.Matches($row.CommandLine.Replace('/', '\'))) {
-          if (TestJobPath $match.Value) { $reason = 'argument'; break }
-        }
-      }
-      if (!$reason -and (TestJobPath (ReadCurrentDirectory $row.ProcessId))) { $reason = 'cwd' }
-      if (!$reason) { return }
+    $failures = [Collections.Generic.List[string]]::new()
+    $reason = try { FindProcessReference $row $pattern $failures }
+      catch { $failures.Add('process reference query failed') }
+    if ($reason) {
       if (++$matched -gt ${RESULT_LIMIT}) { $script:processLimited = $true; return }
       $record = NewProcessRecord $row 'process'
       if (!$record.image) { $record.image = LimitProcessPath $row.Name }
       $record.reason = $reason
       $record
-    } catch { $script:processFailed = $true }
+    } elseif ($failures.Count) {
+      $scope = GetProcessScope $row $session $ownerSid
+      if ($scope -eq 'other-session-other-owner') { $script:processSkipped++ }
+      @{ kind = 'processAttestation'; pid = $row.ProcessId; scope = $scope; reason = $failures -join '; ' }
+    }
   }
   if ($preflight -and !$sawQueryProcess) { $script:processFailed = $true }
 }
@@ -531,13 +598,14 @@ try {
 $null = WriteEvidence @{ kind = 'holders'; limited = $holderLimited; failed = $script:holderFailed } ${HOLDER_OUTPUT_LIMIT + 256}
 $script:processFailed = $false
 $script:processLimited = $false
+$script:processSkipped = 0
 try {
   FindJobProcesses | ForEach-Object {
     if (!(WriteEvidence $_ ${OUTPUT_LIMIT - STATUS_RESERVE})) { $script:processLimited = $true }
   }
 } catch { $script:processFailed = $true }
 $null = WriteEvidence @{
-  kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited
+  kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited; skipped = $script:processSkipped
 } ${OUTPUT_LIMIT}
 `;
 }
@@ -647,8 +715,7 @@ export async function assertNoJobRootWriters(root, run) {
   const evidence = [];
   let reason = "live processes can still access the job root";
   try {
-    await inspectJobRoot(root, line => evidence.push(line), run, true);
-    if (!evidence.length) return;
+    if (!(await inspectJobRoot(root, line => evidence.push(line), run, true))) return;
   } catch {
     reason = "writer evidence is incomplete";
   }
@@ -675,6 +742,8 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   let processesComplete = false;
   let fileCount = 0;
   let processCount = 0;
+  let skippedProcesses = 0;
+  let writerFound = false;
   let holdersOutputEnd = 0;
   function incomplete(row, ...flags) {
     return flags.some(key => row[key] !== false);
@@ -709,6 +778,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
         failed ||= preflight;
         emit(`Native file holder lookup failed path=${JSON.stringify(row.path)} status=${row.status}`, holdersOutputEnd);
       } else if (row.kind === "holder") {
+        writerFound = true;
         emit(formatProcess(row), holdersOutputEnd);
       } else {
         throw new Error("Unexpected holder record");
@@ -719,9 +789,23 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
         if (preflight) failed ||= incomplete(row, "failed", "limited");
         if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");
         if (row.failed) emit("Cleanup process scan was incomplete");
+        const skipped = row.skipped ?? 0;
+        if (!Number.isSafeInteger(skipped) || skipped < 0 || skipped > PROCESS_SCAN_LIMIT ||
+            (!row.limited && skipped !== skippedProcesses)) throw new Error("Invalid skipped process count");
+        if (skipped) emit(`Cleanup process scan skipped ${skipped} other-session, other-owner process${skipped === 1 ? "" : "es"}`, OUTPUT_LIMIT);
       } else if (row.kind === "process") {
+        writerFound = true;
         if (processCount++ < RESULT_LIMIT) emit(formatProcess(row));
         else failed ||= preflight;
+      } else if (row.kind === "processAttestation") {
+        const { pid, scope, reason } = row;
+        if (!PROCESS_ATTESTATION_SCOPES.includes(scope) ||
+            (scope === "identity-unknown" ? pid !== null : !Number.isSafeInteger(pid) || pid <= 0) ||
+            typeof reason !== "string" || !reason) throw new Error("Invalid process attestation");
+        const skip = scope === "other-session-other-owner";
+        if (skip) skippedProcesses++;
+        else failed ||= preflight;
+        emit(`process ${skip ? "skipped" : "cannot attest"} pid=${pid ?? '"not determined"'} scope=${scope} reason=${formatOptionalText(reason, PROCESS_PATH_LIMIT)}`);
       } else {
         throw new Error("Unexpected process record");
       }
@@ -734,4 +818,5 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   if (!queryOk || failed || !filesComplete || !processesComplete || (preflight && (!holdersComplete || outputLimited))) {
     throw new Error("Cleanup query was incomplete");
   }
+  return writerFound;
 }

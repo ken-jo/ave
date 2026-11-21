@@ -245,6 +245,69 @@ describe("Windows job root writer precondition", () => {
   });
 
   if (process.platform === "win32") {
+    const processCases = [
+      { name: "an invalid OpenProcess handle", nativeFailure: "OpenProcess failed" },
+      { name: "a failed NtQueryInformationProcess call", nativeFailure: "NtQueryInformationProcess failed" },
+      { name: "a failed ReadProcessMemory call", nativeFailure: "ReadProcessMemory failed" },
+      { name: "a cwd over the byte limit", nativeFailure: "cwd exceeds 4096 bytes" },
+      { name: "a missing CIM ExecutablePath", field: "ExecutablePath", value: "$null", reason: "missing CIM ExecutablePath" },
+      { name: "a missing CIM CommandLine", field: "CommandLine", value: "$null", reason: "missing CIM CommandLine" },
+      { name: "a missing CIM ProcessId", field: "ProcessId", value: "$null", reason: "missing CIM ProcessId", scope: "identity-unknown" },
+      { name: "a path conversion error", field: "ExecutablePath", value: '"C:\\example`0.exe"', reason: "path conversion failed (image)" },
+      { name: "our owner in another session", nativeFailure: "OpenProcess failed", session: "other", owner: "current", scope: "owner-current" },
+      { name: "an undeterminable session and owner", nativeFailure: "OpenProcess failed", session: "unknown", scope: "session-unknown" },
+      { name: "an undeterminable owner in another session", nativeFailure: "OpenProcess failed", session: "other", scope: "owner-unknown" },
+      { name: "another owner in another session", nativeFailure: "OpenProcess failed", session: "other", owner: "other", scope: "other-session-other-owner" },
+    ];
+    for (const { name, nativeFailure, field, value, reason = nativeFailure, session, owner, scope = "session-current" } of processCases) {
+      it(`attests writer scope for ${name}`, async t => {
+        const job = fixture(t);
+        const pid = 2147483647;
+        const row = {
+          ProcessId: pid, SessionId: "$session", ExecutablePath: "'C:\\example.exe'", CommandLine: "'example.exe'",
+        };
+        if (field) row[field] = value;
+        const sessionValue = session === "unknown" ? "$null" : session === "other" ? "$session + 1" : "$session";
+        const ownerValue = owner === "current" ? "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
+          : owner === "other" ? "'S-1-5-21-1-2-3-1001'" : "$null";
+        const run = runInjectedQuery(`
+function Get-CimInstance {
+  $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
+  [pscustomobject]@{ ProcessId = $PID; SessionId = $session }
+  $session = ${sessionValue}
+  [pscustomobject]@{ ${Object.entries(row).map(([key, raw]) => `${key} = ${raw}`).join("; ")} }
+}
+`, script => script.replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`)
+          .replace("$script:processFailed = $false", `
+function ReadCurrentDirectory {
+  @{ path = 'C:\\example'; reason = ${nativeFailure ? powerShellLiteral(nativeFailure) : "$null"} }
+}
+function ReadProcessOwnerSid { ${ownerValue} }
+$script:processFailed = $false
+`));
+        const displayedPid = field === "ProcessId" ? '"not determined"' : pid;
+        if (scope === "other-session-other-owner") {
+          const diagnostic = mock.fn();
+          await diagnoseJobRoot(job.localRoot, diagnostic, run);
+          const lines = output({ diagnostic }).split("\n");
+          assert.ok(lines.includes(`process skipped pid=${displayedPid} scope=${scope} reason=${JSON.stringify(reason)}`));
+          assert.ok(lines.includes("Cleanup process scan skipped 1 other-session, other-owner process"));
+          await cleanupJobRoot(root, { ...job.options, run });
+          assert.equal(existsSync(job.localRoot), false);
+          assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
+        } else {
+          await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
+            assert.match(error.message, /writer evidence is incomplete/i);
+            assert.ok(error.message.split("\n").includes(
+              `process cannot attest pid=${displayedPid} scope=${scope} reason=${JSON.stringify(reason)}`,
+            ), error.message);
+            return true;
+          });
+          job.assertPreserved();
+        }
+      });
+    }
+
     for (const operation of ["cleanup", "rollback"]) {
       it(`refuses ${operation} while an outside process holds a job file open`, async t => {
         const job = fixture(t);
