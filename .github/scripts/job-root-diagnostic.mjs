@@ -175,14 +175,6 @@ function LimitProcessPath($path) {
   return $path.Substring(0, [Math]::Min($path.Length, ${PROCESS_PATH_LIMIT}))
 }
 
-function NewProcessRecord($row, $kind) {
-  @{
-    kind = $kind; pid = $row.ProcessId; unresolvedParentPid = $row.ParentProcessId
-    image = LimitProcessPath $row.ExecutablePath
-    created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') } else { $null }
-  }
-}
-
 `;
 const CURRENT_DIRECTORY_PROBE = String.raw`
 function ReadProcessPointer($bytes, $offset, $size) {
@@ -371,9 +363,14 @@ function FindJobProcesses {
       catch { $failures.Add('process reference query failed') }
     if ($reason) {
       if (++$matched -gt ${RESULT_LIMIT}) { $script:processLimited = $true; return }
-      $record = NewProcessRecord $row 'process'
-      if (!$record.image) { $record.image = LimitProcessPath $row.Name }
-      $record.reason = $reason
+      $record = @{ kind = 'process'; pid = $row.ProcessId; reason = $reason }
+      try {
+        $record.unresolvedParentPid = $row.ParentProcessId
+        $record.image = if ($row.ExecutablePath) { LimitProcessPath $row.ExecutablePath }
+          else { LimitProcessPath $row.Name }
+        $record.created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') }
+          else { $null }
+      } catch { $script:processFailed = $true }
       $record
     }
     if ($failures.Count) {
@@ -600,10 +597,13 @@ function formatCandidate({ path, attributes, owner, deny, denyOmitted, parentDen
     ` created=${formatOptionalText(created, 32)} last-write=${formatOptionalText(lastWrite, 32)}`;
 }
 
+function isProcessId(pid) {
+  return Number.isSafeInteger(pid) && pid > 0;
+}
+
 function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, app, service, reason }) {
-  if (!Number.isSafeInteger(pid) || pid <= 0 ||
-      (unresolvedParentPid !== null && (!Number.isSafeInteger(unresolvedParentPid) || unresolvedParentPid < 0))) {
-    throw new Error("Invalid cleanup process identity");
+  if (unresolvedParentPid !== null && (!Number.isSafeInteger(unresolvedParentPid) || unresolvedParentPid < 0)) {
+    throw new Error("Invalid cleanup process parent PID");
   }
   const base = `${kind} pid=${pid} unresolved-parent-pid=${unresolvedParentPid ?? '"not determined"'} image=${formatOptionalText(image, PROCESS_PATH_LIMIT)}`;
   const started = `created=${formatOptionalText(created, 32)}`;
@@ -611,7 +611,6 @@ function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, a
     if (typeof path !== "string") throw new Error("Invalid holder path");
     return `${base} path=${JSON.stringify(path)} app=${formatOptionalText(app, 256)} service=${formatOptionalText(service, 64)} ${started}`;
   }
-  if (!["image", "cwd", "argument"].includes(reason)) throw new Error("Invalid process match reason");
   return `${base} match=${reason} ${started}`;
 }
 
@@ -748,6 +747,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
         emit(`Native file holder lookup failed path=${JSON.stringify(row.path)} status=${row.status}`, holdersOutputEnd);
       } else if (row.kind === "holder") {
         writerFound = true;
+        if (!isProcessId(row.pid)) throw new Error("Invalid native file holder PID");
         emit(formatProcess(row), holdersOutputEnd);
       } else {
         throw new Error("Unexpected holder record");
@@ -758,13 +758,26 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
         if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");
         processScanIncomplete = preflight ? incomplete(row, "failed", "limited") : row.failed;
       } else if (row.kind === "process") {
-        const line = formatProcess(row);
+        const { pid, reason } = row;
+        if (!isProcessId(pid) || !["image", "cwd", "argument"].includes(reason)) {
+          throw new Error("Invalid process match record");
+        }
         writerFound = true;
-        if (processCount++ < RESULT_LIMIT) emit(line);
+        if (processCount++ < RESULT_LIMIT) {
+          let line;
+          try { line = formatProcess(row); }
+          catch {
+            emit(`process pid=${pid} match=${reason}`);
+            emit(`Cleanup process match metadata was unavailable for pid=${pid}`);
+            return;
+          }
+          emit(line);
+        }
       } else if (row.kind === "processUnreadable") {
         const { pid, reason } = row;
-        if ((pid !== null && (!Number.isSafeInteger(pid) || pid <= 0)) ||
-            typeof reason !== "string" || !reason) throw new Error("Invalid unreadable process record");
+        if ((pid !== null && !isProcessId(pid)) || typeof reason !== "string" || !reason) {
+          throw new Error("Invalid unreadable process record");
+        }
         emit(`process unreadable pid=${pid ?? '"not determined"'} reason=${formatOptionalText(reason, PROCESS_PATH_LIMIT)}`,
           OUTPUT_LIMIT - STATUS_RESERVE - PROCESS_MATCH_RESERVE);
       } else {

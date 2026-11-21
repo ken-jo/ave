@@ -266,6 +266,24 @@ describe("Windows job root writer precondition", () => {
     assert.match(output({ diagnostic }), /Cleanup process scan was incomplete/);
   });
 
+  it("refuses a process argument match with its parent PID omitted", async t => {
+    const job = fixture(t);
+    const run = queryResult({
+      processes: [{
+        kind: "process", pid: PROCESS_DETAILS.pid, reason: "argument",
+        image: PROCESS_DETAILS.image, created: PROCESS_DETAILS.created,
+      }],
+    });
+    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
+      assertReportedRoot(error, root);
+      assert.match(error.message, /live processes can still access the job root/i);
+      assert.match(error.message, /^process pid=4000 match=argument$/m);
+      assert.match(error.message, /^Cleanup process match metadata was unavailable for pid=4000$/m);
+      return true;
+    });
+    job.assertPreserved();
+  });
+
   if (process.platform === "win32") {
     it("refuses an unsupported native handle query for a job entry", async t => {
       const job = fixture(t);
@@ -338,8 +356,10 @@ describe("Windows job root writer precondition", () => {
       assert.match(lines, /Cleanup process scan was incomplete/);
     });
 
-    for (const reference of ["cwd", "image", "module", "argument"]) {
-      it(`refuses rollback for a live ${reference} reference`, async t => {
+    for (const scenario of ["cwd", "image", "module", "argument", "argument with invalid creation time"]) {
+      const invalidCreationTime = scenario === "argument with invalid creation time";
+      const reference = invalidCreationTime ? "argument" : scenario;
+      it(`refuses rollback for a live ${scenario} reference`, async t => {
         const job = fixture(t);
         let executable = process.execPath;
         let path = join(job.localRoot, "shared");
@@ -374,8 +394,13 @@ describe("Windows job root writer precondition", () => {
           ]);
           assert.equal(ready.toString().trim(), "ready");
           const setupError = new Error("Could not publish job environment");
+          const run = invalidCreationTime ? runInjectedQuery("", script => script.replace("    $row = $_", `$&
+    if ($row.ProcessId -eq ${child.pid}) {
+      $row = $row | Select-Object -Property *
+      $row.CreationDate = 'invalid timestamp'
+    }`)) : undefined;
           await assert.rejects(isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
-            () => {}, fixtureIdentity, assignments => { if (assignments.HOME) throw setupError; }), error => {
+            () => {}, fixtureIdentity, assignments => { if (assignments.HOME) throw setupError; }, run), error => {
             assert.ok(error instanceof AggregateError);
             assert.equal(error.errors[0], setupError);
             const refusal = error.errors[1];
@@ -384,6 +409,10 @@ describe("Windows job root writer precondition", () => {
               : [`holder pid=${child.pid} `, `path=${JSON.stringify(path)}`];
             assert.ok(refusal.message.split("\n").some(line => line.startsWith(expected[0]) && line.includes(expected[1])),
               refusal.message);
+            if (invalidCreationTime) {
+              assert.ok(refusal.message.split("\n").includes(`Cleanup process match metadata was unavailable for pid=${child.pid}`),
+                refusal.message);
+            }
             assert.match(refusal.message, /live processes can still access the job root/i);
             return true;
           });
