@@ -471,7 +471,7 @@ describe("Windows helper integrity", () => {
   }
 
   function runFixturePowerShell(script: string, env: NodeJS.ProcessEnv = {}): string | undefined {
-    const executable = process.platform === "win32" ? win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : process.env.AVE_TEST_PWSH ?? "pwsh";
+    const executable = process.platform === "win32" ? win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : process.env.AVE_TEST_PWSH ?? "pwsh";
     const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
       env: { ...process.env, ...env }, encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
     });
@@ -526,10 +526,11 @@ describe("Windows helper integrity", () => {
     const bin = join(copy, "bin");
     if (process.platform === "win32") {
       const [, allocation] = await captureScripts();
+      if (!allocation) throw new Error("The helper allocation script was not captured");
       const checkpoint = shape === "no marker" ? "& $verifyDirectory $outer" :
         shape === "live marker" ? "$createdMarker = $true" : "& $verifyDirectory $bin";
       expect(allocation).toContain(checkpoint);
-      runFixturePowerShell(allocation!.replace(checkpoint, `${checkpoint}; return`), {
+      runFixturePowerShell(allocation.replace(checkpoint, `${checkpoint}; return`), {
         AVE_SRT_PRIVATE_DIRECTORY: copy, AVE_SRT_OWNER_PID: String(process.pid),
       });
       if (shape === "empty bin without a marker") rmSync(marker);
@@ -653,19 +654,22 @@ describe("Windows helper integrity", () => {
 
   it("creates the private copy with its final descriptor and never changes an existing object's", async () => {
     const [, script] = await captureScripts();
+    if (!script) throw new Error("The helper allocation script was not captured");
     // No step sets an owner or a DACL on a path: only new descriptors get an owner.
     expect(script).not.toMatch(/SetAccessControl\(/);
     expect(script.match(/\$\w+\.SetOwner\(/g)).toEqual(["$security.SetOwner(", "$fileSecurity.SetOwner("]);
     // Anything already at the path refuses creation, before the create call.
-    const refusal = script!.indexOf("throw 'Private directory already exists'");
+    const refusal = script.indexOf("throw 'Private directory already exists'");
     expect(refusal).toBeGreaterThan(-1);
-    expect(refusal).toBeLessThan(script!.indexOf("[System.IO.Directory]::CreateDirectory($outer, $security)"));
+    expect(refusal).toBeLessThan(script.indexOf("[System.IO.Directory]::CreateDirectory($outer, $security)"));
     expect(script).toContain("[System.IO.FileMode]::CreateNew");
     expect(script).toContain("$fileSecurity)");
     expect(script).toContain("$stream.GetAccessControl().GetOwner(");
-    expect(script!.indexOf("& $writeNewFile $markerPath")).toBeGreaterThan(refusal);
-    expect(script!.indexOf("& $writeNewFile $markerPath")).toBeLessThan(script!.indexOf("::CreateDirectory($bin, $security)"));
-    expect(script!.indexOf("::CreateDirectory($bin, $security)")).toBeLessThan(script!.indexOf("& $writeNewFile $imagePath"));
+    const markerWrite = script.indexOf("& $writeNewFile $markerPath");
+    const binCreate = script.indexOf("::CreateDirectory($bin, $security)");
+    expect(markerWrite).toBeGreaterThan(refusal);
+    expect(markerWrite).toBeLessThan(binCreate);
+    expect(binCreate).toBeLessThan(script.indexOf("& $writeNewFile $imagePath"));
   });
 
   // Run the captured step against a path that already holds something: it must refuse, and leave that object's owner and DACL exactly as they were.
