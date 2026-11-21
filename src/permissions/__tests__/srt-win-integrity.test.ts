@@ -623,6 +623,31 @@ describe("Windows helper integrity", () => {
     expect(existsSync(copy)).toBe(false);
   });
 
+  it.for(["owner.json", "srt-win.exe"])("keeps a complete marker-first copy with a hard-linked %s", async (entry, context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
+    const bin = join(copy, "bin");
+    createSweepDirectory(copy);
+    createSweepDirectory(bin);
+    const marker = join(copy, "owner.json");
+    const image = join(bin, "srt-win.exe");
+    writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+    writeFileSync(image, "image");
+    const linked = entry === "owner.json" ? marker : image;
+    const outside = join(root, "outside");
+    linkSync(linked, outside);
+    expect(lstatSync(linked).nlink).toBe(2);
+
+    if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(image)).toBe(true);
+    expect(lstatSync(outside).nlink).toBe(2);
+
+    rmSync(outside);
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
+  });
+
   it("names every module its PowerShell steps use", async () => {
     const scripts = await captureScripts();
     const modules: Record<string, string> = {

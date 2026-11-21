@@ -94,7 +94,7 @@ const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le
 
 const TEMP_ROOT_ACL_DIAGNOSTIC = "srt-win-temp-root-acl-owner-action-required";
 
-// A marker is useful only inside verified private directories. Support both layouts, deleting only their two known plain files without recursion.
+// A marker is useful only inside verified private directories. Delete only the known plain files without recursion.
 const SWEEP_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$root = [System.IO.Path]::GetFullPath($env:AVE_SRT_TEMP_ROOT).TrimEnd('\\')",
@@ -117,27 +117,32 @@ const SWEEP_SCRIPT = [
   "$marker = [System.IO.Path]::Combine($directory, 'owner.json')",
   "$bin = [System.IO.Path]::Combine($directory, 'bin')",
   "$imageDirectory = $directory",
+  "$markerFirst = $false",
   "if ($bin -in $entries) {",
-  "$outerMarker = $marker -in $entries",
-  "if ($entries.Count -ne (1 + [int]$outerMarker)) { continue }",
+  "$markerFirst = $marker -in $entries",
+  "if ($entries.Count -ne (1 + [int]$markerFirst)) { continue }",
   "$imageDirectory = $entries | Where-Object { $_ -eq $bin }; $attributes = [System.IO.File]::GetAttributes($imageDirectory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { continue }",
   "$acl = [System.IO.Directory]::GetAccessControl($imageDirectory)",
   "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or !$acl.AreAccessRulesProtected) { continue }",
   "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
   "$entries = @([System.IO.Directory]::GetFileSystemEntries($imageDirectory))",
-  "if ($outerMarker) { $entries += $marker } else { $marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json') }",
+  "if ($markerFirst) { $entries += $marker } else { $marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json') }",
   "}",
   "$image = [System.IO.Path]::Combine($imageDirectory, 'srt-win.exe')",
   "$hasImage = $image -in $entries",
   "if ($marker -notin $entries -or $entries.Count -ne (1 + [int]$hasImage)) { continue }",
   // Partial copies keep the generated name. The complete shape also supports older names.
   "if (!$hasImage -and [System.IO.Path]::GetFileName($directory) -notmatch '\\Aave-srt-win-[0-9a-f]{32}\\z') { continue }",
-  "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false } }",
+  "$plain = $true; foreach ($entry in $entries) {",
+  "$a = [System.IO.File]::GetAttributes($entry)",
+  "if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false; break }",
+  // LinkType uses the file's link count, which GetAttributes does not expose.
+  "if (!$hasImage -or $markerFirst) { $linkType = ([System.IO.FileInfo]::new($entry)).PSObject.Properties['LinkType']; if ($null -eq $linkType -or $null -ne $linkType.Value) { $plain = $false; break } }",
+  "}",
   "if (!$plain) { continue }",
-  // The marker is the sole file in a partial copy. LinkType uses the file's link count, which GetAttributes does not expose.
-  "if (!$hasImage) { $linkType = ([System.IO.FileInfo]::new($marker)).PSObject.Properties['LinkType']; if ($null -eq $linkType -or $null -ne $linkType.Value) { continue } }",
   "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
+  // Conservatively keep copies marked with this process's PID, even if PID reuse leaves a stale copy behind.
   "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
   "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
   "if ($live) { continue }",
