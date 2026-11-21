@@ -36,7 +36,7 @@ const POWERSHELL_PROLOGUE = [
   "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')",
 ];
 
-// Create random unpublished directories/files with final user ownership and protected DACLs; elevated defaults may assign administrator ownership. Refuse existing paths/links, verify descriptors and file owners on the same creation handle, write bytes afterward and remove created objects on failure. Never modify existing ACLs (docs/architecture/architecture.md).
+// Create directories and files with final user ownership and protected DACLs. Refuse existing paths, verify descriptors, and remove created objects on failure. Never modify existing ACLs (docs/architecture/architecture.md).
 const PRIVATE_DIRECTORY_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$outer = $env:AVE_SRT_PRIVATE_DIRECTORY",
@@ -52,12 +52,7 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$security.SetAccessRuleProtection($true, $false)",
   "$security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))",
   "foreach ($id in $readers) { $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
-  "$null = [System.IO.Directory]::CreateDirectory($outer, $security)",
-  // From here on the directory is this step's own: a failure removes what it made.
-  "try {",
-  "$createdBin = $false",
-  "foreach ($directory in @($outer, $bin)) {",
-  "if ($directory -eq $bin) { $present = $true; try { $null = [System.IO.File]::GetAttributes($bin) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { $present = $false }; if ($present) { throw 'Private directory already exists' }; $null = [System.IO.Directory]::CreateDirectory($bin, $security); $createdBin = $true }",
+  "$verifyDirectory = { param($directory)",
   "$attributes = [System.IO.File]::GetAttributes($directory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { throw 'Private directory is not a plain directory' }",
   "$check = [System.IO.Directory]::GetAccessControl($directory)",
@@ -73,11 +68,27 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$fileSecurity.SetAccessRuleProtection($true, $false)",
   "$fileSecurity.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'None', 'None', 'Allow')))",
   "foreach ($id in $readers) { $fileSecurity.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'None', 'None', 'Allow'))) }",
+  "$writeNewFile = { param($path, [byte[]]$bytes)",
+  "$stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity)",
+  "try { try { if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' }; $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() } } catch { [System.IO.File]::Delete($path); throw }",
+  "}",
+  "$markerPath = [System.IO.Path]::Combine($outer, 'owner.json')",
+  "$imagePath = [System.IO.Path]::Combine($bin, 'srt-win.exe')",
+  "$null = [System.IO.Directory]::CreateDirectory($outer, $security)",
+  // Publish the process marker before creating any payload. A markerless directory is never stale.
+  "$createdMarker = $false; $createdBin = $false",
+  "try {",
+  "& $verifyDirectory $outer",
   "$owner = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
   "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $owner.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
-  "$contents = @{ 'srt-win.exe' = [byte[]]@(); 'owner.json' = (New-Object System.Text.UTF8Encoding($false)).GetBytes($marker) }",
-  "foreach ($name in @('srt-win.exe', 'owner.json')) { $stream = New-Object System.IO.FileStream([System.IO.Path]::Combine($bin, $name), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity); try { $bytes = $contents[$name]; $stream.Write($bytes, 0, $bytes.Length); if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } } finally { $stream.Dispose() } }",
-  "} catch { if ($createdBin) { foreach ($name in @('srt-win.exe', 'owner.json')) { $file = [System.IO.Path]::Combine($bin, $name); if ([System.IO.File]::Exists($file)) { [System.IO.File]::Delete($file) } }; [System.IO.Directory]::Delete($bin, $false) }; [System.IO.Directory]::Delete($outer, $false); throw }",
+  "& $writeNewFile $markerPath ((New-Object System.Text.UTF8Encoding($false)).GetBytes($marker))",
+  "$createdMarker = $true",
+  "$present = $true; try { $null = [System.IO.File]::GetAttributes($bin) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { $present = $false }",
+  "if ($present) { throw 'Private directory already exists' }",
+  "$null = [System.IO.Directory]::CreateDirectory($bin, $security); $createdBin = $true",
+  "& $verifyDirectory $bin",
+  "& $writeNewFile $imagePath ([byte[]]@())",
+  "} catch { if ($createdBin) { [System.IO.Directory]::Delete($bin, $false) }; if ($createdMarker) { [System.IO.File]::Delete($markerPath) }; [System.IO.Directory]::Delete($outer, $false); throw }",
 ].join("; ");
 const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
 
@@ -103,33 +114,38 @@ const SWEEP_SCRIPT = [
   "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or !$acl.AreAccessRulesProtected) { continue }",
   "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
   "$entries = @([System.IO.Directory]::GetFileSystemEntries($directory))",
+  "$marker = [System.IO.Path]::Combine($directory, 'owner.json')",
+  "$bin = [System.IO.Path]::Combine($directory, 'bin')",
   "$imageDirectory = $directory",
-  "if ($entries.Count -eq 1 -and [System.IO.Path]::GetFileName($entries[0]) -eq 'bin') {",
-  "$imageDirectory = $entries[0]; $attributes = [System.IO.File]::GetAttributes($imageDirectory)",
+  "if ($bin -in $entries) {",
+  "$outerMarker = $marker -in $entries",
+  "if ($entries.Count -ne (1 + [int]$outerMarker)) { continue }",
+  "$imageDirectory = $entries | Where-Object { $_ -eq $bin }; $attributes = [System.IO.File]::GetAttributes($imageDirectory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { continue }",
   "$acl = [System.IO.Directory]::GetAccessControl($imageDirectory)",
   "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or !$acl.AreAccessRulesProtected) { continue }",
   "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
   "$entries = @([System.IO.Directory]::GetFileSystemEntries($imageDirectory))",
+  "if ($outerMarker) { $entries += $marker } else { $marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json') }",
   "}",
-  "$marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json')",
   "$image = [System.IO.Path]::Combine($imageDirectory, 'srt-win.exe')",
-  "$hasMarker = $marker -in $entries; $hasImage = $image -in $entries",
-  "if ($entries.Count -ne ([int]$hasMarker + [int]$hasImage)) { continue }",
+  "$hasImage = $image -in $entries",
+  "if ($marker -notin $entries -or $entries.Count -ne (1 + [int]$hasImage)) { continue }",
   // Partial copies keep the generated name. The complete shape also supports older names.
   "if ($entries.Count -ne 2 -and [System.IO.Path]::GetFileName($directory) -notmatch '^ave-srt-win-[0-9a-f]+$') { continue }",
   "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false } }",
   "if (!$plain) { continue }",
-  "if ($hasMarker) {",
   "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
   "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
   "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
   "if ($live) { continue }",
-  "}",
   // A running image or an incompatible open handle prevents this write open. Hold the handle through deletion; sharing permits only deletion, not spawn.
   "if ($hasImage) { $handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete); try { [System.IO.File]::Delete($image) } finally { $handle.Dispose() } }",
-  "if ($hasMarker) { [System.IO.File]::Delete($marker) }",
+  // A legacy marker inside bin must be removed before its directory. For new copies, keep the marker until bin is gone.
+  "$nestedMarker = $imageDirectory -ne $directory -and [System.IO.Path]::GetDirectoryName($marker) -eq $imageDirectory",
+  "if ($nestedMarker) { [System.IO.File]::Delete($marker) }",
   "if ($imageDirectory -ne $directory) { [System.IO.Directory]::Delete($imageDirectory, $false) }",
+  "if (!$nestedMarker) { [System.IO.File]::Delete($marker) }",
   "[System.IO.Directory]::Delete($directory, $false)",
   "} catch { continue } }",
 ].join("; ");
@@ -258,9 +274,11 @@ function removePrivateCopy(directory: string): void {
   if (child?.isSymbolicLink()) {
     if (process.platform === "win32") rmdirSync(bin); else unlinkSync(bin);
   } else if (child?.isDirectory()) {
-    for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(bin, name), { force: true });
+    rmSync(join(bin, "srt-win.exe"), { force: true });
     rmdirSync(bin);
   }
+  rmSync(join(directory, "owner.json"), { force: true });
+  // If this rmdir fails, only an empty outer directory remains. The sweep leaves it alone without an owner marker.
   rmdirSync(directory);
 }
 

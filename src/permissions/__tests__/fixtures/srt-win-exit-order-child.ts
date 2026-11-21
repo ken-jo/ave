@@ -22,7 +22,7 @@ const executable = prepareSrtWinExecutable(source);
 let lockAttempts = 0;
 if (lockedEntry !== undefined) {
   const bin = dirname(executable);
-  const marker = join(bin, "owner.json");
+  const marker = join(dirname(bin), "owner.json");
   // The Windows allocation writes a marker. Supply one for the POSIX test copy.
   if (process.platform !== "win32") writeFileSync(marker, JSON.stringify({ pid: process.pid, started: "1" }));
   const targets: Record<string, string> = { image: executable, marker, bin, outer: dirname(bin) };
