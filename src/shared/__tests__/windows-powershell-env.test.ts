@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 import { windowsPowerShellEnv } from "../windows-powershell-env.js";
 import { windowsPowerShellEnv as scriptWindowsPowerShellEnv } from "../../../scripts/lib/windows-powershell-env.mjs";
+import { installIncompatibleSecurityModule } from "../../__tests__/support/windows-powershell-fixtures.js";
 
 const BUILDERS = [windowsPowerShellEnv, scriptWindowsPowerShellEnv];
 
@@ -20,16 +21,7 @@ describe("internal Windows PowerShell environment", () => {
   it.skipIf(process.platform !== "win32")("autoloads the native security module despite an inherited incompatible module", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-module-path-"));
     try {
-      const moduleDirectory = join(root, "Microsoft.PowerShell.Security");
-      mkdirSync(moduleDirectory);
-      writeFileSync(join(moduleDirectory, "Microsoft.PowerShell.Security.psd1"), [
-        "@{",
-        "ModuleVersion = '1.0.0'",
-        "RootModule = 'incompatible.psm1'",
-        "FunctionsToExport = @('Get-Acl')",
-        "}",
-      ].join("\n"));
-      writeFileSync(join(moduleDirectory, "incompatible.psm1"), "throw 'Incompatible security module fixture'\n");
+      installIncompatibleSecurityModule(root);
       // Child environment keys are case-insensitive; an inherited uppercase key can otherwise win over this fixture.
       const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
       const polluted = { ...environment, PSModulePath: root };

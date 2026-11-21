@@ -100,6 +100,11 @@ describe("Appearance settings", () => {
 });
 
 it("moves one tab stop through mode, scheme and font radio groups with the keyboard", async () => {
+  const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
+  const settings = await api.getSettings();
+  let releaseSettings!: () => void;
+  const settingsReady = new Promise<void>((resolve) => { releaseSettings = resolve; });
+  api.getSettings.mockImplementation(async () => { await settingsReady; return settings; });
   const { getByRole, getByTestId, container } = renderAppearance();
   const mode = getByRole("radiogroup", { name: "화면 모드" });
   expect(within(mode).getAllByRole("radio").filter((radio) => radio.tabIndex === 0)).toHaveLength(1);
@@ -120,6 +125,9 @@ it("moves one tab stop through mode, scheme and font radio groups with the keybo
   expect(scheme).toHaveFocus();
   const families = getByTestId("font-family-presets");
   await waitFor(() => expect(within(families).getAllByRole("radio").some((radio) => radio.getAttribute("aria-checked") === "true")).toBe(true));
+  expect(getByTestId("appearance-font-controls")).toBeDisabled();
+  releaseSettings();
+  await waitFor(() => expect(getByTestId("appearance-font-controls")).not.toBeDisabled());
   const [first] = within(families).getAllByRole("radio");
   assertPresent(first);
   first.focus();

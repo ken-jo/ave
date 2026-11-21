@@ -42,6 +42,7 @@ describe("Custom font input Escape semantics", () => {
     const { container, findByLabelText } = render(<AppearanceTab />);
 
     const input = (await findByLabelText("사용자 정의 폰트 stack")) as HTMLInputElement;
+    await waitFor(() => expect(screen.getByTestId("appearance-font-controls")).not.toBeDisabled());
 
     const { getApi } = await import("../../api-client.js");
     const api = getApi() as ReturnType<typeof getApi> & {

@@ -81,11 +81,18 @@ export function redactFsPath(p: string): string {
   if (_homeDir) {
     const standardFileUrlHome = pathToFileURL(_homeDir).toString();
     const legacyFileUrlHome = "file://" + _homeDir;
-    if (out === standardFileUrlHome || out.startsWith(standardFileUrlHome + "/")) {
+    const windows = os.platform() === "win32";
+    const comparable = (value: string): string => windows ? value.replace(/\\/gu, "/").toLowerCase() : value;
+    const startsAtHome = (home: string): boolean => {
+      const path = comparable(out);
+      const prefix = comparable(home);
+      return path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "\\");
+    };
+    if (startsAtHome(standardFileUrlHome)) {
       out = "file://<home>" + out.slice(standardFileUrlHome.length);
-    } else if (out === legacyFileUrlHome || out.startsWith(legacyFileUrlHome + "/") || out.startsWith(legacyFileUrlHome + "\\")) {
+    } else if (startsAtHome(legacyFileUrlHome)) {
       out = "file://<home>" + out.slice(legacyFileUrlHome.length).replace(/\\/g, "/");
-    } else if (out === _homeDir || out.startsWith(_homeDir + "/") || out.startsWith(_homeDir + "\\")) {
+    } else if (startsAtHome(_homeDir)) {
       out = "<home>" + out.slice(_homeDir.length);
     }
   }
@@ -108,8 +115,17 @@ export function redactHomePathsInText(value: string): string {
     ] as const;
     for (const [home, replacement] of homeForms) {
       if (!home) continue;
+      const windows = os.platform() === "win32";
+      const pattern = windows
+        ? home.split(/([\\/]+)/u).map(part => /^[\\/]/u.test(part)
+          ? String.raw`[\\/]{${part.length},}`
+          : escapeRegExp(part)).join("")
+        : escapeRegExp(home);
+      // Consume each separator run together and never retry from inside a leading run.
+      const start = windows && /^[\\/]/u.test(home) ? String.raw`(?<![\\/])` : "";
+      // Only filename continuation text prevents redaction; punctuation fails closed and suffix bytes stay intact.
       out = out.replace(
-        new RegExp(escapeRegExp(home), os.platform() === "win32" ? "giu" : "gu"),
+        new RegExp(String.raw`${start}${pattern}(?![\p{L}\p{N}_-]|\.[\p{L}\p{N}_-])`, windows ? "giu" : "gu"),
         replacement,
       );
     }

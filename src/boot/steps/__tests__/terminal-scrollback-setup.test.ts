@@ -3,7 +3,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+
+import { configureHostResources } from "../../../main/host-resources.js";
 
 type ExitCb = (e: { exitCode: number; signal?: number }) => void;
 class FakePty {
@@ -100,6 +102,7 @@ const kept = async () => {
 const EVERYTHING_KEPT = { shown: "shown\r\n", side: "side\r\n", closed: "export TOKEN=closed-tab-secret\r\n" };
 
 beforeEach(async () => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   shellDir = mkdtempSync(join(tmpdir(), "ave-boot-scrollback-shell-"));
   home = mkdtempSync(join(tmpdir(), "ave-boot-scrollback-home-"));
   aveHome = mkdtempSync(join(tmpdir(), "ave-boot-scrollback-avehome-"));

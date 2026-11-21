@@ -110,7 +110,14 @@ export type WindowsKeptFileFacts = (path: string) => WindowsDaclFacts | undefine
  */
 export function windowsKeptFileReader(facts: WindowsKeptFileFacts = (path) => readWindowsDacls([path], { content: true })[0]): KeptFileReader {
   return async (path) => {
-    const row = facts(path);
+    let row: WindowsDaclFacts | undefined;
+    try { row = facts(path); }
+    catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EFBIG") {
+        throw new Error("kept terminal output is larger than a terminal's replay", { cause: error });
+      }
+      throw error;
+    }
     if (!row) throw new Error("kept terminal output could not be checked");
     if (!admitWindowsReparse(row, "evidence")) throw new Error("kept terminal output is not a file of its own");
     if (row.exists === false) return null;

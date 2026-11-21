@@ -1,8 +1,12 @@
+import { useTempPaths as configureTempPaths } from "../../__tests__/test-helpers.js";
 import { useConfigurationOwner as configureTestOwner } from "../../__tests__/support/configuration-owner.js";
 
 configureTestOwner();
+const freshHome = configureTempPaths("permission-settings-home-", ".ave");
+beforeEach(() => vi.stubEnv("AVE_HOME", freshHome()));
+afterEach(() => vi.unstubAllEnvs());
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +21,9 @@ import { permissionSettingsPath, writePermissionSettings, setJudgeSettingsPersis
 let userDataPath: string;
 beforeEach(() => {
   userDataPath = mkdtempSync(join(tmpdir(), "settings-permission-independence-"));
-  migrateAveHomeConfiguration(aveHome(), ensureAveHomePrivate(aveHome()));
+  const privacy = ensureAveHomePrivate(aveHome());
+  expect(privacy.enforcement).not.toBe("none");
+  migrateAveHomeConfiguration(aveHome(), privacy);
 });
 afterEach(async () => { await cleanupTmpDir(userDataPath); });
 

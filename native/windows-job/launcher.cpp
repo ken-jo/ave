@@ -2,6 +2,7 @@
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
 #include <cstdio>
+#include <cwchar>
 #include <cwctype>
 #include <vector>
 #include <string>
@@ -22,22 +23,77 @@ static bool duplicateOutput(DWORD id, HANDLE* output) {
   return DuplicateHandle(GetCurrentProcess(), GetStdHandle(id), GetCurrentProcess(),
                          output, 0, TRUE, DUPLICATE_SAME_ACCESS) != FALSE;
 }
-int wmain(int argc, wchar_t** argv) {
-  if (argc < 2 || !((iswalpha(argv[1][0]) && argv[1][1] == L':' &&
-        (argv[1][2] == L'\\' || argv[1][2] == L'/')) ||
-        (argv[1][0] == L'\\' && argv[1][1] == L'\\'))) {
-    std::fprintf(stderr, "Windows job launcher requires an absolute executable path\n");
-    return 125;
-  }
-  // Strip only this launcher's argv[0]. Forward the original command tail so
-  // arguments undergo precisely the same quoting as a direct pipe spawn.
-  wchar_t* command = GetCommandLineW();
+static bool absolutePath(const wchar_t* path) {
+  return (iswalpha(path[0]) && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/')) ||
+         (path[0] == L'\\' && path[1] == L'\\');
+}
+// Skips one command-line token; a token that does not spell `expected` clears `same`.
+static wchar_t* skipArgument(wchar_t* command, const wchar_t* expected, bool* same) {
+  std::wstring token;
   bool quoted = false;
   while (*command && (quoted || !iswspace(*command))) {
-    if (*command == L'"') quoted = !quoted;
+    if (*command == L'"') quoted = !quoted; else token += *command;
     ++command;
   }
   while (iswspace(*command)) ++command;
+  if (expected && token != expected) *same = false;
+  return command;
+}
+// Receipt mode: terminate every member, then prove the job is empty. Completion
+// messages only wake the wait; the job query alone decides.
+static bool emptyJob(HANDLE job) {
+  HANDLE port = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1);
+  if (!port) { fail("CreateIoCompletionPort"); return false; }
+  JOBOBJECT_ASSOCIATE_COMPLETION_PORT association{job, port};
+  if (!SetInformationJobObject(job, JobObjectAssociateCompletionPortInformation, &association, sizeof(association)))
+    { fail("job completion port"); return false; }
+  if (!TerminateJobObject(job, 1)) { fail("TerminateJobObject"); return false; }
+#ifdef AVE_TEST_UNQUERYABLE_JOB
+  // The query failure fixture proves an unreadable job never yields a receipt.
+  HANDLE queried = INVALID_HANDLE_VALUE;
+#else
+  HANDLE queried = job;
+#endif
+  const ULONGLONG deadline = GetTickCount64() + 5000;
+  for (;;) {
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+    if (!QueryInformationJobObject(queried, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr))
+      { fail("QueryInformationJobObject"); return false; }
+    if (accounting.ActiveProcesses == 0) return true;
+    const ULONGLONG now = GetTickCount64();
+    if (now >= deadline) {
+      std::fprintf(stderr, "Windows job launcher: %lu job processes survived termination\n", accounting.ActiveProcesses);
+      return false;
+    }
+    DWORD message;
+    ULONG_PTR key;
+    LPOVERLAPPED overlapped;
+    if (!GetQueuedCompletionStatus(port, &message, &key, &overlapped, static_cast<DWORD>(deadline - now)) &&
+        GetLastError() != WAIT_TIMEOUT) { fail("GetQueuedCompletionStatus"); return false; }
+  }
+}
+int wmain(int argc, wchar_t** argv) {
+  // `--receipt <absolute path>` appends "0" to an existing registered receipt only
+  // after the closed job is proven empty.
+  const bool contained = argc >= 2 && wcscmp(argv[1], L"--receipt") == 0;
+  const int first = contained ? 3 : 1;
+  if (contained && (argc < 3 || !absolutePath(argv[2]))) {
+    std::fprintf(stderr, "Windows job launcher requires an absolute receipt path\n");
+    return 125;
+  }
+  if (argc <= first || !absolutePath(argv[first])) {
+    std::fprintf(stderr, "Windows job launcher requires an absolute executable path\n");
+    return 125;
+  }
+  // Strip only this launcher's own arguments. Forward the original command tail
+  // so arguments undergo precisely the same quoting as a direct pipe spawn.
+  bool same = true;
+  wchar_t* command = skipArgument(GetCommandLineW(), nullptr, &same);
+  for (int i = 1; i < first; ++i) command = skipArgument(command, argv[i], &same);
+  if (!same) {
+    std::fprintf(stderr, "Windows job launcher could not separate its own arguments\n");
+    return 125;
+  }
 
   std::wstring commandLine(command);
 
@@ -47,6 +103,11 @@ int wmain(int argc, wchar_t** argv) {
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
   if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
     return fail("SetInformationJobObject");
+  HANDLE receipt = INVALID_HANDLE_VALUE;
+  if (contained) {
+    receipt = CreateFileW(argv[2], FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (receipt == INVALID_HANDLE_VALUE) return fail("receipt open");
+  }
 
   HANDLE inherited[3]{};
   SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
@@ -79,7 +140,7 @@ int wmain(int argc, wchar_t** argv) {
   PROCESS_INFORMATION child{};
   // Assignment is atomic with creation, eliminating even an abandoned suspended
   // process if this launcher is terminated between creation and assignment.
-  if (!CreateProcessW(argv[1], commandLine.data(), nullptr, nullptr, TRUE,
+  if (!CreateProcessW(argv[first], commandLine.data(), nullptr, nullptr, TRUE,
                       EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
                       nullptr, nullptr, &startup.StartupInfo, &child)) return fail("CreateProcess in job");
   DeleteProcThreadAttributeList(attributes);
@@ -96,6 +157,12 @@ int wmain(int argc, wchar_t** argv) {
     code = 130;
   } else {
     code = fail("WaitForMultipleObjects");
+  }
+  if (contained) {
+    DWORD written = 0;
+    if (!emptyJob(job)) code = 125;
+    else if (!WriteFile(receipt, "0", 1, &written, nullptr) || written != 1) code = fail("receipt write");
+    CloseHandle(receipt);
   }
   // A completed root command must not leave descendants retaining its pipes.
   CloseHandle(job);

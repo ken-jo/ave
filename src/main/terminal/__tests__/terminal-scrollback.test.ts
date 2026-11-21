@@ -1,9 +1,10 @@
 /** A host tab's output kept across a restart: what is written to disk, who may read it, and what a new shell in the tab continues from.
  * A fake PTY stands for the shell; the store is the real one, on a real directory. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { configureHostResources } from "../../host-resources.js";
 
 type DataCb = (chunk: string) => void;
 type ExitCb = (e: { exitCode: number; signal?: number }) => void;
@@ -63,6 +64,7 @@ const start = (options: { restore?: boolean; tabId?: string } = {}) =>
   spawnTerminal({ tabId: options.tabId ?? TAB, lane: "manual", purpose: "workspace", ownerWindowId: WINDOW, cwd: tmpdir(), ...(options.restore ? { restore: true } : {}) });
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   shellDir = mkdtempSync(join(tmpdir(), "ave-scrollback-shell-"));
   home = mkdtempSync(join(tmpdir(), "ave-scrollback-home-"));
   aveHome = mkdtempSync(join(tmpdir(), "ave-scrollback-avehome-"));
@@ -225,6 +227,8 @@ describe("the file a tab's output is kept in", () => {
     // `/tmp` is a link to `/private/tmp` on macOS; Windows reaches its temporary directory through a short name as often as not.
     const temporary = process.platform === "win32" ? tmpdir() : "/tmp";
     const userData = mkdtempSync(join(realpathSync.native(temporary), "ave-scrollback-reached-"));
+    const sentinel = join(userData, "sentinel.txt");
+    writeFileSync(sentinel, "preserve the target");
     const link = join(home, "linked-user-data");
     try {
       const named = terminalScrollbackProfile(userData);
@@ -239,7 +243,10 @@ describe("the file a tab's output is kept in", () => {
       // Another directory is another profile.
       expect(terminalScrollbackProfile(home)).not.toBe(named);
     } finally {
-      rmSync(link, { force: true, recursive: false });
+      if (existsSync(link)) unlinkSync(link);
+      expect(existsSync(link)).toBe(false);
+      expect(statSync(userData).isDirectory()).toBe(true);
+      expect(readFileSync(sentinel, "utf8")).toBe("preserve the target");
       rmSync(userData, { recursive: true, force: true });
     }
   });
@@ -321,11 +328,17 @@ describe("the file a tab's output is kept in", () => {
     expect(await store.read("terminal:other-1")).toBe("two\r\n");
   });
 
-  it("refuses a file larger than a terminal's replay", async () => {
+  it.each([TERMINAL_REPLAY_MAX_BYTES, TERMINAL_REPLAY_MAX_BYTES + 1])("bounds a kept file of %i bytes to a terminal's replay", async (size) => {
     const store = terminalScrollbackStore(PROFILE);
     await store.save(TAB, ("x\r\n"));
-    writeFileSync(join(directory(), keptFiles()[0] ?? ""), "y".repeat(TERMINAL_REPLAY_MAX_BYTES + 1));
-    await expect(store.read(TAB)).rejects.toThrow(/larger than a terminal's replay/u);
+    writeFileSync(join(directory(), keptFiles()[0] ?? ""), "y".repeat(size));
+    if (size > TERMINAL_REPLAY_MAX_BYTES) await expect(store.read(TAB)).rejects.toThrow(/larger than a terminal's replay/u);
+    else expect(await store.read(TAB)).toBe("y".repeat(size));
+  });
+  it.runIf(process.platform === "win32")("keeps an unrelated native read failure distinct from an oversized replay", async () => {
+    const failure: unknown = await windowsKeptFileReader()(join(aveHome, "invalid|target")).catch(error => error);
+    expect(failure).toMatchObject({ status: 4, message: expect.stringContaining("Command failed") });
+    expect((failure as Error).message).not.toContain("larger than a terminal's replay");
   });
 
   it("finds a saved layout's terminal tabs wherever they are", () => {

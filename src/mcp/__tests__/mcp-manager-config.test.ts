@@ -781,6 +781,7 @@ describe("McpManager encrypted user credentials", () => {
       persistence.immediateBackoff = true;
       const manager = await makeManager();
       await expect(manager.loadFromConfig()).rejects.toMatchObject({ code: "mcp-credential-migration-failed" });
+      expect(renameSpy).toHaveBeenCalled();
       expect(await readFile(testConfigPath, "utf-8")).toBe(content);
       expect(storedSecrets.get("mcp.server.apiKey.private-server")).toBe("throwaway-legacy-key");
       expect(mockConnect).not.toHaveBeenCalled();

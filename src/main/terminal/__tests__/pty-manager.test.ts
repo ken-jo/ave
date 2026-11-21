@@ -1286,8 +1286,11 @@ describe("pty-manager typing an approved agent command", () => {
     pty.emitData(prompt());
     writeTerminal(TAB, "echo human\r");
     pty.emitData(`${mark("C;cmdline_url=echo%20human")}private user output\n${mark("D;0")}`);
-    const manual = await spawnLane({ tabId: "terminal:0000000b-1", lane: "manual", purpose: "workspace", ownerWindowId: 3 });
-    expect(manual.ok).toBe(true);
+    setManualShellPreference(() => process.execPath);
+    vi.stubEnv("SHELL", undefined);
+    const manual = await spawnLane({ tabId: "terminal:0000000b-1", lane: "manual", purpose: "workspace", ownerWindowId: 3 })
+      .finally(() => vi.unstubAllEnvs());
+    expect(manual.ok, JSON.stringify(manual)).toBe(true);
     if (!manual.ok) throw new Error("Missing manual terminal");
     expect(writeLane(manual.session, "echo manual\r")).toEqual({ ok: true });
     lastPty!.emitData("private manual output\n");
