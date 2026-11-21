@@ -502,7 +502,7 @@ describe("Windows job root writer precondition", () => {
     const done = runInJob(process.execPath, args, { root: job.localRoot, identity: job.options.identity, manifest, launcher });
     return { receipts, pidFile, manifest, done };
   }
-  const scanLocalRoot = job => runInjectedQuery("", script => script
+  const scanLocalRoot = (job, injection = "") => runInjectedQuery(injection, script => script
     .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`));
 
   function wrapperJob(t) {
@@ -696,8 +696,15 @@ describe("Windows job root writer precondition", () => {
       job.assertPreserved();
     });
 
-    for (const reference of ["cwd", "image"]) {
-      it(`refuses cleanup while an uncontained process has its ${reference} under the root`, async t => {
+    const NEWER_IDLE_ROWS = [
+      "function Get-CimInstance($Class, $Property) {",
+      "  1..600 | ForEach-Object { [pscustomobject]@{ ProcessId = 0; CreationDate = [datetime]::MaxValue } }",
+      "  CimCmdlets\\Get-CimInstance -ClassName $Class -Property $Property",
+      "}",
+    ].join("\n");
+    for (const [reference, injection] of [["cwd", ""], ["image", ""], ["cwd", NEWER_IDLE_ROWS]]) {
+      const behind = injection ? " behind 600 newer idle rows" : "";
+      it(`refuses cleanup while an uncontained process has its ${reference} under the root${behind}`, async t => {
         const job = fixture(t);
         const executable = reference === "image" ? join(job.localRoot, "example.exe") : process.execPath;
         const cwd = reference === "cwd" ? join(job.localRoot, "tmp") : job.parent;
@@ -711,7 +718,7 @@ describe("Windows job root writer precondition", () => {
             once(child.stdout, "data"), exited.then(() => { throw new Error("Reference fixture exited early"); }),
           ]);
           assert.equal(ready.toString().trim(), "ready");
-          await assert.rejects(cleanupJobRoot(root, { ...job.options, run: scanLocalRoot(job) }), error => {
+          await assert.rejects(cleanupJobRoot(root, { ...job.options, run: scanLocalRoot(job, injection) }), error => {
             assertReportedRoot(error, root);
             assert.match(error.message, /live processes can still access the job root/);
             const lines = error.message.split("\n");
@@ -719,6 +726,7 @@ describe("Windows job root writer precondition", () => {
               error.message);
             const timing = lines.find(line => /^Cleanup process scan inspected \d+ process rows in \d+ ms$/.test(line));
             assert.ok(timing, error.message);
+            if (injection) assert.ok(Number(timing.split(" ")[4]) > 600, timing);
             t.diagnostic(timing);
             return true;
           });

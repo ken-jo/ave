@@ -6,7 +6,6 @@ const OUTPUT_LIMIT = 64 * 1024;
 const RESULT_LIMIT = 20;
 const SCAN_LIMIT = 128;
 const DENY_LIMIT = 8;
-const PROCESS_SCAN_LIMIT = 512;
 const PROCESS_PATH_LIMIT = 256;
 const MAX_HOLDERS = 128;
 const FILE_OUTPUT_LIMIT = 32 * 1024;
@@ -371,9 +370,9 @@ function FindJobProcesses {
   $inspected = 0
   $matched = 0
   $sawQueryProcess = $false
-  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name |
-    Sort-Object CreationDate -Descending | Select-Object -First ${PROCESS_SCAN_LIMIT + 1} | ForEach-Object {
-    if (++$inspected -gt ${PROCESS_SCAN_LIMIT}) { $script:processRowLimited = $true; return }
+  # Rows stream unsorted; the deadline and the byte budget bound the scan.
+  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name | ForEach-Object {
+    $inspected++
     if ($matched -gt ${RESULT_LIMIT}) { return }
     $row = $_
     if ($row.ProcessId -eq $PID) { $sawQueryProcess = $true; return }
@@ -585,7 +584,6 @@ if (!$preflight) {
   } ${HOLDER_OUTPUT_LIMIT + 256}
 }
 $script:processFailure = $null
-$script:processRowLimited = $false
 $script:processMatchLimited = $false
 $script:processByteLimited = $false
 $script:processInspected = 0
@@ -599,10 +597,10 @@ try {
   }
 } catch { $script:processFailure = "process query HRESULT=$($_.Exception.HResult)" }
 $script:processFailed = $null -ne $script:processFailure
-$script:processLimited = $script:processRowLimited -or $script:processMatchLimited -or $script:processByteLimited
+$script:processLimited = $script:processMatchLimited -or $script:processByteLimited
 $null = WriteEvidence @{
   kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited
-  reason = $script:processFailure; rowLimited = $script:processRowLimited;
+  reason = $script:processFailure
   matchLimited = $script:processMatchLimited; byteLimited = $script:processByteLimited
   inspected = $script:processInspected; elapsedMs = $processWatch.ElapsedMilliseconds
 } ${OUTPUT_LIMIT}
@@ -799,7 +797,6 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
       if (row.kind === "processes") {
         processesComplete = true;
         if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");
-        if (row.rowLimited) emit(`Cleanup process scan exceeded ${PROCESS_SCAN_LIMIT} process rows`);
         if (row.matchLimited) emit(`Cleanup process scan exceeded ${RESULT_LIMIT} process matches`);
         if (row.byteLimited) emit(`Cleanup process output reached its ${OUTPUT_LIMIT}-byte budget`);
         if (row.reason) emit(`Cleanup process scan failed: ${row.reason}`);
