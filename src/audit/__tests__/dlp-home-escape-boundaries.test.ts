@@ -14,6 +14,9 @@ const unsupported = JSON.parse(readFileSync(
   new URL("./fixtures/home-redaction-unsupported-concatenations.json", import.meta.url), "utf8",
 )) as { cases: Record<string, string[]> };
 const corpus = literalHomeCorpus();
+const GENERIC_WINDOWS_HOME = String.raw`C:\Users\bob`;
+const GENERIC_WINDOWS_SLASH_HOME = GENERIC_WINDOWS_HOME.replaceAll("\\", "/");
+const GENERIC_WINDOWS_URL_JOIN = `${GENERIC_WINDOWS_SLASH_HOME}file:///`;
 
 it.each(corpus.map((row, index) => ({ ...row, baseline: base.cases[index] })))(
   "matches the pinned base on literal text and paths for $platform $home",
@@ -51,14 +54,14 @@ describe("unsupported home concatenations documented in the redaction contract",
       String.raw`open D:\fixtures\habitat.D:\fixtures\habitat\x now`, String.raw`open D:\fixtures\habitat.[home]\x now`],
     ["dot-joined native and slash copies", String.raw`E:\temp\ted`,
       String.raw`E:\temp\ted.E:/temp/ted`, String.raw`E:\temp\ted.[home]`],
-    ["dot-joined Unicode copies", String.raw`C:\Users\Café`,
-      String.raw`C:\Users\Café.C:\Users\Café`, "[home]é.[home]"],
-    ["dot-joined generic copies", String.raw`C:\Users\bob`,
-      String.raw`C:\Users\bob.C:\Users\bob`, "[home][home]"],
-    ["a directly joined pair before a dot join", String.raw`C:\Users\bob`,
-      String.raw`C:\Users\bobC:\Users\bob.C:\Users\bob`, String.raw`[home]:\Users\bob.[home]`],
-    ["four mixed generic copies with a literal suffix", String.raw`C:\Users\bob`,
-      String.raw`open C:\Users\bobC:/Users/bobC:\Users\bobC:\Users\bob\x now`, String.raw`open [home]:[home][home][home]\x now`],
+    ["dot-joined Unicode copies", String.raw`C:\Users\Bobé`,
+      String.raw`C:\Users\Bobé.C:\Users\Bobé`, "[home]é.[home]"],
+    ["dot-joined generic copies", GENERIC_WINDOWS_HOME,
+      `${GENERIC_WINDOWS_HOME}.${GENERIC_WINDOWS_HOME}`, "[home][home]"],
+    ["a directly joined pair before a dot join", GENERIC_WINDOWS_HOME,
+      `${GENERIC_WINDOWS_HOME.repeat(2)}.${GENERIC_WINDOWS_HOME}`, String.raw`[home]:\Users\bob.[home]`],
+    ["four mixed generic copies with a literal suffix", GENERIC_WINDOWS_HOME,
+      String.raw`open ${GENERIC_WINDOWS_HOME}${GENERIC_WINDOWS_SLASH_HOME}${GENERIC_WINDOWS_HOME.repeat(2)}\x now`, String.raw`open [home]:[home][home][home]\x now`],
     ["four mixed drive copies with a literal suffix", String.raw`D:\fixtures\habitat`,
       String.raw`open D:\fixtures\habitatD:/fixtures/habitatD:\fixtures\habitatD:\fixtures\habitat\x now`,
       String.raw`open D:\fixtures\habitatD:/fixtures/habitatD:\fixtures\habitat[home]\x now`],
@@ -68,8 +71,8 @@ describe("unsupported home concatenations documented in the redaction contract",
       String.raw`open D:\data\habitat\temp;D:/data/habitat.D:\data\habitat\x now`, "open [home-token] now"],
     ["a file URL followed by a drive copy", String.raw`D:\fixtures\habitat`,
       String.raw`file:///D:/fixtures/habitatD:\fixtures\habitat`, "file:///D:/fixtures/habitat[home]"],
-    ["file URLs between native and slash copies", String.raw`C:\Users\bob`,
-      String.raw`C:/Users/bobfile:///C:/Users/bobfile:///C:/Users/bobC:\Users\bob`, "[home]://[home]:///[home][home]"],
+    ["file URLs between native and slash copies", GENERIC_WINDOWS_HOME,
+      `${GENERIC_WINDOWS_URL_JOIN.repeat(2)}${GENERIC_WINDOWS_SLASH_HOME}${GENERIC_WINDOWS_HOME}`, "[home]://[home]:///[home][home]"],
   ] as const)("pins %s", async (_label, home, input, expected) => {
     const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
     expect(redactHomePathsInText(input), input).toBe(expected);
@@ -133,10 +136,10 @@ describe("complete source escape spans", () => {
 });
 
 const homes = [
-  ["linux", "/home/habitat"], ["darwin", "/Users/habitat"],
-  ["linux", "/home/John Smith"], ["darwin", "/Users/o'brien"],
-  ["win32", String.raw`C:\Users\habitat`], ["win32", String.raw`C:\Users\John Smith`],
-  ["win32", String.raw`C:\Users\O'Brien (Work)`], ["win32", String.raw`\\srv\share\habitat`],
+  ["linux", "/home/demo"], ["darwin", "/Users/demo"],
+  ["linux", "/home/Demo Smith"], ["darwin", "/Users/y'brien"],
+  ["win32", String.raw`C:\Users\demo`], ["win32", String.raw`C:\Users\Demo Smith`],
+  ["win32", String.raw`C:\Users\Y'Brien (Work)`], ["win32", String.raw`\\srv\share\habitat`],
 ] as const;
 
 it.each(homes)("preserves nested JSON syntax and idempotence on %s for %s", async (platform, home) => {
@@ -218,5 +221,5 @@ it.each([
   const { redactHomePathsInText, redactFsPath } = await loadHomeRedactors(home, platform);
   expect(redactHomePathsInText(path)).toBe(path);
   expect(redactFsPath(path)).toBe(path);
-  expect(redactHomePathsInText("C:/Users/sample/a /home/example/b")).toBe("[home]/a [home]/b");
+  expect(redactHomePathsInText("C:/Users/demo/a /home/example/b")).toBe("[home]/a [home]/b");
 });

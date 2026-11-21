@@ -29,7 +29,7 @@ function escapeFreeInputs(home: string, platform: HomePlatform): LiteralHomeCorp
   for (const text of [
     `see ${path} and ${path} now`, `"${home}"`, `cd "${path}" && ls`, `'${path}'`,
     `(${path})`, `[${path}]`, `file://${forward}`, `${home}, ${home}. ${home}: ${home};`,
-    "/home/other/x /Users/other/y C:/Users/other/z",
+    "/home/bar/x /Users/bar/y C:/Users/bar/z",
     JSON.stringify({ p: path, other: 1 }), JSON.stringify(JSON.stringify({ p: path })),
   ]) inputs.push(["text", text]);
   const slashHome = home.replaceAll("\\", "/");
@@ -70,17 +70,17 @@ function quotedHomeInputs(home: string): LiteralHomeCorpus["inputs"] {
 }
 
 export function literalHomeCorpus(): LiteralHomeCorpus[] {
-  const posixHomes = ["/srv/fixtures/habitat", "/home/bob", "/Users/Bob", "/home/John Smith", "/home/o'brien", "/Users/Café"];
+  const posixHomes = ["/srv/fixtures/habitat", "/home/bob", "/Users/Bob", "/home/Demo Smith", "/home/y'brien", "/Users/Bobé"];
   return [
     ...(["linux", "darwin"] as const).flatMap(platform => posixHomes.map(home => ({ platform, home, inputs: escapeFreeInputs(home, platform) }))),
-    ...[...WINDOWS_LITERAL_HOMES, String.raw`D:\fixtures\bob`, String.raw`C:\Users\John Smith`, String.raw`C:\Users\Café`]
+    ...[...WINDOWS_LITERAL_HOMES, String.raw`D:\fixtures\bob`, String.raw`C:\Users\Demo Smith`, String.raw`C:\Users\Bobé`]
       .map(home => ({ platform: "win32" as const, home, inputs: escapeFreeInputs(home, "win32") })),
-    { platform: "linux", home: "/home/José Gil", inputs: [
-      ["text", String.raw`C:\work\/home/José Gil/file`],
-      ["text", String.raw`\\wsl$\Ubuntu\/home/José Gil/file`],
+    { platform: "linux", home: "/home/Devé Gil", inputs: [
+      ["text", String.raw`C:\work\/home/Devé Gil/file`],
+      ["text", String.raw`\\wsl$\Ubuntu\/home/Devé Gil/file`],
     ] },
     ...([
-      ["linux", "/srv/fixtures/habitat"], ["linux", "/home/José Gil"],
+      ["linux", "/srv/fixtures/habitat"], ["linux", "/home/Devé Gil"],
       ["linux", "/home/bob"], ["darwin", "/Users/Bob"],
     ] as const).map(([platform, home]) => ({ platform, home, inputs: quotedHomeInputs(home) })),
   ];

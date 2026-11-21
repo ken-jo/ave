@@ -362,8 +362,8 @@ describe.each(["win32", "linux"] as const)("reversible home encodings on %s", (p
   });
   it("handles native encoded separators and escape-start ambiguity", async () => {
     if (platform === "linux") {
-      const { redactHomePathsInText } = await load("/home/habitat");
-      expect(redactHomePathsInText("/home/h%61bitat/file")).toBe("[home-token]");
+      const { redactHomePathsInText } = await load("/home/user");
+      expect(redactHomePathsInText("/home/u%73er/file")).toBe("[home-token]");
       return;
     }
     const { redactHomePathsInText } = await load(String.raw`D:\fixtures\habitat`);

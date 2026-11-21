@@ -28,7 +28,7 @@ const decoders = {
 };
 const homes = [
   ["linux", "/srv/fixtures/habitat", "/"], ["linux", "/srv/fixtures/김 철수", "/"], ["linux", "/srv/fixtures/O'Brien", "/"], ["linux", "/srv/fixtures/a&b", "/"],
-  ["win32", "D:\\fixtures\\habitat", "\\"], ["win32", "\\\\server\\share\\habitat", "\\"], ["win32", "C:\\Users\\John Smith", "\\"], ["win32", "C:\\Users\\김철수", "\\"], ["win32", "D:\\fixtures\\a𐐀b", "\\"],
+  ["win32", "D:\\fixtures\\habitat", "\\"], ["win32", "\\\\server\\share\\habitat", "\\"], ["win32", "C:\\Users\\Demo Smith", "\\"], ["win32", "C:\\Users\\김철수", "\\"], ["win32", "D:\\fixtures\\a𐐀b", "\\"],
 ] as const;
 
 type Encoder = keyof typeof encoders;
@@ -177,11 +177,11 @@ it.each([
   [String.raw`\\srv\share\Café`, String.raw`\docs\a.txt`],
   [String.raw`D:\fixtures\Café`, String.raw`\docs\a.txt`],
   [String.raw`E:\temp\tëd`, String.raw`\docs\a.txt`],
-  [String.raw`C:\Users\françois`, String.raw`\docs\a.txt`],
-  [String.raw`C:\Users\tomás`, String.raw`\docs\a.txt`],
-  [String.raw`C:\Users\renée`, String.raw`\docs\a.txt`],
-  [String.raw`C:\Users\núñez`, String.raw`\docs\a.txt`],
-  [String.raw`C:\Users\björn`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\demoçois`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\bobás`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\demoée`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\yúñez`, String.raw`\docs\a.txt`],
+  [String.raw`C:\Users\bazörn`, String.raw`\docs\a.txt`],
 ] as const)("redacts hexadecimal UTF-8 without decoding native separators in %s", async (home, suffix) => {
   const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
   const path = `${home}${suffix}`;
@@ -278,7 +278,7 @@ it.each([String.raw`\\srv\share\habitat`, String.raw`\\srv\share\bob`])(
   },
 );
 
-it.each(["D:\\fixtures\\habitat", "\\\\srv\\share\\habitat", "C:\\Users\\John Smith", "C:\\Users\\Café", "E:\\temp\\ted"])(
+it.each(["D:\\fixtures\\habitat", "\\\\srv\\share\\habitat", "C:\\Users\\Demo Smith", "C:\\Users\\Bobé", "E:\\temp\\ted"])(
   "redacts both encoded homes before a literal home for %s", async home => {
     const { redactHomePathsInText } = await loadHomeRedactors(home, "win32");
     const parts = home.replace(/^[a-z]:/iu, "").split(/\\+/u).filter(Boolean).map(escapeRegExp);
@@ -387,7 +387,7 @@ it.each([String.raw`C:\Users\bob`, String.raw`E:\temp\ted`])("redacts with JSON 
 
 it.each([
   ["win32", String.raw`D:\data\Café`], ["win32", String.raw`E:\temp\tëd`],
-  ["win32", String.raw`\\srv\share\Café`], ["win32", String.raw`C:\Users\Café`], ["linux", "/srv/fixtures/Café"],
+  ["win32", String.raw`\\srv\share\Café`], ["win32", String.raw`C:\Users\Bobé`], ["linux", "/srv/fixtures/Café"],
 ] as const)("redacts decoded-only homes before escape-like descendants on %s for %s", async (platform, home) => {
   const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
   const separator = platform === "win32" ? "\\" : "/";
