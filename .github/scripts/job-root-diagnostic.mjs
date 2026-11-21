@@ -261,16 +261,41 @@ function TestJobPath($path, $source, $failures) {
   }
 }
 
-function FindProcessReference($row, $pattern, $failures) {
+function TestArgumentPath($path) {
+  # Resolve dot segments; trimming trailing dots and spaces from every segment can only add matches.
+  $segments = [Collections.Generic.List[string]]::new()
+  foreach ($segment in $path.Substring(3).Split('\')) {
+    if ($segment -eq '..') { if ($segments.Count) { $segments.RemoveAt($segments.Count - 1) } }
+    elseif ($segment -ne '.') {
+      $segment = $segment.TrimEnd(' ', '.')
+      if ($segment) { $segments.Add($segment) }
+    }
+  }
+  $full = $path.Substring(0, 3) + ($segments -join '\') + '\'
+  return $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+# Every drive path start is an operand, also after a switch such as /out: or -o. The first group ends at
+# a delimiter, the second only at a quote or a character Win32 file names cannot hold, so quoted paths keep spaces.
+$argumentPattern = [regex]::new('(?=([a-z]:\\[^\s"''<>|*?:;,&=)]*))(?=([a-z]:\\[^"''<>|*?:]*))',
+  [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$rootLeaf = [IO.Path]::GetFileName($root.TrimEnd('\'))
+
+function FindArgumentReference($commandLine) {
+  # Canonical segments appear literally in the operand, so a line without the root's leaf cannot match.
+  if ($commandLine.IndexOf($rootLeaf, [StringComparison]::OrdinalIgnoreCase) -lt 0) { return $false }
+  foreach ($match in $argumentPattern.Matches($commandLine.Replace('/', '\'))) {
+    if ((TestArgumentPath $match.Groups[1].Value) -or (TestArgumentPath $match.Groups[2].Value)) { return $true }
+  }
+  return $false
+}
+
+function FindProcessReference($row, $failures) {
   if (!$row.ExecutablePath) { $failures.Add('missing CIM ExecutablePath') }
   elseif (TestJobPath $row.ExecutablePath 'image' $failures) { return 'image' }
 
   if (!$row.CommandLine) { $failures.Add('missing CIM CommandLine') }
-  else {
-    foreach ($match in $pattern.Matches($row.CommandLine.Replace('/', '\'))) {
-      if (TestJobPath $match.Value 'argument' $failures) { return 'argument' }
-    }
-  }
+  elseif (FindArgumentReference $row.CommandLine) { return 'argument' }
   $cwd = ReadCurrentDirectory $row.ProcessId
   if ($cwd.reason) { $failures.Add($cwd.reason) }
   elseif (TestJobPath $cwd.path 'cwd' $failures) { return 'cwd' }
@@ -343,9 +368,6 @@ function ReadFileHolders($handle, $path) {
 }
 
 function FindJobProcesses {
-  $rootPattern = '(?<![\w:\\])(?:\\\\\?\\)?' + [regex]::Escape($root) +
-    '(?:\\[^\s"''<>|;&=,)]*)?(?=$|[\s"''<>|;&=,):])'
-  $pattern = [regex]::new($rootPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
   $inspected = 0
   $matched = 0
   $sawQueryProcess = $false
@@ -355,14 +377,11 @@ function FindJobProcesses {
     if ($matched -gt ${RESULT_LIMIT}) { return }
     $row = $_
     if ($row.ProcessId -eq $PID) { $sawQueryProcess = $true; return }
-    if ($null -eq $row.ProcessId) {
-      @{ kind = 'processUnreadable'; pid = $null; reason = 'missing CIM ProcessId' }
-      return
-    }
+    if ($null -eq $row.ProcessId) { $script:processFailure = 'process row without ProcessId'; return }
     # The idle pseudo-process has no user-mode process to inspect.
     if ($row.ProcessId -eq 0) { return }
     $failures = [Collections.Generic.List[string]]::new()
-    $reason = try { FindProcessReference $row $pattern $failures }
+    $reason = try { FindProcessReference $row $failures }
       catch { $failures.Add('process reference query failed') }
     if ($reason) {
       if (++$matched -gt ${RESULT_LIMIT}) { $script:processMatchLimited = $true; return }
@@ -804,10 +823,10 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
         }
       } else if (row.kind === "processUnreadable") {
         const { pid, reason } = row;
-        if ((pid !== null && !isProcessId(pid)) || typeof reason !== "string" || !reason) {
+        if (!isProcessId(pid) || typeof reason !== "string" || !reason) {
           throw new Error("Invalid unreadable process record");
         }
-        emit(`process unreadable pid=${pid ?? '"not determined"'} reason=${formatOptionalText(reason, PROCESS_PATH_LIMIT)}`,
+        emit(`process unreadable pid=${pid} reason=${formatOptionalText(reason, PROCESS_PATH_LIMIT)}`,
           OUTPUT_LIMIT - STATUS_RESERVE - PROCESS_MATCH_RESERVE);
       } else {
         throw new Error("Unexpected process record");

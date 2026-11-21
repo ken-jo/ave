@@ -604,7 +604,6 @@ describe("Windows job root writer precondition", () => {
       { name: "a cwd over the byte limit", nativeFailure: "cwd exceeds 4096 bytes" },
       { name: "a missing CIM ExecutablePath", field: "ExecutablePath", value: "$null", reason: "missing CIM ExecutablePath" },
       { name: "a missing CIM CommandLine", field: "CommandLine", value: "$null", reason: "missing CIM CommandLine" },
-      { name: "a missing CIM ProcessId", field: "ProcessId", value: "$null", reason: "missing CIM ProcessId" },
       { name: "a path conversion error", field: "ExecutablePath", value: '"C:\\example`0.exe"', reason: "path conversion failed (image)" },
     ];
     for (const { name, nativeFailure, field, value, reason = nativeFailure } of processCases) {
@@ -626,12 +625,30 @@ describe("Windows job root writer precondition", () => {
         await cleanupJobRoot(root, { ...job.options, run, diagnostic });
         assert.equal(existsSync(job.localRoot), false);
         assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
-        const displayedPid = field === "ProcessId" ? '"not determined"' : process.pid;
         const lines = output({ diagnostic });
-        assert.ok(lines.split("\n").some(line => line.startsWith(`process unreadable pid=${displayedPid} reason=`)
+        assert.ok(lines.split("\n").some(line => line.startsWith(`process unreadable pid=${process.pid} reason=`)
           && line.includes(reason)), lines);
       });
     }
+
+    it("refuses cleanup when a process row has no ProcessId", async t => {
+      const job = fixture(t);
+      const run = runInjectedQuery("", script => script
+        .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`)
+        .replace("    $row = $_", `$&
+    if ($row.ProcessId -eq ${process.pid}) {
+      $row = $row | Select-Object -Property *
+      $row.ProcessId = $null
+    }`));
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
+        assertReportedRoot(error, root);
+        assert.match(error.message, /writer evidence is incomplete/);
+        assert.match(error.message, /^Cleanup process scan failed: process row without ProcessId$/m);
+        assert.match(error.message, /^Cleanup process scan was incomplete$/m);
+        return true;
+      });
+      job.assertPreserved();
+    });
 
     it("reports unreadable process evidence on successful rollback", async t => {
       const job = fixture(t);
@@ -1385,15 +1402,19 @@ describe("Windows job root cleanup diagnostics", () => {
     try {
       const fromCwd = await start(root);
       const argument = join(root, "SYNTHETIC-PRIVATE");
-      const fromArg = await start(tmpdir(), `--token=${argument}`);
-      const nearMiss = await start(tmpdir(), `${root}-other\\outside.txt`, `${root}\\..\\outside.txt`);
+      const viaSibling = `${win32.dirname(root)}\\example\\..\\${win32.basename(root)}\\SYNTHETIC-PRIVATE`;
+      const fromArgs = [];
+      for (const operand of [`--token=${argument}`, `/out:${argument}`, `-o${argument}`, viaSibling, viaSibling.replace("example", "example dir")]) {
+        fromArgs.push([operand, await start(tmpdir(), operand)]);
+      }
+      const nearMiss = await start(tmpdir(), `${root}-other\\outside.txt`, `${root}\\..\\outside.txt`, `/out:${root}-other`);
       const diagnostic = mock.fn();
       await diagnoseJobRoot(root, diagnostic);
       const lines = output({ diagnostic }).split("\n");
       const lineFor = pid => lines.find(line => line.startsWith(`process pid=${pid} `));
       assert.doesNotMatch(lines.join("\n"), /SYNTHETIC-PRIVATE|--token/);
       assert.ok(lineFor(fromCwd)?.includes("match=cwd"), lines.join("\n"));
-      assert.ok(lineFor(fromArg)?.includes("match=argument"), lines.join("\n"));
+      for (const [operand, pid] of fromArgs) assert.ok(lineFor(pid)?.includes("match=argument"), `${operand}\n${lines.join("\n")}`);
       assert.equal(lineFor(nearMiss), undefined, lines.join("\n"));
       assert.doesNotMatch(lines.join("\n"), /SYNTHETIC|--token|Cleanup process scan was incomplete/);
     } finally {
