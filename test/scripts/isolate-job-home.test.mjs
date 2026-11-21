@@ -259,7 +259,7 @@ describe("Windows job root writer precondition", () => {
         readIdentity: path => fixtureIdentity(localPath(path)),
         rename: (from, to) => renameSync(localPath(from), localPath(to)),
         remove: (path, options) => rmSync(localPath(path), options),
-        readReceipts: () => provenReceipts(identity), manifest: MANIFEST,
+        readReceipts: () => provenReceipts(identity),
       },
       assertPreserved() {
         assert.equal(readFileSync(held, "utf8"), "example");
@@ -415,11 +415,27 @@ describe("Windows job root writer precondition", () => {
 
   const FOREIGN = "00000000-0000-4000-8000-000000000000.receipt";
   const [first, second] = MANIFEST;
+  // A failed step skips the later ones, which register nothing.
+  for (const [name, receipts] of [
+    ["only the first contained step started", identity => provenReceipts(identity).slice(0, 1)],
+    ["no contained step started", () => []],
+  ]) {
+    it(`cleans up when ${name}`, async t => {
+      const job = fixture(t);
+      const run = queryResult();
+      await cleanupJobRoot(root, { ...job.options, readReceipts: () => receipts(job.options.identity), run });
+      assert.equal(run.mock.callCount(), 1);
+      assert.deepEqual(readdirSync(job.parent), ["shared"]);
+    });
+  }
+
   for (const [name, receipts, problems] of [
-    ["an empty ledger", () => [], [`"${first.receipt}" is missing`, `"${second.receipt}" is missing`]],
-    ["a missing step", identity => provenReceipts(identity).slice(0, 1), [`"${second.receipt}" is missing`]],
+    ["a started step without a verdict while later steps never started", identity => [{ name: first.receipt, text: `${first.id}\n${identity}\n` }],
+      [`"${first.receipt}" has no zero verdict`]],
     ["a foreign zero file", identity => [...provenReceipts(identity), { name: FOREIGN, text: "0" }],
       [`"${FOREIGN}" is not a contained-step receipt`]],
+    ["a receipt name without a step position", identity => [{ name: "example.receipt", text: `example\n${identity}\n0` }],
+      [`"example.receipt" is not a contained-step receipt`]],
     ["a foreign directory", identity => [...provenReceipts(identity), { name: "example", text: undefined }],
       [`"example" is not a contained-step receipt`]],
     ["a wrong identity", identity => [{ name: first.receipt, text: `${first.id}\n1:2:3\n0` }, provenReceipts(identity)[1]],
@@ -435,7 +451,7 @@ describe("Windows job root writer precondition", () => {
       const job = fixture(t);
       const run = queryResult();
       await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts: () => receipts(job.options.identity), run }), {
-        message: [`Cannot clean up job root ${root}: ${problems.length} contained-step receipts are missing or unproven`,
+        message: [`Cannot clean up job root ${root}: ${problems.length} job receipt ledger entries are unproven`,
           ...problems.map(problem => `receipt ${problem}`)].join("\n"),
       });
       assert.equal(run.mock.callCount(), 0);
@@ -443,15 +459,36 @@ describe("Windows job root writer precondition", () => {
     });
   }
 
-  it("checks receipts against the workflow manifest by default", async t => {
+  it("accepts the receipt of every workflow manifest step", async t => {
     const job = fixture(t);
     const { containedStepManifest } = await import("../../.github/scripts/run-in-job.mjs");
     const manifest = await containedStepManifest();
     assert.ok(manifest.length > 1);
-    await cleanupJobRoot(root, {
-      ...job.options, manifest: undefined, readReceipts: () => provenReceipts(job.options.identity, manifest), run: queryResult(),
-    });
+    await cleanupJobRoot(root, { ...job.options, readReceipts: () => provenReceipts(job.options.identity, manifest), run: queryResult() });
     assert.deepEqual(readdirSync(job.parent), ["shared"]);
+  });
+
+  it("cleans up without installed packages", () => {
+    // Cleanup also runs after a failed dependency install.
+    const child = [
+      'import assert from "node:assert/strict";',
+      'import { registerHooks } from "node:module";',
+      'registerHooks({ resolve: (specifier, context, next) => {',
+      '  if (specifier === "yaml") throw Object.assign(new Error("Cannot find package yaml"), { code: "ERR_MODULE_NOT_FOUND" });',
+      '  return next(specifier, context);',
+      '} });',
+      'await assert.rejects(import("yaml"), { code: "ERR_MODULE_NOT_FOUND" });',
+      'const [module, input] = process.argv.slice(1);',
+      'const { root, records, ...options } = JSON.parse(input);',
+      'const { cleanupWindowsJobRoot } = await import(module);',
+      'await cleanupWindowsJobRoot(root, { ...options, readIdentity: () => options.identity, rename() {}, remove() {},',
+      '  readReceipts: () => [], diagnostic() {}, run: (_command, _args, _options, done) => done(null, records) });',
+      'console.log("cleaned");',
+    ].join("\n");
+    const input = { root, systemRoot, identity: "1:2:3", records: queryRecords({ preflight: true }) };
+    const module = new URL("../../.github/scripts/isolate-job-home.mjs", import.meta.url).href;
+    assert.equal(execFileSync(process.execPath, ["--input-type=module", "-e", child, module, JSON.stringify(input)],
+      { encoding: "utf8", windowsHide: true }), "cleaned\n");
   });
 
   const TOMBSTONE = /^ave-ci-abc123\.cleanup-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u;
@@ -500,7 +537,7 @@ describe("Windows job root writer precondition", () => {
     const args = ["-e", script, cwd, pidFile];
     const manifest = [{ id: "example-1", receipt: "example-1.receipt", invocation: [process.execPath, ...args].join(" ") }];
     const done = runInJob(process.execPath, args, { root: job.localRoot, identity: job.options.identity, manifest, launcher });
-    return { receipts, pidFile, manifest, done };
+    return { receipts, pidFile, done };
   }
   const scanLocalRoot = (job, injection = "") => runInjectedQuery(injection, script => script
     .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`));
@@ -536,7 +573,7 @@ describe("Windows job root writer precondition", () => {
   });
 
   it("keeps the setup import graph free of installed packages", () => {
-    // Setup runs before dependencies are installed; the manifest loads on demand.
+    // Setup and cleanup run without installed packages; the wrapper loads the manifest on demand.
     const seen = new Set();
     const visit = url => {
       if (seen.has(url.href)) return;
@@ -554,23 +591,23 @@ describe("Windows job root writer precondition", () => {
   if (process.platform === "win32") {
     it("removes the root after the job close kills a live contained child", async t => {
       const job = fixture(t);
-      const { receipts, pidFile, manifest, done } = containedChild(job);
+      const { receipts, pidFile, done } = containedChild(job);
       assert.equal(await done, 0);
       const pid = Number(readFileSync(pidFile, "utf8"));
       assert.ok(pid > 0);
       assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
       assert.deepEqual(localReceipts(receipts), [{ name: "example-1.receipt", text: `example-1\n${job.options.identity}\n0` }]);
-      await cleanupJobRoot(root, { ...job.options, manifest, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job), diagnostic: () => {} });
+      await cleanupJobRoot(root, { ...job.options, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job), diagnostic: () => {} });
       assert.deepEqual(readdirSync(job.parent), ["shared"]);
     });
 
     it("refuses cleanup after a contained step's job query fails", async t => {
       const job = fixture(t);
-      const { receipts, manifest, done } = containedChild(job, join(helpers, "ave-job-query-failure.exe"));
+      const { receipts, done } = containedChild(job, join(helpers, "ave-job-query-failure.exe"));
       assert.equal(await done, 125);
       assert.deepEqual(localReceipts(receipts), [{ name: "example-1.receipt", text: `example-1\n${job.options.identity}\n` }]);
-      await assert.rejects(cleanupJobRoot(root, { ...job.options, manifest, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job) }), {
-        message: `Cannot clean up job root ${root}: 1 contained-step receipts are missing or unproven\nreceipt "example-1.receipt" has no zero verdict`,
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job) }), {
+        message: `Cannot clean up job root ${root}: 1 job receipt ledger entries are unproven\nreceipt "example-1.receipt" has no zero verdict`,
       });
       job.assertPreserved();
     });
@@ -999,7 +1036,7 @@ describe("Windows cleanup root ownership", () => {
       },
       rename: (from, to) => renameSync(localPath(from), localPath(to)),
       remove: (path, options) => rmSync(localPath(path), options),
-      readReceipts: () => provenReceipts(identity), manifest: MANIFEST,
+      readReceipts: () => provenReceipts(identity),
       run: queryResult(),
     }).catch(error => error);
     fixture.assertPreserved();

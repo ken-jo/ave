@@ -862,12 +862,14 @@ jobs:
       # Each run-in-job line above is a manifest step: its wrapper registers the
       # step id and job-root identity in the step's receipt, and its launcher
       # appends "0" only after the closed kill-on-close job reports zero processes.
-      # A missing, foreign or unproven receipt refuses cleanup, so a job that
-      # stops before every contained step ran also fails here. Receipts target
-      # accidental lingering writers, not forgery by a test running as the CI
-      # account. A receipt covers only the step's descendants. The sandbox
-      # helper's runner and payload start through the logon service in jobs of
-      # their own, so the process scan is the authoritative check for them: the
+      # A foreign entry or a registered receipt without that proof refuses
+      # cleanup. A step that never started leaves no receipt, so a job that
+      # stops early still cleans up; cleanup reads no manifest and needs no
+      # installed packages. Receipts target accidental lingering writers, not
+      # forgery by a test running as the CI account. A receipt covers only the
+      # step's descendants. The sandbox helper's runner and payload start
+      # through the logon service in jobs of their own, so the process scan is
+      # the authoritative check for them: the
       # runner's image is the helper copy in TEMP under the root, and the payload
       # matches by cwd or argument. One pass over every process (image, command
       # line, cwd) refuses on a match or an unfinished scan and lists unreadable

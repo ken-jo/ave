@@ -70,8 +70,8 @@ const UNCONTAINED_COMMANDS = new Map([
 ]);
 
 /**
- * The contained-step manifest that run-in-job.mjs and job-root cleanup share:
- * one receipt per contained invocation, named from its step and its position.
+ * The contained-step manifest that run-in-job.mjs registers against: one
+ * receipt per contained invocation, named from its step and its position.
  */
 export function containedSteps(workflow) {
   const manifest = [];

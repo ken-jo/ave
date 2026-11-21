@@ -1,8 +1,8 @@
 // Runs one CI test command inside the job launcher's kill-on-close job. The
 // wrapper registers the command's manifest step and the job-root identity in
 // that step's receipt; the launcher appends "0" only after it has terminated
-// the job and proven it empty. Cleanup refuses the job root without every
-// step's proof.
+// the job and proven it empty. Cleanup refuses the job root while any
+// registered step lacks that proof.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
@@ -12,7 +12,7 @@ import { windowsJobLauncherPath } from "../../scripts/prepare-windows-job.mjs";
 export const JOB_RECEIPTS = "job-receipts";
 const REPOSITORY = fileURLToPath(new URL("../..", import.meta.url));
 
-// Loaded on demand: job-root setup runs before packages are installed.
+// Loaded on demand: job-root setup and cleanup import this module and must run without installed packages.
 export async function containedStepManifest() {
   const { containedSteps } = await import("./check-windows-workflow.mjs");
   return containedSteps(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
