@@ -503,6 +503,22 @@ describe("Windows helper integrity", () => {
     }) !== undefined;
   }
 
+  function createSweepDirectory(directory: string): void {
+    if (process.platform !== "win32") {
+      mkdirSync(directory);
+      return;
+    }
+    runFixturePowerShell([
+      "$ErrorActionPreference = 'Stop'",
+      "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+      "$acl = New-Object System.Security.AccessControl.DirectorySecurity",
+      "$acl.SetOwner($sid)",
+      "$acl.SetAccessRuleProtection($true, $false)",
+      "$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'None', 'None', 'Allow')))",
+      "$null = [System.IO.Directory]::CreateDirectory($env:AVE_TEST_COPY, $acl)",
+    ].join("; "), { AVE_TEST_COPY: directory });
+  }
+
   it.for(["no marker", "empty bin without a marker", "live marker"])("keeps a paused allocation with %s", async (shape, context) => {
     const root = dirname(fixture().source);
     const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
@@ -540,17 +556,37 @@ describe("Windows helper integrity", () => {
   });
 
   it("keeps a partial copy with an unprotected DACL", async (context) => {
-    const root = dirname(fixture().source);
+    const root = join(dirname(fixture().source), "sweep");
+    // The fixture parent has no inheritable rules, so enabling inheritance adds no ACEs.
+    createSweepDirectory(root);
     const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
-    mkdirSync(copy);
+    createSweepDirectory(copy);
     const marker = join(copy, "owner.json");
     writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+    const setProtection = (protectedAcl: boolean): string | undefined => runFixturePowerShell([
+      "$ErrorActionPreference = 'Stop'",
+      "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+      "$protected = $env:AVE_TEST_PROTECTED -eq 'true'",
+      "$path = $env:AVE_TEST_COPY",
+      "$acl = [System.IO.Directory]::GetAccessControl($path)",
+      "$acl.SetAccessRuleProtection($protected, $true)",
+      "[System.IO.Directory]::SetAccessControl($path, $acl)",
+      "$actual = [System.IO.Directory]::GetAccessControl($path)",
+      "if ($actual.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or $actual.AreAccessRulesProtected -ne $protected) { throw 'Unexpected fixture owner or protection' }",
+      "$rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+      "if ($rules.Count -ne 1 -or $rules[0].IdentityReference -ne $sid -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl' -or $rules[0].InheritanceFlags -ne 'None' -or $rules[0].PropagationFlags -ne 'None' -or $rules[0].IsInherited) { throw 'Unexpected fixture access rules' }",
+      "[Console]::WriteLine($actual.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]'Owner,Group'))",
+    ].join("; "), { AVE_TEST_COPY: copy, AVE_TEST_PROTECTED: String(protectedAcl) });
+    const windows = process.platform === "win32";
+    const ownerAndGroup = windows ? setProtection(false) : undefined;
     if (!await sweepFixture(root, false)) return context.skip("PowerShell unavailable");
     expect(existsSync(marker)).toBe(true);
-    if (process.platform !== "win32") {
-      await sweepFixture(root);
-      expect(existsSync(copy)).toBe(false);
+    if (windows) {
+      expect(ownerAndGroup?.trim()).toBeTruthy();
+      expect(setProtection(true)).toBe(ownerAndGroup);
     }
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
   });
 
   it("names every module its PowerShell steps use", async () => {
