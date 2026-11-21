@@ -119,11 +119,11 @@ function ReadFileTime($bytes, $offset) {
   catch { return $null }
 }
 
-function ReadChildren($handle, $limit = $null) {
+function ReadChildren($handle, $limit) {
   $bytes = [byte[]]::new(16384)
   $ioStatus = $marshal::AllocHGlobal(2 * $pointerSize)
   try {
-    while ($null -eq $limit -or $limit -gt 0) {
+    while ($limit -gt 0) {
       # FileDirectoryInformation. STATUS_NO_MORE_FILES ends the scan.
       $status = $native::NtQueryDirectoryFile($handle, 0, 0, 0, $ioStatus, $bytes, $bytes.Length, 1, 0, 0, 0)
       if ($status -eq -2147483642) { return }
@@ -135,7 +135,7 @@ function ReadChildren($handle, $limit = $null) {
         if ($name -ne '.' -and $name -ne '..') {
           $attributes = [IO.FileAttributes][BitConverter]::ToInt32($bytes, $offset + 56)
           @{ name = $name; attributes = $attributes }
-          if ($null -ne $limit -and --$limit -eq 0) { return }
+          if (--$limit -eq 0) { return }
         }
         $advance = [BitConverter]::ToInt32($bytes, $offset)
         $offset += $advance
@@ -445,40 +445,6 @@ function OpenJobParent {
   return @{ handle = $parent; pinned = $parentPinned }
 }
 
-function FindWriterEntries($parent, $name, $path, $expectedKind) {
-  $handle = $null
-  $pinned = $false
-  $isDirectory = $expectedKind -eq $directoryFlag
-  try {
-    if ($expectedKind -band $reparseFlag) { throw 'reparse point' }
-    $status = 0
-    $access = $readAttributes
-    $sharing = $shareAll
-    if ($isDirectory) { $access = $access -bor $readData; $sharing = $shareWithoutDelete }
-    $handle = OpenRelative $parent $name $access $sharing ([ref]$status)
-    if (!$handle) { throw "NtOpenFile status=$status" }
-    $kind = (ReadBasicInformation $handle $true) -band ($directoryFlag -bor $reparseFlag)
-    if ($kind -ne $expectedKind) { throw 'directory or reparse attributes changed' }
-    if ($isDirectory) {
-      # Keep verified directories pinned through the authoritative scan.
-      $handles.Add($handle)
-      $pinned = $true
-    }
-    ReadFileHolders $handle $path
-    if ($isDirectory) {
-      ReadChildren $handle | ForEach-Object {
-        $childKind = $_.attributes -band ($directoryFlag -bor $reparseFlag)
-        FindWriterEntries $handle $_.name ([IO.Path]::Combine($path, $_.name)) $childKind
-      }
-    }
-  } catch {
-    $relative = if ($path -eq $root) { '.' } else { $path.Substring($prefix.Length) }
-    @{ kind = 'entryFailure'; path = $relative; reason = $_.Exception.Message }
-  } finally {
-    if ($handle -and !$pinned) { $handle.Dispose() }
-  }
-}
-
 function FindSurvivingEntries($jobParent) {
   $queue = [Collections.Generic.Queue[object]]::new()
   $queue.Enqueue(@{ path = $root; name = [IO.Path]::GetFileName($root); attributes = $directoryFlag;
@@ -550,60 +516,55 @@ $handles = [Collections.Generic.List[object]]::new()
 $files = [Collections.Generic.List[object]]::new()
 $script:discovered = 0
 $script:holderFailed = $false
-$writerHolders = [Collections.Generic.List[object]]::new()
 $holderRecordLimited = $false
 $holderByteLimited = $false
-try {
+$holderLookupLimited = $false
+# The precondition is the process scan alone; the bounded entry and holder report runs only after a failure.
+if (!$preflight) {
   try {
-    $jobParent = OpenJobParent
-    if ($preflight) {
-      FindWriterEntries $jobParent.handle ([IO.Path]::GetFileName($root)) $root $directoryFlag | ForEach-Object {
-        if ($writerHolders.Count -ge ${MAX_HOLDERS}) { $holderRecordLimited = $true }
-        else { $writerHolders.Add($_) }
-      }
-    } else {
-      FindSurvivingEntries $jobParent
-    }
-  } catch { $script:failed = $true; $script:scanFailure = $_.Exception.Message }
-  $entries = @($priority.ToArray() + $survivors.ToArray() | Select-Object -First ${RESULT_LIMIT})
-  $fileLimited = $priority.Count + $survivors.Count -gt ${RESULT_LIMIT} -or $script:discovered -ge ${SCAN_LIMIT}
-  foreach ($entry in $entries) {
-    if (!(WriteEvidence $entry ${FILE_OUTPUT_LIMIT})) { $fileLimited = $true }
-  }
-  $null = WriteEvidence @{
-    kind = 'files'; failed = $script:failed; changed = $script:changed; limited = $fileLimited
-    empty = $entries.Count -eq 0; reason = $script:scanFailure
-  } ${FILE_OUTPUT_LIMIT + 256}
-
-  $holderFailures = [Collections.Generic.List[object]]::new()
-  & {
     try {
-      if ($preflight) { $writerHolders.ToArray() }
-      else {
-        foreach ($file in $files) {
+      $jobParent = OpenJobParent
+      FindSurvivingEntries $jobParent
+    } catch { $script:failed = $true; $script:scanFailure = $_.Exception.Message }
+    $entries = @($priority.ToArray() + $survivors.ToArray() | Select-Object -First ${RESULT_LIMIT})
+    $fileLimited = $priority.Count + $survivors.Count -gt ${RESULT_LIMIT} -or $script:discovered -ge ${SCAN_LIMIT}
+    foreach ($entry in $entries) {
+      if (!(WriteEvidence $entry ${FILE_OUTPUT_LIMIT})) { $fileLimited = $true }
+    }
+    $null = WriteEvidence @{
+      kind = 'files'; failed = $script:failed; changed = $script:changed; limited = $fileLimited
+      empty = $entries.Count -eq 0; reason = $script:scanFailure
+    } ${FILE_OUTPUT_LIMIT + 256}
+
+    $holderFailures = [Collections.Generic.List[object]]::new()
+    # A holder lookup costs about 15 ms per file, so look up only as many files as the report lists.
+    $holderLookupLimited = $files.Count -gt ${RESULT_LIMIT}
+    & {
+      try {
+        foreach ($file in ($files | Select-Object -First ${RESULT_LIMIT})) {
           try { ReadVerifiedHolders $file }
           catch { NewHolderFailure $file.path 'query' }
         }
+      } catch {
+        $script:holderFailed = $true
+        NewHolderFailure $root 'query'
       }
-    } catch {
-      $script:holderFailed = $true
-      if (!$preflight) { NewHolderFailure $root 'query' }
+    } | ForEach-Object {
+      if ($_.limited) { $holderRecordLimited = $true }
+      if ($_.kind -ne 'holder') { $holderFailures.Add($_) }
+      elseif (!(WriteEvidence $_ ${HOLDER_OUTPUT_LIMIT})) { $holderByteLimited = $true }
     }
-  } | ForEach-Object {
-    if ($_.limited) { $holderRecordLimited = $true }
-    if (!$preflight -and $_.kind -ne 'holder') { $holderFailures.Add($_) }
-    elseif (!(WriteEvidence $_ ${HOLDER_OUTPUT_LIMIT})) { $holderByteLimited = $true }
+    foreach ($failure in $holderFailures) {
+      if (!(WriteEvidence $failure ${HOLDER_OUTPUT_LIMIT})) { $holderByteLimited = $true }
+    }
+  } finally {
+    foreach ($handle in $handles) { $handle.Dispose() }
   }
-  foreach ($failure in $holderFailures) {
-    if (!(WriteEvidence $failure ${HOLDER_OUTPUT_LIMIT})) { $holderByteLimited = $true }
-  }
-} finally {
-  foreach ($handle in $handles) { $handle.Dispose() }
+  $null = WriteEvidence @{
+    kind = 'holders'; limited = $holderRecordLimited -or $holderByteLimited; failed = $script:holderFailed
+    recordLimited = $holderRecordLimited; byteLimited = $holderByteLimited; lookupLimited = $holderLookupLimited
+  } ${HOLDER_OUTPUT_LIMIT + 256}
 }
-$null = WriteEvidence @{
-  kind = 'holders'; limited = $holderRecordLimited -or $holderByteLimited; failed = $script:holderFailed
-  recordLimited = $holderRecordLimited; byteLimited = $holderByteLimited
-} ${HOLDER_OUTPUT_LIMIT + 256}
 $script:processFailure = $null
 $script:processRowLimited = $false
 $script:processMatchLimited = $false
@@ -762,8 +723,9 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
     }
   }
 
-  let filesComplete = false;
-  let holdersComplete = false;
+  // The precondition query streams only process records.
+  let filesComplete = preflight;
+  let holdersComplete = preflight;
   let processesComplete = false;
   let processScanIncomplete = false;
   let fileCount = 0;
@@ -779,41 +741,34 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
 
   const script = queryScript(root, preflight);
   const queryFailure = await collectQuery(script, TIMEOUT_MS, OUTPUT_LIMIT, row => {
-    if (!preflight && !filesComplete && row.kind === "candidate") {
+    if (!filesComplete && row.kind === "candidate") {
       if (fileCount++ < RESULT_LIMIT) emit(formatCandidate(row), FILE_OUTPUT_LIMIT);
     } else if (!filesComplete && row.kind === "files") {
-      failed ||= preflight ? incomplete(row, "failed", "changed", "limited") : row.failed;
+      failed ||= row.failed;
       filesComplete = true;
-      if (!preflight && row.empty && !row.failed) emit("Cleanup path scan found no surviving entries");
-      if (preflight && row.failed) emit(`Cleanup path scan failed: ${row.reason ?? "entry status unavailable"}`);
+      if (row.empty && !row.failed) emit("Cleanup path scan found no surviving entries");
       if (row.changed) emit("Cleanup path scan skipped an entry whose directory or reparse attributes changed");
-      if (row.limited) emit(preflight ? "Cleanup path scan reported a descendant limit"
-        : "Cleanup path scan reached its inspection or reporting limit");
+      if (row.limited) emit("Cleanup path scan reached its inspection or reporting limit");
       holdersOutputEnd = outputBytes + HOLDER_OUTPUT_LIMIT - FILE_OUTPUT_LIMIT;
     } else if (filesComplete && !holdersComplete) {
       if (row.kind === "holders") {
-        failed ||= preflight ? incomplete(row, "failed", "limited") || outputLimited : row.failed;
+        failed ||= row.failed;
         holdersComplete = true;
         if (row.failed) emit("Native file holder lookup was incomplete");
         if (row.recordLimited) emit(`Native file holder records exceeded the ${MAX_HOLDERS}-record limit`);
         if (row.byteLimited) emit(`Native file holder output reached its ${HOLDER_OUTPUT_LIMIT}-byte limit`);
         if (row.limited && !row.recordLimited && !row.byteLimited) emit("Native file holder output reached its reporting limit");
-      } else if (preflight && row.kind === "entryFailure") {
-        if (typeof row.path !== "string" || typeof row.reason !== "string") throw new Error("Invalid cleanup entry failure");
-        failed = true;
-        emit(`Cleanup entry path=${JSON.stringify(row.path)}: ${row.reason}`, holdersOutputEnd);
-      } else if (!preflight && row.kind === "holderFailure") {
+        if (row.lookupLimited) emit(`Native file holder lookup covered only the first ${RESULT_LIMIT} files`);
+      } else if (row.kind === "holderFailure") {
         if (typeof row.path !== "string" || !["unverified-path", "query"].includes(row.operation)) {
           throw new Error("Invalid native file holder operation");
         }
         emit(`Native file holder lookup failed path=${JSON.stringify(row.path)} operation=${row.operation}`, holdersOutputEnd);
       } else if (row.kind === "handleQuery") {
         if (typeof row.path !== "string" || !Number.isInteger(row.status)) throw new Error("Invalid native file holder status");
-        failed ||= preflight;
         const suffix = row.limited ? ` (over ${MAX_HOLDERS} holder records)` : "";
         emit(`Native file holder lookup failed path=${JSON.stringify(row.path)} status=${row.status}${suffix}`, holdersOutputEnd);
       } else if (row.kind === "holder") {
-        writerFound = true;
         if (!isProcessId(row.pid)) throw new Error("Invalid native file holder PID");
         emit(formatProcess(row), holdersOutputEnd);
       } else {
@@ -863,13 +818,10 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   }, () => { failed ||= !holdersComplete; }, run);
   if (preflight) {
     if (queryFailure) emit(queryFailure, OUTPUT_LIMIT);
-    if (!filesComplete) emit("Cleanup path scan did not report completion", OUTPUT_LIMIT);
-    else if (!holdersComplete) emit("Native file holder lookup did not report completion", OUTPUT_LIMIT);
-    else if (!processesComplete) emit("Cleanup process scan did not report completion", OUTPUT_LIMIT);
+    if (!processesComplete) emit("Cleanup process scan did not report completion", OUTPUT_LIMIT);
   } else if (filesComplete && !holdersComplete) emit("Native file holder lookup was incomplete");
   const processQueryIncomplete = Boolean(queryFailure) || !processesComplete;
-  // The holder status closes the authoritative scan before process probes begin.
-  if (processScanIncomplete || (preflight && holdersComplete && (processQueryIncomplete || outputLimited))) {
+  if (processScanIncomplete || (preflight && (processQueryIncomplete || outputLimited))) {
     emit("Cleanup process scan was incomplete");
   }
   if (outputLimited) emit("Cleanup diagnostic output reached its byte limit", OUTPUT_LIMIT);

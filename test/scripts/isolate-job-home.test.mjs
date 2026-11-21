@@ -112,24 +112,30 @@ function cleanupSeams(error = blockedRemoval()) {
     remove: mock.fn(() => { throw error; }), run: queryResult(), diagnostic: mock.fn(),
   };
 }
+// The cleanup precondition streams only process rows; the post-failure diagnostic streams entries and holders first.
 function queryRecords({
   processes = [], holders = [], entries = [], failed = false, changed = false, limited = false,
-  processScanFailed = false, processLimited = false,
+  processScanFailed = false, processLimited = false, preflight = false,
 } = {}) {
   const rows = [
-    ...entries.map(entry => ({ kind: "candidate", ...entry })),
-    { kind: "files", failed, changed, limited, empty: entries.length === 0 },
-    ...holders,
-    { kind: "holders", limited: false, failed: false },
+    ...(preflight ? [] : [
+      ...entries.map(entry => ({ kind: "candidate", ...entry })),
+      { kind: "files", failed, changed, limited, empty: entries.length === 0 },
+      ...holders,
+      { kind: "holders", limited: false, failed: false },
+    ]),
     ...processes,
     { kind: "processes", failed: processScanFailed, limited: processLimited },
   ];
   return `${rows.map(row => JSON.stringify(row)).join("\n")}\n`;
 }
-function queryResult(result) {
-  return mock.fn((_command, _args, _options, done) => done(null, queryRecords(result)));
-}
 const QUERY_VARIABLE = "AVE_CI_JOB_ROOT_QUERY";
+function isPreflightQuery(options) {
+  return /^\$preflight = \$true$/m.test(options.env[QUERY_VARIABLE]);
+}
+function queryResult(result) {
+  return mock.fn((_command, _args, options, done) => done(null, queryRecords({ ...result, preflight: isPreflightQuery(options) })));
+}
 async function cleanupWindowsJobRoot(root, { remove = rmSync, ...options } = {}) {
   try { await diagnoseCleanupFailure(root, () => remove(root, { recursive: true, force: true }), options); }
   finally { await nextTurn(); }
@@ -202,6 +208,27 @@ function fixtureIdentity(path) {
   return `${dev}:${ino}:${birthtimeNs}`;
 }
 
+// Mirrors the hosted failure: 19 branch and 79 leaf directories, 5,121 files, directory depth 8.
+function writeRealisticJobTree(localRoot) {
+  for (const branch of [
+    "home/.ave/cache/models/example/blobs/sha256", "home/.ave-test-tmp", "home/local-app-data/example",
+    "home/app-data/example", "tmp/example/target/release/deps", "tmp/example/target/release/build/example",
+  ]) mkdirSync(join(localRoot, ...branch.split("/")), { recursive: true });
+  let leaf = 0;
+  for (const [branch, count] of [
+    ["home/.ave/cache/models/example/blobs/sha256", 40], ["tmp/example/target/release/deps", 20],
+    ["tmp/example/target/release/build/example", 10], ["home/.ave-test-tmp", 3],
+    ["home/local-app-data/example", 3], ["home/app-data/example", 3],
+  ]) {
+    for (let i = 0; i < count; i++, leaf++) {
+      const directory = join(localRoot, ...branch.split("/"), `example-${i}`);
+      mkdirSync(directory);
+      for (let j = 0; j < (leaf < 64 ? 65 : 64); j++) writeFileSync(join(directory, `example-${j}.dat`), "example");
+    }
+  }
+  return readdirSync(localRoot, { recursive: true }).length;
+}
+
 describe("Windows job root writer precondition", () => {
   const root = "C:\\ave-ci-abc123";
   const systemRoot = "C:\\Windows";
@@ -249,11 +276,11 @@ describe("Windows job root writer precondition", () => {
     job.assertPreserved();
   });
 
-  it("reports the writer query deadline and the unfinished scan phase", async t => {
+  it("reports the writer query deadline and the unfinished process scan", async t => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     const result = assertNoJobRootWriters(root, () => {});
     t.mock.timers.tick(5_000);
-    await assert.rejects(result, /5000 ms deadline\nCleanup path scan did not report completion/);
+    await assert.rejects(result, /5000 ms deadline\nCleanup process scan did not report completion/);
   });
 
   it("reports an incomplete writer record stream that exceeds the byte limit", async () => {
@@ -261,63 +288,85 @@ describe("Windows job root writer precondition", () => {
     await assert.rejects(assertNoJobRootWriters(root, run), /output exceeded 65536 bytes/);
   });
 
-  it("refuses a writer query with a malformed holder status", async () => {
-    const status = queryRecords().split("\n");
-    status[1] = JSON.stringify({ kind: "holders", limited: false });
-    const run = (_command, _args, _options, done) => done(null, status.join("\n"));
-    await assert.rejects(assertNoJobRootWriters(root, run), /Invalid cleanup holders status field: failed/);
+  it("refuses a writer query with a malformed process status", async () => {
+    const run = (_command, _args, _options, done) => done(null, `${JSON.stringify({ kind: "processes", limited: false })}\n`);
+    await assert.rejects(assertNoJobRootWriters(root, run), /Invalid cleanup processes status field: failed/);
+  });
+
+  it("refuses a writer query that streams entry or holder rows", async () => {
+    const run = (_command, _args, _options, done) => done(null, queryRecords());
+    await assert.rejects(assertNoJobRootWriters(root, run), error => {
+      assert.match(error.message, /writer evidence is incomplete/);
+      assert.match(error.message, /^Unexpected process record$/m);
+      return true;
+    });
   });
 
   for (const [flag, reason] of [
-    ["recordLimited", /128-record limit/],
-    ["byteLimited", /53248-byte limit/],
+    ["recordLimited", "Native file holder records exceeded the 128-record limit"],
+    ["byteLimited", "Native file holder output reached its 53248-byte limit"],
+    ["lookupLimited", "Native file holder lookup covered only the first 20 files"],
   ]) {
-    it(`reports the writer holder ${flag} bound`, async () => {
+    it(`reports the diagnostic holder ${flag} bound`, async () => {
       const status = queryRecords().split("\n");
-      status[1] = JSON.stringify({ kind: "holders", failed: false, limited: true, [flag]: true });
-      const run = (_command, _args, _options, done) => done(null, status.join("\n"));
-      await assert.rejects(assertNoJobRootWriters(root, run), reason);
+      status[1] = JSON.stringify({ kind: "holders", failed: false, limited: flag !== "lookupLimited", [flag]: true });
+      const diagnostic = mock.fn();
+      await diagnoseJobRoot(root, diagnostic, (_command, _args, _options, done) => done(null, status.join("\n")));
+      assert.ok(output({ diagnostic }).split("\n").includes(reason), output({ diagnostic }));
     });
   }
 
   if (process.platform === "win32") {
-    it("reports a root-relative path and preserves the tree when a junction is encountered", async t => {
+    it("removes a junction inside the root without following it", async t => {
       const job = fixture(t);
-      const redirect = join(job.localRoot, "home", "example");
       mkdirSync(join(job.localRoot, "home"));
-      symlinkSync(job.parent, redirect, "junction");
-      try {
-        await assert.rejects(assertNoJobRootWriters(job.localRoot), /Cleanup entry path="home\\\\example": reparse point/);
-      } finally {
-        unlinkSync(redirect);
-      }
+      symlinkSync(job.parent, join(job.localRoot, "home", "example"), "junction");
+      await cleanupJobRoot(root, { ...job.options, run: scanLocalRoot(job), diagnostic: () => {} });
+      assert.deepEqual(readdirSync(job.parent), ["shared"]);
       assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
     });
 
-    it("scans a branched isolated home and temp tree", async t => {
-      const { localRoot } = fixture(t);
-      const subtrees = [
-        ["home", ".ave", "cache", "models", "example", "blobs"],
-        ["home", ".ave-test-tmp"],
-        ["home", "local-app-data", "example", "Cache"],
-        ["home", "app-data", "example", "Cache"],
-        ["tmp", "example", "target", "release", "deps"],
-      ];
-      for (const parts of subtrees) {
-        for (let i = 0; i < 4; i++) {
-          const directory = join(localRoot, ...parts, String(i));
-          mkdirSync(directory, { recursive: true });
-          for (let j = 0; j < 4; j++) writeFileSync(join(directory, `example-${j}.dat`), "example");
-        }
-      }
-      await assertNoJobRootWriters(localRoot);
+    it("cleans a realistic 5k-entry job root within the query deadline", async t => {
+      const job = fixture(t);
+      const entries = writeRealisticJobTree(job.localRoot);
+      assert.equal(entries, 5219);
+      const scan = scanLocalRoot(job);
+      let queryMs;
+      const run = (command, args, options, done) => {
+        const start = performance.now();
+        return scan(command, args, options, (error, stdout) => {
+          queryMs = Math.round(performance.now() - start);
+          done(error, stdout);
+        });
+      };
+      const diagnostic = mock.fn();
+      const start = performance.now();
+      await cleanupJobRoot(root, { ...job.options, run, diagnostic });
+      const cleanupMs = Math.round(performance.now() - start);
+      assert.deepEqual(readdirSync(job.parent), ["shared"]);
+      const timing = output({ diagnostic }).split("\n").find(line => /^Cleanup process scan inspected \d+ process rows in \d+ ms$/.test(line));
+      assert.ok(timing, output({ diagnostic }));
+      t.diagnostic(`${entries} entries: query ${queryMs} ms, cleanup ${cleanupMs} ms; ${timing}`);
+    });
+
+    it("keeps the post-failure diagnostic of a 5k-entry root within the query deadline", async t => {
+      const job = fixture(t);
+      assert.equal(writeRealisticJobTree(job.localRoot), 5219);
+      const diagnostic = mock.fn();
+      const start = performance.now();
+      await diagnoseJobRoot(job.localRoot, diagnostic);
+      const lines = output({ diagnostic }).split("\n");
+      assert.ok(lines.includes("Native file holder lookup covered only the first 20 files"), lines.join("\n"));
+      assert.equal(lines.filter(line => line.startsWith("candidate path=")).length, 20);
+      t.diagnostic(`diagnostic ${Math.round(performance.now() - start)} ms`);
+      job.assertPreserved();
     });
   }
 
   for (const [name, records] of [
-    ["failed", queryRecords({ processScanFailed: true })],
-    ["limited", queryRecords({ processLimited: true })],
-    ["missing its status", queryRecords().replace(/^.*"kind":"processes".*\n/m, "")],
+    ["failed", queryRecords({ preflight: true, processScanFailed: true })],
+    ["limited", queryRecords({ preflight: true, processLimited: true })],
+    ["missing its status", queryRecords({ preflight: true }).replace(/^.*"kind":"processes".*\n/m, "")],
   ]) {
     it(`refuses cleanup when the process scan is ${name}`, async t => {
       const job = fixture(t);
@@ -445,25 +494,22 @@ describe("Windows job root writer precondition", () => {
     job.assertPreserved();
   });
 
-  if (process.platform === "win32") {
-    it("refuses an unsupported native handle query for a job entry", async t => {
-      const job = fixture(t);
-      const run = runInjectedQuery("", script => script
-        .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`)
-        .replace("function ReadFileHolders($handle, $path) {", `$&
-  if ($path -eq ${powerShellLiteral(job.held)}) {
-    @{ kind = 'handleQuery'; path = $path; status = -1073741821; limited = $false }
-    return
-  }`));
-      await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
-        assertReportedRoot(error, root);
-        assert.match(error.message, /writer evidence is incomplete/i);
-        assert.ok(error.message.includes(`Native file holder lookup failed path=${JSON.stringify(job.held)} status=-1073741821`));
-        return true;
-      });
-      job.assertPreserved();
-    });
+  // The filesystem gates a reference the process scan cannot see: the rename or removal refuses with its error.
+  function assertQuarantineRefusal(t, error, reportedRoot, parent) {
+    const match = /^Cannot clean up job root (.+?): (?:rename to (\S+) failed \(.+\)\. Directory left in place\.|removing (\S+) failed \(.+\)\. Remaining entries left at (\S+)\.)$/
+      .exec(error.message.split("\n")[0]);
+    assert.ok(match, error.message);
+    assert.equal(match[1], reportedRoot);
+    assert.ok(["EPERM", "EBUSY", "EACCES"].includes(error.cause?.code), String(error.cause));
+    const left = match[2] ? reportedRoot : match[3];
+    if (match[3]) assert.equal(match[4], match[3]);
+    assert.ok(readdirSync(parent).includes(win32.basename(left)), readdirSync(parent).join(","));
+    assert.equal(readFileSync(join(parent, "shared"), "utf8"), "preserve");
+    t.diagnostic(`quarantine refused at ${match[2] ? "rename" : "removal"} with ${error.cause.code}`);
+    return left;
+  }
 
+  if (process.platform === "win32") {
     const processCases = [
       { name: "an invalid OpenProcess handle", nativeFailure: "OpenProcess failed" },
       { name: "a failed NtQueryInformationProcess call", nativeFailure: "NtQueryInformationProcess failed" },
@@ -616,11 +662,11 @@ describe("Windows job root writer precondition", () => {
             assert.ok(error instanceof AggregateError);
             assert.equal(error.errors[0], setupError);
             const refusal = error.errors[1];
+            // A loaded module has no process-scan reference; the quarantine removal refuses instead.
+            if (reference === "module") return Boolean(assertQuarantineRefusal(t, refusal, job.localRoot, job.parent));
             assertReportedRoot(refusal, job.localRoot);
-            const expected = reference === "argument" ? [`process pid=${child.pid} `, "match=argument"]
-              : [`holder pid=${child.pid} `, `path=${JSON.stringify(path)}`];
-            assert.ok(refusal.message.split("\n").some(line => line.startsWith(expected[0]) && line.includes(expected[1])),
-              refusal.message);
+            assert.ok(refusal.message.split("\n").some(line => line.startsWith(`process pid=${child.pid} `)
+              && line.includes(` match=${reference}`)), refusal.message);
             if (invalidCreationTime) {
               assert.ok(refusal.message.split("\n").includes(`Cleanup process match metadata was unavailable for pid=${child.pid}`),
                 refusal.message);
@@ -628,7 +674,7 @@ describe("Windows job root writer precondition", () => {
             assert.match(refusal.message, /live processes can still access the job root/i);
             return true;
           });
-          assert.equal(readFileSync(job.held, "utf8"), "example");
+          if (reference !== "module") assert.equal(readFileSync(job.held, "utf8"), "example");
           assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
         } finally {
           child.stdin.end();
@@ -662,23 +708,28 @@ describe("Windows job root writer precondition", () => {
           const run = (command, args, options, done) => options.env[QUERY_VARIABLE].includes(`$root = ${powerShellLiteral(root)}`)
             ? inspect(command, args, options, done) : done(new Error("Unexpected post-removal query"));
           const setupError = new Error("Could not publish job environment");
+          const diagnostic = mock.fn();
           const failure = operation === "cleanup"
-            ? () => cleanupJobRoot(root, { ...job.options, run, diagnostic: () => {} })
+            ? () => cleanupJobRoot(root, { ...job.options, run, diagnostic })
             : async () => isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
-              () => {}, fixtureIdentity, assignments => { if (assignments.HOME) throw setupError; });
+              () => {}, fixtureIdentity, assignments => { if (assignments.HOME) throw setupError; }, undefined, diagnostic);
+          let left;
           await assert.rejects(failure, error => {
             if (operation === "rollback") {
               assert.ok(error instanceof AggregateError);
               assert.equal(error.errors[0], setupError);
               error = error.errors[1];
             }
-            assertReportedRoot(error, operation === "rollback" ? job.localRoot : root);
-            assert.match(error.message, new RegExp(`holder pid=${holder.pid}\\b`, "i"));
-            assert.ok(error.message.includes(`image=${JSON.stringify(process.execPath)}`), error.message);
-            assert.ok(error.message.includes(`path=${JSON.stringify(job.held)}`), error.message);
+            left = assertQuarantineRefusal(t, error, operation === "rollback" ? job.localRoot : root, job.parent);
             return true;
           });
-          job.assertPreserved();
+          await nextTurn();
+          if (win32.basename(left) === win32.basename(root)) {
+            job.assertPreserved();
+            // The bounded post-failure diagnostic still names the holder.
+            const holders = output({ diagnostic }).split("\n").filter(line => line.startsWith(`holder pid=${holder.pid} `));
+            assert.ok(holders.some(line => line.includes(`path=${JSON.stringify(job.held)}`)), output({ diagnostic }));
+          }
         } finally {
           holder.stdin.end();
           const [code] = await exited;
