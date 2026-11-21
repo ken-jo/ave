@@ -21,7 +21,7 @@ vi.mock("node:fs", async original => {
     }
     return Reflect.apply(fs.readdirSync, undefined, args);
   }) as typeof fs.readdirSync;
-  return { ...fs, readdirSync };
+  return { ...fs, readdirSync, rmSync: vi.fn(fs.rmSync) };
 });
 
 // The sandbox read deny covers the Ave home as one directory: no per-file rows, every child denied unless re-allowed.
@@ -49,6 +49,7 @@ vi.mock("../../shared/policy-home.js", async (importOriginal) => {
 
 import { aveHome } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { AVE_HOME_READ_REALLOWS, isAveHomeReadReallowed } from "../ave-home-read-boundary.js";
 import {
@@ -111,7 +112,6 @@ const withheld = (): string[] => [
 ];
 
 afterEach(() => setProcessPlatform(HOST_PLATFORM));
-
 describe("the Ave home re-allow table", () => {
   it("re-opens only named children, never the root or a sibling file", () => {
     expect(isAveHomeReadReallowed([])).toBe(false);
@@ -263,7 +263,7 @@ describe("the Ave home read boundary through the MCP stdio wrap", () => {
 
 describe("a profile-child Ave home on Windows", () => {
   // A stamp on a profile child also stamps the profile root, so such a home denies its existing top-level children instead of itself.
-  let profile: string;
+  let profile = "";
   let original: string;
   beforeEach(() => {
     profile = mkdtempSync(join(tmpdir(), "ave-boundary-profile-"));
@@ -279,9 +279,17 @@ describe("a profile-child Ave home on Windows", () => {
   afterEach(() => {
     readdirFault.path = undefined;
     factsOverride.clear();
-    setProcessPlatform(HOST_PLATFORM);
     fakeHome.value = undefined;
-    rmSync(profile, { recursive: true, force: true });
+    const root = profile;
+    profile = "";
+    try {
+      setProcessPlatform(HOST_PLATFORM);
+    } finally {
+      if (root) {
+        removeLinksUnder(root);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
   });
 
   const refused = expect.objectContaining({ code: "ave-home-boundary-unverified" });
@@ -327,13 +335,29 @@ describe("a profile-child Ave home on Windows", () => {
     for (const row of ["settings.json", "plugins/registry.json"]) expect(floor).toContain(join(original, ...row.split("/")));
   });
 
-  it("refuses a linked top-level child that is not re-allowed, and keeps a linked re-allowed child", () => {
+  it("refuses a linked top-level child that is not re-allowed, and keeps a linked re-allowed child", async ({ onTestFinished }) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const root = profile;
+    const sandboxLink = join(original, "sandbox");
+    const tracesLink = join(original, "traces");
+    vi.mocked(rmSync).mockImplementation((path, options) => {
+      if (path === root && options?.recursive) {
+        for (const link of [sandboxLink, tracesLink]) {
+          expect(fs.lstatSync(link, { throwIfNoEntry: false }), "Unlink the junction before tree removal").toBeUndefined();
+        }
+      }
+      fs.rmSync(path, options);
+    });
+    onTestFinished(() => {
+      vi.mocked(rmSync).mockReset();
+      expect(existsSync(root)).toBe(false);
+    });
     const target = mkdtempSync(join(tmpdir(), "ave-boundary-link-"));
     try {
-      symlinkSync(target, join(original, "sandbox"), "junction");
+      symlinkSync(target, sandboxLink, "junction");
       const floor = getDefaultSensitiveReadDenyPaths();
       expect(spelled(floor)).not.toContain(join(original, "sandbox"));
-      symlinkSync(target, join(original, "traces"), "junction");
+      symlinkSync(target, tracesLink, "junction");
       for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
     } finally {
       rmSync(target, { recursive: true, force: true });
@@ -343,8 +367,8 @@ describe("a profile-child Ave home on Windows", () => {
   // A junction is a directory on a Windows host and a symlink elsewhere.
   const removeLink = (path: string): void => (HOST_PLATFORM === "win32" ? rmdirSync : unlinkSync)(path);
   const linkHome = (dangling: boolean): string => {
-    const target = mkdtempSync(join(tmpdir(), "ave-boundary-home-target-"));
-    mkdirSync(join(target, "logs"));
+    const target = join(profile, "home-target");
+    mkdirSync(join(target, "logs"), { recursive: true });
     rmSync(original, { recursive: true, force: true });
     symlinkSync(target, original, "junction");
     if (dangling) rmSync(target, { recursive: true, force: true });

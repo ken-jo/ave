@@ -132,7 +132,6 @@ import { hasNativeSrtWinBuildReceipt } from "../../__tests__/support/srt-win-bui
 import { asrtCanInitialize } from "./test-helpers.js";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../lib/confined-process-phase.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { removeSrtWinCopies } from "../../__tests__/support/srt-win-copies.js";
 import { srtWinPrivateDirectories } from "../srt-win-integrity.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
@@ -208,12 +207,6 @@ afterAll(async () => {
   }
   await cleanupTmpDir(isolatedWindowsHome);
 });
-
-// Every srt-win copy this file prepares, from every module instance (several tests re-import after vi.resetModules()).
-const srtWinCopies = vi.hoisted(() => new Set<string>());
-vi.mock("../srt-win-integrity.js", async (importOriginal) =>
-  (await import("../../__tests__/support/srt-win-copies.js")).recordSrtWinCopies(await importOriginal(), srtWinCopies));
-afterAll(() => removeSrtWinCopies(srtWinCopies));
 
 afterEach(async () => {
   // Always return to the gated-OFF baseline so cross-test state never leaks.

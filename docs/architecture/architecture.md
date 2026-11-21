@@ -3529,12 +3529,14 @@ with its own owner rule:
   descriptor.** `prepareSrtWinExecutable` in
   `src/permissions/srt-win-integrity.ts` picks a random, unpublished
   `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
-  both directories with the token user as owner and a protected DACL: full control for the user,
-  read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at either directory path, a link included, refuses creation. The empty image and
-  the owner marker are then created new inside `bin`, each with its own
-  descriptor, and each owner is read on the handle that created the file. No
-  step changes the owner or DACL of an object that already exists. The image's
+  the outer directory with the token user as owner and a protected DACL: full control
+  for the user, read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`.
+  It writes `owner.json` there with the host PID and process start time before
+  creating `bin` with the same DACL and an empty `srt-win.exe` inside it. The
+  marker and image are each created with their own descriptor, and each owner is
+  read on the creation handle. Anything already at either directory path, a link
+  included, refuses creation. No step changes the owner or DACL of an object that
+  already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
   The write-deny target is `bin`, so its parent's inheritable delete-child deny
@@ -3560,8 +3562,14 @@ with its own owner rule:
   code. An unconfirmed one seals the session against further confinement until
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
+  At the first helper preparation, the Windows sweep also reclaims partial copies
+  whose names have the generated hexadecimal suffix. The directories must
+  pass the same ownership and DACL checks as a complete copy and may contain
+  only plain entries from the existing layouts. A surviving marker must name
+  a dead owner, and a surviving image must pass the existing sharing check.
   The copy's `exit` handler, registered at import and so run before the
-  runtime's own, removes the copy only after a successful release.
+  runtime's own, removes the copy only after a successful release. It shares
+  its one-attempt disposer with test teardown.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL
@@ -3589,10 +3597,17 @@ with its own owner rule:
   In the desktop app the runtime's own signal handler still resets it as soon
   as the signal arrives, before children are drained. Any later reset, including
   the one in a quit sequence, finds no ACL session left to release.
-  The stale-copy sweep checks both directory owners and DACLs for the new layout,
-  and also accepts the old single-level layout with its original marker checks.
-  It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
-  without recursion. A sandbox-account ACE found on the temporary root emits
+  The stale-copy sweep checks both directory owners and DACLs and accepts the
+  earlier layouts with the marker inside `bin` or both files in the outer
+  directory. Partial copies and the marker-first layout require a generated
+  32-hex name and singly linked files. Allocation and the sweep use the same
+  Windows process creation time as decimal UTC ticks. The sweep requires a
+  valid marker and compares the full stamp exactly for a live PID. A different
+  stamp identifies PID reuse.
+  For new copies, exit and startup remove the image, `bin`, marker and outer
+  directory in that order, without recursion. If the last removal fails, the
+  sweep leaves the empty outer directory alone. A sandbox-account ACE found on
+  the temporary root emits
   `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
   Any remaining legacy ACE requires owner-approved inspection and repair of the
   exact explicit ACE or its inheritance source, with active holders accounted for.
