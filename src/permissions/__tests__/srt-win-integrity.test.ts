@@ -252,6 +252,27 @@ describe("Windows helper integrity", () => {
     expect(existsSync(sentinel)).toBe(true);
   });
 
+  it("reports a completed legacy diagnostic when the private sweep times out", async () => {
+    const failure = Object.assign(new Error("Private sweep timed out"), {
+      code: "ETIMEDOUT", stdout: "srt-win-temp-root-acl-owner-action-required\r\n",
+    });
+    const exec = vi.fn(() => { throw failure; });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.resetModules();
+    vi.doMock("node:child_process", async (load) => ({ ...await load<typeof import("node:child_process")>(), execFileSync: exec }));
+    vi.stubEnv("SystemRoot", process.env.SystemRoot ?? "C:\\Windows");
+    try {
+      const { runWindowsSrtWinParent } = await import("../srt-win-private-parent.js");
+      expect(() => runWindowsSrtWinParent("sweep", "C:\\Temp")).toThrow(failure);
+      expect(exec).toHaveBeenCalledExactlyOnceWith(expect.any(String), expect.any(Array), expect.objectContaining({ timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs }));
+      expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("[srt-win-temp-root-acl-owner-action-required]"));
+    } finally {
+      warn.mockRestore();
+      vi.doUnmock("node:child_process");
+      vi.resetModules();
+    }
+  });
+
   it("selects generated receipts before adjacent receipts and verifies their bytes", () => {
     expect(selectSrtWinTestReceipts(BUILD_RECEIPTS, vendor)).toEqual(BUILD_RECEIPTS);
     expect(() => selectSrtWinTestReceipts({

@@ -261,10 +261,10 @@ export function runWindowsSrtWinParent(
     output = (error as { stdout?: string }).stdout;
     throw error;
   } finally {
+    if (output?.includes(TEMP_ROOT_ACL_DIAGNOSTIC)) {
+      console.warn(`[${TEMP_ROOT_ACL_DIAGNOSTIC}] Sandbox account ACEs exist on the temporary root; owner review and an explicitly authorized ACL repair are required. No temporary-root ACL was changed.`);
+    }
     const sid = output?.trim();
     if (onAllocated !== undefined && sid !== undefined && /^S-1-(?:[0-9]+-)+[0-9]+$/.test(sid)) onAllocated(sid);
-  }
-  if (output?.includes(TEMP_ROOT_ACL_DIAGNOSTIC)) {
-    console.warn(`[${TEMP_ROOT_ACL_DIAGNOSTIC}] Sandbox account ACEs exist on the temporary root; owner review and an explicitly authorized ACL repair are required. No temporary-root ACL was changed.`);
   }
 }
