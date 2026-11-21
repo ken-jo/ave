@@ -116,7 +116,7 @@ describe("Windows helper integrity", () => {
     expect(existsSync(executable)).toBe(true);
   });
 
-  it("parses every generated PowerShell program with the native parser", async (context) => {
+  it("parses every generated PowerShell program and checks the exact parent ACL", async (context) => {
     const programs: string[] = [];
     vi.resetModules();
     vi.doMock("node:child_process", async (load) => ({
@@ -149,6 +149,12 @@ describe("Windows helper integrity", () => {
         "  $errors = $null; $null = [System.Management.Automation.Language.Parser]::ParseInput($program, [ref]$null, [ref]$errors)",
         "  if ($errors.Count) { [Console]::Error.WriteLine(($errors -join [Environment]::NewLine)); exit 1 }",
         "}",
+        "$program = [System.Management.Automation.Language.Parser]::ParseInput($programs[1], [ref]$null, [ref]$null)",
+        "$definition = $program.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-PrivateParentSddl' }, $false)",
+        "if (!$definition) { throw 'Expected the parent descriptor function in the generated program' }",
+        "Invoke-Expression $definition.Extent.Text",
+        "[Console]::WriteLine((Get-PrivateParentSddl 'S-1-5-21-1-2-3-1001'))",
+        "[Console]::WriteLine((Get-PrivateParentSddl 'S-1-5-18'))",
       ].join("\n"),
     ], {
       env: { ...process.env, TEMP: parserTemp, TMP: parserTemp, TMPDIR: parserTemp },
@@ -157,6 +163,10 @@ describe("Windows helper integrity", () => {
     if (parser === "pwsh" && (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return context.skip("PowerShell parser unavailable");
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim().split(/\r?\n/)).toEqual([
+      "O:S-1-5-21-1-2-3-1001D:P(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;;0x20;;;S-1-5-18)(A;;0x20;;;S-1-5-32-544)(A;;0x20;;;S-1-5-32-545)",
+      "O:S-1-5-18D:P(A;OICI;FA;;;S-1-5-18)(A;;0x20;;;S-1-5-32-544)(A;;0x20;;;S-1-5-32-545)",
+    ]);
   });
 
   it("keeps a legacy tombstone without the two-file shape", () => {
@@ -528,6 +538,12 @@ describe("Windows helper integrity", () => {
       "$acl=[System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY)",
       "if (!$acl.AreAccessRulesProtected) { throw 'Inherited grants' }",
       "$readers=@('S-1-5-18','S-1-5-32-544','S-1-5-32-545')",
+      "$parent=[System.IO.Path]::GetDirectoryName([System.IO.Path]::GetDirectoryName($env:AVE_SRT_PRIVATE_DIRECTORY))",
+      "$raw=[System.Security.AccessControl.RawSecurityDescriptor]::new([System.IO.Directory]::GetAccessControl($parent).GetSecurityDescriptorBinaryForm(), 0)",
+      "if ($raw.Owner -ne $sid -or !($raw.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected)) { throw 'Unprotected parent' }",
+      "$traversers=@($readers | Where-Object { $_ -ne $sid.Value })",
+      "if ($raw.DiscretionaryAcl.Count -ne 1 + $traversers.Count) { throw 'Unexpected parent grants' }",
+      "foreach ($ace in $raw.DiscretionaryAcl) { if ($ace.AceType -ne 'AccessAllowed') { throw 'Unexpected parent ACE' }; if ($ace.SecurityIdentifier -eq $sid) { if ($ace.AccessMask -ne 0x1f01ff -or [int]$ace.AceFlags -ne 3) { throw 'Wrong parent owner grant' } } elseif ($ace.SecurityIdentifier.Value -notin $traversers -or $ace.AccessMask -ne 0x20 -or [int]$ace.AceFlags -ne 0) { throw 'Parent grants more than traversal' } }",
       "$rx=[System.Security.AccessControl.FileSystemRights]::ReadAndExecute",
       "$full=[System.Security.AccessControl.FileSystemRights]::FullControl",
       "$modify=[System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'",

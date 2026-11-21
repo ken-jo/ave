@@ -75,22 +75,35 @@ function New-Descriptor($sddl) {
   return ,$bytes
 }
 
-function Assert-PrivateParent($handle) {
+function Get-PrivateParentSddl($owner) {
+  $rules = "(A;OICI;FA;;;$owner)"
+  # The runner opens the image under its own logon. These are the existing
+  # image readers, with only FILE_TRAVERSE on this ancestor.
+  foreach ($principal in @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-32-545')) {
+    if ($principal -ne $owner) { $rules += "(A;;0x20;;;$principal)" }
+  }
+  return ('O:' + $owner + 'D:P' + $rules)
+}
+
+function Assert-PrivateParent($handle, $descriptor) {
+  $expected = [System.Security.AccessControl.RawSecurityDescriptor]::new($descriptor, 0)
   $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new([HomeDirectoryDacl]::ReadDirectoryDescriptor($handle), 0)
-  if ($raw.Owner -ne $sid -or
+  if ($raw.Owner -ne $expected.Owner -or
       !($raw.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -or
-      $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -ne $writers.Count) {
+      $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -ne $expected.DiscretionaryAcl.Count) {
     throw 'Private helper parent is not protected'
   }
-  $seen = @{}
+  $remaining = @{}
+  foreach ($rule in $expected.DiscretionaryAcl) { $remaining[$rule.SecurityIdentifier.Value] = $rule }
   foreach ($ace in $raw.DiscretionaryAcl) {
-    if ($ace -isnot [System.Security.AccessControl.CommonAce] -or
-        $ace.AceType -ne 'AccessAllowed' -or [int]$ace.AceFlags -ne 3 -or
-        $ace.AccessMask -ne 0x1f01ff -or $ace.SecurityIdentifier.Value -notin $writers -or
-        $seen.ContainsKey($ace.SecurityIdentifier.Value)) {
+    if ($ace -isnot [System.Security.AccessControl.CommonAce]) { throw 'Private helper parent has unexpected access entries' }
+    $principal = $ace.SecurityIdentifier.Value
+    $rule = $remaining[$principal]
+    if ($null -eq $rule -or $ace.AceType -ne $rule.AceType -or $ace.AceFlags -ne $rule.AceFlags -or
+        $ace.AccessMask -ne $rule.AccessMask) {
       throw 'Private helper parent has unexpected access entries'
     }
-    $seen[$ace.SecurityIdentifier.Value] = $true
+    $remaining.Remove($principal)
   }
 }
 
@@ -125,9 +138,6 @@ function Clear-AbandonedCopies($path) {
 function Invoke-PrivateParent {
   Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($native)))
   $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-  $writers = @($sid.Value)
-  if ($sid.Value -ne 'S-1-5-18') { $writers += 'S-1-5-18' }
-  $parentRules = ($writers | ForEach-Object { "(A;OICI;FA;;;$_)" }) -join ''
   $root = $env:AVE_SRT_PRIVATE_TEMP
   $volume = [System.IO.Path]::GetPathRoot($root)
   $handles = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
@@ -147,14 +157,14 @@ function Invoke-PrivateParent {
     $action = $env:AVE_SRT_ACTION
     # FILE_OPEN_IF atomically creates with the descriptor or opens without changing security.
     $disposition = if ($action -eq 'allocate') { 3 } else { 1 }
-    $descriptor = New-Descriptor ('O:' + $sid.Value + 'D:P' + $parentRules)
+    $descriptor = New-Descriptor (Get-PrivateParentSddl $sid.Value)
     $handle = [HomeDirectoryDacl]::OpenRelative($handle, $parentName, $sid, $disposition, $true, $true, $true, $false, 3, 0x001200a1, $descriptor)
     if ($null -eq $handle) {
       if ($action -eq 'verify') { throw 'Private helper parent is missing' }
       return
     }
     $handles.Add($handle)
-    Assert-PrivateParent $handle
+    Assert-PrivateParent $handle $descriptor
     if ($action -eq 'sweep') { Clear-AbandonedCopies $parent; return }
     if ($action -eq 'verify') { return }
 

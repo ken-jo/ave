@@ -3531,7 +3531,11 @@ with its own owner rule:
   canonical temp root. The confinement read floor covers Ave home, so the
   helper lives outside that boundary. The parent is created atomically with
   the token user as owner and a protected DACL granting full control to that
-  user and SYSTEM. Each use checks the owner, exact access entries and absence
+  user. SYSTEM and the built-in users and administrators groups have only
+  non-inheriting `FILE_TRAVERSE` on the parent. These are the existing image
+  readers, and the runner opens the image under its own logon even on systems
+  where that account has lost its traverse-bypass privilege. Each use checks
+  the owner, exact access entries and absence
   of reparse points. Windows holds the path through the parent without delete
   sharing during allocation and cleanup. A pre-existing parent that fails
   verification is left in place. On POSIX the parent uses the effective UID
