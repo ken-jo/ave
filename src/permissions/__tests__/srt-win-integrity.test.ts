@@ -1,7 +1,7 @@
 import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
@@ -598,6 +598,26 @@ describe("Windows helper integrity", () => {
     if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
     expect(existsSync(marker)).toBe(true);
     writeFileSync(join(copy, "srt-win.exe"), "image");
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  it("keeps a partial copy whose marker has another hard link", async (context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
+    createSweepDirectory(copy);
+    const outside = join(root, "outside.json");
+    const contents = JSON.stringify({ pid: 2147483647, started: "1" });
+    const marker = join(copy, "owner.json");
+    writeFileSync(outside, contents);
+    linkSync(outside, marker);
+    expect(lstatSync(marker).nlink).toBe(2);
+    if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+    expect(readFileSync(marker, "utf8")).toBe(contents);
+    expect(lstatSync(outside).nlink).toBe(2);
+
+    // The same partial copy becomes eligible when its marker has just one link.
+    rmSync(outside);
     await sweepFixture(root);
     expect(existsSync(copy)).toBe(false);
   });

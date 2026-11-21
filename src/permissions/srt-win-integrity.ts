@@ -135,6 +135,8 @@ const SWEEP_SCRIPT = [
   "if (!$hasImage -and [System.IO.Path]::GetFileName($directory) -notmatch '\\Aave-srt-win-[0-9a-f]{32}\\z') { continue }",
   "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false } }",
   "if (!$plain) { continue }",
+  // The marker is the sole file in a partial copy. LinkType uses the file's link count, which GetAttributes does not expose.
+  "if (!$hasImage) { $linkType = ([System.IO.FileInfo]::new($marker)).PSObject.Properties['LinkType']; if ($null -eq $linkType -or $null -ne $linkType.Value) { continue } }",
   "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
   "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
   "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
