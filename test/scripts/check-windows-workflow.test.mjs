@@ -206,27 +206,64 @@ function changedWorkflow(change) {
 const realParser = { skip: process.platform !== "win32" && "needs the Windows PowerShell parser" };
 const WRAPPER = "node .github/scripts/run-in-job.mjs";
 
-function parsedCommand(words, line, { text = words, redirected = false, operator = "Unknown", plain = true, scopes = [0] } = {}) {
-  const elements = words.split(" ").map(word => ({ text: word, plain }));
-  return { name: elements[0].text, head: elements[0].text, line, scopes, text, redirected, operator, elements };
+function parsedCommand(source, line, { text = source, redirected = false, operator = "Unknown", plain = true, scopes = [0] } = {}) {
+  const elements = source.match(/'[^']*'|\S+/gu).map(word => ({ text: word, plain: plain && !word.startsWith("'") }));
+  return { name: elements[0].text.replace(/^'(.*)'$/u, "$1"), head: elements[0].text, line, scopes, text, redirected, operator, elements };
 }
 
-// Reports each wrapper line as one command, as the parser does for these plain lines, and nothing else.
-function wrapperLines(_shell, sources) {
-  return { cmdlets: [], aliases: [], steps: sources.map(source => ({ errors: [], functions: [],
-    commands: source.split("\n").flatMap((line, index) =>
-      line.trim().startsWith(`${WRAPPER} `) ? [parsedCommand(line.trim(), index + 1)] : []) })) };
+const KEYWORD_RE = /^(?:if|elseif|else|foreach|for|while|switch|try|catch|finally|throw|exit|return)\b/iu;
+// Reports what the parser reports for this workflow's simple lines: statements split at braces, one command per
+// pipeline element, and none for keywords, comments or expressions.
+function parsedLines(_shell, sources) {
+  return { cmdlets: ["ConvertFrom-Json"], aliases: [], steps: sources.map(source => ({ errors: [], functions: [],
+    commands: source.split("\n").flatMap((line, index) => line.split(/[{}]/u).flatMap(statement => {
+      const pipeline = statement.trim().replace(/^\$\w+\s*=\s*/u, "");
+      if (!pipeline || /^[#$[('"]/u.test(pipeline) || KEYWORD_RE.test(pipeline)) return [];
+      return pipeline.split(" | ").map(text => text.startsWith("& ")
+        ? parsedCommand(text.slice(2), index + 1, { text, operator: "Ampersand" }) : parsedCommand(text, index + 1));
+    })) })) };
 }
 
 it("accepts the workflow's contained commands and stated exemptions", realParser, () => {
   checkWindowsWorkflow(workflow);
 });
 
-it("accepts the workflow's wrapper lines as its manifest", () => {
-  checkWindowsWorkflow(workflow, wrapperLines);
+it("accepts the workflow's contained commands and stated exemptions from parsed lines", () => {
+  checkWindowsWorkflow(workflow, parsedLines);
 });
 
-for (const [name, change, expected, portable] of [
+// Every command after job-root setup is a manifest invocation or one of the guard's stated exemptions.
+const EXEMPTIONS = [
+  "bun install --frozen-lockfile",
+  "node .github/scripts/check-windows-workflow.mjs",
+  "node scripts/fetch-uv.mjs",
+  "node .github/scripts/python-archive-cache.mjs",
+  ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"]
+    .map(option => `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`),
+  "bun run check:plugin-host-protocol-schema",
+  "node scripts/check-srt-win-integrity.cjs --upstream --inputs",
+  "node scripts/check-srt-win-integrity.cjs",
+  "node scripts/fetch-mxc.mjs --arch x64",
+  "& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' install",
+  "& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status",
+  "ConvertFrom-Json",
+  "node .github/scripts/python-download-mirror.mjs",
+  "node ave/.github/scripts/isolate-job-home.mjs --cleanup",
+];
+const containedStep = run => [{ name: "example", shell: "powershell", run, contained: true }];
+for (const exemption of EXEMPTIONS) {
+  it(`accepts the stated exemption after job-root setup: ${exemption}`, () => {
+    assert.deepEqual(parsedLines("powershell", [exemption]).steps[0].commands.map(({ text }) => text), [exemption]);
+    assert.deepEqual(powerShellCommandProblems(containedStep(exemption), parsedLines, []), []);
+  });
+}
+
+it("rejects the bare packaging check after job-root setup", () => {
+  assert.deepEqual(powerShellCommandProblems(containedStep("bun run check:mxc-packaging"), parsedLines, []),
+    ["example: line 1: command runs outside the job containment launcher: bun run check:mxc-packaging"]);
+});
+
+for (const [name, change, expected] of [
   ["a bare bun test line", (_steps, step) => { step("Run script tests").run += "\nbun test"; },
     "Run script tests: line 2: command runs outside the job containment launcher: bun test"],
   ["a test runner hidden in a script block", (_steps, step) => { step("Run script tests").run += "\nif ($true) { bun x vitest run }"; },
@@ -236,15 +273,15 @@ for (const [name, change, expected, portable] of [
     packaging.run = packaging.run.replace("node .github/scripts/run-in-job.mjs bun run check:mxc-packaging", "bun run check:mxc-packaging");
   }, "Verify both Windows native payload packages: line 3: command runs outside the job containment launcher: bun run check:mxc-packaging"],
   ["a non-PowerShell step after setup", (_steps, step) => { step("Ensure uv toolchain").shell = "bash"; },
-    "Ensure uv toolchain: steps after job-root setup need a PowerShell shell", true],
+    "Ensure uv toolchain: steps after job-root setup need a PowerShell shell"],
   ["a contained command before setup", steps => {
     steps.unshift({ name: "Early", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs --early" });
-  }, "manifest step early-1 is not exactly one contained command after job-root setup", true],
+  }, "manifest step early-1 is not exactly one contained command after job-root setup"],
 ]) {
   const rejects = inspect => () => assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), inspect),
     error => error.message.split("\n").includes(`windows-permission-tests: ${expected}`) || assert.fail(error.message));
   it(`rejects ${name} in the contained job`, realParser, rejects());
-  if (portable) it(`rejects ${name} in the contained job from wrapper lines`, rejects(wrapperLines));
+  it(`rejects ${name} in the contained job from parsed lines`, rejects(parsedLines));
 }
 
 const EXAMPLE_MANIFEST = [{ id: "example-1", invocation: "bun run test:scripts" }];
