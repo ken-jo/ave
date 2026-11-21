@@ -603,6 +603,34 @@ describe("Windows helper integrity", () => {
     expect(existsSync(copy)).toBe(false);
   });
 
+  it.for([["a".repeat(31), "flat"], ["a".repeat(33), "nested"]] as const)(
+    "requires a generated name for the marker-first layout with suffix %s and keeps %s compatibility",
+    async ([suffix, legacyLayout], context) => {
+      const root = dirname(fixture().source);
+      const copy = join(root, `ave-srt-win-${suffix}`);
+      const bin = join(copy, "bin");
+      createSweepDirectory(copy);
+      createSweepDirectory(bin);
+      const marker = join(copy, "owner.json");
+      const image = join(bin, "srt-win.exe");
+      writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+      writeFileSync(image, "image");
+
+      if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+      expect(existsSync(marker)).toBe(true);
+      expect(existsSync(image)).toBe(true);
+
+      if (legacyLayout === "flat") {
+        renameSync(image, join(copy, "srt-win.exe"));
+        rmdirSync(bin);
+      } else {
+        renameSync(marker, join(bin, "owner.json"));
+      }
+      await sweepFixture(root);
+      expect(existsSync(copy)).toBe(false);
+    },
+  );
+
   it("keeps a partial copy whose marker has another hard link", async (context) => {
     const root = dirname(fixture().source);
     const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);

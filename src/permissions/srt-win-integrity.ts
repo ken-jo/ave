@@ -132,13 +132,14 @@ const SWEEP_SCRIPT = [
   "$image = [System.IO.Path]::Combine($imageDirectory, 'srt-win.exe')",
   "$hasImage = $image -in $entries",
   "if ($marker -notin $entries -or $entries.Count -ne (1 + [int]$hasImage)) { continue }",
-  // Partial copies keep the generated name. The complete shape also supports older names.
-  "if (!$hasImage -and [System.IO.Path]::GetFileName($directory) -notmatch '\\Aave-srt-win-[0-9a-f]{32}\\z') { continue }",
+  // Only complete copies in the earlier layouts support names outside the generated namespace.
+  "$legacyComplete = $hasImage -and !$markerFirst",
+  "if (!$legacyComplete -and [System.IO.Path]::GetFileName($directory) -notmatch '\\Aave-srt-win-[0-9a-f]{32}\\z') { continue }",
   "$plain = $true; foreach ($entry in $entries) {",
   "$a = [System.IO.File]::GetAttributes($entry)",
   "if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false; break }",
   // LinkType uses the file's link count, which GetAttributes does not expose.
-  "if (!$hasImage -or $markerFirst) { $linkType = ([System.IO.FileInfo]::new($entry)).PSObject.Properties['LinkType']; if ($null -eq $linkType -or $null -ne $linkType.Value) { $plain = $false; break } }",
+  "if (!$legacyComplete) { $linkType = ([System.IO.FileInfo]::new($entry)).PSObject.Properties['LinkType']; if ($null -eq $linkType -or $null -ne $linkType.Value) { $plain = $false; break } }",
   "}",
   "if (!$plain) { continue }",
   "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
