@@ -292,6 +292,19 @@ describe("Windows job root writer precondition", () => {
     await assert.rejects(result, /5000 ms deadline\nCleanup process scan did not report completion/);
   });
 
+  it("terminates a query at its deadline and leaves no descendants", { skip: process.platform !== "win32" }, async () => {
+    const stalled = runInjectedQuery("function Get-CimInstance($Class, $Property, $Filter) { Start-Sleep -Seconds 30 }");
+    let child;
+    let exited;
+    await assert.rejects(assertNoJobRootWriters(root, (...args) => {
+      child = stalled(...args);
+      exited = once(child, "exit");
+      return child;
+    }), /5000 ms deadline/);
+    assert.deepEqual(await exited, [null, "SIGTERM"]);
+    assert.equal(runFixturePowerShell(`@(Get-CimInstance Win32_Process -Filter 'ParentProcessId = ${child.pid}').Count`), "0");
+  });
+
   it("reports an incomplete writer record stream that exceeds the byte limit", async () => {
     const run = (_command, _args, { maxBuffer }, done) => done(null, " ".repeat(maxBuffer + 1));
     await assert.rejects(assertNoJobRootWriters(root, run), /output exceeded 65536 bytes/);
@@ -1055,7 +1068,7 @@ describe("Windows job root cleanup diagnostics", () => {
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     const elapsed = performance.now() - start;
     assert.ok(elapsed >= 4500 && elapsed < 6500, `elapsed=${elapsed}`);
-    assert.equal(child.kill.mock.callCount(), 0);
+    assert.equal(child.kill.mock.callCount(), 1);
     assert.equal(child.unref.mock.callCount(), 1);
     assert.ok(child.stdin.destroyed && child.stdout.destroyed && child.stderr.destroyed);
     assert.match(output(seams), /Cleanup diagnostic failed or timed out/);

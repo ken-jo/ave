@@ -692,6 +692,8 @@ function collectQuery(script, timeout, maxBuffer, readRecord, invalidRecord, run
 
     const deadline = setTimeout(() => {
       finish(`Cleanup query reached its ${timeout} ms deadline`);
+      // The query starts no processes; its console host exits with it.
+      child?.kill?.();
       child?.stdin?.destroy();
       child?.stdout?.destroy();
       child?.stderr?.destroy();
