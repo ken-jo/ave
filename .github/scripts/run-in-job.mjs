@@ -5,7 +5,7 @@
 // step's proof.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, win32 } from "node:path";
+import { isAbsolute, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsJobLauncherPath } from "../../scripts/prepare-windows-job.mjs";
 
@@ -31,14 +31,14 @@ export function resolveCommand(command, path = process.env.PATH ?? "") {
 }
 
 export function runInJob(command, args, {
-  root, identity, manifest, launcher = win32.join(REPOSITORY, windowsJobLauncherPath()), path,
+  root, identity, manifest, launcher = join(REPOSITORY, windowsJobLauncherPath()), path,
 } = {}) {
-  if (!root || !win32.isAbsolute(root)) throw new Error("Contained test commands require AVE_CI_JOB_ROOT");
+  if (!root || !isAbsolute(root)) throw new Error("Contained test commands require AVE_CI_JOB_ROOT");
   if (!/^\d+:\d+:\d+$/u.test(identity ?? "")) throw new Error("Contained test commands require AVE_CI_JOB_ROOT_IDENTITY");
   const invocation = [command, ...args].join(" ");
   const step = manifest?.find(entry => entry.invocation === invocation);
   if (!step) throw new Error(`Not a contained workflow step: ${invocation}`);
-  const receipt = win32.join(root, JOB_RECEIPTS, step.receipt);
+  const receipt = join(root, JOB_RECEIPTS, step.receipt);
   writeFileSync(receipt, `${step.id}\n${identity}\n`, { flag: "wx" });
   // The launcher treats EOF on this never-written pipe as owner exit and still empties the job.
   const child = spawn(launcher, ["--receipt", receipt, resolveCommand(command, path), ...args],
