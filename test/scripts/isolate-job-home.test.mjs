@@ -230,17 +230,29 @@ describe("Windows job root writer precondition", () => {
     };
   }
 
+  function assertReportedRoot(error, originalRoot) {
+    assert.equal(/^Cannot clean up job root (.+?): /.exec(error.message)?.[1], originalRoot);
+  }
+
   it("preserves the original root when the writer query fails", async t => {
     const job = fixture(t);
     const run = (_command, _args, _options, done) => done(new Error("Query unavailable"));
-    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), /writer evidence is incomplete/i);
+    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
+      assert.match(error.message, /writer evidence is incomplete/i);
+      assertReportedRoot(error, root);
+      return true;
+    });
     job.assertPreserved();
   });
 
   it("preserves the root when the writer scan reaches its entry limit", async t => {
     const job = fixture(t);
     const run = queryResult({ limited: true });
-    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), /Cleanup path scan exceeded 4096 entries/);
+    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
+      assert.match(error.message, /Cleanup path scan exceeded 4096 entries/);
+      assertReportedRoot(error, root);
+      return true;
+    });
     job.assertPreserved();
   });
 
@@ -342,6 +354,7 @@ $script:processFailed = $false
               assert.equal(error.errors[0], setupError);
               error = error.errors[1];
             }
+            assertReportedRoot(error, operation === "rollback" ? job.localRoot : root);
             assert.match(error.message, new RegExp(`holder pid=${holder.pid}\\b`, "i"));
             assert.ok(error.message.includes(`image=${JSON.stringify(process.execPath)}`), error.message);
             assert.ok(error.message.includes(`path=${JSON.stringify(job.held)}`), error.message);
