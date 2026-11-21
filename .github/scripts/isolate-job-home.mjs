@@ -70,12 +70,12 @@ function createOwnedJobRoot(prefix, create, readIdentity, publish) {
 }
 
 /**
- * Setup rollback requires every job process to have exited. With no concurrent
- * writers, identity verification and tombstone rename suffice for recursive
- * pathname removal. Any holder or incomplete entry handle scan blocks rollback.
- * Process probes also block on a positive reference and report unreadable values.
- * An idle out-of-process COM server can access the root later without exposing
- * a reference at scan time, which can cause a reported rollback failure.
+ * Setup rollback runs before any contained step, so it skips the receipt ledger
+ * and otherwise shares the cleanup quarantine: the process scan refuses on a
+ * match or an unfinished scan, then the root is renamed to a tombstone,
+ * re-verified and removed. The cleanup residual applies: an undetected
+ * DCOM-launched data-file holder can only cause a reported rollback failure,
+ * never a deletion outside the root.
  */
 export async function isolationAssignments(
   { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
@@ -226,12 +226,15 @@ function writeCleanupDiagnostics(lines, diagnostic) {
 }
 
 /**
- * Every job process must have exited. With no concurrent writers, identity
- * verification and tombstone rename suffice for recursive pathname removal.
- * Any holder or incomplete entry handle scan blocks cleanup. Process probes
- * also block on a positive reference and report unreadable values.
- * An idle out-of-process COM server can access the root later without exposing
- * a reference at scan time, which can cause a reported cleanup failure.
+ * Every contained step must have proved its closed kill-on-close job empty in
+ * the receipt ledger. One pass over every process (image, command line, cwd)
+ * refuses on a match or an unfinished scan and lists unreadable values. The
+ * verified root is renamed to <root>.cleanup-<uuid>, re-verified and removed;
+ * a rename or removal failure refuses with its error.
+ * Residual: a DCOM-launched process that holds only data files under the root
+ * with delete sharing, and has no image, cwd or argument reference there, is
+ * not detected. Its only consequence is a reported cleanup failure, never a
+ * deletion outside the root.
  */
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,

@@ -857,13 +857,16 @@ jobs:
           node .github/scripts/run-in-job.mjs bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # Each contained test step must leave a receipt proving its closed job empty.
-      # Every job process must have exited. With no concurrent writers, identity
-      # verification and tombstone rename suffice for recursive pathname removal.
-      # Any holder or incomplete entry handle scan blocks cleanup. Process probes
-      # also block on a positive reference and report unreadable values.
-      # An idle out-of-process COM server can access the root later without exposing
-      # a reference at scan time, which can cause a reported cleanup failure.
+      # Each contained test step leaves a receipt that its launcher writes only after
+      # the closed kill-on-close job reports zero processes; a missing or unproven
+      # receipt refuses cleanup. One pass over every process (image, command line,
+      # cwd) refuses on a match or an unfinished scan and lists unreadable values.
+      # The verified root is renamed to <root>.cleanup-<uuid>, re-verified and
+      # removed; a rename or removal failure refuses with its error.
+      # Residual: a DCOM-launched process that holds only data files under the root
+      # with delete sharing, and has no image, cwd or argument reference there, is
+      # not detected. Its only consequence is a reported cleanup failure, never a
+      # deletion outside the root.
       - name: Remove isolated system-volume job directory
         if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         shell: powershell
