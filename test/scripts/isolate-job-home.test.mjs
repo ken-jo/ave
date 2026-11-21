@@ -346,7 +346,8 @@ describe("Windows job root writer precondition", () => {
       const run = runInjectedQuery("", script => script
         .replace("function ReadCurrentDirectory($id) {", `$&
   if ($id -eq ${process.pid}) { return @{ reason = 'OpenProcess failed' } }`)
-        .replace("} catch { $script:processFailed = $true }", "$&\n$script:processLimited = $true"));
+        .replace("kind = 'processes'; failed = $script:processFailed; limited = $script:processLimited",
+          "kind = 'processes'; failed = $script:processFailed; limited = $true"));
       await assert.rejects(isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
         () => { throw setupError; }, fixtureIdentity, undefined, run, diagnostic), error => error === setupError);
       assert.deepEqual(readdirSync(job.parent), ["shared"]);
@@ -1026,7 +1027,7 @@ describe("Windows job root cleanup diagnostics", () => {
 
 describe("Windows job root query", () => {
   const libraryName = "rstrt" + "mgr";
-  const registryBackedHolderQuery = new RegExp(libraryName + "|" + /\bRm[A-Z]\w*/.source);
+  const registryBackedHolderQuery = new RegExp(`${libraryName}|${/\bRm[A-Z]\w*/.source}`);
 
   it("detects registry-backed holder identifiers without embedding the library name", () => {
     assert.match(`${libraryName}.dll`, registryBackedHolderQuery);
