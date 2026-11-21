@@ -7,31 +7,20 @@ import { cleanupAfterClosing } from "./support/fixture-cleanup.js";
 import { installWindowsNativeTripwire } from "./support/windows-native-tripwire.js";
 
 const srtWinCopyDisposers = vi.hoisted(() => new Map<string, () => void>());
-const testTempRoot = getBuiltinModule("node:os").tmpdir();
-let srtWinTempRoot: string | undefined;
 vi.mock("../permissions/srt-win-copy-owner.js", () => ({
   _registerSrtWinCopyForTest(directory: string, dispose: () => void): void {
     srtWinCopyDisposers.set(directory, dispose);
   },
-  _srtWinTempRootForTest(temp: string): string | undefined {
-    if (temp !== testTempRoot) return undefined;
-    srtWinTempRoot ??= getBuiltinModule("node:fs").mkdtempSync(join(testTempRoot, "ave-srt-test-"));
-    return srtWinTempRoot;
-  },
 }));
 
 async function disposeSrtWinCopies(): Promise<void> {
-  if (srtWinCopyDisposers.size === 0 && srtWinTempRoot === undefined) return;
-  const { lstatSync, readdirSync, rmdirSync } = getBuiltinModule("node:fs");
+  if (srtWinCopyDisposers.size === 0) return;
+  const { lstatSync } = getBuiltinModule("node:fs");
   try {
     await cleanupAfterClosing([], [...srtWinCopyDisposers].map(([directory, dispose]) => () => {
       dispose();
       expect(lstatSync(directory, { throwIfNoEntry: false }), directory).toBeUndefined();
     }));
-    if (srtWinTempRoot !== undefined) {
-      for (const name of readdirSync(srtWinTempRoot)) rmdirSync(join(srtWinTempRoot, name));
-      rmdirSync(srtWinTempRoot);
-    }
   } finally {
     srtWinCopyDisposers.clear();
   }

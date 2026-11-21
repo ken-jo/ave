@@ -3525,33 +3525,18 @@ group rather than by the user. Admission (`assertCodexLocations` in
 Two other places create or protect owner-sensitive objects themselves, each
 with its own owner rule:
 
-- **The Windows sandbox helper copies share one private parent in temporary
-  storage.** `prepareSrtWinExecutable` in `src/permissions/srt-win-integrity.ts`
-  uses `ave-srt-win.<user SID>/copy-<pid>-<random>/bin/srt-win.exe` under the
-  canonical temp root. The confinement read floor covers Ave home, so the
-  helper lives outside that boundary. The parent is created atomically with
-  the token user as owner and a protected DACL granting full control to that
-  user. SYSTEM and the built-in users and administrators groups have only
-  non-inheriting `FILE_TRAVERSE` on the parent. These are the existing image
-  readers, and the runner opens the image under its own logon even on systems
-  where that account has lost its traverse-bypass privilege. Each use checks
-  the owner, exact access entries and absence of reparse points. Windows checks
-  the canonical ancestors from the local drive root down for trusted owners and
-  refuses grants to other principals that could let them replace path entries.
-  Before creating a missing helper parent, it also refuses grants that could let
-  another principal plant a directory at that name.
-  The directory and descriptor operations use the framework APIs directly.
-  A pre-existing parent that fails verification is left in place. On POSIX the
-  parent uses the effective UID and mode `0700` under a private or sticky temp
-  hierarchy. On macOS any
-  extended ACL grant on the parent or its canonical ancestors refuses the
-  path. Ave strips inherited entries after an exclusive parent creation and
-  verifies the result before using it.
-  A pre-existing copy or `bin` destination refuses provisioning. Their protected
-  Windows DACLs and the image's DACL allow SYSTEM and the built-in users and
-  administrators groups to read and execute. Only the token user can modify
-  the image. The image is created exclusively and filled with the bytes
-  already verified by the host.
+- **The Windows sandbox helper copy is created with its final security
+  descriptor.** `prepareSrtWinExecutable` in
+  `src/permissions/srt-win-integrity.ts` picks a random, unpublished
+  `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
+  both directories with the token user as owner and a protected DACL: full control for the user,
+  read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
+  already at either directory path, a link included, refuses creation. The empty image and
+  the owner marker are then created new inside `bin`, each with its own
+  descriptor, and each owner is read on the handle that created the file. No
+  step changes the owner or DACL of an object that already exists. The image's
+  bytes are written only after that step. If it fails, the step removes what it
+  made; a later failure removes the copy without following a link.
   The write-deny target is `bin`, so its parent's inheritable delete-child deny
   lands on the private outer directory, never `%TEMP%`. Grants inside or writable
   grants covering that outer directory are refused. Session reset or holder
@@ -3576,13 +3561,7 @@ with its own owner rule:
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
   The copy's `exit` handler, registered at import and so run before the
-  runtime's own, calls the same disposer as test teardown after release. It
-  attempts removal once at the original path. Startup sweeps the verified
-  parent, including partial directories and links as entries. A live PID in
-  a copy name defers removal and a reused PID can defer it until a later boot.
-  Before opening the private parent, startup runs the temp-root ACL diagnostic
-  and the legacy sweep of direct `ave-srt-win-*` temp entries. The legacy sweep
-  retains the original two-file shape, DACL checks and dead-owner check.
+  runtime's own, removes the copy only after a successful release.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL
