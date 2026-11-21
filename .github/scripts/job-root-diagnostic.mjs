@@ -684,7 +684,7 @@ export async function assertNoJobRootWriters(root, run) {
   const evidence = [];
   let reason = "live processes can still access the job root";
   try {
-    if (!(await inspectJobRoot(root, line => evidence.push(line), run, true))) return;
+    if (!(await inspectJobRoot(root, line => evidence.push(line), run, true))) return evidence;
   } catch {
     reason = "writer evidence is incomplete";
   }
@@ -709,6 +709,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   let filesComplete = false;
   let holdersComplete = false;
   let processesComplete = false;
+  let processScanIncomplete = false;
   let fileCount = 0;
   let processCount = 0;
   let writerFound = false;
@@ -755,7 +756,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
       if (row.kind === "processes") {
         processesComplete = true;
         if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");
-        if (row.failed) emit("Cleanup process scan was incomplete");
+        processScanIncomplete = preflight ? incomplete(row, "failed", "limited") : row.failed;
       } else if (row.kind === "process") {
         const line = formatProcess(row);
         writerFound = true;
@@ -776,7 +777,9 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
   if (filesComplete && !holdersComplete) emit("Native file holder lookup was incomplete");
   const processQueryIncomplete = !queryOk || !processesComplete;
   // The holder status closes the authoritative scan before process probes begin.
-  if (preflight && holdersComplete && processQueryIncomplete) emit("Cleanup process scan was incomplete");
+  if (processScanIncomplete || (preflight && holdersComplete && (processQueryIncomplete || outputLimited))) {
+    emit("Cleanup process scan was incomplete");
+  }
   if (outputLimited) emit("Cleanup diagnostic output reached its byte limit", OUTPUT_LIMIT);
   if (failed || !filesComplete || !holdersComplete || (!preflight && processQueryIncomplete)) {
     throw new Error("Cleanup query was incomplete");

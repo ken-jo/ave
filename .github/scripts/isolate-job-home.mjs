@@ -78,7 +78,7 @@ function createOwnedJobRoot(prefix, create, readIdentity, publish) {
  */
 export async function isolationAssignments(
   { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
-  readIdentity = readJobRootIdentity, publish = () => {}, run,
+  readIdentity = readJobRootIdentity, publish = () => {}, run, diagnostic,
 ) {
   const windows = platform === "win32";
   const paths = windows ? win32 : posix;
@@ -107,8 +107,9 @@ export async function isolationAssignments(
   } catch (error) {
     if (windows) {
       try {
-        const tombstone = await renameOwnedRoot(root, identity, readIdentity, renameSync, run);
+        const { tombstone, warnings } = await renameOwnedRoot(root, identity, readIdentity, renameSync, run);
         rmSync(tombstone, { recursive: true, force: true });
+        writeCleanupDiagnostics(warnings, diagnostic);
       } catch (rollbackError) {
         throw new AggregateError([error, rollbackError], "Job isolation setup and rollback failed");
       }
@@ -156,7 +157,7 @@ function assertOwnedRoot(root, identity, readIdentity) {
 
 async function renameOwnedRoot(root, identity, readIdentity, rename, run) {
   assertOwnedRoot(root, identity, readIdentity);
-  await assertNoJobRootWriters(root, run);
+  const warnings = await assertNoJobRootWriters(root, run);
   assertOwnedRoot(root, identity, readIdentity);
   const tombstone = `${root}.cleanup-${randomUUID()}`;
   rename(root, tombstone);
@@ -165,7 +166,7 @@ async function renameOwnedRoot(root, identity, readIdentity, rename, run) {
   } catch (cause) {
     throw new Error(`Cleanup requires an unchanged isolated job root. Directory left at ${tombstone}`, { cause });
   }
-  return tombstone;
+  return { tombstone, warnings };
 }
 
 function writeCleanupLog(lines) {
@@ -182,6 +183,14 @@ function writeCleanupLog(lines) {
   writer.stdin.end(lines.join("\n") + "\n");
 }
 
+function writeCleanupDiagnostics(lines, diagnostic) {
+  if (lines.length === 0) return;
+  try {
+    if (diagnostic) lines.forEach(line => diagnostic(line));
+    else writeCleanupLog(lines);
+  } catch { /* Diagnostic output must not change the cleanup result. */ }
+}
+
 /**
  * Every job process must have exited. With no concurrent writers, identity
  * verification and tombstone rename suffice for recursive pathname removal.
@@ -196,13 +205,15 @@ export async function cleanupWindowsJobRoot(root, {
 } = {}) {
   validateJobHomeRoot(root, systemRoot);
   let tombstone;
+  let warnings;
   try {
-    tombstone = await renameOwnedRoot(root, identity, readIdentity, rename, run);
+    ({ tombstone, warnings } = await renameOwnedRoot(root, identity, readIdentity, rename, run));
   } catch (error) {
     if (error?.syscall === "rename") await reportCleanupFailure(root, error, { run, diagnostic });
     throw error;
   }
   await diagnoseCleanupFailure(tombstone, () => remove(tombstone, { recursive: true, force: true }), { run, diagnostic });
+  writeCleanupDiagnostics(warnings, diagnostic);
 }
 
 export async function diagnoseCleanupFailure(root, remove, options) {
@@ -220,12 +231,7 @@ async function reportCleanupFailure(root, error, { run, diagnostic } = {}) {
     lines.push(`Job root cleanup failed: code=${JSON.stringify(error.code)} syscall=${JSON.stringify(error.syscall)} path=${JSON.stringify(error.path)}`);
     await diagnoseJobRoot(root, line => lines.push(line), run);
   } catch { lines.push("Cleanup diagnostic failed or timed out"); }
-  setImmediate(() => {
-    try {
-      if (diagnostic) lines.forEach(line => diagnostic(line));
-      else writeCleanupLog(lines);
-    } catch { /* The removal rejection has already settled. */ }
-  });
+  setImmediate(() => writeCleanupDiagnostics(lines, diagnostic));
 }
 async function main() {
   if (process.argv.includes("--cleanup")) {

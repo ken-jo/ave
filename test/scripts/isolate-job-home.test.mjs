@@ -256,6 +256,16 @@ describe("Windows job root writer precondition", () => {
     job.assertPreserved();
   });
 
+  it("reports an incomplete process scan on successful cleanup", async t => {
+    const job = fixture(t);
+    const diagnostic = mock.fn();
+    const run = queryResult({ processScanFailed: true });
+    await cleanupJobRoot(root, { ...job.options, run, diagnostic });
+    assert.deepEqual(readdirSync(job.parent), ["shared"]);
+    assert.equal(run.mock.callCount(), 1);
+    assert.match(output({ diagnostic }), /Cleanup process scan was incomplete/);
+  });
+
   if (process.platform === "win32") {
     it("refuses an unsupported native handle query for a job entry", async t => {
       const job = fixture(t);
@@ -300,18 +310,33 @@ describe("Windows job root writer precondition", () => {
       $row.${field} = ${value}
     }`);
         });
-        await cleanupJobRoot(root, { ...job.options, run });
+        const diagnostic = mock.fn();
+        await cleanupJobRoot(root, { ...job.options, run, diagnostic });
         assert.equal(existsSync(job.localRoot), false);
         assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
-        mkdirSync(job.localRoot);
-        const diagnostic = mock.fn();
-        await diagnoseJobRoot(job.localRoot, diagnostic, run);
         const displayedPid = field === "ProcessId" ? '"not determined"' : process.pid;
         const lines = output({ diagnostic });
         assert.ok(lines.split("\n").some(line => line.startsWith(`process unreadable pid=${displayedPid} reason=`)
           && line.includes(reason)), lines);
       });
     }
+
+    it("reports unreadable and limited process evidence on successful rollback", async t => {
+      const job = fixture(t);
+      const setupError = new Error("DACL readback failed");
+      const diagnostic = mock.fn();
+      const run = runInjectedQuery("", script => script
+        .replace("function ReadCurrentDirectory($id) {", `$&
+  if ($id -eq ${process.pid}) { return @{ reason = 'OpenProcess failed' } }`)
+        .replace("} catch { $script:processFailed = $true }", "$&\n$script:processLimited = $true"));
+      await assert.rejects(isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
+        () => { throw setupError; }, fixtureIdentity, undefined, run, diagnostic), error => error === setupError);
+      assert.deepEqual(readdirSync(job.parent), ["shared"]);
+      const lines = output({ diagnostic });
+      assert.ok(lines.includes(`process unreadable pid=${process.pid} reason="OpenProcess failed"`), lines);
+      assert.match(lines, /Cleanup process scan reached its inspection or reporting limit/);
+      assert.match(lines, /Cleanup process scan was incomplete/);
+    });
 
     for (const reference of ["cwd", "image", "module", "argument"]) {
       it(`refuses rollback for a live ${reference} reference`, async t => {
