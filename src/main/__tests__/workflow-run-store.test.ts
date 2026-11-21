@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,6 +7,7 @@ import { WorkflowRunStore } from "../workflow-run-store.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import * as namespace from "../storage/feature-namespace.js";
 import type { WorkflowRunRecord } from "../../shared/workflow-template-types.js";
+import { contentHash as sha } from "../../__tests__/support/content-hash.js";
 
 let dir: string;
 let file: string;
@@ -247,8 +247,6 @@ it("reads a delete as unknown while the file holds its marker or the store holds
   expect(await store.hasUnknown()).toBe(false);
   expect(await store.withdrawIntent(intent)).toBe(true);
 });
-
-const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
 it("shows every entry that does not read as a run by its place and content, and discards only the one named, after keeping the file as it was", async () => {
   const store = new WorkflowRunStore(file);
