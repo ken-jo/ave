@@ -151,3 +151,44 @@ it("uses the configured edition, its aliases, and the enclosing function scopes"
     "desktop: line 1: unrecognized command alice",
   ]);
 });
+
+async function containedManifest(steps) {
+  const { containedSteps } = await import("../../.github/scripts/check-windows-workflow.mjs");
+  return containedSteps(stringify({ jobs: { "windows-permission-tests": { "runs-on": "windows-2025", steps } } }));
+}
+const CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
+
+it("derives one receipt per contained workflow invocation", async () => {
+  const { containedSteps } = await import("../../.github/scripts/check-windows-workflow.mjs");
+  const manifest = containedSteps(workflow);
+  assert.deepEqual(manifest.map(({ id }) => id), [
+    "verify-native-background-process-ownership-1", "verify-windows-folder-classification-1",
+    "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
+    "run-script-tests-1", "run-windows-appearance-regressions-1", "run-windows-session-persistence-regressions-1",
+    "run-windows-permission-regressions-1", "run-windows-native-import-regressions-1",
+    "run-native-workbook-and-control-file-confinement-1",
+  ]);
+  const lines = windowsRunSteps(workflow).filter(({ jobId }) => jobId === "windows-permission-tests")
+    .flatMap(({ lines }) => lines).filter(line => line.includes("run-in-job.mjs"))
+    .map(line => line.trim().replace("node .github/scripts/run-in-job.mjs ", ""));
+  assert.deepEqual(manifest.map(({ invocation }) => invocation), lines);
+  for (const { id, receipt } of manifest) assert.equal(receipt, `${id}.receipt`);
+});
+
+for (const [name, steps, expected] of [
+  ["a repeated invocation", [
+    { name: "alice", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node example.mjs" },
+    { name: "bob", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node example.mjs" },
+  ], /duplicate contained invocation: node example\.mjs/],
+  ["a quoted argument", [{ name: "alice", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node -e \"example\"" }],
+    /plain single-spaced arguments/],
+  ["a doubled space", [{ name: "alice", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node  example.mjs" }],
+    /plain single-spaced arguments/],
+  ["a step without the regression condition", [{ name: "alice", run: "node .github/scripts/run-in-job.mjs node example.mjs" }],
+    /a contained step needs if:/],
+  ["no contained step", [{ name: "alice", if: CONDITION, run: "node example.mjs" }], /no contained test steps/],
+]) {
+  it(`rejects a contained-step manifest with ${name}`, async () => {
+    await assert.rejects(containedManifest(steps), expected);
+  });
+}

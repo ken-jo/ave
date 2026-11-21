@@ -110,32 +110,35 @@ try {
   run=launch(process.execPath,['-e',`require('fs').writeFileSync(${JSON.stringify(marker)},'ran')`],failureHelper);
   result=await deadline(run.done);assert.equal(result.code,125);assert.equal(existsSync(marker),false);assert.match(result.stderr,/failed/);
   console.log('PASS job assignment failure never runs command');
+  // The CI wrapper registers each receipt before launch; the launcher only appends the verdict.
+  const registered='example-1\n1:2:3\n';
   for(const mode of ['root-exit','owner-eof']) {
     const receipt=join(directory,`${mode}.receipt`);
+    writeFileSync(receipt,registered);
     run=launch(process.execPath,[fixture,mode],helper,receipt);
     const [output]=await deadline(once(run.child.stdout,'data'));
     const pid=Number(output.toString().trim());assert.ok(pid>0);
-    if(mode==='owner-eof'){assert.equal(readFileSync(receipt,'utf8'),'');run.child.stdin.end();}
+    if(mode==='owner-eof'){assert.equal(readFileSync(receipt,'utf8'),registered);run.child.stdin.end();}
     result=await deadline(run.done);
-    assert.equal(result.code,mode==='root-exit'?23:130);assert.equal(readFileSync(receipt,'utf8'),'0');
+    assert.equal(result.code,mode==='root-exit'?23:130);assert.equal(readFileSync(receipt,'utf8'),`${registered}0`);
     assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
     console.log(`PASS ${mode} receipt proves the closed job is empty`);
   }
   assert.ok(existsSync(queryFailureHelper),'Build -QueryFailureFixture before running this suite');
   const unqueried=join(directory,'unqueried.receipt');
+  writeFileSync(unqueried,registered);
   run=launch(process.execPath,[fixture,'root-exit'],queryFailureHelper,unqueried);
   const [unqueriedOutput]=await deadline(once(run.child.stdout,'data'));
   result=await deadline(run.done);await gone(Number(unqueriedOutput.toString().trim()));
-  assert.equal(result.code,125);assert.match(result.stderr,/QueryInformationJobObject failed/);assert.equal(readFileSync(unqueried,'utf8'),'');
-  console.log('PASS job query failure leaves no receipt');
-  const reused=join(directory,'reused.receipt');
-  writeFileSync(reused,'');
-  for(const receipt of [reused,'relative.receipt']) {
+  assert.equal(result.code,125);assert.match(result.stderr,/QueryInformationJobObject failed/);assert.equal(readFileSync(unqueried,'utf8'),registered);
+  console.log('PASS job query failure appends no verdict');
+  const missing=join(directory,'missing.receipt');
+  for(const receipt of [missing,'relative.receipt']) {
     run=launch(process.execPath,['-e',`require('fs').writeFileSync(${JSON.stringify(marker)},'ran')`],helper,receipt);
     result=await deadline(run.done);assert.equal(result.code,125);assert.equal(existsSync(marker),false);
   }
-  assert.equal(readFileSync(reused,'utf8'),'');
-  console.log('PASS existing or relative receipt never runs command');
+  assert.equal(existsSync(missing),false);
+  console.log('PASS missing or relative receipt never runs command');
   const elapsed=[];
   for(let i=0;i<15;i++){const start=performance.now();await deadline(launch(process.execPath,['-e','']).done);elapsed.push(performance.now()-start);}
   const direct=[];

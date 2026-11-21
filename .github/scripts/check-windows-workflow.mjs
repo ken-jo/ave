@@ -40,6 +40,37 @@ export function windowsRunSteps(workflow) {
   });
 }
 
+const CONTAINED_PREFIX_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}`, "u");
+// The wrapper finds its step by its exact argv, so arguments must be plain single-spaced tokens.
+const PLAIN_INVOCATION_RE = /^[\w./:=@+-]+(?: [\w./:=@+-]+)*$/u;
+
+/**
+ * The contained-step manifest that run-in-job.mjs and job-root cleanup share:
+ * one receipt per contained invocation, named from its step and its position.
+ */
+export function containedSteps(workflow) {
+  const manifest = [];
+  for (const { jobId, name, stepName, condition, lines } of windowsRunSteps(workflow)) {
+    if (jobId !== CONTAINED_JOB) continue;
+    const slug = (stepName ?? "").toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
+    let position = 0;
+    for (const line of lines) {
+      if (!CONTAINED_LINE_RE.test(line)) continue;
+      const invocation = line.replace(CONTAINED_PREFIX_RE, "").trim();
+      if (!slug) throw new Error(`${name}: a contained step needs a name`);
+      if (condition !== REGRESSION_CONDITION) throw new Error(`${name}: a contained step needs if: ${REGRESSION_CONDITION}`);
+      if (!PLAIN_INVOCATION_RE.test(invocation)) throw new Error(`${name}: contained invocation needs plain single-spaced arguments: ${invocation}`);
+      const id = `${slug}-${++position}`;
+      if (manifest.some(step => step.id === id || step.invocation === invocation)) {
+        throw new Error(`${name}: duplicate contained invocation: ${invocation}`);
+      }
+      manifest.push({ id, receipt: `${id}.receipt`, invocation });
+    }
+  }
+  if (manifest.length === 0) throw new Error(`${CONTAINED_JOB}: no contained test steps`);
+  return manifest;
+}
+
 export function windowsRegressionStepFiles(run, readInventory, name) {
   const invocation = run.trim();
   const inventoryName = LIST_INVOCATION.exec(invocation)?.[1];
@@ -187,6 +218,7 @@ export function checkWindowsWorkflow(workflow, inspect) {
     && /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i.test(step.shell))) {
     throw new Error("The Windows permission step requires a PowerShell parser");
   }
+  containedSteps(workflow);
   const failures = [...directCommandProblems(steps), ...powerShellCommandProblems(steps, inspect)];
   if (failures.length) throw new Error(failures.join("\n"));
 }

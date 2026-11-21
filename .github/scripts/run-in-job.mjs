@@ -1,15 +1,22 @@
 // Runs one CI test command inside the job launcher's kill-on-close job. The
-// launcher records "0" in a fresh receipt only after it has terminated the job
-// and proven it empty; cleanup refuses the job root without that proof.
+// wrapper registers the command's manifest step and the job-root identity in
+// that step's receipt; the launcher appends "0" only after it has terminated
+// the job and proven it empty. Cleanup refuses the job root without every
+// step's proof.
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsJobLauncherPath } from "../../scripts/prepare-windows-job.mjs";
 
 export const JOB_RECEIPTS = "job-receipts";
 const REPOSITORY = fileURLToPath(new URL("../..", import.meta.url));
+
+// Loaded on demand: job-root setup runs before packages are installed.
+export async function containedStepManifest() {
+  const { containedSteps } = await import("./check-windows-workflow.mjs");
+  return containedSteps(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
+}
 
 export function resolveCommand(command, path = process.env.PATH ?? "") {
   if (win32.isAbsolute(command)) return command;
@@ -24,10 +31,15 @@ export function resolveCommand(command, path = process.env.PATH ?? "") {
 }
 
 export function runInJob(command, args, {
-  root = process.env.AVE_CI_JOB_ROOT, launcher = win32.join(REPOSITORY, windowsJobLauncherPath()), path,
+  root, identity, manifest, launcher = win32.join(REPOSITORY, windowsJobLauncherPath()), path,
 } = {}) {
   if (!root || !win32.isAbsolute(root)) throw new Error("Contained test commands require AVE_CI_JOB_ROOT");
-  const receipt = win32.join(root, JOB_RECEIPTS, `${randomUUID()}.receipt`);
+  if (!/^\d+:\d+:\d+$/u.test(identity ?? "")) throw new Error("Contained test commands require AVE_CI_JOB_ROOT_IDENTITY");
+  const invocation = [command, ...args].join(" ");
+  const step = manifest?.find(entry => entry.invocation === invocation);
+  if (!step) throw new Error(`Not a contained workflow step: ${invocation}`);
+  const receipt = win32.join(root, JOB_RECEIPTS, step.receipt);
+  writeFileSync(receipt, `${step.id}\n${identity}\n`, { flag: "wx" });
   // The launcher treats EOF on this never-written pipe as owner exit and still empties the job.
   const child = spawn(launcher, ["--receipt", receipt, resolveCommand(command, path), ...args],
     { stdio: ["pipe", "inherit", "inherit"], windowsHide: true });
@@ -40,5 +52,8 @@ export function runInJob(command, args, {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [command, ...args] = process.argv.slice(2);
   if (!command) throw new Error("Usage: run-in-job.mjs <command> [args...]");
-  process.exitCode = await runInJob(command, args);
+  process.exitCode = await runInJob(command, args, {
+    root: process.env.AVE_CI_JOB_ROOT, identity: process.env.AVE_CI_JOB_ROOT_IDENTITY,
+    manifest: await containedStepManifest(),
+  });
 }

@@ -7,7 +7,7 @@ import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 import { assertNoJobRootWriters, diagnoseJobRoot } from "./job-root-diagnostic.mjs";
-import { JOB_RECEIPTS } from "./run-in-job.mjs";
+import { containedStepManifest, JOB_RECEIPTS } from "./run-in-job.mjs";
 
 function systemVolume(systemRoot) {
   const root = typeof systemRoot === "string" ? win32.parse(systemRoot).root : "";
@@ -154,33 +154,52 @@ function assertOwnedRoot(root, identity, readIdentity) {
   }
 }
 
-const RECEIPT_NAME = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.receipt$/u;
-
 function readJobReceipts(directory) {
   return readdirSync(directory, { withFileTypes: true }).map(entry => ({
     name: entry.name, text: entry.isFile() ? readFileSync(win32.join(directory, entry.name), "utf8") : undefined,
   }));
 }
 
-// A contained step's launcher writes "0" only after proving its closed job empty.
-function assertContainedSteps(root, readReceipts) {
+function receiptProblem(step, identity, text) {
+  if (text === `${step.id}\n${identity}\n0`) return undefined;
+  const [id, owner] = typeof text === "string" ? text.split("\n") : [];
+  if (id !== step.id) return "names another step";
+  if (owner !== identity) return "names another job root";
+  return "has no zero verdict";
+}
+
+async function assertContainedSteps(root, identity, readReceipts, manifest) {
   let receipts;
   try {
     receipts = readReceipts(win32.join(root, JOB_RECEIPTS));
   } catch (cause) {
     throw new Error(`Cannot clean up job root ${root}: the job receipt ledger is unreadable`, { cause });
   }
-  const unproven = receipts.filter(({ name, text }) => !RECEIPT_NAME.test(name) || text !== "0").map(({ name }) => name);
-  if (unproven.length > 0) {
-    throw new Error([`Cannot clean up job root ${root}: ${unproven.length} contained steps did not prove an empty job`,
-      ...unproven.slice(0, 20).map(name => `receipt ${JSON.stringify(name)}`)].join("\n"));
+  let steps;
+  try {
+    steps = manifest ?? await containedStepManifest();
+  } catch (cause) {
+    throw new Error(`Cannot clean up job root ${root}: the contained-step manifest is unavailable`, { cause });
+  }
+  const problems = [];
+  for (const { name, text } of receipts) {
+    const step = steps.find(entry => entry.receipt === name);
+    const problem = step ? receiptProblem(step, identity, text) : "is not a contained-step receipt";
+    if (problem) problems.push(`${JSON.stringify(name)} ${problem}`);
+  }
+  for (const { receipt } of steps) {
+    if (!receipts.some(({ name }) => name === receipt)) problems.push(`${JSON.stringify(receipt)} is missing`);
+  }
+  if (problems.length > 0) {
+    throw new Error([`Cannot clean up job root ${root}: ${problems.length} contained-step receipts are missing or unproven`,
+      ...problems.slice(0, 20).map(problem => `receipt ${problem}`)].join("\n"));
   }
 }
 
 // Quarantine: verify identity, rename to a fresh tombstone, verify it, then remove only the tombstone.
-async function removeOwnedRoot(root, identity, { readIdentity, rename, remove, readReceipts, run, diagnostic }) {
+async function removeOwnedRoot(root, identity, { readIdentity, rename, remove, readReceipts, manifest, run, diagnostic }) {
   assertOwnedRoot(root, identity, readIdentity);
-  if (readReceipts) assertContainedSteps(root, readReceipts);
+  if (readReceipts) await assertContainedSteps(root, identity, readReceipts, manifest);
   const warnings = await assertNoJobRootWriters(root, run);
   assertOwnedRoot(root, identity, readIdentity);
   const tombstone = `${root}.cleanup-${randomUUID()}`;
@@ -226,11 +245,14 @@ function writeCleanupDiagnostics(lines, diagnostic) {
 }
 
 /**
- * Every contained step must have proved its closed kill-on-close job empty in
- * the receipt ledger. One pass over every process (image, command line, cwd)
- * refuses on a match or an unfinished scan and lists unreadable values. The
- * verified root is renamed to <root>.cleanup-<uuid>, re-verified and removed;
- * a rename or removal failure refuses with its error.
+ * The receipt ledger must hold exactly one receipt per contained-step manifest
+ * entry, each naming its step and this job root and proving its closed
+ * kill-on-close job empty; anything else refuses. Receipts target accidental
+ * lingering writers; deliberate forgery by a test running as the same CI
+ * account is out of scope. One pass over every process (image, command line,
+ * cwd) refuses on a match or an unfinished scan and lists unreadable values.
+ * The verified root is renamed to <root>.cleanup-<uuid>, re-verified and
+ * removed; a rename or removal failure refuses with its error.
  * Residual: a DCOM-launched process that holds only data files under the root
  * with delete sharing, and has no image, cwd or argument reference there, is
  * not detected. Its only consequence is a reported cleanup failure, never a
@@ -238,10 +260,11 @@ function writeCleanupDiagnostics(lines, diagnostic) {
  */
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,
-  readIdentity = readJobRootIdentity, rename = renameSync, remove = rmSync, readReceipts = readJobReceipts, run, diagnostic,
+  readIdentity = readJobRootIdentity, rename = renameSync, remove = rmSync, readReceipts = readJobReceipts, manifest,
+  run, diagnostic,
 } = {}) {
   validateJobHomeRoot(root, systemRoot);
-  await removeOwnedRoot(root, identity, { readIdentity, rename, remove, readReceipts, run, diagnostic });
+  await removeOwnedRoot(root, identity, { readIdentity, rename, remove, readReceipts, manifest, run, diagnostic });
 }
 
 export async function diagnoseCleanupFailure(root, remove, options) {

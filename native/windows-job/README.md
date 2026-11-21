@@ -13,11 +13,13 @@ WSL-backed and unknown interpreters are refused before starting the command;
 distribution-wide termination would also affect unrelated work.
 
 CI test steps use `--receipt <absolute path>` through
-`.github/scripts/run-in-job.mjs`. The launcher creates the receipt before the
-command starts. When the root command exits or the owner closes stdin, it
-terminates the job and waits up to 5 seconds for the job to report zero active
-processes. Only then does it write `0`. A job query failure or survivor exits
-125 with the receipt left empty, and job-root cleanup refuses the root.
+`.github/scripts/run-in-job.mjs`, which first registers the step's manifest id
+and job-root identity in that receipt. The launcher opens the existing receipt
+for append before the command starts and refuses a missing one. When the root
+command exits or the owner closes stdin, it terminates the job and waits up to
+5 seconds for the job to report zero active processes. Only then does it append
+`0`. A job query failure or survivor exits 125 with no verdict appended, and
+job-root cleanup refuses the root.
 
 Call `spawnWindowsJobProcess` with an absolute executable path already selected
 by the shell resolver. Keep its stdin open until disposal; never expose that pipe

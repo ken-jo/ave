@@ -857,10 +857,14 @@ jobs:
           node .github/scripts/run-in-job.mjs bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # Each contained test step leaves a receipt that its launcher writes only after
-      # the closed kill-on-close job reports zero processes; a missing or unproven
-      # receipt refuses cleanup. One pass over every process (image, command line,
-      # cwd) refuses on a match or an unfinished scan and lists unreadable values.
+      # Each run-in-job line above is a manifest step: its wrapper registers the
+      # step id and job-root identity in the step's receipt, and its launcher
+      # appends "0" only after the closed kill-on-close job reports zero processes.
+      # A missing, foreign or unproven receipt refuses cleanup, so a job that
+      # stops before every contained step ran also fails here. Receipts target
+      # accidental lingering writers, not forgery by a test running as the CI
+      # account. One pass over every process (image, command line, cwd) refuses
+      # on a match or an unfinished scan and lists unreadable values.
       # The verified root is renamed to <root>.cleanup-<uuid>, re-verified and
       # removed; a rename or removal failure refuses with its error.
       # Residual: a DCOM-launched process that holds only data files under the root

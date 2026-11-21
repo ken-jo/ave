@@ -208,6 +208,14 @@ function fixtureIdentity(path) {
   return `${dev}:${ino}:${birthtimeNs}`;
 }
 
+const MANIFEST = [
+  { id: "example-1", receipt: "example-1.receipt", invocation: "node example.mjs" },
+  { id: "example-2", receipt: "example-2.receipt", invocation: "node example.mjs shared" },
+];
+function provenReceipts(identity, manifest = MANIFEST) {
+  return manifest.map(({ id, receipt }) => ({ name: receipt, text: `${id}\n${identity}\n0` }));
+}
+
 // Mirrors the hosted failure: 19 branch and 79 leaf directories, 5,121 files, directory depth 8.
 function writeRealisticJobTree(localRoot) {
   for (const branch of [
@@ -243,14 +251,15 @@ describe("Windows job root writer precondition", () => {
     writeFileSync(held, "example");
     writeFileSync(sentinel, "preserve");
     const localPath = path => join(parent, win32.basename(path));
+    const identity = fixtureIdentity(localRoot);
     return {
       parent, localRoot, held,
       options: {
-        systemRoot, identity: fixtureIdentity(localRoot),
+        systemRoot, identity,
         readIdentity: path => fixtureIdentity(localPath(path)),
         rename: (from, to) => renameSync(localPath(from), localPath(to)),
         remove: (path, options) => rmSync(localPath(path), options),
-        readReceipts: () => [],
+        readReceipts: () => provenReceipts(identity), manifest: MANIFEST,
       },
       assertPreserved() {
         assert.equal(readFileSync(held, "utf8"), "example");
@@ -381,24 +390,56 @@ describe("Windows job root writer precondition", () => {
     });
   }
 
-  const RECEIPT = "00000000-0000-4000-8000-000000000000.receipt";
-  for (const [name, readReceipts, expected] of [
-    ["a missing receipt ledger", () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); }, /the job receipt ledger is unreadable/],
-    ["a receipt left without proof", () => [{ name: RECEIPT, text: "" }], new RegExp(`1 contained steps did not prove an empty job\\nreceipt "${RECEIPT}"$`)],
-    ["a foreign ledger entry", () => [{ name: RECEIPT, text: "0" }, { name: "example", text: undefined }], /\nreceipt "example"$/],
+  it("refuses cleanup for a missing receipt ledger before scanning processes", async t => {
+    const job = fixture(t);
+    const run = queryResult();
+    const readReceipts = () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); };
+    await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts, run }),
+      { message: `Cannot clean up job root ${root}: the job receipt ledger is unreadable` });
+    assert.equal(run.mock.callCount(), 0);
+    job.assertPreserved();
+  });
+
+  const FOREIGN = "00000000-0000-4000-8000-000000000000.receipt";
+  const [first, second] = MANIFEST;
+  for (const [name, receipts, problems] of [
+    ["an empty ledger", () => [], [`"${first.receipt}" is missing`, `"${second.receipt}" is missing`]],
+    ["a missing step", identity => provenReceipts(identity).slice(0, 1), [`"${second.receipt}" is missing`]],
+    ["a foreign zero file", identity => [...provenReceipts(identity), { name: FOREIGN, text: "0" }],
+      [`"${FOREIGN}" is not a contained-step receipt`]],
+    ["a foreign directory", identity => [...provenReceipts(identity), { name: "example", text: undefined }],
+      [`"example" is not a contained-step receipt`]],
+    ["a wrong identity", identity => [{ name: first.receipt, text: `${first.id}\n1:2:3\n0` }, provenReceipts(identity)[1]],
+      [`"${first.receipt}" names another job root`]],
+    ["a wrong step", identity => [{ name: first.receipt, text: `${second.id}\n${identity}\n0` }, provenReceipts(identity)[1]],
+      [`"${first.receipt}" names another step`]],
+    ["a registered step without a verdict", identity => [{ name: first.receipt, text: `${first.id}\n${identity}\n` }, provenReceipts(identity)[1]],
+      [`"${first.receipt}" has no zero verdict`]],
+    ["a non-zero verdict", identity => [{ name: first.receipt, text: `${first.id}\n${identity}\n1` }, provenReceipts(identity)[1]],
+      [`"${first.receipt}" has no zero verdict`]],
   ]) {
     it(`refuses cleanup for ${name} before scanning processes`, async t => {
       const job = fixture(t);
       const run = queryResult();
-      await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts, run }), error => {
-        assertReportedRoot(error, root);
-        assert.match(error.message, expected);
-        return true;
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts: () => receipts(job.options.identity), run }), {
+        message: [`Cannot clean up job root ${root}: ${problems.length} contained-step receipts are missing or unproven`,
+          ...problems.map(problem => `receipt ${problem}`)].join("\n"),
       });
       assert.equal(run.mock.callCount(), 0);
       job.assertPreserved();
     });
   }
+
+  it("checks receipts against the workflow manifest by default", async t => {
+    const job = fixture(t);
+    const { containedStepManifest } = await import("../../.github/scripts/run-in-job.mjs");
+    const manifest = await containedStepManifest();
+    assert.ok(manifest.length > 1);
+    await cleanupJobRoot(root, {
+      ...job.options, manifest: undefined, readReceipts: () => provenReceipts(job.options.identity, manifest), run: queryResult(),
+    });
+    assert.deepEqual(readdirSync(job.parent), ["shared"]);
+  });
 
   const TOMBSTONE = /^ave-ci-abc123\.cleanup-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u;
   for (const stage of ["rename", "remove"]) {
@@ -443,34 +484,80 @@ describe("Windows job root writer precondition", () => {
     // The root exits at once; its detached child keeps a cwd under the job root.
     const script = "const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],"
       + " { cwd: process.argv[1], detached: true, stdio: 'ignore' }); child.unref(); require('node:fs').writeFileSync(process.argv[2], String(child.pid));";
-    return { receipts, pidFile, done: runInJob(process.execPath, ["-e", script, cwd, pidFile], { root: job.localRoot, launcher }) };
+    const args = ["-e", script, cwd, pidFile];
+    const manifest = [{ id: "example-1", receipt: "example-1.receipt", invocation: [process.execPath, ...args].join(" ") }];
+    const done = runInJob(process.execPath, args, { root: job.localRoot, identity: job.options.identity, manifest, launcher });
+    return { receipts, pidFile, manifest, done };
   }
   const scanLocalRoot = job => runInjectedQuery("", script => script
     .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`));
 
+  function wrapperJob(t) {
+    const job = fixture(t);
+    mkdirSync(join(job.localRoot, JOB_RECEIPTS));
+    const launcher = join(job.parent, "missing-launcher.exe");
+    return { ...job, launcher, receipts: () => localReceipts(join(job.localRoot, JOB_RECEIPTS)) };
+  }
+
+  it("registers nothing for an invocation outside the manifest", t => {
+    const job = wrapperJob(t);
+    assert.throws(() => runInJob("node", ["other.mjs"], { root: job.localRoot, identity: job.options.identity, manifest: MANIFEST, launcher: job.launcher }),
+      { message: "Not a contained workflow step: node other.mjs" });
+    assert.deepEqual(job.receipts(), []);
+  });
+
+  it("registers nothing without the job-root identity", t => {
+    const job = wrapperJob(t);
+    assert.throws(() => runInJob("node", ["example.mjs"], { root: job.localRoot, manifest: MANIFEST, launcher: job.launcher }),
+      { message: "Contained test commands require AVE_CI_JOB_ROOT_IDENTITY" });
+    assert.deepEqual(job.receipts(), []);
+  });
+
+  it("refuses to re-register a step that already has a receipt", t => {
+    const job = wrapperJob(t);
+    const [proof] = provenReceipts(job.options.identity);
+    writeFileSync(join(job.localRoot, JOB_RECEIPTS, proof.name), proof.text);
+    assert.throws(() => runInJob("node", ["example.mjs"], { root: job.localRoot, identity: job.options.identity, manifest: MANIFEST, launcher: job.launcher }),
+      { code: "EEXIST" });
+    assert.deepEqual(job.receipts(), [proof]);
+  });
+
+  it("keeps the setup import graph free of installed packages", () => {
+    // Setup runs before dependencies are installed; the manifest loads on demand.
+    const seen = new Set();
+    const visit = url => {
+      if (seen.has(url.href)) return;
+      seen.add(url.href);
+      for (const [, specifier] of readFileSync(url, "utf8").matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gmu)) {
+        if (specifier.startsWith("node:")) continue;
+        assert.match(specifier, /^\.\.?\//u, `${fileURLToPath(url)} imports ${specifier}`);
+        visit(new URL(specifier, url));
+      }
+    };
+    visit(new URL("../../.github/scripts/isolate-job-home.mjs", import.meta.url));
+    assert.ok(seen.size >= 5, [...seen].join("\n"));
+  });
+
   if (process.platform === "win32") {
     it("removes the root after the job close kills a live contained child", async t => {
       const job = fixture(t);
-      const { receipts, pidFile, done } = containedChild(job);
+      const { receipts, pidFile, manifest, done } = containedChild(job);
       assert.equal(await done, 0);
       const pid = Number(readFileSync(pidFile, "utf8"));
       assert.ok(pid > 0);
       assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-      assert.deepEqual(localReceipts(receipts).map(({ text }) => text), ["0"]);
-      await cleanupJobRoot(root, { ...job.options, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job), diagnostic: () => {} });
+      assert.deepEqual(localReceipts(receipts), [{ name: "example-1.receipt", text: `example-1\n${job.options.identity}\n0` }]);
+      await cleanupJobRoot(root, { ...job.options, manifest, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job), diagnostic: () => {} });
       assert.deepEqual(readdirSync(job.parent), ["shared"]);
     });
 
     it("refuses cleanup after a contained step's job query fails", async t => {
       const job = fixture(t);
-      const { receipts, done } = containedChild(job, join(helpers, "ave-job-query-failure.exe"));
+      const { receipts, manifest, done } = containedChild(job, join(helpers, "ave-job-query-failure.exe"));
       assert.equal(await done, 125);
-      const [receipt] = localReceipts(receipts);
-      assert.equal(receipt.text, "");
-      await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job) }), error => {
-        assertReportedRoot(error, root);
-        assert.ok(error.message.endsWith(`1 contained steps did not prove an empty job\nreceipt ${JSON.stringify(receipt.name)}`), error.message);
-        return true;
+      assert.deepEqual(localReceipts(receipts), [{ name: "example-1.receipt", text: `example-1\n${job.options.identity}\n` }]);
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, manifest, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job) }), {
+        message: `Cannot clean up job root ${root}: 1 contained-step receipts are missing or unproven\nreceipt "example-1.receipt" has no zero verdict`,
       });
       job.assertPreserved();
     });
@@ -794,16 +881,17 @@ describe("Windows cleanup root ownership", () => {
     const fixture = rootSwapFixture(t);
     const localPath = path => join(fixture.parent, win32.basename(path));
     let reads = 0;
+    const identity = fixtureIdentity(fixture.root);
     const failure = await cleanupJobRoot(root, {
-      systemRoot: "C:\\Windows", identity: fixtureIdentity(fixture.root),
+      systemRoot: "C:\\Windows", identity,
       readIdentity(path) {
-        const identity = fixtureIdentity(localPath(path));
+        const current = fixtureIdentity(localPath(path));
         if (path === root && ++reads === 2) fixture.swap();
-        return identity;
+        return current;
       },
       rename: (from, to) => renameSync(localPath(from), localPath(to)),
       remove: (path, options) => rmSync(localPath(path), options),
-      readReceipts: () => [],
+      readReceipts: () => provenReceipts(identity), manifest: MANIFEST,
       run: queryResult(),
     }).catch(error => error);
     fixture.assertPreserved();

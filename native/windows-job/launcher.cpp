@@ -73,7 +73,8 @@ static bool emptyJob(HANDLE job) {
   }
 }
 int wmain(int argc, wchar_t** argv) {
-  // `--receipt <absolute path>` records "0" only after the closed job is proven empty.
+  // `--receipt <absolute path>` appends "0" to an existing registered receipt only
+  // after the closed job is proven empty.
   const bool contained = argc >= 2 && wcscmp(argv[1], L"--receipt") == 0;
   const int first = contained ? 3 : 1;
   if (contained && (argc < 3 || !absolutePath(argv[2]))) {
@@ -104,8 +105,8 @@ int wmain(int argc, wchar_t** argv) {
     return fail("SetInformationJobObject");
   HANDLE receipt = INVALID_HANDLE_VALUE;
   if (contained) {
-    receipt = CreateFileW(argv[2], GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (receipt == INVALID_HANDLE_VALUE) return fail("receipt creation");
+    receipt = CreateFileW(argv[2], FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (receipt == INVALID_HANDLE_VALUE) return fail("receipt open");
   }
 
   HANDLE inherited[3]{};
