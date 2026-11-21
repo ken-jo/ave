@@ -3575,8 +3575,9 @@ with its own owner rule:
   attempts removal once at the original path. Startup sweeps the verified
   parent, including partial directories and links as entries. A live PID in
   a copy name defers removal and a reused PID can defer it until a later boot.
-  The legacy sweep still handles direct `ave-srt-win-*` temp entries with the
-  original two-file shape, DACL checks and dead-owner check.
+  Before opening the private parent, startup runs the temp-root ACL diagnostic
+  and the legacy sweep of direct `ave-srt-win-*` temp entries. The legacy sweep
+  retains the original two-file shape, DACL checks and dead-owner check.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL

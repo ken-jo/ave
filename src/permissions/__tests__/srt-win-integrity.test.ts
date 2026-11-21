@@ -164,7 +164,7 @@ describe("Windows helper integrity", () => {
     expect(existsSync(executable)).toBe(true);
   });
 
-  it("parses every generated PowerShell program and checks the exact parent ACL", async (context) => {
+  it("parses the generated PowerShell and checks the exact parent ACL and independent sweeps", async (context) => {
     const programs: string[] = [];
     vi.resetModules();
     vi.doMock("node:child_process", async (load) => ({
@@ -203,6 +203,16 @@ describe("Windows helper integrity", () => {
         "Invoke-Expression $definition.Extent.Text",
         "[Console]::WriteLine((Get-PrivateParentSddl 'S-1-5-21-1-2-3-1001'))",
         "[Console]::WriteLine((Get-PrivateParentSddl 'S-1-5-18'))",
+        "$sweep = [System.Management.Automation.Language.Parser]::ParseInput($programs[7], [ref]$null, [ref]$null)",
+        "$legacy = $sweep.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-LegacySweep' }, $false)",
+        "if (!$legacy) { throw 'Expected an independent legacy sweep in the generated program' }",
+        "$dispatch = [ScriptBlock]::Create($programs[7].Substring($legacy.Extent.EndOffset))",
+        "function Invoke-LegacySweep { [Console]::WriteLine('legacy sweep'); [Console]::WriteLine('temp-root diagnostic') }",
+        "function Invoke-PrivateParent { throw 'Private parent refused' }",
+        "& $dispatch",
+        "function Invoke-LegacySweep { throw 'Legacy sweep refused' }",
+        "function Invoke-PrivateParent { [Console]::WriteLine('private sweep') }",
+        "& $dispatch",
       ].join("\n"),
     ], {
       env: { ...process.env, TEMP: parserTemp, TMP: parserTemp, TMPDIR: parserTemp },
@@ -214,6 +224,7 @@ describe("Windows helper integrity", () => {
     expect(result.stdout.trim().split(/\r?\n/)).toEqual([
       "O:S-1-5-21-1-2-3-1001D:P(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;;0x20;;;S-1-5-18)(A;;0x20;;;S-1-5-32-544)(A;;0x20;;;S-1-5-32-545)",
       "O:S-1-5-18D:P(A;OICI;FA;;;S-1-5-18)(A;;0x20;;;S-1-5-32-544)(A;;0x20;;;S-1-5-32-545)",
+      "legacy sweep", "temp-root diagnostic", "private sweep",
     ]);
   });
 
@@ -336,6 +347,25 @@ describe("Windows helper integrity", () => {
     function abandon(directory: string): void {
       writeFileSync(join(directory, "owner.json"), JSON.stringify({ pid: 2147483647, started: "1" }));
     }
+
+    it("reclaims an eligible legacy copy when the private parent is refused", () => {
+      isolateTemp();
+      const directory = stage();
+      abandon(directory);
+      const sid = nativePowerShell("[Console]::WriteLine([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)", {}).trim();
+      const parent = join(tmpdir(), `ave-srt-win.${sid}`);
+      // Ordinary mkdir inherits a DACL that the private-parent verifier refuses.
+      mkdirSync(parent);
+      const sentinel = join(parent, "keep");
+      writeFileSync(sentinel, "original");
+      const describeAcl = () => nativePowerShell("[Console]::WriteLine([System.IO.Directory]::GetAccessControl($env:AVE_TEST_PARENT).GetSecurityDescriptorSddlForm('Owner, Access'))", { AVE_TEST_PARENT: parent });
+      const before = describeAcl();
+
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(dirname(directory))).toBe(false);
+      expect(readFileSync(sentinel, "utf8")).toBe("original");
+      expect(describeAcl()).toBe(before);
+    });
 
     it.each(["single-level", "two-level"] as const)("removes only a verified stale %s copy", (layout) => {
       isolateTemp();

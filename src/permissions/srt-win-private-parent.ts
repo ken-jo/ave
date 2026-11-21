@@ -13,11 +13,11 @@ const POWERSHELL_PROLOGUE = [
 const TEMP_ROOT_ACL_DIAGNOSTIC = "srt-win-temp-root-acl-owner-action-required";
 
 // A marker is useful only inside verified private directories. Support both layouts, deleting only their two known plain files without recursion.
-const SWEEP_SCRIPT = [
+const LEGACY_SWEEP_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$root = [System.IO.Path]::GetFullPath($env:AVE_SRT_TEMP_ROOT).TrimEnd('\\')",
   "$reparse = [System.IO.FileAttributes]::ReparsePoint",
-  "if (([System.IO.File]::GetAttributes($root) -band $reparse) -ne 0) { exit }",
+  "if (([System.IO.File]::GetAttributes($root) -band $reparse) -ne 0) { return }",
   "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
   // Diagnose the installed account's legacy temp-root ACEs without changing any descriptor.
   `try { $sandboxSid = (New-Object System.Security.Principal.NTAccount('srt-sandbox')).Translate([System.Security.Principal.SecurityIdentifier]); $rootAcl = [System.IO.Directory]::GetAccessControl($root); if (@($rootAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference -eq $sandboxSid }).Count -ne 0) { [Console]::Out.WriteLine('${TEMP_ROOT_ACL_DIAGNOSTIC}') } } catch { }`,
@@ -195,7 +195,14 @@ function Invoke-PrivateParent {
   }
 }
 
-Invoke-PrivateParent
+`;
+
+// Both best-effort passes share the startup budget. The legacy diagnostic runs
+// before the private parent is opened or its native helper is compiled.
+const SWEEP_DISPATCH = `
+function Invoke-LegacySweep { ${LEGACY_SWEEP_SCRIPT} }
+try { Invoke-LegacySweep } catch { }
+try { Invoke-PrivateParent } catch { }
 `;
 
 export function runWindowsSrtWinParent(
@@ -216,7 +223,7 @@ export function runWindowsSrtWinParent(
         AVE_SRT_OWNER_PID: String(process.pid), AVE_SRT_OWN_DIRECTORIES: "[]",
       },
       input: [NATIVE_SOURCE, bytes?.toString("base64") ?? "", PRIVATE_PARENT_SCRIPT,
-        action === "sweep" ? SWEEP_SCRIPT : ""].join("\n"),
+        action === "sweep" ? SWEEP_DISPATCH : "Invoke-PrivateParent"].join("\n"),
       windowsHide: true, stdio: "pipe", encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
     });
   } catch (error) {
