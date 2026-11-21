@@ -139,7 +139,10 @@ describe("Windows helper integrity", () => {
     }
     expect(programs).toHaveLength(8);
     expect(programs.join("\n")).not.toContain("Owner's TEMP");
-    const result = spawnSync(process.platform === "win32" ? windowsPowerShell : "pwsh", [
+    const parserTemp = mkdtempSync(join(tmpdir(), "ave-srt-parser-"));
+    directories.push(parserTemp);
+    const parser = process.platform === "win32" ? windowsPowerShell : process.env.AVE_TEST_PWSH ?? "pwsh";
+    const result = spawnSync(parser, [
       "-NoProfile", "-NonInteractive", "-Command", [
         "$programs = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())",
         "foreach ($program in $programs) {",
@@ -147,8 +150,11 @@ describe("Windows helper integrity", () => {
         "  if ($errors.Count) { [Console]::Error.WriteLine(($errors -join [Environment]::NewLine)); exit 1 }",
         "}",
       ].join("\n"),
-    ], { input: JSON.stringify(programs), encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs });
-    if (process.platform !== "win32" && (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return context.skip("PowerShell parser unavailable");
+    ], {
+      env: { ...process.env, TEMP: parserTemp, TMP: parserTemp, TMPDIR: parserTemp },
+      input: JSON.stringify(programs), encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+    });
+    if (parser === "pwsh" && (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return context.skip("PowerShell parser unavailable");
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
   });
