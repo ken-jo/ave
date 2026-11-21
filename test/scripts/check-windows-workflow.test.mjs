@@ -202,11 +202,31 @@ function changedWorkflow(change) {
   return stringify(parsed);
 }
 
-it("accepts the workflow's contained commands and stated exemptions", () => {
+// The workflow's own parser is Windows PowerShell; other hosts check the same rules on injected parser output.
+const realParser = { skip: process.platform !== "win32" && "needs the Windows PowerShell parser" };
+const WRAPPER = "node .github/scripts/run-in-job.mjs";
+
+function parsedCommand(words, line, { text = words, redirected = false, operator = "Unknown", plain = true, scopes = [0] } = {}) {
+  const elements = words.split(" ").map(word => ({ text: word, plain }));
+  return { name: elements[0].text, head: elements[0].text, line, scopes, text, redirected, operator, elements };
+}
+
+// Reports each wrapper line as one command, as the parser does for these plain lines, and nothing else.
+function wrapperLines(_shell, sources) {
+  return { cmdlets: [], aliases: [], steps: sources.map(source => ({ errors: [], functions: [],
+    commands: source.split("\n").flatMap((line, index) =>
+      line.trim().startsWith(`${WRAPPER} `) ? [parsedCommand(line.trim(), index + 1)] : []) })) };
+}
+
+it("accepts the workflow's contained commands and stated exemptions", realParser, () => {
   checkWindowsWorkflow(workflow);
 });
 
-for (const [name, change, expected] of [
+it("accepts the workflow's wrapper lines as its manifest", () => {
+  checkWindowsWorkflow(workflow, wrapperLines);
+});
+
+for (const [name, change, expected, portable] of [
   ["a bare bun test line", (_steps, step) => { step("Run script tests").run += "\nbun test"; },
     "Run script tests: line 2: command runs outside the job containment launcher: bun test"],
   ["a test runner hidden in a script block", (_steps, step) => { step("Run script tests").run += "\nif ($true) { bun x vitest run }"; },
@@ -216,14 +236,41 @@ for (const [name, change, expected] of [
     packaging.run = packaging.run.replace("node .github/scripts/run-in-job.mjs bun run check:mxc-packaging", "bun run check:mxc-packaging");
   }, "Verify both Windows native payload packages: line 3: command runs outside the job containment launcher: bun run check:mxc-packaging"],
   ["a non-PowerShell step after setup", (_steps, step) => { step("Ensure uv toolchain").shell = "bash"; },
-    "Ensure uv toolchain: steps after job-root setup need a PowerShell shell"],
+    "Ensure uv toolchain: steps after job-root setup need a PowerShell shell", true],
   ["a contained command before setup", steps => {
     steps.unshift({ name: "Early", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs --early" });
-  }, "manifest step early-1 is not exactly one contained command after job-root setup"],
+  }, "manifest step early-1 is not exactly one contained command after job-root setup", true],
 ]) {
-  it(`rejects ${name} in the contained job`, () => {
-    assert.throws(() => checkWindowsWorkflow(changedWorkflow(change)),
-      error => error.message.split("\n").includes(`windows-permission-tests: ${expected}`) || assert.fail(error.message));
+  const rejects = inspect => () => assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), inspect),
+    error => error.message.split("\n").includes(`windows-permission-tests: ${expected}`) || assert.fail(error.message));
+  it(`rejects ${name} in the contained job`, realParser, rejects());
+  if (portable) it(`rejects ${name} in the contained job from wrapper lines`, rejects(wrapperLines));
+}
+
+const EXAMPLE_MANIFEST = [{ id: "example-1", invocation: "bun run test:scripts" }];
+const WRAPPED = `${WRAPPER} bun run test:scripts`;
+const notPlain = (line, text = WRAPPED) => `example: line ${line}: contained command is not a plain manifest invocation: ${text}`;
+const unwrapped = "windows-permission-tests: manifest step example-1 is not exactly one contained command after job-root setup";
+for (const [name, commands, expected] of [
+  ["a wrapped manifest step and a stated exemption",
+    [parsedCommand("bun install --frozen-lockfile", 1), parsedCommand(WRAPPED, 2)], []],
+  ["a bare test command", [parsedCommand(WRAPPED, 1), parsedCommand("bun test", 2)],
+    ["example: line 2: command runs outside the job containment launcher: bun test"]],
+  ["a test runner in a script block", [parsedCommand(WRAPPED, 1), parsedCommand("bun x vitest run", 2, { scopes: [12, 0] })],
+    ["example: line 2: command runs outside the job containment launcher: bun x vitest run"]],
+  ["a redirected wrapper", [parsedCommand(WRAPPED, 1, { text: `${WRAPPED} > example.log`, redirected: true })],
+    [notPlain(1, `${WRAPPED} > example.log`), unwrapped]],
+  ["an invocation operator", [parsedCommand(WRAPPED, 1, { text: `& ${WRAPPED}`, operator: "Ampersand" })],
+    [notPlain(1, `& ${WRAPPED}`), unwrapped]],
+  ["a quoted wrapper argument", [parsedCommand(WRAPPED, 1, { plain: false })], [notPlain(1), unwrapped]],
+  ["an invocation outside the manifest", [parsedCommand(`${WRAPPER} bun run other`, 1)],
+    [notPlain(1, `${WRAPPER} bun run other`), unwrapped]],
+  ["a manifest step wrapped twice", [parsedCommand(WRAPPED, 1), parsedCommand(WRAPPED, 2)], [unwrapped]],
+]) {
+  it(`checks parsed contained commands: ${name}`, () => {
+    const steps = [{ name: "example", shell: "pwsh", run: "example", contained: true }];
+    const inspect = () => ({ cmdlets: [], aliases: [], steps: [{ errors: [], functions: [], commands }] });
+    assert.deepEqual(powerShellCommandProblems(steps, inspect, EXAMPLE_MANIFEST), expected);
   });
 }
 
