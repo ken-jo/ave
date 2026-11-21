@@ -2,11 +2,12 @@
 // need the system volume's aliases and trusted volume-root ownership.
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 import { assertNoJobRootWriters, diagnoseJobRoot } from "./job-root-diagnostic.mjs";
+import { JOB_RECEIPTS } from "./run-in-job.mjs";
 
 function systemVolume(systemRoot) {
   const root = typeof systemRoot === "string" ? win32.parse(systemRoot).root : "";
@@ -155,8 +156,32 @@ function assertOwnedRoot(root, identity, readIdentity) {
   }
 }
 
-async function renameOwnedRoot(root, identity, readIdentity, rename, run) {
+const RECEIPT_NAME = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.receipt$/u;
+
+function readJobReceipts(directory) {
+  return readdirSync(directory, { withFileTypes: true }).map(entry => ({
+    name: entry.name, text: entry.isFile() ? readFileSync(win32.join(directory, entry.name), "utf8") : undefined,
+  }));
+}
+
+// A contained step's launcher writes "0" only after proving its closed job empty.
+function assertContainedSteps(root, readReceipts) {
+  let receipts;
+  try {
+    receipts = readReceipts(win32.join(root, JOB_RECEIPTS));
+  } catch (cause) {
+    throw new Error(`Cannot clean up job root ${root}: the job receipt ledger is unreadable`, { cause });
+  }
+  const unproven = receipts.filter(({ name, text }) => !RECEIPT_NAME.test(name) || text !== "0").map(({ name }) => name);
+  if (unproven.length > 0) {
+    throw new Error([`Cannot clean up job root ${root}: ${unproven.length} contained steps did not prove an empty job`,
+      ...unproven.slice(0, 20).map(name => `receipt ${JSON.stringify(name)}`)].join("\n"));
+  }
+}
+
+async function renameOwnedRoot(root, identity, readIdentity, rename, run, readReceipts) {
   assertOwnedRoot(root, identity, readIdentity);
+  if (readReceipts) assertContainedSteps(root, readReceipts);
   const warnings = await assertNoJobRootWriters(root, run);
   assertOwnedRoot(root, identity, readIdentity);
   const tombstone = `${root}.cleanup-${randomUUID()}`;
@@ -201,13 +226,13 @@ function writeCleanupDiagnostics(lines, diagnostic) {
  */
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,
-  readIdentity = readJobRootIdentity, rename = renameSync, remove = rmSync, run, diagnostic,
+  readIdentity = readJobRootIdentity, rename = renameSync, remove = rmSync, readReceipts = readJobReceipts, run, diagnostic,
 } = {}) {
   validateJobHomeRoot(root, systemRoot);
   let tombstone;
   let warnings;
   try {
-    ({ tombstone, warnings } = await renameOwnedRoot(root, identity, readIdentity, rename, run));
+    ({ tombstone, warnings } = await renameOwnedRoot(root, identity, readIdentity, rename, run, readReceipts));
   } catch (error) {
     if (error?.syscall === "rename") await reportCleanupFailure(root, error, { run, diagnostic });
     throw error;
@@ -242,8 +267,9 @@ async function main() {
   if (!runnerTemp || !githubEnv) throw new Error("RUNNER_TEMP and GITHUB_ENV must be set");
   const values = await isolationAssignments({ platform: process.platform, runnerTemp, systemRoot },
     mkdtempSync, hardenWindowsJobRoot, readJobRootIdentity, assignments => {
-      for (const path of [assignments.HOME, assignments.TEMP, assignments.LOCALAPPDATA, assignments.APPDATA]) {
-        if (path !== undefined) mkdirSync(path, { recursive: true });
+      const receipts = assignments.HOME && assignments.AVE_CI_JOB_ROOT && win32.join(assignments.AVE_CI_JOB_ROOT, JOB_RECEIPTS);
+      for (const path of [assignments.HOME, assignments.TEMP, assignments.LOCALAPPDATA, assignments.APPDATA, receipts]) {
+        if (path) mkdirSync(path, { recursive: true });
       }
       appendFileSync(githubEnv, Object.entries(assignments).map(([name, value]) => `${name}=${value}\n`).join(""));
     });

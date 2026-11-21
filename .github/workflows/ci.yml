@@ -722,7 +722,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -FailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/test-windows-job.mjs
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
       # Folder sources classify a drive letter from its MS-DOS device mapping
       # without opening the drive (design multi-source-git-marketplace.md §18.4.1).
       - name: Verify Windows folder classification
@@ -734,7 +736,7 @@ jobs:
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/test-windows-path-kind.mjs
+          node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs
       # The tag build runs `bun run build` on Windows, and this check is part of
       # it: there the generator finds its sources through Windows path spellings
       # (drive letters, `\` separators), and must still produce the same bytes.
@@ -747,11 +749,11 @@ jobs:
         working-directory: ave
         shell: powershell
         run: |
-          node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/srt-win-build.test.mjs
+          node .github/scripts/run-in-job.mjs node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/srt-win-build.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-srt-win-integrity.cjs --upstream --inputs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/build-srt-win.mjs --test-native
+          node .github/scripts/run-in-job.mjs node scripts/build-srt-win.mjs --test-native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-srt-win-integrity.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -778,12 +780,12 @@ jobs:
       - name: Run script tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: bun run test:scripts
+        run: node .github/scripts/run-in-job.mjs bun run test:scripts
       - name: Run Windows appearance regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
-          bun run test:vitest --
+          node .github/scripts/run-in-job.mjs bun run test:vitest --
           src/ui/renderer/__tests__/appearance-tab.test.tsx
           src/ui/renderer/tabs/__tests__/AppearanceTab.font-escape.test.tsx
           src/ui/renderer/theme/__tests__/ThemeProvider-initial-theme.test.tsx
@@ -816,7 +818,7 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
-          bun run test:vitest --
+          node .github/scripts/run-in-job.mjs bun run test:vitest --
           src/memory/__tests__/session-repository.test.ts
           src/memory/__tests__/session-turn-journal.test.ts
           src/engine/__tests__/conversation-loop-resume.test.ts
@@ -837,13 +839,13 @@ jobs:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt
+        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt
       - name: Run Windows native import regressions
         env:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
+        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
       - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -852,9 +854,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           node scripts/fetch-mxc.mjs --arch x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
+          node .github/scripts/run-in-job.mjs bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Each contained test step must leave a receipt proving its closed job empty.
       # Every job process must have exited. With no concurrent writers, identity
       # verification and tombstone rename suffice for recursive pathname removal.
       # Any holder or incomplete entry handle scan blocks cleanup. Process probes

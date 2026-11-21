@@ -30,10 +30,30 @@ it("rejects the historically broken permission scalar as parsed YAML", () => {
   const brokenWorkflow = stringify({ jobs: { "windows-permission-tests": { "runs-on": "windows-latest", steps: historic } } });
   const [step] = windowsRunSteps(brokenWorkflow);
   assert.equal(step.run, historic[0].run);
-  assert.deepEqual(directCommandProblems([step]), [
+  const [command, containment, bare, ...rest] = directCommandProblems([step]);
+  assert.deepEqual([command, bare, rest], [
     "windows-permission-tests: Run Windows permission regressions: expected one complete direct test command",
     "windows-permission-tests: Run Windows permission regressions: bare test path src/__tests__/packaging-discipline-source.test.ts",
+    [],
   ]);
+  assert.ok(containment.startsWith("windows-permission-tests: Run Windows permission regressions: test command runs outside the job containment launcher: bun run test -- "), containment);
+});
+
+it("rejects job-root test commands that run outside the containment launcher", () => {
+  const commands = [
+    "bun run test:scripts",
+    "bun run test:vitest -- src/example.test.ts",
+    "bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt",
+    "node scripts/test-windows-job.mjs",
+    "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/example.test.mjs",
+    "node scripts/build-srt-win.mjs --test-native",
+  ];
+  const steps = commands.flatMap(run => windowsRunSteps(stringify({ jobs: { "windows-permission-tests": {
+    "runs-on": "windows-2025",
+    steps: [{ name: "example", run }, { name: "contained", run: `node .github/scripts/run-in-job.mjs ${run}` }],
+  } } })));
+  assert.deepEqual(directCommandProblems(steps), commands.map(run =>
+    `windows-permission-tests: example: test command runs outside the job containment launcher: ${run}`));
 });
 
 it("fails when a required PowerShell parser cannot launch", () => {
@@ -86,7 +106,7 @@ it("routes the permission and native inventories through bounded batches", () =>
     ["Run Windows native import regressions", "config/windows-native-tests.txt"],
   ]) {
     const step = steps.find(entry => entry.name === name);
-    assert.equal(step.run, `bun run scripts/run-windows-test-list.mjs ${inventory}`);
+    assert.equal(step.run, `node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs ${inventory}`);
     assert.equal(step.env.UV_PYTHON_CACHE_DIR, `\${{ runner.temp }}/python-archives`);
     const list = readFileSync(new URL(`../../${inventory}`, import.meta.url), "utf8");
     const batches = windowsTestCommands(list);

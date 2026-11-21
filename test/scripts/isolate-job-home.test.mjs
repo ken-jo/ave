@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { join, sep, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { describe, it, mock } from "node:test";
 import { parse } from "yaml";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 import { assertNoJobRootWriters, diagnoseJobRoot } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { cleanupWindowsJobRoot as cleanupJobRoot, diagnoseCleanupFailure, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
+import { JOB_RECEIPTS, runInJob } from "../../.github/scripts/run-in-job.mjs";
 
 describe("job home isolation", () => {
   it("places Windows fixtures on the system volume instead of the runner temp volume", async () => {
@@ -221,6 +223,7 @@ describe("Windows job root writer precondition", () => {
         readIdentity: path => fixtureIdentity(localPath(path)),
         rename: (from, to) => renameSync(localPath(from), localPath(to)),
         remove: (path, options) => rmSync(localPath(path), options),
+        readReceipts: () => [],
       },
       assertPreserved() {
         assert.equal(readFileSync(held, "utf8"), "example");
@@ -320,6 +323,74 @@ describe("Windows job root writer precondition", () => {
     assert.equal(run.mock.callCount(), 1);
     assert.match(output({ diagnostic }), /Cleanup process scan was incomplete/);
   });
+
+  const RECEIPT = "00000000-0000-4000-8000-000000000000.receipt";
+  for (const [name, readReceipts, expected] of [
+    ["a missing receipt ledger", () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); }, /the job receipt ledger is unreadable/],
+    ["a receipt left without proof", () => [{ name: RECEIPT, text: "" }], new RegExp(`1 contained steps did not prove an empty job\\nreceipt "${RECEIPT}"$`)],
+    ["a foreign ledger entry", () => [{ name: RECEIPT, text: "0" }, { name: "example", text: undefined }], /\nreceipt "example"$/],
+  ]) {
+    it(`refuses cleanup for ${name} before scanning processes`, async t => {
+      const job = fixture(t);
+      const run = queryResult();
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts, run }), error => {
+        assertReportedRoot(error, root);
+        assert.match(error.message, expected);
+        return true;
+      });
+      assert.equal(run.mock.callCount(), 0);
+      job.assertPreserved();
+    });
+  }
+
+  if (process.platform === "win32") {
+    function localReceipts(directory) {
+      return readdirSync(directory, { withFileTypes: true }).map(entry => ({
+        name: entry.name, text: entry.isFile() ? readFileSync(join(directory, entry.name), "utf8") : undefined,
+      }));
+    }
+    const helpers = fileURLToPath(new URL(`../../resources/windows-job/${process.arch}/`, import.meta.url));
+    function containedChild(job, launcher = join(helpers, "ave-job.exe")) {
+      const receipts = join(job.localRoot, JOB_RECEIPTS);
+      const cwd = join(job.localRoot, "tmp");
+      const pidFile = join(job.localRoot, "example.pid");
+      mkdirSync(receipts);
+      mkdirSync(cwd);
+      assert.ok(existsSync(launcher), "Build the Windows job launcher and its fixtures first");
+      // The root exits at once; its detached child keeps a cwd under the job root.
+      const script = "const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],"
+        + " { cwd: process.argv[1], detached: true, stdio: 'ignore' }); child.unref(); require('node:fs').writeFileSync(process.argv[2], String(child.pid));";
+      return { receipts, pidFile, done: runInJob(process.execPath, ["-e", script, cwd, pidFile], { root: job.localRoot, launcher }) };
+    }
+    const scanLocalRoot = job => runInjectedQuery("", script => script
+      .replace(`$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`));
+
+    it("removes the root after the job close kills a live contained child", async t => {
+      const job = fixture(t);
+      const { receipts, pidFile, done } = containedChild(job);
+      assert.equal(await done, 0);
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      assert.ok(pid > 0);
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+      assert.deepEqual(localReceipts(receipts).map(({ text }) => text), ["0"]);
+      await cleanupJobRoot(root, { ...job.options, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job), diagnostic: () => {} });
+      assert.deepEqual(readdirSync(job.parent), ["shared"]);
+    });
+
+    it("refuses cleanup after a contained step's job query fails", async t => {
+      const job = fixture(t);
+      const { receipts, done } = containedChild(job, join(helpers, "ave-job-query-failure.exe"));
+      assert.equal(await done, 125);
+      const [receipt] = localReceipts(receipts);
+      assert.equal(receipt.text, "");
+      await assert.rejects(cleanupJobRoot(root, { ...job.options, readReceipts: () => localReceipts(receipts), run: scanLocalRoot(job) }), error => {
+        assertReportedRoot(error, root);
+        assert.ok(error.message.endsWith(`1 contained steps did not prove an empty job\nreceipt ${JSON.stringify(receipt.name)}`), error.message);
+        return true;
+      });
+      job.assertPreserved();
+    });
+  }
 
   it("refuses a process argument match with its parent PID omitted", async t => {
     const job = fixture(t);
@@ -596,6 +667,7 @@ describe("Windows cleanup root ownership", () => {
       },
       rename: (from, to) => renameSync(localPath(from), localPath(to)),
       remove: (path, options) => rmSync(localPath(path), options),
+      readReceipts: () => [],
       run: queryResult(),
     }).catch(error => error);
     fixture.assertPreserved();

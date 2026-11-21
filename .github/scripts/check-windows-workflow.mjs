@@ -9,12 +9,19 @@ import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/w
 const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
 const BARE_TEST_PATH_RE = new RegExp(String.raw`^\s*${TEST_PATH}(?![\w./\\-])`);
 const TEST_INVOCATION_RE = /\bbun[ \t]+run[ \t]+test(?::vitest)?(?=[ \t]|$)/;
+const CONTAINED = String.raw`node[ \t]+\.github\/scripts\/run-in-job\.mjs[ \t]+`;
 const TEST_COMMAND_RE = new RegExp(
-  String.raw`^bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)((?:[ \t]+${TEST_PATH})+)$`,
+  String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)((?:[ \t]+${TEST_PATH})+)$`,
 );
 const REGRESSION_STEP = /^Run Windows (?:permission|appearance|session persistence|native import) regressions$/u;
 const REGRESSION_CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
-const LIST_INVOCATION = /^bun[ \t]+run[ \t]+scripts\/run-windows-test-list\.mjs[ \t]+(config\/[\w-]+\.txt)$/u;
+const LIST_INVOCATION = new RegExp(
+  String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+scripts\/run-windows-test-list\.mjs[ \t]+(config\/[\w-]+\.txt)$`, "u",
+);
+// Test commands in the job that owns the isolated job root run inside the containment launcher.
+const CONTAINED_JOB = "windows-permission-tests";
+const TEST_LINE_RE = /\bbun[ \t]+run[ \t]+test(?::[\w-]+)?(?=[ \t]|$)|\bnode[ \t]+scripts\/test-|[ \t]--test(?:-native)?(?=[ \t]|$)|\brun-windows-test-list\b/u;
+const CONTAINED_LINE_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}\S`, "u");
 
 export function windowsRunSteps(workflow) {
   const { jobs, defaults } = parse(workflow);
@@ -121,7 +128,7 @@ ConvertTo-Json -InputObject $result -Depth 6 -Compress
 `;
 
 export function directCommandProblems(steps) {
-  return steps.flatMap(({ name, lines }) => {
+  return steps.flatMap(({ jobId, name, lines }) => {
     const commands = lines.filter(line => TEST_INVOCATION_RE.test(line));
     const command = commands[0]?.trim() ?? "";
     const broken = commands.length > 0 && (commands.length !== 1 || !TEST_COMMAND_RE.test(command)
@@ -130,6 +137,9 @@ export function directCommandProblems(steps) {
     for (const line of lines) {
       const path = BARE_TEST_PATH_RE.exec(line)?.[0].trim();
       if (path !== undefined) problems.push(`${name}: bare test path ${path}`);
+      if (jobId === CONTAINED_JOB && TEST_LINE_RE.test(line) && !CONTAINED_LINE_RE.test(line)) {
+        problems.push(`${name}: test command runs outside the job containment launcher: ${line.trim()}`);
+      }
     }
     return problems;
   });

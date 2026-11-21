@@ -97,9 +97,10 @@ describe("Windows CI test list", () => {
   it("does not count test paths mentioned only in workflow comments", () => {
     const file = "test/example.windows.test.ts";
     const mentioned = workflow.replace(
-      "run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt",
-      `run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt # ${file}`,
+      "run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt",
+      `run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt # ${file}`,
     );
+    expect(mentioned).not.toBe(workflow);
     expect(listProblems(new Map([[file, ""]]), mentioned)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
