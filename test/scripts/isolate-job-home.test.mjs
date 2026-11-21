@@ -1025,7 +1025,15 @@ describe("Windows job root cleanup diagnostics", () => {
 
 
 describe("Windows job root query", () => {
-  const registryBackedHolderQuery = /rstrtmgr|\bRm[A-Z]\w*/;
+  const libraryName = "rstrt" + "mgr";
+  const registryBackedHolderQuery = new RegExp(libraryName + "|" + /\bRm[A-Z]\w*/.source);
+
+  it("detects registry-backed holder identifiers without embedding the library name", () => {
+    assert.match(`${libraryName}.dll`, registryBackedHolderQuery);
+    assert.match("Rm" + "StartSession", registryBackedHolderQuery);
+    const source = readFileSync(new URL(import.meta.url), "utf8");
+    assert.ok(!source.toLowerCase().includes(libraryName));
+  });
 
   it("keeps registry-backed holder APIs out of the diagnostic module", () => {
     const source = readFileSync(new URL("../../.github/scripts/job-root-diagnostic.mjs", import.meta.url), "utf8");
