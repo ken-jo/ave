@@ -71,7 +71,11 @@ function createOwnedJobRoot(prefix, create, readIdentity, publish) {
 /**
  * Setup rollback requires every job process to have exited. With no concurrent
  * writers, identity verification and tombstone rename suffice for recursive
- * pathname removal. Handle-bound removal is outside the 2026-11-21 decision.
+ * pathname removal. The scan attests every writer with an observable reference.
+ * An idle out-of-process COM server exposes no handle, cwd, or command-line
+ * reference to a non-killing probe. The residual consequence is a reported
+ * cleanup failure, with deletion bounded to the root. The 2026-11-21 owner
+ * decision excludes recursion TOCTOU and handle-bound removal.
  */
 export async function isolationAssignments(
   { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
@@ -182,7 +186,11 @@ function writeCleanupLog(lines) {
 /**
  * Every job process must have exited. With no concurrent writers, identity
  * verification and tombstone rename suffice for recursive pathname removal.
- * Handle-bound removal is outside the 2026-11-21 owner decision.
+ * The scan attests every writer with an observable reference. An idle
+ * out-of-process COM server exposes no handle, cwd, or command-line reference to
+ * a non-killing probe. The residual consequence is a reported cleanup failure,
+ * with deletion bounded to the root. The 2026-11-21 owner decision excludes
+ * recursion TOCTOU and handle-bound removal.
  */
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,
