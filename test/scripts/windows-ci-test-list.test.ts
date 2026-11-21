@@ -3,12 +3,27 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { windowsRegressionFiles } from "../../.github/scripts/check-windows-workflow.mjs";
 import { conditionalGates } from "./windows-test-gates.js";
+import { isInventorySource, nativeBackedTestFiles } from "./windows-native-test-inventory.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
+const EMPTY_WINDOWS_WORKFLOW = "jobs: { windows-permission-tests: { runs-on: windows-latest, steps: [] } }";
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
+const PERMISSION_TEST_LIST = "config/windows-permission-tests.txt";
+const windowsTestLists = new Map([NATIVE_TEST_LIST, PERMISSION_TEST_LIST]
+  .map(file => [file, readFileSync(join(root, file), "utf8")]));
 const REQUIRED_SECURITY_SUITES = [
+  // Boot, settings and transport callers reach native stores without platform guards.
+  "src/boot/steps/__tests__/terminal-scrollback-setup.test.ts",
+  "src/data/__tests__/settings-permission-store-independence.test.ts",
+  "src/ipc/handlers/__tests__/permissions.test.ts",
+  "src/main/terminal/__tests__/terminal-scrollback.test.ts",
+  "src/api/__tests__/local-api.test.ts",
+  "src/cli/__tests__/http-client.test.ts",
+  "src/engine/__tests__/conversation-loop-project.test.ts",
   "src/permissions/__tests__/allowed-directories-nfd-root.test.ts",
   "src/permissions/__tests__/mxc-extension-admission.test.ts",
   "src/permissions/__tests__/mxc-sdk-packaging.test.ts",
@@ -39,52 +54,100 @@ const REQUIRED_SECURITY_SUITES = [
   // Its fixture home must stay under the test temp root, which only a restricted Windows lane checks.
   "src/boot/__tests__/bootstrap-integration.test.ts",
 ] as const;
-function windowsJobFiles(workflow: string): string[] {
-  const lines = workflow.split("\n");
-  const start = lines.findIndex((line) => line.trim() === `- name: ${STEP_NAME}`);
-  if (start < 0) throw new Error(`ci.yml has no "${STEP_NAME}" step`);
-  const files: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    if (/^\s*-\s/.test(line)) break;
-    const token = line.trim();
-    if (TEST_FILE_RE.test(token)) files.push(token);
-  }
-  return files;
-}
-
-function testFiles(dir: string): string[] {
+function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
     if (name === "node_modules") return [];
-    if (statSync(path).isDirectory()) return testFiles(path);
-    return TEST_FILE_RE.test(name) ? [relative(root, path).split("\\").join("/")] : [];
+    if (statSync(path).isDirectory()) return sourceFiles(path);
+    const file = relative(root, path).split("\\").join("/");
+    return isInventorySource(file) ? [file] : [];
   });
 }
 
-function listProblems(sources: Map<string, string>, workflow: string): string[] {
-  const listed = windowsJobFiles(workflow);
+const nativeInventory = new WeakMap<ReadonlyMap<string, string>, Map<string, string[]>>();
+function listProblems(sources: Map<string, string>, workflow: string, inventories = windowsTestLists): string[] {
+  const listed = new Set(windowsRegressionFiles(workflow, inventories));
+  let native = nativeInventory.get(sources);
+  if (native === undefined) {
+    native = nativeBackedTestFiles(sources);
+    nativeInventory.set(sources, native);
+  }
   return [...sources].flatMap(([file, source]) => {
+    if (!TEST_FILE_RE.test(file)) return [];
     const gates = conditionalGates(source);
     const unknown = gates.filter((gate) => gate.classification === "unclassifiable")
       .map((gate) => `${file}:${gate.line}: unclassifiable argument: ${gate.argument}`);
     const required = REQUIRED_SECURITY_SUITES.some((suite) => suite === file)
-      || file.endsWith(".windows.test.ts") || gates.some((gate) => gate.classification === "win32-only");
-    return [...unknown, ...(required && !listed.includes(file) ? [`${file}: missing from ${STEP_NAME}`] : [])];
+      || file.endsWith(".windows.test.ts") || gates.some((gate) => gate.classification === "win32-only") || native.has(file);
+    return [...unknown, ...(required && !listed.has(file) ? [`${file}: missing from ${STEP_NAME}`] : [])];
   }).sort();
 }
 
 describe("Windows CI test list", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-  const listed = windowsJobFiles(workflow);
-  const sources = new Map(["src", "test"].flatMap((dir) => testFiles(join(root, dir)))
+  const listed = windowsRegressionFiles(workflow, windowsTestLists);
+  const sources = new Map(["src", "test", "scripts", "config", ".github"].flatMap((dir) => sourceFiles(join(root, dir)))
     .map((file) => [file, readFileSync(join(root, file), "utf8")]));
 
   it("names only files that exist", () => {
-    expect(listed.filter((file) => !testFiles(join(root, file.split("/")[0]!)).includes(file))).toEqual([]);
+    expect(listed.filter((file) => !sources.has(file))).toEqual([]);
+    expect(listed).toContain("test/scripts/windows-ci-test-list.test.ts");
+  });
+
+  it("does not count test paths mentioned only in workflow comments", () => {
+    const file = "test/example.windows.test.ts";
+    const mentioned = workflow.replace(
+      "run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt",
+      `run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt # ${file}`,
+    );
+    expect(listProblems(new Map([[file, ""]]), mentioned)).toEqual([`${file}: missing from ${STEP_NAME}`]);
+  });
+
+  it.each([
+    "false", `\${{ false }}`, `\${{ (false) }}`, "steps.docs-impact.outputs.docs_only == 'true'", undefined,
+  ])("rejects an unexpected Windows regression condition %s", (condition) => {
+    const disabled = "test/alice.windows.test.ts";
+    const enabled = "test/bob.windows.test.ts";
+    const stepName = "Run Windows native import regressions";
+    const conditional = `
+jobs:
+  windows-permission-tests:
+    runs-on: windows-latest
+    steps:
+      - name: ${stepName}${condition === undefined ? "" : `\n        if: ${condition}`}
+        run: bun run test -- ${disabled}
+      - name: Run Windows appearance regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: bun run test -- ${enabled}
+`;
+    expect(() => windowsRegressionFiles(conditional, windowsTestLists))
+      .toThrow(`windows-permission-tests: ${stepName}: expected if: steps.docs-impact.outputs.docs_only != 'true'`);
   });
 
   it("names every file with win32-only cases", () => {
     expect(listProblems(sources, workflow)).toEqual([]);
+  });
+  it.each(["boot/steps", "ipc/handlers", "data"])("requires an indirect native caller in %s", (area) => {
+    const file = `src/${area}/__tests__/indirect.test.ts`;
+    const module = `src/${area}/store.ts`;
+    const indirect = new Map([
+      [file, 'import { read } from "../store.js"; it("reads", () => read());'],
+      [module, 'export { read } from "../../shared/windows-native-host.js";'],
+      ["src/shared/windows-native-host.ts", "export const read = () => {};"],
+    ]);
+    // Resolve each area's different depth without making the test platform-specific.
+    indirect.set(module, `export { read } from "${"../".repeat(area.split("/").length)}shared/windows-native-host.js";`);
+    expect(listProblems(indirect, workflow)).toEqual([`${file}: missing from ${STEP_NAME}`]);
+  });
+
+  it("requires an actual-module import through an indirect native re-export", () => {
+    const file = "src/data/__tests__/actual-store.test.ts";
+    const indirect = new Map([
+      [file, 'const { read } = await vi.importActual("../store.js"); it("reads", () => read());'],
+      ["src/data/store.ts", 'export { read } from "../shared/windows-native-host.js";'],
+      ["src/shared/windows-native-host.ts", "export const read = () => {};"],
+    ]);
+    expect(listProblems(indirect, workflow)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
   it("names every unconditional security suite", () => {
@@ -92,14 +155,20 @@ describe("Windows CI test list", () => {
     expect(REQUIRED_SECURITY_SUITES.filter((file) => !listed.includes(file))).toEqual([]);
   });
 
+  function withoutPermissionSuite(file: string) {
+    const inventories = new Map(windowsTestLists);
+    inventories.set(PERMISSION_TEST_LIST, (inventories.get(PERMISSION_TEST_LIST) ?? "")
+      .split("\n").filter(line => line.trim() !== file).join("\n"));
+    return listProblems(sources, workflow, inventories);
+  }
+
   it.each(REQUIRED_SECURITY_SUITES)("rejects removal of an unconditional security suite: %s", (file) => {
-    const withoutSuite = workflow.split("\n").filter((line) => line.trim() !== file).join("\n");
-    expect(listProblems(sources, withoutSuite)).toEqual([`${file}: missing from ${STEP_NAME}`]);
+    expect(withoutPermissionSuite(file)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
   it("rejects removal of the executable location tests from the workflow string", () => {
     const file = "src/main/__tests__/codex-executable-location.test.ts";
-    expect(listProblems(sources, workflow.split("\n").filter((line) => line.trim() !== file).join("\n")))
+    expect(withoutPermissionSuite(file))
       .toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 });
@@ -133,7 +202,7 @@ describe("conditional Windows gates", () => {
     expect(conditionalGates('\nit.runIf(someHelper())("case", () => {});')).toEqual([
       { line: 2, argument: "someHelper()", classification: "unclassifiable" },
     ]);
-    expect(listProblems(new Map([["test/example.test.ts", '\nit.runIf(someHelper())']]), `- name: ${STEP_NAME}\n`))
+    expect(listProblems(new Map([["test/example.test.ts", '\nit.runIf(someHelper())']]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual(["test/example.test.ts:2: unclassifiable argument: someHelper()"]);
   });
 
@@ -174,7 +243,7 @@ describe("conditional Windows gates", () => {
     ]);
     expect(listProblems(new Map([["test/example.test.ts",
       'it.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt());',
-    ]]), `- name: ${STEP_NAME}\n`))
+    ]]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual([`test/example.test.ts: missing from ${STEP_NAME}`]);
   });
 
@@ -211,7 +280,7 @@ describe("conditional Windows gates", () => {
       "const available = someHelper();",
       "const alias = available;",
       "it.skipIf(alias);",
-    ].join("\n")]]), `- name: ${STEP_NAME}\n`))
+    ].join("\n")]]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual(["test/example.test.ts:3: unclassifiable argument: alias"]);
   });
 
@@ -304,7 +373,7 @@ describe("conditional Windows gates", () => {
   });
 
   it("keeps the Windows filename convention without conditional cases", () => {
-    expect(listProblems(new Map([["test/example.windows.test.ts", ""]]), `- name: ${STEP_NAME}\n`))
+    expect(listProblems(new Map([["test/example.windows.test.ts", ""]]), EMPTY_WINDOWS_WORKFLOW))
       .toEqual([`test/example.windows.test.ts: missing from ${STEP_NAME}`]);
   });
 

@@ -145,6 +145,7 @@ against concurrent replacement and writes. It reads files only and leaves
 content null for reparse/unopened/missing objects. No link is followed.
 Invalid options or an empty request return 2. Open/read failures return 4
 without partial output; output failures return 3. Missing objects are data.
+`--content` requests whose content exceeds 1,048,576 bytes exit with status 5 and write no partial output.
 Relative paths, device namespace paths and alternate streams are refused.
 
 `ave-path-kind.exe --dacl --parent --stdin` reads the parent DACL request

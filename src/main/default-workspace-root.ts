@@ -1,8 +1,9 @@
+import { realpathSync } from "node:fs";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 
 // Early boot anchors cwd at the managed workspace before IPC registration, independent of the OS launch directory.
 export function getDefaultWorkspaceRoot(): string {
-  return process.cwd();
+  return realpathSync.native(process.cwd());
 }
 
 export function isDefaultWorkspaceRoot(projectRoot: string, defaultWorkspaceRoot = getDefaultWorkspaceRoot()): boolean {

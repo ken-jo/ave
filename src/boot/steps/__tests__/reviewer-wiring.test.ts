@@ -39,8 +39,10 @@ import { createBootHostFixture } from "../../../__tests__/support/host-runtime.j
 
 let tmpDir: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  const resources = await import("../../../main/host-resources.js");
+  resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   tmpDir = mkdtempSync(join(tmpdir(), "permission-policy-p4-rw-"));
 });
 

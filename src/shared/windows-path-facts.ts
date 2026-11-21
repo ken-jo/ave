@@ -115,6 +115,7 @@ function isDescriptor(value: unknown): value is WindowsDacl {
       && (ace.account === undefined || typeof ace.account === "string"));
 }
 
+const CONTENT_TOO_LARGE_EXIT_CODE = 5;
 function encodeParentDaclFrame(paths: readonly string[]): Buffer {
   if (paths.length > MAX_DACL_FRAME_PATHS) throw new Error("Windows DACL request exceeds the size limit");
   const entries: { path: string; length: number }[] = [];
@@ -146,17 +147,27 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
   const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
   if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
   const input = framed ? encodeParentDaclFrame(paths) : undefined;
-  const output = runWindowsNative(() => {
-    const helper = resolveWindowsPathKindHelper();
-    const args = [mode, ...flags, ...(framed ? ["--stdin"] : paths)];
-    if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
-      throw new Error("Windows path facts command line exceeds the process limit");
-    }
-    return execFileSync(helper, args, {
-      windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
-      maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
+  let output: Buffer;
+  try {
+    output = runWindowsNative(() => {
+      const helper = resolveWindowsPathKindHelper();
+      const args = [mode, ...flags, ...(framed ? ["--stdin"] : paths)];
+      if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
+        throw new Error("Windows path facts command line exceeds the process limit");
+      }
+      return execFileSync(helper, args, {
+        windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+        maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
+      });
     });
-  });
+  } catch (error) {
+    if (flags.includes("--content") && typeof error === "object" && error !== null && "status" in error && error.status === CONTENT_TOO_LARGE_EXIT_CODE) {
+      const oversized: NodeJS.ErrnoException = new Error("Windows file content exceeds the native read limit", { cause: error });
+      oversized.code = "EFBIG";
+      throw oversized;
+    }
+    throw error;
+  }
   return decodeWindowsPathFacts(decodeWindowsNativeReply(output), paths.length, mode, flags, framed ? paths : undefined);
 }
 

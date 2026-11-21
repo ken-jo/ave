@@ -645,11 +645,9 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
-      # Every later step (install scripts, the Windows helper checks, the
-      # tests and the post-job cache saves) sees a home and a temp directory
-      # under RUNNER_TEMP, which the runner empties around every job, instead
-      # of the runner user's profile and %LOCALAPPDATA%\Temp.
-      - name: Isolate home and temp directories in the runner temp
+      # Native fixtures need system-volume aliases and trusted root ownership.
+      # The unique job directory remains outside the account profile.
+      - name: Isolate home and temp directories on the system volume
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
@@ -682,6 +680,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      - name: Validate Windows workflow commands
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/check-windows-workflow.mjs
       - name: Ensure uv toolchain
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -767,10 +769,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/fetch-mxc.mjs --arch x64
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $helper = Join-Path $PWD 'node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
-          & $helper install
+          & './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' install
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $status = & $helper user status | ConvertFrom-Json
+          $status = & './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or !$status.user.exists -or !$status.cred_present) {
             throw 'Native sandbox provisioning did not produce a usable account'
           }
@@ -808,6 +809,9 @@ jobs:
           src/__tests__/app-menu-edit-shortcuts-source.test.ts
           src/ui/renderer/__tests__/MainToolbar.test.tsx
           src/data/__tests__/settings-documents.test.ts
+          src/main/browser/__tests__/browser-upload.test.ts
+          src/main/browser/__tests__/browser-workspace-store.test.ts
+          src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx
       - name: Run Windows session persistence regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -816,6 +820,12 @@ jobs:
           src/memory/__tests__/session-repository.test.ts
           src/memory/__tests__/session-turn-journal.test.ts
           src/engine/__tests__/conversation-loop-resume.test.ts
+          src/memory/__tests__/code-checkpoints-recovery.test.ts
+          src/memory/__tests__/code-checkpoints-transient-rename.test.ts
+          src/memory/__tests__/code-checkpoints.test.ts
+          src/memory/__tests__/memory-usage-log.test.ts
+          src/memory/__tests__/tool-output-artifact-store.test.ts
+          src/engine/__tests__/conversation-loop-permission-mode.test.ts
       - name: Prepare authenticated interpreter mirror
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -827,260 +837,13 @@ jobs:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: >
-          bun run test --
-          src/shared/__tests__/tool-result-trim.test.ts
-          src/engine/__tests__/conversation-history-trim.test.ts
-          src/engine/__tests__/conversation-loop-rounds.test.ts
-          src/engine/turn/__tests__/directory-instructions.test.ts
-          src/engine/__tests__/subagent-runner.test.ts
-          src/permissions/__tests__/approval-gate.test.ts
-          src/tools/__tests__/tool-result-chunk.test.ts
-          src/tools/__tests__/browser-tools.test.ts
-          src/tools/__tests__/executor-approval-memory-skip-integration.test.ts
-          src/permissions/__tests__/session-scope-end.test.ts
-          src/main/__tests__/browser-observation-preview.test.ts
-          test/renderer/main-panels.test.tsx
-          src/tools/__tests__/agent-spawn-background.test.ts
-          src/engine/__tests__/subagent-approval-provenance.test.ts
-          src/ui/renderer/preview/__tests__/browser-observation-bridge.test.tsx
-          src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts
-          src/permissions/__tests__/browser-site-permissions.test.ts
-          src/permissions/__tests__/browser-site-card.test.ts
-          src/engine/__tests__/suggested-replies.test.ts
-          src/main/browser/__tests__/browser-site-navigation.test.ts
-          src/main/browser/__tests__/browser-popup-navigation.test.ts
-          src/main/browser/__tests__/browser-tab-registry.test.ts
-          src/main/browser/__tests__/browser-actions.test.ts
-          src/main/browser/__tests__/browser-select-script.test.ts
-          src/ui/renderer/preview/__tests__/host-focus-memory.test.ts
-          src/main/browser/__tests__/browser-tab-activity.test.ts
-          src/tools/__tests__/agent-browser-observation.test.ts
-          src/ui/renderer/__tests__/ChatView.test.tsx
-          src/ui/renderer/__tests__/ChatView-columns.test.tsx
-          test/renderer/chat-columns.test.tsx
-          src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx
-          src/main/browser/__tests__/browser-guest-tracking.test.ts
-          src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx
-          src/main/browser/__tests__/browser-tools-source.test.ts
-          src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx
-          src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx
-          src/boot/__tests__/builtin-approval-actions.test.ts
-          src/ui/renderer/__tests__/ApprovalDock.test.tsx
-          src/permissions/__tests__/allowed-directories-nfd-root.test.ts
-          src/permissions/__tests__/mxc-extension-admission.test.ts
-          src/permissions/__tests__/mxc-sdk-packaging.test.ts
-          src/permissions/__tests__/asrt-linux-runtime-probe.test.ts
-          src/permissions/__tests__/asrt-sandbox.test.ts
-          src/permissions/__tests__/git-readonly-argv.test.ts
-          src/permissions/__tests__/git-readonly-controls.test.ts
-          src/permissions/__tests__/git-repository-inputs.test.ts
-          src/permissions/__tests__/git-repository-read-boundary.test.ts
-          src/permissions/__tests__/verified-shell-command.test.ts
-          src/main/__tests__/document-open.test.ts
-          src/permissions/__tests__/asrt-deny-absent.test.ts
-          src/permissions/__tests__/mxc-policy-pipe.test.ts
-          src/permissions/__tests__/mxc-windows-missing-denies.test.ts
-          src/permissions/__tests__/mxc-windows-transport.test.ts
-          src/tools/__tests__/mxc-shell-launch.test.ts
-          src/tools/__tests__/mxc-link-traversal.integration.test.ts
-          src/tools/__tests__/mxc-pipe-lifetime.integration.test.ts
-          src/permissions/__tests__/asrt-deny-absent-native.test.ts
-          src/sandbox/__tests__/runtime-grant-native.test.ts
-          src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
-          src/permissions/__tests__/windows-deny-acl.test.ts
-          src/main/terminal/__tests__/host-shell-integration.test.ts
-          src/permissions/__tests__/host-shell-execution-permit.test.ts
-          src/permissions/__tests__/allowed-directories.test.ts
-          src/permissions/__tests__/shell-exfiltration.test.ts
-          src/permissions/__tests__/runner-decisions.test.ts
-          src/permissions/__tests__/shell-unc-no-io.test.ts
-          src/permissions/__tests__/shell-native-path-floors.test.ts
-          src/shared/__tests__/shell-native-path.test.ts
-          src/permissions/__tests__/powershell-exfiltration.test.ts
-          src/permissions/__tests__/powershell-mxc-startup-decisions.test.ts
-          src/permissions/__tests__/powershell-decision-matrix.test.ts
-          src/tools/__tests__/powershell-exfiltration-gate.test.ts
-          src/tools/__tests__/powershell-launch.test.ts
-          src/permissions/__tests__/powershell-unc-write-boundary.test.ts
-          src/permissions/__tests__/encoded-bypass-battery.test.ts
-          src/permissions/__tests__/literal-proof.test.ts
-          src/permissions/__tests__/literal-rule-identity.test.ts
-          src/permissions/__tests__/permission-lane-budgets.test.ts
-          src/permissions/__tests__/permission-nested-semantics.test.ts
-          src/permissions/__tests__/permission-ordinary-performance.test.ts
-          src/permissions/__tests__/permission-path-evidence.test.ts
-          src/permissions/__tests__/permission-static-evaluation.test.ts
-          src/permissions/__tests__/permission-visible-literal-regressions.test.ts
-          src/permissions/__tests__/powershell-catalogue-parity.test.ts
-          src/permissions/__tests__/powershell-data-roles.test.ts
-          src/permissions/__tests__/powershell-dispatch-upload.test.ts
-          src/permissions/__tests__/powershell-network-rules.test.ts
-          src/permissions/__tests__/rules-store-and-decision.test.ts
-          src/permissions/__tests__/shell-sandbox-rules.test.ts
-          src/permissions/__tests__/egress-ask.test.ts
-          src/permissions/__tests__/execution-router.test.ts
-          src/permissions/__tests__/scoped-rules.test.ts
-          src/permissions/judge/__tests__/judge-dispatch.test.ts
-          src/main/__tests__/document-open.test.ts
-          src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
-          src/permissions/__tests__/canonicalizer-8dot3.test.ts
-          src/permissions/__tests__/policy-home.test.ts
-          src/shared/__tests__/windows-configuration-handles.test.ts
-          src/permissions/__tests__/permission-manager-meta-override.test.ts
-          src/tools/__tests__/executor.test.ts
-          src/tools/__tests__/registry-meta-governance.test.ts
-          src/tools/__tests__/executor-rationale-batch.test.ts
-          src/tools/__tests__/executor-broker-shell-route.test.ts
-          src/tools/__tests__/executor-native-permission-pipeline.test.ts
-          src/tools/__tests__/executor-in-project-write.test.ts
-          src/tools/__tests__/executor-broker-file-route.test.ts
-          src/tools/__tests__/terminal-run-host-permission.test.ts
-          src/tools/__tests__/terminal-run.test.ts
-          src/tools/__tests__/grep-search.test.ts
-          src/permissions/__tests__/shell-literal-data.test.ts
-          src/permissions/__tests__/shell-rule-boundaries.test.ts
-          src/permissions/__tests__/exfiltration-guardrail-rules.test.ts
-          src/tools/pipeline/__tests__/rationale-host-coordinator.test.ts
-          src/tools/pipeline/__tests__/rationale-host-service.test.ts
-          src/tools/pipeline/__tests__/rationale-invocation-journal.test.ts
-          src/tools/pipeline/__tests__/rationale-ticket-store.test.ts
-          src/engine/turn/__tests__/rationale-real-stack.integration.test.ts
-          src/audit/__tests__/hmac-chain.test.ts
-          src/audit/__tests__/rationale-audit-adapter.test.ts
-          src/boot/__tests__/plugin-surface-permissions.test.ts
-          src/main/__tests__/windows-job-launcher.test.ts
-          src/main/__tests__/codex-executable-location.test.ts
-          src/main/__tests__/codex-executable-location.windows.test.ts
-          src/main/host-api/__tests__/mapped-drive-root.test.ts
-          src/main/__tests__/codex-user-runtime.test.ts
-          src/main/__tests__/claude-code-executable.test.ts
-          src/main/__tests__/claude-code-authenticity.test.ts
-          src/main/__tests__/claude-code-runtime.test.ts
-          src/main/__tests__/claude-code-policy.test.ts
-          src/main/__tests__/windows-path-kind-launcher.test.ts
-          src/main/browser/__tests__/browser-download-files.test.ts
-          src/main/browser/__tests__/browser-download-staging.test.ts
-          src/main/__tests__/side-browser-webview.test.ts
-          src/permissions/__tests__/browser-download-staging-windows.test.ts
-          src/main/__tests__/subscription-runtime-service.test.ts
-          src/ui/renderer/components/__tests__/InputActionBar.test.tsx
-          src/ui/renderer/hooks/__tests__/use-input-status-row.test.tsx
-          src/ui/renderer/tabs/__tests__/SubscriptionProvidersSection.test.tsx
-          src/__tests__/support/native-executable.test.ts
-          src/__tests__/support/fixture-owner.test.ts
-          src/__tests__/support/fixture-acl-reset.test.ts
-          src/tools/__tests__/background-shell-windows-job.test.ts
-          src/tools/__tests__/bash-dialect.test.ts
-          src/lib/__tests__/admin-policy-file.test.ts
-          src/permissions/__tests__/policy-store-windows.test.ts
-          src/shared/__tests__/windows-admin-policy.test.ts
-          src/__tests__/program-data-isolation.test.ts
-          src/permissions/__tests__/asrt-stamp-targets.test.ts
-          src/permissions/__tests__/windows-stamp-targets.test.ts
-          src/permissions/__tests__/filesystem-policy-boundary.test.ts
-          src/shared/__tests__/windows-read-deny-evidence.test.ts
-          src/shared/__tests__/ave-home-configuration-owners.test.ts
-          src/shared/__tests__/ave-home-configuration-authority.test.ts
-          src/shared/__tests__/windows-path-facts.test.ts
-          src/shared/__tests__/windows-native-host.test.ts
-          src/shared/__tests__/windows-home-boundary-parity.test.ts
-          src/shared/__tests__/windows-system-path.test.ts
-          src/tools/__tests__/file-read-core.test.ts
-          src/tools/__tests__/preview-document-process.test.ts
-          src/tools/__tests__/shell-path-policy.test.ts
-          src/tools/__tests__/shell-path-policy-continuation.test.ts
-          src/tools/__tests__/shell-path-policy-process-pattern.test.ts
-          src/tools/__tests__/prepared-shell-invocation.test.ts
-          src/permissions/__tests__/windows-sandbox-logic.test.ts
-          src/permissions/__tests__/sandbox-write-policy.test.ts
-          src/permissions/__tests__/macos-sandbox-wrap.test.ts
-          src/permissions/__tests__/asrt-protected-write-roots.test.ts
-          src/permissions/__tests__/asrt-exit-release.test.ts
-          test/scripts/fetch-uv-cache.test.ts
-          test/scripts/setup-bun-cache.test.ts
-          test/scripts/asrt-patched-symbols.test.ts
-          src/permissions/__tests__/asrt-windows-support.test.ts
-          src/permissions/__tests__/asrt-background-initialization.test.ts
-          src/permissions/__tests__/asrt-windows-initialization.test.ts
-          src/boot/__tests__/sandbox-init-windows-mxc.test.ts
-          src/permissions/__tests__/asrt-windows-grant-paths.test.ts
-          src/permissions/__tests__/ave-home-read-boundary.test.ts
-          src/permissions/__tests__/srt-win-integrity.test.ts
-          src/permissions/__tests__/egress-runtime-proxy.test.ts
-          src/tools/__tests__/shell-windows-partial-plan-b.test.ts
-          src/tools/__tests__/shell-windows-mxc.test.ts
-          src/tools/__tests__/host-script-policy.test.ts
-          src/tools/__tests__/xlsx-edit-skill.test.ts
-          src/permissions/__tests__/mxc-windows.test.ts
-          src/lib/__tests__/atomic-file.test.ts
-          src/shared/__tests__/ave-home.test.ts
-          src/shared/__tests__/ave-home-boundaries.windows.test.ts
-          src/shared/__tests__/ave-home-configuration-read.windows.test.ts
-          src/shared/__tests__/windows-configuration-stat.windows.test.ts
-          src/shared/__tests__/ave-home-configuration.test.ts
-          src/shared/__tests__/ave-home-trust.test.ts
-          src/ipc/domains/__tests__/permissions.test.ts
-          src/main/storage/__tests__/feature-namespace.test.ts
-          src/lib/__tests__/with-file-lock.test.ts
-          src/data/__tests__/secret-document-store.test.ts
-          src/plugins/__tests__/registry-atomicity.test.ts
-          src/plugins/__tests__/registry-migration.test.ts
-          src/plugins/__tests__/installed-entry-fs.test.ts
-          src/plugins/__tests__/plugin-artifact-store-windows-lock.test.ts
-          src/plugins/__tests__/marketplace-update-recovery.test.ts
-          src/plugins/__tests__/install-local.test.ts
-          src/plugins/__tests__/trust-boundary.test.ts
-          src/__tests__/ave-home-isolation.test.ts
-          src/__tests__/support/native-executable-sid.test.ts
-          src/__tests__/support/tmp-dir-teardown-foreign-lock.test.ts
-          src/audit/__tests__/permission-audit-proof.test.ts
-          src/data/__tests__/node-secret-encryption.test.ts
-          src/data/__tests__/settings-store-atomic-write.test.ts
-          src/main/__tests__/codex-conversation-runtime.test.ts
-          src/main/__tests__/managed-child-tree-kill-starved.test.ts
-          src/main/__tests__/managed-child-tree-termination.test.ts
-          src/memory/__tests__/code-checkpoints-storage-errors.test.ts
-          src/permissions/__tests__/asrt-sandbox-mxc-proxy.test.ts
-          src/permissions/__tests__/egress-grant-class-routing.test.ts
-          src/permissions/__tests__/egress-mxc-review-regressions.test.ts
-          src/permissions/__tests__/sandbox-process-home.test.ts
-          src/permissions/__tests__/windows-process-start-time.test.ts
-          src/boot/__tests__/windows-sandbox-home-sweep.test.ts
-          src/plugins/isolation/__tests__/confined-plugin-child.test.ts
-          src/shared/__tests__/shell-execution.test.ts
-          src/shared/__tests__/shell-filesystem-path.test.ts
-          src/shared/__tests__/windows-powershell-env.test.ts
-          src/tools/__tests__/powershell-ast.test.ts
-          src/tools/__tests__/shell-path-policy-config.test.ts
-          src/tools/__tests__/shell-path-policy-windows.test.ts
-          src/tools/__tests__/shell-tools.test.ts
-          src/workload/__tests__/runtime.test.ts
-          test/scripts/smoke-windows-nsis-installer.test.ts
-          test/scripts/install-windows-git.test.ts
-          src/permissions/__tests__/permission-adversarial-performance.test.ts
-          src/permissions/__tests__/permission-decision-cost.test.ts
-          src/permissions/__tests__/permission-settings-admission.test.ts
-          src/main/__tests__/document-engine-payload.test.ts
-          src/main/__tests__/document-engine-installation.test.ts
-          src/main/__tests__/document-observation.test.ts
-          src/main/__tests__/document-engine-platform-support.test.ts
-          src/observation/__tests__/libreoffice-process.test.ts
-          src/observation/__tests__/libreoffice-engine.test.ts
-          src/lib/__tests__/shell-resolver.test.ts
-          src/lib/__tests__/shell-resolver.win32-trust.test.ts
-          src/boot/steps/__tests__/model-catalog-refresh.test.ts
-          src/boot/steps/__tests__/hook-system-wiring.test.ts
-          src/__tests__/boot-hooks-wiring.test.ts
-          src/hooks/__tests__/hook-config-trust.test.ts
-          src/hooks/__tests__/hook-matcher-safety.test.ts
-          src/hooks/__tests__/hook-source-controller.test.ts
-          src/hooks/__tests__/hook-trust-commands.test.ts
-          src/boot/__tests__/bootstrap-integration.test.ts
-          src/boot/steps/__tests__/plugin-runtime.test.ts
-          src/boot/steps/__tests__/plugin-runtime-auth-partition.test.ts
-          src/boot/steps/__tests__/plugin-runtime-hostapi-wiring.test.ts
-
+        run: bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt
+      - name: Run Windows native import regressions
+        env:
+          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
       - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1091,6 +854,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Every job process must have exited. With no concurrent writers, identity
+      # verification and tombstone rename suffice for recursive pathname removal.
+      # Any holder or incomplete entry handle scan blocks cleanup. Process probes
+      # also block on a positive reference and report unreadable values.
+      # An idle out-of-process COM server can access the root later without exposing
+      # a reference at scan time, which can cause a reported cleanup failure.
+      - name: Remove isolated system-volume job directory
+        if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
+        shell: powershell
+        run: node ave/.github/scripts/isolate-job-home.mjs --cleanup
 
   macos-permission-tests:
     name: macOS permission path tests

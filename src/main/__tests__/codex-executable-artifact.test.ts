@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
+import { createPrivateDirectories, createPrivateObjects } from "../codex-executable-location.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
@@ -18,17 +19,19 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
-function fixture(platform: NodeJS.Platform = process.platform) {
+async function fixture(platform: NodeJS.Platform = process.platform) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-native-artifact-")));
   roots.push(root); normalizeFixtureAncestorPermissions(root);
-  const runtime = join(root, "home", "runtime"); mkdirSync(runtime, { recursive: true, mode: 0o700 });
+  const home = join(root, "home");
+  const runtime = join(home, "runtime");
+  await createPrivateDirectories([home, runtime]);
   const source = writeNativeExecutable(join(root, "installed", "bin", "codex"), nativeExecutableBytes(platform));
   return { root, runtime, source };
 }
 
 describe("private executable artifacts", () => {
   it.each(["opening", "copying", "hashing"] as const)("refuses an identity change beyond number precision while %s", async (stage) => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const artifact = stage === "hashing" ? await copyCodexExecutableArtifact(source, runtime) : null;
     const target = artifact?.executable ?? source;
     // Preserve the fixture's trusted ancestors while injecting file identity changes.
@@ -65,12 +68,16 @@ describe("private executable artifacts", () => {
   });
 
   it("hashes and seals a script copy with exclusive no-follow opens", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const script = Buffer.from("#!/usr/bin/env node\nexport const value = 1;\n");
     writeFileSync(source, script);
     const open = vi.spyOn(fs, "open");
     const destination = join(runtime, "module.js");
-    const artifact = await copyExecutableFile(source, destination);
+    const artifact = await createPrivateObjects(async (created) => {
+    const copy = await copyExecutableFile(source, destination);
+    created.push(copy.executable);
+    return copy;
+  });
     expect(artifact).toEqual({
       executable: destination,
       contentHash: createHash("sha256").update(script).digest("hex"),
@@ -88,7 +95,7 @@ describe("private executable artifacts", () => {
   });
 
   it("hashes while copying, uses exclusive no-follow opens and seals the native copy", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const open = vi.spyOn(fs, "open");
     const artifact = await copyCodexExecutableArtifact(source, runtime);
     expect(artifact.executable).not.toBe(source);
@@ -105,7 +112,7 @@ describe("private executable artifacts", () => {
   });
 
   it.each(["linux", "darwin", "win32"] as const)("rejects a signature-only %s file and removes the staging directory", async (platform) => {
-    const { runtime, source } = fixture(platform);
+    const { runtime, source } = await fixture(platform);
     const bytes = nativeExecutableBytes(platform).subarray(0, 4);
     writeFileSync(source, Buffer.concat([bytes, Buffer.from("\necho unsafe\n")]));
     await expect(copyCodexExecutableArtifact(source, runtime, platform)).rejects.toThrow("Invalid native executable");
@@ -113,7 +120,7 @@ describe("private executable artifacts", () => {
   });
 
   it("leaves the qualified copy unchanged when the installed file and its parent are replaced", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const artifact = await copyCodexExecutableArtifact(source, runtime);
     const bytes = readFileSync(artifact.executable);
     renameSync(dirname(source), `${dirname(source)}-old`);
@@ -123,7 +130,7 @@ describe("private executable artifacts", () => {
   });
 
   it("refuses same-size changes to copied bytes even with restored modification time", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const artifact = await copyCodexExecutableArtifact(source, runtime);
     const stat = statSync(artifact.executable);
     const bytes = readFileSync(artifact.executable); bytes[bytes.length - 1] = 71;
@@ -133,17 +140,22 @@ describe("private executable artifacts", () => {
   });
 
   it("refuses a replaced private ancestor before launch", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const artifact = await copyCodexExecutableArtifact(source, runtime);
-    renameSync(dirname(artifact.executable), `${dirname(artifact.executable)}-old`);
-    mkdirSync(dirname(artifact.executable), { mode: 0o700 });
-    writeFileSync(artifact.executable, "#!/bin/sh\necho replacement\n", { mode: 0o500 });
+    const directory = dirname(artifact.executable);
+    renameSync(directory, `${directory}-old`);
+    await createPrivateObjects(async (created) => {
+      await fs.mkdir(directory, { mode: 0o700 });
+      created.push(directory);
+      await fs.writeFile(artifact.executable, "#!/bin/sh\necho replacement\n", { flag: "wx", mode: 0o500 });
+      created.push(artifact.executable);
+    });
     await expect(verifyCodexExecutableArtifact(artifact)).rejects.toThrow("Executable artifact changed");
   });
 
   // Creating the injected link requires unprivileged symlink support.
   it.skipIf(!canCreateSymlinks())("does not follow an injected destination link or overwrite its target", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const open = fs.open.bind(fs);
     vi.spyOn(fs, "open").mockImplementation(async (...args) => {
       if (typeof args[1] === "number" && (args[1] & constants.O_CREAT) !== 0) symlinkSync(source, String(args[0]));
@@ -156,7 +168,7 @@ describe("private executable artifacts", () => {
   });
 
   it("copies a resource companion ahead of a legacy sibling and rechecks its digest", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const name = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
     const resourceBytes = nativeExecutableBytes(); resourceBytes[resourceBytes.length - 1] = 43;
     const resource = writeNativeExecutable(join(dirname(dirname(source)), "codex-resources", name), resourceBytes);
@@ -169,7 +181,7 @@ describe("private executable artifacts", () => {
   });
 
   it("copies the resource companion beside the application bundle", async () => {
-    const { root, runtime } = fixture("darwin");
+    const { root, runtime } = await fixture("darwin");
     const packageDirectory = join(root, "bundle-package");
     const source = writeNativeExecutable(join(packageDirectory, "CodexCLI.app", "Contents", "MacOS", "codex"), nativeExecutableBytes("darwin"));
     const resourceBytes = nativeExecutableBytes("darwin"); resourceBytes[resourceBytes.length - 1] = 43;
@@ -182,7 +194,7 @@ describe("private executable artifacts", () => {
   });
 
   it("rejects a non-native companion without retaining an executable artifact", async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     const name = process.platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host";
     writeFileSync(join(dirname(source), name), "\x7fELF\necho helper\n", { mode: 0o700 });
     await expect(copyCodexExecutableArtifact(source, runtime)).rejects.toThrow("Invalid native executable");

@@ -37,11 +37,11 @@ function activeBrokeredWorkloadProject(): ProjectIdentity | null {
   };
 }
 
-export function defaultWorkspaceProject(defaultWorkspaceRoot = getDefaultWorkspaceRoot()): ProjectIdentity {
+export function defaultWorkspaceProject(defaultWorkspaceRoot?: string): ProjectIdentity {
   const brokered = activeBrokeredWorkloadProject();
   if (brokered !== null) return brokered;
   return {
-    projectRoot: defaultWorkspaceRoot,
+    projectRoot: defaultWorkspaceRoot ?? getDefaultWorkspaceRoot(),
     projectName: DEFAULT_PROJECT_NAME,
     isDefault: true,
   };
@@ -60,7 +60,7 @@ export function sessionBoundProjectRootMatches(
     && isDefaultWorkspaceRoot(boundRoot);
 }
 
-export function listAuthorizedWorkspaceProjects(defaultWorkspaceRoot = getDefaultWorkspaceRoot()): ProjectIdentity[] {
+export function listAuthorizedWorkspaceProjects(defaultWorkspaceRoot?: string): ProjectIdentity[] {
   const brokered = activeBrokeredWorkloadProject();
   if (brokered !== null) return [brokered];
   const defaultProject = defaultWorkspaceProject(defaultWorkspaceRoot);

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
+import { windowsRegressionStepFiles } from "../../.github/scripts/check-windows-workflow.mjs";
 import { PYTHON_VERSION, pythonArchiveCacheKey } from "../../.github/scripts/python-archive-cache.mjs";
 import { githubExpression as expr } from "../../src/__tests__/test-helpers.js";
 
@@ -25,7 +26,7 @@ describe("managed interpreter archive cache", () => {
     expect(cache.with).toEqual({ path: `${expr("runner.temp")}/python-archives`, key: expr("steps.python-archive.outputs.key") });
     expect(steps.indexOf(cache)).toBeLessThan(steps.indexOf(tests));
     expect(tests.env.UV_PYTHON_CACHE_DIR).toBe(cache.with.path);
-    expect(tests.run).toContain("src/sandbox/__tests__/runtime-grant-native.test.ts");
+    expect(windowsRegressionStepFiles(tests.run, read, tests.name)).toContain("src/sandbox/__tests__/runtime-grant-native.test.ts");
     const native = read("src/sandbox/__tests__/runtime-grant-native.test.ts");
     expect(native).toContain('UV_PYTHON_INSTALL_DIR: join(env, "python")');
     expect(native).toContain('UV_CACHE_DIR: join(env, "uv-cache")');
