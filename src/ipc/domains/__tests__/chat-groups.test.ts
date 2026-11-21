@@ -404,6 +404,31 @@ describe("ave:chat:* with chat groups", () => {
       expect(tile.getHistory().getMessages()).toHaveLength(2);
       expect(memoryManager.sessions.saveSession).not.toHaveBeenCalled();
     });
+    it("applies a decision only to the turn the person reviewed", async () => {
+      const { invoke, tile, file } = await setup();
+      // The person looks at turn A's review; turn B then settles in the same session and changes another file.
+      const other = join(root, "later.txt");
+      await writeFile(other, "before");
+      tile.getHistory().getMessages().push(
+        { role: "user", content: "next question", meta: { messageId: "tile-q2" } },
+        { role: "assistant", content: "next answer", meta: { messageId: "tile-a2" } },
+      );
+      await withCodeCheckpoint({ sessionId: tile.getSessionId(), messageId: "tile-q2" }, () =>
+        checkpointFileMutation([{ path: other, content: "agent" }], () => writeFile(other, "agent")));
+      // A's "undo all" arrives after B became the latest turn: nothing is written, for either turn.
+      expect(await invoke(CHANNELS.chat.decideTurnReview, tile.getSessionId(), { action: "undo", scope: "turn", turnId: "tile-q1" }, "group-2"))
+        .toEqual({ ok: false, error: "turn-review-stale" });
+      expect(await readFile(file, "utf8")).toBe("agent");
+      expect(await readFile(other, "utf8")).toBe("agent");
+      // A decision that names no turn is not a decision.
+      expect(await invoke(CHANNELS.chat.decideTurnReview, tile.getSessionId(), { action: "undo", scope: "turn" }, "group-2"))
+        .toEqual({ ok: false, error: "invalid-input" });
+      // The same decision made on B's review is applied to B.
+      expect(await invoke(CHANNELS.chat.decideTurnReview, tile.getSessionId(), { action: "undo", scope: "turn", turnId: "tile-q2" }, "group-2"))
+        .toMatchObject({ ok: true, review: { turnId: "tile-q2", files: [] } });
+      expect(await readFile(other, "utf8")).toBe("before");
+      expect(await readFile(file, "utf8")).toBe("agent");
+    });
     it("retains the initiating review turn after queued guidance is injected", async () => {
       const { invoke, tile } = await setup();
       tile.getHistory().getMessages().push({ role: "user", content: "Queued follow-up", meta: { messageId: "injected-row", hostInjectionId: "guidance-batch" } });

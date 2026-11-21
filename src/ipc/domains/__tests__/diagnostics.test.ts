@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,7 +17,7 @@ vi.mock("electron", () => ({
     }),
   },
   dialog: { showSaveDialog: (...a: unknown[]) => showSaveDialog(...a) },
-  app: { getPath: () => join(process.env.AVE_HOME ?? tmpdir(), "..", "userData") },
+  app: { getPath: () => join(tmp, "userData") },
 }));
 
 vi.mock("../../../lib/logger.js", () => ({
@@ -71,9 +72,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await auditLogger.close();
-  delete process.env.AVE_HOME;
-  await cleanupTmpDir(tmp);
+  await cleanupAfterClosing([() => auditLogger.close()], [
+    () => { delete process.env.AVE_HOME; },
+    () => cleanupTmpDir(tmp),
+  ]);
 });
 
 describe("diagnostics IPC — fail-closed sender guard", () => {
@@ -210,7 +212,7 @@ describe("ave:logs:tail", () => {
 
 describe("ave:diagnostics:crash-list", () => {
   it("returns crash-dump metadata", async () => {
-    const crashDir = join(tmp, "..", "userData", "crash-dumps");
+    const crashDir = join(tmp, "userData", "crash-dumps");
     mkdirSync(crashDir, { recursive: true });
     writeFileSync(join(crashDir, "x.dmp"), "y", "utf-8");
     const r = (await invokeRegisteredHandlerWithEvent(handlers, CHANNELS.diagnostics.crashList, ACCEPT_EVENT)) as {
@@ -248,7 +250,7 @@ describe("ave:diagnostics:export", () => {
     // Persisted crash-dump consent cannot be widened by renderer arguments.
     handlers.clear();
     registerDiagnosticsHandlers(makeDeps({ includeCrashDumps: false }));
-    const crashDir = join(tmp, "..", "userData", "crash-dumps");
+    const crashDir = join(tmp, "userData", "crash-dumps");
     mkdirSync(crashDir, { recursive: true });
     writeFileSync(join(crashDir, "boom.dmp"), "RAWCRASHBINARYSECRET", "utf-8");
     const out = join(tmp, "bundle-m2.zip");
@@ -272,7 +274,7 @@ describe("ave:diagnostics:export", () => {
   it("persisted setting true + renderer opts out → crash-dump binary NOT included (M2 narrows)", async () => {
     handlers.clear();
     registerDiagnosticsHandlers(makeDeps({ includeCrashDumps: true }));
-    const crashDir = join(tmp, "..", "userData", "crash-dumps");
+    const crashDir = join(tmp, "userData", "crash-dumps");
     mkdirSync(crashDir, { recursive: true });
     writeFileSync(join(crashDir, "boom.dmp"), "RAWCRASHBINARYSECRET", "utf-8");
     const out = join(tmp, "bundle-narrow.zip");

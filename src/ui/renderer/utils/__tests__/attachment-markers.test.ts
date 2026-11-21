@@ -4,6 +4,7 @@ import {
   collapsePath,
   buildMarkerText,
   findMarkerAt,
+  removeMarker,
 } from "../attachment-markers.js";
 import type {
   ImageAttachment,
@@ -174,5 +175,21 @@ describe("resource markers", () => {
     // kind added to `parseMarkers` alone would leave a chip the user can create and then cannot remove.
     const text = "before [Resource #4] after";
     expect(findMarkerAt(text, 20)).toEqual({ start: 7, end: 20 });
+  });
+});
+
+describe("removeMarker", () => {
+  it("takes out one attachment's marker with the space the attach flow put after it", () => {
+    expect(removeMarker("see [Image #1] and [Image #2] here", 1)).toBe("see and [Image #2] here");
+    expect(removeMarker("[File #3] ", 3)).toBe("");
+  });
+
+  it("matches a pasted-text marker with its line count and with the count edited away", () => {
+    expect(removeMarker("a [Pasted text #4 +120 lines] b", 4)).toBe("a b");
+    expect(removeMarker("a [Pasted text #4] b", 4)).toBe("a b");
+  });
+
+  it("leaves other numbers alone, including one that starts with the same digits", () => {
+    expect(removeMarker("[Image #1] [Image #12] [Resource #2]", 1)).toBe("[Image #12] [Resource #2]");
   });
 });

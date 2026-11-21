@@ -6,14 +6,15 @@ import { tmpdir } from "node:os";
 import * as checkpoints from "../code-checkpoints.js";
 import type { TurnChangeReview, TurnReviewResult } from "../../shared/turn-change-review.js";
 import * as accessPolicy from "../../tools/file-access-policy.js";
+import { createCurrentTurnReview, createProjectScope } from "../../__tests__/support/code-checkpoint-turn.js";
 
 let root: string;
 let path: string;
 let sessionId: string;
-const context = () => ({ cwd: root, extraAllowedDirectories: [] });
+const context = createProjectScope(() => root);
 const ledgerPath = () => join(root, "state/code-checkpoints/turns.json");
 const review = () => checkpoints.getTurnChangeReview(sessionId, "latest", context);
-const currentReview = () => checkpoints.getTurnChangeReview(sessionId, "latest", context, { currentDetails: true });
+const currentReview = createCurrentTurnReview(() => sessionId, context);
 function available(result: TurnReviewResult): TurnChangeReview {
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.error);

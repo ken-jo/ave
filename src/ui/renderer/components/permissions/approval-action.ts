@@ -1,3 +1,4 @@
+import { revealHiddenCharacters } from "../../../../shared/display-safe-text.js";
 import type { TranslateFn } from "../../../../i18n/translate.js";
 import { isRecord } from "../../../../shared/is-record.js";
 import type { ApprovalRequest } from "../../types.js";
@@ -12,7 +13,7 @@ export function approvalAction(request: ApprovalRequest, t: TranslateFn): { titl
   if (request.source === "mcp" || request.source === "plugin" || request.kind === "agent-action") {
     const server = scope?.kind === "mcp-tool" ? scope.serverId : request.sourcePluginId;
     const tool = scope?.kind === "mcp-tool" ? scope.toolName : request.toolName;
-    if (server) return { title: t("toolApprovalDialog.externalActionTitle", { server, tool }), primary: JSON.stringify(args, null, 2) };
+    if (server) return { title: t("toolApprovalDialog.externalActionTitle", { server, tool }), primary: revealHiddenCharacters(JSON.stringify(args, null, 2), { lineBreaks: false }) };
   }
   return { title: t(request.kind === "agent-action" ? "toolApprovalDialog.agentActionTitle" : "toolApprovalDialog.toolApprovalTitle"), primary: null };
 }

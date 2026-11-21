@@ -106,3 +106,11 @@ export async function retryOnFileLock<T>(op: () => Promise<T>): Promise<T> {
 export function renameFile(from: string, to: string): Promise<void> {
   return retryOnFileLock(() => fsRename(from, to));
 }
+
+/**
+ * One rename, never retried, for an effect judged just before it: waiting out a Windows lock would carry the effect out on
+ * a judgment that has aged meanwhile, so a lock fails it like any other error and the caller reports it.
+ */
+export function renameFileOnce(from: string, to: string): Promise<void> {
+  return fsRename(from, to);
+}

@@ -478,7 +478,7 @@ describe("documentation impact policy", () => {
       `${hook.slice(hook.indexOf("function runAppTargetedVitestChecks("), hook.indexOf("// lockSuites:"))}; ({ runAppTargetedVitestChecks, runVitestWithReport })`,
       {
         commands: { bun: "bun" }, available: () => "bun", hasPackageScript: () => true, hasFile: () => true,
-        runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {},
+        runAppTypecheckGate: () => {}, ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {}, ensureMacosDirOps: () => {},
         join, tmpdir, mkdtempSync, rmSync, console: { log: () => {} }, splitArgumentsWithinBudget,
         readJsonFile: () => ({ numTotalTests: 1, numPassedTests: 1 }),
         withoutGitContext: () => stripped,

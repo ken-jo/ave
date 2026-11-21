@@ -254,6 +254,40 @@ describe("rankMxcFilesystem", () => {
     expect(grants.denied).toEqual([`${sessions}\\secrets`]);
   });
 
+  it("denies a write-floor row whose nearest rule is a read deny instead of granting it read-only beneath that deny", () => {
+    // An Ave home relocated inside the writable project: its root is read-denied, and the write floor names rows inside it. A read-only
+    // grant on such a row would be more specific than the home's deny and re-open it, so the row is denied with the home instead.
+    const project = "C:\\Users\\u\\work";
+    const aveHomeRoot = `${project}\\ave`;
+    const hooks = `${project}\\.git\\hooks`;
+    const grants = rankMxcFilesystem({
+      allowWrite: [project],
+      allowRead: [project],
+      denyRead: [`${aveHomeRoot}\\`, `${aveHomeRoot}\\secrets\\`, `${aveHomeRoot}\\browser-downloads\\`],
+      denyWrite: [`${aveHomeRoot}\\secrets\\`, `${aveHomeRoot}\\browser-downloads\\`, hooks],
+      protectedFloor: [`${aveHomeRoot}\\secrets\\`, `${aveHomeRoot}\\browser-downloads\\`],
+    }, exists);
+    expect(grants.readwrite).toEqual([project]);
+    // A write-floor row the project may still read stays read-only.
+    expect(grants.readonly).toEqual([hooks]);
+    expect(grants.denied).toEqual([aveHomeRoot]);
+  });
+
+  it("keeps a write-floor row read-only where a grant more specific than the covering read deny re-opens it", () => {
+    const project = "C:\\Users\\u\\work";
+    const aveHomeRoot = `${project}\\ave`;
+    const own = `${aveHomeRoot}\\workspace\\repo`;
+    const grants = rankMxcFilesystem({
+      allowWrite: [project, own],
+      allowRead: [],
+      denyRead: [`${aveHomeRoot}\\`],
+      denyWrite: [`${own}\\.git\\hooks`],
+      protectedFloor: [],
+    }, exists);
+    expect(grants.readonly).toEqual([`${own}\\.git\\hooks`]);
+    expect(grants.denied).toEqual([aveHomeRoot]);
+  });
+
   it("drops grants that do not exist and de-duplicates case variants", () => {
     const grants = rankMxcFilesystem({
       allowWrite: [repo, repo.toUpperCase(), "C:\\missing-dir"],

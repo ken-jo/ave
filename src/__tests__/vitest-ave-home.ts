@@ -2,8 +2,38 @@
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { getBuiltinModule } from "node:process";
-import { afterAll, afterEach, beforeEach, expect, vi } from "vitest";
+import { afterAll, afterEach, aroundAll, beforeEach, expect, vi } from "vitest";
+import { cleanupAfterClosing } from "./support/fixture-cleanup.js";
 import { installWindowsNativeTripwire } from "./support/windows-native-tripwire.js";
+
+const srtWinCopyDisposers = vi.hoisted(() => new Map<string, () => void>());
+vi.mock("../permissions/srt-win-copy-owner.js", () => ({
+  _registerSrtWinCopyForTest(directory: string, dispose: () => void): void {
+    srtWinCopyDisposers.set(directory, dispose);
+  },
+}));
+
+async function disposeSrtWinCopies(): Promise<void> {
+  if (srtWinCopyDisposers.size === 0) return;
+  const { lstatSync } = getBuiltinModule("node:fs");
+  try {
+    await cleanupAfterClosing([], [...srtWinCopyDisposers].map(([directory, dispose]) => () => {
+      dispose();
+      expect(lstatSync(directory, { throwIfNoEntry: false }), directory).toBeUndefined();
+    }));
+  } finally {
+    srtWinCopyDisposers.clear();
+  }
+}
+
+// This file owns its copies, including those made before a dependency probe fails or skips the suite.
+aroundAll(async (runSuite) => {
+  try {
+    await runSuite();
+  } finally {
+    await disposeSrtWinCopies();
+  }
+});
 
 // Match the installed test input without changing production trust.
 vi.mock("../permissions/generated/srt-win-build-receipts.js", async (importOriginal) => {

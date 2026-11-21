@@ -23,7 +23,13 @@ function openRefusalKey(error: OpenRefusal): string {
   }
 }
 
-export function useOpenInDefaultApp(projectRoot: string): { run: (path: string) => Promise<void>; pending: boolean; error: string | null } {
+export function useOpenInDefaultApp(projectRoot: string): {
+  run: (path: string) => Promise<void>;
+  pending: boolean;
+  error: string | null;
+  /** Drop the last refusal: the user has moved on to another action. */
+  clearError: () => void;
+} {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = useCallback(async (path: string) => {
@@ -39,5 +45,6 @@ export function useOpenInDefaultApp(projectRoot: string): { run: (path: string) 
       setPending(false);
     }
   }, [projectRoot]);
-  return { run, pending, error };
+  const clearError = useCallback(() => setError(null), []);
+  return { run, pending, error, clearError };
 }

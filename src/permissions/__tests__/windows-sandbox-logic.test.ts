@@ -65,7 +65,6 @@ afterEach(() => {
   });
   vi.unstubAllEnvs();
 });
-
 describe("windows sandbox — mirrored constants pinned against ASRT", () => {
   it("DEFAULT_WINDOWS_PROXY_PORT_RANGE mirrors ASRT's exported value", () => {
     expect(DEFAULT_WINDOWS_PROXY_PORT_RANGE).toEqual([60080, 60089]);

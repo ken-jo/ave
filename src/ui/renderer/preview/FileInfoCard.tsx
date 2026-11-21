@@ -7,7 +7,7 @@ import { formatBytes } from "../../../lib/turn-summary-format.js";
 export type FileInfoReason = "unsupported" | "too-large" | "binary-file";
 
 /** File facts supplied by the caller; absent metadata is never inferred. */
-export function FileInfoCard({ name, kindLabel, icon, reason, size, modified, created, location, children }: {
+export function FileInfoCard({ name, kindLabel, icon, reason, size, modified, created, location, defaultAppAvailable = true, children }: {
   name: string;
   kindLabel?: string;
   icon?: ReactNode;
@@ -16,6 +16,8 @@ export function FileInfoCard({ name, kindLabel, icon, reason, size, modified, cr
   modified?: string;
   created?: string;
   location?: string;
+  /** False when this file's type is not handed to the OS default app, so the reason does not point the user there. */
+  defaultAppAvailable?: boolean;
   children?: ReactNode;
 }) {
   const { t, locale } = useTranslation();
@@ -38,8 +40,11 @@ export function FileInfoCard({ name, kindLabel, icon, reason, size, modified, cr
           className={cn("mt-4 flex gap-2 rounded-lg border px-3 py-2 text-xs leading-5",
             reason === "unsupported" ? "bg-muted/(--opacity-muted)" : "border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) text-warning")}>
           <Info aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{reason === "too-large" ? size === undefined ? t("chatPreviewRail.fileErrorTooLarge") : t("folderView.reasonTooLarge", { size: formatBytes(size) })
-            : reason === "binary-file" ? t("folderView.reasonBinary") : t("folderView.reasonUnsupported")}</span>
+          <span>{reason === "too-large"
+            ? size === undefined ? t("chatPreviewRail.fileErrorTooLarge")
+              : t(defaultAppAvailable ? "folderView.reasonTooLarge" : "folderView.reasonTooLargeNoDefaultApp", { size: formatBytes(size) })
+            : reason === "binary-file" ? t("folderView.reasonBinary")
+              : t(defaultAppAvailable ? "folderView.reasonUnsupported" : "folderView.reasonUnsupportedNoDefaultApp")}</span>
         </div> : null}
         <dl className="mt-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-xs">
           {facts.map(([label, value]) => (

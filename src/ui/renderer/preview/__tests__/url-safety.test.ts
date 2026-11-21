@@ -1,7 +1,7 @@
 /** Delegate protocol and credential checks to validateExternalUrl; renderer normalization only trims and defaults bare
  * hosts to https. */
 import { describe, it, expect } from "vitest";
-import { normalizeBrowserNavigationUrl } from "../url-safety.js";
+import { normalizeBrowserNavigationUrl, resolveAddressSubmission } from "../url-safety.js";
 
 describe("normalizeBrowserNavigationUrl", () => {
   it("accepts http(s) URLs and returns the canonical form", () => {
@@ -35,5 +35,20 @@ describe("normalizeBrowserNavigationUrl", () => {
       .toBe("https://example.com/users/@alice");
     expect(normalizeBrowserNavigationUrl("https://example.com/s?to=a@b.com"))
       .toBe("https://example.com/s?to=a@b.com");
+  });
+});
+
+describe("resolveAddressSubmission", () => {
+  const api = (webView: unknown) => ({ getSettings: async () => ({ webView }) }) as never;
+
+  it("searches with the engine configured when the text is submitted", async () => {
+    await expect(resolveAddressSubmission(api({ addressSearchEngine: "naver" }), "ave browser")).resolves.toEqual({
+      kind: "search", query: "ave browser", url: "https://search.naver.com/search.naver?query=ave%20browser",
+    });
+  });
+
+  it("opens an address without consulting the engine and refuses a malformed one", async () => {
+    await expect(resolveAddressSubmission(api({ addressSearchEngine: "bing" }), "localhost:3000")).resolves.toEqual({ kind: "url", url: "http://localhost:3000/" });
+    await expect(resolveAddressSubmission(api({ addressSearchEngine: "bing" }), "https://bad host/")).resolves.toBeNull();
   });
 });

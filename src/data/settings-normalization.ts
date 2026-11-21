@@ -3,6 +3,7 @@ import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags } from "../shared
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
+import { isEditorCommandSetting } from "../shared/editor-command.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
   normalizeCorpCaCommonName,
@@ -122,6 +123,7 @@ import type {
   WebSearchSettings,
 } from "./settings-store.js";
 import { isRecord } from "../shared/is-record.js";
+import { isAddressSearchEngine } from "../shared/browser-address.js";
 import { compactionModelSelection, isCompactionModelSelection } from "../shared/compaction-model.js";
 
 const log = createLogger("settings");
@@ -729,17 +731,24 @@ export function normalizeWebView(input: unknown): WebViewSettings {
   if (!isRecord(input)) {
     return { ...DEFAULT_SETTINGS.webView };
   }
+  const next: WebViewSettings = { ...DEFAULT_SETTINGS.webView };
   const raw = input.preferredFlow;
-  if (isWebViewPreferredFlow(raw)) {
-    return { preferredFlow: raw };
-  }
-  if (raw !== undefined) {
+  if (isWebViewPreferredFlow(raw)) next.preferredFlow = raw;
+  else if (raw !== undefined) {
     log.warn(
       `webView.preferredFlow invalid (received ${JSON.stringify(raw)}), using default %s`,
       DEFAULT_SETTINGS.webView.preferredFlow,
     );
   }
-  return { ...DEFAULT_SETTINGS.webView };
+  const engine = input.addressSearchEngine;
+  if (isAddressSearchEngine(engine)) next.addressSearchEngine = engine;
+  else if (engine !== undefined) {
+    log.warn(
+      `webView.addressSearchEngine invalid (received ${JSON.stringify(engine)}), using default %s`,
+      DEFAULT_SETTINGS.webView.addressSearchEngine,
+    );
+  }
+  return next;
 }
 
 export function normalizeWorkBoard(input: unknown): WorkBoardSettings {
@@ -754,6 +763,7 @@ export function normalizeDocuments(input: unknown): DocumentSettings {
   const result = { ...DEFAULT_SETTINGS.documents };
   if (isRecord(input)) {
     acceptField(result, "openMode", input.openMode, isDocumentOpenMode, "documents", STORED_FIELD);
+    acceptField(result, "editorCommand", input.editorCommand, isEditorCommandSetting, "documents", STORED_FIELD);
   }
   return result;
 }

@@ -428,11 +428,11 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
     symlinkSync(outsideDir, join(resolvePluginHostStorageDir(dataDir), "escape"), dirLinkType);
 
     const api = createHostApi(
-      "plugin-a",
-      { id: "plugin-a", config: {} },
+      "alice",
+      { id: "alice", config: {} },
       dataDir,
       activeIncarnation(),
-      "plugin-a",
+      "alice",
     );
 
     await expect(api.storage.readText("escape/secret.txt")).rejects.toThrow(
@@ -456,6 +456,8 @@ describe("HostApi.storage containment refusals reach the boot audit log", () => 
     expect(payload).toMatchObject({
       truncated: true,
       originalLength: expect.any(Number),
+      pluginId: "alice",
+      reason: "storage: rejected symlink escape",
       preview: expect.any(String),
     });
     expect(payload.originalLength).toBeGreaterThan(500);

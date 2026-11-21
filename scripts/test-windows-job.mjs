@@ -11,6 +11,7 @@ import { performance } from "node:perf_hooks";
 if (process.platform !== "win32") throw new Error("This test requires Windows");
 const helper = resolve(`resources/windows-job/${process.arch}/ave-job.exe`);
 const failureHelper = resolve(`resources/windows-job/${process.arch}/ave-job-failure.exe`);
+const queryFailureHelper = resolve(`resources/windows-job/${process.arch}/ave-job-query-failure.exe`);
 const directory = mkdtempSync(join(tmpdir(), "ave job test "));
 const fixture = join(directory, "child fixture.cjs");
 writeFileSync(fixture, `const {spawn}=require('node:child_process');
@@ -18,8 +19,9 @@ if(process.argv[2]==='leaf'){console.log(process.pid);setInterval(()=>{},1000)}
 else {const child=spawn(process.execPath,[__filename,'leaf'],{stdio:['ignore','pipe','inherit']});
 child.stdout.once('data',data=>{process.stdout.write(data); if(process.argv[2]==='root-exit') process.exit(23)});
 setInterval(()=>{},1000)}`);
-function launch(exe, args, binary = helper) {
-  const child = spawn(binary, [exe, ...args], { cwd: directory, stdio: ['pipe','pipe','pipe'], windowsHide:true });
+function launch(exe, args, binary = helper, receipt) {
+  const prefix = receipt === undefined ? [] : ['--receipt', receipt];
+  const child = spawn(binary, [...prefix, exe, ...args], { cwd: directory, stdio: ['pipe','pipe','pipe'], windowsHide:true });
   track(child);
   let stdout='', stderr='';
   child.stdout.on('data', data=>{stdout+=data}); child.stderr.on('data',data=>{stderr+=data});
@@ -108,6 +110,35 @@ try {
   run=launch(process.execPath,['-e',`require('fs').writeFileSync(${JSON.stringify(marker)},'ran')`],failureHelper);
   result=await deadline(run.done);assert.equal(result.code,125);assert.equal(existsSync(marker),false);assert.match(result.stderr,/failed/);
   console.log('PASS job assignment failure never runs command');
+  // The CI wrapper registers each receipt before launch; the launcher only appends the verdict.
+  const registered='example-1\n1:2:3\n';
+  for(const mode of ['root-exit','owner-eof']) {
+    const receipt=join(directory,`${mode}.receipt`);
+    writeFileSync(receipt,registered);
+    run=launch(process.execPath,[fixture,mode],helper,receipt);
+    const [output]=await deadline(once(run.child.stdout,'data'));
+    const pid=Number(output.toString().trim());assert.ok(pid>0);
+    if(mode==='owner-eof'){assert.equal(readFileSync(receipt,'utf8'),registered);run.child.stdin.end();}
+    result=await deadline(run.done);
+    assert.equal(result.code,mode==='root-exit'?23:130);assert.equal(readFileSync(receipt,'utf8'),`${registered}0`);
+    assert.throws(()=>process.kill(pid,0),{code:'ESRCH'});
+    console.log(`PASS ${mode} receipt proves the closed job is empty`);
+  }
+  assert.ok(existsSync(queryFailureHelper),'Build -QueryFailureFixture before running this suite');
+  const unqueried=join(directory,'unqueried.receipt');
+  writeFileSync(unqueried,registered);
+  run=launch(process.execPath,[fixture,'root-exit'],queryFailureHelper,unqueried);
+  const [unqueriedOutput]=await deadline(once(run.child.stdout,'data'));
+  result=await deadline(run.done);await gone(Number(unqueriedOutput.toString().trim()));
+  assert.equal(result.code,125);assert.match(result.stderr,/QueryInformationJobObject failed/);assert.equal(readFileSync(unqueried,'utf8'),registered);
+  console.log('PASS job query failure appends no verdict');
+  const missing=join(directory,'missing.receipt');
+  for(const receipt of [missing,'relative.receipt']) {
+    run=launch(process.execPath,['-e',`require('fs').writeFileSync(${JSON.stringify(marker)},'ran')`],helper,receipt);
+    result=await deadline(run.done);assert.equal(result.code,125);assert.equal(existsSync(marker),false);
+  }
+  assert.equal(existsSync(missing),false);
+  console.log('PASS missing or relative receipt never runs command');
   const elapsed=[];
   for(let i=0;i<15;i++){const start=performance.now();await deadline(launch(process.execPath,['-e','']).done);elapsed.push(performance.now()-start);}
   const direct=[];

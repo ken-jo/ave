@@ -30,9 +30,11 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { createBootHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
+import { installIncompatibleSecurityModule } from "../../../__tests__/support/windows-powershell-fixtures.js";
 import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-api-factory.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
+import { windowsPowerShellEnv } from "../../../shared/windows-powershell-env.js";
 import {
   __resetSandboxRequestedAtBootForTest,
   setPluginWorkerConfinementRequestedAtBoot,
@@ -86,35 +88,39 @@ const GENERATION_ID = "adversarial-generation";
 const WRAP_PLATFORM = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32";
 
 /** Temporary roots may inherit a nonprivate access list. */
-function protectWindowsTestRoot(root: string): void {
+function protectWindowsTestRoot(root: string, env = process.env): void {
   const systemRoot = process.env.SystemRoot;
   if (!systemRoot) throw new Error("Cannot resolve the native system utilities directory");
   const system32 = join(systemRoot, "System32");
-  const identity = execFileSync(join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf-8", windowsHide: true });
-  const sids = identity.match(/\bS-\d-\d+(?:-\d+)+\b/g);
-  if (sids?.length !== 1) throw new Error("Cannot resolve the test root owner's SID");
   const script = [
     "$ErrorActionPreference = 'Stop'",
-    "$sid = New-Object System.Security.Principal.SecurityIdentifier($env:AVE_ADVERSARIAL_ROOT_SID)",
+    "$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()",
+    "$sid = $identity.User",
     "$acl = Get-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT",
-    "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Test root owner mismatch' }",
+    "$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])",
+    "if ($owner -ne $sid) {",
+    "  $administrator = [System.Security.Principal.WindowsPrincipal]::new($identity).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)",
+    "  if ($owner.Value -ne 'S-1-5-32-544' -or !$administrator) { throw 'Test root owner mismatch' }",
+    "  $acl.SetOwner($sid)",
+    "}",
     "$acl.SetAccessRuleProtection($true, $false)",
     "foreach ($entry in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($entry) }",
     "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
     "$acl.AddAccessRule($rule)",
     "Set-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT -AclObject $acl",
     "$check = Get-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT",
+    "if ($check.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Test root owner mismatch' }",
     "$sddl = $check.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)",
     "$entries = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
     "if (!$check.AreAccessRulesProtected -or $entries.Count -ne 1) { throw ('Test root DACL is not owner-only: ' + $sddl) }",
     "$entry = $entries[0]",
     "if ($entry.IdentityReference -ne $sid -or $entry.IsInherited -or $entry.AccessControlType -ne 'Allow' -or $entry.FileSystemRights -ne 'FullControl' -or $entry.InheritanceFlags -ne 'ContainerInherit,ObjectInherit' -or $entry.PropagationFlags -ne 'None') { throw ('Test root DACL grant mismatch: ' + $sddl) }",
     "$sddl",
-  ].join("; ");
+  ].join("\n");
   const sddl = execFileSync(join(system32, "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
     encoding: "utf-8",
     windowsHide: true,
-    env: { ...process.env, AVE_ADVERSARIAL_ROOT: root, AVE_ADVERSARIAL_ROOT_SID: sids[0] },
+    env: windowsPowerShellEnv({ ...env, AVE_ADVERSARIAL_ROOT: root }),
   }).trim();
   console.info(`[adversarial] private root ${root}: ${sddl}`);
 }
@@ -627,6 +633,20 @@ describe("the controls, which must hold before any escape is asserted", () => {
     expect(readFileSync(join(staged.neighbourDataDir, SENTINEL_NAME), "utf-8")).toBe(NEIGHBOUR_SENTINEL);
     controls.secrets = "held";
   });
+
+  if (process.platform === "win32") {
+    it("protects the fixture root with an incompatible inherited security module", () => {
+      const scratch = mkdtempSync(join(tmpdir(), "adv-acl-"));
+      try {
+        installIncompatibleSecurityModule(scratch);
+        const root = join(scratch, "root");
+        mkdirSync(root);
+        protectWindowsTestRoot(root, { ...windowsPowerShellEnv(), PSModulePath: scratch });
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("connects to the loopback listener from the test process", async () => {
     const before = listenerConnections.length;

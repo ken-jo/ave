@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -72,7 +73,7 @@ async function expectNoSend(use: ReturnType<CredentialLeaseRegistry["beginUse"]>
 async function writeFromAnotherProcess(root: string, operation: "rotate" | "delete"): Promise<void> {
   const child = spawn(nodeCommand, ["--import=tsx", childFixture, `settings-${operation}`, root, secretKey], {
     cwd: repoRoot,
-    env: process.env,
+    env: tsxChildEnv(),
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
     timeout: 15_000,

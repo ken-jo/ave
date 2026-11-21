@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { handleClipboardPaste } from "../clipboard-paste.js";
 import { PASTE_INLINE_MAX_CHARS } from "../../types/attachments.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 
 function makePasteEvent({
   text = "",
@@ -100,12 +101,48 @@ describe("handleClipboardPaste", () => {
     expect(outcome.handled).toBe(false);
   });
 
+  it.each([
+    ["clipboard_too_large", () => t("clipboardPaste.imageTooLarge", { maxMb: 25 })],
+    ["not_image", () => t("clipboardPaste.notImage")],
+    ["ENOSPC: no space left on device, write", () => t("clipboardPaste.imageSaveFailed")],
+    [undefined, () => t("clipboardPaste.imageSaveFailed")],
+  ] as const)("says why a clipboard image was not saved, in the reader's language (%s)", async (error, expected) => {
+    const previousLocale = getLocale();
+    try {
+      for (const locale of ["en", "ko"] as const) {
+        setLocale(locale);
+        const ev = makePasteEvent({ imageBlob: new Blob([new Uint8Array([1])], { type: "image/png" }) });
+        const outcome = await handleClipboardPaste(ev, pasteOptions({ saveClipboardImage: async () => ({ ok: false, error }) }));
+        expect(outcome.handled).toBe(true);
+        expect(outcome.newAttachment).toBeUndefined();
+        expect(outcome.warning).toBe(expected());
+        // Neither a code nor an operating-system message reaches the person.
+        expect(outcome.warning).not.toMatch(/clipboard_too_large|not_image|ENOSPC|26214400/);
+      }
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("uses distinct English and Korean sentences for an oversized clipboard image", () => {
+    const previousLocale = getLocale();
+    try {
+      setLocale("en");
+      expect(t("clipboardPaste.imageTooLarge", { maxMb: 25 })).toBe("The clipboard image is larger than 25 MB.");
+      setLocale("ko");
+      expect(t("clipboardPaste.imageTooLarge", { maxMb: 25 })).toBe("클립보드 이미지가 25MB보다 큽니다.");
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
   it("emits warning when saveClipboardImage fails", async () => {
     const blob = new Blob([new Uint8Array([1])], { type: "image/png" });
     const ev = makePasteEvent({ imageBlob: blob });
     const outcome = await handleClipboardPaste(ev, pasteOptions({ saveClipboardImage: async () => ({ ok: false, error: "disk full" }) }));
     expect(outcome.handled).toBe(true);
     expect(outcome.newAttachment).toBeUndefined();
-    expect(outcome.warning).toContain("disk full");
+    expect(outcome.warning).toBe(t("clipboardPaste.imageSaveFailed"));
+    expect(outcome.warning).not.toContain("disk full");
   });
 });

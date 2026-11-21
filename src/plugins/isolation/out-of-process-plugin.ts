@@ -209,7 +209,7 @@ function resolveUserChosenDirectory(
   const folded = caseFoldForMatch(canonicalizePathForMatch(target));
   // The read half of this grant re-allows inside the deny floor exactly as a `hostDirectory` grant does, and unlike a `hostDirectory` grant the value is reachable by anything that can write the plugin's config.
   // Without this the user approving `~/.ave` as a workspace root; which the approval flow permits, since `~/.ave` is not itself a sensitive path; would let a config value point the grant at `~/.ave/secrets` and re-open it.
-  const sensitive = isSensitivePath(folded);
+  const sensitive = isSensitivePath(target);
   if (sensitive) {
     rejectEnvelopeGrant(
       inputs.pluginId,

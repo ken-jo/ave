@@ -18,8 +18,8 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 const session = terminalSessionFixture("terminal:review", "manual");
 
 function reviewed(path: string, before: string, after: string): TerminalReviewFile["review"] {
-  return { path, bytes: after.length, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: false,
-    hunks: [{ id: `${path}-hunk`, oldText: before, newText: after, oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 }] };
+  return { path, bytes: after.length, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: false, decidable: true,
+    hunks: [{ id: `${path}-hunk`, oldText: before, newText: after, oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1, kept: false }] };
 }
 
 function evidence(): TerminalFileReviewSnapshot {

@@ -43,30 +43,78 @@ export function shellFloorBudgetSignals(): ShellFloorSignals {
 export function shellFloorParserBudgetExceeded(reason: string): boolean {
   return SHELL_PARSER_BUDGET_ERRORS.has(reason) || /^(?:\d+:\d+: )?shell (?:parser recursion|total token) limit exceeded$/.test(reason);
 }
-import { createConfiguredSessionReadPathMatcher, createPathCanonicalizer, createSensitiveLocationMatcher, createSensitivePathMatcher } from "../sensitive-paths.js";
+import { caseFoldForMatch, createConfiguredSessionReadPathMatcher, createKeyMaterialPathMatcher, createPathCanonicalizer, createSensitiveLocationMatcher, createSensitivePathMatcher, foldCanonicalPathSeparators, MAX_WALK_UP } from "../sensitive-paths.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { type ShellPathDialect } from "../../shared/shell-native-path.js";
+import { resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
+import { posix } from "node:path";
 
 export class ShellFloorLimitError extends Error {}
 
 // Facts live for one decision, independently of execution time or machine load.
 export class ShellFloorContext {
-  constructor(readonly pathDialect: ShellPathDialect = "bash") {}
+  readonly inspectHostFiles: boolean;
+  readonly canonicalize: ReturnType<typeof createPathCanonicalizer>;
+  readonly isSessionReadPath: ReturnType<typeof createConfiguredSessionReadPathMatcher>;
+  readonly locationUnder: ReturnType<typeof createSensitiveLocationMatcher>;
+  private readonly match: ReturnType<typeof createSensitivePathMatcher>;
+  private contentInspections = { count: 0 };
+
+  constructor(readonly pathDialect: ShellPathDialect = "bash", options: { inspectHostFiles?: boolean } = {}) {
+    this.inspectHostFiles = options.inspectHostFiles !== false;
+    this.canonicalize = this.inspectHostFiles ? createPathCanonicalizer() : path => foldCanonicalPathSeparators(posix.normalize(path));
+    this.isSessionReadPath = this.inspectHostFiles ? createConfiguredSessionReadPathMatcher() : () => false;
+    this.locationUnder = this.inspectHostFiles ? createSensitiveLocationMatcher(this.canonicalize) : directory => this.matchName(directory, true);
+    this.match = createSensitivePathMatcher("read", undefined, this.canonicalize, {
+      inspectKeyMaterial: this.inspectHostFiles,
+      resolveNativePath: path => resolvePhysicalFilesystemPath(path, process.cwd(), MAX_WALK_UP),
+    });
+  }
   unresolvedPath = false;
   readonly retained: { sensitive: string | null; exfiltration: string | null } = { sensitive: null, exfiltration: null };
   readonly visits = { frames: 0, stages: 0, lexes: 0, transfers: 0, walk: 0, inventory: 0, commands: 0, feeder: 0, code: 0, coverage: 0, codeNodes: 0, codeWordLinks: 0, codeSourceChars: 0, codeTokenFacts: 0, codeTokenUses: 0, codeCoverage: 0, codeRangeSteps: 0, staticTokens: 0, staticArguments: 0, staticChars: 0, staticNodes: 0, staticViews: 0 };
   readonly facts = new Map<string, unknown>();
-  readonly canonicalize = createPathCanonicalizer();
-  readonly isSessionReadPath = createConfiguredSessionReadPathMatcher();
-  readonly locationUnder = createSensitiveLocationMatcher(this.canonicalize);
-  private readonly match = createSensitivePathMatcher("read", undefined, this.canonicalize);
+  readonly requiresContentInspection = createKeyMaterialPathMatcher();
+  private matchNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
+  private matchOpaqueNames: ReturnType<typeof createSensitivePathMatcher> | undefined;
   private readonly matches = new Map<string, string | null>();
+  private readonly nameMatches = new Map<string, string | null>();
+
+  get contentInspectionCount(): number { return this.contentInspections.count; }
+
+  createChild(dialect: ShellPathDialect): ShellFloorContext {
+    const child = new ShellFloorContext(dialect, { inspectHostFiles: this.inspectHostFiles });
+    child.contentInspections = this.contentInspections;
+    return child;
+  }
 
   matchPath(path: string): string | null {
+    if (this.requiresContentInspection(path)) {
+      if (this.inspectHostFiles) this.contentInspections.count += 1;
+      return this.match(path);
+    }
     const cached = this.matches.get(path);
     if (cached !== undefined) return cached;
     const hit = this.match(path);
     this.matches.set(path, hit);
+    return hit;
+  }
+
+  matchName(path: string, includeKeyMaterial = false): string | null {
+    const folded = caseFoldForMatch(foldCanonicalPathSeparators(path));
+    const key = JSON.stringify([includeKeyMaterial, folded]);
+    const cached = this.nameMatches.get(key);
+    if (cached !== undefined) return cached;
+    let matcher: ReturnType<typeof createSensitivePathMatcher>;
+    if (includeKeyMaterial) {
+      if (this.matchOpaqueNames === undefined) this.matchOpaqueNames = createSensitivePathMatcher("read", undefined, undefined, { inspectKeyMaterial: false });
+      matcher = this.matchOpaqueNames;
+    } else {
+      if (this.matchNames === undefined) this.matchNames = createSensitivePathMatcher("read", undefined, undefined, { includeKeyMaterial: false });
+      matcher = this.matchNames;
+    }
+    const hit = matcher(folded);
+    this.nameMatches.set(key, hit);
     return hit;
   }
 }

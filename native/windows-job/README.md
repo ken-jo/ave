@@ -12,6 +12,15 @@ background mode unless discovery positively identifies a native interpreter.
 WSL-backed and unknown interpreters are refused before starting the command;
 distribution-wide termination would also affect unrelated work.
 
+CI test steps use `--receipt <absolute path>` through
+`.github/scripts/run-in-job.mjs`, which first registers the step's manifest id
+and job-root identity in that receipt. The launcher opens the existing receipt
+for append before the command starts and refuses a missing one. When the root
+command exits or the owner closes stdin, it terminates the job and waits up to
+5 seconds for the job to report zero active processes. Only then does it append
+`0`. A job query failure or survivor exits 125 with no verdict appended, and
+job-root cleanup refuses the root.
+
 Call `spawnWindowsJobProcess` with an absolute executable path already selected
 by the shell resolver. Keep its stdin open until disposal; never expose that pipe
 as command input. The helper forwards the original command-line tail without
@@ -34,11 +43,12 @@ Native verification from the repository root:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -FailureFixture
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
 node scripts/test-windows-job.mjs
 ```
 
 The failure fixture is a separate executable compiled with an invalid job handle;
-it is never packaged. Tests launch only owned synthetic processes, check their
+the query failure fixture cannot query its job after termination. Neither is packaged. Tests launch only owned synthetic processes, check their
 actual OS lifetime after disposal, and exercise the installed Bash executable.
 The gate also builds twice from a path containing Unicode, spaces, and literal
 percent signs, compares binary hashes, and executes that output. Test cleanup

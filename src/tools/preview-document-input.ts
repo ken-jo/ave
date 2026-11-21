@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
+import { judgedPathNamesOpenedFile } from "../permissions/sensitive-paths.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { TableDocumentError } from "./table-document-error.js";
 
@@ -9,10 +10,24 @@ export async function readPreviewDocumentInput(
   signal?: AbortSignal,
   maxBytes = PREVIEW_DOCUMENT_LIMITS.maxFileBytes,
 ): Promise<Buffer> {
-  return (await readOpenedDocument(path, signal, maxBytes)).data;
+  return (await readOpenedDocument(path, signal, maxBytes, false)).data;
 }
 
-async function readOpenedDocument(path: string, signal: AbortSignal | undefined, maxBytes: number) {
+/**
+ * `readPreviewDocumentInput` for bytes that reach the model. `judged` is the real path whose name and location rules the
+ * caller judged: after the read, with the handle still open, it must still name the very file that was read
+ * (`judgedPathNamesOpenedFile`), or the read fails as changed. A folder that led elsewhere only while the file was opened
+ * is caught this way, on every platform.
+ */
+export async function readJudgedDocumentInput(
+  judged: string,
+  signal?: AbortSignal,
+  maxBytes = PREVIEW_DOCUMENT_LIMITS.maxFileBytes,
+): Promise<Buffer> {
+  return (await readOpenedDocument(judged, signal, maxBytes, true)).data;
+}
+
+async function readOpenedDocument(path: string, signal: AbortSignal | undefined, maxBytes: number, judged: boolean) {
   signal?.throwIfAborted();
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
     throw new TableDocumentError("too-large", "Invalid preview byte limit.");
@@ -50,6 +65,9 @@ async function readOpenedDocument(path: string, signal: AbortSignal | undefined,
       throw new TableDocumentError("too-large", "Document exceeds the file size limit.", final.size);
     }
     if (received !== initial.size || final.size !== initial.size || final.mtimeMs !== initial.mtimeMs) {
+      throw new TableDocumentError("read-failed", "Document changed while being read.");
+    }
+    if (judged && !judgedPathNamesOpenedFile(path, opened)) {
       throw new TableDocumentError("read-failed", "Document changed while being read.");
     }
     return { data: buffer.subarray(0, received), identity: opened };

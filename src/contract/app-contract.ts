@@ -107,6 +107,7 @@ export const CHANNELS = {
     // input. INTERNAL (mutating; destructive by intent).
     rewindTo: "ave:chat:rewind-to",
     getTurnReview: "ave:chat:get-turn-review",
+    decideTurnReview: "ave:chat:decide-turn-review",
     fork: "ave:chat:fork",
     continueLastUser: "ave:chat:continue-last-user",
     retryEffort: "ave:chat:retry-effort",
@@ -658,7 +659,9 @@ export const CHANNELS = {
     openFile: "ave:attach:openFile",
     readImage: "ave:attach:readImage",
     saveClipboardImage: "ave:attach:saveClipboardImage",
-    discardClipboardImage: "ave:attach:discardClipboardImage",
+    // An attachment left the composer (removed or sent): give back its path
+    // authorization and delete the clipboard temp image this app wrote for it.
+    release: "ave:attach:release",
     openExternal: "ave:attach:openExternal",
     // Composer drag-drop, step 1. Invoked ONLY by the preload's
     // `aveDrop.prepareFileDrop`, which resolves OS-backed dropped `File`s via
@@ -712,6 +715,17 @@ export const CHANNELS = {
     // regular file + picker deny list, re-checked on a fresh resolution right before shell.openPath.
     // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
     openPath: "ave:workspace:open-path",
+    // Folder view and file tree "open in editor": the same user-click admission as `openPath` (main-frame app-window
+    // sender, preload-reported user gesture, registered project root, realpath inside that root, regular file), then the
+    // user's own `documents.editorCommand`, started by main without a shell. A user action, not a tool.
+    // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
+    openInEditor: "ave:workspace:open-in-editor",
+    // Folder view "Edit": read one project file for the in-app text editor, and save the edited text back if the file still
+    // holds what the edit started from. The same user-click admission as `openPath`; the save also passes the write guard
+    // and goes through the code checkpoints. User actions, not tools.
+    // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
+    readForEdit: "ave:workspace:read-for-edit",
+    saveEdit: "ave:workspace:save-edit",
   },
   // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /
@@ -771,7 +785,24 @@ export const CHANNELS = {
     zoom: "ave:browser-workspace:zoom",
     preview: "ave:browser-workspace:preview",
     capture: "ave:browser-workspace:capture",
+    retryLoad: "ave:browser-workspace:retry-load",
+    stopLoad: "ave:browser-workspace:stop-load",
+    showDownload: "ave:browser-workspace:show-download",
+    clearData: "ave:browser-workspace:clear-data",
+    agentSiteGrant: "ave:browser-workspace:agent-site-grant",
+    revokeAgentSiteGrant: "ave:browser-workspace:revoke-agent-site-grant",
+    deleteHistory: "ave:browser-workspace:delete-history",
+    clearSiteData: "ave:browser-workspace:clear-site-data",
+    cancelDownload: "ave:browser-workspace:cancel-download",
+    load: "ave:browser-workspace:load",
+    answerPrompt: "ave:browser-workspace:answer-prompt",
+    userNavigation: "ave:browser-workspace:user-navigation",
     changed: "ave:browser-workspace:changed",
+    setPageShortcuts: "ave:browser-workspace:set-page-shortcuts",
+    pageShortcut: "ave:browser-workspace:page-shortcut", // event main→renderer  a browser key was pressed in a tab's page
+    findResult: "ave:browser-workspace:find-result", // event main→renderer  a find in a page finished counting
+    openTab: "ave:browser-workspace:open-tab", // event main→renderer  a page asked for a link in a new tab
+    attachBlocked: "ave:browser-workspace:attach-blocked", // event main→renderer  a page guest was refused before it attached
   },
   // ── Active workspace surface (a hint for agent tools) ─────────────────────
   // INTERNAL. The renderer reports which browser/terminal tab the user is

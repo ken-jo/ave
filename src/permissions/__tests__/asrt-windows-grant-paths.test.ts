@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
-import { dirname, join, parse, resolve } from "node:path";
+import { dirname, join, parse, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -214,8 +214,12 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(canonicalize.mock.calls.some(([path]) => path === first.path)).toBe(true);
     expect(before.filesystem.allowWrite).toEqual(after.filesystem.allowWrite);
     expect(before.filesystem.allowRead).toEqual(after.filesystem.allowRead);
-    expect(before.filesystem.denyWrite).not.toContain(denied);
-    expect(after.filesystem.denyWrite).toContain(denied);
+    const denyPaths = (filesystem: SandboxRuntimeConfig["filesystem"]): string[] => filesystem.denyWrite.map(entry => {
+      const path = typeof entry === "string" ? entry : entry.path;
+      return /^[A-Za-z]:[\\/]/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
+    });
+    expect(denyPaths(before.filesystem)).not.toContain(denied);
+    expect(denyPaths(after.filesystem)).toContain(denied);
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
   });
 

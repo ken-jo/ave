@@ -1,7 +1,7 @@
 /** The folder view's file viewer. It routes like the side-panel preview (table, page, then the text registry), shows images
  * with fit and zoom, and gives anything it cannot show to the info card. */
-import { forwardRef, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Check, ChevronLeft, Copy, ExternalLink, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
+import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, Code, Copy, ExternalLink, FileText, FolderOpen, Link2, MessageSquarePlus, Minus, Pencil, Plus, Save, Scan, SquarePen, Undo2 } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -13,10 +13,16 @@ import { PageDocumentPreview } from "../../preview/PageDocumentPreview.js";
 import { previewFormatLabel } from "../../preview/preview-document-chrome.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { FileInfoCard, formatFolderTimestamp, type FileInfoReason } from "./FileInfoCard.js";
-import { folderEntryIcon } from "./FolderColumn.js";
+import { revealKey } from "./FolderColumn.js";
+import { ViewerHeader, type ViewerAction } from "./ViewerHeader.js";
 import { FOLDER_KIND_LABEL_KEYS, folderFileKind, type FolderEntry } from "./folder-columns.js";
 import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
 import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js";
+import { subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
+import { FileActionNotice } from "../files/FileActionNotice.js";
+import { openInEditor } from "../files/open-in-editor.js";
+import { FileTextEditor } from "./FileTextEditor.js";
+import { useFileTextEdit } from "./file-text-edit.js";
 
 type ReadResult = Awaited<ReturnType<typeof window.ave.preview.readFile>>;
 type ViewerState =
@@ -35,6 +41,17 @@ export interface FileViewerProps {
   onAttachText?: ((text: string) => AttachTextResult) | undefined;
 }
 
+/** What the viewer says for each way a read can fail; a code it does not know gets the plain sentence, never the code. */
+function readFailureKey(code: string): string {
+  switch (code) {
+    case "read-failed": return "folderView.readFailedGone";
+    case "path-not-allowed": return "folderView.readFailedNotAllowed";
+    case "sensitive-path": return "folderView.readFailedProtected";
+    case "not-a-file": return "folderView.readFailedNotAFile";
+    default: return "folderView.readFailed";
+  }
+}
+
 function readState(result: ReadResult): ViewerState {
   if (!result.ok) {
     if (result.error === "too-large" || result.error === "binary-file") return { phase: "info", reason: result.error };
@@ -43,6 +60,16 @@ function readState(result: ReadResult): ViewerState {
   if (result.image) return { phase: "image", dataUrl: result.image.dataUrl };
   const content = result.content ?? "";
   return { phase: "text", content, truncated: result.truncated === true, lineCount: result.lineCount ?? content.split(/\r\n|\r|\n/).length };
+}
+
+/** Keep the previous state object when a re-read found the same thing, so an unchanged file does not re-render. */
+function sameViewerState(previous: ViewerState, next: ViewerState): ViewerState {
+  if (previous.phase === "text" && next.phase === "text"
+    && previous.content === next.content && previous.truncated === next.truncated) return previous;
+  if (previous.phase === "image" && next.phase === "image" && previous.dataUrl === next.dataUrl) return previous;
+  if (previous.phase === "info" && next.phase === "info" && previous.reason === next.reason) return previous;
+  if (previous.phase === "error" && next.phase === "error" && previous.code === next.code) return previous;
+  return next;
 }
 
 function ImageViewer({ src, alt }: { src: string; alt: string }) {
@@ -75,50 +102,69 @@ function ImageViewer({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-function ViewerHeader({ entry, subtitle, actions, back }: {
-  entry: FolderEntry; subtitle: string; actions?: ReactNode; back?: FileViewerProps["back"];
-}) {
-  const Icon = folderEntryIcon(entry);
-  return (
-    <div className="flex min-w-0 shrink-0 items-center gap-2 border-b px-3 py-2" data-testid="folder-viewer-header">
-      {back ? (
-        <Button type="button" size="sm" variant="outline" onClick={back.onBack} data-testid="folder-viewer-back" className="shrink-0">
-          <ChevronLeft aria-hidden="true" className="h-3.5 w-3.5" />{back.label}
-        </Button>
-      ) : null}
-      <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-body-sm font-semibold" title={entry.name}>{entry.name}</div>
-        <div className="truncate text-dense text-muted-foreground" data-testid="folder-viewer-subtitle">{subtitle}</div>
-      </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
-    </div>
-  );
-}
-
 export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function FileViewer({ projectRoot, entry, back, onAttachText }, ref) {
   const { t, locale } = useTranslation();
-  const { copied, copy } = useCopyFlash();
+  const contentCopy = useCopyFlash();
+  const pathCopy = useCopyFlash();
   const open = useOpenInDefaultApp(projectRoot);
-  const [attachNote, setAttachNote] = useState<string | null>(null);
+  // One place for what the last action could not do (an i18n key); the next action clears it, whichever it is.
+  const [notice, setNotice] = useState<string | null>(null);
+  const clearNotices = (): void => { setNotice(null); open.clearError(); };
+  const edit = useFileTextEdit(projectRoot, entry.path, setNotice);
   const [markdownSource, setMarkdownSource] = useState(false);
   const kind = folderFileKind(entry.name);
   const route = useMemo(() => resolveFilePreviewRoute(entry.path), [entry.path]);
   // Formats with no viewer skip the read; table and page documents read through their own components.
   const reads = entry.type === "file" && route.kind === "text" && kind !== "database" && kind !== "design";
   const [state, setState] = useState<ViewerState>(() => (reads ? { phase: "loading" } : { phase: "info", reason: "unsupported" }));
+  const shownPath = useRef<string | null>(null);
   useEffect(() => {
-    setAttachNote(null);
-    setMarkdownSource(false);
+    const anotherFile = shownPath.current !== entry.path;
+    shownPath.current = entry.path;
+    if (anotherFile) {
+      setNotice(null);
+      setMarkdownSource(false);
+    }
     if (!reads) { setState({ phase: "info", reason: "unsupported" }); return; }
     let cancelled = false;
-    setState({ phase: "loading" });
-    void window.ave.preview.readFile(entry.path).then(
-      (result) => { if (!cancelled) setState(readState(result)); },
-      () => { if (!cancelled) setState({ phase: "error", code: "read-failed" }); },
-    );
-    return () => { cancelled = true; };
+    let issued = 0;
+    const read = (): void => {
+      // The newest request wins: an answer to an older one is dropped.
+      const request = ++issued;
+      void window.ave.preview.readFile(entry.path).then(
+        (result) => { if (!cancelled && request === issued) setState((previous) => sameViewerState(previous, readState(result))); },
+        () => { if (!cancelled && request === issued) setState({ phase: "error", code: "read-failed" }); },
+      );
+    };
+    // Only another file starts from "loading"; a re-read keeps the current content on screen until the fresh one arrives.
+    if (anotherFile) setState({ phase: "loading" });
+    read();
+    // The shared "files may have changed" signal asks for the file again; the answer replaces what is shown.
+    const unsubscribe = subscribeWorkspaceFilesChanged(read);
+    return () => { cancelled = true; unsubscribe(); };
   }, [entry.path, reads]);
+  // Table and page documents re-read through their own reload when the listing reports a new size or modified time.
+  const documentReloadToken = `${entry.size}:${entry.mtimeMs}`;
+
+  const reveal = (): void => {
+    clearNotices();
+    const failed = (): void => setNotice("folderView.revealFailed");
+    void window.ave.workspace.reveal(entry.path).then((result) => { if (!result.ok) failed(); }, failed);
+  };
+  // Every header carries the two ways out that need no viewer: show the file in the file manager, and copy its path. A link
+  // outside the project is not handed to the file manager, which would open where it points.
+  const exits: ViewerAction[] = [
+    // The user's own editor takes any file of the project, including one too large or of a kind Ave does not preview.
+    ...(entry.type === "file" ? [{ id: "open-in-editor", label: t("folderView.openInEditor"), icon: SquarePen, onSelect: () => {
+      clearNotices();
+      void openInEditor(projectRoot, entry.path).then((failure) => { if (failure !== null) setNotice(failure); });
+    } }] : []),
+    ...(entry.type === "link" && entry.outside ? [] : [{ id: "reveal", label: t(revealKey()), icon: FolderOpen, onSelect: reveal }]),
+    { id: "copy-path", label: t(pathCopy.copied ? "folderView.copied" : "folderView.copyPath"), icon: pathCopy.copied ? Check : Link2,
+      onSelect: () => { clearNotices(); pathCopy.copy(entry.path); } },
+  ];
+  const alertKey = open.error ?? notice;
+  const alertStrip = alertKey ? <FileActionNotice messageKey={alertKey} testId="folder-viewer-alert" /> : null;
 
   const shell = (children: ReactNode) => (
     <div ref={ref} tabIndex={-1} role="region" aria-label={entry.name} data-testid="folder-viewer" data-path={entry.path}
@@ -129,7 +175,8 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
 
   if (entry.type === "link") {
     return shell(<>
-      <ViewerHeader entry={entry} subtitle={t("folderView.linkSubtitle")} back={back} />
+      <ViewerHeader entry={entry} subtitle={t("folderView.linkSubtitle")} actions={exits} back={back} />
+      {alertStrip}
       <div className="flex flex-1 items-start justify-center p-6">
         <div role="note" className="flex max-w-sm gap-2 rounded-lg border px-3 py-2 text-xs leading-5" data-testid="folder-link-note">
           <Link2 aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -141,18 +188,40 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
 
   if (route.kind === "table" || route.kind === "page") {
     const Document = route.kind === "table" ? TableDocumentPreview : PageDocumentPreview;
+    // The document draws its own header (name, copy path, reload, default app); the reveal action joins it there. The
+    // narrow layout adds this viewer's header for the way back.
     return shell(<>
-      {back ? <ViewerHeader entry={entry} subtitle={previewFormatLabel(entry.path)} back={back} /> : null}
+      {back ? <ViewerHeader entry={entry} subtitle={previewFormatLabel(entry.path)} actions={exits} back={back} /> : null}
+      {alertStrip}
       <div className="flex min-h-0 flex-1 flex-col overflow-auto px-3 py-2">
-        <Document key={entry.path} path={entry.path} workspaceRoot={projectRoot} observe />
+        <Document key={entry.path} path={entry.path} workspaceRoot={projectRoot} observe reloadToken={documentReloadToken}
+          onReveal={reveal} revealLabel={t(revealKey())} />
       </div>
+    </>);
+  }
+
+  if (edit.text !== null) {
+    // While the file is being edited the header holds the two ways to end it; the other actions return with the viewer.
+    // Both are the person's own clicks on their own text: neither asks first.
+    const editing: ViewerAction[] = [
+      { id: "edit-save", label: t("folderView.editSave"), icon: Save, disabled: !edit.dirty || edit.busy, labelled: true,
+        onSelect: () => { edit.save(); open.clearError(); } },
+      { id: "edit-discard", label: t(edit.dirty ? "folderView.editDiscard" : "folderView.editClose"), icon: Undo2, disabled: edit.busy,
+        labelled: true, onSelect: () => { edit.discard(); open.clearError(); } },
+    ];
+    return shell(<>
+      <ViewerHeader entry={entry} back={back} actions={editing}
+        subtitle={[previewFormatLabel(entry.path), t(edit.dirty ? "folderView.editUnsaved" : "folderView.editing")].join(" · ")} />
+      {alertStrip}
+      <FileTextEditor name={entry.name} text={edit.text} busy={edit.busy} onChange={edit.change} onSave={edit.save} />
     </>);
   }
 
   if (state.phase === "info") {
     return shell(<>
-      <ViewerHeader entry={entry} subtitle={`${t(FOLDER_KIND_LABEL_KEYS[kind])} · ${formatBytes(entry.size)}`} back={back} />
-      <FileInfoCard projectRoot={projectRoot} entry={entry} reason={state.reason} />
+      <ViewerHeader entry={entry} subtitle={`${t(FOLDER_KIND_LABEL_KEYS[kind])} · ${formatBytes(entry.size)}`} actions={exits} back={back} />
+      {alertStrip}
+      <FileInfoCard projectRoot={projectRoot} entry={entry} reason={state.reason} open={open} report={setNotice} />
     </>);
   }
 
@@ -162,46 +231,47 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   subtitleParts.push(formatBytes(entry.size));
   if (modified) subtitleParts.push(modified);
   const isMarkdown = state.phase === "text" && resolvePreviewRenderer({ text: "", path: entry.path }).kind === "markdown";
-  const actions = (
-    <>
-      {isMarkdown ? (
-        <div role="group" aria-label={t("folderView.markdownMode")} className="flex rounded-md border p-0.5">
-          {([false, true] as const).map((source) => (
-            <button key={String(source)} type="button" aria-pressed={markdownSource === source} data-testid={`folder-markdown-${source ? "source" : "view"}`}
-              onClick={() => setMarkdownSource(source)}
-              className={cn("rounded px-2 py-0.5 text-dense", markdownSource === source ? "bg-muted font-medium" : "text-muted-foreground")}>
-              {t(source ? "folderView.markdownSource" : "folderView.markdownView")}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {state.phase === "text" ? (
-        <Button type="button" size="icon-xs" variant="ghost" aria-label={t(copied ? "folderView.copied" : "folderView.copyContent")}
-          title={t(copied ? "folderView.copied" : "folderView.copyContent")} onClick={() => copy(state.content)} data-testid="folder-copy-content">
-          {copied ? <Check aria-hidden="true" className="h-3.5 w-3.5" /> : <Copy aria-hidden="true" className="h-3.5 w-3.5" />}
-        </Button>
-      ) : null}
-      {onAttachText ? (
-        <Button type="button" size="icon-xs" variant="ghost" aria-label={t("folderView.addToContext")} title={t("folderView.addToContext")}
-          data-testid="folder-add-context"
-          onClick={() => {
-            const result = onAttachText(`\`${entry.path}\``);
-            setAttachNote(result === true ? null : t(result === false ? "folderView.addToContextFull" : "folderView.addToContextNoComposer"));
-          }}>
-          <MessageSquarePlus aria-hidden="true" className="h-3.5 w-3.5" />
-        </Button>
-      ) : null}
-      {canOpenInDefaultApp(entry.path) ? (
-        <Button type="button" size="sm" variant="outline" disabled={open.pending} onClick={() => void open.run(entry.path)} data-testid="folder-open-external">
-          <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />{t("folderView.openExternal")}
-        </Button>
-      ) : null}
-    </>
-  );
+  const actions: ViewerAction[] = [];
+  if (isMarkdown) {
+    actions.push({ id: "markdown-mode", label: t(markdownSource ? "folderView.markdownShowView" : "folderView.markdownShowSource"),
+      icon: markdownSource ? FileText : Code, onSelect: () => { clearNotices(); setMarkdownSource((source) => !source); }, menuOnly: true });
+  }
+  if (state.phase === "text") {
+    actions.push({ id: "copy-content", label: t(contentCopy.copied ? "folderView.copied" : "folderView.copyContent"),
+      icon: contentCopy.copied ? Check : Copy, onSelect: () => { clearNotices(); contentCopy.copy(state.content); } });
+  }
+  if (state.phase === "text") {
+    // Main decides whether the file can be edited here (size, encoding, line endings) and says why when it cannot.
+    actions.push({ id: "edit", label: t("folderView.edit"), icon: Pencil, disabled: edit.busy,
+      onSelect: () => { edit.begin(); open.clearError(); } });
+  }
+  if (onAttachText) {
+    actions.push({ id: "add-context", label: t("folderView.addToContext"), icon: MessageSquarePlus, onSelect: () => {
+      clearNotices();
+      const result = onAttachText(`\`${entry.path}\``);
+      if (result !== true) setNotice(result === false ? "folderView.addToContextFull" : "folderView.addToContextNoComposer");
+    } });
+  }
+  actions.push(...exits);
+  if (canOpenInDefaultApp(entry.path)) {
+    actions.push({ id: "open-external", label: t("folderView.openExternal"), icon: ExternalLink, disabled: open.pending,
+      onSelect: () => { setNotice(null); void open.run(entry.path); }, labelled: true });
+  }
+  const markdownSwitch = isMarkdown ? (
+    <div role="group" aria-label={t("folderView.markdownMode")} className="flex rounded-md border p-0.5">
+      {([false, true] as const).map((source) => (
+        <button key={String(source)} type="button" aria-pressed={markdownSource === source} data-testid={`folder-markdown-${source ? "source" : "view"}`}
+          onClick={() => { clearNotices(); setMarkdownSource(source); }}
+          className={cn("rounded px-2 py-0.5 text-dense", markdownSource === source ? "bg-muted font-medium" : "text-muted-foreground")}>
+          {t(source ? "folderView.markdownSource" : "folderView.markdownView")}
+        </button>
+      ))}
+    </div>
+  ) : null;
   const body = state.phase === "loading" ? (
     <div className="p-4 text-xs text-muted-foreground" data-testid="folder-viewer-loading">{t("folderView.loading")}</div>
   ) : state.phase === "error" ? (
-    <div role="alert" className="p-4 text-xs text-destructive" data-testid="folder-viewer-error">{t("folderView.readFailed")}</div>
+    <div role="alert" className="p-4 text-xs text-destructive" data-testid="folder-viewer-error">{t(readFailureKey(state.code))}</div>
   ) : state.phase === "image" ? (
     <ImageViewer src={state.dataUrl} alt={entry.name} />
   ) : (
@@ -217,12 +287,8 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
     </div>
   );
   return shell(<>
-    <ViewerHeader entry={entry} subtitle={subtitleParts.join(" · ")} actions={actions} back={back} />
-    {open.error || attachNote ? (
-      <div role="alert" className="shrink-0 border-b px-3 py-1 text-dense text-destructive" data-testid="folder-viewer-alert">
-        {open.error ? t(open.error) : attachNote}
-      </div>
-    ) : null}
+    <ViewerHeader entry={entry} subtitle={subtitleParts.join(" · ")} actions={actions} wideLead={markdownSwitch} back={back} />
+    {alertStrip}
     {body}
   </>);
 });

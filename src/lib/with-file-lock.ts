@@ -1,24 +1,49 @@
-/** Acquire the sibling cross-process lock and release in finally; recover stale holders with bounded retries. */
+/** Serialize local holders and acquire the sibling cross-process lock. */
 import lockfile from "proper-lockfile";
+import { realpath } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { errorMessage } from "../shared/error-message.js";
 
-/** This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work. */
+interface FileQueue {
+  run: SerialQueue;
+  pending: number;
+}
+
+const inProcessFileQueues = new Map<string, FileQueue>();
+// Callers can already hold an in-process transaction queue for the same path.
+const fileLockQueues = new Map<string, FileQueue>();
+
+/**
+ * This queue orders only one module instance in one process; use withFileLock for cross-process writers. Return failures to their callers without poisoning later work.
+ * Not re-entrant: awaiting a same-key call from inside `fn` waits on itself forever. Same-key work started inside `fn` must not be awaited before `fn` returns.
+ * Callers must use a single spelling per file: the key is the lexically resolved path only, so filesystem aliases of one file get separate queues.
+ */
 export async function withInProcessFileQueue<T>(
   filePath: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const key = resolve(filePath);
-  let queue = inProcessFileQueues.get(key);
-  if (!queue) {
-    queue = createSerialQueue();
-    inProcessFileQueues.set(key, queue);
-  }
-  return queue(fn);
+  return withQueuedFileWork(inProcessFileQueues, resolve(filePath), fn);
 }
 
-const inProcessFileQueues = new Map<string, SerialQueue>();
+async function withQueuedFileWork<T>(
+  queues: Map<string, FileQueue>,
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let queue = queues.get(key);
+  if (!queue) {
+    queue = { run: createSerialQueue(), pending: 0 };
+    queues.set(key, queue);
+  }
+  queue.pending++;
+  try {
+    return await queue.run(fn);
+  } finally {
+    queue.pending--;
+    if (queue.pending === 0) queues.delete(key);
+  }
+}
 
 export type SerialQueue = <T>(work: () => Promise<T>) => Promise<T>;
 
@@ -52,15 +77,44 @@ export class FileLockReleaseError<T> extends Error {
   }
 }
 
-/** Touch the target only after acquiring the lock; a waiting Windows open can block the holder's replacement. */
+/**
+ * Queue through release so a stale-looking local holder cannot be replaced and release its successor.
+ * Callers must use a single spelling per file. The queue converges lexical forms, parent symlinks, junctions and
+ * 8.3 names (native parent realpath), and leaf case plus NFC on `darwin` and `win32`; distinct names can then share
+ * a queue on case-sensitive or normalization-sensitive volumes. Other filesystem name aliases, such as full Unicode
+ * case folding (ß/ẞ), are unsupported and may bypass same-process serialization.
+ * Not re-entrant: awaiting a same-key withFileLock from inside `fn` waits on itself forever. Same-key work started inside `fn` must not be awaited before `fn` returns.
+ */
 export async function withFileLock<T>(
   targetPath: string,
   fn: () => Promise<T>,
   opts: FileLockOptions = {},
 ): Promise<T> {
-  const { stale = 10_000, retries = 5 } = opts;
+  const lockPath = resolve(targetPath);
+  const parent = dirname(lockPath);
+  await mkdir(parent, { recursive: true });
+  const canonicalParent = await new Promise<string>((resolve, reject) => {
+    realpath.native(parent, (error, canonicalPath) => {
+      if (error) reject(error);
+      else resolve(canonicalPath);
+    });
+  });
+  const leaf = basename(lockPath);
+  const platform = process.platform;
+  const queueLeaf = platform === "darwin" || platform === "win32"
+    ? leaf.normalize("NFC").toUpperCase().toLowerCase()
+    : leaf;
+  const queueParent = platform === "win32" ? canonicalParent.toLowerCase() : canonicalParent;
+  const key = join(queueParent, queueLeaf);
+  return withQueuedFileWork(fileLockQueues, key, () => withCrossProcessFileLock(lockPath, fn, opts));
+}
 
-  await mkdir(dirname(targetPath), { recursive: true });
+async function withCrossProcessFileLock<T>(
+  targetPath: string,
+  fn: () => Promise<T>,
+  opts: FileLockOptions,
+): Promise<T> {
+  const { stale = 10_000, retries = 5 } = opts;
 
   // Ignore compromise only after release starts; loss of exclusion during the callback must reject its caller, never crash from a filesystem callback.
   let releasing = false;

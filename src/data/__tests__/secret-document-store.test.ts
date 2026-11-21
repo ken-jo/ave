@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -62,7 +63,7 @@ function unavailableEncryption(): SecretEncryption {
 function spawnNode(args: string[]): ChildProcess {
   return spawn(nodeCommand, ["--import=tsx", ...args], {
     cwd: repoRoot,
-    env: process.env,
+    env: tsxChildEnv(),
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   });

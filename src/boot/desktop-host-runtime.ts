@@ -4,7 +4,6 @@ import { createDeviceCodePresentation } from "../main/device-code-dialog.js";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { browserCapturePixelRatio } from "../main/browser/browser-capture-desktop.js";
 import { browserGuestOwnerWindow } from "../main/browser/browser-guest-owner.js";
-import { join } from "node:path";
 import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
 import { prepareDesktopRelease } from "./steps/desktop-release.js";
 import { adaptPowerMonitor } from "../main/idle-scheduler.js";
@@ -22,6 +21,7 @@ import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import { getBrowserWorkspaceService } from "../main/browser/browser-workspace-desktop.js";
 import type { BootHost } from "./host-runtime.js";
+import { desktopResourcePath } from "../main/desktop-resource-path.js";
 import { relaunchDesktopHost } from "./desktop-relaunch.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
@@ -34,7 +34,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
   };
   const host: BootHost = {
     userDataPath: app.getPath("userData"),
-    resourcePath: app.isPackaged ? process.resourcesPath : join(projectRoot, "resources"),
+    resourcePath: desktopResourcePath(projectRoot),
     systemLocale: app.getPreferredSystemLanguages()[0] ?? "en",
     isPackaged: app.isPackaged,
     encryption: desktopSecretEncryption,

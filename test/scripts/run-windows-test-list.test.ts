@@ -9,7 +9,8 @@ describe("Windows test list runner", () => {
   it("runs the complete workflow inventory through bounded commands", () => {
     const job = parse(readFileSync(resolve(".github/workflows/ci.yml"), "utf8")).jobs["windows-permission-tests"];
     const step = job.steps.find((entry: { name?: string }) => entry.name === "Run Windows native import regressions");
-    expect(step.run).toBe("bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt");
+    const runner = "bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt";
+    expect(step.run).toBe(`node .github/scripts/run-in-job.mjs ${runner}`);
     const list = readFileSync(resolve("config/windows-native-tests.txt"), "utf8");
     expect(windowsTestCommands(list).length).toBeGreaterThan(2);
   });

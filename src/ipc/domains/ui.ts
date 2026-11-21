@@ -23,7 +23,6 @@ const MAX_NATIVE_COMMANDS = 16;
 
 const NATIVE_KINDS = new Set<NativeContextMenuKind>([
   "action-item",
-  "workspace-entry",
   "project",
   "conversation",
   "message",
@@ -38,10 +37,6 @@ const NATIVE_LAYOUT: Record<
   "action-item": [
     ["action.open-system"],
     ["action.copy-url", "action.copy-path"],
-  ],
-  "workspace-entry": [
-    ["workspace.open", "workspace.reveal"],
-    ["workspace.copy-path", "workspace.copy-relative-path"],
   ],
   // Order menu groups by undo cost, keeping destructive removal last and separate.
   project: [
@@ -78,13 +73,6 @@ const NATIVE_LABEL: Record<NativeContextMenuCommand, () => string> = {
   "action.open-system": () => t("toolActivity.openInSystemApp"),
   "action.copy-url": () => t("toolActivity.copyUrl"),
   "action.copy-path": () => t("toolActivity.copyPath"),
-  "workspace.open": () => t("chatPreviewRail.ctxOpen"),
-  "workspace.reveal": () =>
-    t(process.platform === "darwin"
-      ? "chatPreviewRail.revealInFinder"
-      : "chatPreviewRail.revealInExplorer"),
-  "workspace.copy-path": () => t("chatPreviewRail.copyPath"),
-  "workspace.copy-relative-path": () => t("chatPreviewRail.copyRelativePath"),
   "project.new-chat": () => t("sidebar.projectMenuNewChat"),
   "project.pin": () => t("sidebar.pinProject"),
   "project.unpin": () => t("sidebar.unpinProject"),

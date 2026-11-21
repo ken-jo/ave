@@ -34,7 +34,7 @@ async function added(volume: FakeVolume, inputs: string[]) {
       outcomes.push({ input, error: `${error.code}: ${error.message}` });
     }
   }
-  harness.service.close();
+  await harness.service.close();
   return outcomes;
 }
 
@@ -75,7 +75,7 @@ describe("a case-sensitive volume on macOS (APFS can be either)", () => {
       code: "SOURCE_POLICY_BLOCKED",
       detail: { reason: "not-in-allow-list", target: "/approved/tools" },
     });
-    harness.service.close();
+    await harness.service.close();
   });
 });
 

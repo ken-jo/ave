@@ -2,18 +2,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWorkspaceService } from "../../../main/browser/browser-workspace.js";
 import type { IpcDeps } from "../../types.js";
 
+const openTab: { handler?: (windowId: number, request: unknown) => void } = {};
+const pageShortcut: { handler?: (windowId: number, shortcut: unknown) => void } = {};
+const findResult: { handler?: (windowId: number, result: unknown) => void } = {};
 const { handlers, authorize, mainWindow, send, changed } = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>(), authorize: vi.fn(() => true), mainWindow: vi.fn(() => ({ id: 1, isDestroyed: () => false })), send: vi.fn(), changed: { handler: null as null | ((windowId: number, state: unknown) => void) },
 }));
 vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, callback: (event: unknown, payload?: unknown) => Promise<unknown>) => handlers.set(channel, callback) } }));
-vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "changed"].map((key) => [key, `workspace:${key}`])) } }));
+vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "retryLoad", "stopLoad", "load", "answerPrompt", "userNavigation", "showDownload", "cancelDownload", "clearData", "clearSiteData", "deleteHistory", "agentSiteGrant", "revokeAgentSiteGrant", "setPageShortcuts", "changed", "openTab", "findResult", "pageShortcut"].map((key) => [key, `workspace:${key}`])) } }));
 vi.mock("../../gated.js", () => ({ validateHostRendererSender: authorize, auditUnauthorized: vi.fn() }));
 vi.mock("../../../main/app-state.js", () => ({ mainWindowForContents: mainWindow, getMainWindows: () => [{ id: 1 }, { id: 2 }] }));
 vi.mock("../../safe-send.js", () => ({ sendToWindow: send }));
 import { registerBrowserWorkspaceHandlers } from "../browser-workspace.js";
+import { BrowserSitePermissions } from "../../../permissions/browser-site-permissions.js";
 
 function setup() {
-  const service = { onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
+  const service = { onPageShortcut: vi.fn((handler: (windowId: number, shortcut: unknown) => void) => { pageShortcut.handler = handler; }), setPageShortcuts: vi.fn(() => null), onFindResult: vi.fn((handler: (windowId: number, result: unknown) => void) => { findResult.handler = handler; }), onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), onOpenTab: vi.fn((handler: (windowId: number, request: unknown) => void) => { openTab.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
   registerBrowserWorkspaceHandlers({ auditLogger: {} } as IpcDeps, service as unknown as BrowserWorkspaceService);
   return service;
 }
@@ -23,7 +27,7 @@ const EVENT = { sender: {} };
 describe("private browser workspace IPC", () => {
   it("rejects every invoke from an unauthorized frame before service access", async () => {
     const service = setup(); authorize.mockReturnValue(false);
-    expect(handlers.size).toBe(9);
+    expect(handlers.size).toBe(22);
     for (const handler of handlers.values()) expect(await handler(EVENT)).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(service.getState).not.toHaveBeenCalled(); expect(service.preview).not.toHaveBeenCalled();
     expect(service.capture).not.toHaveBeenCalled();
@@ -45,6 +49,14 @@ describe("private browser workspace IPC", () => {
     changed.handler!(2, state);
     expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:changed", state, expect.anything());
   });
+  it("sends a page's request for a link tab only to the window that owns the asking tab", () => {
+    setup();
+    send.mockClear();
+    const request = { openerTabId: "browser:one", url: "https://other.example/", active: true };
+    openTab.handler?.(2, request);
+    expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:openTab", request, expect.anything());
+    expect(send).toHaveBeenCalledOnce();
+  });
   it("binds captures to the sender window and refuses injected scope and malformed rectangles", async () => {
     const service = setup();
     const target = { tabId: "browser:one", documentGeneration: 1, clip: { x: 1, y: 2, width: 100, height: 80 } };
@@ -61,5 +73,49 @@ describe("private browser workspace IPC", () => {
     const service = setup();
     service.getState.mockRejectedValueOnce(new TypeError("Missing internal callback"));
     await expect(handlers.get("workspace:getState")!(EVENT)).rejects.toThrow("Missing internal callback");
+  });
+  it("reads and takes back the owning conversation's site grant, and never grants one", async () => {
+    handlers.clear();
+    const invoke = (name: string, payload: unknown) => {
+      const handler = handlers.get(`workspace:${name}`);
+      if (!handler) throw new Error(`no handler for ${name}`);
+      return handler(EVENT, payload);
+    };
+    const browserSites = new BrowserSitePermissions();
+    browserSites.allow("session-1", "https://site.example/", "this-site");
+    const agentSessionForSite = vi.fn((): string | null => "session-1");
+    registerBrowserWorkspaceHandlers({ auditLogger: {}, conversationLoop: { permissionManager: { browserSites } } } as unknown as IpcDeps,
+      { onChanged: vi.fn(), onOpenTab: vi.fn(), onFindResult: vi.fn(), onPageShortcut: vi.fn(), agentSessionForSite } as unknown as BrowserWorkspaceService);
+    const request = { tabId: "browser:one", documentGeneration: 1, origin: "https://site.example" };
+    expect(await invoke("agentSiteGrant", request)).toEqual({ ok: true, value: { grant: "this-site" } });
+    expect(agentSessionForSite).toHaveBeenCalledWith(1, request);
+    expect(await invoke("revokeAgentSiteGrant", request)).toEqual({ ok: true, value: null });
+    expect(browserSites.allows("session-1", "https://site.example/")).toBe(false);
+    expect(await invoke("agentSiteGrant", request)).toEqual({ ok: true, value: { grant: null } });
+    // A tab no agent owns has no grant, and revoking there changes nothing.
+    browserSites.allow("session-1", "https://site.example/", "this-site");
+    agentSessionForSite.mockReturnValue(null);
+    expect(await invoke("agentSiteGrant", request)).toEqual({ ok: true, value: { grant: null } });
+    await invoke("revokeAgentSiteGrant", request);
+    expect(browserSites.allows("session-1", "https://site.example/")).toBe(true);
+    expect(await invoke("agentSiteGrant", { ...request, origin: "https://site.example/path" })).toMatchObject({ ok: false });
+  });
+  it("sends a find's count only to the window whose tab was searched", () => {
+    setup();
+    const result = { tabId: "browser:one", requestId: 4, matches: 3, activeMatch: 1 };
+    findResult.handler?.(2, result);
+    expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:findResult", result, expect.anything());
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  it("stores a window's browser keys and sends a key pressed in a page only to that window", async () => {
+    const service = setup();
+    const keys = { focusAddress: "CommandOrControl+L", find: null, reload: null, back: null, forward: null };
+    const handler = handlers.get("workspace:setPageShortcuts");
+    if (!handler) throw new Error("no handler for setPageShortcuts");
+    expect(await handler(EVENT, keys)).toEqual({ ok: true, value: null });
+    expect(service.setPageShortcuts).toHaveBeenCalledWith(1, keys);
+    expect(await handler(EVENT, { ...keys, focusAddress: "not a key" })).toEqual({ ok: false, error: "bad-request" });
+    pageShortcut.handler?.(2, { tabId: "browser:one", action: "reload" });
+    expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:pageShortcut", { tabId: "browser:one", action: "reload" }, expect.anything());
   });
 });

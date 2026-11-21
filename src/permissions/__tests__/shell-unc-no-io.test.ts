@@ -5,7 +5,7 @@ import { join, resolve, win32 } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import type { ExecutionMode } from "../../shared/permission-mode.js";
-import { canonicalizePathForMatch, createPathCanonicalizer } from "../sensitive-paths.js";
+import { canonicalizePathForMatch, createPathCanonicalizer, isSensitivePath } from "../sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import { inspectPhysicalFilesystemPath, physicalParentReading, resolvePhysicalFilesystemPath, resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../../shared/shell-filesystem-path.js";
 import { editDepthCandidates } from "../rules/scoped-rule-matcher.js";
@@ -298,6 +298,15 @@ describe("network operands before approval", () => {
       }
       if (!needsApproval) expect(result.forceModal).not.toBe(true);
     }
+  });
+
+  it("judges a key-extension name on a share by its name, without looking it up", () => {
+    // A name that is not ASCII is looked for in its stored Unicode spelling, but never on a share.
+    const share = String.raw`\\host\share\clé.pem`;
+    probes.calls.length = 0;
+    expect(isSensitivePath(share, "read")).toBe("**/*.pem");
+    if (process.platform === "win32") expect(probes.calls.filter(call => call.unc)).toEqual([]);
+    else expect(isWindowsNetworkOrDevicePath(share)).toBe(false);
   });
 
   it.each([String.raw`\\e\s`, "//e/s", String.raw`\\?\UNC\e\s`, String.raw`\\.\pipe\example`, String.raw`\\?\Volume{example}\x`])("canonicalizes %s lexically on the native network platform", path => {

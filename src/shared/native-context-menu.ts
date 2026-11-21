@@ -2,10 +2,6 @@ export const NATIVE_CONTEXT_MENU_COMMANDS = [
   "action.open-system",
   "action.copy-url",
   "action.copy-path",
-  "workspace.open",
-  "workspace.reveal",
-  "workspace.copy-path",
-  "workspace.copy-relative-path",
   "project.new-chat",
   "project.pin",
   "project.unpin",
@@ -42,7 +38,6 @@ export type NativeContextMenuCommand = (typeof NATIVE_CONTEXT_MENU_COMMANDS)[num
 
 export type NativeContextMenuKind =
   | "action-item"
-  | "workspace-entry"
   | "project"
   | "conversation"
   | "message"
@@ -64,12 +59,6 @@ export interface NativeContextMenuAction {
 
 export const NATIVE_CONTEXT_MENU_COMMANDS_BY_KIND = {
   "action-item": ["action.open-system", "action.copy-url", "action.copy-path"],
-  "workspace-entry": [
-    "workspace.open",
-    "workspace.reveal",
-    "workspace.copy-path",
-    "workspace.copy-relative-path",
-  ],
   // Empty-area commands belong to the list kind because they create items rather than target a row.
   project: [
     "project.new-chat",

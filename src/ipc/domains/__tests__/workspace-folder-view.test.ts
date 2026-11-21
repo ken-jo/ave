@@ -1,6 +1,6 @@
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as fsModule from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -36,13 +36,17 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
 }));
 
 import { registerWorkspaceHandlers } from "../workspace.js";
+import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
+import * as sensitivePaths from "../../../permissions/sensitive-paths.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
 const auditLog = vi.fn();
+const editorCommand = { value: "" };
 const deps = {
   auditLogger: { log: auditLog },
+  settingsService: { get: (section: string) => (section === "documents" ? { openMode: "direct", editorCommand: editorCommand.value } : undefined) },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => appWindows[0] ?? null,
   getAppWindows: () => appWindows,
@@ -126,9 +130,57 @@ beforeEach(() => {
   openPathMock.mockClear();
   openPathMock.mockResolvedValue("");
   auditLog.mockClear();
+  editorCommand.value = "";
+});
+
+describe("workspace.searchFiles in one folder", () => {
+  type SearchResult = { ok: boolean; error?: string; matches?: Array<{ path: string; relativePath: string; root: string }> };
+  const search = (query: unknown, options?: unknown) => (options === undefined
+    ? invoke(CHANNELS.workspace.searchFiles, frameEvent(), query)
+    : invoke(CHANNELS.workspace.searchFiles, frameEvent(), query, options)) as Promise<SearchResult>;
+
+  it("searches the named folder of a registered root by file name", async () => {
+    const res = await search("notes", { folder: join(root, "src") });
+    expect(res.ok).toBe(true);
+    expect(res.matches).toEqual([expect.objectContaining({ path: join(root, "src", "notes.md"), relativePath: "notes.md", root })]);
+    // "src" is in every path under the folder but in no file name.
+    expect((await search("src", { folder: join(root, "src") })).matches).toEqual([]);
+  });
+
+  it("refuses a folder outside every registered root, a relative folder and a malformed option", async () => {
+    expect(await search("secret", { folder: outside })).toEqual({ ok: false, error: "folder-not-allowed" });
+    expect(await search("notes", { folder: "src" })).toEqual({ ok: false, error: "invalid-query" });
+    expect(await search("notes", { folder: 7 })).toEqual({ ok: false, error: "invalid-query" });
+    expect(await search("notes", "src")).toEqual({ ok: false, error: "invalid-query" });
+  });
 });
 
 describe("workspace.listDir folder-view entries", () => {
+  it("sorts before it caps, so a folder past the first 1,000 names is still listed, and counts what the cap left out", async () => {
+    const many = join(root, "many");
+    mkdirSync(many);
+    try {
+      for (let i = 0; i < 1_100; i += 1) writeFileSync(join(many, `f${String(i).padStart(4, "0")}.txt`), "x");
+      mkdirSync(join(many, "zz-folder"));
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult & { omitted?: number };
+      expect(res.ok).toBe(true);
+      expect(res.entries).toHaveLength(1_000);
+      expect(res.entries?.[0]).toMatchObject({ name: "zz-folder", type: "directory" });
+      expect(res.entries?.[1]?.name).toBe("f0000.txt");
+      expect(res.entries?.[999]?.name).toBe("f0998.txt");
+      expect(res.truncated).toBe(true);
+      expect(res.omitted).toBe(101);
+    } finally {
+      rmSync(many, { recursive: true, force: true });
+    }
+  });
+
+  it("reports nothing omitted for a folder under the cap", async () => {
+    const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), join(root, "src"))) as ListResult & { omitted?: number };
+    expect(res.truncated).toBe(false);
+    expect(res.omitted).toBe(0);
+  });
+
   it("adds size, modified and created times from one lstat per entry", async () => {
     const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), root)) as ListResult;
     expect(res.ok).toBe(true);
@@ -160,6 +212,56 @@ describe("workspace.listDir folder-view entries", () => {
       const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
       expect(res).toMatchObject({ ok: true, entries: [], hidden: 1 });
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("hides a key-extension file only when it holds a private key", async () => {
+    const dir = join(root, "key-files");
+    mkdirSync(dir);
+    // The header is written in two parts so no scanner takes this test file for key material.
+    writeFileSync(join(dir, "tls.key"), "-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n");
+    writeFileSync(join(dir, "server.pem"), "-----BEGIN RSA PRIVATE" + " KEY-----\nFIXTURE\n");
+    writeFileSync(join(dir, "Quarterly review.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+    mkdirSync(join(dir, "Roadmap.key"));
+    writeFileSync(join(dir, "chain.pem"), "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
+    // Longer than what is read: a presentation archive nobody could show harmless, and a key whose header is in the part
+    // that was read.
+    const window = 1024 * 1024;
+    writeFileSync(join(dir, "Big deck.key"), Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window * 2, "s")]));
+    writeFileSync(join(dir, "big.key"), Buffer.concat([Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n"), Buffer.alloc(window * 2, "x")]));
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      expect(res.ok).toBe(true);
+      // Only a confirmed key is hidden; the large deck stays the person's to see.
+      expect(res.entries?.map((entry) => entry.name).sort()).toEqual(["Big deck.key", "Quarterly review.key", "Roadmap.key", "chain.pem"]);
+      expect(res.hidden).toBe(3);
+      // An agent read of the large deck still asks: what was not read is not taken for harmless.
+      expect(fileAccessPolicy.sensitiveFilePattern(join(dir, "Big deck.key"), "read")).toBe("**/*.key");
+      expect(fileAccessPolicy.sensitiveFilePattern(join(dir, "Quarterly review.key"), "read")).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes each stored entry name unchanged to key inspection", async () => {
+    const dir = join(root, "stored-key-names");
+    mkdirSync(dir);
+    for (const name of ["Cafe\u0301.key", "\u212A.key", "MiXeD.key"]) {
+      writeFileSync(join(dir, name), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    }
+    const storedNames = await fsModule.promises.readdir(dir);
+    const sensitivity = vi.spyOn(sensitivePaths, "isSensitivePath");
+    try {
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
+      expect(res).toMatchObject({ ok: true, hidden: 0 });
+      expect(res.entries?.map((entry) => entry.name).sort()).toEqual(storedNames.sort());
+      const inspectedPaths = sensitivity.mock.calls
+        .filter(([, effect, audience]) => effect === "write" && audience === "person")
+        .map(([path]) => path);
+      expect(inspectedPaths.sort()).toEqual(storedNames.map((name) => join(dir, name)).sort());
+    } finally {
+      sensitivity.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -224,6 +326,23 @@ describe("workspace.openPath", () => {
     expect(entry?.input).toBeDefined();
     expect(entry!.input).not.toContain(root);
     expect(entry!.input).toContain("\"ok\":true");
+  });
+
+  it("opens a large presentation document for the person and refuses a confirmed key", async () => {
+    const window = 1024 * 1024;
+    const deck = join(root, "Big deck.key");
+    const key = join(root, "big.key");
+    writeFileSync(deck, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window * 2, "s")]));
+    writeFileSync(key, Buffer.concat([Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n"), Buffer.alloc(window * 2, "x")]));
+    try {
+      expect(await openPath({ projectRoot: root, path: deck, intent: GESTURE })).toEqual({ ok: true });
+      expect(openPathMock).toHaveBeenCalledWith(deck);
+      expect(await openPath({ projectRoot: root, path: key, intent: GESTURE })).toEqual({ ok: false, error: "sensitive-path" });
+      expect(openPathMock).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(deck, { force: true });
+      rmSync(key, { force: true });
+    }
   });
 
   it("follows an in-project link to an in-project file", async ({ skip }) => {
@@ -590,5 +709,268 @@ describe("workspace.listDir links to network locations", () => {
       realpath.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("workspace.openInEditor", () => {
+  type EditorResult = { ok: boolean; error?: string };
+  const openInEditor = (payload: unknown, event: unknown = frameEvent()) =>
+    invoke(CHANNELS.workspace.openInEditor, event, payload) as Promise<EditorResult>;
+  // A stand-in editor: the runner's script runtime records the arguments it was started with, then exits.
+  let recorder: string;
+  let runs = 0;
+  beforeAll(() => {
+    recorder = join(outside, "record-arguments.cjs");
+    writeFileSync(recorder, 'require("node:fs").writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\nprocess.exit(0);\n');
+  });
+  function recordingEditor(template: string): { started: () => Promise<string[]> } {
+    const out = join(outside, `editor-run-${++runs}.json`);
+    const runtime = process.env.AVE_TEST_NODE_EXEC_PATH;
+    if (!runtime) throw new Error("The test runner must provide its script runtime");
+    editorCommand.value = `"${runtime}" "${recorder}" "${out}" ${template}`;
+    return {
+      started: async () => {
+        await vi.waitFor(() => expect(existsSync(out) && readFileSync(out, "utf8").length > 0).toBe(true), { timeout: 20_000, interval: 50 });
+        return JSON.parse(readFileSync(out, "utf8")) as string[];
+      },
+    };
+  }
+
+  it("starts the configured command with the file and the line as whole arguments, and audits an opaque reference", async () => {
+    const target = join(root, "src", "index.ts");
+    const editor = recordingEditor("--goto {file}:{line}");
+    expect(await openInEditor({ projectRoot: root, path: target, line: 7, intent: GESTURE })).toEqual({ ok: true });
+    expect(await editor.started()).toEqual(["--goto", `${target}:7`]);
+    expect(openPathMock).not.toHaveBeenCalled();
+    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
+      value.input?.includes(CHANNELS.workspace.openInEditor));
+    expect(entry?.input).toBeDefined();
+    expect(entry?.input).not.toContain(root);
+    expect(entry?.input).toContain("\"ok\":true");
+  });
+
+  it("keeps a path with blanks, a quote and shell characters inside one argument, and uses line 1 when none is given", async () => {
+    // Every character here is valid in a file name on all three platforms.
+    const odd = join(root, "my notes; it's odd $(touch pwned) & more %PATH% ^.txt");
+    writeFileSync(odd, "text\n");
+    try {
+      const editor = recordingEditor("+{line} {file}");
+      expect(await openInEditor({ projectRoot: root, path: odd, intent: GESTURE })).toEqual({ ok: true });
+      expect(await editor.started()).toEqual(["+1", odd]);
+      expect(existsSync(join(root, "pwned"))).toBe(false);
+    } finally {
+      rmSync(odd, { force: true });
+    }
+  });
+
+  it("opens a script and a file with an execute bit, which the default app refuses", async ({ skip }) => {
+    if (process.platform === "win32") skip("execute bits are POSIX");
+    const runnable = join(root, "run-me.txt");
+    writeFileSync(runnable, "#!/bin/sh\n");
+    chmodSync(runnable, 0o755);
+    try {
+      for (const target of [join(root, "deploy.sh"), runnable]) {
+        const editor = recordingEditor("{file}");
+        expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: true });
+        expect(await editor.started()).toEqual([target]);
+        expect((await openPath({ projectRoot: root, path: target, intent: GESTURE })).ok).toBe(false);
+      }
+    } finally {
+      rmSync(runnable, { force: true });
+    }
+  });
+
+  it("passes the real file when the requested name is an in-project link", async ({ skip }) => {
+    needsFileLinks(skip);
+    const editor = recordingEditor("{file}");
+    expect(await openInEditor({ projectRoot: root, path: join(root, "inside-link.md"), intent: GESTURE })).toEqual({ ok: true });
+    expect(await editor.started()).toEqual([join(root, "src", "notes.md")]);
+  });
+
+  it("answers not-configured when no command is set and invalid-command for one it will not start", async () => {
+    const target = join(root, "src", "index.ts");
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "not-configured" });
+    editorCommand.value = 'edit "{file}';
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "invalid-command" });
+    editorCommand.value = "./edit {file}";
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "invalid-command" });
+  });
+
+  it("reports a program that cannot be started", async () => {
+    editorCommand.value = `"${join(outside, "no-such-editor")}" {file}`;
+    expect(await openInEditor({ projectRoot: root, path: join(root, "src", "index.ts"), intent: GESTURE }))
+      .toEqual({ ok: false, error: "launch-failed" });
+    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
+      value.input?.includes(CHANNELS.workspace.openInEditor));
+    expect(entry?.input).toContain("\"error\":\"open-failed\"");
+  });
+
+  it("refuses everything the default-app open refuses before the hand-off, and starts nothing", async ({ skip }) => {
+    needsFileLinks(skip);
+    recordingEditor("{file}");
+    const out = join(outside, `editor-run-${runs}.json`);
+    const target = join(root, "src", "index.ts");
+    expect(await openInEditor({ projectRoot: root, path: target })).toEqual({ ok: false, error: "user-keyboard-required" });
+    expect(await openInEditor({ projectRoot: root, path: target, intent: { inputOrigin: "user-keyboard", userActivation: false } }))
+      .toEqual({ ok: false, error: "user-keyboard-required" });
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE }, frameEvent({ mainFrame: false })))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE }, frameEvent({ url: "https://evil.example.com/" })))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(await openInEditor({ projectRoot: outside, path: join(outside, "secret.txt"), intent: GESTURE }))
+      .toEqual({ ok: false, error: "root-not-registered" });
+    expect(await openInEditor({ projectRoot: root, path: `${join(root, "src")}/../src/index.ts`, intent: GESTURE }))
+      .toEqual({ ok: false, error: "invalid-request" });
+    for (const line of [0, -1, 1.5, "3", Number.NaN]) {
+      expect(await openInEditor({ projectRoot: root, path: target, line, intent: GESTURE })).toEqual({ ok: false, error: "invalid-request" });
+    }
+    expect(await openInEditor({ projectRoot: root, path: join(root, "src"), intent: GESTURE })).toEqual({ ok: false, error: "not-a-file" });
+    expect(await openInEditor({ projectRoot: root, path: join(root, "gone.txt"), intent: GESTURE })).toEqual({ ok: false, error: "not-found" });
+    additionalDirectories.value = [root, outside];
+    try {
+      expect(await openInEditor({ projectRoot: root, path: join(root, "escape.txt"), intent: GESTURE }))
+        .toEqual({ ok: false, error: "outside-project" });
+    } finally {
+      additionalDirectories.value = [root];
+    }
+    const secret = join(root, ".env");
+    writeFileSync(secret, "TOKEN=1\n");
+    try {
+      expect(await openInEditor({ projectRoot: root, path: secret, intent: GESTURE })).toEqual({ ok: false, error: "sensitive-path" });
+    } finally {
+      rmSync(secret, { force: true });
+    }
+    expect(existsSync(out)).toBe(false);
+  });
+});
+
+describe("workspace.readForEdit and workspace.saveEdit", () => {
+  type ReadResult = { ok: boolean; error?: string; text?: string; hash?: string };
+  type SaveResult = { ok: boolean; error?: string; hash?: string };
+  const readForEdit = (payload: unknown, event: unknown = frameEvent()) =>
+    invoke(CHANNELS.workspace.readForEdit, event, payload) as Promise<ReadResult>;
+  const saveEdit = (payload: unknown, event: unknown = frameEvent()) =>
+    invoke(CHANNELS.workspace.saveEdit, event, payload) as Promise<SaveResult>;
+  let target: string;
+  let serial = 0;
+  beforeEach(() => {
+    // The checkpoint ledger the save consults lives under this test's own state folder.
+    vi.stubEnv("AVE_HOME", join(outside, "edit-state"));
+    target = join(root, `editable-${++serial}.txt`);
+  });
+  afterAll(() => { vi.unstubAllEnvs(); });
+  async function opened(path = target): Promise<string> {
+    const read = await readForEdit({ projectRoot: root, path, intent: GESTURE });
+    if (!read.ok || read.hash === undefined) throw new Error(`read refused: ${read.error}`);
+    return read.hash;
+  }
+
+  it("reads the text with LF line breaks and saves an edit back in the file's own CRLF and byte order mark", async () => {
+    writeFileSync(target, "﻿one\r\ntwo\r\nthree\r\n");
+    const read = await readForEdit({ projectRoot: root, path: target, intent: GESTURE });
+    expect(read).toMatchObject({ ok: true, text: "one\ntwo\nthree\n" });
+    const saved = await saveEdit({ projectRoot: root, path: target, baseHash: read.hash, text: "one\nTWO\nthree\n", intent: GESTURE });
+    expect(saved.ok).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("﻿one\r\nTWO\r\nthree\r\n");
+    // The returned hash is the new base: a second save from it goes through without another read.
+    expect((await saveEdit({ projectRoot: root, path: target, baseHash: saved.hash, text: "x\n", intent: GESTURE })).ok).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("﻿x\r\n");
+  });
+
+  it("writes nothing when the project is removed while the save is on its way", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    // The write guard is asked before staging, after staging and at the effect. The project leaves the list after the
+    // second answer, so only a guard that reads the list again at the effect can refuse.
+    let calls = 0;
+    const guard = vi.spyOn(fileAccessPolicy, "ensureFileAccess").mockImplementation(() => {
+      if (++calls === 2) additionalDirectories.value = [];
+      return null;
+    });
+    try {
+      expect(await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).toEqual({ ok: false, error: "denied" });
+    } finally {
+      guard.mockRestore();
+      additionalDirectories.value = [root];
+    }
+    expect(calls).toBe(2);
+    expect(readFileSync(target, "utf8")).toBe("start\n");
+  });
+
+  it("writes nothing when the project is removed while the file is read for the last check", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    // The third answer opens the last check; the project leaves the list while that check reads the file. Only a
+    // question asked after the read, directly before the rename, finds the project gone.
+    let calls = 0;
+    const guard = vi.spyOn(fileAccessPolicy, "ensureFileAccess").mockImplementation(() => {
+      if (++calls === 3) queueMicrotask(() => { additionalDirectories.value = []; });
+      return null;
+    });
+    try {
+      expect(await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).toEqual({ ok: false, error: "denied" });
+    } finally {
+      guard.mockRestore();
+      additionalDirectories.value = [root];
+    }
+    expect(calls).toBe(3);
+    expect(readFileSync(target, "utf8")).toBe("start\n");
+  });
+
+  it("writes nothing when the file changed after it was opened", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    writeFileSync(target, "changed in another program\n");
+    expect(await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).toEqual({ ok: false, error: "changed" });
+    expect(readFileSync(target, "utf8")).toBe("changed in another program\n");
+  });
+
+  it("refuses files a text box cannot give back byte for byte, with the reason", async () => {
+    writeFileSync(target, "a\r\nb\n");
+    expect(await readForEdit({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "mixed-line-endings" });
+    writeFileSync(target, Buffer.from([0x61, 0x00, 0xff]));
+    expect(await readForEdit({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "not-text" });
+    writeFileSync(target, Buffer.alloc(1024 * 1024 + 1, 0x61));
+    expect(await readForEdit({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "too-large" });
+  });
+
+  it("needs the user gesture, the app window's main frame and a registered project for the read and for the save", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    const save = { projectRoot: root, path: target, baseHash, text: "mine\n" };
+    expect(await readForEdit({ projectRoot: root, path: target })).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(await saveEdit(save)).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(await saveEdit({ ...save, intent: GESTURE }, frameEvent({ mainFrame: false }))).toEqual({ ok: false, error: "unauthorized" });
+    expect(await saveEdit({ ...save, projectRoot: outside, intent: GESTURE })).toEqual({ ok: false, error: "root-not-registered" });
+    expect(await saveEdit({ ...save, baseHash: "not-a-hash", intent: GESTURE })).toEqual({ ok: false, error: "invalid-request" });
+    expect(await saveEdit({ ...save, baseHash: "not-a-hash" })).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(readFileSync(target, "utf8")).toBe("start\n");
+  });
+
+  it("does not write through a link that leaves the project", async () => {
+    const elsewhere = join(outside, `edit-elsewhere-${serial}.txt`);
+    writeFileSync(elsewhere, "outside\n");
+    const link = join(root, `edit-link-${serial}.txt`);
+    symlinkSync(elsewhere, link);
+    try {
+      const read = await readForEdit({ projectRoot: root, path: link, intent: GESTURE });
+      expect(read.ok).toBe(false);
+      const saved = await saveEdit({ projectRoot: root, path: link, baseHash: "0".repeat(64), text: "mine\n", intent: GESTURE });
+      expect(saved.ok).toBe(false);
+      expect(readFileSync(elsewhere, "utf8")).toBe("outside\n");
+    } finally {
+      unlinkSync(link);
+    }
+  });
+
+  it("audits a save with opaque references and its outcome", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    auditLog.mockClear();
+    expect((await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).ok).toBe(true);
+    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
+      value.input?.includes(CHANNELS.workspace.saveEdit));
+    expect(entry?.input).toContain('"ok":true');
+    expect(entry?.input).not.toContain(target);
   });
 });

@@ -37,6 +37,8 @@ if (process.platform === "darwin") {
         await expect(tooltip).toHaveCount(0);
         await fixture.page.getByTestId("web-panel-address").focus();
         await fixture.page.keyboard.press("Shift+Tab");
+        await expect(fixture.page.getByTestId("browser-site-info-toggle")).toBeFocused();
+        await fixture.page.keyboard.press("Shift+Tab");
         await expect(reload).toBeFocused();
         await expect(tooltip).toBeVisible();
         await reload.press("Enter");
@@ -258,7 +260,7 @@ if (process.platform === "darwin") {
         expect(await readUser()).toMatchObject({ inputTrusted: true });
         await workspace.getByTestId("browser-workspace-toggle").click();
         const tools = workspace.getByTestId("browser-workspace-panel");
-        const zoom = tools.getByRole("combobox", { name: /^(Zoom|확대)$/ });
+        const zoom = workspace.getByTestId("browser-zoom");
         await zoom.selectOption("1.25");
         await expect.poll(() => app.evaluate(({ webContents }, id) => webContents.fromId(id)?.getZoomFactor(), guestId)).toBe(1.25);
         await zoom.selectOption("1");

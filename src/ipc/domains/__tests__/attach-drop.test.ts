@@ -1,7 +1,12 @@
 // Registration binds a drop token; only single-use, sender-bound redemption grants authority.
+import { isSensitiveContent, isSensitivePath } from "../../../permissions/sensitive-paths.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { shell } from "electron";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as nodeFs from "node:fs";
+import {
+  constants, linkSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -13,6 +18,12 @@ const { handlers, defaultSession } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
   defaultSession: {},
 }));
+
+vi.mock("node:fs", async (importOriginal) => ({ ...await importOriginal<typeof import("node:fs")>() }));
+vi.mock("../../../permissions/sensitive-paths.js", async original => {
+  const actual = await original<typeof import("../../../permissions/sensitive-paths.js")>();
+  return { ...actual, isSensitivePath: vi.fn(actual.isSensitivePath), isSensitiveContent: vi.fn(actual.isSensitiveContent) };
+});
 
 vi.mock("electron", () => ({
   session: { defaultSession },
@@ -88,6 +99,25 @@ async function register(senderId: number, paths: unknown) {
 }
 
 describe("composer drop token", () => {
+  it("keeps the chosen native spelling as the content inspection operand", async () => {
+    const target = join(root, "Cafe\u0301-Mixed.png");
+    writeFileSync(target, PNG);
+    vi.mocked(isSensitivePath).mockClear();
+    expect(await register(7, [target])).toMatchObject({ ok: true, rejected: [] });
+    expect(isSensitivePath).toHaveBeenCalledWith(target, "read", "person");
+  });
+
+  it("keeps the native handle target when judging an attached key-extension image buffer", async () => {
+    const target = join(root, "Cafe\u0301-Mixed.key");
+    writeFileSync(target, PNG);
+    const registered = await register(7, [target]);
+    expect(registered).toMatchObject({ ok: true, rejected: [] });
+    expect(await call(CHANNELS.attach.redeemDrop, 7, registered.token)).toMatchObject({ ok: true });
+    vi.mocked(isSensitiveContent).mockClear();
+    expect(await call(CHANNELS.attach.readImage, 7, target)).toMatchObject({ ok: true });
+    expect(isSensitiveContent).toHaveBeenCalledWith(realpathSync.native(target), PNG);
+  });
+
   it("authorizes the dropped files only when the token is redeemed", async () => {
     const reg = await register(7, [imagePath, notesPath]);
     expect(reg).toMatchObject({ ok: true, rejected: [] });
@@ -168,6 +198,213 @@ describe("composer drop token", () => {
       ok: false,
       error: "drop-token-expired",
     });
+  });
+
+  it("refuses a key-extension file that holds a private key and takes one that does not", async () => {
+    // The header is written in two parts so no scanner takes this test file for key material.
+    writeFileSync(join(root, "tls.key"), "-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n");
+    writeFileSync(join(root, "Quarterly review.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+    writeFileSync(join(root, "chain.pem"), "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n");
+    // Longer than what is read: a presentation archive nobody could show harmless, and a key whose header is in the part
+    // that was read.
+    const window = 1024 * 1024;
+    writeFileSync(join(root, "Big deck.key"), Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window * 2, "s")]));
+    writeFileSync(join(root, "big.key"), Buffer.concat([Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n"), Buffer.alloc(window * 2, "x")]));
+    // Dropping the files is the person bringing them to Ave, from a folder that is no project: each is looked at, and
+    // only the ones that hold a private key are refused. The large deck is the person's own choice and is taken.
+    const dropped = ["tls.key", "Quarterly review.key", "chain.pem", "Big deck.key", "big.key"].map((name) => join(root, name));
+    const reg = await register(7, dropped);
+    expect(reg.ok).toBe(true);
+    expect(reg.rejected).toEqual([{ name: "tls.key", reason: "sensitive-path" }, { name: "big.key", reason: "sensitive-path" }]);
+    const redeemed = await call(CHANNELS.attach.redeemDrop, 7, reg.token) as { ok: boolean; files: Array<{ path: string; name: string; bytes: number }> };
+    expect(redeemed.ok).toBe(true);
+    expect(redeemed.files.map((file) => file.path)).toEqual([join(root, "Quarterly review.key"), join(root, "chain.pem"), join(root, "Big deck.key")]);
+    // The chip shows it as any other file: its own name and size.
+    expect(redeemed.files[2]).toMatchObject({ name: "Big deck.key", bytes: window * 2 + 4 });
+    // The agent reading the attached deck still asks: its unread part is not taken for harmless.
+    expect(isSensitivePath(realpathSync(join(root, "Big deck.key")), "read")).toBe("**/*.key");
+    rmSync(join(root, "Big deck.key"));
+    rmSync(join(root, "big.key"));
+    // That covers the dropped files only. The same folder's other key-extension names, which nobody brought, are still
+    // judged on the name alone by every other reader.
+    writeFileSync(join(root, "Other deck.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
+    expect(isSensitivePath(realpathSync(join(root, "Other deck.key")), "read")).toBe("**/*.key");
+    expect(isSensitivePath(realpathSync(join(root, "Quarterly review.key")), "read")).toBeNull();
+    // Giving the attachment back ends it.
+    await call(CHANNELS.attach.release, 7, redeemed.files.map((file) => file.path));
+    expect(isSensitivePath(realpathSync(join(root, "Quarterly review.key")), "read")).toBe("**/*.key");
+  });
+
+  it("judges an attached image's bytes as the model's read, though the person could attach the file", async () => {
+    const window = 1024 * 1024;
+    const header = Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n");
+    // An image that is also a key-extension file: read whole and harmless, and one whose key lies past what was read.
+    const small = join(root, "small image.key");
+    const hidden = join(root, "hidden image.key");
+    writeFileSync(small, PNG);
+    writeFileSync(hidden, Buffer.concat([PNG, Buffer.alloc(window, "x"), header]));
+    try {
+      const reg = await register(7, [small, hidden]);
+      // Attaching is the person's own action: neither is refused.
+      expect(reg).toMatchObject({ ok: true, rejected: [] });
+      const redeemed = await call(CHANNELS.attach.redeemDrop, 7, reg.token) as { ok: boolean; files: Array<{ path: string; isImage: boolean }> };
+      expect(redeemed.files.map((file) => [file.path, file.isImage])).toEqual([[small, true], [hidden, true]]);
+      // Its bytes would become an image part of the message: the one nobody showed harmless is not handed over.
+      expect(await call(CHANNELS.attach.readImage, 7, small)).toMatchObject({ ok: true });
+      const refused = await call(CHANNELS.attach.readImage, 7, hidden) as { ok: boolean; error?: string; dataUrl?: string };
+      expect(refused).toEqual({ ok: false, error: "sensitive-path" });
+      // The real read returns key-bearing bytes, then the same file is rewritten before the content judgment. Replacing
+      // an open destination by renaming a different file over it is not supported by every filesystem.
+      const realRename = nodeFs.renameSync;
+      const replace = vi.spyOn(nodeFs, "renameSync").mockImplementation((from, to) => {
+        if (to === small) throw Object.assign(new Error("open destination cannot be replaced"), { code: "EPERM" });
+        realRename(from, to);
+      });
+      const realOpen = fsPromises.open.bind(fsPromises);
+      // The image sniffer opens the file by name first; the read that fills the buffer is the next open.
+      let opens = 0;
+      let readBytes: Buffer | undefined;
+      const opened = vi.spyOn(fsPromises, "open").mockImplementation((async (target: string, flags: number | string) => {
+        if (++opens !== 2) return realOpen(target, flags);
+        expect(target).toBe(realpathSync(small));
+        writeFileSync(small, Buffer.concat([PNG, Buffer.alloc(window, "x"), header]));
+        const handle = await realOpen(target, flags);
+        const realReadFile = handle.readFile.bind(handle);
+        vi.spyOn(handle, "readFile").mockImplementationOnce(async () => {
+          const bytes = await realReadFile();
+          readBytes = bytes;
+          writeFileSync(small, PNG);
+          return bytes;
+        });
+        return handle;
+      }) as typeof fsPromises.open);
+      const swapped = await call(CHANNELS.attach.readImage, 7, small) as { ok: boolean; error?: string; dataUrl?: string };
+      expect(swapped).toEqual({ ok: false, error: "sensitive-path" });
+      expect(opens).toBe(2);
+      expect(readBytes?.includes(header)).toBe(true);
+      expect(readFileSync(small).equals(PNG)).toBe(true);
+      expect(replace).not.toHaveBeenCalled();
+      opened.mockRestore();
+      replace.mockRestore();
+      // The path holds the harmless image again, and it is read as one.
+      expect(await call(CHANNELS.attach.readImage, 7, small)).toMatchObject({ ok: true });
+      await call(CHANNELS.attach.release, 7, [small, hidden]);
+    } finally {
+      rmSync(small, { force: true });
+      rmSync(hidden, { force: true });
+    }
+  });
+
+  // A protected folder's rules are judged on a path. The bytes handed over must come from the file that path names, also
+  // when a folder or the last name leads somewhere else only while the image is opened and is back before any later look.
+  const PROTECTED_BYTES = Buffer.from("BYTES-FROM-A-PROTECTED-FOLDER");
+
+  function imageBesideProtectedFolder(name: string) {
+    const base = join(root, name);
+    const shots = join(base, "project", "shots");
+    const image = join(shots, "qr.png");
+    const protectedDir = join(base, "elsewhere", ".ssh");
+    const protectedImage = join(protectedDir, "qr.png");
+    mkdirSync(shots, { recursive: true });
+    mkdirSync(protectedDir, { recursive: true });
+    writeFileSync(image, PNG);
+    writeFileSync(protectedImage, Buffer.concat([PNG, PROTECTED_BYTES]));
+    expect(isSensitivePath(realpathSync(protectedImage), "read")).toBe("**/.ssh/**");
+    expect(isSensitivePath(realpathSync(image), "read")).toBeNull();
+    return { base, shots, image, protectedDir, protectedImage };
+  }
+
+  /** Run `swap` just before the open that fills the buffer and `restore` right after it. Without `noFollow` the open loses
+   * the flag that refuses a link in the last name, as on Windows, which has none. Returns the count of opens seen. */
+  function swapAroundBufferOpen(swap: () => void, restore: () => void, noFollow = true): () => number {
+    const realOpen = fsPromises.open.bind(fsPromises);
+    let opens = 0;
+    vi.spyOn(fsPromises, "open").mockImplementation((async (target: string, flags: number | string) => {
+      // The image sniffer opens the file by name first; the read that fills the buffer is the next open.
+      if (++opens !== 2) return realOpen(target, flags);
+      swap();
+      try {
+        return await realOpen(target, noFollow || typeof flags !== "number" ? flags : flags & ~(constants.O_NOFOLLOW ?? 0));
+      } finally {
+        restore();
+      }
+    }) as typeof fsPromises.open);
+    return () => opens;
+  }
+
+  async function attachDropped(path: string): Promise<void> {
+    const reg = await register(7, [path]);
+    expect(reg).toMatchObject({ ok: true, rejected: [] });
+    expect(await call(CHANNELS.attach.redeemDrop, 7, reg.token)).toMatchObject({ ok: true });
+  }
+
+  type ImageRead = { ok: boolean; error?: string; dataUrl?: string };
+  const sentBytes = (read: ImageRead): Buffer => Buffer.from(read.dataUrl?.split(",")[1] ?? "", "base64");
+
+  for (const noFollow of [true, false]) {
+    it(`refuses an image read through a folder swapped for a link into a protected folder and back${noFollow ? "" : ", with no flag that refuses a link"}`, async () => {
+      const { base, shots, image, protectedDir } = imageBesideProtectedFolder(`parent-swap-${noFollow}`);
+      try {
+        await attachDropped(image);
+        const opens = swapAroundBufferOpen(() => {
+          renameSync(shots, `${shots}.orig`);
+          symlinkSync(protectedDir, shots, "junction");
+        }, () => {
+          unlinkSync(shots);
+          renameSync(`${shots}.orig`, shots);
+        }, noFollow);
+        const read = await call(CHANNELS.attach.readImage, 7, image) as ImageRead;
+        expect(opens()).toBe(2);
+        // The handle reached the protected folder's file; the path names the harmless image again when it is looked at.
+        expect(read).toEqual({ ok: false, error: "changed" });
+        expect(sentBytes(read).includes(PROTECTED_BYTES)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("refuses an image whose last name led to a protected file during the open, with no flag that refuses a link", async () => {
+    const { base, image, protectedImage } = imageBesideProtectedFolder("last-swap");
+    try {
+      await attachDropped(image);
+      // On Windows the open follows a link in the last name to wherever it leads. A second name for the protected file
+      // stands in for that link here, so no link privilege is needed, and no flag can refuse it on any platform.
+      const opens = swapAroundBufferOpen(() => {
+        renameSync(image, `${image}.orig`);
+        linkSync(protectedImage, image);
+      }, () => {
+        unlinkSync(image);
+        renameSync(`${image}.orig`, image);
+      }, false);
+      const read = await call(CHANNELS.attach.readImage, 7, image) as ImageRead;
+      expect(opens()).toBe(2);
+      expect(read).toEqual({ ok: false, error: "changed" });
+      expect(sentBytes(read).includes(PROTECTED_BYTES)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("reads an attached image named through a linked folder when nothing changes while it is read", async () => {
+    const { base, image } = imageBesideProtectedFolder("no-swap");
+    const linked = join(base, "alias", "shots", "qr.png");
+    symlinkSync(join(base, "project"), join(base, "alias"), "junction");
+    try {
+      await attachDropped(linked);
+      await attachDropped(image);
+      for (const path of [linked, image]) {
+        // The same interception as above, with nothing swapped.
+        const opens = swapAroundBufferOpen(() => {}, () => {}, false);
+        const read = await call(CHANNELS.attach.readImage, 7, path) as ImageRead;
+        expect(opens()).toBe(2);
+        expect(read).toMatchObject({ ok: true, mimeType: "image/png", bytes: PNG.length });
+        expect(sentBytes(read).equals(PNG)).toBe(true);
+        vi.restoreAllMocks();
+      }
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   it("refuses a sensitive path, a blocked type and a folder", async () => {

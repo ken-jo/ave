@@ -6,6 +6,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { cleanupAfterClosing } from "../../__tests__/support/fixture-cleanup.js";
 import { _resetForTest, setIsPackaged } from "../../boot/dev-flags.js";
 import {
   createFixtureRepo,
@@ -77,9 +78,10 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(async () => {

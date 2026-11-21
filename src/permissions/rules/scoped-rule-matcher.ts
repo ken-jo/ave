@@ -5,7 +5,7 @@ import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.j
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { isPathWithin } from "../../plugins/plugin-storage-containment.js";
-import { caseFoldForMatch, foldCanonicalPathSeparators, isAdmissionDeniedPath, protectedControlEntryFor } from "../sensitive-paths.js";
+import { caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators, isAdmissionDeniedPath, protectedControlEntryFor } from "../sensitive-paths.js";
 import { validateDirectoryAddition } from "../allowed-directories.js";
 import type { PathEffect } from "../allowed-directories.js";
 import type { PermissionFloorCode } from "../decision-pipeline.js";
@@ -37,6 +37,7 @@ function isWithinRoot(root: string, path: string): boolean {
 
 function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: string) {
   if (subject.pathEffects && subject.pathEffects.length !== subject.paths.length) throw new Error("Edit path effects do not match sealed operands");
+  const inProject = createProjectMembership(root);
   return subject.paths.map((path, index) => {
     const lexical = foldCanonicalPathSeparators(resolveToolPathForPermission(path, subject.cwd));
     const frozen = subject.targets?.find((target) => caseFoldForMatch(foldCanonicalPathSeparators(target.filePath)) === caseFoldForMatch(lexical));
@@ -49,7 +50,7 @@ function editPaths(subject: Extract<ScopedRuleSubject, { kind: "edit" }>, root: 
     const effect = subject.pathEffects?.[index] ?? "write";
     if (effect !== "read" && effect !== "write") throw new Error("Edit target has no valid path effect");
     const control = effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined;
-    const escaped = (isWithinRoot(root, lexical) || path.split(/[\\/]/).includes("..")) && !isWithinRoot(root, canonical);
+    const escaped = (isWithinRoot(root, lexical) || path.split(/[\\/]/).includes("..")) && !inProject(canonical);
     return { lexical, canonical, floor: escaped ? "Write path escapes the project" : control !== undefined ? `Protected control path: ${control}` : undefined,
       floorCode: escaped ? "project-escape" as const : control !== undefined ? "protected-path" as const : undefined };
   });

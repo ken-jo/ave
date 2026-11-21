@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 const trust = vi.hoisted(() => ({ pending: new Set<string>() }));
 vi.mock("../../../shared/ave-home-trust.js", async (original) => {
   const actual = await original<typeof import("../../../shared/ave-home-trust.js")>();
@@ -86,11 +87,11 @@ describe("content package store", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    for (const seed of seedRepos) await removeFixtureRepo(seed);
-    await removeFixtureRepo(emptyRepo);
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      ...[...seedRepos, emptyRepo].map((repo) => () => removeFixtureRepo(repo)),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(() => {

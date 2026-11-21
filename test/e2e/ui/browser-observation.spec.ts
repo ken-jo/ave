@@ -290,7 +290,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
       await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
       await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
     }, guestId);
-    await expect(page.getByTestId("chat-side-panel-url-viewer")).toContainText(userUrl);
+    await expect(page.locator('[data-testid="chat-side-panel-browser-address"]:visible')).toHaveValue(userUrl);
     await expect(page.getByTestId(TEST_IDS.approvalDock)).toHaveCount(0);
     await expect(page.getByTestId("agent-browser-control-resume")).toBeVisible();
     expectStableBrowserBounds(await page.evaluate(() =>

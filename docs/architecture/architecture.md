@@ -150,7 +150,7 @@ field descriptions are redacted. URL metadata omits embedded credentials, query 
 and fragments before entering delivery or retention buffers. Observation
 does not copy ordinary browser history or download destinations.
 
-Download admission uses the existing native Save-admitted callback and only an
+Download admission uses the existing Save-admitted callback and only an
 active command receipt for the exact guest, actor and current control lease.
 Recognized takeover, caller cancellation and unrelated guests cannot supply
 that receipt. The item's URL chain must also match the approved navigation URL
@@ -540,6 +540,121 @@ Every caller requires the registered main-frame identity, checked again before
 the open. The folder view's open also requires a user gesture
 (`user-keyboard-required` otherwise). This is a user action: it emits
 no agent observation and grants no document write authority.
+
+"Open in editor" (`workspace.openInEditor`, offered by the folder view's
+viewer header and by the file rows of the folder view and the side panel's
+tree) hands a project file to the editor command the user set in
+`documents.editorCommand`. It passes the same admission as
+`workspace.openPath` and runs the same sequence with a different hand-off: a
+text editor reads a file as text, so the allowed-extension list and the
+execute-bit refusal do not apply, while the link-chain walk, the sensitive-path
+floor, project containment, the regular-file requirement and the second
+resolution all do. Main splits the command into a program and arguments
+(blanks separate, quotes group, nothing else is special), fills `{file}` and
+`{line}` in afterwards as whole arguments using the verified real path, and
+starts the program directly, never through a shell, detached and without the
+app's own environment variables. The program is an absolute path or a bare name
+found in an absolute `PATH` folder; a relative program is refused
+(`invalid-command`), because it would resolve against the app's working
+folder. With no command set the answer is `not-configured`, and the renderer
+shows that sentence with a button that opens the setting. The command is
+written only through `settings.update` from the settings screen; the settings
+file is on the sensitive floor, so no tool can write it.
+
+"Edit" in the folder view's viewer header edits a project file's text in the
+app (`workspace.readForEdit`, `workspace.saveEdit`). Both calls pass the
+admission of `workspace.openPath` and the same twice-resolved target; the last
+step reads or replaces the file in main instead of starting a program. They are
+the person's own actions: no tool, no approval card and no node in the
+permission tree. The save also passes the write guard (sensitive floor and
+project scope) on the verified real path.
+
+- **What is editable.** Main reads the file and refuses one a text box cannot
+  give back byte for byte: over 1 MiB (`too-large`), not valid UTF-8 or
+  containing NUL (`not-text`), more than one line-ending style
+  (`mixed-line-endings`), or a link, a file with a second hard link or a
+  special file (`not-editable`). The viewer shows the reason and the person's
+  editor takes the file. See [`editable-text.ts`](../../src/shared/editable-text.ts).
+- **What is saved.** The renderer holds the text with `\n` line breaks and the
+  hash of the bytes it was read at. On save main reads the file again, refuses
+  with `changed` when the hash differs (nothing is written, the draft stays),
+  and otherwise writes the text in the file's own line ending and byte order
+  mark through a staged file and a rename, keeping the file's mode. The hash,
+  the sender and the project grant are judged again immediately before the
+  rename, which is attempted once; the instant between that check and the
+  rename is the one window the platform leaves open.
+- **Checkpoints.** The save runs inside the code checkpoints' exclusive
+  section, so it never lands between a tool's capture and its write. Its effect
+  on the ledger is described in [code rewind](../design/code-rewind.md).
+- **Drafts.** Unsaved text is kept per path for the life of the window, so
+  choosing another file does not drop it. Saving or discarding ends it; neither
+  asks first. While a save is on its way the text is locked, also after
+  leaving the file and coming back, so its answer never ends a newer draft.
+
+Three host-only stores sit behind these surfaces:
+
+- **Stored write diffs.** The diff of each file write is kept under
+  `AVE_HOME/diff-cache/<session>/` for the person's diff cards and read only by
+  main. It holds lines of the changed files, so the directory is on the
+  sensitive floor and admission-denied for every tool, read and write, in every
+  mode, like the credential stores.
+- **Key-extension files.** A `.pem` or `.key` name is opened to see whether it
+  holds a private key only inside a project (the default project, the
+  additional directories and the folders live conversations work in) or when
+  it is a file the person picked, dropped or pasted, for as long as that
+  attachment is held. It is read through one handle, up to 1 MiB, opened
+  without following a link in its last name where the platform can refuse one
+  (Windows cannot). Anywhere else, and whenever the file is a link, a
+  special file, unreadable or longer than what was read, the name alone makes
+  it sensitive, whatever format its first bytes announce: an archive's stored
+  entries hold plain text. A folder under such a name is not a key. That
+  fail-closed answer is the agent's: its reads ask. What the person does
+  themselves (the folder view's listing and viewer, a dropped attachment,
+  opening the file in another program) hides or refuses only a file that was seen to
+  hold a private-key header, so a large presentation document stays listed,
+  attachable and openable. Bytes that reach the model are still the agent's
+  read: an attached image's bytes become part of the message, so the bytes
+  read are themselves judged for the agent before they leave. Where the host
+  may not look inside, the name decides for the person too. Name and location
+  rules (`.ssh`, `.gnupg`, the Ave home's `secrets/`, a key-extension name) are
+  judged on a path, but the bytes come from the file the handle opened, and a
+  folder or the last name may lead elsewhere just while it is opened. So after
+  the read, with the handle still open, the judged path is resolved again: it
+  must resolve to itself and name that very regular file (same device and file
+  number), or the bytes are refused (`changed` for an attached image,
+  `unknown` key evidence). This runs on every platform and is the only guard
+  where the open follows a link in the last name (Windows). It is two lookups,
+  because Node cannot name an open handle's path on macOS or Windows, so a path
+  switched to another file and back between them is not seen; nor is a hard
+  link that stays in an unprotected folder. The same check binds these other
+  host reads to the path they judged: a previewed file or document the agent
+  then observes, and the agent's `read_file`, `read_document` and
+  `view_image`, which read the real path they judged (`read_file` makes every
+  pass over the text through one handle), and `grep_files`. Ripgrep's search
+  of the tree only names the files that match; each is judged on its real
+  path, which must lie under the searched root's, read by the host through one
+  bound handle, and searched again by ripgrep on those bytes alone, decoded
+  and held back as binary as in a file it reads itself, so every line, count
+  and match shown comes from them. Reads that need no such binding: a
+  windowed preview, which only the person sees; the edit tools, which return
+  no file text and accept only bytes whose hash matches a bound `read_file`
+  or the tool's own last write; the current side of a turn-change excerpt,
+  compared with the hash its change recorded; a document the agent observes
+  after its own change, compared with that change's hash; a plain file
+  mention, which sends only the path for the agent's own `read_file`. Not
+  bound: the earlier side of a turn-change excerpt, captured by path just
+  before the agent's write and checked afterwards only against the hash it
+  was stored with; and the names `list_files` and `glob_files` find by
+  walking folders, since Node cannot open a name relative to an open folder. For an agent tool, the rules judged when it
+  runs are the admission and directory ones; the other secret-file rules are
+  decided before the call, by the permission tree.
+- **Clipboard images.** A pasted image is written to a per-profile private
+  directory together with a receipt of the file's identity. Release and the
+  start sweep delete only a file a receipt names and whose identity still
+  matches, taken under a fresh name first. Anything else found there is kept:
+  a hard link gives it its name back, and where none can be made it stays whole
+  under the fresh name; it is never moved back over its old name. A directory
+  without a receipt is left alone whatever it is called.
 
 `folder` is an instance view and a main-surface kind. A folder surface belongs
 to one project, is saved in the v2 main layout with its folder and selection,
@@ -1016,11 +1131,49 @@ Important rules:
   windows of the owning main window, so they close with it, on the same
   session with no preload, sandboxed, context-isolated, guarded recursively),
   downloads, and a Chromium/Edge user agent so sign-in pages accept it.
-  Downloads always go through the native Save dialog (no save path is ever
-  preset and nothing opens a saved file); one Save dialog may be pending per
-  side browser, and a page origin gets at most 3 download prompts a minute —
-  requests beyond either limit are cancelled and logged. Other schemes stay
-  blocked. Site capability decisions are separate from agent control and
+  Downloads always go through the native Save dialog, and the user picks every
+  final path: Ave never chooses one and nothing opens a saved file. Each
+  download is written to a private staging file under the Ave home
+  (`browser-downloads/`, an unguessable name, a host-only 0700 directory that
+  tools and confined processes are denied) and paused until its dialog is
+  answered; the staging location is private staging only, never a
+  destination. The folder is verified at start (a plain directory owned by
+  the user, resolving inside the canonical Ave home); when it cannot be
+  verified, or the native file helper below is missing or broken, every
+  download is refused with a notice. Setup errors allow startup to continue
+  only once that refusal handler is registered; incomplete policy installation
+  fails through the startup error handler. The asynchronous boot sweep finishes
+  or reaches its bounded kill-confirmation ceiling before bootstrap; an
+  unconfirmed sweep leaves downloads refused. The folder is created before
+  bootstrap starts any confined process, so a Windows projection that denies the Ave home's
+  existing children per snapshot already sees it. A page's Save dialogs show one at a time, so a
+  download that starts while one is open waits for its own dialog instead of
+  being lost. The chosen path is bound when the dialog answers: its folder's
+  identity and the final name. The file is put there by a rename or, across
+  volumes, through an exclusive temporary file and an atomic rename, which is
+  the commit point a cancel is serialized against; the name must not be a
+  link. Every step that creates, moves or removes a file (publication, the
+  temporary file and its commit, and every cleanup) opens the staging folder
+  and the chosen folder, refuses one that is not the verified or bound
+  folder, and names files only relative to those open folders until it ends,
+  so a folder moved or replaced by a link after its check is never written
+  through. Linux reaches files through the held descriptor; on macOS and
+  Windows a helper shipped with Ave performs each step
+  (`native/macos-dir-ops`, `native/windows-path-kind`), and on Windows it also
+  holds every folder above them so none can be renamed meanwhile. A helper
+  that says nothing for `browserDownloadHelperStallMs`, or does not end that
+  long after a cancel, is killed and its exit awaited before the step fails;
+  a killed copy's temporary file is removed through the chosen folder, held
+  anew, and the log names any that may remain (README in
+  `native/macos-dir-ops`). A closed dialog, a failed download or a failed
+  move removes the staged file and is reported cancelled or failed.
+  Staged files a crash left behind are removed at the next start. At most 4
+  downloads wait for a dialog at once, and a waiting one that writes more
+  than 8 MiB is stopped. A page origin gets at most 3 Save dialogs a minute
+  that the user did not save from. Each refusal is cancelled, logged and
+  reported in the tab. A same-user process outside every sandbox can still
+  read the bytes already in flight when a download is paused. Other schemes
+  stay blocked. Site capability decisions are separate from agent control and
   origin approval; see [Browser And Terminal Workspace](#browser-and-terminal-workspace).
 
 A long turn uses per-call limits and progress guidance. Each API-backed chat call
@@ -1799,7 +1952,9 @@ site decisions, download status, and tab-card previews. Persistent bookmarks,
 history, and site decisions use `openFeatureNamespace("browser-workspace")`;
 invalid stored state cannot become a permission grant. Download paths and
 history are not disclosed by browser tools merely because the UI lists them.
-Downloads retain native Save consent and prompt-rate limits, with no auto-open.
+Downloads retain native Save consent, one dialog at a time per page, and
+prompt-rate limits, with no auto-open and no automatic final path; their
+private staging files never leave the host.
 
 Site capability checks bind the current requesting origin and owned guest.
 `clipboard-sanitized-write` retains its safe baseline for a known guest. Camera,
@@ -3154,7 +3309,12 @@ in its directory.
   exists, and grants that do not exist are dropped. Measured: a more specific
   grant wins over a denied parent, a missing `denied` file path still blocks its
   creation, and a missing `readonly` directory does not block its creation, so
-  a `denyWrite` path that does not exist is written as `denied`.
+  a `denyWrite` path that does not exist is written as `denied`. An existing
+  `denyWrite` path strictly inside a writable grant is written as `readonly`,
+  except where a read deny is the nearest rule at or above it (an Ave home
+  moved into a writable project): a read-only entry, being more specific,
+  would re-open that deny, so the path is written as `denied`, and stays
+  read-only only under a grant more specific than the deny.
   Missing nested denies are raised to the first missing component strictly
   inside a writable grant; raising onto a grant root or outside all writable
   grants fails closed. The shell cannot create that missing directory during
@@ -3399,12 +3559,14 @@ with its own owner rule:
   descriptor.** `prepareSrtWinExecutable` in
   `src/permissions/srt-win-integrity.ts` picks a random, unpublished
   `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
-  both directories with the token user as owner and a protected DACL: full control for the user,
-  read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at either directory path, a link included, refuses creation. The empty image and
-  the owner marker are then created new inside `bin`, each with its own
-  descriptor, and each owner is read on the handle that created the file. No
-  step changes the owner or DACL of an object that already exists. The image's
+  the outer directory with the token user as owner and a protected DACL: full control
+  for the user, read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`.
+  It writes `owner.json` there with the host PID and process start time before
+  creating `bin` with the same DACL and an empty `srt-win.exe` inside it. The
+  marker and image are each created with their own descriptor, and each owner is
+  read on the creation handle. Anything already at either directory path, a link
+  included, refuses creation. No step changes the owner or DACL of an object that
+  already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
   The write-deny target is `bin`, so its parent's inheritable delete-child deny
@@ -3430,8 +3592,14 @@ with its own owner rule:
   code. An unconfirmed one seals the session against further confinement until
   the quit reset (in practice, until restart); confined children already
   running are not stopped.
+  At the first helper preparation, the Windows sweep also reclaims partial copies
+  whose names have the generated hexadecimal suffix. The directories must
+  pass the same ownership and DACL checks as a complete copy and may contain
+  only plain entries from the existing layouts. A surviving marker must name
+  a dead owner, and a surviving image must pass the existing sharing check.
   The copy's `exit` handler, registered at import and so run before the
-  runtime's own, removes the copy only after a successful release.
+  runtime's own, removes the copy only after a successful release. It shares
+  its one-attempt disposer with test teardown.
   Otherwise it keeps the copy and writes one line to stderr, since the file log
   is closed by then. The runtime's `exit` handler then retries the release with
   the copy still present, the next boot's sweep removes the copy, and ACL
@@ -3459,10 +3627,17 @@ with its own owner rule:
   In the desktop app the runtime's own signal handler still resets it as soon
   as the signal arrives, before children are drained. Any later reset, including
   the one in a quit sequence, finds no ACL session left to release.
-  The stale-copy sweep checks both directory owners and DACLs for the new layout,
-  and also accepts the old single-level layout with its original marker checks.
-  It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
-  without recursion. A sandbox-account ACE found on the temporary root emits
+  The stale-copy sweep checks both directory owners and DACLs and accepts the
+  earlier layouts with the marker inside `bin` or both files in the outer
+  directory. Partial copies and the marker-first layout require a generated
+  32-hex name and singly linked files. Allocation and the sweep use the same
+  Windows process creation time as decimal UTC ticks. The sweep requires a
+  valid marker and compares the full stamp exactly for a live PID. A different
+  stamp identifies PID reuse.
+  For new copies, exit and startup remove the image, `bin`, marker and outer
+  directory in that order, without recursion. If the last removal fails, the
+  sweep leaves the empty outer directory alone. A sandbox-account ACE found on
+  the temporary root emits
   `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
   Any remaining legacy ACE requires owner-approved inspection and repair of the
   exact explicit ACE or its inheritance source, with active holders accounted for.

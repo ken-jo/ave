@@ -16,7 +16,7 @@ import type { SideChatOpenRequest } from "./components/SideChatView.js";
 import { getApi } from "./api-client.js";
 import { useChatContext } from "./context/ChatContext.js";
 import { useInputStatusRow } from "./hooks/use-input-status-row.js";
-import { captureComposerKeyboardIntent, type ComposerHandle } from "./components/Composer.js";
+import { captureComposerKeyboardIntent, composerDropZoneProps, type ComposerHandle } from "./components/Composer.js";
 import { useSuggestedReplies } from "./hooks/use-suggested-replies.js";
 import { hasActiveSuggestedReplies } from "./utils/composer-placeholder.js";
 import type { PluginEntry } from "./types.js";
@@ -70,6 +70,8 @@ import { ChatComposerDock } from "./components/ChatComposerDock.js";
 import { ComposerContextNotice } from "./components/ComposerContextNotice.js";
 import type { ProjectErrorReporter } from "./hooks/use-add-project-folder.js";
 import { TEST_IDS } from "../../shared/test-ids.js";
+import type { AttachmentRejection } from "../../shared/attachment-rejection.js";
+import { attachmentRejectionMessage } from "./format-ipc-error.js";
 import { DockedPanelColumn, useDockedPanelMotion } from "./components/DockedWorkPanel.js";
 import { formatTokensExact } from "../../lib/cost-format.js";
 import { MemorySaveNoticeRows, useComposerTextFlag, useMemorySaveNotices, type MemoryNotice } from "./components/MemorySaveNotices.js";
@@ -170,6 +172,8 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
   const workflowApi = getApi();
   const debugStreamEnabled = isDebugStreamEnabled();
   const composerRef = useRef<ComposerHandle | null>(null);
+  // The conversation column is the drop target, not only the input: a file let go over the transcript is attached too.
+  const composerDropZone = useMemo(() => composerDropZoneProps(composerRef), []);
   const suggestedReplies = useSuggestedReplies();
   const suggestedRepliesActive = hasActiveSuggestedReplies(suggestedReplies);
   const readingColumnClass = "chat-reading-column mx-auto w-full max-w-(--reading-column-max)";
@@ -568,6 +572,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
     openAgentTab: (url, requestId, active, owner) => {
       browserTabHostRef.current.workspaceTabs.openAgentBrowserTab(url, requestId, active, owner);
     },
+    openLinkTab: (url, openerTabId, active) => browserTabHostRef.current.workspaceTabs.openBrowserTabAt(url, openerTabId, active),
     selectTab: (tabId) => {
       browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);
     },
@@ -742,15 +747,15 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
     }));
   }, [onAttachmentWarning, t]);
 
-  const emitDropRejected = useCallback((count: number) => {
-    onAttachmentWarning?.(t("app.dropRejected", { count }));
-  }, [onAttachmentWarning, t]);
+  const emitAttachmentRejected = useCallback((rejections: readonly AttachmentRejection[]) => {
+    onAttachmentWarning?.(attachmentRejectionMessage(rejections));
+  }, [onAttachmentWarning]);
   const { handleAttach, handleDropFiles, attachPastedText, attachImage } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion,
     composerRef,
-    onDropRejected: emitDropRejected,
+    onAttachmentRejected: emitAttachmentRejected,
     imagesEnabled: subscriptionRuntimePolicy ? subscriptionRuntimePolicy.imagesEnabled : settingsLoaded !== false && runtimeImageAttachmentProvider === undefined,
     filesEnabled: subscriptionRuntimePolicy ? subscriptionRuntimePolicy.filesEnabled : settingsLoaded !== false && runtimeFileAttachmentProvider === undefined,
     imageAttachmentLimits: subscriptionRuntimePolicy?.imageAttachmentLimits,
@@ -861,6 +866,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
       <div
         className="@container/chat-transcript relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size]"
         data-testid="chat-main-column"
+        {...composerDropZone}
       >
 
       <div ref={transcriptStageRef} data-testid="chat-transcript-stage" className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
@@ -985,6 +991,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
         onImageAttachmentLimitExceeded={emitImageAttachmentLimitExceeded}
         onAttach={handleAttach}
         onDropFiles={handleDropFiles}
+        onComposerWarning={onAttachmentWarning}
         subscriptionRuntimePolicy={subscriptionRuntimePolicy}
         subscriptionImageAttachmentProvider={runtimeImageAttachmentProvider}
         subscriptionFileAttachmentProvider={runtimeFileAttachmentProvider}
@@ -1083,6 +1090,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
         >
           <ChatSidePanel
             api={api}
+            pendingApprovals={pendingApprovals}
             visible={dockedPanelShouldOpen && !hidden}
             {...(chatGroupId !== undefined ? { chatGroupId } : {})}
             sessionId={currentSessionId}
@@ -1091,7 +1099,11 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
             changes={workspaceChanges}
             revealRequest={fileReveal?.sessionId === currentSessionId ? fileReveal.request : null}
             onReference={(reference) => { composerRef.current?.insertFileReference(reference); }}
-            onFileReference={(path) => { composerRef.current?.insertFileMention(path); }}
+            onFileReference={(path) => {
+              // The row that asked reports what did not happen: no composer to take it, or a composer that refused it.
+              const composer = composerRef.current;
+              return composer ? composer.insertFileMention(path).inserted : "no-composer";
+            }}
             selectedId={selectedPreviewId}
             onSelect={setSelectedPreviewId}
             workspaceTabs={workspaceTabs}

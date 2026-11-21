@@ -118,7 +118,9 @@ describe("IPC domain runtime named-export lock", () => {
         ],
         "attach": [
           "DROP_TOKEN_TTL_MS",
+          "clipboardImageRoot",
           "registerAttachHandlers",
+          "sweepLeftoverClipboardImages",
         ],
         "audit": [
           "parseIsoDate",

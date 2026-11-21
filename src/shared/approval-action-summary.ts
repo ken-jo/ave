@@ -1,4 +1,5 @@
 import type { TranslateFn } from "../i18n/translate.js";
+import { revealHiddenCharacters } from "./display-safe-text.js";
 import { isRecord } from "./is-record.js";
 import type { ToolCategory } from "./permission-review-status.js";
 
@@ -22,7 +23,8 @@ export function approvalActionSummary(
     || request.outOfAllowedDir?.candidatePath
     || (typeof args.path === "string" ? args.path : "")
     || (typeof args.filePath === "string" ? args.filePath : "");
-  const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "";
+  // The name is approved by reading it: spell hidden characters out so a bidi override cannot show another file name.
+  const name = revealHiddenCharacters(path.split(/[\\/]/).filter(Boolean).at(-1) ?? "", { lineBreaks: true });
   const describeTarget = (key: string): string => {
     const fixedCharacters = [...translate(key, { target: "" })].length;
     const available = options.maxCharacters === undefined ? Infinity : Math.max(1, options.maxCharacters - fixedCharacters);

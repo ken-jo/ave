@@ -28,6 +28,30 @@ const occluders = new Set<HTMLElement>();
 let dragActive = false;
 const observedHiddenTabs = new Set<string>();
 const awakeTabs = new Set<string>();
+/** Guests that attached at least once, and the address of each guest main refused before it could. */
+const attachedTabs = new Set<string>();
+const attachBlocked = new Map<string, string>();
+
+export function noteWebSurfaceAttached(tabId: string): void { attachedTabs.add(tabId); }
+
+/**
+ * Main refused the guest element that carried `src`. A refused element never attaches again, so its tab drops the element:
+ * the slot shows the refusal, and the next address mounts a fresh guest.
+ */
+export function markWebSurfaceAttachBlocked(src: string): void {
+  let changed = false;
+  for (const surface of surfaces) {
+    if (surface.host === "native" || surface.url !== src || attachedTabs.has(surface.tabId) || attachBlocked.get(surface.tabId) === src) continue;
+    attachBlocked.set(surface.tabId, src);
+    changed = true;
+  }
+  if (!changed) return;
+  surfaces = [...surfaces];
+  emit();
+}
+
+/** The address main refused for this tab's guest, until the tab is pointed somewhere else. */
+export function webSurfaceAttachBlocked(tabId: string): string | null { return attachBlocked.get(tabId) ?? null; }
 
 export function setWebSurfaceAwake(tabId: string, awake: boolean): void {
   if (awakeTabs.has(tabId) === awake) return;
@@ -133,6 +157,7 @@ export function setWebSurfaceUrl(tabId: string, url: string, bindRequestId?: str
   const existing = surfaces.find((surface) => surface.tabId === tabId);
   const requestId = bindRequestId ?? existing?.bindRequestId;
   if (existing?.url === url && existing.bindRequestId === requestId) return;
+  if (existing && existing.url !== url) attachBlocked.delete(tabId);
   const host = existing?.host ?? (requestId !== undefined || nativeTabIds?.has(tabId) ? "native" : nativeTabIds === null ? undefined : "webview");
   const next: WebSurface = { tabId, url, ...(requestId === undefined ? {} : { bindRequestId: requestId }),
     ...(host === undefined ? {} : { host }) };
@@ -226,6 +251,7 @@ export function setWebSurfaceElement(tabId: string, element: HTMLElement | null)
     if (webviews.get(tabId) === element) return;
     webviews.set(tabId, element);
   } else {
+    attachedTabs.delete(tabId);
     if (!webviews.has(tabId)) return;
     webviews.delete(tabId);
   }
@@ -271,6 +297,8 @@ function scheduleReconcile(): void {
       observedHiddenTabs.delete(surface.tabId);
       nativeStates.delete(surface.tabId);
       nativeElements.delete(surface.tabId);
+      attachedTabs.delete(surface.tabId);
+      attachBlocked.delete(surface.tabId);
     }
     surfaces = next;
     emit();

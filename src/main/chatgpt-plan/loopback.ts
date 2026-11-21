@@ -1,6 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import {
   CHATGPT_PLAN_CALLBACK_HOST,
@@ -13,7 +12,7 @@ const CALLBACK_PAGE = "<!doctype html><meta charset=\"utf-8\"><title>Ave</title>
 export interface ChatGptPlanCallbackListener {
   /** The exact redirect URI for this attempt, port included. */
   readonly redirectUri: string;
-  /** Resolves with the first request to the callback path. */
+  /** Resolves with the first valid callback or rejects when the listener stops first. */
   readonly callback: Promise<URL>;
   close(): void;
 }
@@ -27,17 +26,33 @@ function sameState(received: string | null, expected: string): boolean {
 
 function listen(server: Server, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
-    const onError = (error: Error) => {
+    const cleanup = () => {
       server.off("listening", onListening);
+      server.off("error", onError);
+      server.off("close", onClose);
+    };
+    const onError = (error: unknown) => {
+      cleanup();
       reject(error);
     };
+    const onClose = () => onError(new Error("Callback listener closed before binding"));
     const onListening = () => {
-      server.off("error", onError);
-      resolve((server.address() as AddressInfo).port);
+      cleanup();
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        reject(new Error("Callback listener reported no TCP port"));
+        return;
+      }
+      resolve(address.port);
     };
     server.once("error", onError);
     server.once("listening", onListening);
-    server.listen(port, CHATGPT_PLAN_CALLBACK_HOST);
+    server.once("close", onClose);
+    try {
+      server.listen(port, CHATGPT_PLAN_CALLBACK_HOST);
+    } catch (error) {
+      onError(error);
+    }
   });
 }
 
@@ -54,15 +69,51 @@ export async function startChatGptPlanCallbackListener(
   expectedState: string,
   preferredPort: number = 0,
 ): Promise<ChatGptPlanCallbackListener> {
-  let deliver: (url: URL) => void = () => undefined;
-  let fail: (error: Error) => void = () => undefined;
-  const callback = new Promise<URL>((resolve, reject) => {
-    deliver = resolve;
-    fail = reject;
+  const server = createServer();
+  let port: number;
+  if (preferredPort === 0) {
+    port = await listenFetchLoopback(server);
+  } else {
+    try {
+      port = await listen(server, preferredPort);
+    } catch {
+      port = await listenFetchLoopback(server);
+    }
+  }
+  let resolve!: (url: URL) => void;
+  let reject!: (error: Error) => void;
+  const callback = new Promise<URL>((deliver, fail) => {
+    resolve = deliver;
+    reject = fail;
   });
+  // The owner may close the listener before a caller begins observing the callback.
+  void callback.catch(() => undefined);
   let settled = false;
-  let port = preferredPort;
-  const server = createServer((request, response) => {
+  let closing = false;
+  const fail = (error: Error) => {
+    if (settled) return;
+    settled = true;
+    reject(error);
+  };
+  const failClosed = () => fail(new Error("chatgpt-plan callback listener closed"));
+  const close = () => {
+    if (closing) return;
+    closing = true;
+    failClosed();
+    server.close();
+    server.closeAllConnections?.();
+  };
+  // Temporary closes while selecting a Fetch-allowed port do not end the callback.
+  server.once("close", () => {
+    closing = true;
+    failClosed();
+  });
+  server.on("error", error => {
+    fail(error);
+    close();
+  });
+  if (!server.listening) close();
+  server.on("request", (request, response) => {
     const url = new URL(request.url ?? "/", `http://${CHATGPT_PLAN_CALLBACK_HOST}:${port}`);
     if (
       request.method !== "GET"
@@ -76,33 +127,17 @@ export async function startChatGptPlanCallbackListener(
       return;
     }
     settled = true;
+    resolve(url);
     response.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "referrer-policy": "no-referrer",
     });
     response.end(CALLBACK_PAGE);
-    deliver(url);
   });
-  if (preferredPort === 0) {
-    port = await listenFetchLoopback(server);
-  } else {
-    try {
-      port = await listen(server, preferredPort);
-    } catch {
-      port = await listenFetchLoopback(server);
-    }
-  }
   return {
     redirectUri: `http://${CHATGPT_PLAN_CALLBACK_HOST}:${port}${CHATGPT_PLAN_CALLBACK_PATH}`,
     callback,
-    close: () => {
-      if (!settled) {
-        settled = true;
-        fail(new Error("chatgpt-plan callback listener closed"));
-      }
-      server.close();
-      server.closeAllConnections?.();
-    },
+    close,
   };
 }
