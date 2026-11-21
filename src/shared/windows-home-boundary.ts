@@ -156,19 +156,11 @@ public static class HomeDirectoryDacl {
       return expected.Volume == actual.Volume && expected.IndexHigh == actual.IndexHigh && expected.IndexLow == actual.IndexLow;
     }
   }
-  public static SafeFileHandle OpenDirectoryRoot(string path) {
-    var handle = CreateFile(path, 0x001000a0, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
-    try {
-      if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-      if ((Attributes(handle) & 0x410) != 0x10) throw new InvalidOperationException("Path is not a plain directory");
-      return handle;
-    } catch { handle.Dispose(); throw; }
-  }
-  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u, uint access = 0u, byte[] descriptor = null) {
+  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u, uint access = 0u) {
     if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
     IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
     IntPtr memory = IntPtr.Zero;
-    byte[] bytes = descriptor ?? (boundary ? Descriptor(user) : OwnerDescriptor(user));
+    byte[] bytes = boundary ? Descriptor(user) : OwnerDescriptor(user);
     var security = GCHandle.Alloc(bytes, GCHandleType.Pinned);
     try {
       var name = new UnicodeString { Length = checked((ushort)(leaf.Length * 2)), MaximumLength = checked((ushort)(leaf.Length * 2 + 2)), Buffer = buffer };
@@ -208,15 +200,12 @@ public static class HomeDirectoryDacl {
     if (!GetFileInformationByHandleEx(handle, 9, out attributes, 8)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory attributes could not be read on the permission handle");
     return attributes;
   }
-  public static byte[] ReadDirectoryDescriptor(SafeFileHandle handle) {
+  public static DirectorySecurity Read(SafeFileHandle handle) {
     long attributes = Attributes(handle);
     if ((attributes & 0x400) != 0) throw new InvalidOperationException("Directory is a link or junction");
     if ((attributes & 0x10) == 0) throw new InvalidOperationException("Path is not a directory");
-    return ReadDescriptor(handle);
-  }
-  public static DirectorySecurity Read(SafeFileHandle handle) {
     var security = new DirectorySecurity();
-    security.SetSecurityDescriptorBinaryForm(ReadDirectoryDescriptor(handle));
+    security.SetSecurityDescriptorBinaryForm(ReadDescriptor(handle));
     return security;
   }
   public static bool OwnerValid(DirectorySecurity security, SecurityIdentifier user, bool elevated) {

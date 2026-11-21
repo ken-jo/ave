@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 
-import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../shared/windows-home-boundary.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
@@ -58,21 +57,20 @@ const LEGACY_SWEEP_SCRIPT = [
   "[System.IO.Directory]::Delete($directory, $false)",
   "} catch { continue } }",
 ].join("; ");
-// The bootstrap separates native source and image bytes from the program before parsing it.
-const BOOTSTRAP = "$native = [Console]::In.ReadLine(); $image = [Console]::In.ReadLine(); & ([ScriptBlock]::Create([Console]::In.ReadToEnd()))";
+// Keep image bytes separate from the program before parsing it.
+const BOOTSTRAP = "$image = [Console]::In.ReadLine(); & ([ScriptBlock]::Create([Console]::In.ReadToEnd()))";
 const COMMAND = Buffer.from(BOOTSTRAP, "utf16le").toString("base64");
-const NATIVE_SOURCE = Buffer.from(WINDOWS_HOME_BOUNDARY_SOURCE).toString("base64");
 
 const PRIVATE_PARENT_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $PSModuleAutoLoadingPreference = 'None'
 Import-Module ($PSHOME + '\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
 
-function New-Descriptor($sddl) {
-  $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new($sddl)
+function New-Security($security, $descriptor) {
   $bytes = [byte[]]::new($descriptor.BinaryLength)
   $descriptor.GetBinaryForm($bytes, 0)
-  return ,$bytes
+  $security.SetSecurityDescriptorBinaryForm($bytes)
+  return $security
 }
 
 function Get-PrivateParentSddl($owner) {
@@ -85,9 +83,20 @@ function Get-PrivateParentSddl($owner) {
   return ('O:' + $owner + 'D:P' + $rules)
 }
 
-function Assert-PrivateParent($handle, $descriptor) {
-  $expected = [System.Security.AccessControl.RawSecurityDescriptor]::new($descriptor, 0)
-  $raw = [System.Security.AccessControl.RawSecurityDescriptor]::new([HomeDirectoryDacl]::ReadDirectoryDescriptor($handle), 0)
+function Get-EntryAttributes($path) {
+  try { return [System.IO.File]::GetAttributes($path) }
+  catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { return $null }
+}
+
+function Read-PlainDirectoryDescriptor($path) {
+  $attributes = Get-EntryAttributes $path
+  $flags = [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint
+  if (($attributes -band $flags) -ne [System.IO.FileAttributes]::Directory) { throw 'Private helper path is not a plain directory' }
+  $security = [System.IO.Directory]::GetAccessControl($path)
+  return [System.Security.AccessControl.RawSecurityDescriptor]::new($security.GetSecurityDescriptorBinaryForm(), 0)
+}
+
+function Assert-PrivateParent($raw, $expected) {
   if ($raw.Owner -ne $expected.Owner -or
       !($raw.ControlFlags -band [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected) -or
       $null -eq $raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -ne $expected.DiscretionaryAcl.Count) {
@@ -96,15 +105,39 @@ function Assert-PrivateParent($handle, $descriptor) {
   $remaining = @{}
   foreach ($rule in $expected.DiscretionaryAcl) { $remaining[$rule.SecurityIdentifier.Value] = $rule }
   foreach ($ace in $raw.DiscretionaryAcl) {
-    if ($ace -isnot [System.Security.AccessControl.CommonAce]) { throw 'Private helper parent has unexpected access entries' }
+    if ($ace.AceType -ne 'AccessAllowed') { throw 'Private helper parent has unexpected access entries' }
     $principal = $ace.SecurityIdentifier.Value
     $rule = $remaining[$principal]
-    if ($null -eq $rule -or $ace.AceType -ne $rule.AceType -or $ace.AceFlags -ne $rule.AceFlags -or
+    if ($null -eq $rule -or $ace.AceFlags -ne $rule.AceFlags -or
         $ace.AccessMask -ne $rule.AccessMask) {
       throw 'Private helper parent has unexpected access entries'
     }
     $remaining.Remove($principal)
   }
+}
+
+function Assert-TempAncestor($raw, $user, $creatingParent = $false) {
+  $trusted = @($user, 'S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+  if ($raw.Owner.Value -notin $trusted -or $null -eq $raw.DiscretionaryAcl) { throw 'Temporary ancestor is not protected' }
+  # Generic write/all, delete and delete-child, reparse-related writes, and changes to security.
+  $mask = 0x500d0152
+  # A foreign principal may neither claim nor plant a link at the new parent's name.
+  if ($creatingParent) { $mask = $mask -bor 4 } # FILE_ADD_SUBDIRECTORY
+  foreach ($ace in $raw.DiscretionaryAcl) {
+    if ([int]$ace.AceFlags -band 8) { continue } # INHERIT_ONLY
+    if ($ace.AceType -in @('AccessDenied', 'AccessDeniedObject')) { continue }
+    if ($ace.AceType -notin @('AccessAllowed', 'AccessAllowedObject')) { throw 'Temporary ancestor has an unsupported access entry' }
+    if ($ace.SecurityIdentifier.Value -notin $trusted -and ($ace.AccessMask -band $mask)) {
+      throw 'Temporary ancestor grants replacement rights'
+    }
+  }
+}
+
+function New-PrivateCopyDirectory($path, $descriptor) {
+  if ($null -ne (Get-EntryAttributes $path)) { throw 'Private helper copy destination already exists' }
+  $security = New-Security ([System.Security.AccessControl.DirectorySecurity]::new()) $descriptor
+  $null = [System.IO.Directory]::CreateDirectory($path, $security)
+  Assert-PrivateParent (Read-PlainDirectoryDescriptor $path) $descriptor
 }
 
 function Remove-PrivateTree($path) {
@@ -136,69 +169,67 @@ function Clear-AbandonedCopies($path) {
 }
 
 function Invoke-PrivateParent {
-  Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($native)))
   $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
   $root = $env:AVE_SRT_PRIVATE_TEMP
   $volume = [System.IO.Path]::GetPathRoot($root)
-  $handles = [System.Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
-  try {
-    # Hold the canonical path without delete sharing throughout validation and use.
-    $handle = [HomeDirectoryDacl]::OpenDirectoryRoot($volume)
-    $handles.Add($handle)
-    foreach ($leaf in ($root.Substring($volume.Length) -split '\\')) {
-      if (!$leaf) { continue }
-      $handle = [HomeDirectoryDacl]::OpenRelative($handle, $leaf, $sid, 1, $true, $true, $false, $false, 3, 0x001000a0)
-      if ($null -eq $handle) { throw 'Temporary directory disappeared' }
-      $handles.Add($handle)
-    }
-    $parentName = 'ave-srt-win.' + $sid.Value
-    if ($env:AVE_SRT_EXPECTED_PARENT -and $env:AVE_SRT_EXPECTED_PARENT -cne $parentName) { throw 'Private helper parent changed' }
-    $parent = [System.IO.Path]::Combine($root, $parentName)
-    $action = $env:AVE_SRT_ACTION
-    # FILE_OPEN_IF atomically creates with the descriptor or opens without changing security.
-    $disposition = if ($action -eq 'allocate') { 3 } else { 1 }
-    $descriptor = New-Descriptor (Get-PrivateParentSddl $sid.Value)
-    $handle = [HomeDirectoryDacl]::OpenRelative($handle, $parentName, $sid, $disposition, $true, $true, $true, $false, 3, 0x001200a1, $descriptor)
-    if ($null -eq $handle) {
-      if ($action -eq 'verify') { throw 'Private helper parent is missing' }
-      return
-    }
-    $handles.Add($handle)
-    Assert-PrivateParent $handle $descriptor
-    if ($action -eq 'sweep') { Clear-AbandonedCopies $parent; return }
-    if ($action -eq 'verify') { return }
-
-    $copyName = $env:AVE_SRT_COPY
-    if ($copyName -cnotmatch ('^copy-' + $env:AVE_SRT_OWNER_PID + '-[a-f0-9]{32}$')) { throw 'Invalid helper copy name' }
-    if ($action -eq 'dispose') { Remove-PrivateTree ([System.IO.Path]::Combine($parent, $copyName)); return }
-    if ($action -ne 'allocate') { throw 'Invalid private helper action' }
-
-    $readers = '(A;OICI;0x1200a9;;;BA)(A;OICI;0x1200a9;;;BU)'
-    if ($sid.Value -ne 'S-1-5-18') { $readers += '(A;OICI;0x1200a9;;;SY)' }
-    $directoryAcl = New-Descriptor ('O:' + $sid.Value + 'D:P(A;OICI;FA;;;' + $sid.Value + ')' + $readers)
-    $copy = [HomeDirectoryDacl]::OpenRelative($handle, $copyName, $sid, 2, $true, $true, $true, $false, 3, 0, $directoryAcl)
-    $handles.Add($copy)
-    [Console]::Out.WriteLine($sid.Value)
-    [Console]::Out.Flush()
-    $bin = [HomeDirectoryDacl]::OpenRelative($copy, 'bin', $sid, 2, $true, $true, $true, $false, 3, 0, $directoryAcl)
-    $handles.Add($bin)
-    $fileAcl = New-Descriptor ('O:' + $sid.Value + 'D:P(A;;FA;;;' + $sid.Value + ')' + $readers.Replace('OICI', ''))
-    $file = [HomeDirectoryDacl]::OpenRelative($bin, 'srt-win.exe', $sid, 2, $false, $true, $false, $false, 3, 0x00100182, $fileAcl)
-    $handles.Add($file)
-    $stream = [System.IO.FileStream]::new($file, [System.IO.FileAccess]::Write)
-    try {
-      $bytes = [Convert]::FromBase64String($image)
-      $stream.Write($bytes, 0, $bytes.Length)
-    } finally { $stream.Dispose() }
-  } finally {
-    for ($i = $handles.Count - 1; $i -ge 0; $i--) { $handles[$i].Dispose() }
+  if ($volume -notmatch '^[a-zA-Z]:\\$') { throw 'Temporary path is not drive rooted' }
+  if ([System.IO.DriveInfo]::new($volume).DriveType -notin @('Fixed', 'Removable', 'Ram')) { throw 'Temporary path is not on a local drive' }
+  # Check from the volume down. Each already-checked directory protects the name of the next.
+  $ancestor = $volume
+  $ancestorAcl = Read-PlainDirectoryDescriptor $ancestor
+  Assert-TempAncestor $ancestorAcl $sid.Value
+  foreach ($leaf in ($root.Substring($volume.Length) -split '\\')) {
+    if (!$leaf) { continue }
+    $ancestor = [System.IO.Path]::Combine($ancestor, $leaf)
+    $ancestorAcl = Read-PlainDirectoryDescriptor $ancestor
+    Assert-TempAncestor $ancestorAcl $sid.Value
   }
+
+  $parentName = 'ave-srt-win.' + $sid.Value
+  if ($env:AVE_SRT_EXPECTED_PARENT -and $env:AVE_SRT_EXPECTED_PARENT -cne $parentName) { throw 'Private helper parent changed' }
+  $parent = [System.IO.Path]::Combine($root, $parentName)
+  $action = $env:AVE_SRT_ACTION
+  $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new((Get-PrivateParentSddl $sid.Value))
+  if ($null -eq (Get-EntryAttributes $parent)) {
+    if ($action -eq 'allocate') {
+      Assert-TempAncestor $ancestorAcl $sid.Value $true
+      $security = New-Security ([System.Security.AccessControl.DirectorySecurity]::new()) $descriptor
+      $null = [System.IO.Directory]::CreateDirectory($parent, $security)
+    } elseif ($action -eq 'verify') { throw 'Private helper parent is missing' }
+    else { return }
+  }
+  Assert-PrivateParent (Read-PlainDirectoryDescriptor $parent) $descriptor
+  if ($action -eq 'sweep') { Clear-AbandonedCopies $parent; return }
+  if ($action -eq 'verify') { return }
+
+  $copyName = $env:AVE_SRT_COPY
+  if ($copyName -cnotmatch ('^copy-' + $env:AVE_SRT_OWNER_PID + '-[a-f0-9]{32}$')) { throw 'Invalid helper copy name' }
+  $copy = [System.IO.Path]::Combine($parent, $copyName)
+  if ($action -eq 'dispose') { Remove-PrivateTree $copy; return }
+  if ($action -ne 'allocate') { throw 'Invalid private helper action' }
+
+  $readers = '(A;OICI;0x1200a9;;;BA)(A;OICI;0x1200a9;;;BU)'
+  if ($sid.Value -ne 'S-1-5-18') { $readers += '(A;OICI;0x1200a9;;;SY)' }
+  $directoryAcl = [System.Security.AccessControl.RawSecurityDescriptor]::new(('O:' + $sid.Value + 'D:P(A;OICI;FA;;;' + $sid.Value + ')' + $readers))
+  New-PrivateCopyDirectory $copy $directoryAcl
+  [Console]::Out.WriteLine($sid.Value)
+  [Console]::Out.Flush()
+  $bin = [System.IO.Path]::Combine($copy, 'bin')
+  New-PrivateCopyDirectory $bin $directoryAcl
+  $fileAcl = [System.Security.AccessControl.RawSecurityDescriptor]::new(('O:' + $sid.Value + 'D:P(A;;FA;;;' + $sid.Value + ')' + $readers.Replace('OICI', '')))
+  $security = New-Security ([System.Security.AccessControl.FileSecurity]::new()) $fileAcl
+  $file = [System.IO.Path]::Combine($bin, 'srt-win.exe')
+  $stream = [System.IO.FileStream]::new($file, 'CreateNew', [System.Security.AccessControl.FileSystemRights]::Write, 'None', 4096, 'None', $security)
+  try {
+    $bytes = [Convert]::FromBase64String($image)
+    $stream.Write($bytes, 0, $bytes.Length)
+  } finally { $stream.Dispose() }
 }
 
 `;
 
 // Both best-effort passes share the startup budget. The legacy diagnostic runs
-// before the private parent is opened or its native helper is compiled.
+// before opening the private parent.
 const SWEEP_DISPATCH = `
 function Invoke-LegacySweep { ${LEGACY_SWEEP_SCRIPT} }
 try { Invoke-LegacySweep } catch { }
@@ -222,7 +253,7 @@ export function runWindowsSrtWinParent(
         AVE_SRT_EXPECTED_PARENT: expectedParent,
         AVE_SRT_OWNER_PID: String(process.pid), AVE_SRT_OWN_DIRECTORIES: "[]",
       },
-      input: [NATIVE_SOURCE, bytes?.toString("base64") ?? "", PRIVATE_PARENT_SCRIPT,
+      input: [bytes?.toString("base64") ?? "", PRIVATE_PARENT_SCRIPT,
         action === "sweep" ? SWEEP_DISPATCH : "Invoke-PrivateParent"].join("\n"),
       windowsHide: true, stdio: "pipe", encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
     });

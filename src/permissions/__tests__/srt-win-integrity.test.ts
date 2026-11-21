@@ -171,7 +171,7 @@ describe("Windows helper integrity", () => {
       ...await load<typeof import("node:child_process")>(),
       execFileSync: (_path: string, args: readonly string[], options: { input: string }) => {
         programs.push(Buffer.from(args[args.indexOf("-EncodedCommand") + 1]!, "base64").toString("utf16le"));
-        programs.push(options.input.split("\n").slice(2).join("\n"));
+        programs.push(options.input.split("\n").slice(1).join("\n"));
         return "";
       },
     }));
@@ -187,6 +187,7 @@ describe("Windows helper integrity", () => {
     }
     expect(programs).toHaveLength(8);
     expect(programs.join("\n")).not.toContain("Owner's TEMP");
+    expect(programs.join("\n")).not.toMatch(/\b(?:Add-Type|csc(?:\.exe)?)\b/i);
     const parserTemp = mkdtempSync(join(tmpdir(), "ave-srt-parser-"));
     directories.push(parserTemp);
     const parser = process.platform === "win32" ? windowsPowerShell : process.env.AVE_TEST_PWSH ?? "pwsh";
@@ -203,6 +204,14 @@ describe("Windows helper integrity", () => {
         "Invoke-Expression $definition.Extent.Text",
         "[Console]::WriteLine((Get-PrivateParentSddl 'S-1-5-21-1-2-3-1001'))",
         "[Console]::WriteLine((Get-PrivateParentSddl 'S-1-5-18'))",
+        "$ancestorCheck = $program.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Assert-TempAncestor' }, $false)",
+        "Invoke-Expression $ancestorCheck.Extent.Text",
+        "$ace = [pscustomobject]@{ AceType = 'AccessAllowed'; AceFlags = 0; SecurityIdentifier = @{ Value = 'S-1-5-32-545' }; AccessMask = 4 }",
+        "$ancestor = [pscustomobject]@{ Owner = @{ Value = 'S-1-5-18' }; DiscretionaryAcl = @($ace) }",
+        "Assert-TempAncestor $ancestor 'S-1-5-21-1-2-3-1001'",
+        "try { Assert-TempAncestor $ancestor 'S-1-5-21-1-2-3-1001' $true; [Console]::WriteLine('allowed planting') } catch { [Console]::WriteLine($_.Exception.Message) }",
+        "$ace.AccessMask = 0x40",
+        "try { Assert-TempAncestor $ancestor 'S-1-5-21-1-2-3-1001'; [Console]::WriteLine('allowed replacement') } catch { [Console]::WriteLine($_.Exception.Message) }",
         "$sweep = [System.Management.Automation.Language.Parser]::ParseInput($programs[7], [ref]$null, [ref]$null)",
         "$legacy = $sweep.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-LegacySweep' }, $false)",
         "if (!$legacy) { throw 'Expected an independent legacy sweep in the generated program' }",
@@ -224,6 +233,8 @@ describe("Windows helper integrity", () => {
     expect(result.stdout.trim().split(/\r?\n/)).toEqual([
       "O:S-1-5-21-1-2-3-1001D:P(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;;0x20;;;S-1-5-18)(A;;0x20;;;S-1-5-32-544)(A;;0x20;;;S-1-5-32-545)",
       "O:S-1-5-18D:P(A;OICI;FA;;;S-1-5-18)(A;;0x20;;;S-1-5-32-544)(A;;0x20;;;S-1-5-32-545)",
+      "Temporary ancestor grants replacement rights",
+      "Temporary ancestor grants replacement rights",
       "legacy sweep", "temp-root diagnostic", "private sweep",
     ]);
   });

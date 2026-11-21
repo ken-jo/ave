@@ -3535,18 +3535,23 @@ with its own owner rule:
   non-inheriting `FILE_TRAVERSE` on the parent. These are the existing image
   readers, and the runner opens the image under its own logon even on systems
   where that account has lost its traverse-bypass privilege. Each use checks
-  the owner, exact access entries and absence
-  of reparse points. Windows holds the path through the parent without delete
-  sharing during allocation and cleanup. A pre-existing parent that fails
-  verification is left in place. On POSIX the parent uses the effective UID
-  and mode `0700` under a private or sticky temp hierarchy. On macOS any
+  the owner, exact access entries and absence of reparse points. Windows checks
+  the canonical ancestors from the local drive root down for trusted owners and
+  refuses grants to other principals that could let them replace path entries.
+  Before creating a missing helper parent, it also refuses grants that could let
+  another principal plant a directory at that name.
+  The directory and descriptor operations use the framework APIs directly.
+  A pre-existing parent that fails verification is left in place. On POSIX the
+  parent uses the effective UID and mode `0700` under a private or sticky temp
+  hierarchy. On macOS any
   extended ACL grant on the parent or its canonical ancestors refuses the
   path. Ave strips inherited entries after an exclusive parent creation and
   verifies the result before using it.
-  Each copy and its `bin` directory are created exclusively. Their protected
+  A pre-existing copy or `bin` destination refuses provisioning. Their protected
   Windows DACLs and the image's DACL allow SYSTEM and the built-in users and
   administrators groups to read and execute. Only the token user can modify
-  the image. The file is filled with the bytes already verified by the host.
+  the image. The image is created exclusively and filled with the bytes
+  already verified by the host.
   The write-deny target is `bin`, so its parent's inheritable delete-child deny
   lands on the private outer directory, never `%TEMP%`. Grants inside or writable
   grants covering that outer directory are refused. Session reset or holder
