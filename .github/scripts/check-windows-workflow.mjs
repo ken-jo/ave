@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve, win32 } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
 import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
-import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
+import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
 const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
 const BARE_TEST_PATH_RE = new RegExp(String.raw`^\s*${TEST_PATH}(?![\w./\\-])`);
@@ -137,14 +137,7 @@ export function directCommandProblems(steps) {
 
 function inspectPowerShell(shell, steps) {
   const env = windowsPowerShellEnv();
-  let executable = shell;
-  if (shell === "powershell") {
-    const systemRoot = Object.entries(env).find(([key]) => key.toLowerCase() === "systemroot")?.[1];
-    if (!/^[a-z]:[\\/]/iu.test(systemRoot ?? "")) {
-      throw new Error("The powershell parser requires an absolute system directory");
-    }
-    executable = win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  }
+  const executable = shell === "powershell" ? windowsPowerShellPath(env) : shell;
   const encoded = Buffer.from(INSPECT_POWERSHELL_AST, "utf16le").toString("base64");
   const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
     input: JSON.stringify({ steps, executableNames: WORKFLOW_EXECUTABLES }),

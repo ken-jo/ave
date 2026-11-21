@@ -855,6 +855,9 @@ jobs:
           bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Every job process must have exited. With no concurrent writers, identity
+      # verification and tombstone rename suffice for recursive pathname removal.
+      # Handle-bound removal is outside the 2026-11-21 owner decision.
       - name: Remove isolated system-volume job directory
         if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         shell: powershell

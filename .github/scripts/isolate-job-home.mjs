@@ -5,8 +5,8 @@ import { randomUUID } from "node:crypto";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
-import { diagnoseJobRoot } from "./job-root-diagnostic.mjs";
+import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
+import { assertNoJobRootWriters, diagnoseJobRoot } from "./job-root-diagnostic.mjs";
 
 function systemVolume(systemRoot) {
   const root = typeof systemRoot === "string" ? win32.parse(systemRoot).root : "";
@@ -15,8 +15,9 @@ function systemVolume(systemRoot) {
 }
 
 function runJobRootCommand(command, args, options) {
-  const executable = command === "powershell.exe" ? "WindowsPowerShell\\v1.0\\powershell.exe" : command;
-  return execFileSync(win32.join(process.env.SystemRoot, "System32", executable), args, options);
+  const executable = command === "powershell.exe" ? windowsPowerShellPath()
+    : win32.join(process.env.SystemRoot, "System32", command);
+  return execFileSync(executable, args, options);
 }
 
 export function hardenWindowsJobRoot(root, run = runJobRootCommand) {
@@ -67,9 +68,14 @@ function createOwnedJobRoot(prefix, create, readIdentity, publish) {
   }
 }
 
-export function isolationAssignments(
+/**
+ * Setup rollback requires every job process to have exited. With no concurrent
+ * writers, identity verification and tombstone rename suffice for recursive
+ * pathname removal. Handle-bound removal is outside the 2026-11-21 decision.
+ */
+export async function isolationAssignments(
   { platform, runnerTemp, systemRoot }, create = mkdtempSync, harden = hardenWindowsJobRoot,
-  readIdentity = readJobRootIdentity, publish = () => {},
+  readIdentity = readJobRootIdentity, publish = () => {}, run,
 ) {
   const windows = platform === "win32";
   const paths = windows ? win32 : posix;
@@ -98,7 +104,7 @@ export function isolationAssignments(
   } catch (error) {
     if (windows) {
       try {
-        const tombstone = renameOwnedRoot(root, identity, readIdentity);
+        const tombstone = await renameOwnedRoot(root, identity, readIdentity, renameSync, run);
         rmSync(tombstone, { recursive: true, force: true });
       } catch (rollbackError) {
         throw new AggregateError([error, rollbackError], "Job isolation setup and rollback failed");
@@ -145,7 +151,9 @@ function assertOwnedRoot(root, identity, readIdentity) {
   }
 }
 
-function renameOwnedRoot(root, identity, readIdentity, rename = renameSync) {
+async function renameOwnedRoot(root, identity, readIdentity, rename, run) {
+  assertOwnedRoot(root, identity, readIdentity);
+  await assertNoJobRootWriters(root, run);
   assertOwnedRoot(root, identity, readIdentity);
   const tombstone = `${root}.cleanup-${randomUUID()}`;
   rename(root, tombstone);
@@ -163,7 +171,6 @@ function writeCleanupLog(lines) {
     { stdio: ["pipe", "ignore", 2], windowsHide: true });
   const deadline = setTimeout(() => {
     writer.stdin.destroy();
-    try { writer.kill(); } catch {}
     writer.unref();
   }, 250).unref();
   writer.on("error", () => {});
@@ -172,6 +179,11 @@ function writeCleanupLog(lines) {
   writer.stdin.end(lines.join("\n") + "\n");
 }
 
+/**
+ * Every job process must have exited. With no concurrent writers, identity
+ * verification and tombstone rename suffice for recursive pathname removal.
+ * Handle-bound removal is outside the 2026-11-21 owner decision.
+ */
 export async function cleanupWindowsJobRoot(root, {
   systemRoot = process.env.SystemRoot, identity = process.env.AVE_CI_JOB_ROOT_IDENTITY,
   readIdentity = readJobRootIdentity, rename = renameSync, remove = rmSync, run, diagnostic,
@@ -179,7 +191,7 @@ export async function cleanupWindowsJobRoot(root, {
   validateJobHomeRoot(root, systemRoot);
   let tombstone;
   try {
-    tombstone = renameOwnedRoot(root, identity, readIdentity, rename);
+    tombstone = await renameOwnedRoot(root, identity, readIdentity, rename, run);
   } catch (error) {
     if (error?.syscall === "rename") await reportCleanupFailure(root, error, { run, diagnostic });
     throw error;
@@ -216,7 +228,7 @@ async function main() {
   }
   const { RUNNER_TEMP: runnerTemp, GITHUB_ENV: githubEnv, SystemRoot: systemRoot } = process.env;
   if (!runnerTemp || !githubEnv) throw new Error("RUNNER_TEMP and GITHUB_ENV must be set");
-  const values = isolationAssignments({ platform: process.platform, runnerTemp, systemRoot },
+  const values = await isolationAssignments({ platform: process.platform, runnerTemp, systemRoot },
     mkdtempSync, hardenWindowsJobRoot, readJobRootIdentity, assignments => {
       for (const path of [assignments.HOME, assignments.TEMP, assignments.LOCALAPPDATA, assignments.APPDATA]) {
         if (path !== undefined) mkdirSync(path, { recursive: true });

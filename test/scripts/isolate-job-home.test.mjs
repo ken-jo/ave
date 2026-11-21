@@ -1,23 +1,22 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promises";
-import { promisify } from "node:util";
 import { describe, it, mock } from "node:test";
 import { parse } from "yaml";
-import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
+import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 import { diagnoseJobRoot } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { cleanupWindowsJobRoot as cleanupJobRoot, diagnoseCleanupFailure, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
 
 describe("job home isolation", () => {
-  it("places Windows fixtures on the system volume instead of the runner temp volume", () => {
+  it("places Windows fixtures on the system volume instead of the runner temp volume", async () => {
     const create = mock.fn(() => "C:\\ave-ci-abc123");
     const publish = mock.fn();
-    const values = isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot: "C:\\Windows" },
+    const values = await isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot: "C:\\Windows" },
       create, mock.fn(), () => "1:2:3", publish);
     assert.deepEqual(create.mock.calls.map(call => call.arguments), [["C:\\ave-ci-"]]);
     assert.deepEqual(values, {
@@ -32,8 +31,8 @@ describe("job home isolation", () => {
       [{ AVE_CI_JOB_ROOT: "C:\\ave-ci-abc123", AVE_CI_JOB_ROOT_IDENTITY: "unknown" }], [values],
     ]);
   });
-  it("leaves room for socket paths before publishing environment changes", () => {
-    assert.throws(() => isolationAssignments({ platform: "darwin", runnerTemp: "/".padEnd(81, "a") }), /socket path/);
+  it("leaves room for socket paths before publishing environment changes", async () => {
+    await assert.rejects(() => isolationAssignments({ platform: "darwin", runnerTemp: "/".padEnd(81, "a") }), /socket path/);
   });
 
   it("publishes the unverified job root for cleanup and preserves it when its identity cannot be read", async t => {
@@ -50,7 +49,7 @@ describe("job home isolation", () => {
     const env = {};
     const publish = assignments => { events.push("publish"); Object.assign(env, assignments); };
 
-    assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, create, harden,
+    await assert.rejects(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, create, harden,
       () => { events.push("read"); throw identityError; }, publish), error => {
       assert.match(error.message, /Directory left at /);
       assert.ok(error.message.includes(root));
@@ -79,19 +78,19 @@ describe("job home isolation", () => {
     assert.equal(readFileSync(sentinel, "utf8"), "preserve");
   });
 
-  it("keeps non-Windows homes under runner temp", () => {
+  it("keeps non-Windows homes under runner temp", async () => {
     const create = mock.fn();
     const home = "/runner/temp/home";
-    assert.deepEqual(isolationAssignments({ platform: "linux", runnerTemp: "/runner/temp" }, create), {
+    assert.deepEqual(await isolationAssignments({ platform: "linux", runnerTemp: "/runner/temp" }, create), {
       HOME: home, USERPROFILE: home, AVE_HOME: `${home}/.ave`,
       TMPDIR: "/runner/temp/tmp", TEMP: "/runner/temp/tmp", TMP: "/runner/temp/tmp",
     });
     assert.equal(create.mock.callCount(), 0);
   });
   for (const systemRoot of [undefined, "Windows", "\\\\host\\share\\Windows"]) {
-    it(`refuses an invalid system directory before creating a root: ${systemRoot}`, () => {
+    it(`refuses an invalid system directory before creating a root: ${systemRoot}`, async () => {
       const create = mock.fn();
-      assert.throws(() => isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot }, create), /local system volume/);
+      await assert.rejects(() => isolationAssignments({ platform: "win32", runnerTemp: "D:\\a\\_temp", systemRoot }, create), /local system volume/);
       assert.equal(create.mock.callCount(), 0);
     });
   }
@@ -119,7 +118,7 @@ function queryRecords({
     ...entries.map(entry => ({ kind: "candidate", ...entry })),
     { kind: "files", failed, changed, limited, empty: entries.length === 0 },
     ...holders,
-    { kind: "holders", limited: false },
+    { kind: "holders", limited: false, failed: false },
     ...processes,
     { kind: "processes", failed: processScanFailed, limited: processLimited },
   ];
@@ -149,11 +148,17 @@ function runFixturePowerShell(script) {
     ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")],
     { encoding: "utf8", windowsHide: true, stdio: "pipe", env: windowsPowerShellEnv() }).trim();
 }
+function runFixtureQuery(executable, args, { env, encoding, windowsHide }, done) {
+  const child = spawn(executable, args, { env, windowsHide, stdio: ["ignore", "pipe", "ignore"] });
+  child.stdout.setEncoding(encoding);
+  child.once("error", done);
+  child.once("close", code => done(code === 0 ? null : new Error("Fixture query failed")));
+  return child;
+}
 function runInjectedQuery(injection, transform = script => script) {
-  return (command, args, options, done) => {
+  return (_command, args, options, done) => {
     const env = { ...options.env, [QUERY_VARIABLE]: `${injection}\n${transform(options.env[QUERY_VARIABLE])}` };
-    return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
-      args, { ...options, env }, done);
+    return runFixtureQuery(windowsPowerShellPath(), args, { ...options, env }, done);
   };
 }
 async function within(promise, ms, message) {
@@ -194,6 +199,101 @@ function fixtureIdentity(path) {
   const { dev, ino, birthtimeNs } = lstatSync(path, { bigint: true });
   return `${dev}:${ino}:${birthtimeNs}`;
 }
+
+describe("Windows job root writer precondition", () => {
+  const root = "C:\\ave-ci-abc123";
+  const systemRoot = "C:\\Windows";
+
+  function fixture(t) {
+    const parent = realpathSync.native(mkdtempSync(join(tmpdir(), "example-")));
+    t.after(() => rmSync(parent, { recursive: true, force: true }));
+    const localRoot = join(parent, win32.basename(root));
+    const held = join(localRoot, "example.log");
+    const sentinel = join(parent, "shared");
+    mkdirSync(localRoot);
+    writeFileSync(held, "example");
+    writeFileSync(sentinel, "preserve");
+    const localPath = path => join(parent, win32.basename(path));
+    return {
+      parent, localRoot, held,
+      options: {
+        systemRoot, identity: fixtureIdentity(localRoot),
+        readIdentity: path => fixtureIdentity(localPath(path)),
+        rename: (from, to) => renameSync(localPath(from), localPath(to)),
+        remove: (path, options) => rmSync(localPath(path), options),
+      },
+      assertPreserved() {
+        assert.equal(readFileSync(held, "utf8"), "example");
+        assert.equal(readFileSync(sentinel, "utf8"), "preserve");
+        assert.deepEqual(readdirSync(parent).sort(), [win32.basename(root), "shared"]);
+      },
+    };
+  }
+
+  it("preserves the original root when the writer query fails", async t => {
+    const job = fixture(t);
+    const run = (_command, _args, _options, done) => done(new Error("Query unavailable"));
+    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), /writer evidence is incomplete/i);
+    job.assertPreserved();
+  });
+
+  it("preserves the root when the writer scan reaches its entry limit", async t => {
+    const job = fixture(t);
+    const run = queryResult({ limited: true });
+    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), /Cleanup path scan exceeded 4096 entries/);
+    job.assertPreserved();
+  });
+
+  if (process.platform === "win32") {
+    for (const operation of ["cleanup", "rollback"]) {
+      it(`refuses ${operation} while an outside process holds a job file open`, async t => {
+        const job = fixture(t);
+        // Only the environment names the file, so the command line scan cannot identify this holder.
+        const holder = spawn(process.execPath, ["-e", [
+          "const fs = require('node:fs');",
+          "const fd = fs.openSync(process.env.EXAMPLE_FILE, 'r+');",
+          "process.stdin.on('end', () => fs.closeSync(fd)).resume();",
+          "console.log('ready');",
+        ].join(" ")], {
+          cwd: job.parent, env: { ...process.env, EXAMPLE_FILE: job.held }, windowsHide: true, stdio: "pipe",
+        });
+        const exited = once(holder, "exit");
+        try {
+          const [ready] = await Promise.race([
+            once(holder.stdout, "data"), exited.then(() => { throw new Error("Holder exited before opening the file"); }),
+          ]);
+          assert.equal(ready.toString().trim(), "ready");
+          const inspect = runInjectedQuery("", script => script.replace(
+            `$root = ${powerShellLiteral(root)}`, `$root = ${powerShellLiteral(job.localRoot)}`,
+          ));
+          const run = (command, args, options, done) => options.env[QUERY_VARIABLE].includes(`$root = ${powerShellLiteral(root)}`)
+            ? inspect(command, args, options, done) : done(new Error("Unexpected post-removal query"));
+          const setupError = new Error("Could not publish job environment");
+          const failure = operation === "cleanup"
+            ? () => cleanupJobRoot(root, { ...job.options, run, diagnostic: () => {} })
+            : async () => isolationAssignments({ platform: "win32", systemRoot }, () => job.localRoot,
+              () => {}, fixtureIdentity, assignments => { if (assignments.HOME) throw setupError; });
+          await assert.rejects(failure, error => {
+            if (operation === "rollback") {
+              assert.ok(error instanceof AggregateError);
+              assert.equal(error.errors[0], setupError);
+              error = error.errors[1];
+            }
+            assert.match(error.message, new RegExp(`holder pid=${holder.pid}\\b`, "i"));
+            assert.ok(error.message.includes(`image=${JSON.stringify(process.execPath)}`), error.message);
+            assert.ok(error.message.includes(`path=${JSON.stringify(job.held)}`), error.message);
+            return true;
+          });
+          job.assertPreserved();
+        } finally {
+          holder.stdin.end();
+          const [code] = await exited;
+          assert.equal(code, 0);
+        }
+      });
+    }
+  }
+});
 
 function createJobRootFixture(t) {
   const root = mkdtempSync(`${tmpdir()}${sep}.${sep}example-`);
@@ -248,32 +348,34 @@ describe("Windows cleanup root ownership", () => {
   it("preserves a directory swapped in after the cleanup identity check", async t => {
     const fixture = rootSwapFixture(t);
     const localPath = path => join(fixture.parent, win32.basename(path));
+    let reads = 0;
     const failure = await cleanupJobRoot(root, {
       systemRoot: "C:\\Windows", identity: fixtureIdentity(fixture.root),
       readIdentity(path) {
         const identity = fixtureIdentity(localPath(path));
-        if (path === root) fixture.swap();
+        if (path === root && ++reads === 2) fixture.swap();
         return identity;
       },
       rename: (from, to) => renameSync(localPath(from), localPath(to)),
       remove: (path, options) => rmSync(localPath(path), options),
+      run: queryResult(),
     }).catch(error => error);
     fixture.assertPreserved();
     assert.match(String(failure), /unchanged isolated job root/);
   });
 
-  it("preserves a directory swapped in after the rollback identity check", t => {
+  it("preserves a directory swapped in after the rollback identity check", async t => {
     const fixture = rootSwapFixture(t);
     const setupError = new Error("DACL readback failed");
     let reads = 0;
     let failure;
     try {
-      isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => fixture.root,
+      await isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => fixture.root,
         () => { throw setupError; }, path => {
           const identity = fixtureIdentity(path);
-          if (++reads === 2) fixture.swap();
+          if (++reads === 3) fixture.swap();
           return identity;
-        });
+        }, undefined, queryResult());
     } catch (error) { failure = error; }
     fixture.assertPreserved();
     assert.ok(failure instanceof AggregateError);
@@ -350,7 +452,7 @@ describe("Windows job root cleanup diagnostics", () => {
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
     const elapsed = performance.now() - start;
     assert.ok(elapsed >= 4500 && elapsed < 6500, `elapsed=${elapsed}`);
-    assert.equal(child.kill.mock.callCount(), 1);
+    assert.equal(child.kill.mock.callCount(), 0);
     assert.equal(child.unref.mock.callCount(), 1);
     assert.ok(child.stdin.destroyed && child.stdout.destroyed && child.stderr.destroyed);
     assert.match(output(seams), /Cleanup diagnostic failed or timed out/);
@@ -380,13 +482,17 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.equal(Buffer.concat(seen).toString(), "original");
       t.diagnostic("original removal error observed with stderr unread");
     } finally {
-      if (child.exitCode === null && child.signalCode === null) child.kill();
       child.stderr.destroy();
       child.stdout.destroy();
       await within(exited, 2000, "Cleanup fixture did not exit");
     }
-    const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--input-type=module", "-e", script],
-      { timeout: 5500, windowsHide: true });
+    const reader = spawn(process.execPath, ["--input-type=module", "-e", script], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const out = [], err = [];
+    reader.stdout.on("data", chunk => out.push(chunk));
+    reader.stderr.on("data", chunk => err.push(chunk));
+    const [code] = await within(once(reader, "close"), 5500, "Cleanup fixture did not exit");
+    assert.equal(code, 0);
+    const stdout = Buffer.concat(out).toString(), stderr = Buffer.concat(err).toString();
     assert.equal(stdout, "original");
     assert.match(stderr, /^Job root cleanup failed:/);
     assert.match(stderr, /candidate path=/);
@@ -414,10 +520,10 @@ describe("Windows job root cleanup diagnostics", () => {
         const before = snapshot();
         const error = Object.assign(blockedRemoval(), { path: join(root, "blocked-original.txt") });
         const seams = cleanupSeams(error);
-        seams.run = mock.fn((command, args, options, done) => {
+        seams.run = mock.fn((_command, args, options, done) => {
           renameSync(root, saved); symlinkSync(target, root, "junction"); swapped = true;
           if (processQuery === "unavailable" || process.platform !== "win32") return done(new Error("Query unavailable"));
-          return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command), args, options, done);
+          return runFixtureQuery(windowsPowerShellPath(), args, options, done);
         });
         await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
         assert.equal(swapped, true);
@@ -442,7 +548,7 @@ describe("Windows job root cleanup diagnostics", () => {
       entries: [{ path: root, attributes: "Directory", owner: null, deny: null, parentDeny: null, created: null, lastWrite: null }],
     }).split("\n").slice(0, 2);
     const evidence = `${records.join("\n")}\n`;
-    seams.run = (_command, _args, options, done) => execFile(process.execPath,
+    seams.run = (_command, _args, options, done) => runFixtureQuery(process.execPath,
       ["-e", "process.stdout.write(process.env.EXAMPLE_EVIDENCE, () => process.stdout.write('SYNTHETIC'.repeat(20000)))"],
       { ...options, env: { ...options.env, EXAMPLE_EVIDENCE: evidence } }, done);
     await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
@@ -497,7 +603,7 @@ describe("Windows job root cleanup diagnostics", () => {
       mkdirSync(target);
       writeFileSync(sentinel, "preserve");
       symlinkSync(target, staged, "junction");
-      seams.run = (command, args, options, done) => {
+      seams.run = (_command, args, options, done) => {
         const script = options.env[QUERY_VARIABLE];
         const beforeOpen = "    $handle = if ($canList)";
         assert.ok(script.includes(beforeOpen));
@@ -508,7 +614,7 @@ describe("Windows job root cleanup diagnostics", () => {
           "    }",
         ].join("\n");
         const env = { ...options.env, [QUERY_VARIABLE]: script.replace(beforeOpen, `${swap}\n${beforeOpen}`) };
-        return execFile(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command),
+        return runFixtureQuery(windowsPowerShellPath(),
           args, { ...options, env }, done);
       };
       await assert.rejects(cleanupWindowsJobRoot(root, seams), caught => caught === error);
@@ -624,8 +730,8 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.equal(existsSync(root), false);
     } finally {
       if (holder && holder.exitCode === null) {
-        if (holder.signalCode === null) holder.kill();
-        await within(exited, 2000, "Holder did not terminate");
+        holder.stdin.end();
+        await within(exited, 2000, "Holder did not exit after EOF");
       }
       rmSync(fixture, { recursive: true, force: true });
     }
@@ -861,23 +967,24 @@ describe("Windows job root hardening", () => {
       assert.equal(run.mock.callCount(), 1);
     });
   }
-  it("hardens the new root while it is empty before returning child paths", t => {
+  it("hardens the new root while it is empty before returning child paths", async t => {
     const root = createJobRootFixture(t);
     const harden = mock.fn(path => {
       assert.equal(path, root);
       assert.deepEqual(readdirSync(root), []);
     });
-    isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => root, harden);
+    await isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => root, harden);
     assert.equal(harden.mock.callCount(), 1);
   });
-  it("removes the half-made root when hardening fails", t => {
+  it("removes the half-made root when hardening fails", async t => {
     const root = createJobRootFixture(t);
-    assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => root,
-      () => { throw new Error("DACL readback failed"); }), /DACL readback failed/);
+    await assert.rejects(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" }, () => root,
+      () => { throw new Error("DACL readback failed"); }, undefined, undefined,
+      process.platform !== "win32" ? queryResult() : undefined), /DACL readback failed/);
     assert.equal(existsSync(root), false);
   });
   for (const stage of ["child directory creation", "environment publication"]) {
-    it(`rolls back the new root on ${stage} failure`, () => {
+    it(`rolls back the new root on ${stage} failure`, async () => {
       const root = mkdtempSync(join(tmpdir(), "ave-job-publish-"));
       const error = new Error(`Could not finish ${stage}`);
       const publish = mock.fn(assignments => {
@@ -886,8 +993,9 @@ describe("Windows job root hardening", () => {
         throw error;
       });
       try {
-        assert.throws(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" },
-          () => root, mock.fn(), () => "1:2:3", publish), caught => caught === error);
+        await assert.rejects(() => isolationAssignments({ platform: "win32", systemRoot: "C:\\Windows" },
+          () => root, mock.fn(), () => "1:2:3", publish,
+          process.platform !== "win32" ? queryResult() : undefined), caught => caught === error);
         assert.equal(publish.mock.callCount(), 2);
         assert.equal(existsSync(root), false);
       } finally { rmSync(root, { recursive: true, force: true }); }

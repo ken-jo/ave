@@ -1,11 +1,11 @@
-import { execFile } from "node:child_process";
-import { win32 } from "node:path";
-import { windowsPowerShellEnv } from "../../scripts/lib/windows-powershell-env.mjs";
+import { spawn } from "node:child_process";
+import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
 const TIMEOUT_MS = 5000;
 const OUTPUT_LIMIT = 64 * 1024;
 const RESULT_LIMIT = 20;
 const SCAN_LIMIT = 128;
+const WRITER_SCAN_LIMIT = 4096;
 const DENY_LIMIT = 8;
 const PROCESS_SCAN_LIMIT = 512;
 const PROCESS_PATH_LIMIT = 256;
@@ -148,9 +148,12 @@ function ReadChildren($handle, $limit) {
 }
 `;
 
-function runJobRootQuery(command, args, options, done) {
-  const executable = win32.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", command);
-  return execFile(executable, args, options, done);
+function runJobRootQuery(_command, args, { encoding, env, windowsHide }, done) {
+  const child = spawn(windowsPowerShellPath(env), args, { env, windowsHide, stdio: ["ignore", "pipe", "ignore"] });
+  child.stdout.setEncoding(encoding);
+  child.once("error", done);
+  child.once("close", code => done(code === 0 ? null : new Error("Job root query failed")));
+  return child;
 }
 
 const EVIDENCE_WRITER = String.raw`
@@ -230,11 +233,13 @@ function ReadCurrentDirectory($id) {
 }
 `;
 
-function queryScript(root) {
+function queryScript(root, preflight) {
+  const scanLimit = preflight ? WRITER_SCAN_LIMIT + 1 : SCAN_LIMIT;
   return String.raw`
 ${EVIDENCE_WRITER}
 $root = '${root.replaceAll("'", "''")}'
 $prefix = $root.TrimEnd('\') + '\'
+$preflight = $${preflight}
 $script:failed = $false
 $script:changed = $false
 ${HANDLE_QUERY}
@@ -258,7 +263,8 @@ function ReadHolderMetadata($record, $started) {
     if ($process.IsInvalid) { return }
     $created = $exited = $kernel = $user = 0L
     if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user) -or
-        $created -ne $started) { return }
+        ($null -ne $started -and $created -ne $started)) { return }
+    if ($null -eq $started) { $record.created = [DateTime]::FromFileTimeUtc($created).ToString('o') }
     $image = [Text.StringBuilder]::new(32768)
     $length = [uint32]$image.Capacity
     if ($native::QueryFullProcessImageNameW($process, 0, $image, [ref]$length)) {
@@ -397,18 +403,45 @@ function ReadHolderGroup([object[]]$group) {
   ReadHolderGroup $verified[$middle..($verified.Count - 1)]
 }
 
+function ReadWriterHolders($handle, $path) {
+  # FileProcessIdsUsingFileInformation is a count followed by aligned ULONG_PTR PIDs.
+  # Query the opened entry directly without a registry-backed resource session.
+  $info = [byte[]]::new((${MAX_HOLDERS} + 1) * $pointerSize)
+  $ioStatus = $marshal::AllocHGlobal(2 * $pointerSize)
+  try {
+    $status = $native::NtQueryInformationFile($handle, $ioStatus, $info, $info.Length, 47)
+    $count = [BitConverter]::ToUInt32($info, 0)
+    if ($status -ne 0 -or $count -gt ${MAX_HOLDERS}) {
+      @{ kind = 'handleQuery'; path = $path; status = $status }
+      return
+    }
+    for ($i = 1; $i -le $count; $i++) {
+      $id = (ReadProcessPointer $info ($i * $pointerSize) $pointerSize).ToInt64()
+      if ($id -eq $PID) { continue }
+      if ($id -le 0 -or $id -gt [int]::MaxValue) { throw 'Invalid file holder PID' }
+      $record = @{ kind = 'holder'; path = $path; pid = $id; unresolvedParentPid = $null
+        image = $null; created = $null; app = $null; service = $null }
+      try { ReadHolderMetadata $record $null } catch {}
+      if (!$record.image) { $record.image = (Get-Process -Id $id -ErrorAction SilentlyContinue).ProcessName }
+      $record
+    }
+  } finally { $marshal::FreeHGlobal($ioStatus) }
+}
+
 function FindJobProcesses {
   $rootPattern = '(?<![\w:\\])(?:\\\\\?\\)?' + [regex]::Escape($root) +
     '(?:\\[^\s"''<>|;&=,)]*)?(?=$|[\s"''<>|;&=,):])'
   $pattern = [regex]::new($rootPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
   $inspected = 0
   $matched = 0
-  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate |
+  $sawQueryProcess = $false
+  Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,CommandLine,CreationDate,Name |
     Sort-Object CreationDate -Descending | Select-Object -First ${PROCESS_SCAN_LIMIT + 1} | ForEach-Object {
     if (++$inspected -gt ${PROCESS_SCAN_LIMIT}) { $script:processLimited = $true; return }
     if ($matched -gt ${RESULT_LIMIT}) { return }
     $row = $_
-    if ($row.ProcessId -eq $PID -or $row.ProcessId -eq 0) { return }
+    if ($row.ProcessId -eq $PID) { $sawQueryProcess = $true; return }
+    if ($row.ProcessId -eq 0) { return }
     try {
       $reason = $null
       if (TestJobPath $row.ExecutablePath) { $reason = 'image' }
@@ -421,10 +454,12 @@ function FindJobProcesses {
       if (!$reason) { return }
       if (++$matched -gt ${RESULT_LIMIT}) { $script:processLimited = $true; return }
       $record = NewProcessRecord $row 'process'
+      if (!$record.image) { $record.image = LimitProcessPath $row.Name }
       $record.reason = $reason
       $record
     } catch { $script:processFailed = $true }
   }
+  if ($preflight -and !$sawQueryProcess) { $script:processFailed = $true }
 }
 
 function ReadEntryAcl($handle) {
@@ -486,13 +521,14 @@ function FindSurvivingEntries {
     }
   }
   $queue.Enqueue(@{ path = $root; name = [IO.Path]::GetFileName($root); attributes = $directoryFlag;
-    parent = $parent; parentAcl = (ReadEntryAcl $parent); parentPinned = $parentPinned })
+    parent = $parent; parentAcl = $(if (!$preflight) { ReadEntryAcl $parent }); parentPinned = $parentPinned })
   while ($queue.Count) {
     $next = $queue.Dequeue()
     $isRoot = $next.path -eq $root
     $expectedKind = $next.attributes -band ($directoryFlag -bor $reparseFlag)
-    $canList = $expectedKind -eq $directoryFlag -and $script:discovered -lt ${SCAN_LIMIT}
-    $access = $readAttributes -bor $readControl
+    if ($preflight -and ($expectedKind -band $reparseFlag)) { $script:failed = $true; continue }
+    $canList = $expectedKind -eq $directoryFlag -and $script:discovered -lt ${scanLimit}
+    $access = if ($preflight) { $readAttributes } else { $readAttributes -bor $readControl }
     $handle = if ($canList) { OpenRelative $next.parent $next.name ($access -bor $readData) $shareWithoutDelete }
     $isFile = $expectedKind -eq 0
     if (!$handle) {
@@ -510,35 +546,39 @@ function FindSurvivingEntries {
       $script:failed = $true
       continue
     }
-    $acl = ReadEntryAcl $handle
-    $entry = @{
-      kind = 'candidate'
-      path = $next.path
-      attributes = $attributes.ToString()
-      created = $basic.created
-      lastWrite = $basic.lastWrite
-      owner = $acl.owner
-      deny = $acl.deny
-      denyOmitted = $acl.omitted
-      parentDeny = $next.parentAcl.deny
-      parentDenyOmitted = $next.parentAcl.omitted
+    $acl = if (!$preflight) { ReadEntryAcl $handle }
+    if (!$preflight) {
+      $entry = @{
+        kind = 'candidate'
+        path = $next.path
+        attributes = $attributes.ToString()
+        created = $basic.created
+        lastWrite = $basic.lastWrite
+        owner = $acl.owner
+        deny = $acl.deny
+        denyOmitted = $acl.omitted
+        parentDeny = $next.parentAcl.deny
+        parentDenyOmitted = $next.parentAcl.omitted
+      }
+      if ($isRoot -or !$acl -or ($attributes -band ($reparseFlag -bor [IO.FileAttributes]::ReadOnly)) -or
+          ($acl.deleteRights -band [Security.AccessControl.FileSystemRights]::Delete) -or
+          ($next.parentAcl.deleteRights -band [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles)) {
+        $priority.Add($entry)
+      } else { $survivors.Add($entry) }
     }
-    if ($isFile) {
+    if ($preflight) {
+      ReadWriterHolders $handle $next.path
+    } elseif ($isFile) {
       $identity = try { ReadFileIdentity $handle } catch { $script:failed = $true; $null }
       $files.Add(@{ path = $next.path; parent = $next.parent; name = $next.name
         parentPinned = $next.parentPinned -and $null -ne $identity; identity = $identity })
     }
-    if ($isRoot -or !$acl -or ($attributes -band ($reparseFlag -bor [IO.FileAttributes]::ReadOnly)) -or
-        ($acl.deleteRights -band [Security.AccessControl.FileSystemRights]::Delete) -or
-        ($next.parentAcl.deleteRights -band [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles)) {
-      $priority.Add($entry)
-    } else { $survivors.Add($entry) }
     if ($canList) {
-      $remaining = ${SCAN_LIMIT} - $script:discovered
+      $remaining = ${scanLimit} - $script:discovered
       try {
         foreach ($child in (ReadChildren $handle $remaining)) {
           $path = [IO.Path]::Combine($next.path, $child.name)
-          if ($script:discovered -ge ${SCAN_LIMIT}) { break }
+          if ($script:discovered -ge ${scanLimit}) { break }
           $queue.Enqueue(@{ path = $path; name = $child.name;
             attributes = $child.attributes; parent = $handle; parentAcl = $acl; parentPinned = $next.parentPinned })
           $script:discovered++
@@ -554,10 +594,17 @@ $handles = [Collections.Generic.List[object]]::new()
 $files = [Collections.Generic.List[object]]::new()
 $script:discovered = 0
 $script:holderFailed = $false
+$writerHolders = [Collections.Generic.List[object]]::new()
+$holderLimited = $false
 try {
-  try { FindSurvivingEntries } catch { $script:failed = $true }
+  try {
+    FindSurvivingEntries | ForEach-Object {
+      if ($writerHolders.Count -ge ${MAX_HOLDERS}) { $holderLimited = $true }
+      else { $writerHolders.Add($_) }
+    }
+  } catch { $script:failed = $true }
   $entries = @($priority.ToArray() + $survivors.ToArray() | Select-Object -First ${RESULT_LIMIT})
-  $fileLimited = $priority.Count + $survivors.Count -gt ${RESULT_LIMIT} -or $script:discovered -ge ${SCAN_LIMIT}
+  $fileLimited = $priority.Count + $survivors.Count -gt ${RESULT_LIMIT} -or $script:discovered -ge ${scanLimit}
   foreach ($entry in $entries) {
     if (!(WriteEvidence $entry ${FILE_OUTPUT_LIMIT})) { $fileLimited = $true }
   }
@@ -566,14 +613,14 @@ try {
     empty = $entries.Count -eq 0
   } ${FILE_OUTPUT_LIMIT + 256}
 
-  $holderLimited = $false
   $holderFailures = [Collections.Generic.List[object]]::new()
   & {
     try {
-      if ($files.Count) { ReadHolderGroup $files.ToArray() }
+      if ($preflight) { $writerHolders.ToArray() }
+      elseif ($files.Count) { ReadHolderGroup $files.ToArray() }
     } catch {
-      @{ kind = 'restartManager'; path = $root; operation = 'query'; code = $null }
       $script:holderFailed = $true
+      if (!$preflight) { @{ kind = 'restartManager'; path = $root; operation = 'query'; code = $null } }
     }
   } | ForEach-Object {
     if ($_.kind -eq 'restartManager') { $holderFailures.Add($_) }
@@ -692,7 +739,6 @@ function collectQuery(script, timeout, maxBuffer, readRecord, run) {
 
     const deadline = setTimeout(() => {
       finish(true);
-      try { child?.kill(); } catch {}
       child?.stdin?.destroy();
       child?.stdout?.destroy();
       child?.stderr?.destroy();
@@ -708,7 +754,23 @@ function collectQuery(script, timeout, maxBuffer, readRecord, run) {
   });
 }
 
-export async function diagnoseJobRoot(root, diagnostic, run = runJobRootQuery) {
+export async function diagnoseJobRoot(root, diagnostic, run) {
+  await inspectJobRoot(root, diagnostic, run, false);
+}
+
+export async function assertNoJobRootWriters(root, run) {
+  const evidence = [];
+  let reason = "live processes can still access the job root";
+  try {
+    await inspectJobRoot(root, line => evidence.push(line), run, true);
+    if (!evidence.length) return;
+  } catch {
+    reason = "writer evidence is incomplete";
+  }
+  throw new Error([`Cannot clean up job root ${root}: ${reason}. Directory left in place.`, ...evidence].join("\n"));
+}
+
+async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight) {
   let outputBytes = 0;
   let outputLimited = false;
   let failed = false;
@@ -729,24 +791,36 @@ export async function diagnoseJobRoot(root, diagnostic, run = runJobRootQuery) {
   let fileCount = 0;
   let processCount = 0;
   let holdersOutputEnd = 0;
-  const script = queryScript(root);
+  function incomplete(row, ...flags) {
+    return flags.some(key => row[key] !== false);
+  }
+
+  const script = queryScript(root, preflight);
   const queryOk = await collectQuery(script, TIMEOUT_MS, OUTPUT_LIMIT, row => {
-    if (!filesComplete && row.kind === "candidate") {
+    if (!preflight && !filesComplete && row.kind === "candidate") {
       if (fileCount++ < RESULT_LIMIT) emit(formatCandidate(row), FILE_OUTPUT_LIMIT);
     } else if (!filesComplete && row.kind === "files") {
       filesComplete = true;
-      failed ||= row.failed;
-      if (row.empty && !row.failed) emit("Cleanup path scan found no surviving entries");
+      failed ||= preflight ? incomplete(row, "failed", "changed", "limited") : row.failed;
+      if (!preflight && row.empty && !row.failed) emit("Cleanup path scan found no surviving entries");
+      if (preflight && row.failed) emit("Cleanup path scan could not verify all entries");
       if (row.changed) emit("Cleanup path scan skipped an entry whose directory or reparse attributes changed");
-      if (row.limited) emit("Cleanup path scan reached its inspection or reporting limit");
+      if (row.limited) emit(preflight ? `Cleanup path scan exceeded ${WRITER_SCAN_LIMIT} entries`
+        : "Cleanup path scan reached its inspection or reporting limit");
       holdersOutputEnd = outputBytes + HOLDER_OUTPUT_LIMIT - FILE_OUTPUT_LIMIT;
     } else if (filesComplete && !holdersComplete) {
       if (row.kind === "holders") {
         holdersComplete = true;
-        failed ||= row.failed;
-        if (row.limited) emit("Restart Manager output reached its reporting limit");
+        failed ||= preflight ? incomplete(row, "failed", "limited") : row.failed;
+        if (preflight && row.failed) emit("Native file holder lookup was incomplete");
+        if (row.limited) emit(`${preflight ? "Native file holder" : "Restart Manager"} output reached its reporting limit`);
       } else if (row.kind === "restartManager") {
+        if (preflight) throw new Error("Unexpected Restart Manager record");
         emit(formatRestartManagerFailure(row), holdersOutputEnd);
+      } else if (preflight && row.kind === "handleQuery") {
+        if (typeof row.path !== "string" || !Number.isInteger(row.status)) throw new Error("Invalid native file holder status");
+        failed = true;
+        emit(`Native file holder lookup failed path=${JSON.stringify(row.path)} status=${row.status}`, holdersOutputEnd);
       } else if (row.kind === "holder") {
         emit(formatProcess(row), holdersOutputEnd);
       } else {
@@ -755,10 +829,12 @@ export async function diagnoseJobRoot(root, diagnostic, run = runJobRootQuery) {
     } else if (holdersComplete && !processesComplete) {
       if (row.kind === "processes") {
         processesComplete = true;
+        if (preflight) failed ||= incomplete(row, "failed", "limited");
         if (row.limited) emit("Cleanup process scan reached its inspection or reporting limit");
         if (row.failed) emit("Cleanup process scan was incomplete");
       } else if (row.kind === "process") {
         if (processCount++ < RESULT_LIMIT) emit(formatProcess(row));
+        else failed ||= preflight;
       } else {
         throw new Error("Unexpected process record");
       }
@@ -766,7 +842,9 @@ export async function diagnoseJobRoot(root, diagnostic, run = runJobRootQuery) {
       throw new Error("Unexpected cleanup record");
     }
   }, run);
-  if (filesComplete && !holdersComplete) emit("Restart Manager lookup was incomplete");
+  if (filesComplete && !holdersComplete) emit(`${preflight ? "Native file holder" : "Restart Manager"} lookup was incomplete`);
   if (outputLimited) emit("Cleanup diagnostic output reached its byte limit", OUTPUT_LIMIT);
-  if (!queryOk || failed || !filesComplete || !processesComplete) throw new Error("Cleanup query was incomplete");
+  if (!queryOk || failed || !filesComplete || !processesComplete || (preflight && (!holdersComplete || outputLimited))) {
+    throw new Error("Cleanup query was incomplete");
+  }
 }
