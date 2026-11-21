@@ -554,12 +554,12 @@ describe("Windows helper integrity", () => {
     // Anything already at the path refuses creation, before the create call.
     const refusal = script.indexOf("throw 'Private directory already exists'");
     expect(refusal).toBeGreaterThan(-1);
-    const create = script.indexOf("[PrivateDirectory]::Create($outer, $descriptor)");
+    const create = script.indexOf("[PrivateDirectory]::Create($held, $outer, $descriptor)");
     expect(create).toBeGreaterThan(refusal);
-    expect(script).toContain("if (!CreateDirectoryW(ExtendedPath(path), ref attributes)) throw new Win32Exception");
+    expect(script).toContain("ref attributes, out io, IntPtr.Zero, Directory, 3u, 2u, 0x00200021u");
     const receipt = script.indexOf("[PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, 'outer', $outerHandle)");
     expect(receipt).toBeGreaterThan(create);
-    expect(receipt).toBeLessThan(script.indexOf("[PrivateDirectory]::Create($bin, $descriptor)"));
+    expect(receipt).toBeLessThan(script.indexOf("[PrivateDirectory]::Create($held, $bin, $descriptor)"));
     expect(script).toContain("[System.IO.FileMode]::CreateNew");
     expect(script).toContain("$fileSecurity)");
     expect(script).toContain("$stream.GetAccessControl().GetOwner(");

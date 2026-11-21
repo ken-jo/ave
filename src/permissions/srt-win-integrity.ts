@@ -60,10 +60,10 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$descriptor = $security.GetSecurityDescriptorBinaryForm()",
   "$held = [PrivateDirectory]::HoldParents($outer)",
   "try {",
-  "$outerHandle = [PrivateDirectory]::Create($outer, $descriptor); $held.Add($outerHandle)",
+  "$outerHandle = [PrivateDirectory]::Create($held, $outer, $descriptor); $held.Add($outerHandle)",
   "[PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, 'outer', $outerHandle)",
   "foreach ($directory in @($outer, $bin)) {",
-  "if ($directory -eq $bin) { $binHandle = [PrivateDirectory]::Create($bin, $descriptor); $held.Add($binHandle); [PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, 'bin', $binHandle) }",
+  "if ($directory -eq $bin) { $binHandle = [PrivateDirectory]::Create($held, $bin, $descriptor); $held.Add($binHandle); [PrivateDirectory]::Record($env:AVE_SRT_ALLOCATION_RECORD, 'bin', $binHandle) }",
   "$attributes = [System.IO.File]::GetAttributes($directory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { throw 'Private directory is not a plain directory' }",
   "$check = [System.IO.Directory]::GetAccessControl($directory)",
@@ -145,7 +145,7 @@ const copyDisposers = new Set<() => void>();
 function isAllocationDirectory(path: string, identity: string | undefined): boolean {
   if (identity === undefined) return false;
   const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-  return entry !== undefined && entry.isDirectory() && allocationIdentity(entry) === identity;
+  return entry?.isDirectory() === true && allocationIdentity(entry) === identity;
 }
 
 function forgetIfGone(allocation: SrtWinAllocation): void {
