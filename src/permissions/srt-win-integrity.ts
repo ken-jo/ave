@@ -132,7 +132,7 @@ const SWEEP_SCRIPT = [
   "$hasImage = $image -in $entries",
   "if ($marker -notin $entries -or $entries.Count -ne (1 + [int]$hasImage)) { continue }",
   // Partial copies keep the generated name. The complete shape also supports older names.
-  "if ($entries.Count -ne 2 -and [System.IO.Path]::GetFileName($directory) -notmatch '^ave-srt-win-[0-9a-f]+$') { continue }",
+  "if (!$hasImage -and [System.IO.Path]::GetFileName($directory) -notmatch '\\Aave-srt-win-[0-9a-f]{32}\\z') { continue }",
   "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false } }",
   "if (!$plain) { continue }",
   "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",

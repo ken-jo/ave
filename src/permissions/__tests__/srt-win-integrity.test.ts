@@ -589,6 +589,19 @@ describe("Windows helper integrity", () => {
     expect(existsSync(copy)).toBe(false);
   });
 
+  it.for(["a", "a".repeat(33)])("requires a generated name for a partial copy with suffix %s", async (suffix, context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${suffix}`);
+    createSweepDirectory(copy);
+    const marker = join(copy, "owner.json");
+    writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+    if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+    expect(existsSync(marker)).toBe(true);
+    writeFileSync(join(copy, "srt-win.exe"), "image");
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
+  });
+
   it("names every module its PowerShell steps use", async () => {
     const scripts = await captureScripts();
     const modules: Record<string, string> = {

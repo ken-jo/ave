@@ -3599,7 +3599,8 @@ with its own owner rule:
   the one in a quit sequence, finds no ACL session left to release.
   The stale-copy sweep checks both directory owners and DACLs and accepts the
   earlier layouts with the marker inside `bin` or both files in the outer
-  directory. Partial cleanup requires a valid marker whose owner has exited.
+  directory. Partial cleanup requires a generated 32-hex name and a valid
+  marker whose owner has exited.
   For new copies, exit and startup remove the image, `bin`, marker and outer
   directory in that order, without recursion. If the last removal fails, the
   sweep leaves the empty outer directory alone. A sandbox-account ACE found on
