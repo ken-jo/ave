@@ -42,7 +42,32 @@ export function windowsRunSteps(workflow) {
 
 const CONTAINED_PREFIX_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}`, "u");
 // The wrapper finds its step by its exact argv, so arguments must be plain single-spaced tokens.
-const PLAIN_INVOCATION_RE = /^[\w./:=@+-]+(?: [\w./:=@+-]+)*$/u;
+const PLAIN_TOKEN = String.raw`[\w./:=+-]+`;
+const PLAIN_TOKEN_RE = new RegExp(`^${PLAIN_TOKEN}$`, "u");
+const PLAIN_INVOCATION_RE = new RegExp(`^${PLAIN_TOKEN}(?: ${PLAIN_TOKEN})*$`, "u");
+const POWERSHELL_SHELL_RE = /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i;
+const SETUP_COMMAND = "node ave/.github/scripts/isolate-job-home.mjs";
+const WRAPPER = ["node", ".github/scripts/run-in-job.mjs"];
+// After job-root setup every command is a contained manifest invocation or one of these.
+const UNCONTAINED_COMMANDS = new Map([
+  ["bun install --frozen-lockfile", "installs dependencies; runs no test code"],
+  ["node .github/scripts/check-windows-workflow.mjs", "this guard"],
+  ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
+  ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
+  ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"].map(option => [
+    `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1${option}`,
+    "builds the containment launcher and its native helpers",
+  ]),
+  ["bun run check:plugin-host-protocol-schema", "regenerates and compares a schema"],
+  ["node scripts/check-srt-win-integrity.cjs --upstream --inputs", "hashes the sandbox helper sources"],
+  ["node scripts/check-srt-win-integrity.cjs", "hashes the sandbox helper"],
+  ["node scripts/fetch-mxc.mjs --arch x64", "fetches pinned native payloads"],
+  ["& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' install", "provisions the sandbox account"],
+  ["& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status", "reads the sandbox account"],
+  ["ConvertFrom-Json", "parses in process"],
+  ["node .github/scripts/python-download-mirror.mjs", "downloads an interpreter archive"],
+  ["node ave/.github/scripts/isolate-job-home.mjs --cleanup", "removes the job root"],
+]);
 
 /**
  * The contained-step manifest that run-in-job.mjs and job-root cleanup share:
@@ -132,7 +157,12 @@ $steps = @(foreach ($source in $inputData.steps) {
       ForEach-Object { @{ name = $_.Name; scope = @(Get-ScopeChain $_)[0] } })
     commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
       ForEach-Object { @{ name = $_.GetCommandName(); head = $_.CommandElements[0].Extent.Text
-        line = $_.Extent.StartLineNumber; scopes = @(Get-ScopeChain $_) } })
+        line = $_.Extent.StartLineNumber; scopes = @(Get-ScopeChain $_)
+        text = $_.Extent.Text; redirected = $_.Redirections.Count -gt 0; operator = [string]$_.InvocationOperator
+        elements = @(foreach ($element in $_.CommandElements) { @{ text = $element.Extent.Text
+          plain = ($element -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+            $element.StringConstantType -eq 'BareWord') -or
+            ($element -is [System.Management.Automation.Language.CommandParameterAst] -and $null -eq $element.Argument) } }) } })
   }
 })
 $seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -155,7 +185,7 @@ $result = @{
   aliases = $resolved.Alias.ToArray()
   steps = $steps
 }
-ConvertTo-Json -InputObject $result -Depth 6 -Compress
+ConvertTo-Json -InputObject $result -Depth 10 -Compress
 `;
 
 export function directCommandProblems(steps) {
@@ -190,8 +220,24 @@ function inspectPowerShell(shell, steps) {
   return JSON.parse(result.stdout);
 }
 
-export function powerShellCommandProblems(steps, inspect = inspectPowerShell) {
+function containedCommandProblems(commands, manifest, wrapped) {
+  return commands.flatMap(({ text, line, elements, redirected, operator }) => {
+    if (elements[0]?.text !== WRAPPER[0] || elements[1]?.text !== WRAPPER[1]) {
+      return UNCONTAINED_COMMANDS.has(text) ? [] : [`line ${line}: command runs outside the job containment launcher: ${text}`];
+    }
+    const invocation = elements.slice(2).map(element => element.text).join(" ");
+    if (redirected || operator !== "Unknown" || !elements.every(element => element.plain && PLAIN_TOKEN_RE.test(element.text))
+      || !manifest.some(step => step.invocation === invocation)) {
+      return [`line ${line}: contained command is not a plain manifest invocation: ${text}`];
+    }
+    wrapped.push(invocation);
+    return [];
+  });
+}
+
+export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = []) {
   const failures = [];
+  const wrapped = [];
   for (const shell of ["pwsh", "powershell"]) {
     const editionSteps = steps.filter(step => step.shell.match(/^(pwsh|powershell)(?:\.exe)?(?:\s|$)/i)?.[1].toLowerCase() === shell);
     if (editionSteps.length === 0) continue;
@@ -206,20 +252,39 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell) {
           || functions.some(fn => fn.name.toLowerCase() === command && scopes.includes(fn.scope)))) return [];
         return [`line ${line}: unrecognized command ${head}`];
       });
-      failures.push(...[...errors, ...unknownCommands].map(problem => `${editionSteps[index].name}: ${problem}`));
+      const contained = editionSteps[index].contained ? containedCommandProblems(commands, manifest, wrapped) : [];
+      failures.push(...[...errors, ...unknownCommands, ...contained].map(problem => `${editionSteps[index].name}: ${problem}`));
+    }
+  }
+  if (steps.some(step => step.contained)) {
+    for (const { id, invocation } of manifest) {
+      if (wrapped.filter(entry => entry === invocation).length !== 1) {
+        failures.push(`${CONTAINED_JOB}: manifest step ${id} is not exactly one contained command after job-root setup`);
+      }
     }
   }
   return failures;
 }
 
+// Every run step after job-root setup in the contained job is checked command by command.
+function scopeContainedSteps(steps) {
+  const setup = steps.findIndex(({ jobId, run }) => jobId === CONTAINED_JOB && run.trim() === SETUP_COMMAND);
+  if (setup < 0) throw new Error(`${CONTAINED_JOB}: no job-root setup step`);
+  return steps.map((step, index) => index > setup && step.jobId === CONTAINED_JOB ? { ...step, contained: true } : step);
+}
+
 export function checkWindowsWorkflow(workflow, inspect) {
-  const steps = windowsRunSteps(workflow);
+  const steps = scopeContainedSteps(windowsRunSteps(workflow));
   if (!windowsRegressionSteps(steps).some(step => step.stepName === "Run Windows permission regressions"
-    && /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i.test(step.shell))) {
+    && POWERSHELL_SHELL_RE.test(step.shell))) {
     throw new Error("The Windows permission step requires a PowerShell parser");
   }
-  containedSteps(workflow);
-  const failures = [...directCommandProblems(steps), ...powerShellCommandProblems(steps, inspect)];
+  const manifest = containedSteps(workflow);
+  const failures = [
+    ...steps.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
+      .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
+    ...directCommandProblems(steps), ...powerShellCommandProblems(steps, inspect, manifest),
+  ];
   if (failures.length) throw new Error(failures.join("\n"));
 }
 

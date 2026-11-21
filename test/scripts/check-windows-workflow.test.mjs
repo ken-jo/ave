@@ -162,7 +162,9 @@ it("derives one receipt per contained workflow invocation", async () => {
   const { containedSteps } = await import("../../.github/scripts/check-windows-workflow.mjs");
   const manifest = containedSteps(workflow);
   assert.deepEqual(manifest.map(({ id }) => id), [
-    "verify-native-background-process-ownership-1", "verify-windows-folder-classification-1",
+    "verify-native-background-process-ownership-1",
+    "verify-both-windows-native-payload-packages-1", "verify-both-windows-native-payload-packages-2",
+    "verify-windows-folder-classification-1",
     "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
     "run-script-tests-1", "run-windows-appearance-regressions-1", "run-windows-session-persistence-regressions-1",
     "run-windows-permission-regressions-1", "run-windows-native-import-regressions-1",
@@ -192,3 +194,41 @@ for (const [name, steps, expected] of [
     await assert.rejects(containedManifest(steps), expected);
   });
 }
+
+function changedWorkflow(change) {
+  const parsed = parse(workflow);
+  const { steps } = parsed.jobs["windows-permission-tests"];
+  change(steps, name => steps.find(entry => entry.name === name));
+  return stringify(parsed);
+}
+
+it("accepts the workflow's contained commands and stated exemptions", () => {
+  checkWindowsWorkflow(workflow);
+});
+
+for (const [name, change, expected] of [
+  ["a bare bun test line", (_steps, step) => { step("Run script tests").run += "\nbun test"; },
+    "Run script tests: line 2: command runs outside the job containment launcher: bun test"],
+  ["a test runner hidden in a script block", (_steps, step) => { step("Run script tests").run += "\nif ($true) { bun x vitest run }"; },
+    "Run script tests: line 2: command runs outside the job containment launcher: bun x vitest run"],
+  ["an uncontained packaging check", (_steps, step) => {
+    const packaging = step("Verify both Windows native payload packages");
+    packaging.run = packaging.run.replace("node .github/scripts/run-in-job.mjs bun run check:mxc-packaging", "bun run check:mxc-packaging");
+  }, "Verify both Windows native payload packages: line 3: command runs outside the job containment launcher: bun run check:mxc-packaging"],
+  ["a non-PowerShell step after setup", (_steps, step) => { step("Ensure uv toolchain").shell = "bash"; },
+    "Ensure uv toolchain: steps after job-root setup need a PowerShell shell"],
+  ["a contained command before setup", steps => {
+    steps.unshift({ name: "Early", if: CONDITION, run: "node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs --early" });
+  }, "manifest step early-1 is not exactly one contained command after job-root setup"],
+]) {
+  it(`rejects ${name} in the contained job`, () => {
+    assert.throws(() => checkWindowsWorkflow(changedWorkflow(change)),
+      error => error.message.split("\n").includes(`windows-permission-tests: ${expected}`) || assert.fail(error.message));
+  });
+}
+
+it("rejects a second bare test command on a contained line", () => {
+  assert.throws(() => checkWindowsWorkflow(changedWorkflow((_steps, step) => {
+    step("Run script tests").run = "node .github/scripts/run-in-job.mjs bun run test:scripts; bun run test:scripts";
+  })), /contained invocation needs plain single-spaced arguments: bun run test:scripts; bun run test:scripts/);
+});

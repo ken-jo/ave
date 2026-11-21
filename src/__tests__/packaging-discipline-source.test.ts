@@ -1683,7 +1683,12 @@ describe("installer smoke and packaging discipline", () => {
     expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
     expect(step.shell).toBe("powershell");
     expect(step["working-directory"]).toBe("ave");
-    expect(step.run).toBe("bun run check:mxc-pins\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\nbun run check:mxc-packaging\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n");
+    const contained = "node .github/scripts/run-in-job.mjs bun run";
+    expect(step.run).toBe(`${contained} check:mxc-pins\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n${contained} check:mxc-packaging\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n`);
+    // The containment launcher is built before the checks that run inside it.
+    const launcher = job.steps.findIndex((entry) => typeof entry.run === "string" && entry.run.startsWith("powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1\n"));
+    expect(launcher).toBeGreaterThanOrEqual(0);
+    expect(launcher).toBeLessThan(job.steps.indexOf(step));
     const cache = job.steps.find((entry) => entry.name === "Cache Windows packaging runtime archives")!;
     expect(cache.with).toMatchObject({ path: ".cache/electron", key: "windows-mxc-electron-${{ hashFiles('ave/bun.lock') }}" });
     expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron");

@@ -701,16 +701,6 @@ jobs:
         with:
           path: ${{ runner.temp }}/python-archives
           key: ${{ steps.python-archive.outputs.key }}
-      - name: Verify both Windows native payload packages
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        timeout-minutes: 10
-        shell: powershell
-        run: |
-          bun run check:mxc-pins
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run check:mxc-packaging
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify native background process ownership
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -725,6 +715,18 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
+      # Both checks build under the job root's temp tree, so they run in the
+      # containment launcher built by the previous step.
+      - name: Verify both Windows native payload packages
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          node .github/scripts/run-in-job.mjs bun run check:mxc-pins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .github/scripts/run-in-job.mjs bun run check:mxc-packaging
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # Folder sources classify a drive letter from its MS-DOS device mapping
       # without opening the drive (design multi-source-git-marketplace.md §18.4.1).
       - name: Verify Windows folder classification
