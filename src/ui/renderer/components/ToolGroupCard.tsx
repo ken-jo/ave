@@ -13,7 +13,7 @@ import { formatDuration } from "../../../lib/turn-summary-format.js";
 import { parseBrowserPreviewImage } from "../../../shared/browser-workspace.js";
 import type { RenderHtmlPayload } from "../types.js";
 import { HtmlPreview } from "./HtmlPreview.js";
-import { FileEditDiff, WriteFileSidecarDiff } from "./FileEditDiff.js";
+import { FileEditDiff } from "./FileEditDiff.js";
 import { McpAppView } from "./McpAppView.js";
 import { CompactedToolResult } from "./CompactedToolResult.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
@@ -295,36 +295,6 @@ function SingleToolInline({
     );
   }
 
-  // Truncated write_file results with sidecars load full content through sidecar IPC.
-  const isWriteFileSidecar =
-    !isRunning &&
-    !isError &&
-    tool.name === "write_file" &&
-    typeof tool.result === "string" &&
-    sessionId &&
-    (() => {
-      try {
-        const p = JSON.parse(tool.result) as Record<string, unknown>;
-        return p.truncated === true && p.hasSidecar === true;
-      } catch {
-        return false;
-      }
-    })();
-
-  if (isWriteFileSidecar && sessionId) {
-    return (
-      <>
-        <WriteFileSidecarDiff
-          resultJson={tool.result as string}
-          sessionId={sessionId}
-          toolUseId={tool.toolUseId}
-          filePath={typeof tool.input?.path === "string" ? tool.input.path : undefined}
-        />
-        <AttachedPermissionReview review={review} className="px-3 pb-1.5" />
-      </>
-    );
-  }
-
   const htmlPayload: RenderHtmlPayload | null =
     tool.name === "render_html" && tool.status === "done"
       ? parseRenderHtmlResult(tool.result)
@@ -398,7 +368,7 @@ function SingleToolInline({
       )}
       {fileDiff && (
         <div className="border-t px-3 py-2">
-          <FileEditDiff data={fileDiff} />
+          <FileEditDiff data={fileDiff} source={sessionId ? { sessionId, toolUseId: tool.toolUseId } : undefined} />
         </div>
       )}
       {tool.status === "done" && tool.uiPayload && (
@@ -593,24 +563,7 @@ export function ToolGroupCard({
                             sessionId={sessionId}
                           />
                         ) :
-                        tool.status !== "error" &&
-                          tool.name === "write_file" &&
-                          sessionId &&
-                          (() => {
-                            try {
-                              const p = JSON.parse(tool.result) as Record<string, unknown>;
-                              return p.truncated === true && p.hasSidecar === true;
-                            } catch {
-                              return false;
-                            }
-                          })() ? (
-                          <WriteFileSidecarDiff
-                            resultJson={tool.result}
-                            sessionId={sessionId}
-                            toolUseId={tool.toolUseId}
-                            filePath={typeof tool.input?.path === "string" ? tool.input.path : undefined}
-                          />
-                        ) : (
+(
                           <ToolPayloadBlock value={tool.result} isError={tool.status === "error"} />
                         )}
                       </div>
@@ -639,7 +592,7 @@ export function ToolGroupCard({
       {fileDiffs.length > 0 && (
         <div className="space-y-2 border-t px-3 py-2">
           {fileDiffs.map((entry) => (
-            <FileEditDiff key={entry.toolUseId} data={entry.data} />
+            <FileEditDiff key={entry.toolUseId} data={entry.data} source={sessionId ? { sessionId, toolUseId: entry.toolUseId } : undefined} />
           ))}
         </div>
       )}

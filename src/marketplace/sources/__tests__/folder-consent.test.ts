@@ -23,7 +23,7 @@ async function preview(volume: FakeVolume, input: string, extra: { acknowledge?:
   try {
     return await service.previewSource({ input, auth: "none", ...extra });
   } finally {
-    service.close();
+    await service.close();
   }
 }
 
@@ -72,7 +72,7 @@ describe("a network folder answers confirm before anything touches it", () => {
       const error = await refused(service.previewSource({ input: "/opt/m", auth: "none", ...request }));
       expect(error).toMatchObject({ code: "SOURCE_URL_REJECTED", detail: { reason: "folder-options" } });
     }
-    service.close();
+    await service.close();
     expect(volume.calls).toEqual([]);
   });
 });

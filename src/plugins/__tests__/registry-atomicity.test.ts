@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
@@ -22,7 +23,7 @@ const children = createChildTracker();
 function spawnNode(args: string[], ipc = false): ChildProcess {
   return children.track(spawn(nodeCommand, ["--import=tsx", ...args], {
     cwd: repoRoot,
-    env: process.env,
+    env: tsxChildEnv(),
     stdio: ipc ? ["ignore", "inherit", "inherit", "ipc"] : ["ignore", "inherit", "inherit"],
     windowsHide: true,
   }));

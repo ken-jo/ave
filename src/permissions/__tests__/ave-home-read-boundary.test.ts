@@ -21,12 +21,12 @@ vi.mock("node:fs", async original => {
     }
     return Reflect.apply(fs.readdirSync, undefined, args);
   }) as typeof fs.readdirSync;
-  return { ...fs, readdirSync };
+  return { ...fs, readdirSync, rmSync: vi.fn(fs.rmSync) };
 });
 
 // The sandbox read deny covers the Ave home as one directory: no per-file rows, every child denied unless re-allowed.
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,6 +49,7 @@ vi.mock("../../shared/policy-home.js", async (importOriginal) => {
 
 import { aveHome } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { AVE_HOME_READ_REALLOWS, isAveHomeReadReallowed } from "../ave-home-read-boundary.js";
 import {
@@ -111,7 +112,6 @@ const withheld = (): string[] => [
 ];
 
 afterEach(() => setProcessPlatform(HOST_PLATFORM));
-
 describe("the Ave home re-allow table", () => {
   it("re-opens only named children, never the root or a sibling file", () => {
     expect(isAveHomeReadReallowed([])).toBe(false);
@@ -178,6 +178,23 @@ describe.each(["linux", "darwin", "win32"] as const)("the Ave home read boundary
   });
 });
 
+// The browser's download staging folder holds a page's file until the user picks where to save it: no confined lane may read, list or write it.
+const stagingDir = (): string => join(aveHome(), "browser-downloads");
+const stagedFile = (): string => join(stagingDir(), "0123456789abcdef0123456789abcdef");
+// A grant reaches the staged file when it names the folder, a path in it, or a directory holding it.
+const reaches = (grant: string, path: string): boolean => path === trim(grant) || path.startsWith(`${trim(grant)}${sep}`);
+
+describe.each(["linux", "darwin", "win32"] as const)("the browser download staging folder on %s", (platform) => {
+  it("is covered by the read floor, named on the write floor, and never granted to a sandboxed shell", () => {
+    setProcessPlatform(platform);
+    expect(trim(aveHomeReadBoundaryCovering(stagedFile()) ?? "")).toBe(trim(aveHome()));
+    expect(spelled(getDefaultSensitiveWriteDenyPaths())).toContain(stagingDir());
+    const policy = getBuiltinShellReadPolicy([stagingDir(), stagedFile(), aveHome()], homedir());
+    for (const grant of spelled(policy.allowRead)) expect(reaches(grant, stagedFile()), grant).toBe(false);
+    expect(spelled(policy.denyRead)).toContain(trim(aveHome()));
+  });
+});
+
 describe.each(["linux", "darwin"] as const)("the Ave home read boundary in %s wraps", (platform) => {
   it("withholds a per-command read grant outside the re-allowed children", () => {
     setProcessPlatform(platform);
@@ -188,6 +205,18 @@ describe.each(["linux", "darwin"] as const)("the Ave home read boundary in %s wr
     const granted = spelled(config?.filesystem?.allowRead ?? []);
     for (const path of reallowed()) expect(granted).toContain(trim(path));
     for (const path of withheld()) expect(granted).not.toContain(trim(path));
+  });
+
+  it("withholds a per-command read or write grant on the browser download staging folder", () => {
+    setProcessPlatform(platform);
+    const config = buildPerCommandSandboxCustomConfig({
+      allowRead: [stagingDir(), stagedFile()], allowWrite: [stagingDir()],
+      denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    });
+    for (const grant of spelled(config?.filesystem?.allowRead ?? [])) expect(reaches(grant, stagedFile()), grant).toBe(false);
+    const stagingDeny = platform === "darwin" && sep === "\\" ? stagingDir().replaceAll("\\", "/") : stagingDir();
+    expect(spelled(config?.filesystem?.denyWrite ?? [])).toContain(stagingDeny);
+    if (platform === "linux") for (const root of spelled(config?.filesystem?.allowWrite ?? [])) expect(reaches(root, stagedFile()), root).toBe(false);
   });
 
   it.runIf(platform === "linux")("withholds a Linux write root outside the re-allowed children", () => {
@@ -234,7 +263,7 @@ describe("the Ave home read boundary through the MCP stdio wrap", () => {
 
 describe("a profile-child Ave home on Windows", () => {
   // A stamp on a profile child also stamps the profile root, so such a home denies its existing top-level children instead of itself.
-  let profile: string;
+  let profile = "";
   let original: string;
   beforeEach(() => {
     profile = mkdtempSync(join(tmpdir(), "ave-boundary-profile-"));
@@ -250,9 +279,17 @@ describe("a profile-child Ave home on Windows", () => {
   afterEach(() => {
     readdirFault.path = undefined;
     factsOverride.clear();
-    setProcessPlatform(HOST_PLATFORM);
     fakeHome.value = undefined;
-    rmSync(profile, { recursive: true, force: true });
+    const root = profile;
+    profile = "";
+    try {
+      setProcessPlatform(HOST_PLATFORM);
+    } finally {
+      if (root) {
+        removeLinksUnder(root);
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
   });
 
   const refused = expect.objectContaining({ code: "ave-home-boundary-unverified" });
@@ -275,6 +312,15 @@ describe("a profile-child Ave home on Windows", () => {
     for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
   });
 
+  it("denies the browser download staging folder as a top-level child once it exists, and never grants it to a shell", () => {
+    const staging = join(original, "browser-downloads");
+    mkdirSync(staging);
+    expect(spelled(getDefaultSensitiveReadDenyPaths())).toContain(staging);
+    expect(spelled(getDefaultSensitiveWriteDenyPaths())).toContain(staging);
+    const policy = getBuiltinShellReadPolicy([staging, join(staging, "0123456789abcdef0123456789abcdef")], profile);
+    for (const grant of spelled(policy.allowRead)) expect(reaches(grant, join(staging, "0123456789abcdef0123456789abcdef")), grant).toBe(false);
+  });
+
   it("refuses when a relocated active home leaves a readable profile home that cannot be enumerated", () => {
     // The active home is relocated (beforeEach), so only the original profile spelling is enumerated.
     expect(trim(aveHome()).toLowerCase()).not.toBe(trim(original).toLowerCase());
@@ -289,13 +335,29 @@ describe("a profile-child Ave home on Windows", () => {
     for (const row of ["settings.json", "plugins/registry.json"]) expect(floor).toContain(join(original, ...row.split("/")));
   });
 
-  it("refuses a linked top-level child that is not re-allowed, and keeps a linked re-allowed child", () => {
+  it("refuses a linked top-level child that is not re-allowed, and keeps a linked re-allowed child", async ({ onTestFinished }) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const root = profile;
+    const sandboxLink = join(original, "sandbox");
+    const tracesLink = join(original, "traces");
+    vi.mocked(rmSync).mockImplementation((path, options) => {
+      if (path === root && options?.recursive) {
+        for (const link of [sandboxLink, tracesLink]) {
+          expect(fs.lstatSync(link, { throwIfNoEntry: false }), "Unlink the junction before tree removal").toBeUndefined();
+        }
+      }
+      fs.rmSync(path, options);
+    });
+    onTestFinished(() => {
+      vi.mocked(rmSync).mockReset();
+      expect(existsSync(root)).toBe(false);
+    });
     const target = mkdtempSync(join(tmpdir(), "ave-boundary-link-"));
     try {
-      symlinkSync(target, join(original, "sandbox"), "junction");
+      symlinkSync(target, sandboxLink, "junction");
       const floor = getDefaultSensitiveReadDenyPaths();
       expect(spelled(floor)).not.toContain(join(original, "sandbox"));
-      symlinkSync(target, join(original, "traces"), "junction");
+      symlinkSync(target, tracesLink, "junction");
       for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
     } finally {
       rmSync(target, { recursive: true, force: true });
@@ -305,8 +367,8 @@ describe("a profile-child Ave home on Windows", () => {
   // A junction is a directory on a Windows host and a symlink elsewhere.
   const removeLink = (path: string): void => (HOST_PLATFORM === "win32" ? rmdirSync : unlinkSync)(path);
   const linkHome = (dangling: boolean): string => {
-    const target = mkdtempSync(join(tmpdir(), "ave-boundary-home-target-"));
-    mkdirSync(join(target, "logs"));
+    const target = join(profile, "home-target");
+    mkdirSync(join(target, "logs"), { recursive: true });
     rmSync(original, { recursive: true, force: true });
     symlinkSync(target, original, "junction");
     if (dangling) rmSync(target, { recursive: true, force: true });
@@ -468,6 +530,40 @@ describe.runIf(HOST_PLATFORM === "darwin")("the Ave home read boundary in a macO
     expect(run.stdout).toContain("CHILD");
     expect(run.stdout).not.toContain("OTHER");
     expect(readFileSync(join(other, "b.log"), "utf8")).toBe("OTHER");
+  });
+});
+
+describe.runIf(HOST_PLATFORM === "darwin" || HOST_PLATFORM === "linux")("the browser download staging folder in a real sandboxed shell", () => {
+  afterEach(async () => { if (isAsrtSandboxActive()) await resetAsrtSandbox(); });
+
+  it("cannot read, list or add to the folder even when the shell asks to read it", async () => {
+    if (!(await asrtCanInitialize())) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("ASRT cannot initialize on this machine");
+      return;
+    }
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const workspace = join(aveHome(), "workspace", "alice-project");
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(stagingDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(stagedFile(), "STAGED");
+    writeFileSync(join(workspace, "a.txt"), "CHILD");
+    // The read policy a sandboxed agent shell gets when its command names the staging folder, and the write floor every wrap restates.
+    const policy = getBuiltinShellReadPolicy([workspace, stagingDir()], homedir());
+    const { argv, env } = await wrapWorkerCommand(
+      `cat ${join(workspace, "a.txt")}; cat ${stagedFile()}; ls ${stagingDir()}; echo planted > ${join(stagingDir(), "planted")}; echo done`, {
+        commandId: TEST_COMMAND_ID,
+        filesystem: { allowRead: [...policy.allowRead], denyRead: [...policy.denyRead], allowWrite: [workspace], denyWrite: getDefaultSensitiveWriteDenyPaths() },
+      });
+    const [command, ...args] = argv;
+    if (command === undefined) throw new Error("sandboxed argv is empty");
+    const run = spawnSync(command, args, { env, encoding: "utf-8", timeout: 30_000 });
+    await cleanupAsrtSandboxAfterCommand();
+    expect(run.stdout).toContain("CHILD");
+    expect(run.stdout).toContain("done");
+    expect(run.stdout).not.toContain("STAGED");
+    expect(run.stdout).not.toContain("0123456789abcdef0123456789abcdef");
+    expect(existsSync(join(stagingDir(), "planted"))).toBe(false);
+    expect(readFileSync(stagedFile(), "utf8")).toBe("STAGED");
   });
 });
 

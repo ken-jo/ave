@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { isAbsolute, resolve as pathResolve } from "node:path";
+import { isAbsolute, posix, resolve as pathResolve } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
@@ -53,14 +53,24 @@ export interface ShellExecutionInspector {
 export class ShellExecutionError extends Error {
   constructor(message: string, readonly operand?: string) { super(message); }
 }
+
+/** Normalize a workload path without consulting the controller filesystem. */
+export function resolveGuestShellPath(path: string, cwd: string | null): string {
+  if (path.includes("\0")) throw new ShellExecutionError("working-directory namespace is unresolved", path);
+  if (posix.isAbsolute(path)) return posix.normalize(path);
+  if (cwd === null || !posix.isAbsolute(cwd)) throw new ShellExecutionError("working directory is unresolved", path);
+  return posix.resolve(cwd, path);
+}
 export interface ShellExecutionFacts {
   dialect: "bash";
   environment: Readonly<Record<string, string | undefined>>;
   /** Present only after a fixed probe of the selected interpreter and locale. */
   unicodeEscapes?: boolean;
   prefixAssignmentRhs?: "incoming" | "sequential";
-  /** Set only for a confirmed broker guest route: drive-less absolute operands name the guest's Linux namespace, not the host's. */
+  /** Set only for a confirmed broker guest route: operands name the guest's Linux namespace. */
   guestPosixPaths?: true;
+  /** Effective POSIX working directory sealed by the confirmed guest execution route. */
+  guestCwd?: string;
 }
 interface ShellState {
   cwd: string | null;
@@ -134,8 +144,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   };
   chargeAnalysis(analysis);
   const nestedAnalyses = new WeakMap<ShellWord["source"], Map<string, Extract<ShellAnalysis, { ok: true }>>>();
-  const initial: ShellState = { cwd, dialect: "bash", unicodeEscapes: facts.unicodeEscapes, prefixAssignmentRhs: facts.prefixAssignmentRhs, variables: new Map(Object.entries(facts.environment)), arrays: new Map(), exported: new Set(Object.keys(facts.environment)), functions: new Map(), readonlyVariables: new Set(), unsetVariables: new Set(), backquote: false, fromPipe: false, activeFunctions: [] };
-  initial.variables.set("PWD", cwd);
+  const guest = facts.guestPosixPaths === true;
+  const initialCwd = guest ? typeof facts.guestCwd === "string" && /^\/(?!\/)/u.test(facts.guestCwd) && !facts.guestCwd.includes("\0")
+    ? posix.normalize(facts.guestCwd) : null : cwd;
+  const initial: ShellState = { cwd: initialCwd, dialect: "bash", unicodeEscapes: facts.unicodeEscapes, prefixAssignmentRhs: facts.prefixAssignmentRhs, variables: new Map(Object.entries(facts.environment)), arrays: new Map(), exported: new Set(Object.keys(facts.environment)), functions: new Map(), readonlyVariables: new Set(), unsetVariables: new Set(), backquote: false, fromPipe: false, activeFunctions: [] };
+  initial.variables.set("PWD", initialCwd ?? undefined);
   // Filesystem effects cross process scopes; after possible mutation, pre-execution stat cannot prove a later chdir outcome. Keep this flag analysis-local.
   let filesystemMayChange = false;
   let steps = 0;
@@ -152,7 +165,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       : { ...result, control: { ...control, levels: control.levels - 1 } };
   };
   const checkPath = (path: string, raw: string, state: ShellState, effect: "read" | "write", role?: "directory"): void => {
-    if (!isAbsolute(path) && state.cwd === null) {
+    if (!(guest ? posix.isAbsolute(path) : isAbsolute(path)) && state.cwd === null) {
       const error = new ShellExecutionError("working directory is unresolved", raw);
       if (inspector.unresolvedPath?.(raw, state.cwd, effect, error, role) === true) return;
       throw error;
@@ -363,7 +376,8 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const target = staticShellWord(transition.path);
         if (target === undefined) decline("unresolved wrapper working directory", transition.path);
         checkPath(target, transition.path.source.raw, commandState, "write", "directory");
-        try { commandState.cwd = resolveShellFilesystemPath(target, commandState.cwd!, { dialect: "bash" }); }
+        if (guest && target.split("/").includes("..")) decline("cannot resolve wrapper working directory", transition.path);
+        try { commandState.cwd = guest ? resolveGuestShellPath(target, commandState.cwd) : resolveShellFilesystemPath(target, commandState.cwd!, { dialect: "bash" }); }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error)) throw error;
           decline("cannot resolve wrapper working directory", transition.path);
@@ -549,6 +563,17 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (target === undefined) decline("unresolved working-directory destination", effective.words[1]);
       if (state.cwd === null && !isAbsolute(target)) decline("working directory is unresolved", targetWord);
       const label = targetWord?.source.raw ?? head;
+      if (guest) {
+        if (physical) decline("cannot resolve working-directory destination", targetWord);
+        const destination = resolveGuestShellPath(target, state.cwd);
+        checkPath(destination, label, state, "write", "directory");
+        const changed = cloneState(state);
+        changed.variables.set("OLDPWD", state.cwd ?? undefined);
+        changed.cwd = destination;
+        changed.variables.set("PWD", destination);
+        // Existence and search permissions are unknown without workload filesystem access.
+        return [{ state: changed, status: "success" }, { state, status: "failure" }];
+      }
       const modeledTarget = modelShellPath(target, { dialect: "bash", location: state.cwd ?? undefined }).nativePath;
       if (modeledTarget === undefined) decline("working-directory namespace is unresolved", targetWord);
       const next = pathResolve(modeledTarget);

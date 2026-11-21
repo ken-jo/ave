@@ -116,4 +116,53 @@ describe("main.ts — single-instance gate on app.whenReady", () => {
     // Only an explicit New Window action may open another window.
     expect(handler).not.toContain("openNewMainWindow(");
   });
+
+  it("awaits browser policy inside main before bootstrap, and continues only for an installed refusal policy", () => {
+    const start = source.indexOf("async function main() {");
+    const install = source.indexOf("await installSideBrowserPartitionPolicy(", start);
+    const bootstrap = source.indexOf("desktopBoot.bootstrap(", start);
+    expect(install).toBeGreaterThan(start);
+    expect(install).toBeLessThan(bootstrap);
+    const guard = source.slice(start, source.indexOf("if (isAppQuitRequested())", start));
+    expect(guard).toMatch(/if \(!\(error instanceof SideBrowserPolicyInstallError\)\) throw error;/u);
+    const ready = source.slice(source.indexOf("app.whenReady().then(() => {"));
+    expect(ready).not.toContain("installSideBrowserPartitionPolicy(");
+    expect(ready).toContain("void main().catch(");
+  });
+
+  it("creates the browser download staging folder before bootstrap can start any confined process", () => {
+    // Every confined lane is admitted only by state bootstrap() sets up, and bootstrap runs inside main(). Installing the side browser's
+    // session policy creates the staging folder synchronously, so it exists before any confinement projection is composed; a profile-child
+    // Ave home on Windows denies only the top-level children that exist when a projection is taken.
+    const opening = "async function main() {";
+    const start = source.indexOf(opening);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const callback = source.slice(start + opening.length, source.indexOf("if (isAppQuitRequested())", start));
+    expect(callback).toContain("await installSideBrowserPartitionPolicy(desktopResourcePath(projectRoot));");
+    expect(callback, "the policy must finish before confinement is composed").not.toMatch(/setImmediate|setTimeout|queueMicrotask/);
+    const policy = readFileSync("src/main/side-browser-webview.ts", "utf-8");
+    const install = policy.slice(policy.indexOf("export async function installSideBrowserPartitionPolicy(resourcePath: string): Promise<void> {"));
+    expect(install.slice(0, install.indexOf("\n}\n"))).toMatch(/stagingRoot = prepareBrowserDownloadStaging\(resourcePath\);/);
+  });
+
+  it("does not reach bootstrap on an incomplete install, and awaits the policy before continuing", async () => {
+    const start = source.indexOf("async function main() {") + "async function main() {".length;
+    const prefix = source.slice(start, source.indexOf("if (isAppQuitRequested())", start));
+    class SideBrowserPolicyInstallError extends Error {}
+    // Execute the actual entry-point policy barrier without importing the entry point's app-wide side effects.
+    const run = new Function("installSideBrowserPartitionPolicy", "SideBrowserPolicyInstallError", "desktopResourcePath", "projectRoot", "log", "bootstrapErrorForLog",
+      `return async function () { ${prefix}\n return "bootstrapped"; }`);
+    const boot = (install: () => Promise<void>) => run(install, SideBrowserPolicyInstallError, () => "/resources", "/project", { error: () => {} }, (error: unknown) => error)();
+    const failure = new Error("session unavailable");
+    await expect(boot(async () => { throw failure; })).rejects.toBe(failure);
+    await expect(boot(async () => { throw new SideBrowserPolicyInstallError(); })).resolves.toBe("bootstrapped");
+    let release!: () => void;
+    let continued = false;
+    const waiting = boot(() => new Promise<void>((resolve) => { release = resolve; })).then(() => { continued = true; });
+    await Promise.resolve();
+    expect(continued).toBe(false);
+    release();
+    await waiting;
+    expect(continued).toBe(true);
+  });
 });

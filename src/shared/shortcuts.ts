@@ -478,6 +478,12 @@ export const SHORTCUTS = [
   { id: "workspace.openFile", scope: "workspace", handledBy: "renderer", labelKey: "chatPreviewRail.launcher.file", defaults: both("CommandOrControl+P") },
   { id: "workspace.openSubagent", scope: "workspace", handledBy: "renderer", labelKey: "chatPreviewRail.launcher.subagent", defaults: both("CommandOrControl+Shift+A") },
   { id: "workspace.openSideChat", scope: "workspace", handledBy: "renderer", labelKey: "chatPreviewRail.launcher.sideChat", defaults: both("CommandOrControl+Alt+S") },
+  // While a web page in a browser tab has the keyboard. The four layered rows follow the app key they share.
+  { id: "browser.focusAddress", scope: "workspace", handledBy: "renderer", labelKey: "shortcuts.label.browserFocusAddress", defaults: both("CommandOrControl+L") },
+  { id: "browser.find", scope: "workspace", handledBy: "renderer", labelKey: "shortcuts.label.browserFind", layeredOn: "app.search", readOnly: { reasonKey: "shortcutsTab.readOnly.layeredBrowser" } },
+  { id: "browser.reload", scope: "workspace", handledBy: "renderer", labelKey: "shortcuts.label.browserReload", layeredOn: "window.reload", readOnly: { reasonKey: "shortcutsTab.readOnly.layeredBrowser" } },
+  { id: "browser.back", scope: "workspace", handledBy: "renderer", labelKey: "shortcuts.label.browserBack", layeredOn: "app.viewBack", readOnly: { reasonKey: "shortcutsTab.readOnly.layeredBrowser" } },
+  { id: "browser.forward", scope: "workspace", handledBy: "renderer", labelKey: "shortcuts.label.browserForward", layeredOn: "app.viewForward", readOnly: { reasonKey: "shortcutsTab.readOnly.layeredBrowser" } },
   { id: "workspace.addFolder", scope: "workspace", handledBy: "renderer", labelKey: "shortcuts.label.addFolder", defaults: both("CommandOrControl+O") },
 
   // Composer (while the message box has focus)

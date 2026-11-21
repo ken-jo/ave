@@ -6,7 +6,7 @@ import { hostScriptInvocationReadPaths, isHostScriptReadPath } from "../main/hos
 import { t } from "../i18n/index.js";
 import { analyzeShell, displayShellWord, shellWordHasSingleField, staticShellWord, type PreparedShellAnalysis, type ShellWord } from "../shared/shell-analysis.js";
 import { commandLeaf, effectiveShellWords, namesCommandPath, stripCommandPath } from "../shared/shell-effective-command.js";
-import { assertStableShellEnvironmentVariable, inspectShellExecution, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
+import { assertStableShellEnvironmentVariable, inspectShellExecution, resolveGuestShellPath, ShellExecutionError, type ShellExecutionFacts, type ShellCommandEvent } from "../shared/shell-execution.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators, isConfiguredSessionReadPath, isAdmissionDeniedPath, createPermissionPathEvidence, type PermissionPathEvidence } from "../permissions/sensitive-paths.js";
 import { isReadOnlyShellLeaf } from "../permissions/reviewer/host-risk-inspector.js";
@@ -1219,6 +1219,7 @@ interface CommandPolicyView {
 function projectCommandPolicyView(
   event: ShellCommandEvent,
   initialSlots?: OperandSlotClassification,
+  resolveDirectory: (path: string, cwd: string) => string = (path, cwd) => resolveShellFilesystemPath(path, cwd, { dialect: "bash" }),
 ): CommandPolicyView {
   let projectedArgv = event.argv;
   let projectedWords = event.effective.words;
@@ -1268,7 +1269,7 @@ function projectCommandPolicyView(
           break;
         }
         wrapperCwds.push({ value, word: transition.path, cwd });
-        try { cwd = cwd === null ? null : resolveShellFilesystemPath(value, cwd, { dialect: "bash" }); }
+        try { cwd = cwd === null ? null : resolveDirectory(value, cwd); }
         catch (error) {
           if (!(error instanceof Error) || !("code" in error)) throw error;
           unsupported = { reason: "cannot resolve projected wrapper working directory", word: transition.path };
@@ -1484,9 +1485,11 @@ export function inspectImplicitGitWriteTargets(
   environment: Readonly<Record<string, string | undefined>>,
   checkPath: (path: string, label: string, cwd: string | null, effect: PathEffect) => void,
   onCommand?: (verb: string) => void,
+  inspectionOptions: { inspectHostFiles?: boolean } = {},
 ): string | undefined {
   if (argv[0] === undefined || stripCommandPath(argv[0]).toLowerCase().replace(/\.exe$/u, "") !== "git") return undefined;
   const resolveDirectory = (path: string, base: string): string => {
+    if (inspectionOptions.inspectHostFiles === false) return resolveGuestShellPath(path, base);
     try { return resolveShellFilesystemPath(path, base); }
     catch (error) {
       if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
@@ -1495,6 +1498,7 @@ export function inspectImplicitGitWriteTargets(
       return win32.resolve(base, path);
     }
   };
+  const joinPath = inspectionOptions.inspectHostFiles === false ? posix.join : join;
   let index = 1;
   let directory = cwd;
   let gitDirectory: string | undefined = environment.GIT_DIR;
@@ -1554,7 +1558,7 @@ export function inspectImplicitGitWriteTargets(
     }
     if (options.includes("--global")) {
       const home = environment.HOME ?? environment.USERPROFILE ?? expandLeadingTilde("~");
-      checkPath(environment.GIT_CONFIG_GLOBAL ?? join(home, ".gitconfig"), "global repository configuration", directory, effect);
+      checkPath(environment.GIT_CONFIG_GLOBAL ?? joinPath(home, ".gitconfig"), "global repository configuration", directory, effect);
       return query ? undefined : "The command mutates protected global repository configuration.";
     }
     if (options.includes("--system")) {
@@ -1562,8 +1566,8 @@ export function inspectImplicitGitWriteTargets(
       return undefined;
     }
     if (directory === null || unknownGitDirectory) return query ? undefined : "The implicit repository write target is unresolved.";
-    const base = gitDirectory === undefined ? join(directory, ".git") : resolveDirectory(gitDirectory, directory);
-    checkPath(join(base, "config"), "repository configuration", directory, effect);
+    const base = gitDirectory === undefined ? joinPath(directory, ".git") : resolveDirectory(gitDirectory, directory);
+    checkPath(joinPath(base, "config"), "repository configuration", directory, effect);
     return query ? undefined : "The command mutates protected repository configuration.";
   }
   if (verb === "clone") return "The command creates protected repository control metadata.";
@@ -1616,16 +1620,16 @@ export function inspectImplicitGitWriteTargets(
       if (["--template", "--initial-branch", "-b", "--object-format", "--ref-format"].includes(arg)) { cursor++; continue; }
       if (!arg.startsWith("-") && arg !== "--") destination = resolveDirectory(arg, directory);
     }
-    const base = gitDirectory === undefined ? bare ? destination : join(destination, ".git") : resolveDirectory(gitDirectory, directory);
-    checkPath(join(base, "hooks"), "implicit repository hooks write", directory, "write");
+    const base = gitDirectory === undefined ? bare ? destination : joinPath(destination, ".git") : resolveDirectory(gitDirectory, directory);
+    checkPath(joinPath(base, "hooks"), "implicit repository hooks write", directory, "write");
     return "The command mutates protected repository control metadata.";
   }
-  const base = gitDirectory === undefined ? join(directory, ".git") : resolveDirectory(gitDirectory, directory);
-  checkPath(join(base, metadataTarget), "implicit repository control write", directory, "write");
+  const base = gitDirectory === undefined ? joinPath(directory, ".git") : resolveDirectory(gitDirectory, directory);
+  checkPath(joinPath(base, metadataTarget), "implicit repository control write", directory, "write");
   return "The command mutates protected repository control metadata.";
 }
 
-type PowerShellPathInspector = (command: string, cwd: string, environment: Readonly<Record<string, string | undefined>>, budget: LiteralBodyBudget) => {
+type PowerShellPathInspector = (command: string, cwd: string, environment: Readonly<Record<string, string | undefined>>, budget: LiteralBodyBudget, options?: { inspectHostFiles?: boolean }) => {
   paths: readonly PermissionPathEvidence[];
   unproven: boolean;
   unknownProtectedWrite?: string;
@@ -1689,7 +1693,10 @@ export function findShellPathPolicyViolation(
     canonMemo.set(path, resolved);
     return resolved;
   };
-  const evidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot, canonicalize) : undefined;
+  const opaqueEvidenceForPath = evidence ? createPermissionPathEvidence(sandboxRoot, undefined, { inspectHostFiles: false }) : undefined;
+  const evidenceForPath = facts.guestPosixPaths ? opaqueEvidenceForPath : evidence ? createPermissionPathEvidence(sandboxRoot, canonicalize, {
+    resolveNativePath: path => resolveShellFilesystemPath(path, cwd, { dialect: facts.dialect }),
+  }) : undefined;
   const resolvedEvidencePaths = evidence ? new Map<string, string>() : undefined;
   let unresolvedEvidence: ShellPathPolicyViolation | null = null;
   if (!evidence) {
@@ -1702,6 +1709,16 @@ export function findShellPathPolicyViolation(
     if (evidence && role === "directory") effect = "read";
     // Public standard-stream operands identify child descriptors; host resolution would inspect different resources.
     if (SHELL_DEVICE_PATHS.has(path)) return;
+    if (evidence && facts.guestPosixPaths === true) {
+      if (!posix.isAbsolute(path) && cwd === null) {
+        unresolvedEvidence ??= { kind: "dynamic-path", reason: "Shell path policy: working directory is unresolved", candidate: label };
+        if (effect === "write") onUnknownWrite?.("The write target's working directory is unresolved.");
+        return;
+      }
+      const guestPath = resolveGuestShellPath(path, cwd);
+      evidence.push({ ...opaqueEvidenceForPath!({ lexical: guestPath, canonical: guestPath, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
+      return;
+    }
     if (!evidence) {
       const nativeViolation = windowsShellPathViolation(path, label, effect);
       if (nativeViolation) throw new PathPolicyError(nativeViolation);
@@ -1740,17 +1757,11 @@ export function findShellPathPolicyViolation(
       if (error.code === "ENETWORKSHAREPATH") {
         if (evidence) {
           const lexical = isAbsolute(path) ? path : win32.resolve(cwd ?? sandboxRoot, path);
-          evidence.push({ ...evidenceForPath!({ lexical, canonical: win32.normalize(lexical), effect }), projectEscape: true,
+          evidence.push({ ...opaqueEvidenceForPath!({ lexical, canonical: win32.normalize(lexical), effect }), projectEscape: true,
             ...(deleting ? { deleteIntent: true as const } : {}) });
           return;
         }
         throw new PathPolicyError({ kind: "sandbox-boundary", reason: `Shell path policy: network or device operand escapes the project: ${label}`, candidate: label, path });
-      }
-      // A confirmed broker guest names its own Linux namespace; resolve that operand lexically with guest semantics so the same floors (protected control, critical delete) apply, never a host-win32 resolution failure.
-      if (evidence && facts.guestPosixPaths === true && error.code === "EUNRESOLVEDSHELLPATH" && /^\/(?!\/)/.test(path)) {
-        const guestPath = posix.normalize(path);
-        evidence.push({ ...evidenceForPath!({ lexical: guestPath, canonical: guestPath, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
-        return;
       }
       if (evidence) {
         unresolvedEvidence ??= { kind: "invalid-path", reason: "Shell path policy: cannot resolve command operand", candidate: label };
@@ -1764,7 +1775,7 @@ export function findShellPathPolicyViolation(
     }
     if (evidence) {
       const lexical = isAbsolute(path) ? path : `${cwd ?? sandboxRoot}/${path}`;
-      evidence.push({ ...evidenceForPath!({ lexical, canonical: absolute, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
+      evidence.push({ ...evidenceForPath!({ lexical, canonical: absolute, runtimePath: absolute, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
       return;
     }
     const violation = findResolvedShellPathViolation(absolute, label, sandboxRoot, extraAllowedDirectories, effect, blockReadsOutsideWorkingDirectories, canonicalize);
@@ -1811,7 +1822,7 @@ export function findShellPathPolicyViolation(
       if (evidence && !argumentView?.literalBodiesAlreadyInspected) for (const body of literalShellBodies(event.argv, event.dialect, effective.words.map(word => word.source.raw))) {
         if (body.dialect !== "powershell") continue;
         if (!inspectPowerShellBody) throw new Error("Missing cross-dialect shell path inspector");
-        const nested = inspectPowerShellBody(body.text, event.cwd ?? cwd, event.environment, { tokens: literalBudget.tokens, depth: literalBudget.depth + 1 });
+        const nested = inspectPowerShellBody(body.text, event.cwd ?? (facts.guestPosixPaths ? "" : cwd), event.environment, { tokens: literalBudget.tokens, depth: literalBudget.depth + 1 }, { inspectHostFiles: facts.guestPosixPaths !== true });
         evidence.push(...nested.paths);
         if (nested.unknownProtectedWrite) onUnknownWrite?.(nested.unknownProtectedWrite);
         if (nested.evidenceLimitExceeded) throw new ShellExecutionError("Shell analysis total token limit exceeded");
@@ -1819,7 +1830,7 @@ export function findShellPathPolicyViolation(
       const outerKnownArgv = event.argv.map((argument,index) => argument ?? displayShellWord(effective.words[index]!));
       const outerSlots = classifyOperandSlots(outerKnownArgv);
       if (evidence && outerSlots.unknownWriteTarget) onUnknownWrite?.(outerSlots.unknownWriteTarget);
-      const view = projectCommandPolicyView(event, outerSlots);
+      const view = projectCommandPolicyView(event, outerSlots, facts.guestPosixPaths ? resolveGuestShellPath : undefined);
       const {
         argv, words, knownArgv, slots, offset, executableHeads,
         wrapperPaths, wrapperCwds, environment: projectedEnvironment, cwd: projectedCwd,
@@ -1841,7 +1852,7 @@ export function findShellPathPolicyViolation(
       }
       let implicitGitCommand: string | undefined;
       if (evidence && verb.toLowerCase().replace(/\.exe$/u, "") === "git") {
-        const unknownTarget = inspectImplicitGitWriteTargets(argv, projectedCwd, projectedEnvironment, checkPath, (command) => { implicitGitCommand = command; });
+        const unknownTarget = inspectImplicitGitWriteTargets(argv, projectedCwd, projectedEnvironment, checkPath, (command) => { implicitGitCommand = command; }, { inspectHostFiles: facts.guestPosixPaths !== true });
         if (unknownTarget) onUnknownWrite?.(unknownTarget);
       }
       // Text checks protect startup config paths and refuse selector overrides without rewriting commands.
@@ -1915,7 +1926,7 @@ export function findShellPathPolicyViolation(
         }
       }
       // Executable paths inherit the command's proven effect; readable bytes alone cannot prove read-only execution.
-      const hostScriptReads = hostScriptInvocationReadPaths(argv, projectedEnvironment);
+      const hostScriptReads = facts.guestPosixPaths ? [] : hostScriptInvocationReadPaths(argv, projectedEnvironment);
       for (const executable of executableHeads) {
         checkPath(executable.value, executable.word.source.raw, executable.cwd,
           evidence || hostScriptReads.includes(executable.value) ? "read" : effect);

@@ -450,6 +450,7 @@ function uniqueWarnings<T extends SourceWarningView>(views: readonly T[]): T[] {
 export class MarketplaceService implements RetirementEntryLookup {
   private readonly plans: Tickets<HeldPlan>;
   private readonly previews: Tickets<HeldPreview>;
+  private readonly ticketRemovals = new Set<Promise<void>>();
   private readonly syncing = new Set<string>();
   /** Keyed source handles cannot be derived from stored ids alone. */
   private readonly handleKey = randomBytes(32);
@@ -482,11 +483,11 @@ export class MarketplaceService implements RetirementEntryLookup {
     const now = () => (options.now?.() ?? new Date()).getTime();
     // Expired or superseded folder plans release their captured bytes.
     this.plans = new Tickets<HeldPlan>("install plan", now, undefined, (held) => {
-      if (held.folder) void rm(held.folder.dir, { recursive: true, force: true });
+      if (held.folder) this.removeTicketDirectory(held.folder.dir);
     });
     this.previews = new Tickets<HeldPreview>("marketplace preview", now, undefined, (preview) => {
       options.previewTokens.delete(preview.sourceId);
-      if (preview.transport === "git") void rm(preview.dir, { recursive: true, force: true });
+      if (preview.transport === "git") this.removeTicketDirectory(preview.dir);
     });
   }
 
@@ -2395,8 +2396,24 @@ export class MarketplaceService implements RetirementEntryLookup {
     }
   }
 
-  close(): void {
+  private removeTicketDirectory(dir: string): void {
+    const removal = rm(dir, { recursive: true, force: true });
+    this.ticketRemovals.add(removal);
+    // Expiry and supersession can drop a ticket before there is a close caller.
+    void removal.then(
+      () => { this.ticketRemovals.delete(removal); },
+      (error: unknown) => {
+        this.ticketRemovals.delete(removal);
+        this.options.log.warn(`Could not remove marketplace ticket directory: ${errorMessage(error)}`);
+      },
+    );
+  }
+
+  async close(): Promise<void> {
     this.previews.clear();
     this.plans.clear();
+    const results = await Promise.allSettled(this.ticketRemovals);
+    const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "Marketplace ticket cleanup failed");
   }
 }

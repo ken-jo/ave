@@ -1,6 +1,8 @@
 /** Labels must preserve visible resource distinctions and stored order; write hostile characters as explicit escapes. */
 import { describe, expect, it } from "vitest";
-import { displaySafeLabel, hasControlChars, hasInvisibleOrReorderingChars, hasNonWhitespaceControlChars } from "../display-safe-text.js";
+import {
+  displaySafeLabel, hasControlChars, hasHiddenCharacters, hasInvisibleOrReorderingChars, hasNonWhitespaceControlChars, revealHiddenCharacters,
+} from "../display-safe-text.js";
 
 const cp = (value: number) => String.fromCodePoint(value);
 const ZWSP = cp(0x200b);
@@ -111,5 +113,33 @@ describe("hasControlChars / hasNonWhitespaceControlChars", () => {
     expect(hasControlChars(`ok${"\ufe0f"}`)).toBe(false);
     expect(hasInvisibleOrReorderingChars(`a${"\u202e"}b`)).toBe(true);
     expect(hasInvisibleOrReorderingChars(`a${"\u200b"}b`)).toBe(true);
+  });
+});
+
+describe("revealHiddenCharacters", () => {
+  const RLO = cp(0x202e);
+
+  it("spells a bidi override as a code point so the stored order stays readable", () => {
+    const spoofed = `/work/safe${RLO}gnp.exe`;
+    expect(revealHiddenCharacters(spoofed, { lineBreaks: true })).toBe("/work/safe\u27e8U+202E\u27e9gnp.exe");
+    expect(hasHiddenCharacters(spoofed)).toBe(true);
+  });
+
+  it("spells controls, zero-width and astral invisibles, keeping every visible character", () => {
+    const value = `a${cp(0x1b)}b${ZWSP}c${cp(0xe0001)}d`;
+    expect(revealHiddenCharacters(value, { lineBreaks: true })).toBe("a\u27e8U+001B\u27e9b\u27e8U+200B\u27e9c\u27e8U+E0001\u27e9d");
+  });
+
+  it("escapes line breaks and tabs only for single-line values", () => {
+    const value = `one\ntwo\tthree${cp(0x2028)}four`;
+    expect(revealHiddenCharacters(value, { lineBreaks: true })).toBe("one\u27e8U+000A\u27e9two\u27e8U+0009\u27e9three\u27e8U+2028\u27e9four");
+    expect(revealHiddenCharacters(value, { lineBreaks: false })).toBe(value);
+    expect(hasHiddenCharacters(value)).toBe(true);
+  });
+
+  it("leaves ordinary paths, Korean and spaces unchanged", () => {
+    const value = "/Users/me/보고서 최종/notes v2.md";
+    expect(revealHiddenCharacters(value, { lineBreaks: true })).toBe(value);
+    expect(hasHiddenCharacters(value)).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import {
   DEFAULT_CORP_CA_COMMON_NAME,
 } from "../shared/corp-ca-common-name.js";
 import { SUBAGENT_MAX_ROUNDS_DEFAULT } from "../shared/subagent-policy.js";
+import { DEFAULT_ADDRESS_SEARCH_ENGINE } from "../shared/browser-address.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   SIDE_PANEL_DEFAULT_WIDTH,
@@ -105,10 +106,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     logRetentionDays: LOG_RETENTION_DAYS,
   },
   appearance: { ...DEFAULT_APPEARANCE, language: DEFAULT_LOCALE },
-  documents: { openMode: "direct" },
+  documents: { openMode: "direct", editorCommand: "" },
   workBoard: { toolApprovalSurface: "chat" },
   webView: {
     preferredFlow: "in-app",
+    addressSearchEngine: DEFAULT_ADDRESS_SEARCH_ENGINE,
   },
   system: {
     signalTurnFinished: DEFAULT_ACCESSIBILITY_SIGNAL_MODES.turnFinished,

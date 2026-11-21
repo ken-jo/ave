@@ -2367,7 +2367,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
 
   it("defaults preferredFlow to 'in-app' on a fresh install", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   it("applies default 'in-app' when webView field is absent on disk (legacy settings.json)", () => {
@@ -2377,16 +2377,16 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   it("round-trips a system-browser preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
-    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser" });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("webView")).toEqual({ preferredFlow: "system-browser" });
+    expect(reloaded.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
   });
 
   // Critic F4 mitigation: schema-invalid value falls back to default for THIS field only; other settings sections must remain intact.
@@ -2406,7 +2406,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
     // Unrelated sections must be preserved (no full default reset).
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
@@ -2420,7 +2420,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   // The patch path is the trust boundary: `CHANNELS.settings.update` forwards the renderer payload to `patch()` without a schema check, so an out-of-enum
@@ -2433,37 +2433,37 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
     ["object", { preferredFlow: "in-app" }],
   ])("ignores an invalid preferredFlow patch (%s) and keeps the stored preference", async (_label, badValue) => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
 
     await service.patch({
-      webView: { preferredFlow: badValue as never },
+      webView: { ...service.get("webView"), preferredFlow: badValue as never },
     });
 
-    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
     // The rejected value must not reach disk either; otherwise the next load would silently reset the user's choice to the default.
     const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as {
       webView: { preferredFlow: unknown };
     };
-    expect(onDisk.webView).toEqual({ preferredFlow: "system-browser" });
+    expect(onDisk.webView).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("webView")).toEqual({
-      preferredFlow: "system-browser",
+      preferredFlow: "system-browser", addressSearchEngine: "google",
     });
   });
 
   it("keeps a valid preferredFlow patch working after validation", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
-    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser" });
-    await service.patch({ webView: { preferredFlow: "in-app" } });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "in-app" } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   // Consumer-side proof, driven by the REAL producer (SettingsService.patch), not a hand-built settings object: `routeExternalUrl` reads the live preferredFlow and treats anything that is not exactly "system-browser"
   // as "in-app". A hostile/malformed patch therefore used to silently move a "system-browser" user back into the in-app viewer for the rest of the session; the validated patch keeps the routing on the user's choice.
   it("keeps routeExternalUrl on system-browser after an invalid preferredFlow patch", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
-    await service.patch({ webView: { preferredFlow: "systembrowser" as never } });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "systembrowser" as never } });
 
     const shellOpened: string[] = [];
     const inAppOpened: string[] = [];
@@ -2478,6 +2478,14 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
 
     expect(shellOpened).toEqual(["https://example.com/sso"]);
     expect(inAppOpened).toEqual([]);
+  });
+  it("keeps a chosen address search engine across restart and drops one it does not know", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ webView: { ...service.get("webView"), addressSearchEngine: "duckduckgo" } });
+    await service.patch({ webView: { ...service.get("webView"), addressSearchEngine: "not-an-engine" as never } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "duckduckgo" });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("webView").addressSearchEngine).toBe("duckduckgo");
   });
 });
 

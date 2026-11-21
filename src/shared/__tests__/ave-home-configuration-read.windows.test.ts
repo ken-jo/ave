@@ -1,4 +1,5 @@
 import { configureHostResources } from "../../main/host-resources.js";
+import * as pathKind from "../../main/windows-path-kind-launcher.js";
 import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import { existsSync, lstatSync, mkdirSync, renameSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
@@ -11,7 +12,8 @@ import { readAveHomeConfigurationFile, withAveHomeConfigurationWrite } from "../
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { AveHomeConfigurationUntrustedError, ensureAveHomePrivate, isAveHomeConfigurationRefused, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
-import { pinWindowsPaths, windowsObjectKey } from "../windows-path-facts.js";
+import { pinWindowsPaths, readWindowsDacls, windowsObjectKey } from "../windows-path-facts.js";
+import * as windowsNative from "../windows-native-host.js";
 import { readJudgeStoredModels, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
@@ -62,6 +64,42 @@ function weaken(path: string): void {
   childProcess.execFileSync(win32SystemBinary("icacls"), [path, "/grant", "*S-1-1-0:(OI)(CI)W", "/q"], { windowsHide: true, stdio: "pipe" });
 }
 
+function rewritePathFactsReply(output: Buffer | string, rewrite: (json: string) => string): Buffer<ArrayBuffer> {
+  if (typeof output === "string") throw new TypeError("Configuration helper fixture expected byte output");
+  return Buffer.from(rewrite(windowsNative.decodeWindowsNativeReply(output)), "utf8");
+}
+
+it.each(["--pin", "--dacl"])("revalidates through an edited configuration helper %s reply", mode => {
+  const path = resolve("configuration", "settings.json");
+  const volumeSerial = "0x0000000000000001";
+  const fileId = "0x00000000000000000000000000000001";
+  const owner = "S-1-5-21-1-2-3-1001";
+  const row = {
+    exists: true, canonical: path, volumeSerial, fileId, volumeSerialNumber: volumeSerial, fileIndex: volumeSerial,
+    changeTime: volumeSerial, attributes: 0, reparseTag: 0, directory: false, reparseTarget: null, ancestors: [],
+    fileSystemName: "NTFS", currentUserSid: owner, elevated: false, principals: {}, identity: { volumeSerial, fileId },
+    owner, protected: true, nullDacl: false, aces: [{ type: 0, flags: 0, mask: 1, sid: owner, account: "alice" }],
+  };
+  const native = vi.spyOn(windowsNative, "runWindowsNative").mockImplementation(operation => operation());
+  const helper = vi.spyOn(pathKind, "resolveWindowsPathKindHelper").mockReturnValue("ave-path-kind.exe");
+  const execute = vi.mocked(childProcess.execFileSync);
+  const original = execute.getMockImplementation();
+  if (original === undefined) throw new Error("Configuration helper fixture is missing");
+  execute.mockImplementation((_file, args) => {
+    expect(args).toEqual([mode, path]);
+    return rewritePathFactsReply(Buffer.from(JSON.stringify([row])), json =>
+      json.replace('"fileSystemName":"NTFS"', '"fileSystemName":"ReFS"').replace('"account":"alice"', '"account":"bob"'));
+  });
+  try {
+    if (mode === "--pin") expect(pinWindowsPaths([path])).toMatchObject([{ fileSystemName: "ReFS" }]);
+    else expect(readWindowsDacls([path])).toMatchObject([{ fileSystemName: "ReFS", dacl: { aces: [{ sid: owner, account: "bob" }] } }]);
+  } finally {
+    execute.mockImplementation(original);
+    helper.mockRestore();
+    native.mockRestore();
+  }
+});
+
 describe.runIf(process.platform === "win32")("configuration handle reads", () => {
   it.each(["ReFS", null, undefined])("revalidates with P0 on every read for filesystem %s", (fileSystemName) => {
     const { path } = fixture();
@@ -69,12 +107,14 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
       const result = Reflect.apply(execute, undefined, args);
       if (!Array.isArray(args[1]) || !["--pin", "--dacl"].includes(String(args[1][0]))) return result;
-      const rows = JSON.parse(String(result));
-      for (const row of rows) for (const component of [row, ...row.ancestors]) {
-        if (fileSystemName === undefined) delete component.fileSystemName;
-        else component.fileSystemName = fileSystemName;
-      }
-      return JSON.stringify(rows);
+      return rewritePathFactsReply(result, json => {
+        const rows = JSON.parse(json);
+        for (const row of rows) for (const component of [row, ...row.ancestors]) {
+          if (fileSystemName === undefined) delete component.fileSystemName;
+          else component.fileSystemName = fileSystemName;
+        }
+        return JSON.stringify(rows);
+      });
     });
     try {
       for (let index = 0; index < 3; index++) {
@@ -106,13 +146,15 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
       const result = Reflect.apply(execute, undefined, args);
       if (!Array.isArray(args[1]) || !["--pin", "--dacl"].includes(String(args[1][0]))) return result;
-      const rows = JSON.parse(String(result));
-      for (const row of rows) {
-        for (const component of [row, ...row.ancestors]) {
-          if (component.volumeSerial === pinned.volumeSerial && component.fileId === pinned.fileId) component.changeTime = "0x0000000000000000";
+      return rewritePathFactsReply(result, json => {
+        const rows = JSON.parse(json);
+        for (const row of rows) {
+          for (const component of [row, ...row.ancestors]) {
+            if (component.volumeSerial === pinned.volumeSerial && component.fileId === pinned.fileId) component.changeTime = "0x0000000000000000";
+          }
         }
-      }
-      return JSON.stringify(rows);
+        return JSON.stringify(rows);
+      });
     });
     try {
       for (let index = 0; index < 2; index++) {
@@ -493,8 +535,10 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
       const output = Reflect.apply(execute, undefined, args);
       if (!Array.isArray(args[1]) || args[1][0] !== "--dacl" || ++walks !== 2) return output;
-      expect(String(output)).toContain('"account":"');
-      return String(output).replaceAll('"account":"', '"account":"RENAMED-');
+      return rewritePathFactsReply(output, json => {
+        expect(json).toContain('"account":"');
+        return json.replaceAll('"account":"', '"account":"RENAMED-');
+      });
     });
     try {
       vi.clearAllMocks();

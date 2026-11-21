@@ -20,13 +20,16 @@ export function BrowserSiteApprovalCard({ request, conversationLabel, interactio
     setSubmitted(true);
     onDecide(choice === undefined ? "deny-once" : "allow-once", undefined, choice === undefined ? undefined : { browserSiteChoice: choice });
   };
-  return <section role="dialog" tabIndex={-1} aria-label={t("toolApprovalDialog.siteTitle", { origin: request.browserSite ? new URL(request.browserSite).origin : "" })} data-testid="tool-approval-panel" data-approval-request-id={request.id} data-approval-tool-name={request.toolName} className="flex min-h-0 flex-col gap-3 overflow-auto p-3"
+  const origin = request.browserSite ? new URL(request.browserSite).origin : "";
+  return <section role="dialog" tabIndex={-1} aria-label={t("toolApprovalDialog.siteTitle", { origin })} data-testid="tool-approval-panel" data-approval-request-id={request.id} data-approval-tool-name={request.toolName} className="flex min-h-0 flex-col gap-3 overflow-auto p-3"
     onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); answer(); } }}>
     <div data-testid="browser-site-approval-card" className="contents">
     <p className="break-words text-xs text-muted-foreground" data-testid="approval-conversation">{conversationLabel}</p>
     {request.requestingAgentTitle && <p className="break-words text-sm font-medium">{t("toolApprovalDialog.requestingAgent", { title: request.requestingAgentTitle })}</p>}
-    <p className="break-all text-xs text-muted-foreground">{request.toolName}</p>
+    <p className="text-sm">{t("toolApprovalDialog.siteRequest")}</p>
+    <p className="break-all font-mono text-sm" data-testid="browser-site-approval-origin">{origin}</p>
     <p className="text-xs text-muted-foreground">{t("toolApprovalDialog.siteSessionOnly")}</p>
+    <p className="text-xs text-muted-foreground" data-testid="browser-site-approval-any-consequence">{t("toolApprovalDialog.siteAllowAnyConsequence")}</p>
     <div className="flex flex-wrap gap-2">
       <Button disabled={interactionLocked || submitted} onClick={() => answer("this-site")}>{t("toolApprovalDialog.siteAllow")}</Button>
       <Button disabled={interactionLocked || submitted} variant="outline" onClick={() => answer("any-site")}>{t("toolApprovalDialog.siteAllowAny")}</Button>

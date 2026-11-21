@@ -34,12 +34,17 @@ const cleanup: Array<() => Promise<void>> = [];
 function primarySurface(id: number) {
   const state = { closed: false };
   const cards: ApprovalRequest[] = [];
-  const contents = Object.assign(new EventEmitter(), {
+  const events = new EventEmitter();
+  const contents = Object.assign(events, {
     id: id * 100,
     mainFrame: { url: "file:///application/index.html" },
     isDestroyed: () => state.closed,
     send: vi.fn((channel: string, payload: unknown) => {
-      if (channel === IPC_APPROVAL_REQUEST) cards.push(payload as ApprovalRequest);
+      if (channel === IPC_APPROVAL_REQUEST) {
+        const card = payload as ApprovalRequest;
+        cards.push(card);
+        events.emit(IPC_APPROVAL_REQUEST, card);
+      }
     }),
   });
   const window = { id, webContents: contents, isDestroyed: () => state.closed } as unknown as BrowserWindow;
@@ -64,6 +69,18 @@ afterEach(async () => {
 });
 
 describe("cached primary conversation adoption", () => {
+  it("retains approval delivery when the caller awaits after the send", async () => {
+    const surface = primarySurface(30);
+    const delivered = new Promise<ApprovalRequest>((resolve) => surface.contents.once(IPC_APPROVAL_REQUEST, resolve));
+    const card = { id: "delivered-before-await" } as ApprovalRequest;
+
+    surface.contents.send(IPC_APPROVAL_REQUEST, card);
+
+    expect(surface.contents.listenerCount(IPC_APPROVAL_REQUEST)).toBe(0);
+    expect(await delivered).toBe(card);
+    expect(surface.cards).toEqual([card]);
+  });
+
   it("delivers the next real write approval to the replacement primary and executes once", async () => {
     const root = realpathSync(resources.makeTmpDir("ave-primary-adoption-"));
     vi.stubEnv("AVE_HOME", join(root, "home"));
@@ -134,14 +151,18 @@ describe("cached primary conversation adoption", () => {
     expect(loop.getSessionId()).toBe(sessionId);
     expect(resolveOtherLoop).not.toHaveBeenCalled();
 
+    const approvalDelivered = new Promise<ApprovalRequest>((resolve) => replacement.contents.once(IPC_APPROVAL_REQUEST, resolve));
     running = Promise.resolve(callNative(CHANNELS.chat.send, replacement.event, {
       input: "Write the approved file once.", inputOrigin: "user-keyboard", userActivation: true,
     }, MAIN_CHAT_GROUP_ID));
-    await vi.waitFor(() => expect(replacement.cards).toHaveLength(1));
+    const card = await Promise.race([
+      approvalDelivered,
+      running.then(() => { throw new Error("Conversation ended before requesting approval"); }),
+    ]);
+    expect(replacement.cards).toEqual([card]);
     expect(original.cards).toEqual([]);
     expect(write).not.toHaveBeenCalled();
     expect(approvalSurfaceRegistry.resolve(sessionId)).toBe(replacement.contents);
-    const [card] = replacement.cards;
     expect(card.sessionId).toBe(sessionId);
     expect(callNative(PERMISSIONS.approvalPending, replacement.event)).toHaveLength(1);
     // The response handler awaits a fresh owner-identity check before answering, so it settles asynchronously like every ipcRenderer.invoke.
@@ -153,7 +174,7 @@ describe("cached primary conversation adoption", () => {
     expect(write).toHaveBeenCalledOnce();
     expect(readFileSync(path, "utf8")).toBe("written after replacement-window consent");
     expect(gate.pendingCount).toBe(0);
-    callNative(PERMISSIONS.approvalRespond, replacement.event, allowOnceCardAnswer(card));
+    expect(await callNative(PERMISSIONS.approvalRespond, replacement.event, allowOnceCardAnswer(card))).toEqual({ ok: true });
     expect(write).toHaveBeenCalledOnce();
   });
 });

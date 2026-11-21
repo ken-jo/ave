@@ -16,7 +16,7 @@ import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
 import { ComposerStatusRow, InputActionBar } from "./InputActionBar.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { computeComposerPlaceholder } from "../utils/composer-placeholder.js";
-import { ATTACH_MAX_COUNT, type Attachment } from "../types/attachments.js";
+import { attachmentSlotsFull, type Attachment } from "../types/attachments.js";
 import { MessageQueueStore, type MessageQueueItem } from "../state/message-queue-store.js";
 import type { ApprovalRequest, AveApi } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
@@ -79,7 +79,9 @@ export interface ChatComposerDockProps {
   ringSlot: React.ReactNode;
   onAttach: () => Promise<void> | void;
   /** Files dropped on the composer (resolved and registered through the preload). */
-  onDropFiles?: (files: FileList) => void;
+  onDropFiles?: (files: FileList | readonly File[]) => void;
+  /** Shows a composer refusal (attachment limit, clipboard image that could not be saved) to the user. */
+  onComposerWarning?: (message: string) => void;
   /** App-owned warning for a verified image-capability refusal only. */
   onImageAttachmentUnavailable?: () => void;
   /** Canonical selected subscription runtime policy; legacy markers are fallback-only. */
@@ -282,6 +284,7 @@ export function ChatComposerDock({
   ringSlot,
   onAttach,
   onDropFiles,
+  onComposerWarning,
   subscriptionRuntimePolicy,
   subscriptionImageAttachmentProvider,
   subscriptionFileAttachmentProvider,
@@ -439,7 +442,7 @@ export function ChatComposerDock({
           onAttachmentsChange={setAttachments}
           allocateN={allocateN}
           saveClipboardImage={(b64) => window.ave.attach.saveClipboardImage(b64)}
-          discardClipboardImage={(filePath) => window.ave.attach.discardClipboardImage(filePath)}
+          discardClipboardImage={(filePath) => window.ave.attach.release([filePath])}
           openExternal={(p) => window.ave.attach.openExternal(p)}
           imagesEnabled={imagesEnabled}
           filesEnabled={filesEnabled}
@@ -452,7 +455,7 @@ export function ChatComposerDock({
           onSelectPlugin={onSelectPlugin}
           disabled={composerInputDisabled}
           sendDisabled={composerSendDisabled}
-          onWarning={(message) => console.warn(message)}
+          onWarning={onComposerWarning}
           onImageAttachmentUnavailable={onImageAttachmentUnavailable}
           onImageAttachmentLimitExceeded={onImageAttachmentLimitExceeded}
           placeholder={computeComposerPlaceholder({
@@ -473,7 +476,7 @@ export function ChatComposerDock({
           slashPickerOpen={slashPickerOpen}
           onSlashPickerOpenChange={onSlashPickerOpenChange}
           attachDisabled={
-            attachments.length >= ATTACH_MAX_COUNT ||
+            attachmentSlotsFull(attachments) ||
             !attachmentInputsReady ||
             hasApiKey === false ||
             (!imagesEnabled && !filesEnabled)

@@ -6,7 +6,7 @@ import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy
 import { app, BrowserWindow, nativeImage, type WebContents, type WebPreferences } from "electron";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { getMainWindows, registerMainWindow, unregisterMainWindow } from "../../../../src/main/app-state.js";
 import { browserTabRegistry, type BrowserTabOpOutcome } from "../../../../src/main/browser/browser-tab-registry.js";
 import { trackBrowserGuest } from "../../../../src/main/browser/browser-guest-tracking.js";
@@ -220,7 +220,7 @@ async function reset(): Promise<void> {
     if (!window.isDestroyed()) window.destroy();
   }
   await previousWorkspace.store.snapshot();
-  await openFeatureNamespace("browser-workspace").writeJson("workspace.json", { version: 1, ...WORKSPACE_BASELINE });
+  await openFeatureNamespace("browser-workspace").writeJson("workspace.json", { version: 2, ...WORKSPACE_BASELINE });
   await clearNativeBrowserStorage(AVE_SIDE_BROWSER_PARTITION);
   nativeEvents.length = 0;
   requestId = "";
@@ -282,7 +282,7 @@ async function assertClean(): Promise<void> {
   await assertNativeBrowserState(owner, guest, rendererTabId);
   const state = await permissionState();
   const expected = { ...WORKSPACE_BASELINE, storageStatus: "ready" };
-  if (!isDeepStrictEqual(state.disk, { version: 1, ...WORKSPACE_BASELINE })
+  if (!isDeepStrictEqual(state.disk, { version: 2, ...WORKSPACE_BASELINE })
     || !isDeepStrictEqual(state.live, expected) || !isDeepStrictEqual(state.reloaded, expected)) {
     throw new Error("Native fixture retained dirty persisted workspace state");
   }
@@ -294,7 +294,8 @@ void app.whenReady().then(async () => {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Workspace fixture server did not start");
   origin = `http://127.0.0.1:${address.port}`;
-  installSideBrowserPartitionPolicy();
+  // The checkout's resources folder: the fixture runs from the repository root, as the app does in development.
+  installSideBrowserPartitionPolicy(resolve("resources"));
   await reset();
   const fixture: WorkspaceNativeFixture = {
     ready: true, read, find, preview, hiddenPreviewRace, savePermissionRules, permissionState, resetWithPendingPermissionWrites, reset, assertClean,

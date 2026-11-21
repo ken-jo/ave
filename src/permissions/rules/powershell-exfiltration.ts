@@ -36,7 +36,8 @@ import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.j
 import { inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { homedir } from "node:os";
-import { win32 } from "node:path";
+import { posix, win32 } from "node:path";
+import { resolveGuestShellPath, type ShellExecutionFacts } from "../../shared/shell-execution.js";
 
 class SharedPowerShellContext extends PowerShellAnalysisContext {
   readonly floor = new ShellFloorContext("powershell");
@@ -1084,14 +1085,17 @@ function literalStageBodies(stage: StaticStage) {
   return literalShellBodies(argv, "powershell", stage.raw);
 }
 
-function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined, budget: LiteralBodyBudget): ShellFloorSignals {
+function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined, budget: LiteralBodyBudget, supplied?: ShellFloorContext): ShellFloorSignals {
   budget.tokens.count += parsed.context.visits.grammarRecords;
   if (budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return shellFloorBudgetSignals();
-  const retained = sharedWork(parsed.context).retained;
+  const work = supplied ?? sharedWork(parsed.context);
+  const retained = {
+    sensitive: work.retained.sensitive ?? sharedWork(parsed.context).retained.sensitive,
+    exfiltration: work.retained.exfiltration ?? sharedWork(parsed.context).retained.exfiltration,
+  };
   if (parsed.analysisLimited) return { ...shellFloorBudgetSignals(), ...retained,
     ...(retained.sensitive !== null || retained.exfiltration !== null ? { outcome: "visible-floor" as const } : {}) };
   const { pipelines, reason, readable } = parsed.syntax;
-  const work = sharedWork(parsed.context);
   if (pipelines === null) {
     let sensitive: string | null = retained.sensitive, exfiltration: string | null = retained.exfiltration;
     for (const command of readable ?? []) {
@@ -1121,8 +1125,9 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined,
     const childFlow = { readsPath: false, network: false, limited: false };
     for (const body of literalStageBodies(stage)) {
       const childBudget = { tokens: budget.tokens, depth: budget.depth + 1 };
-      const child = body.dialect === "powershell" ? inspectPowerShellCommand(body.text, cwd, childBudget)
-        : inspectPosixShellCommand(body.text, cwd, undefined, childBudget, inspectPowerShellCommand);
+      const childContext = work.createChild(body.dialect === "powershell" ? "powershell" : "bash");
+      const child = body.dialect === "powershell" ? inspectPowerShellCommand(body.text, cwd, childBudget, undefined, childContext)
+        : inspectPosixShellCommand(body.text, cwd, childContext, childBudget, inspectPowerShellCommand);
       sensitive ??= child.sensitive;
       exfiltration ??= child.exfiltration;
       const flow = literalShellFlow(child);
@@ -1255,7 +1260,7 @@ function permissionStages(pipelines: readonly PsPipeline[], program: StaticProgr
 
 /** Report parsed filesystem bindings, retaining repeated targets and their individual effects.
  * When unproven is true, paths may be partial; route uncertainty through the pipeline. */
-export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, cwd: string, environment: Readonly<Record<string, string | undefined>> = {}, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }): {
+export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, cwd: string, environment: Readonly<Record<string, string | undefined>> = {}, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, options: { inspectHostFiles?: boolean } = {}): {
   paths: readonly PermissionPathEvidence[];
   unproven: boolean;
   credentialStore: string | null;
@@ -1266,10 +1271,16 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   budget.tokens.count += parsed.context.visits.grammarRecords;
   if (parsed.analysisLimited || budget.depth >= POWERSHELL_ANALYSIS_LIMITS.depth || budget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) return { paths: [], unproven: true, credentialStore: null, evidenceLimitExceeded: true };
   const paths: PermissionPathEvidence[] = [];
-  const evidenceForPath = createPermissionPathEvidence(cwd);
+  const inspectHostFiles = options.inspectHostFiles !== false;
+  const initialDirectory = inspectHostFiles || posix.isAbsolute(cwd) && !cwd.includes("\0") ? cwd : null;
+  const shellFacts = (directory: string | null, values: Readonly<Record<string, string | undefined>>): ShellExecutionFacts => ({
+    dialect: "bash", environment: values,
+    ...(!inspectHostFiles ? { guestPosixPaths: true as const, guestCwd: directory ?? undefined } : {}),
+  });
+  const evidenceForPath = createPermissionPathEvidence(cwd, undefined, { inspectHostFiles });
   const redirectFacts = parsed.facts.get("filesystem-redirections") as readonly PsRedirection[] | undefined;
   const evidencePipelines = parsed.syntax.pipelines ?? parsed.syntax.permissionPipelines;
-  const fallback = parsed.syntax.pipelines === null && evidencePipelines === undefined ? inspectPosixShellPermissionPaths(parsed.command, cwd, { dialect: "bash", environment: {} }, undefined, budget, inspectPowerShellPermissionPaths) : undefined;
+  const fallback = parsed.syntax.pipelines === null && evidencePipelines === undefined ? inspectPosixShellPermissionPaths(parsed.command, cwd, shellFacts(initialDirectory, {}), undefined, budget, inspectPowerShellPermissionPaths) : undefined;
   if (fallback && (parsed.syntax.readable ?? []).length === 0) {
     return { paths: fallback.paths, unproven: true, credentialStore: null,
       ...(fallback.unknownProtectedWrite ? { unknownProtectedWrite: fallback.unknownProtectedWrite } : {}),
@@ -1292,7 +1303,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   // Earlier stages may change environment or location; only an isolated stage can use the launch snapshot.
   const stages: PermissionStage[] = evidencePipelines ? permissionStages(evidencePipelines, program) : program.stages.map(stage => ({ stage, conditional: false }));
   const stageEnvironment = stages.length === 1 ? environment : {};
-  let currentDirectory: string | null = cwd;
+  let currentDirectory: string | null = initialDirectory;
   const add = (binding: FilesystemArgumentBinding, effect: "read" | "write", deleting = false, literalPath = false, directory = currentDirectory) => {
     // The FileSystem provider qualifier names the same file, so the remainder gets the ordinary floor checks.
     let value = binding.value.replace(/^(?:(?:Microsoft\.PowerShell\.Core\\)?FileSystem::)+/i, "");
@@ -1306,8 +1317,27 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
         || /^[A-Za-z][\w.]*\\(?:Alias|Certificate|Environment|Function|Registry|Variable|WSMan)::/i.test(value)) return;
     }
     unproven ||= binding.dynamic;
-    value = value.replace(/^(?:~|\$HOME|\$env:USERPROFILE)(?=[\\/]|$)/i, homedir());
+    const homePrefix = /^(?:~|\$HOME|\$env:USERPROFILE)(?=[\\/]|$)/i;
+    if (inspectHostFiles) value = value.replace(homePrefix, homedir());
+    else if (homePrefix.test(value)) {
+      if (environment.HOME === undefined || !posix.isAbsolute(environment.HOME)) {
+        unproven = true;
+        if (effect === "write") unknownProtectedWrite ??= "The shell write location may be a protected directory.";
+        return;
+      }
+      value = value.replace(homePrefix, environment.HOME);
+    }
     if (!literalPath && /[*?\[\]]/.test(value)) unproven = true;
+    if (!inspectHostFiles) {
+      if (value.includes("\0") || !posix.isAbsolute(value) && directory === null) {
+        unproven = true;
+        if (effect === "write") unknownProtectedWrite ??= "The shell write location may be a protected directory.";
+        return;
+      }
+      const guestPath = resolveGuestShellPath(value, directory);
+      paths.push({ ...evidenceForPath({ lexical: guestPath, canonical: guestPath, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
+      return;
+    }
     const absolute = /^(?:[a-z]:[\\/]|[\\/])/i.test(value);
     if (!absolute && directory === null && effect === "write") unknownProtectedWrite ??= "The shell write location may be a protected directory.";
     const base = directory ?? cwd;
@@ -1355,14 +1385,14 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     for (const body of literalBodies) {
       const childBudget = { tokens: budget.tokens, depth: budget.depth + 1 };
       if (body.dialect === "powershell") {
-        const nested = inspectPowerShellPermissionPaths(body.text, currentDirectory ?? cwd, stageEnvironment, childBudget);
+        const nested = inspectPowerShellPermissionPaths(body.text, currentDirectory ?? (inspectHostFiles ? cwd : ""), stageEnvironment, childBudget, options);
         paths.push(...nested.paths);
         unproven ||= nested.unproven;
         credentialStore ??= nested.credentialStore;
         unknownProtectedWrite ??= nested.unknownProtectedWrite;
         evidenceLimitExceeded ||= nested.evidenceLimitExceeded === true;
       } else {
-        const nested = inspectPosixShellPermissionPaths(body.text, currentDirectory ?? cwd, { dialect: "bash", environment: stageEnvironment }, undefined, childBudget, inspectPowerShellPermissionPaths);
+        const nested = inspectPosixShellPermissionPaths(body.text, currentDirectory ?? (inspectHostFiles ? cwd : ""), shellFacts(currentDirectory, stageEnvironment), undefined, childBudget, inspectPowerShellPermissionPaths);
         paths.push(...nested.paths);
         unproven ||= nested.unproven !== null;
         unknownProtectedWrite ??= nested.unknownProtectedWrite;
@@ -1374,7 +1404,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     if (credential === true || (credential instanceof RegExp && credential.test(stage.visible.filter((value): value is string => value !== undefined).join(" ")))) {
       credentialStore ??= "Host credential store access";
     }
-    const implicitWrite = inspectImplicitGitWriteTargets(stage.argv, currentDirectory, stageEnvironment, (path, _label, directory, effect) => add({ value: path, dynamic: false }, effect, false, false, directory));
+    const implicitWrite = inspectImplicitGitWriteTargets(stage.argv, currentDirectory, stageEnvironment, (path, _label, directory, effect) => add({ value: path, dynamic: false }, effect, false, false, directory), undefined, { inspectHostFiles });
     unknownProtectedWrite ??= implicitWrite;
     if (stage.proof.kind === "static-complete" && stage.proof.dataOnly) continue;
     if (policy === undefined || policy.native) {
@@ -1382,7 +1412,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
       const values = stage.command.tokens.map((token, index) => stage.argv[index] === undefined ? permissionArgumentBinding(token, stageEnvironment) : { value: stage.argv[index]!, dynamic: false });
       const source = values.map((binding, index) => binding && !binding.dynamic ? shellQuote(binding.value) : stage.raw[index]!).join(" ");
       unknownProtectedWrite ??= inspectUnknownNativeWriteArguments(values.map((binding) => binding && !binding.dynamic ? binding.value : undefined), stage.raw);
-      const native = inspectPosixShellPermissionPaths(source, currentDirectory ?? cwd, { dialect: "bash", environment: {} }, undefined, budget, inspectPowerShellPermissionPaths, { rootAlreadyParsed: true, literalBodiesAlreadyInspected: literalBodies.length > 0 });
+      const native = inspectPosixShellPermissionPaths(source, currentDirectory ?? (inspectHostFiles ? cwd : ""), shellFacts(currentDirectory, {}), undefined, budget, inspectPowerShellPermissionPaths, { rootAlreadyParsed: true, literalBodiesAlreadyInspected: literalBodies.length > 0 });
       paths.push(...native.paths);
       unproven ||= native.unproven !== null;
       evidenceLimitExceeded ||= native.unproven?.kind === "analysis-limit";
@@ -1421,7 +1451,10 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     }
     if (effects.includes("cwd-write")) {
       const target = bindings.named.get("path")?.[0] ?? bindings.named.get("literalpath")?.[0] ?? bindings.positional[0];
-      if (conditional || !target || target.dynamic || /[*?\[\]]/.test(target.value) || currentDirectory === null) currentDirectory = null;
+      if (!inspectHostFiles) {
+        currentDirectory = null;
+        unproven = true;
+      } else if (conditional || !target || target.dynamic || /[*?\[\]]/.test(target.value) || currentDirectory === null) currentDirectory = null;
       else {
         try { currentDirectory = resolveShellFilesystemPath(target.value, currentDirectory); }
         catch { currentDirectory = null; }
@@ -1432,7 +1465,7 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
   return { paths, unproven, credentialStore, ...(unknownProtectedWrite ? { unknownProtectedWrite } : {}), ...(evidenceLimitExceeded ? { evidenceLimitExceeded: true as const } : {}) };
 }
 
-export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, executionPlan?: HostShellExecutionPlan): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget), executionPlan); }
+export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string, budget: LiteralBodyBudget = { tokens: { count: 0 }, depth: 0 }, executionPlan?: HostShellExecutionPlan, context?: ShellFloorContext): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd, budget, context), executionPlan); }
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).sensitive; }
 export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).exfiltration; }

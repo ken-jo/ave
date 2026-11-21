@@ -10,6 +10,9 @@ import {
   SENSITIVE_PATH_ENTRIES,
   canonicalizePathForMatch,
   caseFoldForMatch,
+  createPermissionPathEvidence,
+  createSensitivePathMatcher,
+  isSensitiveContent,
   isSensitivePath,
   sensitiveEntryOnSandboxFloor,
   type SensitiveEntry,
@@ -83,6 +86,22 @@ describe("sensitive paths — one table, two projections", () => {
     for (const entry of SENSITIVE_PATH_ENTRIES) {
       expect(entry.segments.length, `${entry.anchor}: ${entry.why}`).toBeGreaterThan(0);
     }
+  });
+
+  it.each([
+    ["path", (path: string) => isSensitivePath(path, "read") !== null],
+    ["buffer", (path: string) => isSensitiveContent(path, Buffer.from("saved-history-fixture")) !== null],
+    ["compiled", (path: string) => createSensitivePathMatcher("read")(path) !== null],
+    ["evidence", (path: string) => createPermissionPathEvidence(CWD)({ lexical: path, canonical: caseFoldForMatch(canonicalizePathForMatch(path)), effect: "read" }).secret !== null],
+    ["host", (path: string, home: string) => hostDeniesAsSensitive(path, home)],
+  ] as const)("keeps mixed-case configured session reads scoped in the %s projection", (_name, denies) => {
+    const home = join(tmpdir(), "MixedCase-Profile", ".ave");
+    process.env.AVE_HOME = home;
+    const sessions = join(home, "sessions");
+    expect(denies(join(sessions, "conversation.jsonl"), home)).toBe(false);
+    expect(denies(join(sessions, "copy", ".ave", "sessions", "conversation.jsonl"), home)).toBe(true);
+    expect(denies(join(sessions, ".env"), home)).toBe(true);
+    expect(isSensitivePath(join(sessions, "conversation.jsonl"), "write")).not.toBeNull();
   });
 
   // Content pins, independent of the table The loop above stays green when a row is DELETED (both projections shrink together). These name the path, so a deletion reds a specific case.

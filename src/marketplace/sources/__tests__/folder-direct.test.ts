@@ -37,16 +37,16 @@ describe("a direct folder package", () => {
     await harness.service.executeInstall(plan.planId);
     expect(harness.content.map((staged) => staged.plan.version)).toEqual([preview.version]);
     expect(harness.gitCalls).toEqual([]);
-    harness.service.close();
+    await harness.service.close();
   });
 
   it("gets another version when its files change", async () => {
     const first = await folderService({ root, folders: { fs: volume("one"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
     const a = await first.service.previewSource({ input: "/opt/note", auth: "none" });
-    first.service.close();
+    await first.service.close();
     const second = await folderService({ root, folders: { fs: volume("two"), platform: "linux", limits: TEST_FOLDER_LIMITS } });
     const b = await second.service.previewSource({ input: "/opt/note", auth: "none" });
-    second.service.close();
+    await second.service.close();
     expect(a).toMatchObject({ type: "package" });
     expect(b).toMatchObject({ type: "package" });
     expect((a as { version: string }).version).not.toBe((b as { version: string }).version);
@@ -62,7 +62,7 @@ describe("allowDirectInstall: false (§12)", () => {
       detail: { reason: "direct-install-blocked", target: "/opt/note", policyPath: FIXTURE_POLICY_PATH },
     });
     await expect(harness.service.previewSource({ input: "/opt/market", auth: "none" })).resolves.toMatchObject({ type: "marketplace", transport: "folder" });
-    harness.service.close();
+    await harness.service.close();
   });
 
   it("refuses the add and the plan of a direct folder once the policy turns it off", async () => {
@@ -83,7 +83,7 @@ describe("allowDirectInstall: false (§12)", () => {
       detail: { reason: "direct-install-blocked", target: "/opt/note" },
     });
     expect(harness.content).toEqual([]);
-    harness.service.close();
+    await harness.service.close();
   });
 });
 
@@ -99,7 +99,7 @@ describe("a direct agent plugin with a folder for an extension namespace Ave doe
       await expect(folder).rejects.toMatchObject({ code: "SOURCE_INDEX_INVALID" });
       await expect(folder).rejects.toThrow(`only: ${UNKNOWN_NAMESPACE}/routines.json`);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 });
@@ -128,7 +128,7 @@ describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, 
         detail: { reason: "classifier-unavailable", path: "Z:\\other" },
       });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -140,7 +140,7 @@ describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, 
         detail: { reason: "link-to-network", path: "skills/other", target: "Z:\\other" },
       });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -159,7 +159,7 @@ describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, 
         detail: { reason: "classifier-unavailable", path: "Z:\\other" },
       });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -190,7 +190,7 @@ describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, 
         detail: { reason: "classifier-unavailable", path: target },
       });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 });

@@ -426,6 +426,8 @@ export class TerminalFileEvidence {
       operation: file.before === null ? "create" : "modify",
       // Terminal provenance offers no chat line references.
       referenceable: false,
+      // Terminal changes have no checkpoint image to keep or undo against.
+      decidable: false,
       hunks: createTurnReviewHunks(before, after, file.before === null, file.path),
     };
   }

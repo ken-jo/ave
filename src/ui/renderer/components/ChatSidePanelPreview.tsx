@@ -270,7 +270,7 @@ export function PreviewBody({
         <div className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-dense [overflow-wrap:anywhere]">
           {target.path}
         </div>
-        <FileEditDiff data={target.diff} />
+        <FileEditDiff data={target.diff} source={sessionId && target.toolUseId ? { sessionId, toolUseId: target.toolUseId } : undefined} />
         <CopyButton value={rawText} />
       </div>
     );

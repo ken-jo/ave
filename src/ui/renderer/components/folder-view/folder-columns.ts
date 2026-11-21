@@ -13,6 +13,8 @@ export interface FolderColumn {
   status: "loading" | "ok" | "error";
   entries: readonly FolderEntry[];
   truncated: boolean;
+  /** Entries past the listing cap, which main counts after sorting; the column says how many are not shown. */
+  omitted: number;
   /** Entries the sensitive-path floor left out; the empty copy says "no hidden files" only when this is 0. */
   hidden: number;
   error?: FolderListError;
@@ -29,12 +31,37 @@ export interface FolderState {
 
 export type FolderAction =
   | { type: "loaded"; dir: string; result: WorkspaceListDirResult }
+  /** A fresh listing of a column that is already shown: it replaces the column wholesale. */
+  | { type: "refreshed"; dir: string; result: WorkspaceListDirResult }
   | { type: "select"; column: number; entry: FolderEntry }
   | { type: "retry"; dir: string }
   | { type: "truncate"; column: number };
 
 function loadingColumn(dir: string): FolderColumn {
-  return { dir, status: "loading", entries: [], truncated: false, hidden: 0 };
+  return { dir, status: "loading", entries: [], truncated: false, omitted: 0, hidden: 0 };
+}
+
+function listedColumn(dir: string, result: WorkspaceListDirResult): FolderColumn {
+  return result.ok
+    ? { dir, status: "ok", entries: result.entries ?? [], truncated: result.truncated === true, omitted: result.omitted ?? 0, hidden: result.hidden ?? 0 }
+    : { dir, status: "error", entries: [], truncated: false, omitted: 0, hidden: 0, error: result.error ?? "read-failed" };
+}
+
+function sameListing(a: FolderColumn, b: FolderColumn): boolean {
+  return a.status === b.status && a.error === b.error && a.truncated === b.truncated && a.omitted === b.omitted && a.hidden === b.hidden
+    && a.entries.length === b.entries.length
+    && a.entries.every((entry, at) => {
+      const other = b.entries[at];
+      return other !== undefined && entry.path === other.path && entry.type === other.type && entry.outside === other.outside
+        && entry.size === other.size && entry.mtimeMs === other.mtimeMs;
+    });
+}
+
+function lockedAfter(locked: ReadonlySet<string>, action: { dir: string; result: WorkspaceListDirResult }): ReadonlySet<string> {
+  const next = new Set(locked);
+  if (!action.result.ok && action.result.error === "permission-denied") next.add(action.dir);
+  else next.delete(action.dir);
+  return next;
 }
 
 export function initialFolderState(root: string): FolderState {
@@ -47,14 +74,26 @@ export function folderReducer(state: FolderState, action: FolderAction): FolderS
       const index = state.columns.findIndex((column) => column.dir === action.dir);
       // A listing for a column the user has since closed is dropped.
       if (index < 0) return state;
-      const { result } = action;
-      const column: FolderColumn = result.ok
-        ? { dir: action.dir, status: "ok", entries: result.entries ?? [], truncated: result.truncated === true, hidden: result.hidden ?? 0 }
-        : { dir: action.dir, status: "error", entries: [], truncated: false, hidden: 0, error: result.error ?? "read-failed" };
-      const locked = new Set(state.locked);
-      if (!result.ok && result.error === "permission-denied") locked.add(action.dir);
-      else locked.delete(action.dir);
-      return { ...state, columns: state.columns.map((each, at) => (at === index ? column : each)), locked };
+      const column = listedColumn(action.dir, action.result);
+      return { ...state, columns: state.columns.map((each, at) => (at === index ? column : each)), locked: lockedAfter(state.locked, action) };
+    }
+    case "refreshed": {
+      const index = state.columns.findIndex((column) => column.dir === action.dir);
+      const shown = state.columns[index];
+      // A closed column has nothing to replace; a column still waiting for its first listing gets one as fresh as this.
+      if (!shown || shown.status === "loading") return state;
+      const column = listedColumn(action.dir, action.result);
+      // Nothing changed on disk: keep the state object so nothing re-renders.
+      if (sameListing(shown, column)) return state;
+      const columns = state.columns.map((each, at) => (at === index ? column : each));
+      const locked = lockedAfter(state.locked, action);
+      const chosen = state.selected[index];
+      if (!chosen) return { ...state, columns, locked };
+      // The whole listing is replaced. The choice in it survives only as the fresh entry of the same path and kind; when it
+      // is gone, or became something else, the columns and the file opened from it close.
+      const fresh = column.entries.find((entry) => entry.path === chosen.path && entry.type === chosen.type);
+      if (!fresh) return { ...state, columns: columns.slice(0, index + 1), selected: state.selected.slice(0, index), locked };
+      return { ...state, columns, selected: state.selected.map((each, at) => (at === index ? fresh : each)), locked };
     }
     case "select": {
       if (action.column < 0 || action.column >= state.columns.length) return state;
@@ -95,13 +134,12 @@ export function viewerReplacesColumns(width: number): boolean {
   return width < FOLDER_VIEWER_MIN_WIDTH + 2 * FOLDER_COLUMN_WIDTH;
 }
 
-/** What a key does in a column row. Arrow keys and Enter only; anything else is left to the browser. */
-export type FolderKeyIntent = "up" | "down" | "open" | "back" | "preview" | null;
+/** What a key does to the row itself. Moving between rows (arrows, Home, End, page keys, typing a name) is the shared list
+ * navigation's job; anything else is left to the browser. */
+export type FolderKeyIntent = "open" | "back" | "preview" | null;
 
 export function folderKeyIntent(key: string): FolderKeyIntent {
   switch (key) {
-    case "ArrowUp": return "up";
-    case "ArrowDown": return "down";
     case "ArrowRight":
     case "Enter": return "open";
     case "ArrowLeft": return "back";

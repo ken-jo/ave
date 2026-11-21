@@ -2,7 +2,7 @@ import { mkdirSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "n
 import childProcess, { type ChildProcess } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { EventEmitter } from "node:events";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { FilesystemConfig, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
@@ -61,6 +61,13 @@ async function initializeFixtureSandbox(filesystem: { allowRead?: string[]; allo
 
 function runtimeDenyWrite(filesystem: Partial<FilesystemConfig> | undefined): string[] {
   return expandWindowsFsPaths(filesystem?.denyWrite ?? [], { mode: "deny" }).map(path => resolve(path));
+}
+
+function denyWriteSpellings(filesystem: Partial<FilesystemConfig> | undefined): string[] {
+  return (filesystem?.denyWrite ?? []).map(entry => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    return /^[A-Za-z]:[\\/]/u.test(path) ? path.replace(/[\\/]/gu, sep) : path;
+  });
 }
 
 function runtimeAllowWrite(filesystem: Partial<FilesystemConfig> | undefined): string[] {
@@ -458,7 +465,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const alias = link(target, join(scratch(), "alias"));
     const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
       expect(config.filesystem.denyRead).toContain(alias);
-      expect(config.filesystem.denyWrite).toContain(alias);
+      expect(denyWriteSpellings(config.filesystem)).toContain(alias);
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     const initialization = await initializeAsrtSandbox({ windows: { externalConfinement: true }, denyRead: [alias], denyWrite: [alias] });
@@ -472,7 +479,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const target = scratch();
     const alias = link(target, join(scratch(), "alias"));
     const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
-      expect(config?.filesystem?.denyWrite).toContain(alias);
+      expect(denyWriteSpellings(config?.filesystem)).toContain(alias);
       return { argv: ["fixture"], env: {} };
     });
     await expect(sandbox.wrapToolCommand("echo fixture", {
@@ -631,7 +638,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       expect(expandWindowsFsPaths(filesystem.allowRead ?? [], { mode: "grant" }).map(path => resolve(path))).toEqual([readable]);
       expect(expandWindowsFsPaths(filesystem.allowWrite, { mode: "grant" }).map(path => resolve(path))).toEqual([writable]);
       expect(expandWindowsFsPaths(filesystem.denyRead, { mode: "deny" }).map(path => resolve(path))).toContain(missingDeny);
-      const entries = filesystem.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
+      const entries = denyWriteSpellings(filesystem);
       expect(entries).toContain(missingDeny + "\\");
       for (const list of [filesystem.allowRead, filesystem.allowWrite]) {
         expect(list?.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);

@@ -1,11 +1,12 @@
 /** Validate parsed protocols and credentials through the shared authority at every navigation boundary; substring checks
  * are insufficient. */
-import { validateExternalUrl } from "../../../shared/external-url.js";
+import { DEFAULT_ADDRESS_SEARCH_ENGINE, isAddressSearchEngine, resolveAddressBarInput, type AddressBarTarget } from "../../../shared/browser-address.js";
+import type { AveApi } from "../types.js";
 
-export function normalizeBrowserNavigationUrl(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-  const validated = validateExternalUrl(candidate);
-  return validated.ok ? validated.url : null;
+export { normalizeBrowserNavigationUrl } from "../../../shared/browser-address.js";
+
+/** What submitted address-row text opens, read against the search engine configured at the moment of submission. */
+export async function resolveAddressSubmission(api: Pick<AveApi, "getSettings">, text: string): Promise<AddressBarTarget | null> {
+  const engine = (await api.getSettings()).webView?.addressSearchEngine;
+  return resolveAddressBarInput(text, isAddressSearchEngine(engine) ? engine : DEFAULT_ADDRESS_SEARCH_ENGINE);
 }

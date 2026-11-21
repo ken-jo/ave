@@ -74,7 +74,7 @@ describe("folder badges (§18.4.8)", () => {
       const sources = await harness.service.listSources();
       for (const item of sources.filter((candidate) => candidate.transport === "git")) expect(item.badges).not.toContain("local-folder");
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -89,7 +89,7 @@ describe("folder badges (§18.4.8)", () => {
       const view = await harness.service.addSource({ previewId: preview.previewId, id: "notes" });
       expect(view.badges).toEqual(["network-folder"]);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 });
@@ -114,7 +114,7 @@ describe("folder badges when the folder or its classifier changes (§18.4.8)", (
       volume.queryDosDevice = healthy;
       expect((await harness.service.listSources()).find((item) => item.id === "notes")!.badges).toEqual(["local-folder"]);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -127,7 +127,7 @@ describe("folder badges when the folder or its classifier changes (§18.4.8)", (
       clock += 60_000;
       expect((await harness.service.listSources()).find((item) => item.id === "notes")!.badges).toEqual(["network-folder-unconfirmed"]);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 });
@@ -146,7 +146,7 @@ describe("package provenance of a folder (§18.4.8)", () => {
       });
       expect(detail.provenance.folder!.contents).toMatch(/^[0-9a-f]{64}$/u);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 });
@@ -161,7 +161,7 @@ describe("revealFolder (§18.9)", () => {
       await expect(harness.service.revealFolder(git!.id)).resolves.toBeNull();
       expect(await refused(harness.service.revealFolder("nowhere"))).toMatchObject({ code: "SOURCE_ID_INVALID" });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -172,7 +172,7 @@ describe("revealFolder (§18.9)", () => {
       volume.remove(folder);
       expect(await refused(harness.service.revealFolder("team"))).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "not-found", path: view.path } });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -185,7 +185,7 @@ describe("revealFolder (§18.9)", () => {
       symlinkSync(elsewhere, folder, "dir");
       expect(await refused(harness.service.revealFolder("team"))).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "moved", path: view.path } });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -198,7 +198,7 @@ describe("revealFolder (§18.9)", () => {
       expect(refreshed.status).toMatchObject({ state: "unreachable", code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "moved" } });
       expect(await refused(harness.service.revealFolder("team"))).toMatchObject({ code: "SOURCE_LOCAL_UNREADABLE", detail: { reason: "moved", path: view.path, target: view.path } });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -214,7 +214,7 @@ describe("revealFolder (§18.9)", () => {
       };
       expect(await refused(harness.service.revealFolder("notes"))).toMatchObject({ code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "network-folder", server: "files.corp" } });
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -235,7 +235,7 @@ describe("revealFolder (§18.9)", () => {
       expect(error).toMatchObject({ code: "SOURCE_CONFIRMATION_REQUIRED", detail: { reason: "network-folder", server: "files.corp" } });
       expect(volume.calls).toEqual([{ op: "queryDosDevice", path: "Z:" }]);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 });
@@ -245,7 +245,7 @@ describe("a folder source an earlier build stored under a credential-shaped id (
   const TOKEN = `glp${"at-"}${"abcd1234".repeat(3)}`;
 
   async function storeUnderToken(harness: Awaited<ReturnType<typeof windowsService>>, volume: FakeVolume) {
-    harness.service.close();
+    await harness.service.close();
     const marketplaces = join(root, "marketplaces");
     const list = join(marketplaces, "sources.json");
     writeFileSync(list, readFileSync(list, "utf8").replaceAll('"notes"', JSON.stringify(TOKEN)));
@@ -272,7 +272,7 @@ describe("a folder source an earlier build stored under a credential-shaped id (
       }
       expect(volume.calls).toEqual([]);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 
@@ -288,7 +288,7 @@ describe("a folder source an earlier build stored under a credential-shaped id (
       expect(error.message).toContain(handle);
       expect(JSON.stringify({ message: error.message, detail: error.detail })).not.toContain(TOKEN);
     } finally {
-      harness.service.close();
+      await harness.service.close();
     }
   });
 });

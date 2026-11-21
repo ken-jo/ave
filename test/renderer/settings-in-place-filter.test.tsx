@@ -8,7 +8,7 @@ import { ThemeProvider } from "../../src/ui/renderer/theme/ThemeProvider.js";
 import { TooltipProvider } from "../../src/components/ui/tooltip.js";
 import { _unregisteredSettingsControlsForTest } from "../../src/ui/renderer/context/SettingsEditorContext.js";
 import { SettingsContent } from "../../src/ui/renderer/SettingsContent.js";
-import { clickSettingsTab } from "./helpers.js";
+import { clickSettingsTab, deferred } from "./helpers.js";
 import { makeMockAveApi, makeMockAveNamespace } from "./mock-ave-api.js";
 import { requiredFixture } from "../../src/__tests__/support/required-fixture.js";
 const previousLocale = getLocale();
@@ -33,7 +33,19 @@ async function renderSettings(settings = DEFAULT_SETTINGS) {
   Object.assign(ns, { mcp });
   window.ave = ns as never; window.aveApi = api as never;
   vi.stubGlobal("ave", ns); vi.stubGlobal("aveApi", api);
+  const readSettings = requiredFixture(api.getSettings.getMockImplementation());
+  const readDefaults = requiredFixture(api.getSettingsDefaults.getMockImplementation());
+  const settingsRead = deferred<Awaited<ReturnType<typeof api.getSettings>>>();
+  const defaultsRead = deferred<Awaited<ReturnType<typeof api.getSettingsDefaults>>>();
+  api.getSettings.mockReturnValueOnce(settingsRead.promise);
+  api.getSettingsDefaults.mockReturnValueOnce(defaultsRead.promise);
   const view = render(<ThemeProvider initialAppearance={DEFAULT_APPEARANCE}><TooltipProvider><SettingsContent api={api as never} onSaved={() => {}} initialTab="web" /></TooltipProvider></ThemeProvider>);
+  expect(view.container.querySelector("fieldset.contents")).toBeDisabled();
+  await act(async () => {
+    settingsRead.resolve(await readSettings());
+    defaultsRead.resolve(await readDefaults());
+  });
+  expect(view.container.querySelector("fieldset.contents")).not.toBeDisabled();
   await waitFor(() => expect(view.container.querySelector('[data-settings-section="web-search-engine"]')).toBeTruthy());
   return { ...view, api, ns, mcp };
 }
@@ -70,24 +82,46 @@ describe("settings in-place editor", () => {
         expect(requiredFixture(view.container.querySelector<HTMLElement>('[data-settings-section="web-search-engine"]')).hidden, query).toBe(true);
       });
     }
+    fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
+    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Modified settings" })); });
     const row = (id: string) => requiredFixture(terminal().querySelector<HTMLElement>(`[data-setting-id="${id}"]:not([data-setting-registered])`));
-    vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame"] });
-    try {
-      await act(async () => {
-        fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
-      });
-      await act(async () => {
-        fireEvent.click(view.getByRole("button", { name: "Modified settings" }));
-      });
-      // The filter rescans after the remounted panels commit and the mutation observer queues a frame.
-      await act(async () => { vi.advanceTimersToNextFrame(); });
+    expect(view.container.querySelector("fieldset.contents")).not.toBeDisabled();
+    expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]);
+    // Remounted controls register asynchronously; their DOM mutations share one filter rescan in the next frame.
+    await act(async () => { await new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); }); });
+    await waitFor(() => {
       expect(row("appearance.terminal.scrollback").hidden).toBe(false);
       expect(row("appearance.terminal.cursorStyle").hidden).toBe(true);
       expect(row("appearance.terminal.copyOnSelect").hidden).toBe(true);
       expect(row("appearance.terminal.shell").hidden).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
+    });
+  });
+  it("registers and filters the editor command independently and resets its saved value", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.documents.editorCommand = "edit --goto {file}:{line}";
+    const view = await renderSettings(settings);
+    fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "editor command" } });
+    const input = await view.findByTestId("document-editor-command");
+    expect(input.closest("[data-setting-id]")).toHaveAttribute("data-setting-id", "documents.editorCommand");
+    const row = (id: string) => requiredFixture(view.container.querySelector<HTMLElement>(`[data-setting-id="${id}"]:not([data-setting-registered])`));
+    await waitFor(() => {
+      expect(input).toHaveValue(settings.documents.editorCommand);
+      expect(row("documents.editorCommand").hidden).toBe(false);
+      expect(view.container.querySelector('[data-setting-control-id="documents.editorCommand"][data-setting-registered="true"]')).toBeTruthy();
+    });
+    fireEvent.click(view.getByRole("button", { name: "Modified settings" }));
+    fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
+    await waitFor(() => {
+      expect(row("documents.editorCommand").hidden).toBe(false);
+      expect(row("documents.openMode").hidden).toBe(true);
+    });
+    const actions = requiredFixture(view.container.querySelector<HTMLDetailsElement>('[data-settings-actions="chat-documents"]'));
+    actions.open = true;
+    fireEvent.click(view.getByRole("button", { name: "Reset Editor command" }));
+    await waitFor(() => {
+      expect(view.api.updateSettings).toHaveBeenCalledWith({ documents: { editorCommand: "" } });
+      expect(input).toHaveValue("");
+    });
   });
   it("fills the directory draft from the picker without granting access", async () => {
     const view = await renderSettings();

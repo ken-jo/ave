@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../__tests__/support/fixture-cleanup.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,8 +31,7 @@ const hosts: BootHost[] = [];
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "runtime-settings-scope-")); });
 afterEach(async () => {
   runtime.closeFailed = false;
-  for (const host of hosts.splice(0)) await host.close();
-  await cleanupTmpDir(directory);
+  await cleanupAfterClosing(hosts.splice(0).map((host) => () => host.close()), [() => cleanupTmpDir(directory)]);
 });
 
 describe("host-owned settings write protection", () => {

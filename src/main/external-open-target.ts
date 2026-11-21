@@ -1,9 +1,10 @@
-// One default-app open sequence for every host channel that hands a file to the OS (attach.openExternal, workspace.openPath).
+// One open sequence for every host channel that hands a file to another program: the OS default app (attach.openExternal,
+// workspace.openPath) and the user's own editor command (workspace.openInEditor).
 import { shell } from "electron";
 import { promises as fs } from "node:fs";
 import { basename, parse, resolve } from "node:path";
 import { DENY_EXTENSIONS as DENY_LIST } from "../shared/attachments-deny-list.js";
-import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
+import { isSensitivePath, type KeyMaterialAudience } from "../permissions/sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 import { canOpenInDefaultApp } from "../shared/preview-external-open.js";
 
@@ -32,13 +33,20 @@ function isDeniedExternalOpenExtension(path: string): boolean {
   return DENY_EXTENSIONS.has(externalOpenExtension(path));
 }
 
-function sensitiveForRead(path: string): boolean {
-  return isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(path)), "read") !== null;
+function sensitiveForRead(path: string, audience: KeyMaterialAudience): boolean {
+  return isSensitivePath(path, "read", audience) !== null;
 }
 
-/** Re-resolve a requested spelling on every use, since a link may have been retargeted since it was authorized. */
+/**
+ * Re-resolve a requested spelling on every use, since a link may have been retargeted since it was authorized.
+ * `audience` names who receives the bytes: "person" only where the file goes to another program the person opens
+ * (a key-extension file is then refused only when it holds a key); "agent" wherever the bytes can reach the model.
+ */
 export async function resolveExternalOpenTarget(
   requested: string,
+  audience: KeyMaterialAudience,
+  // A text editor reads a script as text, so only its hand-off passes "any"; every hand-off to the OS refuses runnable types.
+  types: "refuse-runnable" | "any" = "refuse-runnable",
 ): Promise<{ ok: true; real: string } | { ok: false; error: ExternalOpenRefusal }> {
   let real: string;
   try {
@@ -46,8 +54,8 @@ export async function resolveExternalOpenTarget(
   } catch {
     return { ok: false, error: "not-found" };
   }
-  if (sensitiveForRead(real)) return { ok: false, error: "sensitive-path" };
-  if (isDeniedExternalOpenExtension(real)) return { ok: false, error: "denied_extension" };
+  if (sensitiveForRead(real, audience)) return { ok: false, error: "sensitive-path" };
+  if (types === "refuse-runnable" && isDeniedExternalOpenExtension(real)) return { ok: false, error: "denied_extension" };
   return { ok: true, real };
 }
 
@@ -104,17 +112,40 @@ export async function linkChainVerdict(path: string): Promise<"local" | "network
   return "local";
 }
 
-/** Check the link chain lexically, resolve, require an allowed format on both names and a regular non-executable file. */
-async function judgeOpenTarget(requested: string): Promise<{ ok: true; real: string } | { ok: false; error: ExternalOpenRefusal }> {
+/**
+ * What receives the file. The OS default app runs what it is given by type, so that hand-off is limited to the allowed
+ * formats and refuses files with an execute bit. A text editor only reads the file as text, so the user's editor command
+ * takes any regular file; every other check (link chain, sensitive floor, the caller's authority, the second resolution)
+ * is the same.
+ */
+export interface ExternalOpenHandoff {
+  formats: "default-app" | "any";
+  /** Hand the verified real path over; false when the program could not be started. */
+  launch: (real: string) => Promise<boolean>;
+}
+
+const DEFAULT_APP_HANDOFF: ExternalOpenHandoff = {
+  formats: "default-app",
+  launch: async (real) => (await shell.openPath(real)) === "",
+};
+
+/** Check the link chain lexically, resolve, and require a regular file; for the default app also an allowed format on both
+ * names and no execute bit. */
+async function judgeOpenTarget(
+  requested: string,
+  formats: ExternalOpenHandoff["formats"],
+): Promise<{ ok: true; real: string } | { ok: false; error: ExternalOpenRefusal }> {
+  const byType = formats === "default-app";
   // The requested spelling and its target are both judged: `notes.sh -> notes.txt` and `notes.txt -> run.sh` are both refused.
-  if (!isOpenAllowed(requested)) return { ok: false, error: "type-not-allowed" };
+  if (byType && !isOpenAllowed(requested)) return { ok: false, error: "type-not-allowed" };
   const chain = await linkChainVerdict(requested);
   if (chain === "network") return { ok: false, error: "network-target" };
   if (chain === "missing") return { ok: false, error: "not-found" };
-  const target = await resolveExternalOpenTarget(requested);
+  // The file goes to another program the person opens, never to the model.
+  const target = await resolveExternalOpenTarget(requested, "person", byType ? "refuse-runnable" : "any");
   // The picker deny list is narrower than the allow list; both say the target's type is not opened.
   if (!target.ok) return target.error === "denied_extension" ? { ok: false, error: "type-not-allowed" } : target;
-  if (!isOpenAllowed(target.real)) return { ok: false, error: "type-not-allowed" };
+  if (byType && !isOpenAllowed(target.real)) return { ok: false, error: "type-not-allowed" };
   let info: Awaited<ReturnType<typeof fs.stat>>;
   try {
     info = await fs.stat(target.real);
@@ -122,6 +153,7 @@ async function judgeOpenTarget(requested: string): Promise<{ ok: true; real: str
     return { ok: false, error: "not-found" };
   }
   if (!info.isFile()) return { ok: false, error: "not-a-file" };
+  if (!byType) return target;
   // A POSIX file with any execute bit runs as a program when opened (a cloned repo's +x `build.command`, an extensionless
   // script); Windows has no such bit and relies on the allow list above. Volumes that report every file as 0777 (exFAT, SMB,
   // WSL /mnt/c) refuse everything here; the message tells the user to open it from the file manager instead.
@@ -139,16 +171,16 @@ async function judgeOpenTarget(requested: string): Promise<{ ok: true; real: str
 export async function openVerifiedExternalFile<A extends string>(
   requested: string,
   authorize: (real: string, pass: ExternalOpenPass) => A | null,
+  handoff: ExternalOpenHandoff = DEFAULT_APP_HANDOFF,
 ): Promise<{ ok: true; real: string } | { ok: false; error: ExternalOpenRefusal | A }> {
-  const target = await judgeOpenTarget(requested);
+  const target = await judgeOpenTarget(requested, handoff.formats);
   if (!target.ok) return target;
   const first = authorize(target.real, "first");
   if (first !== null) return { ok: false, error: first };
-  const current = await judgeOpenTarget(requested);
+  const current = await judgeOpenTarget(requested, handoff.formats);
   if (!current.ok) return current;
   const last = authorize(current.real, "final");
   if (last !== null) return { ok: false, error: last };
   if (current.real !== target.real) return { ok: false, error: "changed" };
-  const failure = await shell.openPath(current.real);
-  return failure ? { ok: false, error: "open-failed" } : { ok: true, real: current.real };
+  return await handoff.launch(current.real) ? { ok: true, real: current.real } : { ok: false, error: "open-failed" };
 }

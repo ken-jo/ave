@@ -39,8 +39,8 @@ function ownershipResponse(owner = CURRENT_SID): string {
 it("rechecks native fixture ownership on every call and repairs a changed owner", () => {
   const root = windowsFixture();
   const exec = vi.mocked(childProcess.execFileSync)
-    .mockReturnValueOnce(ownershipResponse())
-    .mockReturnValueOnce(ownershipResponse("S-1-5-32-544"))
+    .mockReturnValueOnce(Buffer.from(ownershipResponse()))
+    .mockReturnValueOnce(Buffer.from(ownershipResponse("S-1-5-32-544")))
     .mockReturnValueOnce(Buffer.alloc(0));
   setFixtureOwner(root);
   expect(exec).toHaveBeenCalledTimes(1);
@@ -56,7 +56,7 @@ it("rechecks native fixture ownership on every call and repairs a changed owner"
 
 it.each(["not-json", "[]", ownershipResponse("not-a-sid")])("refuses invalid ownership facts before changing a fixture: %s", output => {
   const root = windowsFixture();
-  const exec = vi.mocked(childProcess.execFileSync).mockReturnValue(output);
+  const exec = vi.mocked(childProcess.execFileSync).mockReturnValue(Buffer.from(output));
   expect(() => setFixtureOwner(root)).toThrow();
   expect(exec).toHaveBeenCalledTimes(1);
 });

@@ -3,7 +3,13 @@ const MAX_RUNTIME_AUDIT_OUTPUT_LENGTH = 500;
 export function serializeRuntimeAuditData(data: unknown): string | undefined {
   const serialized = JSON.stringify(data);
   if (serialized === undefined || serialized.length <= MAX_RUNTIME_AUDIT_OUTPUT_LENGTH) return serialized;
-  const marker = { truncated: true, originalLength: serialized.length, preview: "" };
+  const truncated = { truncated: true, originalLength: serialized.length, preview: "" };
+  const { pluginId, reason } = (
+    data !== null && typeof data === "object" ? data : {}
+  ) as { pluginId?: unknown; reason?: unknown };
+  const attributed = { ...truncated, pluginId, reason };
+  const marker = typeof pluginId === "string" && typeof reason === "string"
+    && JSON.stringify(attributed).length <= MAX_RUNTIME_AUDIT_OUTPUT_LENGTH ? attributed : truncated;
   for (const character of serialized) {
     const previous = marker.preview;
     marker.preview += character;

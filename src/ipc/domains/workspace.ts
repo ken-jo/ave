@@ -1,13 +1,13 @@
 import { dialog, ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
-import { promises as fs } from "node:fs";
+import { promises as fs, type Dirent } from "node:fs";
 import { isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
 import { randomBytes } from "node:crypto";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { createLogger } from "../../lib/logger.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
-import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
+import { ensureFileAccess, sensitiveFilePattern } from "../../tools/file-access-policy.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import {
@@ -23,9 +23,11 @@ import {
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
-  foldCanonicalPathSeparators,
+  resolvePathForPolicy,
   isSensitivePath,
+  allowKeyMaterialInspectionUnder,
 } from "../../permissions/sensitive-paths.js";
+import { listAuthorizedWorkspaceRoots } from "../../permissions/workspace-authorized-roots.js";
 import { getDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import {
   reconcileWorkspaceRoots,
@@ -43,7 +45,10 @@ import { detachWorkspaceRootSessions } from "../../memory/workspace-root-session
 import { errorMessage } from "../../shared/error-message.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
-import { linkChainVerdict, openVerifiedExternalFile, type ExternalOpenRefusal } from "../../main/external-open-target.js";
+import { linkChainVerdict, openVerifiedExternalFile, type ExternalOpenPass, type ExternalOpenRefusal } from "../../main/external-open-target.js";
+import { buildEditorArgv, launchEditor } from "../../main/editor-command.js";
+import { readUserEditableFile, saveUserFileEdit, type UserFileEditError } from "../../memory/code-checkpoints.js";
+import { decodeEditableText, encodeEditableText, type EditableTextRefusal } from "../../shared/editable-text.js";
 import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import {
   searchWorkspaceFiles,
@@ -65,7 +70,7 @@ const pendingPicks = new Map<string, { path: string; expires: number; gesture: P
 function validateWorkspaceDirectoryAddition(rawPath: string): ReturnType<typeof validateDirectoryAddition> {
   const verdict = validateDirectoryAddition(rawPath);
   if (!verdict.ok) return verdict;
-  const sensitive = sensitiveFilePattern(expandLeadingTilde(rawPath), "write") ?? isSensitivePath(verdict.canonicalPath, "write");
+  const sensitive = sensitiveFilePattern(expandLeadingTilde(rawPath), "write");
   return sensitive ? { ok: false, reason: `path matches sensitive pattern '${sensitive}'`, adjacencyWarnings: verdict.adjacencyWarnings } : verdict;
 }
 
@@ -143,6 +148,8 @@ export interface WorkspaceListDirResult {
   path?: string;
   entries?: WorkspaceDirEntry[];
   truncated?: boolean;
+  /** How many listable entries the cap left out, counted after sorting (folders first). */
+  omitted?: number;
   /** How many entries the sensitive-path floor left out, so an empty folder can say whether anything was hidden. */
   hidden?: number;
   error?: "unauthorized" | "path-not-allowed" | "sensitive-path" | "not-a-dir" | "permission-denied" | "not-found" | "read-failed";
@@ -165,6 +172,25 @@ export type WorkspaceOpenPathResult =
       | "outside-project"
       | ExternalOpenRefusal;
   };
+
+/** "Open in editor": the open-path refusals, plus no command being set, a command that cannot be split into a program and
+ * arguments, and a program the OS could not start (which replaces the default app's `open-failed`). */
+export type WorkspaceOpenInEditorResult =
+  | { ok: true }
+  | { ok: false; error: Exclude<Extract<WorkspaceOpenPathResult, { ok: false }>["error"], "open-failed"> | "not-configured" | "invalid-command" | "launch-failed" };
+
+type ProjectFileRefusal = Exclude<Extract<WorkspaceOpenPathResult, { ok: false }>["error"], "open-failed">;
+
+/** The in-app editor's read: the whole text with "\n" line breaks, and the hash of the file's bytes that a save must name.
+ * Refused for a file a text box cannot give back byte for byte (see `editable-text.ts`) or cannot replace in place. */
+export type WorkspaceReadForEditResult =
+  | { ok: true; text: string; hash: string }
+  | { ok: false; error: ProjectFileRefusal | EditableTextRefusal | "not-editable" };
+
+/** The in-app editor's save. `changed` means the file no longer holds what the edit started from; nothing was written. */
+export type WorkspaceSaveEditResult =
+  | { ok: true; hash: string }
+  | { ok: false; error: ProjectFileRefusal | EditableTextRefusal | UserFileEditError };
 
 export interface WorkspaceRemoveRootResult {
   ok: boolean;
@@ -199,7 +225,8 @@ export type WorkspacePreviewRemoveRootResult =
 
 type WorkspaceSearchFilesResult =
   | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
-  | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" };
+  | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" | "folder-not-allowed" };
+
 
 export interface WorkspaceRevealResult {
   ok: boolean;
@@ -298,6 +325,22 @@ async function linkPointsOutside(realDir: string, linkName: string, realRoot: st
 }
 
 /** Map a filesystem failure to the folder view's stable codes. */
+/** A listing row's kind from its directory entry; a filesystem that does not report the kind there costs one lstat. Sockets,
+ * pipes and devices are not listed. */
+async function listedEntryType(ent: Dirent, full: string): Promise<WorkspaceDirEntry["type"] | null> {
+  if (ent.isSymbolicLink()) return "link";
+  if (ent.isFile()) return "file";
+  if (ent.isDirectory()) return "directory";
+  if (ent.isFIFO() || ent.isSocket() || ent.isCharacterDevice() || ent.isBlockDevice()) return null;
+  try {
+    const info = await fs.lstat(full);
+    return info.isSymbolicLink() ? "link" : info.isFile() ? "file" : info.isDirectory() ? "directory" : null;
+  } catch {
+    // Removed between readdir and lstat; it is no longer there to show.
+    return null;
+  }
+}
+
 function listDirFailure(err: unknown): "permission-denied" | "not-found" | "read-failed" {
   const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
   if (code === "EACCES" || code === "EPERM") return "permission-denied";
@@ -309,17 +352,29 @@ function computeRoots(): WorkspaceRoot[] {
   const defaultRoot = getDefaultWorkspaceRoot();
   const additional = readPermissionSettings().permissions.additionalDirectories;
   const canonicalAdds = sanitizeRuntimeAllowedDirectories(additional);
-  const seen = new Set<string>([defaultRoot]);
+  const seen = new Set<string>([matchKey(defaultRoot)]);
   const roots: WorkspaceRoot[] = [{ path: defaultRoot, isDefault: true }];
   for (const dir of canonicalAdds) {
-    if (seen.has(dir)) continue;
-    seen.add(dir);
-    roots.push({ path: dir, isDefault: false });
+    const key = matchKey(dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    roots.push({ path: resolvePathForPolicy(dir), isDefault: false });
   }
   return roots;
 }
 
 export function registerWorkspaceHandlers(deps: IpcDeps): void {
+  // A `.pem` or `.key` file is opened to see whether it holds a private key only inside the person's projects: the
+  // registered ones and the folders live conversations work in. If the project list cannot be read, only the latter
+  // qualify and other such names are judged on the name alone.
+  allowKeyMaterialInspectionUnder(() => {
+    const live = listAuthorizedWorkspaceRoots();
+    try { return [...computeRoots().map((root) => root.path), ...live]; }
+    catch (error) {
+      if (error instanceof PermissionSettingsUnreadableError) return live;
+      throw error;
+    }
+  });
   const { auditLogger, getMainWindow } = deps;
   type WorkspaceMemoryLifecycle = {
     allowProjectRoot?: (root: string) => unknown;
@@ -945,25 +1000,32 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         // The listed folder's and its root's own physical paths, so link targets resolve against where the link really is.
         const realDir = root === null ? null : await fs.realpath(dir).catch(() => null);
         const realRoot = root === null ? null : await fs.realpath(root.path).catch(() => null);
-        const entries: WorkspaceDirEntry[] = [];
-        let truncated = false;
+        // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
+        // (folders first), and only the kept rows cost an lstat.
+        const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
         let hidden = 0;
         for (const ent of dirents) {
           const full = join(dir, ent.name);
           // A link's own entry is judged by its spelling in the folder: canonicalizing it would resolve through the link.
           const link = ent.isSymbolicLink();
-          const sensitiveKey = link
-            ? caseFoldForMatch(foldCanonicalPathSeparators(join(realDir ?? dir, ent.name)))
-            : caseFoldForMatch(canonicalizePathForMatch(full));
-          // Filter sensitive entries using the file tools' policy so browsing cannot offer paths reads refuse.
-          if (isSensitivePath(sensitiveKey)) {
+          const sensitivePath = link ? join(realDir ?? dir, ent.name) : full;
+          // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
+          // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
+          if (isSensitivePath(sensitivePath, "write", "person")) {
             hidden += 1;
             continue;
           }
-          if (entries.length >= MAX_DIR_ENTRIES) {
-            truncated = true;
-            break;
-          }
+          const type = await listedEntryType(ent, full);
+          if (type !== null) candidates.push({ name: ent.name, type });
+        }
+        candidates.sort((a, b) => {
+          if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        const omitted = Math.max(0, candidates.length - MAX_DIR_ENTRIES);
+        const entries: WorkspaceDirEntry[] = [];
+        for (const candidate of candidates.slice(0, MAX_DIR_ENTRIES)) {
+          const full = join(dir, candidate.name);
           let info: Awaited<ReturnType<typeof fs.lstat>>;
           try {
             info = await fs.lstat(full);
@@ -972,25 +1034,24 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
             continue;
           }
           const times = { size: info.size, mtimeMs: info.mtimeMs, birthtimeMs: info.birthtimeMs };
-          if (info.isSymbolicLink()) {
+          if (candidate.type === "link") {
+            // Replaced by something else since readdir; the next listing shows what it became.
+            if (!info.isSymbolicLink()) continue;
             // Listed for display only; the target is resolved here solely to decide `outside` and never leaves main. A target
             // that names a network or device location is outside without being touched: resolving `\\host\share` would make
             // Windows authenticate to that host (NTLM) and a hung mount would stall the whole listing.
             let outside = true;
             try {
-              outside = realDir === null || realRoot === null || await linkPointsOutside(realDir, ent.name, realRoot);
+              outside = realDir === null || realRoot === null || await linkPointsOutside(realDir, candidate.name, realRoot);
             } catch {
               outside = true;
             }
-            entries.push({ name: ent.name, path: full, type: "link", outside, ...times });
-          } else if (info.isFile()) entries.push({ name: ent.name, path: full, type: "file", ...times });
-          else if (info.isDirectory()) entries.push({ name: ent.name, path: full, type: "directory", ...times });
+            entries.push({ name: candidate.name, path: full, type: "link", outside, ...times });
+          } else if (candidate.type === "file" ? info.isFile() : info.isDirectory()) {
+            entries.push({ name: candidate.name, path: full, type: candidate.type, ...times });
+          }
         }
-        entries.sort((a, b) => {
-          if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        return { ok: true, path: dir, entries, truncated, hidden };
+        return { ok: true, path: dir, entries, truncated: omitted > 0, omitted, hidden };
       } catch (err) {
         return {
           ok: false,
@@ -1002,10 +1063,11 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
-  // Autocomplete accepts only a query; derive current roots in main and read-guard every returned path.
+  // Autocomplete accepts only a query; derive current roots in main and read-guard every returned path. The folder view
+  // also names the folder it searches: it must pass the read guard and lie inside a registered root.
   ipcMain.handle(
     CHANNELS.workspace.searchFiles,
-    async (e, rawQuery: unknown): Promise<WorkspaceSearchFilesResult> => {
+    async (e, rawQuery: unknown, rawOptions?: unknown): Promise<WorkspaceSearchFilesResult> => {
       if (!validateHostRendererSender(e)) {
         auditUnauthorized(auditLogger, CHANNELS.workspace.searchFiles, e);
         return { ok: false, error: "unauthorized" };
@@ -1024,11 +1086,21 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         }
         throw error;
       }
+      let folder: { path: string; root: string } | undefined;
+      if (rawOptions !== undefined) {
+        const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
+        if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return { ok: false, error: "invalid-query" };
+        const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
+        const root = verdict.ok ? containingRoot(verdict.resolved) : null;
+        if (!verdict.ok || root === null) return { ok: false, error: "folder-not-allowed" };
+        folder = { path: verdict.resolved, root: root.path };
+      }
       const result = await searchWorkspaceFiles({
         query: rawQuery,
         roots: roots.map((root) => root.path),
         cwd: scope.cwd,
         extraAllowed: scope.extraAllowed,
+        ...(folder ? { folder } : {}),
       });
       return { ok: true, ...result };
     },
@@ -1161,66 +1233,193 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
-  // Open one in-project file with the OS default app. A user action from the folder view, never a tool: no agent,
-  // plugin frame or remote controller reaches it, and the permission tree gains no node for it.
-  ipcMain.handle(
-    CHANNELS.workspace.openPath,
-    async (e, payload: unknown): Promise<WorkspaceOpenPathResult> => {
-      if (!validateAppWindowMainFrameSender(e, deps)) {
-        auditUnauthorized(auditLogger, CHANNELS.workspace.openPath, e);
-        return { ok: false, error: "unauthorized" };
-      }
-      if (!hasUserKeyboardIntentPayload(payload)) return USER_KEYBOARD_REQUIRED;
-      const { projectRoot, path: rawPath } = payload as { projectRoot?: unknown; path?: unknown };
-      if (typeof projectRoot !== "string" || typeof rawPath !== "string" || rawPath.length === 0
-        || !isAbsolutePath(projectRoot) || !isAbsolutePath(rawPath)
-        // A `.` or `..` segment is refused before any lstat or realpath: the link-chain walk, the scope guard and Win32 would
-        // each fold it differently (lexically, or against a link's physical parent), so the checks could judge one file and
-        // the open resolve another. The folder view never sends one.
-        || rawPath.split(/[\\/]+/u).some((segment) => segment === "." || segment === "..")) {
-        return { ok: false, error: "invalid-request" };
-      }
-      let root: WorkspaceRoot | null;
-      let scope: { cwd: string; extraAllowed: string[] };
-      try {
-        root = registeredRoot(projectRoot);
-        scope = currentScope();
-      } catch (error) {
-        if (error instanceof PermissionSettingsUnreadableError) return { ok: false, error: "settings-unreadable" };
-        throw error;
-      }
-      if (!root) return { ok: false, error: "root-not-registered" };
-      // The scope guard canonicalizes, which resolves through links; a chain to a network or device location stops first.
-      if (await linkChainVerdict(rawPath) === "network") return { ok: false, error: "network-target" };
-      const verdict = assertReadableFilePath(rawPath, scope.cwd, scope.extraAllowed);
-      if (!verdict.ok) return { ok: false, error: verdict.error === "sensitive-path" ? "sensitive-path" : "path-not-allowed" };
-      const rootPath = root.path;
-      // The requested spelling goes in, not the resolved one, so a `.sh` name that links to a text file is still refused.
-      const opened = await openVerifiedExternalFile(rawPath, (real, pass) => {
-        // The entry check above covers the first pass; the frame is re-checked once, just before the open.
+  // The two user-click hand-offs of one in-project file (the OS default app, the user's editor command) share every check up
+  // to the hand-off itself: the app window's main frame, the user gesture, a registered project root, a path with no `.` or
+  // `..` segment, a local link chain and the read guard. Neither is a tool: no agent, plugin frame or remote controller
+  // reaches them, and the permission tree gains no node for them.
+  type ProjectFileOpenRefusal = {
+    ok: false;
+    error: "unauthorized" | typeof USER_KEYBOARD_REQUIRED.error | "invalid-request" | "settings-unreadable" | "root-not-registered"
+      | "network-target" | "sensitive-path" | "path-not-allowed";
+  };
+  async function admitProjectFileOpen(e: Electron.IpcMainInvokeEvent, channel: string, payload: unknown): Promise<
+    | { ok: false; refusal: ProjectFileOpenRefusal }
+    | { ok: true; rawPath: string; rootPath: string; resolved: string; authorize: (real: string, pass: ExternalOpenPass) => "unauthorized" | "root-not-registered" | "outside-project" | null }
+  > {
+    if (!validateAppWindowMainFrameSender(e, deps)) {
+      auditUnauthorized(auditLogger, channel, e);
+      return { ok: false, refusal: { ok: false, error: "unauthorized" } };
+    }
+    if (!hasUserKeyboardIntentPayload(payload)) return { ok: false, refusal: USER_KEYBOARD_REQUIRED };
+    const { projectRoot, path: rawPath } = payload as { projectRoot?: unknown; path?: unknown };
+    if (typeof projectRoot !== "string" || typeof rawPath !== "string" || rawPath.length === 0
+      || !isAbsolutePath(projectRoot) || !isAbsolutePath(rawPath)
+      // A `.` or `..` segment is refused before any lstat or realpath: the link-chain walk, the scope guard and Win32 would
+      // each fold it differently (lexically, or against a link's physical parent), so the checks could judge one file and
+      // the open resolve another. The folder view never sends one.
+      || rawPath.split(/[\\/]+/u).some((segment) => segment === "." || segment === "..")) {
+      return { ok: false, refusal: { ok: false, error: "invalid-request" } };
+    }
+    let root: WorkspaceRoot | null;
+    let scope: { cwd: string; extraAllowed: string[] };
+    try {
+      root = registeredRoot(projectRoot);
+      scope = currentScope();
+    } catch (error) {
+      if (error instanceof PermissionSettingsUnreadableError) return { ok: false, refusal: { ok: false, error: "settings-unreadable" } };
+      throw error;
+    }
+    if (!root) return { ok: false, refusal: { ok: false, error: "root-not-registered" } };
+    // The scope guard canonicalizes, which resolves through links; a chain to a network or device location stops first.
+    if (await linkChainVerdict(rawPath) === "network") return { ok: false, refusal: { ok: false, error: "network-target" } };
+    // The person hands the file to another program: a key-extension file is refused only when it holds a key.
+    const verdict = assertReadableFilePath(rawPath, scope.cwd, scope.extraAllowed, "person");
+    if (!verdict.ok) {
+      return { ok: false, refusal: { ok: false, error: verdict.error === "sensitive-path" ? "sensitive-path" : "path-not-allowed" } };
+    }
+    const rootPath = root.path;
+    return {
+      ok: true,
+      rawPath,
+      rootPath,
+      resolved: verdict.resolved,
+      authorize: (real, pass) => {
+        // The entry check above covers the first pass; the frame is re-checked once, just before the hand-off.
         if (pass === "final" && !validateAppWindowMainFrameSender(e, deps)) return "unauthorized";
-        // The root is re-read each time: removing it between the click and the open withdraws the authority.
+        // The root is re-read each time: removing it between the click and the hand-off withdraws the authority.
         const current = registeredRoot(rootPath);
         if (!current) return "root-not-registered";
         return keyWithin(matchKey(current.path), matchKey(real)) ? null : "outside-project";
+      },
+    };
+  }
+
+  function auditProjectFileOpen(channel: string, sessionId: string, rootPath: string, path: string, error: string | null): void {
+    try {
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId,
+        type: error === null ? "info" : "warn",
+        input: JSON.stringify({
+          channel,
+          root: opaqueWorkspaceRootAuditRef(rootPath),
+          path: opaqueWorkspaceRootAuditRef(path),
+          ok: error === null,
+          ...(error === null ? {} : { error }),
+        }),
       });
-      try {
-        auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: "workspace-open-path",
-          type: opened.ok ? "info" : "warn",
-          input: JSON.stringify({
-            channel: CHANNELS.workspace.openPath,
-            root: opaqueWorkspaceRootAuditRef(rootPath),
-            path: opaqueWorkspaceRootAuditRef(opened.ok ? opened.real : verdict.resolved),
-            ok: opened.ok,
-            ...(opened.ok ? {} : { error: opened.error }),
-          }),
-        });
-      } catch {
-        // An audit sink failure must not change what the user was told.
-      }
+    } catch {
+      // An audit sink failure must not change what the user was told.
+    }
+  }
+
+  // Open one in-project file with the OS default app.
+  ipcMain.handle(
+    CHANNELS.workspace.openPath,
+    async (e, payload: unknown): Promise<WorkspaceOpenPathResult> => {
+      const admitted = await admitProjectFileOpen(e, CHANNELS.workspace.openPath, payload);
+      if (!admitted.ok) return admitted.refusal;
+      // The requested spelling goes in, not the resolved one, so a `.sh` name that links to a text file is still refused.
+      const opened = await openVerifiedExternalFile(admitted.rawPath, admitted.authorize);
+      auditProjectFileOpen(CHANNELS.workspace.openPath, "workspace-open-path", admitted.rootPath,
+        opened.ok ? opened.real : admitted.resolved, opened.ok ? null : opened.error);
       return opened.ok ? { ok: true } : { ok: false, error: opened.error };
+    },
+  );
+
+  // Open one in-project file in the editor the user configured (`documents.editorCommand`). The command is the user's own
+  // setting, written only from the settings screen; it is split into a program and arguments here and started without a
+  // shell, with the verified real path and the line as whole arguments. The editor takes any regular file: it reads a
+  // script as text, where the default app would run it.
+  ipcMain.handle(
+    CHANNELS.workspace.openInEditor,
+    async (e, payload: unknown): Promise<WorkspaceOpenInEditorResult> => {
+      const admitted = await admitProjectFileOpen(e, CHANNELS.workspace.openInEditor, payload);
+      if (!admitted.ok) return admitted.refusal;
+      const rawLine = (payload as { line?: unknown }).line;
+      if (rawLine !== undefined && (typeof rawLine !== "number" || !Number.isSafeInteger(rawLine) || rawLine < 1)) {
+        return { ok: false, error: "invalid-request" };
+      }
+      const command = deps.settingsService.get("documents").editorCommand;
+      // Judge the command before touching the file, so "no editor is set" is the answer whatever the file is.
+      const probe = buildEditorArgv(command, { file: admitted.rawPath, line: rawLine ?? 1 });
+      if (!probe.ok) return { ok: false, error: probe.error };
+      const opened = await openVerifiedExternalFile(admitted.rawPath, admitted.authorize, {
+        formats: "any",
+        launch: async (real) => {
+          const argv = buildEditorArgv(command, { file: real, line: rawLine ?? 1 });
+          return argv.ok && await launchEditor(argv.program, argv.args);
+        },
+      });
+      auditProjectFileOpen(CHANNELS.workspace.openInEditor, "workspace-open-in-editor", admitted.rootPath,
+        opened.ok ? opened.real : admitted.resolved, opened.ok ? null : opened.error);
+      if (opened.ok) return { ok: true };
+      return { ok: false, error: opened.error === "open-failed" ? "launch-failed" : opened.error };
+    },
+  );
+
+  // The in-app text editor. Both calls are the person's own clicks on a file of a project they opened, so they pass the same
+  // admission and the same twice-resolved target as the two hand-offs above; what differs is the last step, which reads or
+  // replaces the file here instead of starting a program. Neither is a tool and neither asks: the permission tree has no
+  // node for them. The save still passes the write guard (sensitive floor, project scope), and it goes through the
+  // checkpoint module, which serializes it with agent writes and keeps a turn's record of the file truthful.
+  async function withVerifiedEditTarget<R extends { ok: boolean }>(
+    e: Electron.IpcMainInvokeEvent, channel: string, auditSession: string, payload: unknown,
+    act: (real: string, stillAuthorized: () => boolean) => Promise<R>,
+  ): Promise<R | { ok: false; error: ProjectFileRefusal }> {
+    const admitted = await admitProjectFileOpen(e, channel, payload);
+    if (!admitted.ok) return admitted.refusal;
+    let outcome: R | undefined;
+    const verified = await openVerifiedExternalFile(admitted.rawPath, admitted.authorize, {
+      formats: "any",
+      // `stillAuthorized` judges the sender and the registered project again, whenever the act asks.
+      launch: async (real) => { outcome = await act(real, () => admitted.authorize(real, "final") === null); return true; },
+    });
+    const error = !verified.ok ? verified.error : outcome?.ok === false ? (outcome as { error?: string }).error ?? "failed" : null;
+    auditProjectFileOpen(channel, auditSession, admitted.rootPath, verified.ok ? verified.real : admitted.resolved, error);
+    if (!verified.ok) {
+      if (verified.error === "open-failed") throw new Error("edit hand-off reported a failed launch");
+      return { ok: false, error: verified.error };
+    }
+    if (outcome === undefined) throw new Error("edit hand-off did not run");
+    return outcome;
+  }
+
+  ipcMain.handle(
+    CHANNELS.workspace.readForEdit,
+    async (e, payload: unknown): Promise<WorkspaceReadForEditResult> =>
+      withVerifiedEditTarget<WorkspaceReadForEditResult>(e, CHANNELS.workspace.readForEdit, "workspace-read-for-edit", payload, async (real) => {
+        const file = await readUserEditableFile(real);
+        if (!file.ok) return { ok: false, error: file.error };
+        const decoded = decodeEditableText(file.bytes);
+        return decoded.ok ? { ok: true, text: decoded.text, hash: file.hash } : { ok: false, error: decoded.error };
+      }),
+  );
+
+  ipcMain.handle(
+    CHANNELS.workspace.saveEdit,
+    async (e, payload: unknown): Promise<WorkspaceSaveEditResult> => {
+      const { baseHash, text } = (typeof payload === "object" && payload !== null ? payload : {}) as { baseHash?: unknown; text?: unknown };
+      if (typeof baseHash !== "string" || !/^[0-9a-f]{64}$/u.test(baseHash) || typeof text !== "string") {
+        // Sender and gesture are judged first for every request; only then is a malformed one named.
+        const admitted = await admitProjectFileOpen(e, CHANNELS.workspace.saveEdit, payload);
+        return admitted.ok ? { ok: false, error: "invalid-request" } : admitted.refusal;
+      }
+      return withVerifiedEditTarget<WorkspaceSaveEditResult>(e, CHANNELS.workspace.saveEdit, "workspace-save-edit", payload, async (real, stillAuthorized) => {
+        // The line ending and byte order mark come from the file as it is now, never from the renderer.
+        const file = await readUserEditableFile(real);
+        if (!file.ok) return { ok: false, error: file.error === "not-found" ? "changed" : "not-editable" };
+        if (file.hash !== baseHash) return { ok: false, error: "changed" };
+        const decoded = decodeEditableText(file.bytes);
+        if (!decoded.ok) return { ok: false, error: decoded.error };
+        // Asked again immediately before the file is replaced, so each answer reads the project list and the folder
+        // grants as they are then: a project removed while the save was on its way is no longer written to.
+        return saveUserFileEdit(real, baseHash, Buffer.from(encodeEditableText(text, decoded.shape)), (path) => {
+          if (!stillAuthorized()) return true;
+          const scope = currentScope();
+          return ensureFileAccess(path, { cwd: scope.cwd, extraAllowedDirectories: scope.extraAllowed, metadata: {} }, "write") !== null;
+        });
+      });
     },
   );
 

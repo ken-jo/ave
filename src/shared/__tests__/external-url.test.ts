@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { validateExternalUrl } from "../external-url.js";
+import { isNavigableHostname, validateExternalUrl } from "../external-url.js";
+import { EXTERNAL_URL_HOST_CASES } from "../external-url-host-cases.js";
 
 describe("validateExternalUrl", () => {
   it("accepts https URLs and returns the canonical form", () => {
@@ -89,5 +90,19 @@ describe("validateExternalUrl", () => {
     expect(path.ok).toBe(true);
     const query = validateExternalUrl("https://example.com/s?to=a@b.com");
     expect(query.ok).toBe(true);
+  });
+});
+
+describe("validateExternalUrl host rule", () => {
+  it.each(EXTERNAL_URL_HOST_CASES)("gives $input the runtime-independent verdict ok=$ok", ({ input, ok }) => {
+    expect(validateExternalUrl(input).ok).toBe(ok);
+  });
+
+  it("names the host as the reason when the parser accepted an unreachable one", () => {
+    expect(validateExternalUrl("https://a..b/")).toEqual({ ok: false, error: "invalid-host" });
+    // What a parser that percent-encodes a space in the host hands back instead of throwing.
+    expect(isNavigableHostname("hello%20world")).toBe(false);
+    expect(isNavigableHostname("[::1]")).toBe(true);
+    expect(isNavigableHostname("")).toBe(false);
   });
 });

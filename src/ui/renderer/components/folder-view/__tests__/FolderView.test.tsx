@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolderView } from "../FolderView.js";
+import { notifyWorkspaceFilesChanged } from "../../../utils/workspace-files-signal.js";
 
 const ROOT = "/p/checkout-service";
 type Entry = { name: string; path: string; type: "file" | "directory" | "link"; outside?: boolean; size: number; mtimeMs: number; birthtimeMs: number };
@@ -20,11 +21,13 @@ const listings: Record<string, unknown> = {
 
 const listDir = vi.fn(async (path: string) => listings[path] ?? { ok: false, error: "not-found" });
 const openPath = vi.fn(async () => ({ ok: true }));
-const readFile = vi.fn(async (path: string) => path.endsWith(".log")
+const openInEditor = vi.fn(async (_root: string, _path: string, _line?: number): Promise<{ ok: boolean; error?: string }> => ({ ok: true }));
+const readFromDisk = async (path: string): Promise<Record<string, unknown>> => path.endsWith(".log")
   ? { ok: false, error: "too-large", bytes: 155_189_248 }
   : path.endsWith(".png") ? { ok: true, image: { dataUrl: "data:image/png;base64,AAAA", mimeType: "image/png" }, path }
   : path.endsWith(".md") ? { ok: true, content: "# Title\n\n- one\n", truncated: false, lineCount: 3, path }
-  : { ok: true, content: "export const MAX = 3;\n", truncated: false, lineCount: 2, path });
+  : { ok: true, content: "export const MAX = 3;\n", truncated: false, lineCount: 2, path };
+const readFile = vi.fn(readFromDisk);
 
 let width = 1_000;
 
@@ -35,7 +38,7 @@ beforeEach(() => {
   readFile.mockClear();
   Object.assign(window, {
     ave: {
-      workspace: { listDir, openPath, reveal: vi.fn(async () => ({ ok: true })), searchFiles: vi.fn(async () => ({ ok: true, matches: [], truncated: false })) },
+      workspace: { listDir, openPath, openInEditor, reveal: vi.fn(async () => ({ ok: true })), searchFiles: vi.fn(async () => ({ ok: true, matches: [], truncated: false })) },
       preview: { readFile },
     },
   });
@@ -150,6 +153,238 @@ describe("FolderView", () => {
     expect(within(card).queryByTestId("folder-open-external")).toBeNull();
     expect(within(card).getByTestId("folder-open-external-unavailable")).toBeDefined();
     await waitFor(() => expect(document.activeElement).toBe(within(card).getByTestId("folder-reveal")));
+  });
+
+  it("asks main to search the deepest open folder and lists the matches it returns", async () => {
+    const searchFiles = vi.fn(async () => ({
+      ok: true, truncated: false,
+      matches: [{ path: `${ROOT}/src/payments/retry-policy.ts`, relativePath: "payments/retry-policy.ts", root: ROOT, bytes: 10 }],
+    }));
+    Object.assign(window.ave.workspace, { searchFiles });
+    await openView();
+    fireEvent.click(row(`${ROOT}/src`));
+    await waitFor(() => expect(columns()).toEqual([ROOT, `${ROOT}/src`]));
+    fireEvent.change(screen.getByTestId("folder-search"), { target: { value: "retry" } });
+    await waitFor(() => expect(searchFiles).toHaveBeenCalledWith("retry", { folder: `${ROOT}/src` }));
+    const results = await screen.findByTestId("folder-search-results");
+    expect(within(results).getByRole("option").textContent).toBe("payments/retry-policy.ts");
+  });
+
+  describe("refresh", () => {
+    const SRC = `${ROOT}/src`;
+    const original = { root: listings[ROOT], src: listings[SRC] };
+    afterEach(() => { listings[ROOT] = original.root; listings[SRC] = original.src; readFile.mockImplementation(readFromDisk); });
+
+    async function openIndex() {
+      await openView();
+      fireEvent.click(row(SRC));
+      await waitFor(() => expect(row(`${SRC}/index.ts`)).toBeDefined());
+      fireEvent.click(row(`${SRC}/index.ts`));
+      await waitFor(() => expect(screen.getAllByTestId("preview-code-line").length).toBeGreaterThan(0));
+    }
+
+    it("lists every open column again and re-reads the open file when files may have changed", async () => {
+      await openIndex();
+      listings[SRC] = { ok: true, entries: [dir(`${SRC}/payments`), file(`${SRC}/created-later.ts`), { ...file(`${SRC}/index.ts`, 99), mtimeMs: 5 }], truncated: false, hidden: 0 };
+      readFile.mockImplementation(async (path: string) => ({ ok: true, content: "export const CHANGED_ON_DISK = 1;\n", truncated: false, lineCount: 2, path }));
+      listDir.mockClear();
+      act(() => notifyWorkspaceFilesChanged("tool"));
+      await waitFor(() => expect(row(`${SRC}/created-later.ts`)).toBeDefined());
+      expect(listDir.mock.calls.map(([path]) => path)).toEqual([ROOT, SRC]);
+      await waitFor(() => expect(screen.getByTestId("folder-viewer").textContent).toContain("CHANGED_ON_DISK"));
+      // The open file stays open, with the fresh size in its header, and the view never went back to "loading".
+      expect(screen.getByTestId("folder-viewer").getAttribute("data-path")).toBe(`${SRC}/index.ts`);
+      expect(screen.getByTestId("folder-viewer-subtitle").textContent).toContain("99 B");
+      expect(screen.queryByTestId("folder-viewer-loading")).toBeNull();
+      expect(screen.queryByTestId("folder-column-loading")).toBeNull();
+    });
+
+    it("refreshes on window focus and from the refresh button", async () => {
+      await openView();
+      listings[ROOT] = { ok: true, entries: [dir(`${ROOT}/data`), file(`${ROOT}/from-focus.txt`)], truncated: false, hidden: 0 };
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      await waitFor(() => expect(row(`${ROOT}/from-focus.txt`)).toBeDefined());
+      listings[ROOT] = { ok: true, entries: [dir(`${ROOT}/data`), file(`${ROOT}/from-button.txt`)], truncated: false, hidden: 0 };
+      fireEvent.click(screen.getByTestId("folder-refresh"));
+      await waitFor(() => expect(row(`${ROOT}/from-button.txt`)).toBeDefined());
+      expect(row(`${ROOT}/from-focus.txt`)).toBeUndefined();
+    });
+
+    it("closes the open file and its columns when the refreshed listing no longer has them, keeping focus in the view", async () => {
+      await openIndex();
+      row(`${SRC}/index.ts`).focus();
+      listings[ROOT] = { ok: true, entries: [dir(`${ROOT}/data`), file(`${ROOT}/package.json`)], truncated: false, hidden: 0 };
+      listings[SRC] = { ok: false, error: "not-found" };
+      act(() => notifyWorkspaceFilesChanged("turn"));
+      await waitFor(() => expect(columns()).toEqual([ROOT]));
+      expect(screen.queryByTestId("folder-viewer")).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(row(`${ROOT}/data`)));
+    });
+
+    it("asks once more after a burst that arrived while a listing was in flight", async () => {
+      await openView();
+      const pending: Array<(value: unknown) => void> = [];
+      listDir.mockClear();
+      listDir.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }) as never);
+      act(() => { notifyWorkspaceFilesChanged("tool"); notifyWorkspaceFilesChanged("tool"); notifyWorkspaceFilesChanged("tool"); });
+      expect(listDir).toHaveBeenCalledTimes(1);
+      await act(async () => { pending.shift()?.(listings[ROOT]); });
+      await waitFor(() => expect(listDir).toHaveBeenCalledTimes(2));
+      await act(async () => { pending.shift()?.({ ok: true, entries: [file(`${ROOT}/last.txt`)], truncated: false, hidden: 0 }); });
+      await waitFor(() => expect(row(`${ROOT}/last.txt`)).toBeDefined());
+      expect(listDir).toHaveBeenCalledTimes(2);
+      listDir.mockImplementation(async (path: string) => listings[path] ?? { ok: false, error: "not-found" });
+    });
+  });
+
+  it("says how many items a capped listing leaves out, in the column and in the status line", async () => {
+    const MANY = `${ROOT}/data`;
+    const before = listings[MANY];
+    listings[MANY] = { ok: true, entries: [dir(`${MANY}/zz-folder`), file(`${MANY}/f0000.txt`)], truncated: true, omitted: 101, hidden: 0 };
+    try {
+      await openView();
+      fireEvent.click(row(MANY));
+      const note = await screen.findByTestId("folder-column-truncated");
+      expect(note.textContent).toBe("처음 2개만 표시합니다. 101개가 더 있습니다.");
+      expect(screen.getByTestId("folder-status").textContent).toContain("폴더 1 · 파일 1 · 101개 더 있음");
+    } finally {
+      listings[MANY] = before;
+    }
+  });
+
+  it("moves with Home and End, and to the row whose name is typed", async () => {
+    await openView();
+    await waitFor(() => expect(document.activeElement).toBe(row(`${ROOT}/data`)));
+    fireEvent.keyDown(row(`${ROOT}/data`), { key: "End" });
+    expect(document.activeElement).toBe(row(`${ROOT}/package.json`));
+    fireEvent.keyDown(row(`${ROOT}/package.json`), { key: "Home" });
+    expect(document.activeElement).toBe(row(`${ROOT}/data`));
+    // "d" from "data" goes to the next row that starts with it; "de" stays on "deploy".
+    fireEvent.keyDown(row(`${ROOT}/data`), { key: "d" });
+    expect(document.activeElement).toBe(row(`${ROOT}/deploy`));
+    fireEvent.keyDown(row(`${ROOT}/deploy`), { key: "e" });
+    expect(document.activeElement).toBe(row(`${ROOT}/deploy`));
+    // A chord is not typing: the row keeps focus and nothing opens.
+    fireEvent.keyDown(row(`${ROOT}/deploy`), { key: "s", metaKey: true });
+    expect(document.activeElement).toBe(row(`${ROOT}/deploy`));
+    expect(columns()).toEqual([ROOT]);
+  });
+
+  it("walks from the search box into the results with the arrows and back, and opens a result with Enter", async () => {
+    const searchFiles = vi.fn(async () => ({
+      ok: true, truncated: false,
+      matches: [
+        { path: `${ROOT}/src/index.ts`, relativePath: "src/index.ts", root: ROOT, bytes: 10 },
+        { path: `${ROOT}/package.json`, relativePath: "package.json", root: ROOT, bytes: 10 },
+      ],
+    }));
+    Object.assign(window.ave.workspace, { searchFiles });
+    await openView();
+    const box = screen.getByTestId("folder-search");
+    fireEvent.change(box, { target: { value: "i" } });
+    const results = await screen.findByTestId("folder-search-results");
+    const options = within(results).getAllByRole("option");
+    box.focus();
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(options[0]);
+    fireEvent.keyDown(options[0] as HTMLElement, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(options[1]);
+    fireEvent.keyDown(options[1] as HTMLElement, { key: "Home" });
+    expect(document.activeElement).toBe(options[0]);
+    fireEvent.keyDown(options[0] as HTMLElement, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(box);
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.click(document.activeElement as HTMLElement);
+    await waitFor(() => expect(screen.getByTestId("folder-viewer").getAttribute("data-path")).toBe(`${ROOT}/src/index.ts`));
+  });
+
+  describe("row menu", () => {
+    const writeText = vi.fn(async (_text: string) => undefined);
+    beforeEach(() => { writeText.mockClear(); Object.assign(navigator, { clipboard: { writeText } }); });
+    const items = () => within(screen.getByTestId("file-row-menu")).getAllByRole("menuitem").map((item) => item.getAttribute("data-testid"));
+
+    it("opens on right-click with the row's actions, which act on that row", async () => {
+      const onOpenTerminal = vi.fn();
+      const onAttachText = vi.fn(() => true as const);
+      render(<FolderView projectRoot={ROOT} onOpenTerminal={onOpenTerminal} onAttachText={onAttachText} />);
+      await waitFor(() => expect(row(`${ROOT}/src`)).toBeDefined());
+      fireEvent.click(row(`${ROOT}/src`));
+      await waitFor(() => expect(row(`${ROOT}/src/index.ts`)).toBeDefined());
+      fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
+      expect(items()).toEqual(["file-row-action-open", "file-row-action-open-in-editor", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
+        "file-row-action-add-to-chat", "file-row-action-open-terminal"]);
+      fireEvent.click(screen.getByTestId("file-row-action-copy-relative-path"));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("src/index.ts"));
+      await waitFor(() => expect(screen.queryByTestId("file-row-menu")).toBeNull());
+
+      fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
+      fireEvent.click(screen.getByTestId("file-row-action-copy-path"));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(`${ROOT}/src/index.ts`));
+
+      fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
+      fireEvent.click(screen.getByTestId("file-row-action-reveal"));
+      expect(window.ave.workspace.reveal).toHaveBeenCalledWith(`${ROOT}/src/index.ts`);
+
+      fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
+      fireEvent.click(screen.getByTestId("file-row-action-add-to-chat"));
+      expect(onAttachText).toHaveBeenCalledWith(`\`${ROOT}/src/index.ts\``);
+
+      // The user's editor is asked for in the click itself; a folder has no such action.
+      openInEditor.mockClear();
+      openInEditor.mockResolvedValueOnce({ ok: false, error: "not-configured" });
+      fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
+      fireEvent.click(screen.getByTestId("file-row-action-open-in-editor"));
+      expect(openInEditor).toHaveBeenCalledWith(ROOT, `${ROOT}/src/index.ts`, undefined);
+      const alert = await screen.findByTestId("folder-view-alert");
+      expect(alert.textContent).toContain("편집기 명령이 아직 없습니다.");
+      expect(within(alert).getByTestId("file-action-open-settings")).toBeTruthy();
+      fireEvent.contextMenu(row(`${ROOT}/src/payments`), { clientX: 300, clientY: 120 });
+      expect(items()).not.toContain("file-row-action-open-in-editor");
+      fireEvent.keyDown(screen.getByTestId("file-row-menu"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("file-row-menu")).toBeNull());
+
+      // A file opens the terminal in the folder that holds it; a folder opens itself.
+      fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
+      fireEvent.click(screen.getByTestId("file-row-action-open-terminal"));
+      expect(onOpenTerminal).toHaveBeenLastCalledWith(`${ROOT}/src`);
+      fireEvent.contextMenu(row(`${ROOT}/src/payments`), { clientX: 300, clientY: 120 });
+      fireEvent.click(screen.getByTestId("file-row-action-open-terminal"));
+      expect(onOpenTerminal).toHaveBeenLastCalledWith(`${ROOT}/src/payments`);
+    });
+
+    it("anchors the menu to the window, not to the panel that holds the list", async () => {
+      render(<div style={{ transform: "translateX(40px)" }}><FolderView projectRoot={ROOT} /></div>);
+      await waitFor(() => expect(row(`${ROOT}/package.json`)).toBeDefined());
+      fireEvent.contextMenu(row(`${ROOT}/package.json`), { clientX: 300, clientY: 120 });
+      await screen.findByTestId("file-row-menu");
+      // A fixed anchor inside a transformed panel would be measured from that panel; under the body it is a window point.
+      const anchor = [...document.body.children].find((child) => child instanceof HTMLElement && child.style.position === "fixed" && child.style.width === "0px") as HTMLElement | undefined;
+      expect(anchor?.style.left).toBe("300px");
+      expect(anchor?.style.top).toBe("120px");
+    });
+
+    it("opens from the keyboard with Shift+F10, returns focus to the row on Escape, and reports a failed action", async () => {
+      render(<FolderView projectRoot={ROOT} onAttachText={() => "no-composer"} />);
+      await waitFor(() => expect(row(`${ROOT}/package.json`)).toBeDefined());
+      row(`${ROOT}/package.json`).focus();
+      fireEvent.keyDown(row(`${ROOT}/package.json`), { key: "F10", shiftKey: true });
+      // No terminal was offered by the host, so the menu has no such action.
+      expect(items()).toEqual(["file-row-action-open", "file-row-action-open-in-editor", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path", "file-row-action-add-to-chat"]);
+      fireEvent.keyDown(screen.getByTestId("file-row-menu"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("file-row-menu")).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(row(`${ROOT}/package.json`)));
+      fireEvent.keyDown(row(`${ROOT}/package.json`), { key: "ContextMenu" });
+      fireEvent.click(screen.getByTestId("file-row-action-add-to-chat"));
+      expect((await screen.findByTestId("folder-view-alert")).textContent).toBe("이 파일을 추가하려면 먼저 채팅을 여세요.");
+    });
+
+    it("offers a link that leaves the project its path only", async () => {
+      await openView();
+      fireEvent.click(row(`${ROOT}/deploy`));
+      await waitFor(() => expect(row(`${ROOT}/deploy/shared-config`)).toBeDefined());
+      fireEvent.contextMenu(row(`${ROOT}/deploy/shared-config`), { clientX: 10, clientY: 10 });
+      expect(items()).toEqual(["file-row-action-copy-path", "file-row-action-copy-relative-path"]);
+    });
   });
 
   it("reopens on a restored location and reports where it is", async () => {

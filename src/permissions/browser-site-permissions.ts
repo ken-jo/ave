@@ -19,6 +19,28 @@ export class BrowserSitePermissions {
     this.sessions.set(sessionId, allowed);
   }
 
+  /** What lets this session's agent open the site right now: a grant for the site, for any site, or nothing. */
+  granted(sessionId: string, url: string): BrowserSiteChoice | null {
+    const origin = browserOrigin(url);
+    const allowed = this.sessions.get(sessionId);
+    if (origin === null || !allowed) return null;
+    return allowed.has("*") ? "any-site" : allowed.has(origin) ? "this-site" : null;
+  }
+
+  /**
+   * The user takes back the agent's access to a site. Whatever allowed it goes: the site's own grant, and the any-site
+   * grant when that is what allowed it, since the site would stay open to the agent otherwise. The next request for the
+   * site asks again, exactly as a first request does.
+   */
+  revoke(sessionId: string, url: string): boolean {
+    const origin = browserOrigin(url);
+    const allowed = this.sessions.get(sessionId);
+    if (origin === null || !allowed) return false;
+    const removed = [allowed.delete(origin), allowed.delete("*")].some(Boolean);
+    if (allowed.size === 0) this.sessions.delete(sessionId);
+    return removed;
+  }
+
   clear(sessionId: string): boolean {
     return this.sessions.delete(sessionId);
   }

@@ -7,6 +7,7 @@ import {
   Presentation, RefreshCw, ScrollText, SquareTerminal,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { FILE_MENTION_DRAG_MIME } from "../../../../shared/file-mention-reference.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { formatBytes } from "../../../../lib/turn-summary-format.js";
@@ -46,6 +47,8 @@ export interface FolderColumnProps {
   onSelect: (entry: FolderEntry) => void;
   onFocusRow: (path: string) => void;
   onKey: (event: KeyboardEvent<HTMLElement>, entry: FolderEntry) => void;
+  /** Open the row's menu at a viewport point (a right-click). */
+  onRowMenu: (entry: FolderEntry, at: { x: number; y: number }) => void;
   onRetry: () => void;
   onReveal: () => void;
   onOpenTerminal?: (() => void) | undefined;
@@ -54,9 +57,9 @@ export interface FolderColumnProps {
 }
 
 export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(function FolderColumn({
-  column, index, selectedPath, isCurrent, focusedPath, locked, onSelect, onFocusRow, onKey, onRetry, onReveal, onOpenTerminal, registerRow,
+  column, index, selectedPath, isCurrent, focusedPath, locked, onSelect, onFocusRow, onKey, onRowMenu, onRetry, onReveal, onOpenTerminal, registerRow,
 }, ref) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const name = column.dir.split(/[\\/]/).filter(Boolean).pop() ?? column.dir;
   const body = (() => {
     if (column.status === "loading") {
@@ -116,10 +119,14 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
               data-entry-type={entry.type}
               data-state={selected ? (isCurrent ? "selected" : "on-path") : undefined}
               draggable={entry.type !== "link"}
-              onDragStart={(event) => event.dataTransfer.setData("text/plain", entry.path)}
+              onDragStart={(event) => {
+                event.dataTransfer.setData("text/plain", entry.path);
+                if (entry.type === "file") event.dataTransfer.setData(FILE_MENTION_DRAG_MIME, entry.path);
+              }}
               onClick={() => { onFocusRow(entry.path); onSelect(entry); }}
               onFocus={() => onFocusRow(entry.path)}
               onKeyDown={(event) => onKey(event, entry)}
+              onContextMenu={(event) => { event.preventDefault(); onRowMenu(entry, { x: event.clientX, y: event.clientY }); }}
               className={cn(
                 "mx-1 flex h-7 cursor-default select-none items-center gap-2 rounded-md px-2 text-body-sm outline-none",
                 "focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
@@ -140,7 +147,9 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
           );
         })}
         {column.truncated ? (
-          <div className="px-3 py-2 text-dense text-muted-foreground" data-testid="folder-column-truncated">{t("folderView.truncated")}</div>
+          <div className="px-3 py-2 text-dense text-muted-foreground" data-testid="folder-column-truncated">
+            {t("folderView.truncated", { shown: column.entries.length.toLocaleString(locale), omitted: column.omitted.toLocaleString(locale) })}
+          </div>
         ) : null}
       </>
     );

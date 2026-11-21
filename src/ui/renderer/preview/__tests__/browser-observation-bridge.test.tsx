@@ -190,6 +190,35 @@ describe("browser observation live strip", () => {
     expect(slot.getAttribute("aria-hidden")).toBe("true");
   });
 
+  it("takes no space while idle when not reserved, appears only once no action holds the tab, then keeps its place", () => {
+    const { emit } = connect();
+    const view = render(<BrowserObservationLiveStrip tabId="browser:1" reserve={false} />);
+    expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
+    // The first action on a borrowed page does not move the page while it runs.
+    view.rerender(<BrowserObservationLiveStrip tabId="browser:1" reserve={false} actionInFlight />);
+    act(() => emit([action(1)]));
+    expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
+    view.rerender(<BrowserObservationLiveStrip tabId="browser:1" reserve={false} />);
+    const slot = screen.getByTestId("browser-observation-slot");
+    view.rerender(<BrowserObservationLiveStrip tabId="browser:1" reserve={false} actionInFlight />);
+    expect(screen.getByTestId("browser-observation-slot")).toBe(slot);
+    expect(screen.getByTestId("browser-preview-live-strip").textContent).toContain("클릭: ‘로그인’");
+    act(() => emit([status(2, "session-cleared")]));
+    expect(screen.queryByTestId("browser-preview-live-strip")).toBeNull();
+    expect(screen.getByTestId("browser-observation-slot")).toBe(slot);
+  });
+
+  it("does not carry a placed band over to another tab shown in the same place", () => {
+    const { emit } = connect();
+    const view = render(<BrowserObservationLiveStrip tabId="browser:1" reserve={false} />);
+    act(() => emit([action(1)]));
+    expect(screen.getByTestId("browser-observation-slot")).toBeTruthy();
+    view.rerender(<BrowserObservationLiveStrip tabId="browser:2" reserve={false} />);
+    expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
+    view.rerender(<BrowserObservationLiveStrip tabId="browser:1" reserve={false} />);
+    expect(screen.getByTestId("browser-observation-slot")).toBeTruthy();
+  });
+
   it("redacts credential descriptions and renders download states without paths or values", () => {
     const { emit } = connect();
     render(<BrowserObservationLiveStrip tabId="browser:1" sessionId={SESSION} />);

@@ -7,7 +7,7 @@ import { setLocale } from "../../../i18n/runtime.js";
 function data(count = 9) {
   return deriveWorkspaceChanges({ files: [], targets: [], workspaceRoot: "/work/project", review: { sessionId: "session", turnId: "turn",
     files: Array.from({ length: count }, (_, index) => ({ path: `src/file-${index}.ts`, operation: "modify" as const,
-      added: index + 1, removed: 1, countsKnown: true, bytes: 5, lineCount: 1, referenceable: true, hunks: [] })),
+      added: index + 1, removed: 1, countsKnown: true, bytes: 5, lineCount: 1, referenceable: true, decidable: true, hunks: [] })),
   } });
 }
 beforeEach(() => { setLocale("en"); });

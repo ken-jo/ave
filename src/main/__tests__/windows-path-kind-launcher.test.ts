@@ -8,7 +8,13 @@ import { queryDosDevice, queryWindowsSystemDirectory, resolveWindowsPathKindHelp
 import { configureHostResources } from "../host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
-type Callback = (error: Error | null, stdout: string, stderr: string) => void;
+function helperReply(stdout: string | Buffer = "", stderr = "", error: Error | null = null) {
+  return (_file: string, _args: string[], options: { encoding?: string }, callback: (error: Error | null, stdout: Buffer | string, stderr: Buffer | string) => void) => {
+    const bytes = typeof stdout === "string" ? Buffer.from(stdout) : stdout;
+    if (options.encoding === "utf8") callback(error, bytes.toString("utf8"), stderr);
+    else callback(error, bytes, Buffer.from(stderr));
+  };
+}
 
 describe("Windows folder classifier launcher", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -24,12 +30,12 @@ describe("Windows folder classifier launcher", () => {
   });
 
   it("runs the helper on the drive letter alone, hidden and bounded, and returns its one line", async () => {
-    mocks.execFile.mockImplementation((_file: string, _args: string[], _options: unknown, callback: Callback) => callback(null, "\\Device\\Mup\\;LanmanRedirector\\server\\share\r\n", ""));
+    mocks.execFile.mockImplementation(helperReply("\\Device\\Mup\\;LanmanRedirector\\server\\share\r\n"));
     await expect(queryDosDevice("Z:")).resolves.toBe("\\Device\\Mup\\;LanmanRedirector\\server\\share");
     expect(mocks.execFile).toHaveBeenCalledWith(
       join("/trusted/resources", "windows-path-kind", "x64", "ave-path-kind.exe"),
       ["Z:"],
-      { windowsHide: true, timeout: 5000, encoding: "utf8" },
+      { windowsHide: true, timeout: 5000, encoding: "buffer" },
       expect.any(Function),
     );
   });
@@ -45,15 +51,22 @@ describe("Windows folder classifier launcher", () => {
     expect(mocks.execFile).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed UTF-8 in a drive mapping", async () => {
+    const mapping = "\\Device\\HarddiskVolume-\ufffd";
+    mocks.execFile.mockImplementationOnce(helperReply(`${mapping}\n`));
+    await expect(queryDosDevice("C:")).resolves.toBe(mapping);
+    mocks.execFile.mockImplementationOnce(helperReply(Buffer.concat([Buffer.from("\\Device\\HarddiskVolume-"), Buffer.from([0xff, 0x0a])])));
+    await expect(queryDosDevice("C:")).rejects.toThrow(/encoding utf-8/i);
+  });
+
   it("answers null when the OS has no mapping for the drive (exit 1), the one failure that is about the drive", async () => {
-    mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) =>
-      callback(Object.assign(new Error("Command failed"), { code: 1 }), "", "QueryDosDeviceW failed: 2\n"));
+    mocks.execFile.mockImplementationOnce(helperReply("", "QueryDosDeviceW failed: 2\n", Object.assign(new Error("Command failed"), { code: 1 })));
     await expect(queryDosDevice("Q:")).resolves.toBeNull();
   });
 
   it("rejects a broken helper with its cause and what to do, never as an answer about the drive", async () => {
     const fail = (error: Error & { code?: number | string | null; killed?: boolean }, stdout = "", stderr = "") =>
-      mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) => callback(error, stdout, stderr));
+      mocks.execFile.mockImplementationOnce(helperReply(stdout, stderr, error));
     fail(Object.assign(new Error("spawn EACCES"), { code: "EACCES" }));
     await expect(queryDosDevice("Q:")).rejects.toThrow(/classifier failed for Q:: spawn EACCES\. Reinstall Ave/u);
     fail(Object.assign(new Error("Command failed"), { code: 2 }), "", "usage: ave-path-kind.exe X:\n");
@@ -62,9 +75,9 @@ describe("Windows folder classifier launcher", () => {
     await expect(queryDosDevice("Q:")).rejects.toThrow("could not write the mapping");
     fail(Object.assign(new Error("Command failed"), { code: null, killed: true }));
     await expect(queryDosDevice("Q:")).rejects.toThrow("did not answer within 5000 ms");
-    mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) => callback(null, "", ""));
+    mocks.execFile.mockImplementationOnce(helperReply());
     await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
-    mocks.execFile.mockImplementationOnce((_f: string, _a: string[], _o: unknown, callback: Callback) => callback(null, "a\nb\n", ""));
+    mocks.execFile.mockImplementationOnce(helperReply("a\nb\n"));
     await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
   });
 });
@@ -82,12 +95,12 @@ describe("native system directory launcher", () => {
     vi.stubEnv("SystemRoot", "Z:\\untrusted");
     vi.stubEnv("WINDIR", "Y:\\untrusted");
     vi.stubEnv("ANTHROPIC_API_KEY", "parent-secret");
-    mocks.execFile.mockImplementation((_file: string, _args: string[], _options: unknown, callback: Callback) => callback(null, "D:\\OperatingSystem\\System32\r\n", ""));
+    mocks.execFile.mockImplementation(helperReply("D:\\OperatingSystem\\System32\r\n"));
     await expect(queryWindowsSystemDirectory()).resolves.toBe("D:\\OperatingSystem\\System32");
     expect(mocks.execFile).toHaveBeenCalledWith(
       join("/trusted/resources", "windows-path-kind", "x64", "ave-path-kind.exe"),
       ["--system-directory"],
-      { windowsHide: true, shell: false, env: {}, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBuffer: 128 * 1024 },
+      { windowsHide: true, shell: false, env: {}, encoding: "buffer", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBuffer: 128 * 1024 },
       expect.any(Function),
     );
   });
@@ -101,19 +114,27 @@ describe("native system directory launcher", () => {
     expect(mocks.execFile).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed UTF-8 in a system directory", async () => {
+    const directory = "D:\\OperatingSystem-\ufffd\\System32";
+    mocks.execFile.mockImplementationOnce(helperReply(`${directory}\n`));
+    await expect(queryWindowsSystemDirectory()).resolves.toBe(directory);
+    mocks.execFile.mockImplementationOnce(helperReply(Buffer.concat([Buffer.from("D:\\OperatingSystem-"), Buffer.from([0xff]), Buffer.from("\\System32\n")])));
+    await expect(queryWindowsSystemDirectory()).rejects.toThrow(/encoding utf-8/i);
+  });
+
   it("does not treat helper failure as a missing mapping or return an environment-derived directory", async () => {
-    mocks.execFile.mockImplementation((_file: string, _args: string[], _options: unknown, callback: Callback) => callback(Object.assign(new Error("Fixture helper failed"), { code: 1 }), "C:\\Windows\\System32\n", ""));
+    mocks.execFile.mockImplementation(helperReply("C:\\Windows\\System32\n", "", Object.assign(new Error("Fixture helper failed"), { code: 1 })));
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("Windows system directory query failed");
     expect(mocks.execFile).toHaveBeenCalledTimes(1);
   });
 
   it.each(["", "relative", "C:\\", "C:\\Windows\\..\\untrusted", "C:\\Windows\\System32\nD:\\Other", "\\\\server\\Windows\\System32", "C:\\Windows\\System32:alternate", "C:\\Windows\\System32\0"])("refuses a malformed simulated native answer %j", async (answer) => {
-    mocks.execFile.mockImplementation((_file: string, _args: string[], _options: unknown, callback: Callback) => callback(null, answer, ""));
+    mocks.execFile.mockImplementation(helperReply(answer));
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("invalid path");
   });
 
   it("fails on unexpected native diagnostics even with a plausible path", async () => {
-    mocks.execFile.mockImplementation((_file: string, _args: string[], _options: unknown, callback: Callback) => callback(null, "C:\\Windows\\System32\n", "Unexpected native diagnostic"));
+    mocks.execFile.mockImplementation(helperReply("C:\\Windows\\System32\n", "Unexpected native diagnostic"));
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("query failed");
   });
 
@@ -121,7 +142,7 @@ describe("native system directory launcher", () => {
     const root = `C:\\${"a".repeat(250)}\\${"b".repeat(250)}\\${"c".repeat(length - 505)}`;
     expect(root).toHaveLength(length);
     const directory = `${root}\\System32`;
-    mocks.execFile.mockImplementation((_file: string, _args: string[], _options: unknown, callback: Callback) => callback(null, `${directory}\n`, ""));
+    mocks.execFile.mockImplementation(helperReply(`${directory}\n`));
     if (length === 512) await expect(queryWindowsSystemDirectory()).resolves.toBe(directory);
     else await expect(queryWindowsSystemDirectory()).rejects.toThrow("invalid path");
   });

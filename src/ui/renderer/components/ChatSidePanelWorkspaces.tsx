@@ -1,27 +1,24 @@
+import type { AttachTextResult } from "../preview/composer-targets.js";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
 import { cn } from "../../../lib/utils.js";
 import {
   ArrowLeft,
-  ArrowRight,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
-  ExternalLink,
   FolderPlus,
-  Globe,
-  RotateCw,
+  RefreshCw,
   X,
 } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
-import { Input } from "../../../components/ui/input.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
-import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
-import type { AveApi } from "../types.js";
+import type { ApprovalRequest, AveApi } from "../types.js";
 import { type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
+import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS } from "./BrowserAddressRow.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { useFileTreeWidth } from "../hooks/use-file-tree-width.js";
 import { useEdgeResize, useMeasuredSize } from "../hooks/use-edge-resize.js";
@@ -37,7 +34,13 @@ import {
   useAddProjectFolder,
   type AddProjectFolderOutcome,
 } from "../hooks/use-add-project-folder.js";
-import { useNativeContextMenu } from "../hooks/use-native-context-menu.js";
+import { fileRowActions } from "./files/file-row-actions.js";
+import { FileRowMenu, type FileRowMenuState } from "./files/FileRowMenu.js";
+import { listWorkspaceDir } from "./files/workspace-listing.js";
+import { EDITOR_COMMAND_SETTINGS_PATH, EDITOR_NOT_CONFIGURED_KEY } from "./files/open-in-editor.js";
+import { coalesceRefresh, notifyWorkspaceFilesChanged, subscribeWorkspaceFilesChanged } from "../utils/workspace-files-signal.js";
+import { listNavigationTarget, mightProducePrintableCharacter, TypeNavigationController } from "../utils/list-keyboard-navigation.js";
+import { requestFolderViewAt, requestSettingsSection, requestTerminalAt } from "../utils/app-shell-requests.js";
 import { incompleteToolStatusLabelKey } from "../utils/tool-status-label.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import {
@@ -54,7 +57,6 @@ import {
   fileIcon,
   isPathWithinRoot,
   matchesQuery,
-  toRelativePath,
 } from "./ChatSidePanelPreview.js";
 import { matchesShortcut } from "../hooks/use-shortcuts.js";
 
@@ -84,10 +86,13 @@ type WorkspaceDirEntry = { name: string; path: string; type: "file" | "directory
  * preview IPC used everywhere else.
  */
 function ProjectRootsBrowser({
-  onOpenFile,
+  onOpenFile, onFileReference,
   selectedPath, files, changes, filter, query, revealRequest, focusSelectedToken,
 }: {
   onOpenFile: (path: string, file?: WorkspaceFileItem, root?: string) => void;
+  /** Put a reference to a row into the chat composer; the row menu offers "add to chat" when the host can. */
+  /** Put a file reference into the chat composer and say what happened, so a row action can report a refusal. */
+  onFileReference?: ((path: string) => AttachTextResult) | undefined;
   selectedPath: string | null;
   files: readonly WorkspaceFileItem[];
   changes: WorkspaceChanges;
@@ -96,8 +101,7 @@ function ProjectRootsBrowser({
   revealRequest?: FileWorkspaceReveal | null;
   focusSelectedToken?: number;
 }) {
-  const { t } = useTranslation();
-  const openNativeContextMenu = useNativeContextMenu();
+  const { t, locale } = useTranslation();
   const [roots, setRoots] = useState<Array<{ path: string; isDefault: boolean }>>([]);
   const [activeRoot, setActiveRoot] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -109,9 +113,9 @@ function ProjectRootsBrowser({
   // effect would refire every render → an infinite render→IPC loop.
   const [attemptedPaths, setAttemptedPaths] = useState<Set<string>>(new Set());
   const [errorByPath, setErrorByPath] = useState<Record<string, string>>({});
-  // Directories whose listing hit MAX_DIR_ENTRIES (main returns `truncated`), so
-  // the browser can flag that only a prefix of the folder is shown.
-  const [truncatedPaths, setTruncatedPaths] = useState<Set<string>>(new Set());
+  // Directories whose listing hit the cap, with how many entries main left out (it sorts first, then caps), so the
+  // browser can say how much of the folder is not shown.
+  const [omittedByPath, setOmittedByPath] = useState<Record<string, number>>({});
   // "Add a project folder" (pickRoot + adjacency-warning acknowledgement) is
   // the SAME shared flow the empty-state composer's ComposerProjectSelector
   // uses — see use-add-project-folder.ts. Kept as one implementation so the
@@ -135,58 +139,78 @@ function ProjectRootsBrowser({
   // Set true just before a keyboard-driven setActiveItemPath so the post-render
   // effect calls .focus(); prevents stealing focus on mount / mouse clicks.
   const pendingFocusRef = useRef(false);
-  // Type-ahead buffer with a 500ms reset window.
-  const typeaheadRef = useRef<{ buffer: string; timer: ReturnType<typeof setTimeout> | null }>({
-    buffer: "",
-    timer: null,
-  });
+  // Typing a name moves to the row that starts with it: the same word rules the folder view's columns use.
+  const typeNavigation = useRef<TypeNavigationController | null>(null);
+  typeNavigation.current ??= new TypeNavigationController();
+  // The row menu (right-click, Shift+F10 or the menu key), built from the row actions the folder view also offers.
+  const [rowMenu, setRowMenu] = useState<(FileRowMenuState & { path: string }) | null>(null);
   // Inline failure surface for the mutating ops (add / reveal). Removing a project is the sidebar's 프로젝트 제거, which
   // previews what would be lost first (case 31). Cleared
   // when a new op starts or the user dismisses it — a failed op no longer
   // swallows its error result silently.
   const [opError, setOpError] = useState<string | null>(null);
+  // "No editor command is set" comes with the way to the setting, so the explanation and its fix stay together.
+  const opErrorOffersEditorSetting = opError !== null && opError === t(EDITOR_NOT_CONFIGURED_KEY);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
+  // One listing replaces what the folder showed: its entries, its omitted count and its failure. Nothing is merged.
   const loadDir = useCallback(async (path: string) => {
     setLoadingPaths((prev) => new Set(prev).add(path));
-    try {
-      const res = await window.ave.workspace.listDir(path);
-      if (res.ok && res.entries) {
-        // This tree has no link rows; links stay a folder-view display item, as before they were listed at all.
-        const entries = (res.entries ?? []).flatMap((entry): WorkspaceDirEntry[] =>
-          entry.type === "link" ? [] : [{ name: entry.name, path: entry.path, type: entry.type }]);
-        setChildrenByPath((prev) => ({ ...prev, [path]: entries }));
-        setTruncatedPaths((prev) => {
-          const has = prev.has(path);
-          if (res.truncated && !has) return new Set(prev).add(path);
-          if (!res.truncated && has) {
-            const next = new Set(prev);
-            next.delete(path);
-            return next;
-          }
-          return prev;
-        });
-        setErrorByPath((prev) => {
-          if (!(path in prev)) return prev;
-          const next = { ...prev };
-          delete next[path];
-          return next;
-        });
-      } else {
-        // Surface the failure rather than swallowing it silently.
-        setErrorByPath((prev) => ({ ...prev, [path]: res.error ?? "read-failed" }));
-      }
-    } catch {
-      setErrorByPath((prev) => ({ ...prev, [path]: "read-failed" }));
-    } finally {
-      setAttemptedPaths((prev) => new Set(prev).add(path));
-      setLoadingPaths((prev) => {
-        const next = new Set(prev);
-        next.delete(path);
+    const res = await listWorkspaceDir(path);
+    const entries = res.ok
+      // This tree has no link rows; links stay a folder-view display item, as before they were listed at all.
+      ? (res.entries ?? []).flatMap((entry): WorkspaceDirEntry[] =>
+        entry.type === "link" ? [] : [{ name: entry.name, path: entry.path, type: entry.type }])
+      : null;
+    setChildrenByPath((prev) => {
+      if (entries !== null) return { ...prev, [path]: entries };
+      if (!(path in prev)) return prev;
+      // A folder that can no longer be listed shows its failure, not the rows it used to have.
+      const next = { ...prev };
+      delete next[path];
+      return next;
+    });
+    setOmittedByPath((prev) => {
+      const omitted = res.ok && res.truncated ? res.omitted ?? 0 : null;
+      if (omitted === null) {
+        if (!(path in prev)) return prev;
+        const next = { ...prev };
+        delete next[path];
         return next;
-      });
-    }
+      }
+      return prev[path] === omitted ? prev : { ...prev, [path]: omitted };
+    });
+    setErrorByPath((prev) => {
+      if (!res.ok) return { ...prev, [path]: res.error ?? "read-failed" };
+      if (!(path in prev)) return prev;
+      const next = { ...prev };
+      delete next[path];
+      return next;
+    });
+    setAttemptedPaths((prev) => new Set(prev).add(path));
+    setLoadingPaths((prev) => {
+      const next = new Set(prev);
+      next.delete(path);
+      return next;
+    });
   }, []);
+
+  // The shared "files may have changed" signal (a finished tool or turn, a code rewind, window focus, the reload button):
+  // every folder this tree has listed or tried to list is asked for again, one query per folder at a time.
+  const listedPathsRef = useRef<string[]>([]);
+  listedPathsRef.current = [...new Set([...Object.keys(childrenByPath), ...Object.keys(errorByPath)])];
+  const refreshers = useRef(new Map<string, () => void>());
+  const reloadListings = useCallback(() => {
+    for (const path of listedPathsRef.current) {
+      let request = refreshers.current.get(path);
+      if (!request) {
+        request = coalesceRefresh(() => loadDir(path));
+        refreshers.current.set(path, request);
+      }
+      request();
+    }
+  }, [loadDir]);
+  useEffect(() => subscribeWorkspaceFilesChanged(reloadListings), [reloadListings]);
 
   const applyRoots = useCallback(
     (next: Array<{ path: string; isDefault: boolean }>, preferred?: string | null) => {
@@ -320,39 +344,36 @@ function ProjectRootsBrowser({
     if (activeItemPath) itemRefs.current.get(activeItemPath)?.focus();
   }, [activeItemPath]);
 
-  // Clear the type-ahead timer on unmount.
-  useEffect(
-    () => () => {
-      if (typeaheadRef.current.timer) clearTimeout(typeaheadRef.current.timer);
-    },
-    [],
-  );
+  // Forget a half-typed word on unmount.
+  useEffect(() => () => typeNavigation.current?.clear(), []);
 
-  const focusPath = useCallback((path: string | null) => {
+  const focusPath = useCallback((path: string | null | undefined) => {
     if (!path) return;
     pendingFocusRef.current = true;
     setActiveItemPath(path);
   }, []);
 
-  const runTypeahead = (char: string, curIdx: number) => {
-    const ta = typeaheadRef.current;
-    if (ta.timer) clearTimeout(ta.timer);
-    ta.buffer += char.toLowerCase();
-    ta.timer = setTimeout(() => {
-      ta.buffer = "";
-      ta.timer = null;
-    }, 500);
-    const n = flatNodes.length;
-    // Single-char buffer starts the search at the NEXT node (cycles repeats);
-    // multi-char refines from the current node.
-    const startOffset = ta.buffer.length === 1 ? 1 : 0;
-    for (let i = 0; i < n; i++) {
-      const cand = flatNodes[(curIdx + startOffset + i) % n];
-      if (cand.name.toLowerCase().startsWith(ta.buffer)) {
-        focusPath(cand.path);
-        return;
-      }
-    }
+  const openRowMenu = (node: { path: string; name: string; isDir: boolean; parentPath: string; file?: WorkspaceFileItem }, at: { x: number; y: number }) => {
+    setActiveItemPath(node.path);
+    setRowMenu({
+      ...at,
+      name: node.name,
+      path: node.path,
+      actions: fileRowActions(
+        { path: node.path, type: node.isDir ? "directory" : "file", parent: node.parentPath || activeRoot || node.path, root: activeRoot },
+        {
+          open: () => (node.isDir ? toggleFolder(node.path) : onOpenFile(node.path, node.file, activeRoot ?? undefined)),
+          addToChat: onFileReference,
+          openTerminal: activeRoot ? (dir) => {
+            if (!requestTerminalAt({ dir, projectRoot: activeRoot })) setOpError(t("folderView.openTerminalFailed"));
+          } : undefined,
+          showInFolderView: activeRoot ? (path) => {
+            if (!requestFolderViewAt({ path, projectRoot: activeRoot })) setOpError(t("folderView.showInFolderViewFailed"));
+          } : undefined,
+          report: (messageKey) => setOpError(messageKey === null ? null : t(messageKey)),
+        },
+      ),
+    });
   };
 
   const onTreeKeyDown = (e: ReactKeyboardEvent) => {
@@ -360,15 +381,30 @@ function ProjectRootsBrowser({
     const idx = flatNodes.findIndex((n) => n.path === rovingPath);
     const i = idx >= 0 ? idx : 0;
     const cur = flatNodes[i];
+    if (!cur) return;
+    if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+      e.preventDefault();
+      const rect = itemRefs.current.get(cur.path)?.getBoundingClientRect();
+      openRowMenu(cur, { x: (rect?.left ?? 0) + 24, y: rect?.bottom ?? 0 });
+      return;
+    }
+    if (mightProducePrintableCharacter(e.nativeEvent)) {
+      e.preventDefault();
+      const match = typeNavigation.current?.input(e.key, flatNodes.map((node) => node.name), i) ?? -1;
+      focusPath(flatNodes[match]?.path);
+      return;
+    }
+    // Arrows up and down, Home, End and the page keys move through the visible rows.
+    const row = itemRefs.current.get(cur.path);
+    const rowHeight = row?.offsetHeight ?? 0;
+    const viewHeight = row?.closest<HTMLElement>("[data-file-tree-scroller]")?.clientHeight ?? 0;
+    const target = listNavigationTarget(e.key, i, flatNodes.length, rowHeight > 0 ? Math.floor(viewHeight / rowHeight) - 1 : 1);
+    if (target !== null) {
+      e.preventDefault();
+      focusPath(flatNodes[target]?.path);
+      return;
+    }
     switch (e.key) {
-      case "ArrowDown":
-        e.preventDefault();
-        focusPath(flatNodes[Math.min(i + 1, flatNodes.length - 1)].path);
-        break;
-      case "ArrowUp":
-        e.preventDefault();
-        focusPath(flatNodes[Math.max(i - 1, 0)].path);
-        break;
       case "ArrowRight":
         e.preventDefault();
         if (cur.isDir) {
@@ -394,19 +430,6 @@ function ProjectRootsBrowser({
         if (cur.isDir) toggleFolder(cur.path);
         else onOpenFile(cur.path, cur.file, activeRoot ?? undefined);
         break;
-      case "Home":
-        e.preventDefault();
-        focusPath(flatNodes[0].path);
-        break;
-      case "End":
-        e.preventDefault();
-        focusPath(flatNodes[flatNodes.length - 1].path);
-        break;
-      default:
-        if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
-          e.preventDefault();
-          runTypeahead(e.key, i);
-        }
     }
   };
 
@@ -464,7 +487,7 @@ function ProjectRootsBrowser({
   const handleFolderDrop = useCallback(
     async (files: FileList) => {
       setOpError(null);
-      const paths = window.aveDrop.resolveDroppedPaths(files);
+      const paths = window.aveDrop.resolveDroppedPaths(Array.from(files));
       const dropped = paths[0]; // first dropped item only — no multi-add fan-out
       if (!dropped) return; // non-file drag (text/url) or unresolvable — no-op
       const res = await window.ave.workspace.dropPrepare(dropped);
@@ -482,14 +505,6 @@ function ProjectRootsBrowser({
     },
     [formatOpError],
   );
-
-  // Reveal a file/folder in the OS file manager. Re-validated in main; surfaces
-  // any failure inline instead of swallowing the result.
-  const revealEntry = async (path: string) => {
-    setOpError(null);
-    const res = await window.ave.workspace.reveal(path);
-    if (!res.ok) setOpError(formatOpError(res.error, res.message));
-  };
 
   const confirmPendingFolder = async () => {
     applyAddOutcome(await confirmPendingFolderShared());
@@ -533,12 +548,10 @@ function ProjectRootsBrowser({
             style={{ paddingLeft: `min(${childPad}px, 14%)` }}
             onFocus={() => setActiveItemPath(entry.path)}
             onClick={() => { setActiveItemPath(entry.path); if (isDir) toggleFolder(entry.path); else onOpenFile(entry.path, entry.file, activeRoot ?? undefined); }}
-            onContextMenu={(event) => openNativeContextMenu(event, "workspace-entry", {
-              "workspace.open": () => isDir ? toggleFolder(entry.path) : onOpenFile(entry.path, entry.file, activeRoot ?? undefined),
-              "workspace.reveal": () => void revealEntry(entry.path),
-              "workspace.copy-path": () => void navigator.clipboard?.writeText(entry.path),
-              "workspace.copy-relative-path": () => void navigator.clipboard?.writeText(toRelativePath(activeRoot, entry.path)),
-            })}>
+            onContextMenu={(event) => {
+              event.preventDefault();
+              openRowMenu({ path: entry.path, name: entry.name, isDir, parentPath: path, file: entry.file }, { x: event.clientX, y: event.clientY });
+            }}>
             {isDir ? isOpen ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" /> : createElement(fileIcon(entry.name), { className: "h-3 w-3 shrink-0 text-muted-foreground" })}
             <span className={cn("min-w-0 flex-1 truncate", entry.change?.operation === "delete" && "text-muted-foreground line-through")}>{entry.name}</span>
             {entry.session && !isDir ? <span data-testid="chat-side-panel-file-session-badge" className={cn("shrink-0 rounded px-1 text-dense font-medium", SESSION_FILE_BADGE_CLASS)}>{t("chatPreviewRail.sessionFileBadge")}</span> : null}
@@ -549,7 +562,7 @@ function ProjectRootsBrowser({
           {isDir && isOpen ? <div role="group">{renderEntries(entry.path, depth + 1, entry.children)}</div> : null}
         </div>;
       })}
-      {truncatedPaths.has(path) ? <div role="presentation" className="flex h-6 items-center text-dense italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-truncated">{t("chatPreviewRail.dirTruncated")}</div> : null}
+      {path in omittedByPath ? <div role="presentation" className="flex h-6 items-center text-dense italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-truncated">{t("folderView.truncated", { shown: (childrenByPath[path]?.length ?? 0).toLocaleString(locale), omitted: (omittedByPath[path] ?? 0).toLocaleString(locale) })}</div> : null}
     </>;
   };
   return (
@@ -624,6 +637,21 @@ function ProjectRootsBrowser({
               type="button"
               size="icon-xs"
               variant="ghost"
+              data-testid="chat-side-panel-files-reload"
+              aria-label={t("folderView.refresh")}
+              onClick={() => notifyWorkspaceFilesChanged("manual")}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{t("folderView.refresh")}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
               data-testid="chat-side-panel-collapse-all"
               aria-label={t("chatPreviewRail.collapseAll")}
               disabled={expanded.size === 0}
@@ -642,6 +670,16 @@ function ProjectRootsBrowser({
           className="flex items-start gap-1 rounded-md border border-destructive bg-destructive/(--opacity-muted) px-2 py-1 text-dense text-destructive"
         >
           <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{opError}</span>
+          {opErrorOffersEditorSetting ? (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 underline hover:bg-destructive/(--opacity-muted)"
+              data-testid="file-action-open-settings"
+              onClick={() => requestSettingsSection(EDITOR_COMMAND_SETTINGS_PATH)}
+            >
+              {t("folderView.editorOpenSettings")}
+            </button>
+          ) : null}
           <button
             type="button"
             className="shrink-0 rounded p-0.5 hover:bg-destructive/(--opacity-muted)"
@@ -686,6 +724,7 @@ function ProjectRootsBrowser({
           </div>
         </div>
       ) : null}
+      {rowMenu ? <FileRowMenu menu={rowMenu} onClose={() => setRowMenu(null)} focusTarget={() => itemRefs.current.get(rowMenu.path)} /> : null}
       <div role="tree" aria-label={t("chatPreviewRail.projectRoots")} onKeyDown={onTreeKeyDown}>
         {activeRoot ? <>
           {loadingPaths.has(activeRoot) && !childrenByPath[activeRoot] ? <div className="px-2 py-1 text-dense text-muted-foreground">{t("chatPreviewRail.filePreviewLoading")}</div> : errorByPath[activeRoot] ? <button type="button" className="flex w-full items-center gap-1 px-2 py-1 text-left text-dense text-destructive hover:underline" data-testid="chat-side-panel-fs-error" onClick={() => retryDir(activeRoot)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button> : null}
@@ -754,7 +793,7 @@ export function FileBrowserWorkspace({
   changes?: WorkspaceChanges;
   revealRequest?: FileWorkspaceReveal | null;
   onReference?: (reference: FileMentionReference) => void;
-  onFileReference?: (path: string) => void;
+  onFileReference?: (path: string) => AttachTextResult;
   /**
    * Show only the files `changes` lists, with no filter, no directory browsing and no workspace listing: a view whose
    * file set is exactly what main delivered (a terminal's matched agent-changed files) never lists anything else.
@@ -849,12 +888,12 @@ export function FileBrowserWorkspace({
           </button>)}
         </div>}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2" onKeyDown={(event) => {
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2" data-file-tree-scroller="" onKeyDown={(event) => {
         if (event.key === "F6" && previewTarget && !narrow) { event.preventDefault(); detailRef.current?.focus(); }
       }}>
         {matchedOnly ? <MatchedFileList files={files} changes={changes} query={query} selectedPath={selectedPath} onOpenFile={openFile} />
           : <ProjectRootsBrowser files={files} changes={changes} filter={filter} query={query} selectedPath={selectedPath}
-            onOpenFile={openFile} revealRequest={revealRequest} focusSelectedToken={focusSelectedToken} />}
+            onOpenFile={openFile} onFileReference={onFileReference} revealRequest={revealRequest} focusSelectedToken={focusSelectedToken} />}
       </div>
     </div>
     {!narrow ? <div role="separator" aria-orientation="vertical" aria-label={t("chatPreviewRail.resizeFileColumns")} tabIndex={0}
@@ -868,7 +907,8 @@ export function FileBrowserWorkspace({
         if (event.key === "F6") { event.preventDefault(); narrow ? goBack() : focusTree(); }
       }}>
       {narrow ? <button type="button" className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3 text-left text-xs text-primary" onClick={goBack} data-testid="chat-side-panel-file-back"><ArrowLeft className="h-3.5 w-3.5" />{t("chatPreviewRail.fileTreeBack")}</button> : null}
-      {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference} />
+      {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference}
+        onDecide={changes.onDecide} deciding={changes.deciding} decisionError={changes.decisionError} />
         : emptyDetail !== undefined ? <EmptyState title={selectedPath ? emptyDetail : t("chatPreviewRail.emptyState")} />
           : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} visible={visible} /></div>
           : <EmptyState title={t("chatPreviewRail.emptyState")} />}
@@ -935,14 +975,22 @@ export function VisitedSites({
   api,
   targets,
   onOpen,
+  pendingApprovals = [],
 }: {
   api: AveApi;
   targets: ChatPreviewTarget[];
   /** Open the picked page (a url or an html document) in a tab. */
   onOpen: (target: ChatPreviewTarget) => void;
+  /** The approvals waiting for the user; a site approval marks the pages its tool call is waiting to open. */
+  pendingApprovals?: readonly ApprovalRequest[];
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  // A page waits for the site approval raised by its own tool call, and only while that call runs.
+  const awaitingApproval = useCallback((target: ChatPreviewTarget): boolean => {
+    if (target.kind !== "url" || target.status !== "running" || target.toolUseId === undefined) return false;
+    return pendingApprovals.some((request) => request.browserSite !== undefined && request.toolUseId === target.toolUseId);
+  }, [pendingApprovals]);
   const visitedTargets = useMemo(
     () => targets
       .filter((target) => matchesQuery(query, target.title, target.subtitle, target.sourceLabel, target.kind === "url" ? target.url : undefined))
@@ -962,6 +1010,7 @@ export function VisitedSites({
           <TargetRows
             targets={visitedTargets}
             rowTestId="chat-side-panel-browser-row"
+            awaitingApproval={awaitingApproval}
             onSelect={(id) => {
               const target = visitedTargets.find((each) => each.id === id);
               if (target) onOpen(target);
@@ -1000,10 +1049,6 @@ export function BrowserWorkspace({
   composerGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
-  const guest = useBrowserSurface(tabId);
-  const navigation = useGuestNavigation(guest);
-  const [addressDraft, setAddressDraft] = useState("");
-  const [addressError, setAddressError] = useState<string | null>(null);
   const latestTarget = useMemo(
     () => targets.reduce<ChatPreviewTarget | null>(
       (latest, target) => (latest === null || target.createdOrder > latest.createdOrder ? target : latest),
@@ -1011,30 +1056,6 @@ export function BrowserWorkspace({
     ),
     [targets],
   );
-
-  // The tab whose address row holds text the user is typing and has not submitted. While the field has focus, a page that
-  // reports a new address (its first load finishing or failing, a redirect) must not erase the draft, as in any browser.
-  // The draft lives only that long: leaving the field, Escape, and back, forward or reload put the page's real address back,
-  // so the row never shows a typed address for a page it is not showing.
-  const draftEditedForTab = useRef<string | null>(null);
-  const addressInputRef = useRef<HTMLInputElement | null>(null);
-  const goButtonRef = useRef<HTMLButtonElement | null>(null);
-  const currentAddress = navigation.url ?? manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : "");
-  const discardDraft = () => {
-    draftEditedForTab.current = null;
-    setAddressDraft(currentAddress);
-    setAddressError(null);
-  };
-  useEffect(() => {
-    if (draftEditedForTab.current === tabId) return;
-    draftEditedForTab.current = null;
-    setAddressDraft(currentAddress);
-    setAddressError(null);
-  }, [currentAddress, tabId]);
-  const navigate = (action: () => void) => {
-    discardDraft();
-    void navigateBrowserTabAsUser(api, tabId, action);
-  };
 
   const manualTarget = useMemo<Extract<ChatPreviewTarget, { kind: "url" }> | null>(() => {
     if (!manualUrl) return null;
@@ -1056,121 +1077,15 @@ export function BrowserWorkspace({
     };
   }, [manualUrl, t, tabId]);
   const displayedTarget = manualTarget ?? latestTarget;
-  const shownUrl = navigation.url ?? (displayedTarget?.kind === "url" ? displayedTarget.url : null);
-
-  const submitAddress = () => {
-    const normalized = normalizeBrowserNavigationUrl(addressDraft);
-    if (!normalized) {
-      setAddressError(t("chatPreviewRail.browserInvalidUrl"));
-      return;
-    }
-    draftEditedForTab.current = null;
-    setAddressDraft(normalized);
-    setAddressError(null);
-    void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, normalized));
-  };
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden" data-testid="chat-side-panel-browser-workspace">
-      {/*
-        Single address bar (#11): the browser tab owns ONE address row here and
-        the viewer's own header is suppressed (UrlDocumentViewer showHeader=false)
-        so there is no duplicate URL band nesting.
-      */}
-      <form
-        data-native-page-chrome="background"
-        className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
-        onBlur={(event) => {
-          // The draft lives while focus stays on the field or the Go button that submits it; focus going anywhere else,
-          // from either of them, drops it. Switching away from the whole window is not leaving the edit: focus comes back to
-          // the field when the window does, so the draft stays, as in Chrome.
-          const left: EventTarget = event.target;
-          const next: EventTarget | null = event.relatedTarget;
-          if (left !== addressInputRef.current && left !== goButtonRef.current) return;
-          if (next === addressInputRef.current || next === goButtonRef.current) return;
-          if (next === null && !document.hasFocus()) return;
-          discardDraft();
-        }}
-        onSubmit={(event) => {
-          event.preventDefault();
-          submitAddress();
-        }}
-      >
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
-          aria-label={t("mainPanels.back")} disabled={!navigation.canGoBack}
-          onClick={() => navigate(() => navigateBrowserSurface(guest, "back"))} data-testid="browser-back">
-          <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
-          aria-label={t("mainPanels.forward")} disabled={!navigation.canGoForward}
-          onClick={() => navigate(() => navigateBrowserSurface(guest, "forward"))} data-testid="browser-forward">
-          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
-          aria-label={t("mainPanels.reload")} disabled={!guest || !navigation.url}
-          onClick={() => navigate(() => navigateBrowserSurface(guest, "reload"))} data-testid="browser-reload">
-          <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
-        </Button>
-        <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <Input
-          ref={addressInputRef}
-          data-testid="chat-side-panel-browser-address"
-          value={addressDraft}
-          onChange={(event) => {
-            draftEditedForTab.current = tabId;
-            setAddressDraft(event.target.value);
-            if (addressError) setAddressError(null);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") discardDraft();
-          }}
-          placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
-          className="h-8 min-w-0 flex-1 text-xs"
-        />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="submit"
-              size="icon"
-              variant="ghost"
-              className="h-8 w-8 shrink-0"
-              ref={goButtonRef}
-              aria-label={t("chatPreviewRail.browserGo")}
-              data-testid="chat-side-panel-browser-go"
-            >
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{t("chatPreviewRail.browserGo")}</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              size="icon"
-              variant="ghost"
-              className="h-8 w-8 shrink-0"
-              aria-label={t("chatPreviewRail.openUrl")}
-              data-testid="chat-side-panel-browser-open-external"
-              disabled={!shownUrl}
-              onClick={() => {
-                const safe = shownUrl ? normalizeBrowserNavigationUrl(shownUrl) : null;
-                if (safe) void api.openExternalUrl(safe);
-              }}
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{t("chatPreviewRail.openUrl")}</TooltipContent>
-        </Tooltip>
-      </form>
+      {/* The tab owns the one address row; the viewer's own header is suppressed (showHeader=false). */}
+      <BrowserAddressRow api={api} tabId={tabId} chrome="background" testIds={SIDE_PANEL_ADDRESS_ROW_TEST_IDS}
+        fallbackUrl={manualUrl ?? (latestTarget?.kind === "url" ? latestTarget.url : null)}
+        onNavigate={(url) => onManualUrlChange(tabId, url)} />
       <BrowserSurfaceTools api={api} tabId={tabId} composerGroupId={composerGroupId}
         onOpenUrl={(url) => { void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, url)); }} />
-      {addressError ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid="chat-side-panel-browser-address-error">
-          {addressError}
-        </div>
-      ) : null}
       <div className="min-h-0 w-full min-w-0 flex-1 overflow-hidden">
         {displayedTarget?.kind === "html" ? (
           <BrowserDocumentViewer target={displayedTarget} />

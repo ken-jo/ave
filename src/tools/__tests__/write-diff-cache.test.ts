@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { mkdtempSync, existsSync, readFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,46 +23,45 @@ async function loadModule() {
 
 const SESSION_ID = "session-abc123";
 const TOOL_USE_ID = "tu-def456";
-const SMALL = "x".repeat(10);
 const LARGE = "y".repeat(5000);
 
 describe("write-diff-cache", () => {
-  it("skips write when both sides are within WRITE_DIFF_PREVIEW_LIMIT", async () => {
-    const { writeDiffSidecar, WRITE_DIFF_PREVIEW_LIMIT } = await loadModule();
+  it("stores a small change too, so every write has one rendering", async () => {
+    const { writeDiffSidecar, readDiffSidecar } = await loadModule();
     const warns: string[] = [];
-    const result = await writeDiffSidecar(
-      SESSION_ID,
-      TOOL_USE_ID,
-      SMALL,
-      SMALL,
-      (m) => warns.push(m),
-    );
-    expect(result).toBe(false);
+    expect(await writeDiffSidecar(SESSION_ID, TOOL_USE_ID, "a\nb\nc\n", "a\nB\nc\n", (m) => warns.push(m))).toBe(true);
     expect(warns).toHaveLength(0);
-    const path = join(testHome, "diff-cache", SESSION_ID, `${TOOL_USE_ID}.json`);
-    expect(existsSync(path)).toBe(false);
-    expect(WRITE_DIFF_PREVIEW_LIMIT).toBe(4096);
+    expect(await readDiffSidecar(SESSION_ID, TOOL_USE_ID)).toEqual({
+      version: 2,
+      isNewFile: false,
+      view: {
+        added: 1, removed: 1, truncated: false,
+        hunks: [{ oldStart: 1, newStart: 1, oldCount: 3, newCount: 3, rows: [
+          { kind: "context", text: "a" }, { kind: "removed", text: "b" }, { kind: "added", text: "B" }, { kind: "context", text: "c" },
+        ] }],
+      },
+    });
   });
 
-  it("writes sidecar when before exceeds WRITE_DIFF_PREVIEW_LIMIT", async () => {
-    const { writeDiffSidecar } = await loadModule();
-    const warns: string[] = [];
-    const result = await writeDiffSidecar(SESSION_ID, TOOL_USE_ID, LARGE, SMALL, (m) => warns.push(m));
-    expect(result).toBe(true);
-    expect(warns).toHaveLength(0);
-    const path = join(testHome, "diff-cache", SESSION_ID, `${TOOL_USE_ID}.json`);
-    expect(existsSync(path)).toBe(true);
-    const raw = JSON.parse(readFileSync(path, "utf8")) as { before: string; after: string };
-    expect(raw.before).toBe(LARGE);
-    expect(raw.after).toBe(SMALL);
+  it("marks a created file and stores its lines as additions", async () => {
+    const { writeDiffSidecar, readDiffSidecar } = await loadModule();
+    expect(await writeDiffSidecar(SESSION_ID, TOOL_USE_ID, null, "one\ntwo\n", () => {})).toBe(true);
+    const record = await readDiffSidecar(SESSION_ID, TOOL_USE_ID);
+    expect(record?.isNewFile).toBe(true);
+    expect(record?.view).toMatchObject({ added: 2, removed: 0 });
   });
 
-  it("writes sidecar when after exceeds WRITE_DIFF_PREVIEW_LIMIT", async () => {
-    const { writeDiffSidecar } = await loadModule();
-    const warns: string[] = [];
-    const result = await writeDiffSidecar(SESSION_ID, TOOL_USE_ID, SMALL, LARGE, (m) => warns.push(m));
-    expect(result).toBe(true);
-    expect(warns).toHaveLength(0);
+  it("stores a bounded diff, not the file contents, for a large write", async () => {
+    const { writeDiffSidecar, readDiffSidecar } = await loadModule();
+    const big = Array.from({ length: 30_000 }, (_, index) => `row ${index}`).join("\n");
+    expect(await writeDiffSidecar(SESSION_ID, TOOL_USE_ID, LARGE, big, () => {})).toBe(true);
+    const sidecarFile = join(testHome, "diff-cache", SESSION_ID, `${TOOL_USE_ID}.json`);
+    expect(existsSync(sidecarFile)).toBe(true);
+    const record = await readDiffSidecar(SESSION_ID, TOOL_USE_ID);
+    expect(record?.view.truncated).toBe(true);
+    expect(record?.view.added).toBe(30_000);
+    expect(record?.view.hunks.reduce((rows, hunk) => rows + hunk.rows.length, 0)).toBe(2_000);
+    expect(readFileSync(sidecarFile, "utf8").length).toBeLessThan(big.length);
   });
 
   it("rejects unsafe sessionId (path separator)", async () => {
@@ -93,13 +92,14 @@ describe("write-diff-cache", () => {
     expect(warns.length).toBeGreaterThan(0);
   });
 
-  it("readDiffSidecar returns blob for written sidecar", async () => {
-    const { writeDiffSidecar, readDiffSidecar } = await loadModule();
-    await writeDiffSidecar(SESSION_ID, TOOL_USE_ID, LARGE, SMALL, () => {});
-    const blob = await readDiffSidecar(SESSION_ID, TOOL_USE_ID);
-    expect(blob).not.toBeNull();
-    expect(blob!.before).toBe(LARGE);
-    expect(blob!.after).toBe(SMALL);
+  it("readDiffSidecar returns null for a sidecar in another shape", async () => {
+    const { readDiffSidecar } = await loadModule();
+    const dir = join(testHome, "diff-cache", SESSION_ID);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${TOOL_USE_ID}.json`), JSON.stringify({ before: "a", after: "b" }));
+    expect(await readDiffSidecar(SESSION_ID, TOOL_USE_ID)).toBeNull();
+    writeFileSync(join(dir, `${TOOL_USE_ID}.json`), JSON.stringify({ version: 2, isNewFile: false, view: { hunks: [{ rows: [{ kind: "bogus", text: 1 }] }], added: 0, removed: 0, truncated: false } }));
+    expect(await readDiffSidecar(SESSION_ID, TOOL_USE_ID)).toBeNull();
   });
 
   it("readDiffSidecar returns null for missing sidecar", async () => {

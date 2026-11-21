@@ -32,7 +32,7 @@ import { readPermissionSettings } from "../../permissions/permission-settings-st
 import { buildRuntimeAllowedDirectories } from "../../permissions/allowed-directories.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { TableDocumentError } from "../../tools/table-document-error.js";
-import { readPreviewDocumentInput } from "../../tools/preview-document-input.js";
+import { readJudgedDocumentInput } from "../../tools/preview-document-input.js";
 import { installDocumentObservation } from "../../main/document-observation.js";
 import { parseObservedTextDocument } from "../../observation/text-document.js";
 import { recordPreviewFileAccess } from "../../main/preview-file-access.js";
@@ -178,7 +178,9 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
 
       const { cwd, extraAllowed } = currentReadScope();
       const requestedPath = workspaceRoot === undefined ? rawPath : resolve(workspaceRoot, rawPath);
-      const verdict = assertReadableFilePath(requestedPath, cwd, extraAllowed);
+      // This read is drawn on the person's own screen: a key-extension file is refused here only when it holds a key.
+      // Handing the document to the agent's observation is judged separately, as the agent's read.
+      const verdict = assertReadableFilePath(requestedPath, cwd, extraAllowed, "person");
       if (!verdict.ok) {
         // "not-a-file" here means glob/argument, never a concrete file.
         return { ok: false, error: verdict.error, message: `read guard rejected: ${verdict.error}` };
@@ -222,7 +224,9 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           };
         }
         request?.controller.signal.throwIfAborted();
-        const input = hasLineWindow ? undefined : await readPreviewDocumentInput(resolved, request?.controller.signal, MAX_TEXT_FILE_BYTES);
+        // These bytes may become the agent's observed document: they count only if `resolved`, judged above, still names
+        // the file they were read from.
+        const input = hasLineWindow ? undefined : await readJudgedDocumentInput(resolved, request?.controller.signal, MAX_TEXT_FILE_BYTES);
         request?.controller.signal.throwIfAborted();
         const imageFormat = input ? sniffComposerImageFormat(input) : null;
         if (!imageFormat && await isBinaryFile(resolved)) {
@@ -233,7 +237,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           ? { content: textDocument.content, lines: textDocument.lines, truncated: textDocument.truncated }
           : await readTextFileWindow(resolved, offset, limit);
         const liveScope = currentReadScope();
-        const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed);
+        const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed, "person");
         if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
           return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
         }
@@ -326,7 +330,8 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             if (!validateAppWindowMainFrameSender(e, deps)) {
               return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
             }
-            const bytes = await readPreviewDocumentInput(resolved, slot.signal);
+            // The parsed document may become the agent's observed document, as above.
+            const bytes = await readJudgedDocumentInput(resolved, slot.signal);
             inputBytes = bytes.length;
             if (!validateAppWindowMainFrameSender(e, deps)) {
               auditUnauthorized(auditLogger, CHANNELS.preview.readDocument, e);

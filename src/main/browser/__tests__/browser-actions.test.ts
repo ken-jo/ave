@@ -26,6 +26,7 @@ import {
   type NavigableGuest,
   watchActionNavigation,
 } from "../browser-actions.js";
+import { dismissedPageDialogs } from "../browser-page-dialogs.js";
 import { ownsPageSession, withGuardedAction } from "../browser-action-guard.js";
 import { startBrowserPreview } from "../../browser-observation-preview.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
@@ -750,12 +751,12 @@ describe("action navigation", () => {
     await expect(navigation.outcome(new AbortController().signal, 5_000)).resolves.toBeUndefined();
   });
 
-  it("returns at once when nothing was requested, or only a child frame, new tab, or download was", async () => {
+  it("returns at once when nothing was requested, or only a child frame or new tab was", async () => {
     const { cdp, guest, request } = linkPage();
     const navigation = await watchActionNavigation(guest, cdp);
     request("child");
     request("main", "newTab");
-    request("main", "download");
+    request("child", "download");
     guest.emit("did-start-navigation", { url: "https://a.example/frame", isMainFrame: false, isSameDocument: false });
     guest.emit("did-navigate-in-page", {}, "https://a.example/frame#x", false);
     expect(navigation.requested).toBe(false);
@@ -783,6 +784,132 @@ describe("action navigation", () => {
     guest.emit("did-stop-loading");
     await expect(navigation.outcome(new AbortController().signal, 1)).resolves.toBeUndefined();
     expect(guest.getURL()).toBe("https://a.example/page");
+  });
+
+  // The events a main-frame navigation produces, in the order the browser reports them, for a response that is shown or saved.
+  function documentNavigation(page: ReturnType<typeof linkPage>, response: { url?: string; status?: number; mimeType?: string; headers?: Record<string, string> }) {
+    const loaderId = `loader-${nextGuestId++}`;
+    const url = response.url ?? "https://a.example/next";
+    page.request();
+    page.cdp.events.emit("message", "Page.frameStartedNavigating", { frameId: "main", url, loaderId, navigationType: "differentDocument" });
+    page.cdp.events.emit("message", "Network.responseReceived", { requestId: loaderId, loaderId, frameId: "main", type: "Document",
+      response: { url, status: response.status ?? 200, mimeType: response.mimeType ?? "text/html", headers: response.headers ?? {} } });
+    return {
+      url,
+      abort: () => page.cdp.events.emit("message", "Network.loadingFailed", { requestId: loaderId, type: "Document", errorText: "net::ERR_ABORTED", canceled: true }),
+    };
+  }
+  const pendingAfter = async (outcome: Promise<void>) => {
+    let done = false;
+    const settled = outcome.then(() => { done = true; });
+    // Longer than the outcome's poll, so an outcome that had ended would show it.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return { done: () => done, settled };
+  };
+
+  it("ends a navigation whose own response was saved only once that download is recorded for the page", async () => {
+    // Saved responses never commit: the load is aborted and stops first, and the download is recorded after it.
+    for (const response of [{ mimeType: "application/octet-stream" }, { mimeType: "text/plain", headers: { "Content-Disposition": "attachment; filename=r.txt" } }]) {
+      const page = linkPage();
+      const navigation = await watchActionNavigation(page.guest, page.cdp);
+      const saved = documentNavigation(page, { ...response, url: "https://a.example/report.bin" });
+      saved.abort();
+      page.guest.emit("did-stop-loading");
+      const wait = await pendingAfter(navigation.outcome(new AbortController().signal, 5_000));
+      expect(wait.done()).toBe(false);
+      // Another download of the same page is not this navigation's.
+      dismissedPageDialogs.noteDownload(page.guest.id, "other.bin", "started", ["https://a.example/other.bin"]);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(wait.done()).toBe(false);
+      dismissedPageDialogs.noteDownload(page.guest.id, "report.bin", "started", ["https://a.example/start", saved.url]);
+      await wait.settled;
+      expect(dismissedPageDialogs.takeDownloads(page.guest.id).map((entry) => entry.name)).toEqual(["other.bin", "report.bin"]);
+      navigation.stop();
+      dismissedPageDialogs.forget(page.guest.id);
+    }
+  });
+
+  it("keeps a shown response a navigation until its own commit, whatever the page downloads meanwhile", async () => {
+    const page = linkPage();
+    const navigation = await watchActionNavigation(page.guest, page.cdp);
+    documentNavigation(page, { mimeType: "text/html" });
+    dismissedPageDialogs.noteDownload(page.guest.id, "other.bin", "started", ["https://a.example/other.bin"]);
+    const wait = await pendingAfter(navigation.outcome(new AbortController().signal, 5_000));
+    expect(wait.done()).toBe(false);
+    page.commit();
+    await wait.settled;
+    navigation.stop();
+    dismissedPageDialogs.forget(page.guest.id);
+  });
+
+  it("ends at loading stop for a shown response whose load was aborted, or a response with no content", async () => {
+    for (const response of [{ mimeType: "text/html" }, { status: 204, mimeType: "application/octet-stream" }]) {
+      const page = linkPage();
+      const navigation = await watchActionNavigation(page.guest, page.cdp);
+      documentNavigation(page, response).abort();
+      page.guest.emit("did-stop-loading");
+      await expect(navigation.outcome(new AbortController().signal, 1)).resolves.toBeUndefined();
+      navigation.stop();
+    }
+  });
+
+  it("ends a link the page asks to download once that link's download is recorded", async () => {
+    const { cdp, guest } = linkPage();
+    const navigation = await watchActionNavigation(guest, cdp);
+    cdp.events.emit("message", "Page.frameRequestedNavigation", { frameId: "main", reason: "anchorClick", url: "https://a.example/copy.bin", disposition: "download" });
+    expect(navigation.requested).toBe(true);
+    const wait = await pendingAfter(navigation.outcome(new AbortController().signal, 5_000));
+    dismissedPageDialogs.noteDownload(guest.id, "other.bin", "started", ["https://a.example/other.bin"]);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(wait.done()).toBe(false);
+    dismissedPageDialogs.noteDownload(guest.id, "copy.bin", "started", ["https://a.example/copy.bin"]);
+    await wait.settled;
+    navigation.stop();
+    dismissedPageDialogs.forget(guest.id);
+  });
+
+  it("does not settle a newer navigation with the download an earlier one asked for", async () => {
+    // Download A is asked for, then navigation B starts with its own document request and an ordinary page; A is recorded while B is pending.
+    const page = linkPage();
+    const navigation = await watchActionNavigation(page.guest, page.cdp);
+    page.cdp.events.emit("message", "Page.frameRequestedNavigation", { frameId: "main", reason: "anchorClick", url: "https://a.example/A.bin", disposition: "download" });
+    documentNavigation(page, { url: "https://a.example/B", mimeType: "text/html" });
+    const wait = await pendingAfter(navigation.outcome(new AbortController().signal, 5_000));
+    dismissedPageDialogs.noteDownload(page.guest.id, "A.bin", "started", ["https://a.example/A.bin"]);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(wait.done()).toBe(false);
+    page.commit("https://a.example/B");
+    await wait.settled;
+    expect(page.guest.getURL()).toBe("https://a.example/B");
+    navigation.stop();
+    dismissedPageDialogs.forget(page.guest.id);
+  });
+
+  it("does not settle a newer navigation with the download an earlier saved response became", async () => {
+    const page = linkPage();
+    const navigation = await watchActionNavigation(page.guest, page.cdp);
+    documentNavigation(page, { url: "https://a.example/A.bin", mimeType: "application/octet-stream" }).abort();
+    documentNavigation(page, { url: "https://a.example/B", mimeType: "text/html" });
+    const wait = await pendingAfter(navigation.outcome(new AbortController().signal, 5_000));
+    dismissedPageDialogs.noteDownload(page.guest.id, "A.bin", "started", ["https://a.example/A.bin"]);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(wait.done()).toBe(false);
+    page.commit("https://a.example/B");
+    await wait.settled;
+    navigation.stop();
+    dismissedPageDialogs.forget(page.guest.id);
+  });
+
+  it("keeps a link the page asked to download as that navigation when its own document request starts", async () => {
+    const page = linkPage();
+    const navigation = await watchActionNavigation(page.guest, page.cdp);
+    page.cdp.events.emit("message", "Page.frameRequestedNavigation", { frameId: "main", reason: "anchorClick", url: "https://a.example/copy.bin", disposition: "download" });
+    page.cdp.events.emit("message", "Page.frameStartedNavigating", { frameId: "main", url: "https://a.example/copy.bin", loaderId: "loader-copy", navigationType: "differentDocument" });
+    const wait = await pendingAfter(navigation.outcome(new AbortController().signal, 5_000));
+    dismissedPageDialogs.noteDownload(page.guest.id, "copy.bin", "started", ["https://a.example/copy.bin"]);
+    await wait.settled;
+    navigation.stop();
+    dismissedPageDialogs.forget(page.guest.id);
   });
 
   it("refuses a failed load, a closed tab, a crashed page, and a navigation still pending at its bound", async () => {
@@ -1478,6 +1605,19 @@ function adapterFixture(options: {
     cdp.events.emit("message", "Page.frameNavigated", { frame: cdp.frameTree.frame });
   } };
 }
+
+describe("waiting for a download", () => {
+  it("answers at once when a download already ended before the wait began", async () => {
+    const value = adapterFixture();
+    const live = await value.approve("browser_click");
+    dismissedPageDialogs.noteDownload(value.guest.id, "ready.bin", "completed", ["https://a.example/ready.bin"]);
+    const started = Date.now();
+    const result = await value.actions.waitFor(live, { download: true, timeMs: 20_000 });
+    expect(result.found).toBe(true);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    dismissedPageDialogs.forget(value.guest.id);
+  });
+});
 
 describe("page session connection lifetime", () => {
   function prepare(value: ReturnType<typeof adapterFixture>) {

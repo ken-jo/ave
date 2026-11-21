@@ -85,9 +85,41 @@ describe("ToolApprovalContent out-of-allowed-dir — one frame, one decision row
     expect(targetLine()).toContain("거부");
     fireEvent.focus(screen.getByTestId(TEST_IDS.allowSessionButton));
     expect(targetLine()).toContain(PARENT);
-    expect(targetLine()).toContain("상위 폴더 전체");
     fireEvent.focus(screen.getByTestId(TEST_IDS.approveButton));
     expect(targetLine()).toContain(TARGET);
+  });
+
+  // The line under the headline states what each choice would do; before any choice it must not read as a verdict.
+  it.each([
+    ["ko", "거부하면: 도구가 이 경로에 접근하지 못합니다.", `이 폴더를 허용하면: ${PARENT}`, `한 번만 허용하면: ${TARGET}`],
+    ["en", "If denied: the tool gets no access to this path.", `If you allow this folder: ${PARENT}`, `If you allow once: ${TARGET}`],
+  ] as const)("words each choice as a condition in %s", async (locale, denied, folder, once) => {
+    await loadLocaleMessages(locale);
+    setLocale(locale);
+    renderCard(makeRequest({ toolName: "write_file", toolCategory: "write" }));
+    expect(targetLine()).toBe(denied);
+    expect(targetLine()).not.toMatch(/Access will be denied|접근을 거부합니다/u);
+    fireEvent.focus(screen.getByTestId(TEST_IDS.allowSessionButton));
+    expect(targetLine()).toBe(folder);
+    fireEvent.focus(screen.getByTestId(TEST_IDS.approveButton));
+    expect(targetLine()).toBe(once);
+  });
+
+  it("shows the folder row and its project hint only when the host offers a folder grant", () => {
+    const offered = renderCard();
+    expect(screen.getByTestId("approval-path-grant-parent")).toHaveTextContent(PARENT);
+    expect(screen.getByTestId("approval-folder-project-hint")).toBeInTheDocument();
+    offered.view.unmount();
+    renderCard(makeRequest({ allowedChoices: ["allow-once", "deny-once"] }));
+    expect(screen.getByTestId("approval-path-grant-candidate")).toHaveTextContent(TARGET);
+    expect(screen.queryByTestId("approval-path-grant-parent")).toBeNull();
+    expect(screen.queryByTestId("approval-folder-project-hint")).toBeNull();
+  });
+
+  it("drops the always-allow hint when only a session folder grant is offered", () => {
+    renderCard(makeRequest({ allowedChoices: ["allow-once", "allow-session", "deny-once"] }));
+    expect(screen.getByTestId("approval-path-grant-parent")).toHaveTextContent(PARENT);
+    expect(screen.queryByTestId("approval-folder-project-hint")).toBeNull();
   });
 
   it("allow-always carries the host-resolved parent pattern and never writes the exact-args record", async () => {

@@ -49,6 +49,7 @@ import { connectBrowserObservations } from "./preview/browser-observation-bridge
 import { AgentBrowserPipLayer } from "./preview/AgentBrowserPipLayer.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { FolderView } from "./components/folder-view/FolderView.js";
+import { handleFolderViewAtRequests, handleSettingsSectionRequests, handleTerminalAtRequests } from "./utils/app-shell-requests.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
@@ -1025,6 +1026,10 @@ export function App() {
     },
     [navigateToLocation],
   );
+  // A view deep in the tree (a file action whose setting is missing) asks for a setting to be shown.
+  useEffect(() => handleSettingsSectionRequests((request) => {
+    navigateToSettingsPath({ tab: normalizeSettingsTab(request.tab), ...(request.section ? { section: request.section } : {}) });
+  }), [navigateToSettingsPath]);
   // Refresh the list after a Suggestions card arrives so its row receives the attention count.
   const refreshSessionsOnSuggestion = useCallback(() => { void refreshSessions(); }, [refreshSessions]);
   const {
@@ -1094,6 +1099,29 @@ export function App() {
     });
     chatGroups.setPaneContent(chatGroups.focusedId, { view, surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
+
+  // A file explorer outside the main area (the side panel's tree) asks for a terminal in a folder: it opens beside the
+  // focused pane when the canvas has room, otherwise in that pane, as the folder view's own "open terminal here" does.
+  useEffect(() => handleTerminalAtRequests(({ dir, projectRoot }) => {
+    const terminal = mainSurfaces.create("terminal", { cwd: dir, projectRoot });
+    const location: ViewLocation = { view: "terminal", surface: terminal.tabId };
+    const paneId = chatGroups.focusedId;
+    const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+      ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+    if (beside === null) chatGroups.setPaneContent(paneId, location);
+  }), [chatGroups, mainSurfaces]);
+
+  // A view that names a project file (the side panel's tree) asks to see it in a folder view: a new one, opened where the
+  // terminal request above opens, that walks to the path as a restored view walks back to where it was.
+  useEffect(() => handleFolderViewAtRequests(({ path, projectRoot }) => {
+    const folder = mainSurfaces.create("folder", { projectRoot });
+    mainSurfaces.setFolderLocation(folder.tabId, { path: projectRoot, selection: path });
+    const location: ViewLocation = { view: "folder", surface: folder.tabId };
+    const paneId = chatGroups.focusedId;
+    const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+      ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+    if (beside === null) chatGroups.setPaneContent(paneId, location);
+  }), [chatGroups, mainSurfaces]);
 
   // After a folder is added (case 08) or turns out to be a project already (case 09), the window switches to it once the
   // refreshed list holds it, and the notice offers the way back to where it was.

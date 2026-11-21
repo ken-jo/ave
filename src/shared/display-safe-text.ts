@@ -46,3 +46,28 @@ export function displaySafeLabel(value: unknown, maxChars: number): string {
     .trim()
     .slice(0, maxChars);
 }
+
+// Tabs and line breaks are legal in prose but never belong in a path or identifier shown for approval.
+const LINE_BREAK_AND_TAB_RE = /[\t\n\r\u2028\u2029]/;
+const LINE_BREAK_AND_TAB_GLOBAL_RE = /[\t\n\r\u2028\u2029]/g;
+
+function codePointEscape(character: string): string {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return `\u27e8U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}\u27e9`;
+}
+
+/** True when a single-line value (path, file name) holds characters that are invisible, reorder the text, or break the line. */
+export function hasHiddenCharacters(value: string): boolean {
+  return hasInvisibleOrReorderingChars(value) || LINE_BREAK_AND_TAB_RE.test(value);
+}
+
+/**
+ * Spell invisible, reordering and control characters as visible `\u27e8U+XXXX\u27e9` escapes.
+ * Use it wherever a person approves or reviews a value: deleting the characters would show a different
+ * identifier than the one that is acted on, and rendering them lets a bidi override reorder the name.
+ * `lineBreaks` also escapes tab and line breaks; set it for single-line values such as paths.
+ */
+export function revealHiddenCharacters(value: string, options: { lineBreaks: boolean }): string {
+  const revealed = value.replace(CONTROL_AND_INVISIBLE_RE, codePointEscape);
+  return options.lineBreaks ? revealed.replace(LINE_BREAK_AND_TAB_GLOBAL_RE, codePointEscape) : revealed;
+}

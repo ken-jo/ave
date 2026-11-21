@@ -154,6 +154,23 @@ describe("project root authorization", () => {
 });
 
 describe("project root authorization under the exclusive workload-broker route", () => {
+  it("resolves brokered projects even when the host cwd cannot be canonicalized", () => {
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw new Error("Host cwd is unavailable");
+    });
+    try {
+      broker.active = true;
+      const project = { projectRoot: broker.cwd, projectName: "app" };
+      expect(defaultWorkspaceProject()).toEqual(project);
+      expect(listAuthorizedWorkspaceProjects()).toEqual([project]);
+      expect(realpath).not.toHaveBeenCalled();
+
+      broker.active = false;
+      expect(() => defaultWorkspaceProject()).toThrow("Host cwd is unavailable");
+      expect(() => listAuthorizedWorkspaceProjects()).toThrow("Host cwd is unavailable");
+    } finally { realpath.mockRestore(); }
+  });
+
   it("authorizes exactly the bound guest cwd and nothing on the controller host", async () => {
     const allowed = join(root, "allowed-project");
     mkdirSync(allowed);

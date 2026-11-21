@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { nativeImage, type DownloadItem, type IpcMainInvokeEvent, type WebContents } from "electron";
+import { nativeImage, type IpcMainInvokeEvent, type WebContents } from "electron";
+import type { ObservedDownload } from "./browser/browser-download-staging.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { IpcDeps } from "../ipc/types.js";
 import { validateAppWindowMainFrameSender } from "../ipc/app-window-sender.js";
@@ -225,7 +226,7 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     };
   }
 
-  observeDownload(contents: WebContents, item: DownloadItem): void {
+  observeDownload(contents: WebContents, item: ObservedDownload): void {
     const command = this.commands.get(contents.id);
     if (!command || command.guest !== contents || !command.isCurrent() || !this.current(command.view) || !command.expectedDownloadUrl
       || !item.getURLChain().includes(command.expectedDownloadUrl)) return;
@@ -402,4 +403,4 @@ export function installBrowserObservation(deps: IpcDeps, daemon: ObservationDaem
   browserObservation = new BrowserObservationRuntime(deps, daemon);
   return browserObservation;
 }
-export function observeAgentBrowserDownload(contents: WebContents, item: DownloadItem): void { browserObservation?.observeDownload(contents, item); }
+export function observeAgentBrowserDownload(contents: WebContents, item: ObservedDownload): void { browserObservation?.observeDownload(contents, item); }

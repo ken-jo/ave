@@ -6,6 +6,7 @@ import {
   type PasteAttachment,
 } from "../types/attachments.js";
 import { buildMarkerText } from "./attachment-markers.js";
+import { clipboardImageErrorMessage } from "../format-ipc-error.js";
 
 export interface PasteContext {
   /** Currently allocated attachment count (live from textarea). */
@@ -116,9 +117,7 @@ export async function handleClipboardPaste(
     ) {
       return {
         handled: true,
-        warning: saved.error
-          ? t("clipboardPaste.imageSaveFailedWithError", { error: saved.error })
-          : t("clipboardPaste.imageSaveFailed"),
+        warning: clipboardImageErrorMessage(saved.error),
       };
     }
     const n = ctx.allocateN();

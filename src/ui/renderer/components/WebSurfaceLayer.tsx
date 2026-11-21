@@ -11,6 +11,8 @@ import { bindGuestToTab, reportGuestParking } from "../preview/agent-browser-bri
 import type { BrowserNativeSurfaceState } from "../../../shared/browser-native-surface.js";
 import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
 import { useSessionTabBindings } from "../preview/session-browser-tabs.js";
+import { connectBrowserPageStatus, useBrowserPageStatus } from "../preview/browser-page-status.js";
+import { BrowserLoadErrorView } from "./BrowserLoadErrorView.js";
 import { commandNativeBrowserSurface, connectNativeBrowserSurfaces, createNativeBrowserSurface,
   requestNativeBrowserSurface } from "../preview/native-browser-surfaces.js";
 import type { AveApi } from "../types.js";
@@ -27,6 +29,9 @@ import {
   forgetWebSurfaceLocation,
   noteWebSurfaceLocation,
   noteWebSurfaceTitle,
+  noteWebSurfaceAttached,
+  markWebSurfaceAttachBlocked,
+  webSurfaceAttachBlocked,
   setWebSurfaceSlot,
   clearWebSurfaceSlot,
   setWebSurfaceUrl,
@@ -330,7 +335,10 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
         noteWebSurfaceLocation(surface.tabId, url);
       }
     };
-    const onAttach = () => forgetWebSurfaceLocation(surface.tabId);
+    const onAttach = () => {
+      noteWebSurfaceAttached(surface.tabId);
+      forgetWebSurfaceLocation(surface.tabId);
+    };
     const onTitle = (event: Event) => {
       const title = (event as Event & { title?: string }).title;
       if (typeof title === "string") noteWebSurfaceTitle(surface.tabId, title);
@@ -471,6 +479,8 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
     return connectNativeBrowserSurfaces(api.browserTabs);
   }, [api.browserTabs]);
   useEffect(() => () => setNativeBrowserTabIds(null), []);
+  useEffect(() => api.browserWorkspace?.onAttachBlocked(({ src }) => markWebSurfaceAttachBlocked(src)), [api.browserWorkspace]);
+  useEffect(() => connectBrowserPageStatus(api), [api]);
 
   useEffect(() => {
     const unsubscribe = subscribeWebSurfaceLayout(kick);
@@ -532,7 +542,8 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
     >
       {surfaces.map((surface) => surface.host === "native"
         ? api.browserTabs ? <NativePageLifecycle key={surface.tabId} api={api.browserTabs} surface={surface} /> : null
-        : surface.host === "webview" ? <GuestFrame key={surface.tabId} api={api} surface={surface} /> : null)}
+        : surface.host === "webview" && webSurfaceAttachBlocked(surface.tabId) === null
+          ? <GuestFrame key={surface.tabId} api={api} surface={surface} /> : null)}
     </div>,
     document.body,
   );
@@ -564,16 +575,21 @@ export function WebSurfaceSlot({
   const mount = useSurfaceMount(tabId, location);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
   const native = useSyncExternalStore(subscribeWebSurfaces, () => mount.owned ? nativeWebSurfaceState(tabId) : null);
+  const blocked = useSyncExternalStore(subscribeWebSurfaces, () => mount.owned ? webSurfaceAttachBlocked(tabId) : null);
+  // A page that failed to load is blank. The host's own error page takes its place: without a slot the guest is parked,
+  // alive but not shown, and it returns as soon as a new navigation clears the failure.
+  const loadError = useBrowserPageStatus(tabId)?.loadError ?? null;
+  const showsPage = mount.owned && loadError === null;
 
   useEffect(() => {
     if (mount.owned) setWebSurfaceUrl(tabId, url, bindRequestId);
   }, [mount.owned, tabId, url, bindRequestId]);
 
   useEffect(() => {
-    if (!mount.owned || !element) return undefined;
+    if (!showsPage || !element) return undefined;
     setWebSurfaceSlot(tabId, element);
     return () => clearWebSurfaceSlot(tabId, element);
-  }, [mount.owned, element, tabId]);
+  }, [showsPage, element, tabId]);
 
   return (
     <div
@@ -584,7 +600,15 @@ export function WebSurfaceSlot({
       data-owned={mount.owned ? "true" : "false"}
       data-surface-host={native ? "native" : undefined}
     >
-      {native ? <NativePageSentinel surface={native} /> : null}
+      {native && showsPage ? <NativePageSentinel surface={native} /> : null}
+      {mount.owned && loadError !== null ? <BrowserLoadErrorView tabId={tabId} error={loadError} /> : null}
+      {blocked !== null ? (
+        <div role="alert" className="flex h-full flex-col items-center justify-center gap-1 p-4 text-center text-sm text-muted-foreground"
+          data-testid="web-surface-attach-blocked">
+          <p className="font-medium text-foreground">{t("webSurface.attachBlocked")}</p>
+          <p className="max-w-full break-all text-xs">{blocked}</p>
+        </div>
+      ) : null}
       {mount.owned ? null : (
         <div
           className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground"

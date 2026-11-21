@@ -45,6 +45,7 @@ export function TargetRows({
   rowTestId,
   onSelect,
   onOpenUrlInSystemApp,
+  awaitingApproval,
 }: {
   targets: ChatPreviewTarget[];
   selectedId?: string;
@@ -52,6 +53,8 @@ export function TargetRows({
   onSelect: (id: string) => void;
   /** Right-click on a web row: open the page in the system browser, or copy its address. */
   onOpenUrlInSystemApp?: (url: string) => void;
+  /** Whether a row's page is still waiting for the user to answer its approval. */
+  awaitingApproval?: (target: ChatPreviewTarget) => boolean;
 }) {
   const { t } = useTranslation();
   const openNativeContextMenu = useNativeContextMenu();
@@ -90,7 +93,9 @@ export function TargetRows({
                 .join(" · ")}
             </span>
           </span>
-          {target.status ? <span className={`shrink-0 text-tiny ${statusTone(target.status)}`}>{target.status}</span> : null}
+          {awaitingApproval?.(target)
+            ? <span className="shrink-0 text-tiny text-warning" data-testid="target-row-awaiting-approval">{t("chatPreviewRail.awaitingApproval")}</span>
+            : target.status ? <span className={`shrink-0 text-tiny ${statusTone(target.status)}`}>{target.status}</span> : null}
         </button>
       ))}
     </div>

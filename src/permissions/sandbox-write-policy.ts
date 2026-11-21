@@ -1,9 +1,11 @@
 import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
+import { normalizeCaseForComparison, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
 import { permissionSettingsPath } from "./permission-settings-store.js";
 import { egressGrantFilePath } from "./egress-grants.js";
 import { userApprovalFilePath } from "./user-approval-store.js";
@@ -34,16 +36,26 @@ const MAX_GIT_METADATA_BYTES = 65_536;
 const MAX_GIT_METADATA_TOTAL_BYTES = 1_048_576;
 const MAX_GIT_ROOT_POLICY_BYTES = 16_384;
 const MAX_GIT_DISCOVERY_POLICY_BYTES = 32_768;
-// Reserve most of a conservative 256 KiB execution budget for profile expansion, other rules and environment.
-const MAX_WRITE_DENY_POLICY_BYTES = 65_536;
+// Reserve space in the POSIX exec budget for profile expansion, mount arguments, other rules and environment.
+const MAX_POSIX_WRITE_DENY_POLICY_BYTES = 65_536;
 
 export function assertSandboxWritePolicySize(entries: readonly FilesystemPathEntry[], mandatoryPaths?: ReadonlySet<string>, configuredDenies: readonly FilesystemPathEntry[] = []): void {
-  const discovery = mandatoryPaths === undefined ? [] : entries.filter(entry => !mandatoryPaths.has(typeof entry === "string" ? entry : entry.path));
+  if (mandatoryPaths !== undefined) {
+    const discovery = entries.filter(entry => !mandatoryPaths.has(typeof entry === "string" ? entry : entry.path));
+    if (Buffer.byteLength(JSON.stringify(discovery)) > MAX_GIT_DISCOVERY_POLICY_BYTES) {
+      throw new Error(t("sandboxPolicy.tooLarge"));
+    }
+  }
+  // The Windows ACL admission and stamp senders bound their shared stdin frame
+  // independently of this POSIX assembly allowance (windows-sandbox-utils.js).
+  // Per-exec deltas are checked with the command and env overlay at the
+  // CreateProcessW boundary (windows-sandbox-utils.js, wrapCommandWithSandboxWindows).
+  // Container requests have their own whole-request guard in mxc-windows.ts.
+  if (process.platform === "win32") return;
+
   const totalBytes = Buffer.byteLength(JSON.stringify(entries));
-  if (Buffer.byteLength(JSON.stringify(discovery)) > MAX_GIT_DISCOVERY_POLICY_BYTES
-    || totalBytes > MAX_WRITE_DENY_POLICY_BYTES) {
-    const configuredDominates = totalBytes > MAX_WRITE_DENY_POLICY_BYTES
-      && Buffer.byteLength(JSON.stringify(configuredDenies)) > totalBytes / 2;
+  if (totalBytes > MAX_POSIX_WRITE_DENY_POLICY_BYTES) {
+    const configuredDominates = Buffer.byteLength(JSON.stringify(configuredDenies)) > totalBytes / 2;
     throw new Error(t(configuredDominates ? "sandboxPolicy.configuredDeniesTooLarge" : "sandboxPolicy.tooLarge"));
   }
 }
@@ -152,8 +164,11 @@ function resolvePolicyDenyPath(path: string): string {
   }
 }
 
-function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly string[]): string[] {
-  const keyFor = (path: string) => process.platform === "win32" ? path.toLowerCase() : path;
+function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly string[], caseInsensitive = process.platform === "win32"): string[] {
+  const keyFor = (path: string) => {
+    const native = sep === "\\" ? path.replaceAll("/", "\\") : path;
+    return caseInsensitive ? native.toLowerCase() : native;
+  };
   const inheritedKeys = new Set(inherited.map(path => {
     while (path.endsWith(sep) && dirname(path) !== path) path = path.slice(0, -1);
     return keyFor(path);
@@ -173,6 +188,69 @@ function minimalLiteralDenyPaths(paths: readonly string[], inherited: readonly s
     emitted.add(key);
     return true;
   });
+}
+
+function nativeWriteDenyPath(path: string): string {
+  // Ordinary drive operands accept either separator. Extended and network
+  // namespaces keep their own grammar; names and directory hints stay intact.
+  if (!/^[A-Za-z]:[\\/][^:]*$/u.test(path)) return path;
+  // The runtime preserves the original separators of absent deny targets.
+  if (process.platform === "win32") return path.replaceAll("/", "\\");
+  return process.platform === "darwin" && sep === "\\" ? path.replaceAll("\\", "/") : path;
+}
+
+export function windowsDenyOperandKey(path: string): string {
+  // A drive letter is a case-insensitive namespace. Keep the exact name and
+  // directory hint because the caller uses this key to combine stamp targets.
+  return nativeWriteDenyPath(stripExtendedPathPrefix(path)).replace(/^[A-Za-z]:/u, normalizeCaseForComparison);
+}
+
+function nativeWriteDenyEntries(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {
+  if (process.platform !== "win32" && (process.platform !== "darwin" || sep !== "\\")) return [...entries];
+  const seen = new Set<string>();
+  const result: FilesystemPathEntry[] = [];
+  for (const entry of entries) {
+    const path = typeof entry === "string" ? entry : entry.path;
+    const literal = typeof entry !== "string" || !/[*?[\]]/u.test(entry);
+    const native = literal ? nativeWriteDenyPath(path) : path;
+    const key = `${typeof entry === "string" ? "spelling" : "literal"}:${native}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (native === path) result.push(entry);
+    else if (typeof entry === "string") result.push(native);
+    else {
+      const literalEntry = { ...entry, path: native };
+      result.push(Object.isFrozen(entry) ? Object.freeze(literalEntry) : literalEntry);
+    }
+  }
+  return result;
+}
+
+/** Remove only backend-equivalent rows without folding filesystem names or changing patterns. */
+export function compactSandboxWriteDenies(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {
+  // Only the declarative subtree profile proves this reduction. Native ACLs
+  // and mount rules keep every explicit row for their own enforcement logic.
+  if (process.platform !== "darwin") return nativeWriteDenyEntries(entries);
+  const isLiteral = (entry: FilesystemPathEntry): boolean => typeof entry !== "string" || !/[*?[\]]/u.test(entry);
+  const literalPaths = entries.filter(isLiteral).map(entry => typeof entry === "string" ? entry : entry.path);
+  const retained = new Set(minimalLiteralDenyPaths(literalPaths, [], false));
+  const emitted = new Set<string>();
+  const compacted = entries.filter(entry => {
+    if (!isLiteral(entry)) return true;
+    const path = typeof entry === "string" ? entry : entry.path;
+    if (emitted.has(path)) return false;
+    if (!retained.has(path)) {
+      if (isWindowsNetworkOrDevicePath(path, "win32")) return true;
+      // A lexical child link can target outside its denied parent. Only the
+      // unchanged physical spelling proves that the parent's deny covers it.
+      // Resolution uncertainty keeps the explicit row.
+      try { if (nativeWriteDenyPath(resolvePolicyDenyPath(path)) === nativeWriteDenyPath(path)) return false; }
+      catch { /* Keep the existing deny when coverage cannot be proved. */ }
+    }
+    emitted.add(path);
+    return true;
+  });
+  return nativeWriteDenyEntries(compacted);
 }
 
 function addGitMetadataTarget(path: string, cwd: string, paths: Set<string>, routingPins: Set<string>, discovery?: GitControlDiscovery): string {
@@ -1017,9 +1095,11 @@ export function buildMandatorySandboxWritePolicy(
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
   if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
   // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
-  assertSandboxWritePolicySize(entries, mandatoryPaths);
+  const backendEntries = nativeWriteDenyEntries(entries);
+  const backendMandatoryPaths = new Set([...mandatoryPaths].map(nativeWriteDenyPath));
+  assertSandboxWritePolicySize(backendEntries, backendMandatoryPaths);
   return {
-    allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: entries,
+    allowWrite: roots.filter(root => !revoked.has(root)), denyWrite: backendEntries,
     narrowedWriteRoots: [...narrowed].map(([root, reason]) => ({ root, reason })),
     ...(gitDiscovery ? { gitControlSnapshot: finishGitControlSnapshot(
       new Map([...rootIdentities].filter(([root]) => !revoked.has(root))),

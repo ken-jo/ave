@@ -304,6 +304,23 @@ describe("createSandboxProcessHome", () => {
     expect(readdirSync(outside)).toEqual([]);
   });
 
+  // A Windows profile on a POSIX host joins `AppData\Local` onto a POSIX temp root, which this kernel would create as one relative name in the working directory. The case runs from a disposable working directory, so a regression leaves those names there instead of in the checkout.
+  it.skipIf(process.platform === "win32")("refuses a Windows profile on a POSIX host and leaves neither the HOME nor a working-directory entry", () => {
+    const parent = realpathSync.native(mkdtempSync(join(aveHomeDir, "windows-temp-")));
+    const workingDirectory = realpathSync.native(mkdtempSync(join(aveHomeDir, "cwd-")));
+    vi.stubEnv("TMPDIR", parent);
+    const probe = vi.fn(async () => new Map());
+    const previousCwd = process.cwd();
+    process.chdir(workingDirectory);
+    try {
+      expect(() => createSandboxProcessHome("win32", rmSync, probe)).toThrow(/not an absolute path on this host: \\.*AppData/);
+      expect(readdirSync(parent)).toEqual([]);
+      expect(readdirSync(workingDirectory)).toEqual([]);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
   it("overrides the Windows HOME drive pair for a non-drive temp path", () => {
     const path = "\\\\server\\temp\\ave-sandbox-home-test";
     const env = sandboxProcessProfileEnvironment(path, "win32");

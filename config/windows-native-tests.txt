@@ -305,6 +305,7 @@ src/ipc/domains/__tests__/workspace-folder-view.test.ts
 src/ipc/domains/__tests__/workspace-preview.test.ts
 src/ipc/domains/__tests__/workspace-root-plugin-scope-revocation.test.ts
 src/ipc/domains/__tests__/workspace-root-template-run-revocation.test.ts
+src/ipc/domains/__tests__/workspace-windows-paths.test.ts
 src/ipc/handlers/__tests__/chat-content-parts.test.ts
 src/ipc/handlers/__tests__/chat-plugin-prompt-scope.test.ts
 src/ipc/handlers/__tests__/chat-rationale-anchor.test.ts
@@ -352,6 +353,7 @@ src/main/__tests__/conversation-command-port.test.ts
 src/main/__tests__/corp-ca-extract.test.ts
 src/main/__tests__/corp-ca-runtime.test.ts
 src/main/__tests__/document-engine-signature.test.ts
+src/main/__tests__/editor-command.test.ts
 src/main/__tests__/exec-mode.test.ts
 src/main/__tests__/floating-dock-auth.test.tsx
 src/main/__tests__/floating-dock-theme.test.ts
@@ -554,7 +556,9 @@ src/memory/__tests__/session-goal-sidecar.test.ts
 src/memory/__tests__/session-row-fields.test.ts
 src/memory/__tests__/terminal-file-provenance.test.ts
 src/memory/__tests__/tool-result-artifact.test.ts
+src/memory/__tests__/turn-change-decision.test.ts
 src/memory/__tests__/turn-change-review.test.ts
+src/memory/__tests__/user-file-edit.test.ts
 src/memory/__tests__/work-board-run-sessions.test.ts
 src/memory/__tests__/workspace-project-detach-aba.test.ts
 src/memory/__tests__/workspace-project-detach.test.ts
@@ -586,6 +590,7 @@ src/permissions/__tests__/egress-token-isolation-native.test.ts
 src/permissions/__tests__/encoded-argument-exclusion.test.ts
 src/permissions/__tests__/filesystem-sandbox-block.test.ts
 src/permissions/__tests__/foundry-endpoint.test.ts
+src/permissions/__tests__/guest-path-evidence.test.ts
 src/permissions/__tests__/host-determined-risk.test.ts
 src/permissions/__tests__/host-fetch-verb-snapshot.test.ts
 src/permissions/__tests__/host-shell-execution-plan.test.ts
@@ -594,6 +599,9 @@ src/permissions/__tests__/hostapi-effect-completeness.test.ts
 src/permissions/__tests__/hostapi-effect-recorder.test.ts
 src/permissions/__tests__/hostapi-serialization-conformance.test.ts
 src/permissions/__tests__/installer-nsh-proxy-port-drift.test.ts
+src/permissions/__tests__/key-material-inspection.test.ts
+src/permissions/__tests__/key-material-native-paths.test.ts
+src/permissions/__tests__/key-material-network.test.ts
 src/permissions/__tests__/long-shell-restrictions.test.ts
 src/permissions/__tests__/macos-sandbox-wrap.integration.test.ts
 src/permissions/__tests__/manifest-integrity.test.ts
@@ -605,6 +613,7 @@ src/permissions/__tests__/mxc-launcher-verify.test.ts
 src/permissions/__tests__/nested-executable-startup.test.ts
 src/permissions/__tests__/permission-manager-check-path-scope.test.ts
 src/permissions/__tests__/permission-manager-disposable-substrate.test.ts
+src/permissions/__tests__/permission-manager-guest-deletion.test.ts
 src/permissions/__tests__/permission-manager-host-terminal.test.ts
 src/permissions/__tests__/permission-manager-judge-decision.test.ts
 src/permissions/__tests__/permission-manager-legacy-null-verdict.test.ts
@@ -651,6 +660,8 @@ src/permissions/__tests__/recently-denied-replay.test.ts
 src/permissions/__tests__/recently-denied.test.ts
 src/permissions/__tests__/replay-root-binding.test.ts
 src/permissions/__tests__/reviewer-file-policy-facts.test.ts
+src/permissions/__tests__/reviewer-guest-path-facts.test.ts
+src/permissions/__tests__/reviewer-native-path-facts.test.ts
 src/permissions/__tests__/reviewer-path-resolution-alignment.test.ts
 src/permissions/__tests__/reviewer-plugin-worker-capability.test.ts
 src/permissions/__tests__/reviewer-substrate-capability.test.ts
@@ -671,6 +682,7 @@ src/permissions/__tests__/sandbox-scope-gates.test.ts
 src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
 src/permissions/__tests__/sandbox-start-failure.test.ts
 src/permissions/__tests__/sandbox-write-jail.test.ts
+src/permissions/__tests__/sandbox-write-policy-hosted.test.ts
 src/permissions/__tests__/sandboxed-shell-review.test.ts
 src/permissions/__tests__/sensitive-deny-platform-projection.test.ts
 src/permissions/__tests__/sensitive-path-glob.test.ts
@@ -690,6 +702,8 @@ src/permissions/__tests__/user-approval-store.test.ts
 src/permissions/__tests__/user-approval-working-directory.test.ts
 src/permissions/__tests__/user-owned-surface-card.test.ts
 src/permissions/__tests__/verdict-cache.test.ts
+src/permissions/__tests__/windows-acl-policy-budget.test.ts
+src/permissions/__tests__/windows-exec-argv.test.ts
 src/permissions/__tests__/worker-socket-carry.test.ts
 src/permissions/__tests__/worker-socket-registration.test.ts
 src/permissions/__tests__/worker-spawn-liveness.test.ts
@@ -835,6 +849,7 @@ src/shared/__tests__/policy-home-anchors.test.ts
 src/shared/__tests__/policy-home.test.ts
 src/shared/__tests__/shell-execution-environment.test.ts
 src/shared/__tests__/telemetry-policy.test.ts
+src/shared/__tests__/windows-path-facts-transport.test.ts
 src/studio/__tests__/connector.test.ts
 src/studio/__tests__/write-interruption.test.ts
 src/tools/__tests__/agent-list-resumables.test.ts
@@ -883,12 +898,17 @@ src/tools/__tests__/executor-shell-tool-identity.test.ts
 src/tools/__tests__/executor-success-shape.test.ts
 src/tools/__tests__/executor-transfer-settlement.test.ts
 src/tools/__tests__/executor-user-hook-contract.test.ts
+src/tools/__tests__/executor-windows-file-paths.test.ts
 src/tools/__tests__/file-access-policy.test.ts
 src/tools/__tests__/file-read-core-stream.test.ts
+src/tools/__tests__/file-read-state.test.ts
 src/tools/__tests__/file-tools-broker.test.ts
+src/tools/__tests__/file-tools-read-binding.test.ts
 src/tools/__tests__/file-tools-transient-rename.test.ts
+src/tools/__tests__/grep-search-read-binding.test.ts
 src/tools/__tests__/guarded-file-transfer-failures.test.ts
 src/tools/__tests__/host-shell-cwd-spawn.test.ts
+src/tools/__tests__/image-preparation-input.test.ts
 src/tools/__tests__/image-preparation.test.ts
 src/tools/__tests__/invocation-authorization-pipeline.test.ts
 src/tools/__tests__/invocation-authorization.test.ts
@@ -898,9 +918,11 @@ src/tools/__tests__/mcp-resource-tools.test.ts
 src/tools/__tests__/mcp-skill-loading.test.ts
 src/tools/__tests__/memory-recall.test.ts
 src/tools/__tests__/memory-write.test.ts
+src/tools/__tests__/native-inspection-boundaries.test.ts
 src/tools/__tests__/nested-startup-admission.test.ts
 src/tools/__tests__/plugin-studio.test.ts
 src/tools/__tests__/powershell-parser-admission.test.ts
+src/tools/__tests__/preview-document-input.test.ts
 src/tools/__tests__/registry-atomicity.test.ts
 src/tools/__tests__/registry-model-exposure.test.ts
 src/tools/__tests__/routine-headless-write.test.ts

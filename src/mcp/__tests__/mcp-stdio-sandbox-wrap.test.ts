@@ -119,6 +119,21 @@ import type { McpStdioServerConfig } from "../types.js";
 
 const REAL_PLATFORM = process.platform;
 
+const coveragePath = (path: string) => path.replace(/[\\/]+$/, "").replace(/\\/g, "/");
+const covers = (row: string, path: string) => {
+  const parent = coveragePath(row);
+  const child = coveragePath(path);
+  return child === parent || child.startsWith(`${parent}/`);
+};
+
+it.each(["/", "\\"])("checks staged path coverage with %s separators", (separator) => {
+  const staging = ["C:", "fixture", "browser-downloads"].join(separator);
+  const staged = `${staging}${separator}0123456789abcdef0123456789abcdef`;
+  expect(covers(`${staging}${separator}`, staged)).toBe(true);
+  expect(covers(`${staging}-other`, staged)).toBe(false);
+  expect(covers(staging, `${staging}-other${separator}file`)).toBe(false);
+});
+
 function handshakeResponses(serverName: string): FakeChildProcess["responses"] {
   return {
     "server/discover": (id) => ({
@@ -354,6 +369,28 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(cleanupMock).toHaveBeenCalled();
     expect(isMcpServerWrapped("fs")).toBe(false);
     expect(egressInvocationOwner(commandId)).toBeUndefined();
+  });
+
+  it("keeps a confined server out of the browser download staging folder, for reading and for writing", async () => {
+    gateActive = true;
+    const fake = new FakeChildProcess();
+    fake.responses = handshakeResponses("fs");
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "sandbox-exec ... ave-mcp-fs"], env: { ...process.env } });
+    spawnMock.mockReturnValueOnce(fake);
+    const sandboxRoot = join(aveHome(), "mcp", "fs", "sandbox");
+    const client = new McpClient({ id: "fs", transport: "stdio", command: "ave-mcp-fs", sandboxRoot },
+      governanceWithPolicy(buildPolicy([stdioApproval("fs", "ave-mcp-fs")])), new ToolRegistry(), unusedNetworkFetch);
+    await client.connect();
+    const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead: string[]; denyWrite: string[] } }];
+    const staging = join(aveHome(), "browser-downloads");
+    const staged = join(staging, "0123456789abcdef0123456789abcdef");
+    // A deny row at the folder or above it covers it; no grant may name the folder, a path in it, or a directory holding it.
+    expect(options.filesystem.denyRead.some((row) => covers(row, staged))).toBe(true);
+    expect(options.filesystem.denyWrite.map(coveragePath)).toContain(coveragePath(staging));
+    for (const grant of [...options.filesystem.allowRead, ...options.filesystem.allowWrite]) {
+      expect(covers(grant, staged) || covers(staging, grant), grant).toBe(false);
+    }
+    await client.disconnect();
   });
 
   it("absent sandboxRoot grants only the fresh process HOME and the server's temp directory (never real HOME/cwd)", async () => {
