@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, type } from "node:os";
@@ -5,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 
 import { posixHomeProtectionFailure } from "../shared/ave-home.js";
 import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import SRT_WIN_BUILD_RECEIPTS from "./generated/srt-win-build-receipts.js";
 import { _registerSrtWinCopyForTest, _srtWinTempRootForTest } from "./srt-win-copy-owner.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
@@ -35,20 +37,55 @@ function helperTempRoot(): string {
   return _srtWinTempRootForTest(temp) ?? temp;
 }
 
+const MAC_ACL_COMMAND_OPTIONS = {
+  encoding: "utf8",
+  env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+  timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+} as const;
+
+function assertPosixHelperBoundary(parent: string, allowMissing = false): void {
+  if (posixHomeProtectionFailure(parent, { allowMissing }) !== undefined) throw new Error("Private helper path is not protected");
+  if (type() !== "Darwin") return;
+
+  const paths: string[] = [];
+  // All components of this canonical path can affect the private parent's name.
+  for (let path = allowMissing ? dirname(parent) : parent;; path = dirname(path)) {
+    paths.push(path);
+    if (path === dirname(path)) break;
+  }
+  // Escape filenames and print ACL entries even when the mode row displays an xattr marker.
+  const output = execFileSync("/bin/ls", ["-ldebn", "--", ...paths], MAC_ACL_COMMAND_OPTIONS);
+  let directoryCount = 0;
+  for (const row of output.trimEnd().split("\n")) {
+    if (/^d[rwxstST-]{9}[+@ ] /.test(row)) directoryCount++;
+    else if (!/^ \d+: [\da-f-]{36} (?:inherited )?deny [a-z_,]+$/i.test(row)) {
+      throw new Error("Private helper path has an extended access grant or unreadable ACL");
+    }
+  }
+  if (directoryCount !== paths.length) throw new Error("Private helper path ACL is unverified");
+}
+
 // A sticky or private temporary hierarchy protects the verified parent from replacement.
 function posixPrivateParent(temp: string, create = false): string | undefined {
   const uid = process.geteuid?.();
   if (uid === undefined) throw new Error("Private helper owner is unavailable");
   const parent = join(temp, `ave-srt-win.${uid}`);
-  if (create) {
-    try { mkdirSync(parent, { mode: 0o700 }); }
+  if (create && lstatSync(parent, { throwIfNoEntry: false }) === undefined) {
+    assertPosixHelperBoundary(parent, true);
+    let created = false;
+    try {
+      mkdirSync(parent, { mode: 0o700 });
+      created = true;
+    }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    if (created && type() === "Darwin") execFileSync("/bin/chmod", ["-N", parent], MAC_ACL_COMMAND_OPTIONS);
   }
   const entry = lstatSync(parent, { throwIfNoEntry: false });
   if (entry === undefined && !create) return undefined;
-  if (!entry?.isDirectory() || (entry.mode & 0o7777) !== 0o700 || posixHomeProtectionFailure(parent) !== undefined) {
+  if (!entry?.isDirectory() || (entry.mode & 0o7777) !== 0o700) {
     throw new Error("Private helper parent is not protected");
   }
+  assertPosixHelperBoundary(parent);
   return parent;
 }
 

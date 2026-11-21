@@ -851,19 +851,22 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
  * account that group and others cannot write, and every directory above it must be owned by root or this account and not
  * writable by group or others, except a root-owned sticky directory such as `/tmp`. Per-child modes are not checked, so a
  * umask-002 system does not refuse every home. The macOS extended ACL (`chmod +a`) is not covered by mode bits.
+ * Creation callers may check the existing ancestors before allocating an absent leaf.
  */
-export function posixHomeProtectionFailure(home: string): { failedPath: string; reason: string } | undefined {
+export function posixHomeProtectionFailure(home: string, { allowMissing = false } = {}): { failedPath: string; reason: string } | undefined {
   // Production reaches the POSIX branch only on a POSIX host. A test that simulates POSIX on a Windows host has no POSIX
   // ownership to read; a real Windows home is checked by its DACL instead.
   if (process.platform === "win32") return undefined;
   const uid = process.geteuid!();
-  const root = lstatSync(home);
-  if (!root.isDirectory()) return { failedPath: home, reason: "The Ave folder is a link or not a directory" };
-  if (root.uid !== uid) {
-    return { failedPath: home, reason: `The Ave folder is owned by another account. Fix it with: sudo chown "$(id -u)" ${posixShellQuote(home)}` };
-  }
-  if ((root.mode & 0o022) !== 0) {
-    return { failedPath: home, reason: `Group or others can write to the Ave folder. Fix it with: chmod go-w ${posixShellQuote(home)}` };
+  const root = allowMissing ? lstatSync(home, { throwIfNoEntry: false }) : lstatSync(home);
+  if (root !== undefined) {
+    if (!root.isDirectory()) return { failedPath: home, reason: "The Ave folder is a link or not a directory" };
+    if (root.uid !== uid) {
+      return { failedPath: home, reason: `The Ave folder is owned by another account. Fix it with: sudo chown "$(id -u)" ${posixShellQuote(home)}` };
+    }
+    if ((root.mode & 0o022) !== 0) {
+      return { failedPath: home, reason: `Group or others can write to the Ave folder. Fix it with: chmod go-w ${posixShellQuote(home)}` };
+    }
   }
   for (const ancestor of directoriesResolving(dirname(resolve(home)))) {
     const entry = lstatSync(ancestor);

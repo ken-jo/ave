@@ -78,6 +78,54 @@ describe("Windows helper integrity", () => {
     },
   );
 
+  it.skipIf(process.platform !== "darwin").each(["parent", "temp ancestor"])(
+    "refuses a macOS %s with an extended access grant",
+    (kind) => {
+      const { source } = fixture();
+      const temp = dirname(source);
+      useTemp(temp);
+      const parent = join(temp, `ave-srt-win.${process.geteuid!()}`);
+      mkdirSync(parent, { mode: 0o700 });
+      const sentinel = join(parent, "keep");
+      writeFileSync(sentinel, "original");
+      const target = kind === "parent" ? parent : temp;
+      const mode = lstatSync(target).mode;
+      execFileSync("/bin/chmod", ["+a", "everyone allow search,add_file,delete_child", target]);
+      const describeAcl = () => execFileSync("/bin/ls", ["-lde", target], { encoding: "utf8" });
+      try {
+        expect(lstatSync(target).mode).toBe(mode);
+        const before = describeAcl();
+        expect(before).toMatch(/ allow .*delete_child/);
+        sweepStaleSrtWinDirectories();
+        expect(existsSync(sentinel)).toBe(true);
+        expect(readFileSync(sentinel, "utf8")).toBe("original");
+        expect(() => prepareSrtWinExecutable(source)).toThrow(expect.objectContaining({ code: "srt-win-integrity-mismatch" }));
+        expect(describeAcl()).toBe(before);
+        expect(readdirSync(parent)).toEqual(["keep"]);
+      } finally {
+        execFileSync("/bin/chmod", ["-N", target]);
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== "darwin")("strips inherited ACLs from a newly created macOS parent", () => {
+    const { source } = fixture();
+    const temp = dirname(source);
+    useTemp(temp);
+    const parent = join(temp, `ave-srt-win.${process.geteuid!()}`);
+    const probe = join(temp, "inheritance-probe");
+    execFileSync("/bin/chmod", ["+a", "everyone deny delete,file_inherit,directory_inherit", temp]);
+    try {
+      mkdirSync(probe, { mode: 0o700 });
+      expect(execFileSync("/bin/ls", ["-lde", probe], { encoding: "utf8" })).toMatch(/ inherited deny delete/);
+      expect(existsSync(prepareSrtWinExecutable(source))).toBe(true);
+      expect(execFileSync("/bin/ls", ["-lde", parent], { encoding: "utf8" })).not.toMatch(/^ \d+:/m);
+      expect(execFileSync("/bin/ls", ["-lde", temp], { encoding: "utf8" })).toMatch(/ deny delete/);
+    } finally {
+      execFileSync("/bin/chmod", ["-RN", temp]);
+    }
+  });
+
   it.skipIf(process.platform === "win32")("preserves a pre-existing empty allocation destination", async () => {
     const { source } = fixture();
     const temp = dirname(source);
