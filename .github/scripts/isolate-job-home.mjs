@@ -108,9 +108,7 @@ export async function isolationAssignments(
   } catch (error) {
     if (windows) {
       try {
-        const { tombstone, warnings } = await renameOwnedRoot(root, identity, readIdentity, renameSync, run);
-        rmSync(tombstone, { recursive: true, force: true });
-        writeCleanupDiagnostics(warnings, diagnostic);
+        await removeOwnedRoot(root, identity, { readIdentity, rename: renameSync, remove: rmSync, run, diagnostic });
       } catch (rollbackError) {
         throw new AggregateError([error, rollbackError], "Job isolation setup and rollback failed");
       }
@@ -179,19 +177,30 @@ function assertContainedSteps(root, readReceipts) {
   }
 }
 
-async function renameOwnedRoot(root, identity, readIdentity, rename, run, readReceipts) {
+// Quarantine: verify identity, rename to a fresh tombstone, verify it, then remove only the tombstone.
+async function removeOwnedRoot(root, identity, { readIdentity, rename, remove, readReceipts, run, diagnostic }) {
   assertOwnedRoot(root, identity, readIdentity);
   if (readReceipts) assertContainedSteps(root, readReceipts);
   const warnings = await assertNoJobRootWriters(root, run);
   assertOwnedRoot(root, identity, readIdentity);
   const tombstone = `${root}.cleanup-${randomUUID()}`;
-  rename(root, tombstone);
+  try {
+    rename(root, tombstone);
+  } catch (cause) {
+    await reportCleanupFailure(root, cause, { run, diagnostic });
+    throw new Error(`Cannot clean up job root ${root}: rename to ${tombstone} failed (${cause?.message ?? cause}). Directory left in place.`, { cause });
+  }
   try {
     assertOwnedRoot(tombstone, identity, readIdentity);
   } catch (cause) {
     throw new Error(`Cleanup requires an unchanged isolated job root. Directory left at ${tombstone}`, { cause });
   }
-  return { tombstone, warnings };
+  try {
+    await diagnoseCleanupFailure(tombstone, () => remove(tombstone, { recursive: true, force: true }), { run, diagnostic });
+  } catch (cause) {
+    throw new Error(`Cannot clean up job root ${root}: removing ${tombstone} failed (${cause?.message ?? cause}). Remaining entries left at ${tombstone}.`, { cause });
+  }
+  writeCleanupDiagnostics(warnings, diagnostic);
 }
 
 function writeCleanupLog(lines) {
@@ -229,16 +238,7 @@ export async function cleanupWindowsJobRoot(root, {
   readIdentity = readJobRootIdentity, rename = renameSync, remove = rmSync, readReceipts = readJobReceipts, run, diagnostic,
 } = {}) {
   validateJobHomeRoot(root, systemRoot);
-  let tombstone;
-  let warnings;
-  try {
-    ({ tombstone, warnings } = await renameOwnedRoot(root, identity, readIdentity, rename, run, readReceipts));
-  } catch (error) {
-    if (error?.syscall === "rename") await reportCleanupFailure(root, error, { run, diagnostic });
-    throw error;
-  }
-  await diagnoseCleanupFailure(tombstone, () => remove(tombstone, { recursive: true, force: true }), { run, diagnostic });
-  writeCleanupDiagnostics(warnings, diagnostic);
+  await removeOwnedRoot(root, identity, { readIdentity, rename, remove, readReceipts, run, diagnostic });
 }
 
 export async function diagnoseCleanupFailure(root, remove, options) {

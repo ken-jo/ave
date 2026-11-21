@@ -351,6 +351,33 @@ describe("Windows job root writer precondition", () => {
     });
   }
 
+  const TOMBSTONE = /^ave-ci-abc123\.cleanup-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u;
+  for (const stage of ["rename", "remove"]) {
+    it(`refuses cleanup with the error when the quarantine ${stage} fails`, async t => {
+      const job = fixture(t);
+      const failure = Object.assign(new Error(`EPERM: operation not permitted, ${stage}`), { code: "EPERM", syscall: stage });
+      const diagnostic = mock.fn();
+      await assert.rejects(cleanupJobRoot(root, {
+        ...job.options, [stage]: () => { throw failure; }, run: queryResult(), diagnostic,
+      }), error => {
+        assertReportedRoot(error, root);
+        assert.equal(error.cause, failure);
+        const tombstone = /(?:rename to|removing) (\S+) failed/.exec(error.message)?.[1];
+        assert.match(win32.basename(tombstone ?? ""), TOMBSTONE, error.message);
+        assert.equal(error.message, stage === "rename"
+          ? `Cannot clean up job root ${root}: rename to ${tombstone} failed (${failure.message}). Directory left in place.`
+          : `Cannot clean up job root ${root}: removing ${tombstone} failed (${failure.message}). Remaining entries left at ${tombstone}.`);
+        return true;
+      });
+      await nextTurn();
+      assert.ok(output({ diagnostic }).includes(`Job root cleanup failed: code="EPERM" syscall="${stage}"`), output({ diagnostic }));
+      const [left] = readdirSync(job.parent).filter(name => name !== "shared");
+      assert.match(left, stage === "rename" ? /^ave-ci-abc123$/u : TOMBSTONE);
+      assert.equal(readFileSync(join(job.parent, left, "example.log"), "utf8"), "example");
+      assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
+    });
+  }
+
   function localReceipts(directory) {
     return readdirSync(directory, { withFileTypes: true }).map(entry => ({
       name: entry.name, text: entry.isFile() ? readFileSync(join(directory, entry.name), "utf8") : undefined,
