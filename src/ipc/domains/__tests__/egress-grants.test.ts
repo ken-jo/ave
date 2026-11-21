@@ -1,6 +1,6 @@
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
@@ -9,6 +9,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approva
 import { createEgressAskRuntimeCallback } from "../../../permissions/egress-runtime.js";
 import { openEgressInvocation } from "../../../permissions/egress-invocations.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { flushSandboxAudit } from "../../../audit/sandbox-audit-sink.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({ ipcMain: { handle: vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler)) } }));
@@ -18,8 +19,9 @@ const originalPlatform = process.platform;
 afterEach(() => { vi.unstubAllEnvs(); setProcessPlatform(originalPlatform); });
 
 describe("domain grant management boundary", () => {
-  it("lists a dock-approved Always grant, revokes it through the guarded handler, and asks again", async () => {
+  it("lists a dock-approved Always grant, revokes it through the guarded handler, and asks again", async ({ onTestFinished }) => {
     const home = mkdtempSync(join(tmpdir(), "ave-domain-ipc-"));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     vi.stubEnv("AVE_HOME", home);
     setProcessPlatform("linux");
     const wc = { send: vi.fn(), isDestroyed: () => false };
@@ -59,8 +61,16 @@ describe("domain grant management boundary", () => {
       expect(await afterRevoke).toEqual({ allow: false, reason: "denied by the user" });
       expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("[egress-grant:revoke]") }));
     } finally {
-      first.release(); second.release();
-      rmSync(home, { recursive: true, force: true });
+      first.release();
+      second.release();
+      await flushSandboxAudit();
     }
+    const auditDir = join(home, "audit");
+    const rows = readdirSync(auditDir).filter(file => file.endsWith(".sandbox.jsonl"))
+      .flatMap(file => readFileSync(join(auditDir, file), "utf8").trim().split("\n").map(line => JSON.parse(line)));
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entryKind: "egress-decision", decision: "allow", scope: "always", destination }),
+      expect.objectContaining({ entryKind: "egress-decision", decision: "deny", reason: "denied by the user", destination }),
+    ]));
   });
 });
