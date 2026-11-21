@@ -9,7 +9,6 @@ const WRITER_SCAN_LIMIT = 4096;
 const DENY_LIMIT = 8;
 const PROCESS_SCAN_LIMIT = 512;
 const PROCESS_PATH_LIMIT = 256;
-const HOLDER_LIMIT = 16;
 const MAX_HOLDERS = 128;
 const FILE_OUTPUT_LIMIT = 32 * 1024;
 const HOLDER_OUTPUT_LIMIT = 52 * 1024;
@@ -47,10 +46,6 @@ ImportReadMethod kernel32.dll ReadProcessMemory ([bool]) @($processHandleType, [
 ImportReadMethod kernel32.dll QueryFullProcessImageNameW ([bool]) @($processHandleType, [uint32], [Text.StringBuilder], $outLength)
 $fileTime = [long].MakeByRefType()
 ImportReadMethod kernel32.dll GetProcessTimes ([bool]) @($processHandleType, $fileTime, $fileTime, $fileTime, $fileTime)
-ImportReadMethod rstrtmgr.dll RmStartSession ([uint32]) @($outLength, [uint32], [Text.StringBuilder])
-ImportReadMethod rstrtmgr.dll RmRegisterResources ([uint32]) @([uint32], [uint32], [IntPtr], [uint32], [IntPtr], [uint32], [IntPtr])
-ImportReadMethod rstrtmgr.dll RmGetList ([uint32]) @([uint32], $outLength, $outLength, [IntPtr], $outLength)
-ImportReadMethod rstrtmgr.dll RmEndSession ([uint32]) @([uint32])
 $native = $interop.CreateType()
 
 $readAttributes = 0x80
@@ -257,14 +252,13 @@ function TestJobPath($path) {
   } catch { return $false }
 }
 
-function ReadHolderMetadata($record, $started) {
+function ReadHolderMetadata($record) {
   $process = $native::OpenProcess(0x1000, $false, $record.pid)
   try {
     if ($process.IsInvalid) { return }
     $created = $exited = $kernel = $user = 0L
-    if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user) -or
-        ($null -ne $started -and $created -ne $started)) { return }
-    if ($null -eq $started) { $record.created = [DateTime]::FromFileTimeUtc($created).ToString('o') }
+    if (!$native::GetProcessTimes($process, [ref]$created, [ref]$exited, [ref]$kernel, [ref]$user)) { return }
+    $record.created = [DateTime]::FromFileTimeUtc($created).ToString('o')
     $image = [Text.StringBuilder]::new(32768)
     $length = [uint32]$image.Capacity
     if ($native::QueryFullProcessImageNameW($process, 0, $image, [ref]$length)) {
@@ -277,142 +271,37 @@ function ReadHolderMetadata($record, $started) {
   } finally { $process.Dispose() }
 }
 
-function FindFileHolders([string[]]$paths) {
-  $path = $paths[0]
-  $session = [uint32]0
-  $key = [Text.StringBuilder]::new(33)
-  $operation = 'RmStartSession'
-  $code = $native::RmStartSession([ref]$session, 0, $key)
-  if ($code -ne 0) { @{ kind = 'restartManager'; path = $path; operation = $operation; code = $code }; return }
-  $files = $buffer = [IntPtr]::Zero
-  $strings = [IntPtr[]]::new($paths.Length)
-  try {
-    $files = $marshal::AllocHGlobal($pointerSize * $paths.Length)
-    for ($i = 0; $i -lt $paths.Length; $i++) {
-      $strings[$i] = $marshal::StringToHGlobalUni($paths[$i])
-      $marshal::WriteIntPtr($files, $i * $pointerSize, $strings[$i])
-    }
-    $operation = 'RmRegisterResources'
-    $code = $native::RmRegisterResources($session, $paths.Length, $files, 0, 0, 0, 0)
-    if ($code -eq 0) {
-      # RM_PROCESS_INFO is a PID and FILETIME, two WCHAR arrays (256 and 64),
-      # and four 32-bit fields. The native record has no pointers.
-      $rowSize = 668
-      $count = [uint32]${HOLDER_LIMIT}
-      $buffer = $marshal::AllocHGlobal($rowSize * $count)
-      $needed = $reasons = [uint32]0
-      $operation = 'RmGetList'
-      $code = $native::RmGetList($session, [ref]$needed, [ref]$count, $buffer, [ref]$reasons)
-      if ($code -eq 234 -and $needed -gt ${HOLDER_LIMIT} -and $needed -le ${MAX_HOLDERS}) {
-        $count = $needed
-        $buffer = $marshal::ReAllocHGlobal($buffer, [IntPtr]($rowSize * $count))
-        $code = $native::RmGetList($session, [ref]$needed, [ref]$count, $buffer, [ref]$reasons)
-      }
-      if ($code -eq 0) {
-        for ($i = 0; $i -lt $count; $i++) {
-          $row = [IntPtr]::Add($buffer, $i * $rowSize)
-          $id = $marshal::ReadInt32($row)
-          if ($id -le 0 -or $id -eq $PID) { continue }
-          # A multi-file registration cannot attribute a PID to a particular file.
-          if ($paths.Length -gt 1) { return $true }
-          $started = $marshal::ReadInt64($row, 4)
-          $record = @{
-            kind = 'holder'; path = $path; pid = $id; unresolvedParentPid = $null; image = $null
-            app = $marshal::PtrToStringUni([IntPtr]::Add($row, 12), 256).Split([char]0)[0].Trim()
-            service = $marshal::PtrToStringUni([IntPtr]::Add($row, 524), 64).Split([char]0)[0]
-            created = [DateTime]::FromFileTimeUtc($started).ToString('o')
-          }
-          try { ReadHolderMetadata $record $started } catch {}
-          if (!$record.app) { $record.app = [IO.Path]::GetFileName($record.image) }
-          $record
-        }
-      }
-    }
-    if ($code -ne 0) {
-      @{ kind = 'restartManager'; path = $path; operation = $operation; code = $code }
-    }
-  } finally {
-    $marshal::FreeHGlobal($buffer)
-    $marshal::FreeHGlobal($files)
-    foreach ($string in $strings) { $marshal::FreeHGlobal($string) }
-    $code = $native::RmEndSession($session)
-    if ($code -ne 0) { @{ kind = 'restartManager'; path = $path; operation = 'RmEndSession'; code = $code } }
-  }
-}
-
 function TestFileIdentity($file, $handle) {
   if (!$handle) { return $false }
   $kind = (ReadBasicInformation $handle).attributes -band ($directoryFlag -bor $reparseFlag)
   return $kind -eq 0 -and (ReadFileIdentity $handle) -eq $file.identity
 }
 
-function NewUnverifiedPath($file) {
-  @{ kind = 'restartManager'; path = $file.path; operation = 'unverified-path'; code = $null }
-}
-
-function PinCandidate($file) {
-  if (!$file.parentPinned) { return }
-  # Data access makes the handle participate in delete sharing.
-  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete
-  try {
-    if (TestFileIdentity $file $pin) {
-      $verified = $pin
-      $pin = $null
-      return $verified
-    }
-  } finally { if ($pin) { $pin.Dispose() } }
+function NewHolderFailure($path, $operation) {
+  @{ kind = 'holderFailure'; path = $path; operation = $operation }
 }
 
 function ReadVerifiedHolders($file) {
-  $pin = PinCandidate $file
-  if (!$pin) { return (NewUnverifiedPath $file) }
+  if (!$file.parentPinned) { return (NewHolderFailure $file.path 'unverified-path') }
+  # Data access makes the handle participate in delete sharing.
+  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete
   try {
-    $rows = @(FindFileHolders $file.path)
-    if (!(TestFileIdentity $file $pin)) { return (NewUnverifiedPath $file) }
+    if (!(TestFileIdentity $file $pin)) { return (NewHolderFailure $file.path 'unverified-path') }
+    $rows = @(ReadFileHolders $pin $file.path)
+    if (!(TestFileIdentity $file $pin)) { return (NewHolderFailure $file.path 'unverified-path') }
     return $rows
-  } finally { $pin.Dispose() }
+  } finally { if ($pin) { $pin.Dispose() } }
 }
 
-function ReadHolderGroup([object[]]$group) {
-  if ($group.Length -eq 1) {
-    $file = $group[0]
-    try { ReadVerifiedHolders $file }
-    catch { @{ kind = 'restartManager'; path = $file.path; operation = 'query'; code = $null } }
-    return
-  }
-  $verified = [Collections.Generic.List[object]]::new()
-  $pins = [Collections.Generic.List[object]]::new()
-  try {
-    foreach ($file in $group) {
-      $pin = PinCandidate $file
-      if (!$pin) { NewUnverifiedPath $file; continue }
-      $pins.Add($pin)
-      $verified.Add($file)
-    }
-    if (!$verified.Count) { return }
-    # Batch results only select files for individually verified lookups.
-    $rows = @(FindFileHolders ($verified | ForEach-Object { $_.path }))
-    if ($verified.Count -eq 1) { $rows; return }
-  } finally {
-    foreach ($pin in $pins) { $pin.Dispose() }
-  }
-  if (!$rows.Count) { return }
-  # Split groups with holders or native errors until each result names one file.
-  $middle = $verified.Count -shr 1
-  ReadHolderGroup $verified[0..($middle - 1)]
-  ReadHolderGroup $verified[$middle..($verified.Count - 1)]
-}
-
-function ReadWriterHolders($handle, $path) {
+function ReadFileHolders($handle, $path) {
   # FileProcessIdsUsingFileInformation is a count followed by aligned ULONG_PTR PIDs.
-  # Query the opened entry directly without a registry-backed resource session.
   $info = [byte[]]::new((${MAX_HOLDERS} + 1) * $pointerSize)
   $ioStatus = $marshal::AllocHGlobal(2 * $pointerSize)
   try {
     $status = $native::NtQueryInformationFile($handle, $ioStatus, $info, $info.Length, 47)
     $count = [BitConverter]::ToUInt32($info, 0)
     if ($status -ne 0 -or $count -gt ${MAX_HOLDERS}) {
-      @{ kind = 'handleQuery'; path = $path; status = $status }
+      @{ kind = 'handleQuery'; path = $path; status = $status; limited = $count -gt ${MAX_HOLDERS} }
       return
     }
     for ($i = 1; $i -le $count; $i++) {
@@ -421,8 +310,9 @@ function ReadWriterHolders($handle, $path) {
       if ($id -le 0 -or $id -gt [int]::MaxValue) { throw 'Invalid file holder PID' }
       $record = @{ kind = 'holder'; path = $path; pid = $id; unresolvedParentPid = $null
         image = $null; created = $null; app = $null; service = $null }
-      try { ReadHolderMetadata $record $null } catch {}
+      try { ReadHolderMetadata $record } catch {}
       if (!$record.image) { $record.image = (Get-Process -Id $id -ErrorAction SilentlyContinue).ProcessName }
+      $record.app = [IO.Path]::GetFileName($record.image)
       $record
     }
   } finally { $marshal::FreeHGlobal($ioStatus) }
@@ -567,7 +457,7 @@ function FindSurvivingEntries {
       } else { $survivors.Add($entry) }
     }
     if ($preflight) {
-      ReadWriterHolders $handle $next.path
+      ReadFileHolders $handle $next.path
     } elseif ($isFile) {
       $identity = try { ReadFileIdentity $handle } catch { $script:failed = $true; $null }
       $files.Add(@{ path = $next.path; parent = $next.parent; name = $next.name
@@ -617,17 +507,22 @@ try {
   & {
     try {
       if ($preflight) { $writerHolders.ToArray() }
-      elseif ($files.Count) { ReadHolderGroup $files.ToArray() }
+      else {
+        foreach ($file in $files) {
+          try { ReadVerifiedHolders $file }
+          catch { NewHolderFailure $file.path 'query' }
+        }
+      }
     } catch {
       $script:holderFailed = $true
-      if (!$preflight) { @{ kind = 'restartManager'; path = $root; operation = 'query'; code = $null } }
+      if (!$preflight) { NewHolderFailure $root 'query' }
     }
   } | ForEach-Object {
-    if ($_.kind -eq 'restartManager') { $holderFailures.Add($_) }
+    if ($_.limited) { $holderLimited = $true }
+    if (!$preflight -and $_.kind -ne 'holder') { $holderFailures.Add($_) }
     elseif (!(WriteEvidence $_ ${HOLDER_OUTPUT_LIMIT})) { $holderLimited = $true }
   }
   foreach ($failure in $holderFailures) {
-    if ($failure.code -eq 234) { $holderLimited = $true }
     if (!(WriteEvidence $failure ${HOLDER_OUTPUT_LIMIT})) { $holderLimited = $true }
   }
 } finally {
@@ -684,16 +579,6 @@ function formatProcess({ kind, pid, unresolvedParentPid, image, created, path, a
   }
   if (!["image", "cwd", "argument"].includes(reason)) throw new Error("Invalid process match reason");
   return `${base} match=${reason} ${started}`;
-}
-
-function formatRestartManagerFailure({ path, operation, code }) {
-  if (typeof path !== "string" ||
-      !["RmStartSession", "RmRegisterResources", "RmGetList", "RmEndSession", "unverified-path", "query"].includes(operation) ||
-      (code !== null && (!Number.isSafeInteger(code) || code < 0))) {
-    throw new Error("Invalid Restart Manager status");
-  }
-  return `Restart Manager lookup failed path=${JSON.stringify(path)} operation=${operation}` +
-    (code === null ? "" : ` code=${code}`);
 }
 
 function collectQuery(script, timeout, maxBuffer, readRecord, run) {
@@ -812,14 +697,16 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
       if (row.kind === "holders") {
         holdersComplete = true;
         failed ||= preflight ? incomplete(row, "failed", "limited") : row.failed;
-        if (preflight && row.failed) emit("Native file holder lookup was incomplete");
-        if (row.limited) emit(`${preflight ? "Native file holder" : "Restart Manager"} output reached its reporting limit`);
-      } else if (row.kind === "restartManager") {
-        if (preflight) throw new Error("Unexpected Restart Manager record");
-        emit(formatRestartManagerFailure(row), holdersOutputEnd);
-      } else if (preflight && row.kind === "handleQuery") {
+        if (row.failed) emit("Native file holder lookup was incomplete");
+        if (row.limited) emit("Native file holder output reached its reporting limit");
+      } else if (!preflight && row.kind === "holderFailure") {
+        if (typeof row.path !== "string" || !["unverified-path", "query"].includes(row.operation)) {
+          throw new Error("Invalid native file holder operation");
+        }
+        emit(`Native file holder lookup failed path=${JSON.stringify(row.path)} operation=${row.operation}`, holdersOutputEnd);
+      } else if (row.kind === "handleQuery") {
         if (typeof row.path !== "string" || !Number.isInteger(row.status)) throw new Error("Invalid native file holder status");
-        failed = true;
+        failed ||= preflight;
         emit(`Native file holder lookup failed path=${JSON.stringify(row.path)} status=${row.status}`, holdersOutputEnd);
       } else if (row.kind === "holder") {
         emit(formatProcess(row), holdersOutputEnd);
@@ -842,7 +729,7 @@ async function inspectJobRoot(root, diagnostic, run = runJobRootQuery, preflight
       throw new Error("Unexpected cleanup record");
     }
   }, run);
-  if (filesComplete && !holdersComplete) emit(`${preflight ? "Native file holder" : "Restart Manager"} lookup was incomplete`);
+  if (filesComplete && !holdersComplete) emit("Native file holder lookup was incomplete");
   if (outputLimited) emit("Cleanup diagnostic output reached its byte limit", OUTPUT_LIMIT);
   if (!queryOk || failed || !filesComplete || !processesComplete || (preflight && (!holdersComplete || outputLimited))) {
     throw new Error("Cleanup query was incomplete");

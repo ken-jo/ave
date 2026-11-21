@@ -694,7 +694,9 @@ describe("Windows job root cleanup diagnostics", () => {
       hardenWindowsJobRoot(root);
       const image = join(fixture, "holder.exe");
       const file = join(root, "held.log");
+      const idleFile = join(root, "idle.log");
       writeFileSync(file, "held fixture");
+      writeFileSync(idleFile, "idle fixture");
       const lastWrite = new Date("2026-01-02T03:04:05Z");
       utimesSync(file, lastWrite, lastWrite);
       const { birthtimeMs } = statSync(file);
@@ -715,15 +717,16 @@ describe("Windows job root cleanup diagnostics", () => {
       assert.ok(candidate, lines);
       assert.equal(Date.parse(candidate.match(/created="([^"]+)"/)?.[1]), Math.trunc(birthtimeMs));
       assert.equal(Date.parse(candidate.match(/last-write="([^"]+)"/)?.[1]), +lastWrite);
-      const holderLine = lines.split("\n").find(line => line.startsWith(`holder pid=${holder.pid} `));
-      assert.ok(holderLine, lines);
+      const holderLines = lines.split("\n").filter(line => line.startsWith(`holder pid=${holder.pid} `));
+      assert.equal(holderLines.length, 1, lines);
+      const [holderLine] = holderLines;
       for (const detail of [`unresolved-parent-pid=${process.pid}`, `image=${JSON.stringify(image)}`, `path=${JSON.stringify(file)}`]) {
         assert.ok(holderLine.includes(detail), holderLine);
       }
       assert.match(holderLine, /app="holder\.exe".*created="[\d:T.-]+Z"/i);
       assert.ok(lines.indexOf(candidate) < lines.indexOf(holderLine), lines);
       t.diagnostic(holderLine);
-      holder.stdin.end("\n");
+      holder.stdin.end();
       const [code] = await within(exited, 2000, "Holder did not exit after EOF");
       assert.equal(code, 0);
       await cleanupWindowsJobRoot(root);
@@ -736,8 +739,8 @@ describe("Windows job root cleanup diagnostics", () => {
       rmSync(fixture, { recursive: true, force: true });
     }
   });
-  for (const stage of ["before", "during", "batch"]) {
-    it(`rejects a leaf replacement at ${stage} registration`, { skip: process.platform !== "win32" }, async () => {
+  for (const stage of ["before pinning", "when pinning is unavailable", "during the query"]) {
+    it(`guards against a leaf replacement ${stage}`, { skip: process.platform !== "win32" }, async () => {
       const fixture = mkdtempSync(join(tmpdir(), "ave-job-holder-swap-"));
       const root = join(fixture, "root");
       const file = join(root, "example.log");
@@ -745,35 +748,39 @@ describe("Windows job root cleanup diagnostics", () => {
         mkdirSync(root);
         writeFileSync(file, "original");
         const probe = join(fixture, "probe.txt");
-        if (stage === "batch") writeFileSync(join(root, "bob.log"), "other candidate");
+        if (stage === "during the query") writeFileSync(join(root, "bob.log"), "other candidate");
         const run = runInjectedQuery("", script => {
-          if (stage === "batch") return script.replace("    $operation = 'RmRegisterResources'", [
-            "    if ($paths.Length -gt 1) {",
-            `      [IO.File]::WriteAllText(${powerShellLiteral(probe)}, 'batch entered')`,
-            `      try { [IO.File]::Move(${powerShellLiteral(file)}, ${powerShellLiteral(join(fixture, "saved.log"))}) }`,
-            "      catch [IO.IOException] {}",
-            "    }",
-            "    $operation = 'RmRegisterResources'",
-          ].join("\n"));
-          const lookup = script.includes("function ReadVerifiedHolders") ? "    try { ReadVerifiedHolders $file" : "      FindFileHolders $file";
-          const marker = stage === "before" ? lookup : "  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete";
+          if (stage === "during the query") {
+            const marker = "    $rows = @(ReadFileHolders $pin $file.path)";
+            assert.ok(script.includes(marker));
+            return script.replace(marker, [
+              `    if ($file.path -eq ${powerShellLiteral(file)}) {`,
+              `      [IO.File]::WriteAllText(${powerShellLiteral(probe)}, 'query entered')`,
+              `      try { [IO.File]::Move(${powerShellLiteral(file)}, ${powerShellLiteral(join(fixture, "saved.log"))}) }`,
+              "      catch [IO.IOException] {}",
+              "    }",
+              marker,
+            ].join("\n"));
+          }
+          const marker = "  $pin = OpenRelative $file.parent $file.name ($readData -bor $readAttributes) $shareWithoutDelete";
+          assert.ok(script.includes(marker));
           const swap = [
             `    [IO.File]::Move(${powerShellLiteral(file)}, ${powerShellLiteral(join(fixture, "saved.log"))})`,
             `    [IO.File]::WriteAllText(${powerShellLiteral(file)}, 'replacement')`,
             "",
           ].join("\n");
           // Simulate a candidate whose metadata can be opened but whose data access cannot be pinned.
-          return script.replace(marker, swap + (stage === "during" ? "  $pin = $null" : marker));
+          return script.replace(marker, swap + (stage === "when pinning is unavailable" ? "  $pin = $null" : marker));
         });
         const diagnostic = mock.fn();
         await diagnoseJobRoot(root, diagnostic, run);
-        if (stage === "batch") {
-          assert.equal(readFileSync(probe, "utf8"), "batch entered");
+        if (stage === "during the query") {
+          assert.equal(readFileSync(probe, "utf8"), "query entered");
           assert.equal(existsSync(join(fixture, "saved.log")), false);
           assert.equal(readFileSync(file, "utf8"), "original");
         } else {
           assert.equal(readFileSync(file, "utf8"), "replacement");
-          assert.match(output({ diagnostic }), /Restart Manager lookup failed .*operation=unverified-path/);
+          assert.match(output({ diagnostic }), /Native file holder lookup failed .*operation=unverified-path/);
         }
       } finally { rmSync(fixture, { recursive: true, force: true }); }
     });
@@ -836,6 +843,22 @@ describe("Windows job root cleanup diagnostics", () => {
 
 
 describe("Windows job root query", () => {
+  const registryBackedHolderQuery = /rstrtmgr|\bRm[A-Z]\w*/;
+
+  it("keeps registry-backed holder APIs out of the diagnostic module", () => {
+    const source = readFileSync(new URL("../../.github/scripts/job-root-diagnostic.mjs", import.meta.url), "utf8");
+    assert.equal(source.match(registryBackedHolderQuery)?.[0], undefined);
+  });
+
+  it("generates a registry-free holder query", async () => {
+    const run = queryResult();
+    await diagnoseJobRoot("C:\\fixture", () => {}, run);
+    assert.equal(run.mock.callCount(), 1);
+    const script = run.mock.calls[0].arguments[2].env[QUERY_VARIABLE];
+    assert.equal(script.match(registryBackedHolderQuery)?.[0], undefined);
+    assert.match(script, /NtQueryInformationFile\(\$handle, \$ioStatus, \$info, \$info.Length, 47\)/);
+  });
+
   it("caps process and path counts and projects only requested fields", async () => {
     const diagnostic = mock.fn();
     const run = queryResult({
@@ -865,7 +888,7 @@ describe("Windows job root query", () => {
     assert.match(script, /NtQuerySecurityObject\(\$handle,/);
     assert.doesNotMatch(script, /Get-ChildItem|Set-Acl|SetAttributes|icacls|takeown|Stop-Process|Remove-Item|-Recurse|Environment/i);
   });
-  it("reserves byte budget for Restart Manager output after long Unicode file rows", async () => {
+  it("reserves byte budget for native file holder output after long Unicode file rows", async () => {
     const diagnostic = mock.fn();
     const run = queryResult({
       entries: Array.from({ length: 20 }, (_, i) => ({
@@ -873,7 +896,7 @@ describe("Windows job root query", () => {
         deny: null, parentDeny: null, created: "2026-01-02T03:04:05.0000000Z", lastWrite: "2026-01-02T03:04:06.0000000Z",
       })),
       holders: [
-        { kind: "restartManager", path: "C:\\fixture\\example.log", operation: "RmGetList", code: 234 },
+        { kind: "handleQuery", path: "C:\\fixture\\example.log", status: -1073741820 },
         { ...PROCESS_DETAILS, kind: "holder", app: "holder.exe", service: "", path: "C:\\fixture\\example.txt" },
       ],
     });
@@ -881,7 +904,7 @@ describe("Windows job root query", () => {
     const lines = output({ diagnostic });
     assert.ok(Buffer.byteLength(lines) + 1 <= 64 * 1024);
     assert.match(lines, /candidate path=.*created="2026-01-02T03:04:05.0000000Z" last-write="2026-01-02T03:04:06.0000000Z"/);
-    assert.match(lines, /Restart Manager lookup failed .*operation=RmGetList code=234/);
+    assert.match(lines, /Native file holder lookup failed .*status=-1073741820/);
     assert.match(lines, /holder pid=4000.*app="holder\.exe"/);
     assert.match(lines, /Cleanup diagnostic output reached its byte limit/);
   });
