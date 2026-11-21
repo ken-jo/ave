@@ -9,7 +9,7 @@ import { setImmediate as nextTurn, setTimeout as sleep } from "node:timers/promi
 import { describe, it, mock } from "node:test";
 import { parse } from "yaml";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
-import { diagnoseJobRoot } from "../../.github/scripts/job-root-diagnostic.mjs";
+import { assertNoJobRootWriters, diagnoseJobRoot } from "../../.github/scripts/job-root-diagnostic.mjs";
 import { cleanupWindowsJobRoot as cleanupJobRoot, diagnoseCleanupFailure, hardenWindowsJobRoot, isolationAssignments, validateJobHomeRoot } from "../../.github/scripts/isolate-job-home.mjs";
 
 describe("job home isolation", () => {
@@ -239,22 +239,77 @@ describe("Windows job root writer precondition", () => {
     const run = (_command, _args, _options, done) => done(new Error("Query unavailable"));
     await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
       assert.match(error.message, /writer evidence is incomplete/i);
+      assert.match(error.message, /Query unavailable/);
       assertReportedRoot(error, root);
       return true;
     });
     job.assertPreserved();
   });
 
-  it("preserves the root when the writer scan reaches its entry limit", async t => {
-    const job = fixture(t);
-    const run = queryResult({ limited: true });
-    await assert.rejects(cleanupJobRoot(root, { ...job.options, run }), error => {
-      assert.match(error.message, /Cleanup path scan exceeded 4096 entries/);
-      assertReportedRoot(error, root);
-      return true;
-    });
-    job.assertPreserved();
+  it("reports the writer query deadline and the unfinished scan phase", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const result = assertNoJobRootWriters(root, () => {});
+    t.mock.timers.tick(5_000);
+    await assert.rejects(result, /5000 ms deadline\nCleanup path scan did not report completion/);
   });
+
+  it("reports an incomplete writer record stream that exceeds the byte limit", async () => {
+    const run = (_command, _args, { maxBuffer }, done) => done(null, " ".repeat(maxBuffer + 1));
+    await assert.rejects(assertNoJobRootWriters(root, run), /output exceeded 65536 bytes/);
+  });
+
+  it("refuses a writer query with a malformed holder status", async () => {
+    const status = queryRecords().split("\n");
+    status[1] = JSON.stringify({ kind: "holders", limited: false });
+    const run = (_command, _args, _options, done) => done(null, status.join("\n"));
+    await assert.rejects(assertNoJobRootWriters(root, run), /Invalid cleanup holders status field: failed/);
+  });
+
+  for (const [flag, reason] of [
+    ["recordLimited", /128-record limit/],
+    ["byteLimited", /53248-byte limit/],
+  ]) {
+    it(`reports the writer holder ${flag} bound`, async () => {
+      const status = queryRecords().split("\n");
+      status[1] = JSON.stringify({ kind: "holders", failed: false, limited: true, [flag]: true });
+      const run = (_command, _args, _options, done) => done(null, status.join("\n"));
+      await assert.rejects(assertNoJobRootWriters(root, run), reason);
+    });
+  }
+
+  if (process.platform === "win32") {
+    it("reports a root-relative path and preserves the tree when a junction is encountered", async t => {
+      const job = fixture(t);
+      const redirect = join(job.localRoot, "home", "example");
+      mkdirSync(join(job.localRoot, "home"));
+      symlinkSync(job.parent, redirect, "junction");
+      try {
+        await assert.rejects(assertNoJobRootWriters(job.localRoot), /Cleanup entry path="home\\\\example": reparse point/);
+      } finally {
+        unlinkSync(redirect);
+      }
+      assert.equal(readFileSync(join(job.parent, "shared"), "utf8"), "preserve");
+    });
+
+    it("scans a branched isolated home and temp tree", async t => {
+      const { localRoot } = fixture(t);
+      const subtrees = [
+        ["home", ".ave", "cache", "models", "example", "blobs"],
+        ["home", ".ave-test-tmp"],
+        ["home", "local-app-data", "example", "Cache"],
+        ["home", "app-data", "example", "Cache"],
+        ["tmp", "example", "target", "release", "deps"],
+      ];
+      for (const parts of subtrees) {
+        for (let i = 0; i < 4; i++) {
+          const directory = join(localRoot, ...parts, String(i));
+          mkdirSync(directory, { recursive: true });
+          for (let j = 0; j < 4; j++) writeFileSync(join(directory, `example-${j}.dat`), "example");
+        }
+      }
+      await assertNoJobRootWriters(localRoot);
+    });
+  }
 
   it("reports an incomplete process scan on successful cleanup", async t => {
     const job = fixture(t);
