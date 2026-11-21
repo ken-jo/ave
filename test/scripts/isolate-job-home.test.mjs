@@ -469,16 +469,16 @@ describe("Windows job root writer precondition", () => {
   });
 
   it("cleans up without installed packages", () => {
-    // Cleanup also runs after a failed dependency install.
+    // Cleanup also runs after a failed dependency install. module.register exists on every supported Node release.
+    const blockYaml = "export async function resolve(specifier, context, next) {"
+      + " if (specifier === 'yaml') throw Object.assign(new Error('Cannot find package yaml'), { code: 'ERR_MODULE_NOT_FOUND' });"
+      + " return next(specifier, context); }";
     const child = [
       'import assert from "node:assert/strict";',
-      'import { registerHooks } from "node:module";',
-      'registerHooks({ resolve: (specifier, context, next) => {',
-      '  if (specifier === "yaml") throw Object.assign(new Error("Cannot find package yaml"), { code: "ERR_MODULE_NOT_FOUND" });',
-      '  return next(specifier, context);',
-      '} });',
+      'import { register } from "node:module";',
+      'const [module, input, hooks] = process.argv.slice(1);',
+      'register(hooks);',
       'await assert.rejects(import("yaml"), { code: "ERR_MODULE_NOT_FOUND" });',
-      'const [module, input] = process.argv.slice(1);',
       'const { root, records, ...options } = JSON.parse(input);',
       'const { cleanupWindowsJobRoot } = await import(module);',
       'await cleanupWindowsJobRoot(root, { ...options, readIdentity: () => options.identity, rename() {}, remove() {},',
@@ -487,7 +487,8 @@ describe("Windows job root writer precondition", () => {
     ].join("\n");
     const input = { root, systemRoot, identity: "1:2:3", records: queryRecords({ preflight: true }) };
     const module = new URL("../../.github/scripts/isolate-job-home.mjs", import.meta.url).href;
-    assert.equal(execFileSync(process.execPath, ["--input-type=module", "-e", child, module, JSON.stringify(input)],
+    const hooks = `data:text/javascript,${encodeURIComponent(blockYaml)}`;
+    assert.equal(execFileSync(process.execPath, ["--input-type=module", "-e", child, module, JSON.stringify(input), hooks],
       { encoding: "utf8", windowsHide: true }), "cleaned\n");
   });
 
