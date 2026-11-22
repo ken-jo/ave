@@ -7,7 +7,7 @@ const gitCalls = vi.hoisted(() => ({
   lastEnv: undefined as NodeJS.ProcessEnv | undefined,
   lastCwd: undefined as string | undefined,
   traceEnv: undefined as NodeJS.ProcessEnv | undefined,
-  intercept: false,
+  intercept: undefined as ((args: readonly string[]) => Buffer) | undefined,
 }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -18,8 +18,8 @@ vi.mock("node:child_process", async (importOriginal) => {
         gitCalls.checkIgnore.push(file);
         gitCalls.lastEnv = options.env;
         gitCalls.lastCwd = options.cwd;
-        if (gitCalls.intercept) return Buffer.alloc(0);
-        if (gitCalls.traceEnv) options = { ...options, env: { ...options.env, ...gitCalls.traceEnv } };
+        if (gitCalls.intercept) return gitCalls.intercept(args);
+        options = { ...options, env: { ...options.env, ...FIXTURE_GIT_CONFIG, ...gitCalls.traceEnv } };
       }
       return actual.execFileSync(file, args, options);
     }) as typeof actual.execFileSync,
@@ -39,10 +39,34 @@ import {
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { holdSandboxGitWrites } from "../../shared/host-git.js";
+import { resolveHostGit } from "../../shared/host-git-executable.js";
 
-function initIgnoredBuild(project: string, patterns: string, layout: "nested" | "recursive" | "plain") {
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-  execFileSync("git", ["init", "-q", project], { stdio: "ignore", env });
+const FIXTURE_GIT_CONFIG = {
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+};
+
+function requireFixtureGit() {
+  const git = resolveHostGit({ packaged: false });
+  if (git === null) throw new Error("Project instruction fixtures require an absolute host Git executable");
+  const options = {
+    env: { ...git.options.env, ...FIXTURE_GIT_CONFIG, GIT_ALLOW_PROTOCOL: "file" },
+    encoding: "utf8" as const,
+  };
+  const capability = spawnSync(git.path, ["--no-lazy-fetch", "--version"], options);
+  if (capability.status !== 0 || !capability.stdout?.startsWith("git version ")) {
+    throw new Error("Project instruction fixtures require host Git with --no-lazy-fetch support");
+  }
+  return { path: git.path, options };
+}
+
+function initIgnoredBuild(
+  project: string,
+  patterns: string,
+  layout: "nested" | "recursive" | "plain",
+  git = requireFixtureGit(),
+) {
+  execFileSync(git.path, ["init", "-q", project], git.options);
   writeFileSync(join(project, ".gitignore"), patterns);
   if (layout !== "plain") mkdirSync(layout === "nested" ? join(project, "build", "out") : join(project, "build"), { recursive: true });
   else mkdirSync(join(project, "build"));
@@ -66,13 +90,13 @@ it("uses an absolute host Git path even with an executable in the project and re
     vi.stubEnv("PATH", ["", ".", "", host].join(delimiter));
     vi.stubEnv("PATHEXT", ".CMD;.BAT;.EXE");
     vi.resetModules();
-    gitCalls.intercept = true;
+    gitCalls.intercept = () => Buffer.alloc(0);
     const before = gitCalls.checkIgnore.length;
     const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
     expect(discover(project, join("build", "x.js"), new Set())).toEqual([]);
     expect(gitCalls.checkIgnore.slice(before)).toEqual([join(host, binary)]);
   } finally {
-    gitCalls.intercept = false;
+    gitCalls.intercept = undefined;
     vi.unstubAllEnvs();
     process.chdir(cwd);
     await cleanupTmpDir(root);
@@ -84,36 +108,37 @@ it("keeps the ignore query local when a skip-worktree ignore blob is missing", a
   const source = join(root, "source");
   const project = join(root, "project");
   const trace = join(root, "git-trace.jsonl");
-  const disabledConfig = process.platform === "win32" ? "NUL" : "/dev/null";
-  const configEnv = { GIT_CONFIG_GLOBAL: disabledConfig, GIT_CONFIG_SYSTEM: disabledConfig };
-  const env = {
-    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/iu.test(key))),
-    ...configEnv,
-  };
-  const git = (...args: string[]) => execFileSync("git", args, { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const hasBlob = () => spawnSync("git", ["--no-lazy-fetch", "-C", project, "cat-file", "-e", "HEAD:.gitignore"], { env }).status;
   try {
+    const fixture = requireFixtureGit();
+    const git = (...args: string[]) => execFileSync(fixture.path, args, fixture.options);
     git("init", "-q", source);
     git("-C", source, "config", "uploadpack.allowFilter", "true");
     git("-C", source, "config", "uploadpack.allowAnySHA1InWant", "true");
     writeFileSync(join(source, ".gitignore"), "build/\n");
     git("-C", source, "add", ".gitignore");
     git("-C", source, "-c", "user.name=Example", "-c", "user.email=git@example.test", "commit", "-qm", "fixture");
+    const ignoreBlob = git("-C", source, "rev-parse", "HEAD:.gitignore").trim();
+    const inspectBlob = () => execFileSync(
+      fixture.path, ["--no-lazy-fetch", "-C", project, "cat-file", "--batch-check"],
+      { ...fixture.options, input: `${ignoreBlob}\n` },
+    ).trim();
     git("clone", "-q", "--filter=blob:none", "--no-checkout", "-c", "protocol.file.allow=always", pathToFileURL(source).href, project);
     git("-C", project, "read-tree", "HEAD");
     git("-C", project, "update-index", "--skip-worktree", ".gitignore");
     expect(git("-C", project, "ls-files", "-t", ".gitignore").trim()).toBe("S .gitignore");
     expect(existsSync(join(project, ".gitignore"))).toBe(false);
-    expect(hasBlob()).toBeGreaterThan(0);
+    expect(inspectBlob()).toBe(`${ignoreBlob} missing`);
     mkdirSync(join(project, "build"));
     writeFileSync(join(project, "build", "AGENTS.md"), "fixture instructions");
 
-    gitCalls.traceEnv = { ...configEnv, GIT_TRACE2_EVENT: trace };
+    gitCalls.traceEnv = { GIT_TRACE2_EVENT: trace };
+    const before = gitCalls.checkIgnore.length;
     const layers = discoverDirectoryInstructions(project, join("build", "x.js"), new Set());
+    expect(gitCalls.checkIgnore.slice(before)).toEqual([fixture.path]);
     const events = readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ event: "cmd_name", name: "check-ignore" })]));
     expect(events.filter((event) => event.event === "child_start").map((event) => event.argv)).toEqual([]);
-    expect(hasBlob()).toBeGreaterThan(0);
+    expect(inspectBlob()).toBe(`${ignoreBlob} missing`);
     expect(layers.map((layer) => layer.content)).toEqual(["fixture instructions"]);
   } finally {
     gitCalls.traceEnv = undefined;
@@ -128,7 +153,7 @@ it("strips inherited Git variables case-insensitively on Windows", async () => {
     mkdirSync(join(project, ".git"));
     mkdirSync(join(project, "build"));
     writeFileSync(join(project, "build", "AGENTS.md"), "fixture instructions");
-    gitCalls.intercept = true;
+    gitCalls.intercept = () => Buffer.alloc(0);
     discoverDirectoryInstructions(project, join("build", "x.js"), new Set());
     setProcessPlatform("win32");
     vi.stubEnv("Git_ExeC_PatH", join(project, "helper"));
@@ -140,7 +165,7 @@ it("strips inherited Git variables case-insensitively on Windows", async () => {
     expect(gitCalls.lastEnv).not.toHaveProperty("GIT_DIR");
   } finally {
     setProcessPlatform(originalPlatform);
-    gitCalls.intercept = false;
+    gitCalls.intercept = undefined;
     vi.unstubAllEnvs();
     await cleanupTmpDir(project);
   }
@@ -477,12 +502,23 @@ describe("discoverDirectoryInstructions", () => {
     expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
   });
 
-  it("skips instruction files git ignores", () => {
-    initIgnoredBuild(project, "build/\nsrc/api/CLAUDE.md\n", "nested");
-    writeFileSync(join(project, "build", "out", "AGENTS.md"), "generated nested rule");
-    expect(discoverDirectoryInstructions(project, join("build", "out", "x.js"), new Set())).toEqual([]);
-    const layers = discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
-    expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
+  it("uses the same absolute Git for fixture setup and ignore queries after PATH changes", () => {
+    const git = requireFixtureGit();
+    const before = gitCalls.checkIgnore.length;
+    const other = join(project, "other-bin");
+    mkdirSync(other);
+    writeFileSync(join(other, process.platform === "win32" ? "git.exe" : "git"), "unusable Git", { mode: 0o755 });
+    vi.stubEnv("PATH", other);
+    try {
+      initIgnoredBuild(project, "build/\nsrc/api/CLAUDE.md\n", "nested", git);
+      writeFileSync(join(project, "build", "out", "AGENTS.md"), "generated nested rule");
+      expect(discoverDirectoryInstructions(project, join("build", "out", "x.js"), new Set())).toEqual([]);
+      const layers = discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
+      expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
+      expect(new Set(gitCalls.checkIgnore.slice(before))).toEqual(new Set([git.path]));
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
   it("asks git once per path for the session's repeated touches", () => {
     initIgnoredBuild(project, "build/\n", "recursive");
@@ -499,7 +535,9 @@ describe("discoverDirectoryInstructions", () => {
   });
 
   it("does not query Git while unavailable and checks again for the same path when it appears", async () => {
-    initIgnoredBuild(project, "build/\n", "plain");
+    mkdirSync(join(project, ".git"));
+    mkdirSync(join(project, "build"));
+    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
     const resolve = vi.fn().mockReturnValue(null);
     vi.resetModules();
     vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: resolve }));
@@ -513,13 +551,37 @@ describe("discoverDirectoryInstructions", () => {
       const fixtureGit = join(project, "fixture-git");
       const options = { cwd: join(project, "installer"), env: { GIT_ALLOW_PROTOCOL: "" } };
       resolve.mockReturnValue({ path: fixtureGit, options });
-      gitCalls.intercept = true;
+      gitCalls.intercept = () => Buffer.alloc(0);
       expect(discover(project, join("build", "x.js"), new Set(), opts)).toEqual([]);
       expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit]);
       expect(gitCalls.lastEnv).toBe(options.env);
       expect(gitCalls.lastCwd).toBe(options.cwd);
     } finally {
-      gitCalls.intercept = false;
+      gitCalls.intercept = undefined;
+      vi.doUnmock("../../shared/host-git-executable.js");
+      vi.resetModules();
+    }
+  });
+
+  it("loads eligible instructions when Git rejects the no-lazy-fetch option", async () => {
+    mkdirSync(join(project, ".git"));
+    const fixtureGit = join(project, "fixture-git");
+    const resolve = () => ({ path: fixtureGit, options: { env: {} } });
+    const unsupported = vi.fn(() => {
+      throw Object.assign(new Error("unknown option: --no-lazy-fetch"), { status: 129 });
+    });
+    vi.resetModules();
+    vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: resolve }));
+    gitCalls.intercept = unsupported;
+    try {
+      const before = gitCalls.checkIgnore.length;
+      const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
+      const layers = discover(project, join("src", "handler.ts"), new Set());
+      expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit]);
+      expect(unsupported).toHaveBeenCalledWith(expect.arrayContaining(["--no-lazy-fetch", "check-ignore"]));
+      expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
+    } finally {
+      gitCalls.intercept = undefined;
       vi.doUnmock("../../shared/host-git-executable.js");
       vi.resetModules();
     }
