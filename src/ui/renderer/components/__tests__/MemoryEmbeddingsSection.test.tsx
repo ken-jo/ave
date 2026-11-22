@@ -31,7 +31,7 @@ describe('memory embeddings settings', () => {
         get: (key: string) => key === 'memoryEmbedding' ? config : key === 'llm' ? {
           vendors: { openai: { baseUrl } },
           modelListCache: { saved: {
-            vendor: 'openai', baseUrl, endpoint: baseUrl + '/models', models: ['embed-a'],
+            vendor: 'openai', baseUrl, endpoint: `${baseUrl}/models`, models: ['embed-a'],
             modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }],
           } },
         } : undefined,
@@ -41,10 +41,15 @@ describe('memory embeddings settings', () => {
       singleHopNetworkFetch: transport,
       memoryManager: { readMemoryPanelCatalog: () => ({ notes: [] }) },
     } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    const invoke = (key: 'settingsGet' | 'settingsSet' | 'build', input?: unknown) => {
+      const handler = handlers.get(CHANNELS.memoryMap[key]);
+      if (!handler) throw new Error('Missing memory map handler');
+      return handler(event, input);
+    };
     api.settingsGet.mockImplementation(async () =>
-      await handlers.get(CHANNELS.memoryMap.settingsGet)!(event) as Awaited<ReturnType<typeof api.settingsGet>>);
+      await invoke('settingsGet') as Awaited<ReturnType<typeof api.settingsGet>>);
     api.settingsSet.mockImplementation(async input =>
-      await handlers.get(CHANNELS.memoryMap.settingsSet)!(event, input) as Awaited<ReturnType<typeof api.settingsSet>>);
+      await invoke('settingsSet', input) as Awaited<ReturnType<typeof api.settingsSet>>);
 
     render(<MemoryEmbeddingsSection api={api} />);
     await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
@@ -59,10 +64,10 @@ describe('memory embeddings settings', () => {
     baseUrl = 'https://api.mistral.ai/v1';
     fireEvent.click(save);
     await waitFor(() => expect(api.settingsSet).toHaveBeenCalledOnce());
-    expect(await api.settingsSet.mock.results[0]!.value).toEqual({ ok: false, error: 'request-stale' });
+    expect(await api.settingsSet.mock.results[0]?.value).toEqual({ ok: false, error: 'request-stale' });
     expect(previousDestination).toBeTruthy();
     expect(set).not.toHaveBeenCalled();
-    expect(await handlers.get(CHANNELS.memoryMap.build)!(event)).toEqual({ ok: false, error: 'model-unconfigured' });
+    expect(await invoke('build')).toMatchObject({ ok: false });
     expect(transport).not.toHaveBeenCalled();
     expect(await screen.findByText(/https:\/\/api\.mistral\.ai/)).toBeTruthy();
     expect(acknowledgement).not.toBeChecked();
@@ -126,6 +131,35 @@ describe('memory embeddings settings', () => {
     expect(screen.getByRole('combobox', { name: '임베딩 모델' })).toBeDisabled();
     expect(screen.getByRole('checkbox')).toBeDisabled();
     expect(screen.getByRole('button', { name: '저장' })).toBeDisabled();
+  });
+  it('keeps setup disabled for an unsupported local runtime when opting into a provider', async () => {
+    const api = createMemoryMapApi();
+    const initial = await api.settingsGet();
+    if (!initial.ok) throw new Error('Missing settings');
+    const settings = { ...initial.value, providers: [{ id: 'configured', models: ['embed-a'], route: ROUTE }] };
+    api.settingsGet.mockResolvedValue({ ok: true, value: settings });
+    api.modelStatus.mockResolvedValue({ ok: false, error: 'local-runtime-unavailable' });
+    api.settingsSet.mockResolvedValue({ ok: true, value: { ...settings, source: 'provider' } });
+
+    render(<MemoryEmbeddingsSection api={api} />);
+    const unavailable = ko['memoryMap.error.local-runtime-unavailable'];
+    expect(await screen.findByText(unavailable)).toBeTruthy();
+    const download = screen.getByRole('button', { name: '로컬 모델 다운로드' });
+    const existing = screen.getByRole('button', { name: '기존 모델 사용' });
+    expect(download).toBeDisabled();
+    expect(existing).toBeDisabled();
+    fireEvent.click(screen.getByRole('radio', { name: '제공자' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '제공자' }), { target: { value: 'configured' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '임베딩 모델' }), { target: { value: 'embed-a' } });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: '저장' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
+    expect(api.settingsSet).toHaveBeenCalledOnce();
+    expect(screen.getByText(unavailable)).toBeTruthy();
+    expect(download).toBeDisabled();
+    expect(existing).toBeDisabled();
+    expect(api.modelDownload).not.toHaveBeenCalled();
+    expect(api.modelUseExisting).not.toHaveBeenCalled();
   });
   it('keeps setup explicit and reports failed folder validation and retry', async () => {
     const api = createMemoryMapApi();

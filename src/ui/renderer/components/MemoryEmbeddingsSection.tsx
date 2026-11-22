@@ -8,6 +8,7 @@ import type { MemoryModelStatus } from "../../../shared/memory-model.js";
 export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<MemoryModelStatus | null>(null);
+  const [localRuntimeUnavailable, setLocalRuntimeUnavailable] = useState(false);
   const [revision, setRevision] = useState("");
   const [error, setError] = useState<MemoryMapError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -23,6 +24,11 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     const current = generation.current;
     void api.modelStatus().then(result => {
       if (!active || current !== generation.current) return;
+      if (!result.ok && result.error === 'local-runtime-unavailable') {
+        setLocalRuntimeUnavailable(true);
+        return;
+      }
+      setLocalRuntimeUnavailable(false);
       if (result.ok) { setStatus(result.value); setError(result.value.error ?? null); } else setError(result.error);
     }).catch(() => { if (active) setError("model-download-failed"); });
     void api.settingsGet().then(result => { if (active && result.ok) {
@@ -38,14 +44,16 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     return () => { active = false; generation.current++; stop(); };
   }, [api]);
   const handleAction = async (action: "download" | "existing" | "cancel") => {
+    if (localRuntimeUnavailable) return;
     setBusy(true); setError(null);
     try {
-      const result = await (action === "download" ? api.modelDownload() : action === "existing" ? api.modelUseExisting() : api.modelCancel());
-      if (!result.ok) setError(result.error);
-      else if (result.value) { setStatus(result.value); setError(result.value.error ?? null); }
-      else if (action === "cancel") {
-        const next = await api.modelStatus();
-        if (next.ok) setStatus(next.value); else setError(next.error);
+      const initial = await (action === "download" ? api.modelDownload() : action === "existing" ? api.modelUseExisting() : api.modelCancel());
+      const result = initial.ok && action === "cancel" ? await api.modelStatus() : initial;
+      if (!result.ok) {
+        if (result.error === 'local-runtime-unavailable') setLocalRuntimeUnavailable(true);
+        else setError(result.error);
+      } else if (result.value) {
+        setStatus(result.value); setError(result.value.error ?? null);
       }
     } catch { setError(action === "existing" ? "model-folder-invalid" : "model-download-failed"); }
     finally { setBusy(false); }
@@ -90,7 +98,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     }
     setConsent(checked);
   };
-  const downloading = status?.status === "downloading";
+  const downloading = !localRuntimeUnavailable && status?.status === "downloading";
   return <section data-settings-section="memory-embeddings" tabIndex={-1} aria-labelledby="memory-embeddings-heading" className="space-y-3 rounded-lg border p-4">
     <h2 id="memory-embeddings-heading" className="text-sm font-semibold">{t("memoryEmbeddings.title")}</h2>
     <p className="text-xs text-muted-foreground">{t("memoryEmbeddings.localDefault")}</p>
@@ -116,14 +124,16 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
         <p>{t('memoryEmbeddings.rebuildNotice')}</p>
       </>}
     </fieldset>
-    <p role="status" className="text-xs">{t(status ? `memoryEmbeddings.${status.status}` : "memoryEmbeddings.loading")}{status?.status === "ready" && revision ? ` · ${revision}` : ""}</p>
+    <p role="status" className="text-xs">{localRuntimeUnavailable
+      ? t("memoryMap.error.local-runtime-unavailable")
+      : <>{t(status ? `memoryEmbeddings.${status.status}` : "memoryEmbeddings.loading")}{status?.status === "ready" && revision ? ` · ${revision}` : ""}</>}</p>
     {downloading && <div className="space-y-1 text-xs"><progress aria-label={t("memoryEmbeddings.downloading")} value={status.receivedBytes} max={Math.max(1, status.totalBytes)} className="w-full"/><p>{t("memoryEmbeddings.bytes", { received: status.receivedBytes.toLocaleString(), total: status.totalBytes.toLocaleString() })}</p></div>}
     {error && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
-    <p className="text-xs text-muted-foreground">{t("memoryEmbeddings.downloadNotice")}</p>
+    {!localRuntimeUnavailable && <p className="text-xs text-muted-foreground">{t("memoryEmbeddings.downloadNotice")}</p>}
     <div className="flex flex-wrap gap-2">
       {downloading ? <Button variant="outline" size="sm" onClick={() => void handleAction("cancel")}>{t("memoryEmbeddings.cancel")}</Button> : <>
-        <Button size="sm" disabled={busy || !status} onClick={() => void handleAction("download")}>{t(status?.status === "failed" ? "memoryEmbeddings.retry" : "memoryEmbeddings.download")}</Button>
-        <Button variant="outline" size="sm" disabled={busy || !status} onClick={() => void handleAction("existing")}>{t("memoryEmbeddings.existing")}</Button>
+        <Button size="sm" disabled={busy || localRuntimeUnavailable || !status} onClick={() => void handleAction("download")}>{t(status?.status === "failed" ? "memoryEmbeddings.retry" : "memoryEmbeddings.download")}</Button>
+        <Button variant="outline" size="sm" disabled={busy || localRuntimeUnavailable || !status} onClick={() => void handleAction("existing")}>{t("memoryEmbeddings.existing")}</Button>
       </>}
     </div>
   </section>;

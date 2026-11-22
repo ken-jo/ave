@@ -14,6 +14,7 @@ export const MEMORY_MAP_ERROR_KEYS = {
   'provider-dimension-mismatch': 'memoryMap.error.provider-dimension-mismatch',
   'provider-embedding-failed': 'memoryMap.error.provider-embedding-failed',
   'provider-no-embedding-model': 'memoryMap.error.provider-no-embedding-model',
+  'provider-route-ineligible': 'memoryMap.error.provider-route-ineligible',
   'provider-unavailable': 'memoryMap.error.provider-unavailable',
   'model-download-failed': 'memoryMap.error.model-download-failed',
   'model-folder-invalid': 'memoryMap.error.model-folder-invalid',

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
 import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
+import { ko } from '../../../../i18n/messages/ko.js';
 import type { GraphSnapshot } from '../../../../shared/memory-map.js';
 import type { AveApi } from '../../types.js';
 import { MemoryView } from '../MemoryView.js';
@@ -38,8 +39,43 @@ function selectTab(name: string) { fireEvent.mouseDown(screen.getByRole('tab', {
 async function ready() { await screen.findByText('메모리 3 · 연결 2'); }
 
 describe('memory map view', () => {
+  it.each([null, SNAPSHOT])('disables local build on first open with an unsupported local runtime and snapshot %#', async snapshot => {
+    const { map, props } = setup();
+    map.get.mockResolvedValue({ ok: true, value: snapshot });
+    map.modelStatus.mockResolvedValue({ ok: false, error: 'local-runtime-unavailable' });
+    render(<MemoryView {...props} />);
+    expect(await screen.findByText(ko['memoryMap.error.local-runtime-unavailable'])).toBeTruthy();
+    expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '메모리 임베딩 설정' }));
+    expect(props.onOpenEmbeddingSettings).toHaveBeenCalledOnce();
+    expect(map.build).not.toHaveBeenCalled();
+  });
+  it('keeps build disabled when refreshing after a local runtime refusal', async () => {
+    const { api, map, props } = setup();
+    const refusal = { ok: false, error: 'local-runtime-unavailable' } as const;
+    map.build.mockResolvedValue(refusal);
+    render(<MemoryView {...props} />);
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
+    expect(await screen.findByText(ko['memoryMap.error.local-runtime-unavailable'])).toBeTruthy();
+    expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
+
+    map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'failed' } });
+    map.modelStatus.mockResolvedValue(refusal);
+    const save = vi.mocked(api.onMemorySaveResult).mock.calls[0]?.[0];
+    if (!save) throw new Error('Missing memory save subscription');
+    act(() => save({} as Parameters<typeof save>[0]));
+    await waitFor(() => expect(map.modelStatus).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(ko['memoryMap.error.local-runtime-unavailable'])).toBeTruthy();
+    expect(screen.getByRole('button', { name: '지도 다시 만들기' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '다시 시도' })).toBeNull();
+    expect(map.build).toHaveBeenCalledOnce();
+  });
   it('allows building a provider map without a local model installed', async () => {
     const { map, props } = setup(); map.get.mockResolvedValue({ ok: true, value: null });
+    map.modelStatus.mockResolvedValue({ ok: false, error: 'local-runtime-unavailable' });
     map.settingsGet.mockResolvedValue({ ok: true, value: { source: 'provider', providerAvailable: true, providers: [], namespace: { ...SNAPSHOT.model.namespace, source: 'provider', providerId: 'configured' } } });
     render(<MemoryView {...props} />);
     await screen.findByText('아직 지도가 없습니다. 사용 가능한 메모리로 지도를 만드세요.');

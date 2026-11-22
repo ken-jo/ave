@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../types.js';
 import type { MemoryMapApi } from '../../shared/memory-map.js';
+import type { MemoryEmbeddingConfig } from '../../shared/memory-embedding-config.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 const state = vi.hoisted(() => ({
@@ -22,12 +23,49 @@ async function providerEndpointId() {
   if (!endpointId) throw new Error('Missing provider route');
   return endpointId;
 }
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+if (!originalPlatform) throw new Error('Missing platform descriptor');
 beforeEach(() => {
+  Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
   vi.clearAllMocks(); state.handles.clear();
+  state.status.mockReset().mockResolvedValue({ status: 'unconfigured' });
   registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
     raw => (raw as { projectRoot?: string } | undefined)?.projectRoot === '/denied' ? { ok: false, error: 'project-not-allowed' } : { ok: true, options: {} });
 });
+afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
 describe('memory map host boundary', () => {
+  it.each([undefined, '/example/verified-model'])('refuses unsupported Windows local operations with model folder %s', async localModelPath => {
+    Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'win32' });
+    state.status.mockResolvedValue({ status: localModelPath ? 'ready' : 'unconfigured' });
+    let config: MemoryEmbeddingConfig = { source: 'local', localModelPath };
+    const set = vi.fn(async (_key: string, value: MemoryEmbeddingConfig) => { config = value; });
+    registerMemoryMapHandlers({
+      auditLogger: { log: state.audit },
+      settingsService: {
+        get: (key: string) => key === 'memoryEmbedding' ? config : undefined,
+        hasStoredSecret: async (name: string) => name === 'llm.apiKey.openai',
+        set,
+      },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    const unavailable = { ok: false, error: 'local-runtime-unavailable' };
+    expect(await invoke('modelStatus')).toEqual(unavailable);
+    expect(await invoke('modelDownload')).toEqual(unavailable);
+    expect(await invoke('modelUseExisting')).toEqual(unavailable);
+    expect(await invoke('build')).toEqual(unavailable);
+    expect(await invoke('modelStatus')).toEqual(unavailable);
+    expect(state.status).not.toHaveBeenCalled();
+    expect(state.download).not.toHaveBeenCalled();
+    expect(state.dialog).not.toHaveBeenCalled();
+    expect(state.useExisting).not.toHaveBeenCalled();
+    expect(state.build).not.toHaveBeenCalled();
+    expect(set).not.toHaveBeenCalled();
+
+    expect(await invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small',
+      endpointId: await providerEndpointId(), consent: true })).toMatchObject({ ok: true, value: { source: 'provider' } });
+    expect(config.localModelPath).toBe(localModelPath);
+    expect(await invoke('build')).toMatchObject({ ok: true });
+    expect(state.build).toHaveBeenCalledOnce();
+  });
   it('locates a selected revision through its authorized graph scope and refuses edited or revoked sources', async () => {
     const note = { id: '11111111-1111-4111-8111-111111111111', filename: 'selected.md', title: 'Selected', content: 'Original body' };
     const revision = graphMemoryRevision(note);
@@ -115,7 +153,7 @@ describe('memory map host boundary', () => {
         get: (key: string) => key === 'llm' ? {
           vendors: { openai: { baseUrl } },
           modelListCache: { saved: {
-            vendor: 'openai', baseUrl, endpoint: baseUrl + '/models', models: ['embed-a'],
+            vendor: 'openai', baseUrl, endpoint: `${baseUrl}/models`, models: ['embed-a'],
             modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }],
           } },
         } : undefined,

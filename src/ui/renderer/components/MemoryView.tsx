@@ -13,7 +13,7 @@ import { MEMORY_SOURCE_TOKENS } from './memory-graph-renderer.js';
 
 const CARD_PAGE_SIZE = 24;
 const BUILD_STATUS_REFRESH_MS = 1500;
-type MapState = 'loading' | 'unconfigured' | 'building' | 'failed' | 'empty' | 'ready' | 'stale';
+type MapState = 'loading' | 'unconfigured' | 'unavailable' | 'building' | 'failed' | 'empty' | 'ready' | 'stale';
 export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSettings: () => void }) {
   const { api, project, onOpenSession, onOpenEmbeddingSettings } = props;
   const { t } = useTranslation();
@@ -45,9 +45,15 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
     setFacets({ sources: [], projects: [], playbooks: [] });
     setState('loading'); setSnapshot(null); setFilters({}); setSelected(null); setProgress(null); setError(null);
     setResumedBuild(false);
-    const stop = api.memoryMap.onProgress(value => { if (active) { setProgress(value); setState('building'); } });
+    const stop = api.memoryMap.onProgress(value => {
+      if (active) { setProgress(value); setState(previous => previous === 'unavailable' ? previous : 'building'); }
+    });
     void Promise.all([api.memoryMap.get(scope), api.memoryMap.facets(scope), api.memoryMap.modelStatus(), api.memoryMap.settingsGet()]).then(([graph, counts, model, settings]) => {
       if (!active || generation.current !== current) return;
+      if (settings.ok && settings.value.source === 'local' && !model.ok && model.error === 'local-runtime-unavailable') {
+        setState('unavailable');
+        return;
+      }
       if (!graph.ok) { setState(graph.error === 'graph-stale' ? 'stale' : 'failed'); setError(graph.error); return; }
       if (!counts.ok) { setState('failed'); setError(counts.error); return; }
       if (!settings.ok) { setState('failed'); setError(settings.error); return; }
@@ -120,6 +126,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
       const result = await api.memoryMap.build(scope);
       if (current !== generation.current) return;
       if (result.ok) { hadSnapshot.current = true; setSnapshot(result.value); setState(result.value.points.length ? 'ready' : 'empty'); }
+      else if (result.error === 'local-runtime-unavailable') setState('unavailable');
       else { setState(result.error === 'graph-stale' ? 'stale' : 'failed'); setError(result.error); }
     } catch { if (current === generation.current) { setState('failed'); setError('graph-build-failed'); } }
   };
@@ -140,7 +147,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
         <TabsTrigger value="cards">{t('memoryMap.cards')}</TabsTrigger>
         <TabsTrigger value="manage">{t('memoryMap.manage')}</TabsTrigger>
       </TabsList>
-      {tab !== 'manage' && <Button size="sm" variant="outline" disabled={state === 'building' || state === 'loading' || state === 'unconfigured'} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
+      {tab !== 'manage' && <Button size="sm" variant="outline" disabled={state === 'building' || state === 'loading' || state === 'unconfigured' || state === 'unavailable'} onClick={() => void handleBuild()}>{t('memoryMap.rebuild')}</Button>}
     </div>
     {tab !== 'manage' && <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border @[640px]:flex-row">
       <aside aria-label={t('memoryMap.filters')} className="w-full shrink-0 space-y-4 overflow-auto border-b p-3 @[640px]:w-48 @[640px]:border-b-0 @[640px]:border-r">
@@ -167,9 +174,10 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
           </TabsContent>
           {!visiblePoints.length && <p role="status" className="pointer-events-none absolute inset-x-4 top-16 rounded bg-background p-3 text-sm">{t('memoryMap.noFiltered')}</p>}
         </> : <div className="space-y-3 p-6" role="status">
-          <p className="text-sm">{t(state === 'empty' && snapshot?.status === 'ready' ? 'memoryMap.noMemories' : `memoryMap.state.${state}`)}</p>
+          <p className="text-sm">{t(state === 'unavailable' ? 'memoryMap.error.local-runtime-unavailable'
+            : state === 'empty' && snapshot?.status === 'ready' ? 'memoryMap.noMemories' : `memoryMap.state.${state}`)}</p>
           {error && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
-          {state === 'unconfigured' && <Button size="sm" onClick={onOpenEmbeddingSettings}>{t('memoryMap.openSettings')}</Button>}
+          {(state === 'unconfigured' || state === 'unavailable') && <Button size="sm" onClick={onOpenEmbeddingSettings}>{t('memoryMap.openSettings')}</Button>}
           {state === 'building' && <><p className="text-xs">{progress ? t(`memoryMap.phase.${progress.phase}`, { completed: progress.completed, total: progress.total }) : snapshot?.status === 'building' ? t('memoryMap.phase.embedding', { completed: snapshot.coverage.embedded, total: snapshot.coverage.eligible }) : t('memoryMap.preparing')}</p>{progress && <progress aria-label={t('memoryMap.state.building')} value={progress.completed} max={Math.max(1, progress.total)} />}<Button size="sm" variant="outline" onClick={() => void handleCancel()}>{t('memoryMap.cancelBuild')}</Button></>}
           {['failed', 'stale', 'empty'].includes(state) && <Button size="sm" onClick={() => void handleBuild()}>{t(state === 'failed' ? 'memoryMap.retry' : 'memoryMap.rebuild')}</Button>}
         </div>}

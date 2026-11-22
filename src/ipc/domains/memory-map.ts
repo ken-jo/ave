@@ -8,6 +8,7 @@ import { validateHostRendererSender, auditUnauthorized, UNAUTHORIZED_FRAME } fro
 import type { IpcDeps } from '../types.js';
 import type { MemoryMapScope, MemoryEmbeddingSettings, MemoryMapError } from '../../shared/memory-map.js';
 import { MemoryMapScopeSchema, MemoryRetrievalSchema, MemoryEmbeddingSettingsSchema } from '../../shared/memory-map-validation.js';
+import { assertLocalEmbeddingRuntime } from '../../main/memory-map/local-runtime.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
 import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
@@ -60,9 +61,18 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
       throw error;
     }
   };
-  const host = new MemoryMapHost({ provider, watchAuthority, validatedModelPath: () => { if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured'); return model.validatedPath(); }, onProgress: progress => {
-    if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
-  } });
+  const host = new MemoryMapHost({
+    provider,
+    watchAuthority,
+    validatedModelPath: () => {
+      assertLocalEmbeddingRuntime();
+      if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured');
+      return model.validatedPath();
+    },
+    onProgress: progress => {
+      if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
+    },
+  });
   let sourceIndex: { scopeId: string; filenames: Map<string, string> } | undefined;
   const catalog = (scope?: MemoryMapScope): ReadMemoryMapCatalog => {
     const filenames = new Map<string, string>();
@@ -105,14 +115,26 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     });
   }
   handle(CHANNELS.memoryMap.get, MemoryMapScopeSchema.optional(), scope => host.get(catalog(scope)));
-  handle(CHANNELS.memoryMap.build, MemoryMapScopeSchema.optional(), (scope, event) => { buildEvent = event; return host.build(catalog(scope)); });
+  handle(CHANNELS.memoryMap.build, MemoryMapScopeSchema.optional(), (scope, event) => {
+    if (deps.settingsService.get('memoryEmbedding')?.source !== 'provider') assertLocalEmbeddingRuntime();
+    buildEvent = event;
+    return host.build(catalog(scope));
+  });
   handle(CHANNELS.memoryMap.cancel, z.undefined(), () => { host.cancel(); return null; });
   handle(CHANNELS.memoryMap.facets, MemoryMapScopeSchema.optional(), async scope => { await host.get(catalog(scope)); return memoryFacets(catalog(scope)().records); });
   handle(CHANNELS.memoryMap.retrieve, MemoryRetrievalSchema, request => host.retrieve(catalog(request.scope), request));
-  handle(CHANNELS.memoryMap.modelStatus, z.undefined(), () => model.status());
-  handle(CHANNELS.memoryMap.modelDownload, z.undefined(), (_value, event) => { host.cancel(); modelEvent = event; return model.download(); });
+  handle(CHANNELS.memoryMap.modelStatus, z.undefined(), () => {
+    assertLocalEmbeddingRuntime();
+    return model.status();
+  });
+  handle(CHANNELS.memoryMap.modelDownload, z.undefined(), (_value, event) => {
+    assertLocalEmbeddingRuntime();
+    host.cancel(); modelEvent = event;
+    return model.download();
+  });
   handle(CHANNELS.memoryMap.modelCancel, z.undefined(), () => { model.cancel(); return null; });
   handle(CHANNELS.memoryMap.modelUseExisting, z.undefined(), async (_value, event) => {
+    assertLocalEmbeddingRuntime();
     const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     if (selection.canceled || !selection.filePaths[0]) return null;
     host.cancel(); modelEvent = event; return model.useExisting(selection.filePaths[0]);
