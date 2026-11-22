@@ -1033,6 +1033,7 @@ src/work-board/workflow/__tests__/stage-machine.test.ts
 src/work-board/workflow/__tests__/stage-prompt.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-folder.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-git.test.ts
+src/work-board/workflow/__tests__/stage-workspaces-open-race.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-ownership.test.ts
 test/renderer/assistant-card-contrast.test.tsx
 test/renderer/plugin-load-refusal-visibility.test.tsx

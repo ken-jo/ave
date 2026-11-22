@@ -322,11 +322,22 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     // Each level is made on its own in the level above it, which is still the directory it was: a link would put the run somewhere else.
     let chain: Pick<Held, "project" | "run">;
     try {
-      const level = holdDir(aveHome()).ensure(WORKTREES_DIR).ensure(basename(dirname(runRoot)));
+      const made = (): typeof chain => {
+        const level = holdDir(aveHome()).ensure(WORKTREES_DIR).ensure(basename(dirname(runRoot)));
+        return { project: level, run: level.make(basename(runRoot)) };
+      };
       try {
-        chain = { project: level, run: level.make(basename(runRoot)) };
+        try {
+          chain = made();
+        } catch (error) {
+          // The project folder is shared: another run's release, in this or another process, removes it once it is empty. Every level
+          // is then held anew, from the home down; a link in one of them still ends it there.
+          if (!(error instanceof OwnedFsError) || error.reason !== "moved") throw error;
+          chain = made();
+        }
       } catch (error) {
-        return refused(error instanceof OwnedFsError && error.reason === "exists" ? "workspace-unavailable" : "home-boundary-unverified");
+        if (!(error instanceof OwnedFsError) || (error.reason !== "exists" && error.reason !== "moved")) throw error;
+        return refused("workspace-unavailable");
       }
     } catch {
       return refused("home-boundary-unverified");
