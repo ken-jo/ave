@@ -273,7 +273,10 @@ export async function openInvocationProxyListener(
   });
   let binding: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
+  // Unlike `closing`, never cleared: a failed close must not let a bind in progress finish.
+  let closeRequested = false;
   const close = (): Promise<void> => {
+    closeRequested = true;
     revoke();
     options.admission?.signal.removeEventListener("abort", revoke);
     closing ??= (async () => {
@@ -293,7 +296,7 @@ export async function openInvocationProxyListener(
   try {
     for (let attempt = 0; attempt < MAX_LISTENER_BIND_ATTEMPTS; attempt++) {
       options.admission?.assertCanBind();
-      if (closing !== undefined) throw new Error("invocation proxy listener closed while binding");
+      if (closeRequested) throw new Error("invocation proxy listener closed while binding");
       binding = new Promise<void>((resolve, reject) => {
         server.once("error", reject);
         server.listen(0, "127.0.0.1", () => {
@@ -312,7 +315,7 @@ export async function openInvocationProxyListener(
     }
     if (port === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
     options.admission?.assertCanBind();
-    if (closing !== undefined) throw new Error("invocation proxy listener closed while binding");
+    if (closeRequested) throw new Error("invocation proxy listener closed while binding");
   } catch (error) {
     // An admission's owner closes the listener it adopted; without one it is closed here.
     if (options.admission === undefined) await close();

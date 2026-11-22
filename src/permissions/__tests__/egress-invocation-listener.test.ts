@@ -218,6 +218,45 @@ describe("openInvocationProxyListener", () => {
     await expect(connect()).rejects.toThrow();
   });
 
+  it("stays closed when a close requested during a bind fails to unbind", async () => {
+    const originalAddress = http.Server.prototype.address;
+    const servers = new Set<http.Server>();
+    let first = true;
+    vi.spyOn(http.Server.prototype, "address").mockImplementation(function (this: http.Server) {
+      servers.add(this);
+      const address = originalAddress.call(this);
+      if (first && address !== null && typeof address !== "string") {
+        first = false;
+        return { ...address, port: 60088 };
+      }
+      return address;
+    });
+    const failure = new Error("listener unbind failed");
+    const close = http.Server.prototype.close;
+    let releaseTentative: (() => void) | undefined;
+    vi.spyOn(http.Server.prototype, "close").mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
+      // The tentative bind's unbind is still in flight when the owner's close runs.
+      releaseTentative = () => close.call(this, callback);
+      return this;
+    }).mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
+      queueMicrotask(() => callback?.(failure));
+      return this;
+    }).mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
+      return close.call(this, callback);
+    });
+    let adopted: (() => Promise<void>) | undefined;
+    const opening = openInvocationProxyListener({
+      upstream: () => undefined,
+      admission: { signal: new AbortController().signal, assertCanBind: () => {}, acceptsConnections: () => true, adopt: (c) => { adopted = c; } },
+    });
+    opening.then((listener) => cleanups.push(listener.close), () => {});
+    await expect(adopted!()).rejects.toBe(failure);
+    releaseTentative!();
+    await expect(opening).rejects.toThrow(/closed while binding/);
+    await expect(adopted!()).resolves.toBeUndefined();
+    expect([...servers].every((server) => !server.listening)).toBe(true);
+  });
+
   it("does not expose the shell listener to a client restricted to the shared allow range", async () => {
     const { listener, upstream } = await setup("Basic aWQ=");
     const [start, end] = asrtSandbox.getWindowsProxyPortRange();
