@@ -69,6 +69,7 @@ export const en = {
   "memoryEmbeddings.unconfigured": "Model not configured",
   "memoryEmbeddings.downloading": "Downloading model",
   "memoryEmbeddings.ready": "Model ready · revision",
+  "memoryEmbeddings.legacy-location": "This model is stored in a previous location. Choose “Use existing model” to copy it into Ave.",
   "memoryEmbeddings.failed": "Model setup failed",
   "memoryEmbeddings.bytes": "{received} / {total} bytes",
   "memoryEmbeddings.downloadNotice": "About 135 MB. Download contacts the model host once for setup. Local inference stays on this device.",

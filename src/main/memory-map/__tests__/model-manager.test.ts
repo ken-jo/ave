@@ -94,12 +94,13 @@ describe('local model lifecycle', () => {
       expect(await readdir(join(f.root, 'multilingual-e5-small'))).toHaveLength(1);
     } finally { await f.close(); }
   });
-  it('refuses a saved external path until the folder is adopted', async () => {
+  it('reports a valid legacy model location in settings and refuses it for inference', async () => {
     const f = await fixture();
     try {
       const external = await mkdtemp(join(tmpdir(), 'previous-model-')); roots.push(external);
       await writeFile(join(external, 'weights.bin'), 'model');
       f.setSaved(external);
+      await expect(f.manager.status()).resolves.toMatchObject({ status: 'legacy-location', error: undefined });
       await expect(f.manager.validatedPath()).rejects.toMatchObject({ code: 'model-integrity-failed' });
       expect(f.saved()).toBe(external);
     } finally { await f.close(); }

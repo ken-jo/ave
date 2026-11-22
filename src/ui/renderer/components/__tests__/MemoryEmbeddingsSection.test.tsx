@@ -214,6 +214,24 @@ describe('memory embeddings settings', () => {
     expect(await screen.findByText(/모델 준비됨/)).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
+  it('offers adoption for a legacy model location', async () => {
+    const api = createMemoryMapApi();
+    api.modelStatus.mockResolvedValue({ ok: true, value: {
+      status: 'legacy-location', receivedBytes: 0, totalBytes: 0, completedFiles: 0, totalFiles: 4,
+    } });
+    render(<MemoryEmbeddingsSection api={api} />);
+    expect(await screen.findByText('모델이 이전 위치에 있습니다. ‘기존 모델 사용’을 선택해 Ave로 복사하세요.')).toBeTruthy();
+    const existing = screen.getByRole('button', { name: '기존 모델 사용' });
+    expect(existing).toBeEnabled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(existing);
+    expect(api.modelUseExisting).toHaveBeenCalledOnce();
+    await screen.findByRole('alert');
+  });
+  it('provides legacy model location guidance in both locales', () => {
+    expect(en['memoryEmbeddings.legacy-location']).toBe('This model is stored in a previous location. Choose “Use existing model” to copy it into Ave.');
+    expect(ko['memoryEmbeddings.legacy-location']).toBe('모델이 이전 위치에 있습니다. ‘기존 모델 사용’을 선택해 Ave로 복사하세요.');
+  });
   it('keeps embedding and map keys in both catalogs', () => {
     const keys = (catalog: Record<string, string>) => Object.keys(catalog).filter(key => key.startsWith('memoryEmbeddings.') || key.startsWith('memoryMap.')).sort();
     expect(keys(en)).toEqual(keys(ko));

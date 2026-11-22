@@ -71,6 +71,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryEmbeddings.unconfigured": "모델이 설정되지 않았습니다",
   "memoryEmbeddings.downloading": "모델 다운로드 중",
   "memoryEmbeddings.ready": "모델 준비됨 · 리비전",
+  "memoryEmbeddings.legacy-location": "모델이 이전 위치에 있습니다. ‘기존 모델 사용’을 선택해 Ave로 복사하세요.",
   "memoryEmbeddings.failed": "모델 설정 실패",
   "memoryEmbeddings.bytes": "{received} / {total} 바이트",
   "memoryEmbeddings.downloadNotice": "약 135 MB. 설정을 위해 모델 호스트에 한 번 연결합니다. 로컬 추론은 이 기기에서 실행됩니다.",
