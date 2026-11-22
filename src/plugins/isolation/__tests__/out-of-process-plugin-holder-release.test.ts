@@ -56,7 +56,7 @@ vi.mock("../child-loopback-link.js", async (importOriginal) => ({
   connectToAnnouncedChild: async () => loopback.channel,
 }));
 
-import { afterQueuedCallbacks } from "../../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
@@ -122,11 +122,9 @@ type FakeChild = EventEmitter & {
   readonly kill: Mock<(signal: NodeJS.Signals) => boolean>;
 };
 
-const liveChildren: FakeChild[] = [];
-
 /** Records every signal and never exits on one: only {@link exit} ends it. */
 function fakeChild(): FakeChild {
-  const child: FakeChild = Object.assign(new EventEmitter(), {
+  return Object.assign(new EventEmitter(), {
     pid: 4242,
     stdin: new PassThrough(),
     stdout: new PassThrough(),
@@ -138,8 +136,6 @@ function fakeChild(): FakeChild {
       return true;
     }),
   });
-  liveChildren.push(child);
-  return child;
 }
 
 function exit(child: FakeChild, code: number | null, signal: NodeJS.Signals | null): void {
@@ -148,7 +144,6 @@ function exit(child: FakeChild, code: number | null, signal: NodeJS.Signals | nu
   child.signalCode = signal;
   events.push("exit");
   child.emit("exit", code, signal);
-  child.emit("close", code, signal);
 }
 
 function registration() {
@@ -178,6 +173,13 @@ function track(stopping: unknown): { readonly settled: () => boolean; readonly o
     settled = true;
   });
   return { settled: () => settled, outcome };
+}
+
+async function finishChild(child: FakeChild, stop: ReturnType<typeof track> | undefined): Promise<void> {
+  exit(child, null, "SIGKILL");
+  child.emit("close", child.exitCode, child.signalCode);
+  await stop?.outcome;
+  await afterQueuedCallbacks();
 }
 
 /** Let stop arm its EOF grace, run it out, and let the teardown it starts settle as far as it can. */
@@ -215,14 +217,12 @@ function spec(overrides: Partial<OutOfProcessPluginSpec>): OutOfProcessPluginSpe
 }
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   root = mkdtempSync(join(tmpdir(), "oop-holder-release-"));
   previousAveHome = process.env.AVE_HOME;
 });
 
 afterEach(() => {
-  vi.useRealTimers();
-  // A failed case must not leave a child the session still waits on.
-  for (const child of liveChildren.splice(0)) exit(child, null, "SIGKILL");
   events.length = 0;
   grant.acquired = 0;
   grant.released = 0;
@@ -233,6 +233,7 @@ afterEach(() => {
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
   rmSync(root, { recursive: true, force: true });
+  vi.useRealTimers();
 });
 
 /** The sandboxed Windows launch holds a filesystem grant for the child's lifetime; only Windows takes that path. */
@@ -257,31 +258,36 @@ describe.runIf(process.platform === "win32")("a stopped Windows child keeps its 
   it("releases each holder once, only after the terminated child exits, and only then resolves stop", async () => {
     const child = fakeChild();
     const { holder, register } = registration();
-    const instance = await confinedInstance(child, register);
-    expect(events).toEqual(["registration acquired", "grant acquired"]);
+    let stop: ReturnType<typeof track> | undefined;
+    try {
+      const instance = await confinedInstance(child, register);
+      expect(events).toEqual(["registration acquired", "grant acquired"]);
 
-    // The session's EOF grace and the force-kill escalation are setTimeout calls with no injection point.
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const stop = track(instance.stop?.());
-    await runOutStopGrace();
-    expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
-    expect(stop.settled()).toBe(false);
-    expect(grant.released).toBe(0);
-    expect(holder.dispose).not.toHaveBeenCalled();
+      stop = track(instance.stop?.());
+      await runOutStopGrace();
+      expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+      expect(stop.settled()).toBe(false);
+      expect(grant.released).toBe(0);
+      expect(holder.dispose).not.toHaveBeenCalled();
 
-    await vi.advanceTimersToNextTimerAsync();
-    await afterQueuedCallbacks();
-    expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
-    expect(stop.settled()).toBe(false);
-    expect(grant.released).toBe(0);
-    expect(holder.dispose).not.toHaveBeenCalled();
+      await vi.advanceTimersToNextTimerAsync();
+      await afterQueuedCallbacks();
+      expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+      expect(stop.settled()).toBe(false);
+      expect(grant.released).toBe(0);
+      expect(holder.dispose).not.toHaveBeenCalled();
 
-    exit(child, null, "SIGKILL");
-    expect(await stop.outcome).toBeUndefined();
-    expect(events).toEqual([
-      "registration acquired", "grant acquired", "SIGTERM", "SIGKILL",
-      "exit", "grant released", "registration released", "stop resolved",
-    ]);
+      exit(child, null, "SIGKILL");
+      await afterQueuedCallbacks();
+      expect(stop.settled()).toBe(true);
+      expect(await stop.outcome).toBeUndefined();
+      expect(events).toEqual([
+        "registration acquired", "grant acquired", "SIGTERM", "SIGKILL",
+        "exit", "grant released", "registration released", "stop resolved",
+      ]);
+    } finally {
+      await finishChild(child, stop);
+    }
     expect(grant).toEqual({ acquired: 1, released: 1 });
     expect(holder.dispose).toHaveBeenCalledOnce();
     expect(holder.quarantine).not.toHaveBeenCalled();
@@ -290,13 +296,18 @@ describe.runIf(process.platform === "win32")("a stopped Windows child keeps its 
   it("releases once when the child exits on its own, and a stop that follows signals and releases nothing", async () => {
     const child = fakeChild();
     const { holder, register } = registration();
-    const instance = await confinedInstance(child, register);
+    let stop: ReturnType<typeof track> | undefined;
+    try {
+      const instance = await confinedInstance(child, register);
+      exit(child, 0, null);
+      await afterQueuedCallbacks();
+      expect(events).toEqual(["registration acquired", "grant acquired", "exit", "grant released", "registration released"]);
 
-    exit(child, 0, null);
-    await afterQueuedCallbacks();
-    expect(events).toEqual(["registration acquired", "grant acquired", "exit", "grant released", "registration released"]);
-
-    expect(await track(instance.stop?.()).outcome).toBeUndefined();
+      stop = track(instance.stop?.());
+      expect(await stop.outcome).toBeUndefined();
+    } finally {
+      await finishChild(child, stop);
+    }
     expect(child.kill).not.toHaveBeenCalled();
     expect(events.slice(-2)).toEqual(["registration released", "stop resolved"]);
     expect(grant).toEqual({ acquired: 1, released: 1 });
@@ -312,6 +323,10 @@ describe("a stopped native child whose exit cannot be verified", () => {
     const disposal = new Promise<void>((_resolve, reject) => {
       rejectDisposal = reject;
     });
+    // Teardown may reject disposal before the native child has requested it.
+    void disposal.catch(() => {});
+    const disposalFailure = new MxcProcessCleanupError("Termination unverified");
+    const completion = deferred<{ exitCode: number; timedOut: boolean }>();
     const dispose = vi.fn(() => {
       events.push("dispose requested");
       return disposal;
@@ -319,7 +334,7 @@ describe("a stopped native child whose exit cannot be verified", () => {
     const admittedRelease = vi.fn(async () => {});
     spawnNativeChild.mockResolvedValue(admittedMxcChild({
       id: 42, stdin: pipes.hostToChild, stdout: pipes.childToHost, stderr: new PassThrough(),
-      completion: new Promise<never>(() => undefined), dispose,
+      completion: completion.promise, dispose,
     } as never, admittedRelease));
     const launchRelease = vi.fn();
     const { holder, register } = registration();
@@ -327,23 +342,22 @@ describe("a stopped native child whose exit cannot be verified", () => {
       prepareMxcChild: async () => nativePluginLaunch({ release: launchRelease }),
       registerSandboxEnvelope: register,
     }));
-    const instance = await factory(runtimeContext({
-      pluginRoot: join(root, "plugin"),
-      pluginDataDir: join(root, "data"),
-      pluginSocketDir: join(root, "sockets"),
-    }));
-
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
     process.on("unhandledRejection", onUnhandled);
+    let stop: ReturnType<typeof track> | undefined;
     try {
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const stop = track(instance.stop?.());
+      const instance = await factory(runtimeContext({
+        pluginRoot: join(root, "plugin"),
+        pluginDataDir: join(root, "data"),
+        pluginSocketDir: join(root, "sockets"),
+      }));
+      stop = track(instance.stop?.());
       await runOutStopGrace();
       expect(events).toEqual(["registration acquired", "terminating", "dispose requested"]);
       expect(stop.settled()).toBe(false);
 
-      rejectDisposal(new MxcProcessCleanupError("Termination unverified"));
+      rejectDisposal(disposalFailure);
       const failure = await stop.outcome;
       await afterQueuedCallbacks();
       expect(failure).toBeInstanceOf(PluginChildTerminationUnverifiedError);
@@ -357,6 +371,10 @@ describe("a stopped native child whose exit cannot be verified", () => {
       expect(admittedRelease).not.toHaveBeenCalled();
       expect(unhandled).toEqual([]);
     } finally {
+      rejectDisposal(disposalFailure);
+      completion.resolve({ exitCode: 1, timedOut: false });
+      await stop?.outcome;
+      await afterQueuedCallbacks();
       process.off("unhandledRejection", onUnhandled);
     }
   });
