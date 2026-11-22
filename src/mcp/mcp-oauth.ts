@@ -412,7 +412,7 @@ export class McpOAuthSession {
       if (outcome.reason === "ceiling" || isOAuthConnectionTimeout(outcome.error)) {
         throw new DOMException("MCP authorization timed out", "TimeoutError");
       }
-      throw new Error(AUTH_FAILED);
+      throw new Error(AUTH_FAILED, { cause: outcome.error });
     }
     this.assertActive();
     return outcome.value;
