@@ -654,6 +654,32 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(command.homeExists()).toBe(false);
   });
 
+  it("revokes the command's egress as soon as its launcher fails to spawn with no pid", async () => {
+    bootMxcShells();
+    const command = captureCommandLaunch();
+    const launched = deferred<EventEmitter>();
+    const spawn = childProcessMock.spawn.getMockImplementation();
+    if (spawn === undefined) throw new Error("Missing child spawn fixture");
+    childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
+      if (file !== WXC_EXEC || args.includes(PARSER_REQUEST)) return spawn(file, args, options);
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null, pid: undefined, kill: vi.fn(() => false),
+      });
+      launched.resolve(child);
+      return child;
+    });
+    const execution = executePowerShell(context("ps-mxc-no-pid-revokes"));
+    const child = await launched.promise;
+    expect(command.revoked()).toBe(false);
+    child.emit("error", Object.assign(new Error("spawn failed"), { code: "ENOENT" }));
+    // Synchronous: a spawn that failed ends the command's authority before anything else is finalized.
+    expect(command.revoked()).toBe(true);
+    expect(command.egressLive()).toBe(false);
+    const result = await execution;
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
   it("settles and releases everything when the remote authority refresh rejects", async () => {
     bootMxcShells();
     const container = failCommandContainerRelease({});

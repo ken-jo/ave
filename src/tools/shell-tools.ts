@@ -4213,9 +4213,10 @@ async function spawnPowerShellInMxc(
       shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([error]) }, "contained shell failed while its job was live");
       return mxcSpawnFailure(FAILURE_UNAVAILABLE);
     };
-    // A fault inside finalization still settles, and still disposes.
+    // A fault inside finalization still settles, ends the observation, and still disposes.
     const fault = (error: unknown): void => {
-      void release(() => spawnFailure(error), []).then(resolveResult);
+      void runReleaseSteps([() => endObservation(null, "failed")])
+        .then((failures) => release(() => spawnFailure(error), failures)).then(resolveResult);
     };
     let settled = false;
     const settle = (produce: () => Promise<ToolExecutionResult>): void => {
