@@ -1,21 +1,69 @@
+import { randomBytes } from "node:crypto";
 import { Transform, Writable, type Readable } from "node:stream";
 import { FRAME_BYTES_MAX } from "./host-api-wire.js";
 
 export const PLUGIN_CHILD_INPUT_BYTES_MAX = FRAME_BYTES_MAX + 1;
 export const PLUGIN_CHILD_INPUT_FD = 3;
 
-// Raw NUL cannot occur in a JSON frame. The four bytes after it acknowledge consumed input.
+const WRITE_ID_BYTES = 16;
+const WRITE_HEADER_BYTES = WRITE_ID_BYTES + 4;
+// Raw NUL cannot occur in a JSON frame. Credit carries the write ID and its cumulative consumed bytes.
 const CREDIT_MARKER = 0;
-const CREDIT_BYTES = 4;
+const CREDIT_BYTES = WRITE_HEADER_BYTES;
 
-export function pluginChildInputCredit(bytes: number): Buffer {
+export function pluginChildInputCredit(id: Buffer, consumed: number): Buffer {
   const credit = Buffer.alloc(1 + CREDIT_BYTES);
-  credit.writeUInt32BE(bytes, 1);
+  id.copy(credit, 1);
+  credit.writeUInt32BE(consumed, 1 + WRITE_ID_BYTES);
   return credit;
 }
 
+export function framePluginChildInputWrite(chunk: Buffer): Buffer {
+  const header = Buffer.alloc(WRITE_HEADER_BYTES);
+  randomBytes(WRITE_ID_BYTES).copy(header);
+  header.writeUInt32BE(chunk.length, WRITE_ID_BYTES);
+  return Buffer.concat([header, chunk]);
+}
+
+/** Strip the write envelope before passing payload bytes to the frame decoder. */
+export class PluginChildInputWriteDecoder {
+  private readonly header = Buffer.alloc(WRITE_HEADER_BYTES);
+  private headerBytes = 0;
+  private remaining = 0;
+  private consumed = 0;
+
+  push(chunk: Buffer, receive: (payload: Buffer, id: Buffer, consumed: number) => void): void {
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (this.remaining === 0) {
+        const count = Math.min(WRITE_HEADER_BYTES - this.headerBytes, chunk.length - offset);
+        chunk.copy(this.header, this.headerBytes, offset, offset + count);
+        this.headerBytes += count;
+        offset += count;
+        if (this.headerBytes < WRITE_HEADER_BYTES) return;
+        this.headerBytes = 0;
+        this.consumed = 0;
+        this.remaining = this.header.readUInt32BE(WRITE_ID_BYTES);
+        if (this.remaining === 0 || this.remaining > PLUGIN_CHILD_INPUT_BYTES_MAX) {
+          throw new Error("Invalid plugin child input write size");
+        }
+        if (offset === chunk.length) return;
+      }
+      const count = Math.min(this.remaining, chunk.length - offset);
+      const payload = chunk.subarray(offset, offset + count);
+      const id = this.header.subarray(0, WRITE_ID_BYTES);
+      offset += count;
+      this.remaining -= count;
+      this.consumed += count;
+      receive(payload, id, this.consumed);
+    }
+  }
+}
+
 interface PendingWrite {
-  remaining: number;
+  readonly id: Buffer;
+  readonly length: number;
+  consumed: number;
   done(error?: Error | null): void;
 }
 
@@ -27,11 +75,9 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
   let pending: PendingWrite | undefined;
   const credit = Buffer.alloc(CREDIT_BYTES);
   let creditRemaining = 0;
-  let creditWrite: PendingWrite | undefined;
   const input = new Transform({
-    writableObjectMode: true,
     writableHighWaterMark: 1,
-    transform({ chunk, write }: { chunk: Buffer; write: PendingWrite | undefined }, _encoding, done) {
+    transform(chunk: Buffer, _encoding, done) {
       let offset = 0;
       while (offset < chunk.length) {
         if (creditRemaining === 0) {
@@ -41,11 +87,10 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
             break;
           }
           if (marker > offset) this.push(chunk.subarray(offset, marker));
-          creditWrite = write;
           creditRemaining = CREDIT_BYTES;
           offset = marker + 1;
         }
-        if (!creditWrite || creditWrite !== write || creditWrite !== pending || creditWrite.remaining === 0) {
+        if (!pending || pending.consumed === pending.length) {
           done(new Error("Invalid plugin child input credit"));
           return;
         }
@@ -54,19 +99,23 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
         offset += count;
         creditRemaining -= count;
         if (creditRemaining > 0) continue;
-        const bytes = credit.readUInt32BE();
-        if (bytes === 0 || bytes > creditWrite.remaining) {
+        const consumed = credit.readUInt32BE(WRITE_ID_BYTES);
+        if (!pending.id.equals(credit.subarray(0, WRITE_ID_BYTES))
+          || consumed <= pending.consumed || consumed > pending.length) {
           done(new Error("Invalid plugin child input credit"));
           return;
         }
-        creditWrite.remaining -= bytes;
-        creditWrite = undefined;
+        pending.consumed = consumed;
       }
-      if (write && pending === write && write.remaining === 0) {
+      if (pending && pending.consumed === pending.length) {
+        const write = pending;
         pending = undefined;
         write.done();
       }
       done();
+    },
+    flush(done) {
+      done(creditRemaining === 0 ? undefined : new Error("Truncated plugin child input credit"));
     },
   });
   const output = new Writable({
@@ -75,9 +124,10 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
       if (chunk.length > PLUGIN_CHILD_INPUT_BYTES_MAX) {
         return done(new Error("Plugin child input write exceeds credit window"));
       }
-      const write = { remaining: chunk.length, done };
+      const frame = framePluginChildInputWrite(chunk);
+      const write = { id: frame.subarray(0, WRITE_ID_BYTES), length: chunk.length, consumed: 0, done };
       pending = write;
-      sink.write(chunk, (error) => {
+      sink.write(frame, (error) => {
         if (error && pending === write) {
           pending = undefined;
           done(error);
@@ -106,16 +156,8 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
   sink.once("finish", () => {
     if (!output.writableEnded || pending) output.destroy();
   });
-  const accept = (chunk: Buffer): void => {
-    // Snapshot on arrival, before the transform can queue the chunk or complete a write.
-    if (!input.write({ chunk, write: pending })) source.pause();
-  };
-  input.on("drain", () => source.resume());
-  input.once("close", () => source.off("data", accept));
-  source.once("end", () => input.end());
-  if (source.readableEnded) input.end();
-  else source.on("data", accept);
   if (source.destroyed && !source.readableEnded) input.destroy();
+  else source.pipe(input);
   if (sink.destroyed || sink.writableFinished) output.destroy();
   return { input, output };
 }

@@ -11,7 +11,7 @@ import { aveHome } from "../../../shared/ave-home.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import { PluginChildTerminationUnverifiedError } from "../plugin-child-transport.js";
 import { attachMxcPluginChild, spawnMxcPluginChild } from "../mxc-plugin-child.js";
-import { pluginChildInputCredit } from "../plugin-child-credit.js";
+import { PluginChildInputWriteDecoder, pluginChildInputCredit } from "../plugin-child-credit.js";
 
 const terminationDebug = vi.hoisted(() => vi.fn());
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
@@ -81,8 +81,13 @@ describe("native plugin stream ownership", () => {
       if (error) reject(error);
       else done();
     }));
-    await expect(sent).resolves.toEqual(request);
-    owned.stdout.write(Buffer.concat([pluginChildInputCredit(request.length), response]));
+    const payloads: Buffer[] = [];
+    const decoder = new PluginChildInputWriteDecoder();
+    decoder.push(await sent, (payload, id, consumed) => {
+      payloads.push(payload);
+      owned.stdout.write(Buffer.concat([pluginChildInputCredit(id, consumed), response]));
+    });
+    expect(payloads).toEqual([request]);
     await expect(received).resolves.toEqual(response);
     await written;
     expect(child.pid).toBe(42);

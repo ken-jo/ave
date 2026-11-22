@@ -8,10 +8,15 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { acceptHostOverLoopback } from "./child-loopback-link.js";
 import type { DecodedMessageInput, MultiplexedMessage } from "./child-stream-multiplex.js";
 import { FRAME_BYTES_MAX } from "./host-api-wire.js";
-import { PLUGIN_CHILD_INPUT_BYTES_MAX, PLUGIN_CHILD_INPUT_FD, pluginChildInputCredit } from "./plugin-child-credit.js";
+import {
+  PLUGIN_CHILD_INPUT_BYTES_MAX,
+  PLUGIN_CHILD_INPUT_FD,
+  PluginChildInputWriteDecoder,
+  pluginChildInputCredit,
+} from "./plugin-child-credit.js";
 
 type OwnerMessage =
-  | { readonly frames: MultiplexedMessage[]; readonly observation: Uint8Array; readonly byteLength: number }
+  | { readonly frames: MultiplexedMessage[]; readonly observation: Uint8Array; readonly credit: Uint8Array }
   | { readonly violation: string }
   | { readonly announce: string }
   | { readonly error?: string }
@@ -130,8 +135,8 @@ export function openPluginChildInput(
       for (let index = 0; index < message.frames.length; index += 1) {
         receive?.(message.frames[index]!);
       }
-      acknowledgeBytes(queuedBytes, 0, message.byteLength);
-      if (receive) sendCredit(pluginChildInputCredit(message.byteLength));
+      acknowledgeBytes(queuedBytes, 0, message.observation.byteLength);
+      if (receive) sendCredit(message.credit);
       if (listeners.length > 0) {
         const { buffer, byteOffset, byteLength } = message.observation;
         observe("data", listeners, observationBuffer(buffer, byteOffset, byteLength));
@@ -185,6 +190,7 @@ export function watchPluginChildInput(
   control: PluginChildInputControl = inputControl,
 ): void {
   const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
+  const writes = new PluginChildInputWriteDecoder();
   let lost = false;
   const handleLoss = (): void => {
     if (lost) return;
@@ -210,21 +216,25 @@ export function watchPluginChildInput(
   });
   input.on("data", (chunk: Buffer) => {
     if (lost) return;
-    // A valid host waits for consumption of its current write. The owner can always read through to EOF.
-    if (Atomics.add(queuedBytes, 0, chunk.byteLength) + chunk.byteLength > PLUGIN_CHILD_INPUT_BYTES_MAX) {
-      fail("host input exceeded the credit window");
-      return;
-    }
-    let frames: MultiplexedMessage[];
     try {
-      frames = decoder.push(chunk);
+      writes.push(chunk, (payload, id, consumed) => {
+        if (lost) return;
+        // A valid host waits for delivery. The owner can always read through to EOF.
+        const bytes = payload.byteLength;
+        if (Atomics.add(queuedBytes, 0, bytes) + bytes > PLUGIN_CHILD_INPUT_BYTES_MAX) {
+          fail("host input exceeded the credit window");
+          return;
+        }
+        const frames = decoder.push(payload);
+        const observation = Uint8Array.from(payload);
+        const credit = pluginChildInputCredit(id, consumed);
+        port.postMessage({ frames, observation, credit } satisfies OwnerMessage, [observation.buffer]);
+      });
     } catch (error) {
+      if (lost) return;
       port.postMessage({ violation: errorMessage(error) } satisfies OwnerMessage);
       handleLoss();
-      return;
     }
-    const observation = Uint8Array.from(chunk);
-    port.postMessage({ frames, observation, byteLength: chunk.byteLength } satisfies OwnerMessage, [observation.buffer]);
   });
   input.resume();
 }

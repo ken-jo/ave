@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import { MessageChannel } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PLUGIN_CHILD_INPUT_BYTES_MAX } from "../plugin-child-credit.js";
+import { framePluginChildInputWrite, PLUGIN_CHILD_INPUT_BYTES_MAX } from "../plugin-child-credit.js";
 import { watchPluginChildInput } from "../plugin-child-stdin.js";
 
 function openInput() {
@@ -52,13 +52,16 @@ describe("plugin child input owner", () => {
     const owner = openInput();
     try {
       Atomics.store(owner.bytes, 0, PLUGIN_CHILD_INPUT_BYTES_MAX - 2);
-      owner.stream.emit("data", Buffer.from("ok"));
+      const write = framePluginChildInputWrite(Buffer.from("ok"));
+      owner.stream.emit("data", write.subarray(0, 7));
+      expect(owner.dispatch).not.toHaveBeenCalled();
+      owner.stream.emit("data", write.subarray(7));
       expect(Atomics.load(owner.bytes, 0)).toBe(PLUGIN_CHILD_INPUT_BYTES_MAX);
-      const delivery = { frames: [], observation: Uint8Array.from(Buffer.from("ok")), byteLength: 2 };
+      const delivery = { frames: [], observation: Uint8Array.from(Buffer.from("ok")), credit: expect.any(Buffer) };
       expect(owner.dispatch.mock.calls[0]?.[0]).toEqual(delivery);
       expect(owner.schedule).not.toHaveBeenCalled();
 
-      owner.stream.emit("data", Buffer.from("!"));
+      owner.stream.emit("data", framePluginChildInputWrite(Buffer.from("!")));
       expect(owner.dispatch.mock.calls.map(([message]) => message)).toEqual([delivery, null]);
       expect(owner.report).toHaveBeenCalledExactlyOnceWith("host input exceeded the credit window");
       expect(owner.stream.destroyed).toBe(true);

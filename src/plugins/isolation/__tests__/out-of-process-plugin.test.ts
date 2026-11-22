@@ -162,7 +162,8 @@ import {
   encodeChildEnv,
   parseChildLaunchArgs,
 } from "../child-loopback-link.js";
-import { pacePluginChildInput, pluginChildInputCredit } from "../plugin-child-credit.js";
+import { pacePluginChildInput } from "../plugin-child-credit.js";
+import { consumePluginChildInput } from "../../../__tests__/support/plugin-child-input.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import { PluginChildTerminationUnverifiedError, type ChildLink } from "../plugin-child-transport.js";
 import {
@@ -1156,8 +1157,7 @@ describe("construct negotiates the host protocol", () => {
     const roots = spawnableRoots();
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough(), stderr = new PassThrough();
-    const service = servePluginChild(input, output);
-    input.on("data", (chunk: Buffer) => output.write(pluginChildInputCredit(chunk.length)));
+    const service = servePluginChild(consumePluginChildInput(input, output), output);
     let finish!: (result: { exitCode: number; timedOut: boolean }) => void;
     const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve) => { finish = resolve; });
     const dispose = vi.fn(async () => {
@@ -1204,8 +1204,7 @@ describe("construct negotiates the host protocol", () => {
     const roots = spawnableRoots();
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough();
-    const service = servePluginChild(input, output);
-    input.on("data", (chunk: Buffer) => output.write(pluginChildInputCredit(chunk.length)));
+    const service = servePluginChild(consumePluginChildInput(input, output), output);
     // The supervisor already reported exit, so termination begins at attach; disposal stays pending, which keeps
     // the streams up and lets the handshake complete regardless.
     const dispose = vi.fn(() => new Promise<void>(() => {}));
@@ -2000,8 +1999,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       }, (socket) => {
         opts.onAccepted?.(socket);
         if (opts.ignoresEof) socket.allowHalfOpen = true;
-        const service = servePluginChild(socket, socket);
-        socket.on("data", (chunk: Buffer) => socket.write(pluginChildInputCredit(chunk.length)));
+        const service = servePluginChild(consumePluginChildInput(socket, socket), socket);
         const onClose = own("loopback child service", () => service.hostGone());
         const socketClosed = () => {
           void onClose().catch(() => undefined);
