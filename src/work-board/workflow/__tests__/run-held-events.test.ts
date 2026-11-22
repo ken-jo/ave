@@ -224,13 +224,18 @@ it.each(["sibling", "prior attempt"] as const)("a live child of a %s does not su
   }));
 
 it("a pending preparation protects its exact stage attempt at a permitted read", async () => {
-  const preparing = deferred<boolean>();
+  const preparing = deferred<"preparing">();
+  const childLinked = deferred<"child-linked">();
   const release = deferred<void>();
   const h = await stageRunHarness({
     observeRunWork: true,
+    script: () => {
+      childLinked.resolve("child-linked");
+      return undefined;
+    },
     wiring: (_store, { workspace }) => ({
       workspace: { ...workspace, prepare: async (...args) => {
-        preparing.resolve(true);
+        preparing.resolve("preparing");
         await release.promise;
         return workspace.prepare(...args);
       } },
@@ -240,7 +245,7 @@ it("a pending preparation protects its exact stage attempt at a permitted read",
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     const running = h.start(id, h.local(version));
-    expect(await Promise.race([preparing.promise, running.then(() => false)])).toBe(true);
+    expect(await Promise.race([preparing.promise, childLinked.promise, running])).toBe("preparing");
     await replayHeldEvents(h, { includeLaunches: false });
     expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 1, status: "running" });
     expect(h.children).toHaveLength(0);
@@ -250,7 +255,7 @@ it("a pending preparation protects its exact stage attempt at a permitted read",
     expect(h.children).toHaveLength(1);
     const [child] = h.children;
     child.finish();
-    await running;
+    await h.drainRunWork();
     expect((await h.stageRun(id, "a")).status).toBe("awaiting_gate");
   } finally {
     release.resolve();
@@ -346,8 +351,13 @@ it.each((["row-lost", "board-unread"] as const).flatMap(reason => [false, true].
   let refusing = true;
   let prepared = false;
   let refusedWrites = 0;
+  const childLinked = deferred<"child-linked">();
   const h = await stageRunHarness({
     observeRunWork: true,
+    script: () => {
+      childLinked.resolve("child-linked");
+      return undefined;
+    },
     wiring: (store, { workspace }) => {
       const runs = boardRunState(store);
       return {
@@ -363,7 +373,8 @@ it.each((["row-lost", "board-unread"] as const).flatMap(reason => [false, true].
   try {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
-    expect(await h.start(id, h.local(version))).toMatchObject({ status: "awaiting_approval" });
+    const running = h.start(id, h.local(version));
+    expect(await Promise.race([running, childLinked.promise])).toMatchObject({ status: "awaiting_approval" });
     await h.drainRunWork();
     const runId = (await h.item(id)).runId ?? "";
     const held = { itemId: id, runId, stage: "a", attempt: 1, kind: "spawn_requested" };
