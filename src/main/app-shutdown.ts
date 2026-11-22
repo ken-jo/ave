@@ -42,8 +42,7 @@ import { drainMxcHolderLifetimes, sealMxcHolderLifetimeAdmission } from "../perm
 // How long a quit waits for running turns to record themselves as interrupted. Their rows are already on disk as they happen (the turn journal), so this
 // buys the clean interrupted record, not the data, and stays short.
 const RUNNING_TURN_EXIT_WAIT_MS = 3_000;
-// How long a shutdown that already failed or timed out waits for the sandbox runtime's reset. On Windows the ACL release is the reset's first,
-// synchronous step; the wait covers only its proxy teardown, so the process still leaves promptly.
+// Bound the final wait for the sandbox runtime's reset, including any pending Windows stamp and ACL release.
 const OS_SANDBOX_RELEASE_FALLBACK_WAIT_MS = 2_000;
 const INCOMPLETE_BOOT_SHUTDOWN_REASON = "host bootstrap interrupted or failed";
 

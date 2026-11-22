@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync, sy
 import * as os from "node:os";
 import { dirname, join, parse, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
+import { stampWindowsAclAsync } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { expandWindowsAclDenyLists } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,10 @@ import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWri
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
+}));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async importOriginal => ({
+  ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>()),
+  stampWindowsAclAsync: vi.fn(),
 }));
 vi.mock("node:os", async importOriginal => ({ ...(await importOriginal<typeof import("node:os")>()) }));
 
@@ -57,7 +62,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       [...new Set(vi.mocked(runtime.grantWindowsAcl).mock.calls
         .filter(([call]) => call.holderPid === holderPid).flatMap(([call]) => call.read ?? []))]
         .map(path => ({ path, status: "revoked" as const })));
-    vi.spyOn(runtime, "stampWindowsAcl").mockImplementation(() => {});
+    vi.mocked(stampWindowsAclAsync).mockReset().mockResolvedValue(undefined);
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);
     vi.spyOn(runtime.SandboxManager, "initialize").mockImplementation(async next => { config = next; });
     vi.spyOn(runtime.SandboxManager, "getConfig").mockImplementation(() => config);
@@ -201,10 +206,16 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       if (assertionPending) { now += 19; assertions++; assertionPending = false; }
       return pinPaths(paths);
     });
-    vi.mocked(runtime.stampWindowsAcl).mockImplementation(() => { now += 23; assertionPending = true; });
+    vi.mocked(stampWindowsAclAsync).mockImplementation(async () => {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      now += 23;
+    });
     vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += 29; assertionPending = true; });
     const info = vi.spyOn(console, "log").mockImplementation(() => {});
-    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
+    const grant = await grantWindowsWorkerFilesystemAccess({
+      holderPid: () => { assertionPending = true; return process.pid + 1; },
+      allowWrite: [target],
+    });
     expect(assertions).toBe(2);
     expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(2);
     expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", {
@@ -499,7 +510,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     })));
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
     try {
-      expect(runtime.stampWindowsAcl).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: expect.arrayContaining(paths) }));
+      expect(stampWindowsAclAsync).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: expect.arrayContaining(paths) }));
       for (const [requests] of read.mock.calls) expect(requests).toEqual(expect.arrayContaining(paths));
     } finally { grant.release(); }
   });
