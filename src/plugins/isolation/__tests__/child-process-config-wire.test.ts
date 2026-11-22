@@ -560,7 +560,7 @@ export const createPlugin = async () => ({
       const state = observeStall(child);
       const exited = once(child, "exit");
       const release = await control?.connected;
-      void instance.start().catch(() => undefined);
+      void Promise.resolve(instance.start()).catch(() => undefined);
       await state.entered;
       link.disconnect();
 

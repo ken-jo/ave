@@ -2181,7 +2181,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         await closed;
         const { pluginShutdownKillGraceMs: grace, pluginChildForceKillMs: force } = TOOL_TIMEOUT_POLICY;
         await vi.advanceTimersByTimeAsync(grace - 1);
-        const stop = stopDuringGrace ? instance.stop?.().catch((error: unknown) => error) : undefined;
+        const stop = stopDuringGrace ? Promise.resolve(instance.stop?.()).catch((error: unknown) => error) : undefined;
         await vi.advanceTimersByTimeAsync(0);
         expect(child.kill.mock.calls).toEqual([]);
         await vi.advanceTimersByTimeAsync(1);
