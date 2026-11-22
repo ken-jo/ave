@@ -420,3 +420,40 @@ it("a child wait created after a refused start settles at once", async () => {
     await h.cleanup();
   }
 });
+
+it("a second start of a running item leaves its child waits pending", async () => {
+  const release = deferred<void>();
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (run, stage, attempt) => {
+          if (stage.id === "b") await release.promise;
+          return workspace.prepare(run, stage, attempt);
+        },
+      },
+    }),
+  });
+  let running: ReturnType<typeof h.start> | undefined;
+  try {
+    const version = await h.confirm([stageOf("a"), stageOf("b")]);
+    const id = await h.addItem(version);
+    running = h.start(id, h.local(version));
+    await h.untilLive(1, id);
+    const early = Promise.allSettled([h.untilLive(2, id), h.untilSpawned(2, id)]);
+    expect(await h.start(id, h.local(version))).toMatchObject({ status: "already_running" });
+    expect(await Promise.race([early, setImmediate("still pending")])).toBe("still pending");
+    const late = h.untilLive(2, id);
+    release.resolve();
+    const [live] = await Promise.all([late, early]);
+    expect(live).toHaveLength(2);
+  } finally {
+    release.resolve();
+    await h.drainRunWork();
+    for (const child of h.live()) child.finish();
+    await running;
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});

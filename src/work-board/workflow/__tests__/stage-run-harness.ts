@@ -224,6 +224,8 @@ export async function stageRunHarness(opts: {
         };
         try {
           const result = await current.runItem(...args);
+          // The run already in progress is unaffected by a second start.
+          if (result.status === "already_running") return result;
           if (engine === wrapped && result.status !== "awaiting_approval") ended(`${result.status}: ${"reason" in result ? result.reason : "run ended"}`);
           else if (engine === wrapped && !spawned()) failChildWaits("awaiting_approval: run ended without the requested child", origin);
           return result;
