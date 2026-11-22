@@ -4,13 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UV_TARGETS } from "../uv-targets.mjs";
 
-/**
- * @param {{
- *   loadArchive: (target: (typeof UV_TARGETS)[number]) => Promise<Buffer>,
- *   run?: (file: string, args: string[], options: { stdio: "inherit", windowsHide: boolean }) =>
- *     { status: number | null, signal?: NodeJS.Signals | null, error?: NodeJS.ErrnoException }
- * }} options
- */
 export async function verifyPinnedAttestations({ loadArchive, run = spawnSync }) {
   const directory = await mkdtemp(join(tmpdir(), "uv-attestation-"));
   try {

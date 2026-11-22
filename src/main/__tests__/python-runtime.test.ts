@@ -13,8 +13,10 @@ import { homedir, tmpdir, type as osType } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { resolveUvTarget } from "../../../scripts/uv-targets.mjs";
+import { aveHome } from "../../shared/ave-home.js";
 import { configureHostResources } from "../host-resources.js";
 import { initializeAveHomeFixture, protectAveHomeFixture } from "../../__tests__/support/ave-home-privacy.js";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -410,7 +412,7 @@ describe("PythonRuntimeBootstrapper", () => {
   });
 
   it.each([false, true])("replaces an existing virtual environment during setup with forceSetup=%s", async (forceSetup) => {
-    const runtimeDir = path.join(process.env.AVE_HOME!, "runtime");
+    const runtimeDir = path.join(aveHome(), "runtime");
     const venvDir = path.join(runtimeDir, "venv");
     registryTempRoots.push(venvDir);
     mkdirSync(venvDir);
@@ -432,7 +434,9 @@ describe("PythonRuntimeBootstrapper", () => {
     );
   });
 
-  it.each([process.platform === "win32" ? "junction" : "dir"] as const)("refuses to clear through a linked runtime ancestor (%s)", async (linkType) => {
+  const runtimeLinkTypes = process.platform === "win32" ? ["dir", "junction"] as const : ["dir"] as const;
+  it.for(runtimeLinkTypes)("refuses to clear through a linked runtime ancestor (%s)", async (linkType, context) => {
+    if (linkType === "dir" && !canCreateSymlinks("dir")) context.skip("Directory symlink creation requires an unavailable privilege");
     const externalRoot = mkdtempSync(path.join(tmpdir(), "ave-external-python-"));
     registryTempRoots.push(externalRoot);
     const externalVenv = path.join(externalRoot, "venv");
@@ -443,7 +447,7 @@ describe("PythonRuntimeBootstrapper", () => {
     const lock = "example==1.0\n";
     const hash = createHash("sha256").update(lock).digest("hex").slice(0, 24);
     const target = resolveUvTarget(process.platform, process.arch);
-    const managedRoot = path.join(process.env.AVE_HOME!, "runtime", "python-envs");
+    const managedRoot = path.join(aveHome(), "runtime", "python-envs");
     mkdirSync(managedRoot, { recursive: true });
     const runtimeLink = path.join(managedRoot, `${target.dir}-py312-${hash}`);
     symlinkSync(externalRoot, runtimeLink, linkType);

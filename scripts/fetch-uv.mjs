@@ -6,7 +6,6 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchBytesWithRetry } from "./lib/fetch-with-retry.mjs";
-import { verifyPinnedAttestations } from "./lib/uv-archive-attestation.mjs";
 import { UV_TARGETS, getUvTargetByDir, resolveUvTarget } from "./uv-targets.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -348,6 +347,7 @@ async function downloadTarget(target) {
 
 async function main() {
   if (CLI_ARGS.verifyAttestation) {
+    const { verifyPinnedAttestations } = await import("./lib/uv-archive-attestation.mjs");
     await verifyPinnedAttestations({ loadArchive: async (target) => (await readVerifiedArchive(target)).buffer });
     return;
   }
