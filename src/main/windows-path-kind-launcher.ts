@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
 import { getHostResources } from "./host-resources.js";
@@ -97,21 +97,36 @@ export async function queryWindowsSystemDirectory(): Promise<string> {
         reject(new Error(`Windows system directory query failed. ${REPAIR}`, { cause: error ?? undefined }));
         return;
       }
-      let directory: string;
       try {
-        directory = decodeWindowsNativeReply(stdout).replace(/\r?\n$/u, "");
+        resolve(parseWindowsSystemDirectory(stdout));
       } catch (cause) {
         reject(cause);
-        return;
       }
-      if (directory.length > 32767 || !/^[a-z]:\\/iu.test(directory)
-        || /[\u0000-\u001f\u007f<>"|?*]/u.test(directory) || directory.slice(2).includes(":")
-        || win32.normalize(directory) !== directory || win32.dirname(directory) === win32.parse(directory).root
-        || win32.dirname(directory).length > 512) {
-        reject(new Error(`Windows system directory query returned an invalid path. ${REPAIR}`));
-        return;
-      }
-      resolve(directory);
     });
   });
+}
+
+export function queryWindowsSystemDirectorySync(): string {
+  if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
+  const helper = resolveWindowsPathKindHelper();
+  const result = spawnSync(helper, ["--system-directory"], {
+    cwd: dirname(helper), windowsHide: true, shell: false, env: {},
+    timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 128 * 1024,
+  });
+  if (result.error || result.status !== 0 || result.stderr.length > 0) {
+    throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
+  }
+  return parseWindowsSystemDirectory(result.stdout);
+}
+
+function parseWindowsSystemDirectory(stdout: Uint8Array): string {
+  const directory = decodeWindowsNativeReply(stdout).replace(/\r?\n$/u, "");
+  const root = win32.dirname(directory);
+  if (directory.length > 32767 || !/^[a-z]:\\/iu.test(directory)
+    || /[\u0000-\u001f\u007f<>"|?*]/u.test(directory) || directory.slice(2).includes(":")
+    || win32.normalize(directory) !== directory || root === win32.parse(directory).root
+    || root.length > 512) {
+    throw new Error(`Windows system directory query returned an invalid path. ${REPAIR}`);
+  }
+  return directory;
 }

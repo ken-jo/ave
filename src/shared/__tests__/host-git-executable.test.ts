@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { accessSync, existsSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, parse, win32 } from "node:path";
@@ -9,6 +9,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   execFileSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
 vi.mock("node:fs", async (importOriginal) => ({
@@ -23,6 +24,12 @@ const host = join(root, "host-bin");
 const binary = process.platform === "win32" ? "git.exe" : "git";
 const platform = process.platform;
 
+function systemDirectoryReply(directory: string): ReturnType<typeof spawnSync> {
+  const stdout = Buffer.from(directory + "\r\n");
+  const stderr = Buffer.alloc(0);
+  return { pid: 1, status: 0, signal: null, stdout, stderr, output: [null, stdout, stderr] };
+}
+
 describe("systemGitCandidates", () => {
   it("keeps semicolons inside quoted Windows PATH entries", async () => {
     const { systemGitCandidates } = await import("../host-git-executable.js");
@@ -36,10 +43,13 @@ describe("systemGitCandidates", () => {
 });
 
 describe("resolveHostGit", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.resetAllMocks();
     vi.stubEnv("PATHEXT", ".CMD;.EXE;.BAT");
+    const { configureHostResources } = await import("../../main/host-resources.js");
+    configureHostResources({ resourcePath: join(root, "host-resources"), isPackaged: true });
+    vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("C:\\Windows\\System32"));
   });
 
   afterEach(() => {
@@ -90,7 +100,7 @@ describe("resolveHostGit", () => {
     expect(existsSync).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])("uses the bundled Windows executable only when it runs (%s)", async (launchable) => {
+  it.each(["available", "unlaunchable", "unverified"])("selects Windows Git when the bundle is %s", async (bundle) => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     const originalExecPath = process.execPath;
     Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
@@ -99,18 +109,72 @@ describe("resolveHostGit", () => {
     vi.stubEnv("PATH", "D:\\Tools\\Git\\cmd");
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    if (bundle === "unverified") vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("relative"));
     const bundled = join("C:/Ave", "git", "cmd", "git.exe");
     const system = "D:\\Tools\\Git\\cmd\\git.exe";
     vi.mocked(execFileSync).mockImplementation((file) => {
-      if (file === bundled && !launchable) throw new Error("unlaunchable");
+      if (file === bundled && bundle === "unlaunchable") throw new Error("unlaunchable");
       return "git version 2.56.0";
     });
     try {
-      expect(resolveHostGit({ packaged: true })?.path).toBe(launchable ? bundled : system);
-      expect(resolveHostGit({ packaged: true })?.path).toBe(launchable ? bundled : system);
-      expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual([bundled]);
+      const expected = bundle === "available" ? bundled : system;
+      expect.soft(resolveHostGit({ packaged: true })?.path).toBe(expected);
+      expect.soft(resolveHostGit({ packaged: true })?.path).toBe(expected);
+      expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(bundle === "unverified" ? [] : [bundled]);
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath });
+    }
+  });
+
+  it("uses the verified OS directory for both the bundled probe and project query", async () => {
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { setIsPackaged } = await import("../../boot/dev-flags.js");
+    const { discoverDirectoryInstructions } = await import("../../memory/project-agents-md.js");
+    const project = mkdtempSync(join(tmpdir(), "ave-git-query-"));
+    const originalExecPath = process.execPath;
+    const installRoot = join("C:/Ave", "git");
+    const cwd = join(installRoot, "cmd");
+    const bundled = join(cwd, "git.exe");
+    const helper = join(root, "host-resources", "windows-path-kind", process.arch, "ave-path-kind.exe");
+    const systemRoot = "D:\\OperatingSystem";
+    const systemDirectory = win32.join(systemRoot, "System32");
+    try {
+      actual.mkdirSync(join(project, ".git"));
+      actual.mkdirSync(join(project, "src"));
+      actual.writeFileSync(join(project, "src", "AGENTS.md"), "project instructions");
+      setIsPackaged(true);
+      setProcessPlatform("win32");
+      Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
+      vi.stubEnv("SystemRoot", "X:\\UntrustedRoot");
+      vi.stubEnv("windir", "Y:\\UntrustedWindows");
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(statSync).mockImplementation((path) => path === bundled
+        ? { isFile: () => true } as ReturnType<typeof statSync>
+        : actual.statSync(path));
+      vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply(systemDirectory));
+      vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
+
+      expect(discoverDirectoryInstructions(project, join("src", "file.ts"), new Set(), { homeDir: project })).toEqual([]);
+      const expectedOptions = {
+        cwd,
+        env: {
+          PATH: [cwd, join(installRoot, "ucrt64", "bin"), join(installRoot, "usr", "bin"),
+            systemDirectory, systemRoot].join(";"),
+          SystemRoot: systemRoot,
+          WINDIR: systemRoot,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "NUL",
+          GIT_ALLOW_PROTOCOL: "",
+        },
+      };
+      expect(execFileSync).toHaveBeenCalledTimes(2);
+      expect.soft(execFileSync).toHaveBeenNthCalledWith(1, bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
+      expect.soft(execFileSync).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions));
+      expect(spawnSync).toHaveBeenCalledExactlyOnceWith(helper, ["--system-directory"], expect.objectContaining({ env: {}, shell: false }));
+    } finally {
+      Object.defineProperty(process, "execPath", { value: originalExecPath });
+      setProcessPlatform(platform);
+      await cleanupTmpDir(project);
     }
   });
 
@@ -123,6 +187,8 @@ describe("resolveHostGit", () => {
     const systemGit = resolveHostGit({ packaged: false });
     if (systemGit === null) throw new Error("The trace regression requires an installed Git");
     vi.resetModules();
+    const { configureHostResources } = await import("../../main/host-resources.js");
+    configureHostResources({ resourcePath: join(root, "host-resources"), isPackaged: true });
 
     const install = mkdtempSync(join(tmpdir(), "ave-git-probe-"));
     const trace = join(install, "trace.jsonl");
@@ -160,6 +226,7 @@ describe("resolveHostGit", () => {
           PATH: [cwd, join(installRoot, "ucrt64", "bin"), join(installRoot, "usr", "bin"),
             win32.join("C:\\Windows", "System32"), "C:\\Windows"].join(";"),
           SystemRoot: "C:\\Windows",
+          WINDIR: "C:\\Windows",
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: "NUL",
           GIT_ALLOW_PROTOCOL: "",

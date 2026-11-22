@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { dirname, join, posix, win32 } from "node:path";
+import { queryWindowsSystemDirectorySync } from "../main/windows-path-kind-launcher.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "./verified-executable.js";
-import { windowsSystemRoot } from "./windows-system-path.js";
 
 export interface InstallerGitInstall {
   path: string;
@@ -119,10 +119,11 @@ interface HostGitLaunch {
 function probeInstallerGit(install: InstallerGitInstall): HostGitLaunch | undefined {
   try {
     const cwd = dirname(install.path);
-    const systemRoot = windowsSystemRoot();
+    const systemDirectory = queryWindowsSystemDirectorySync();
+    const systemRoot = win32.dirname(systemDirectory);
     const pathEntries = [
       cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin"),
-      win32.join(systemRoot, "System32"), systemRoot,
+      systemDirectory, systemRoot,
     ];
     if (pathEntries.some((entry) => entry.includes(";"))) return undefined;
     const options = {
@@ -130,6 +131,7 @@ function probeInstallerGit(install: InstallerGitInstall): HostGitLaunch | undefi
       env: {
         PATH: pathEntries.join(";"),
         SystemRoot: systemRoot,
+        WINDIR: systemRoot,
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: "NUL",
         GIT_ALLOW_PROTOCOL: "",
