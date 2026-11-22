@@ -17,7 +17,7 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { buildSandboxedChildEnv, buildUserTerminalEnv } from "../../tools/safe-env.js";
 import {
   getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths,
+  getDefaultSensitiveWriteDenyEntries,
   wrapTerminalCommand,
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
@@ -682,7 +682,6 @@ async function spawnNewTerminal(
   const allowRead = [cwd, ...allowWrite];
   const boundarySnapshot = createAveHomeBoundarySnapshot();
   const denyRead = boundarySnapshot.run(() => getDefaultSensitiveReadDenyPaths());
-  const denyWrite = getDefaultSensitiveWriteDenyPaths();
 
   // macOS only (terminal-tty-handoff.ts): the pty is spawned first, on a trampoline, so the wrap can grant the shell its own terminal by path.
   let handoff: TerminalTtyHandoff | undefined;
@@ -703,7 +702,7 @@ async function spawnNewTerminal(
       innerPtyCommand = innerPty.innerPtyShellCommand;
     }
     const cmdline = buildShellCommand(shell, tempDir, innerPtyCommand);
-    const filesystem = { allowWrite, allowRead, denyRead, denyWrite };
+    const filesystem = { allowWrite, allowRead, denyRead, denyWrite: getDefaultSensitiveWriteDenyEntries() };
     const ptyOptions = { name: "xterm-256color", cols, rows, cwd };
 
     let ownTty: string | undefined;

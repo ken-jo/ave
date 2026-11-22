@@ -114,7 +114,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
     "/home/u/.ave/sandbox/home",
   ],
   // The persistence-vector write floor restated on the worker wrap SOT).
-  getDefaultSensitiveWriteDenyPaths: () => [
+  getDefaultSensitiveWriteDenyEntries: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
     "/home/u/.zshrc",

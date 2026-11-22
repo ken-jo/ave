@@ -3,6 +3,7 @@ import * as os from "node:os";
 import { dirname, join, parse, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import { expandWindowsAclDenyLists } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initializeAveHomeFixture, useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -70,6 +71,28 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.unstubAllEnvs();
     removeLinksUnder(fixture);
     rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it.each(["Work [Archive]", "Work %HOMEPATH%"])("protects literal Documents paths under %s and admits an independent worker write", async folder => {
+    const documents = join(fixture, folder, "Documents");
+    const engine = join(documents, "PowerShell");
+    const profile = join(engine, "profile.ps1");
+    mkdirSync(engine, { recursive: true });
+    writeFileSync(profile, "");
+    await initializeAsrtSandbox({ resolveWindowsDocumentsPath: () => documents });
+    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+      denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false,
+    })));
+
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
+    try {
+      expect(grant.allowWrite).toEqual([target]);
+      expect(expandWindowsAclDenyLists([], config?.filesystem.denyWrite).denyWrite).toContain(profile);
+      const rejected = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowWrite: [profile] });
+      await expect(rejected).rejects.toThrow(folder.includes("%") ? "not a plain drive path" : "inside a protected sensitive target");
+    } finally {
+      grant.release();
+    }
   });
 
   it.each([0, 5000, 5001])("logs numeric grant and release timings without identities at %s ms", async duration => {

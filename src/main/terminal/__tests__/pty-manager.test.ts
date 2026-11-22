@@ -73,7 +73,7 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   wrapTerminalCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapTerminalCommandMock(command, options), options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
   getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
-  getDefaultSensitiveWriteDenyPaths: () => [
+  getDefaultSensitiveWriteDenyEntries: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
     "/home/u/.zshrc",

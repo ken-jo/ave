@@ -10,7 +10,7 @@ import type { Readable, Writable } from "node:stream";
 import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths,
+  getDefaultSensitiveWriteDenyEntries,
   isPluginWorkerConfinementActive,
   assertExtensionStartAllowed,
   admitMxcExtensionFilesystem,
@@ -299,7 +299,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   // The floor and the admission share one Ave home boundary snapshot.
   const admitted = createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
-    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
   }, spec.filesystemOwnership));
   const grants = rankMxcFilesystem(admitted.policy, existsSync);
@@ -632,14 +632,14 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   allowRead?: string[];
   allowWrite?: string[];
   denyRead: string[];
-  denyWrite: string[];
+  denyWrite: ReturnType<typeof getDefaultSensitiveWriteDenyEntries>;
   pinWriteRoots?: boolean;
   floorPierces?: readonly string[];
   denyPluginsRoot?: boolean;
 } {
   const floor = {
     denyRead: getDefaultSensitiveReadDenyPaths(),
-    denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyWrite: getDefaultSensitiveWriteDenyEntries(),
   };
   if (spec.grantMode === "deny-only") {
     if (spec.denyPluginsRoot === true) {

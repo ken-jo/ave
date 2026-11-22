@@ -18,7 +18,7 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock("../asrt-sandbox.js", () => ({
   assertExtensionStartAllowed: () => state.allowed(), admitMxcExtensionFilesystem: (...args: unknown[]) => state.admit(...args),
-  getDefaultSensitiveReadDenyPaths: () => ["C:\\private"], getDefaultSensitiveWriteDenyPaths: () => ["D:\\work\\.git"],
+  getDefaultSensitiveReadDenyPaths: () => ["C:\\private"], getDefaultSensitiveWriteDenyEntries: () => ["D:\\work\\.git"],
   appOwnedSandboxHomeRoot: () => "C:\\ave\\sandbox\\home", appOwnedSandboxTempRoot: () => "C:\\ave\\sandbox\\temp",
   appOwnedTerminalHandoffRoot: () => "C:\\ave\\sandbox\\handoff",
 }));

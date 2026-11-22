@@ -63,8 +63,8 @@ function walkLocalWindowsFilesystemChain(path: string, maxSymlinkHops: number, f
     if (known?.missing) return undefined;
     let physicalParent = known?.canonical ?? realpathSync.native(root);
     facts?.onLocalPath(lexicalParent, physicalParent, false);
-    for (let index = remaining; index < components.length; index++) {
-      const component = components[index]!;
+    const pending = components.slice(remaining);
+    for (const [index, component] of pending.entries()) {
       if (component === ".") continue;
       if (component === "..") { physicalParent = win32.dirname(physicalParent); continue; }
       const candidate = win32.join(physicalParent, component);
@@ -72,7 +72,7 @@ function walkLocalWindowsFilesystemChain(path: string, maxSymlinkHops: number, f
       const entry = lstatSync(candidate, { throwIfNoEntry: false });
       if (entry === undefined) {
         facts?.onLocalPath(lexicalParent, candidate, true);
-        return projectMissing ? win32.join(candidate, ...components.slice(index + 1)) : undefined;
+        return projectMissing ? win32.join(candidate, ...pending.slice(index + 1)) : undefined;
       }
       if (entry.isSymbolicLink()) {
         const target = readlinkSync(candidate);

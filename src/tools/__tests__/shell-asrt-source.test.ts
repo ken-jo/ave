@@ -19,8 +19,8 @@ function expectShellDialectContracts(section: string, dialect: "bash" | "powersh
   expect(section).toContain("shell: false");
   expect(section).toContain("const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(");
   // Saved-session reads pierce the protected floor only when the shell explicitly requests them.
-  expect(section).toContain("    floorPierces,\n  };");
-  expect(section).toContain("denyWrite: getDefaultSensitiveWriteDenyPaths()");
+  expect(section).toMatch(/\n\s+floorPierces,\n\s+}/);
+  expect(section).toContain("denyWrite: getDefaultSensitiveWriteDenyEntries()");
 }
 
 describe("shell ASRT source contracts", () => {

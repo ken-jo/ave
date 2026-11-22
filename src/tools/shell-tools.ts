@@ -83,6 +83,7 @@ import {
   filesystemSandboxBlockForCommand,
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
+  getDefaultSensitiveWriteDenyEntries,
   getDefaultSensitiveWriteDenyPaths,
   type SandboxWrapResult,
 } from "../permissions/asrt-sandbox.js";
@@ -2416,7 +2417,7 @@ export async function spawnWithSandbox(
     allowWrite: sandboxWritePaths,
     allowRead,
     denyRead,
-    denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces,
   };
 
@@ -3775,14 +3776,6 @@ async function spawnPowerShellWithSandbox(
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const boundarySnapshot = createAveHomeBoundarySnapshot();
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
-  const filesystem = {
-    allowWrite: sandboxWritePaths,
-    allowRead,
-    denyRead,
-    denyWrite: getDefaultSensitiveWriteDenyPaths(),
-    floorPierces,
-  };
-
   const abortController = new AbortController();
   const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
   const egress = openEgressInvocation(
@@ -3792,7 +3785,13 @@ async function spawnPowerShellWithSandbox(
   let wrapped: SandboxWrapResult;
   try {
     wrapped = await wrapToolCommand(sandboxCommand, {
-      filesystem,
+      filesystem: {
+        allowWrite: sandboxWritePaths,
+        allowRead,
+        denyRead,
+        denyWrite: getDefaultSensitiveWriteDenyEntries(),
+        floorPierces,
+      },
       boundarySnapshot,
       abortSignal: wrapAbortSignal,
       commandId: egress.token,

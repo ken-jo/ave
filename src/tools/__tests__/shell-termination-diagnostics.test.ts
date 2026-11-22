@@ -24,7 +24,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/asrt-sandbox.js")>(),
   wrapToolCommand: vi.fn(async () => ({ argv: ["shell"], env: {} })),
   cleanupAsrtSandboxAfterCommand: vi.fn(async () => {}),
-  getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyPaths: () => [],
+  getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyEntries: () => [],
 }));
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";

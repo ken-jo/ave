@@ -10,7 +10,7 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths } from "./windows-stamp-targets.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
-import { assertWindowsAclPolicyBudget, expandWindowsFsPaths, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { assertWindowsAclPolicyBudget, expandWindowsAclDenyLists, expandWindowsFsPaths, setWindowsAclRecoveryListener, WindowsSandboxError, type WindowsAclRecoveryReport } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
@@ -173,7 +173,7 @@ export interface TrustedSandboxSettings {
   // Paths the child may write.
   readonly allowWrite?: readonly string[];
   // Paths the child is denied writing (takes precedence).
-  readonly denyWrite?: readonly string[];
+  readonly denyWrite?: readonly FilesystemPathEntry[];
   // macOS-only: directories whose Unix-domain sockets the child may bind / connect (emitted as `network.allowUnixSockets`, the seatbelt `(subpath <dir>)` allow). The worker-UDS control channel uses this — see the WORKER UDS header. TRUSTED-ONLY: host-allocated worker control-socket dirs, never a plugin-supplied value. Ignored on Linux (seccomp is path-blind — the `allowAllUnixSockets` weakening + the `--bind` of the writable dir apply instead) and on Windows (no UDS primitive). Maintained additively at runtime via registerWorkerUnixSocketDir.
   readonly allowUnixSocketDirs?: readonly string[];
   // Sandbox-weakening flags. TRUSTED-ONLY (see the trust-boundary note above). Never wire a plugin/project-config path to any field in this object.
@@ -215,7 +215,7 @@ export interface PerCommandFilesystem {
   // Paths the child is denied reading (e.g. $HOME, to fix the read-jail leak).
   readonly denyRead?: readonly string[];
   // Paths the child is denied writing (takes precedence over allowWrite).
-  readonly denyWrite?: readonly string[];
+  readonly denyWrite?: readonly FilesystemPathEntry[];
   // The child may write INSIDE each `allowWrite` root but not unlink, rename or replace the root itself. Set by every wrap of PLUGIN-OWNED code — the plugin child, its workers, bundled hooks and MCP stdio servers — whose write roots are directories the host created and keeps resolving, a plugin's data root above all. Never by a wrap of the user's own shell or tools, whose write roots are the user's workspaces. Narrows only: it adds write denies (see PINNED_WRITE_ROOT_MARKER), so it requires `denyWrite` to be restated, since a per-command `denyWrite` replaces the shared floor rather than extending it.
   readonly pinWriteRoots?: boolean;
   // Reads this wrap may hold inside the protected read floor, each one also named in `allowRead`. Without it every `allowRead` entry under the floor is withheld. Composers set it for an exact user hook script, the builtin shell's configured saved-session root, or a plugin's declared `hostDirectory` that pierces the floor (`certs`). Anything else is refused (see readGrantsOutsideReadDenies).
@@ -342,7 +342,7 @@ interface WindowsLiveGrantCounts {
 
 interface WindowsWrapDenies {
   readonly read: string[];
-  readonly write: string[];
+  readonly write: FilesystemPathEntry[];
 }
 
 interface AsrtSandboxSession {
@@ -350,7 +350,7 @@ interface AsrtSandboxSession {
   windowsLiveGrantCount: number;
   windowsLiveGrantRevision: number;
   readonly windowsWrapDenyRead: Set<string>;
-  readonly windowsWrapDenyWrite: Set<string>;
+  readonly windowsWrapDenyWrite: Map<string, FilesystemPathEntry>;
   readonly windowsPendingWrapDenies: Set<WindowsWrapDenies>;
   windowsDenyRevision: number;
   windowsDenyFailure?: Error;
@@ -386,20 +386,29 @@ function snapshotWindowsLiveGrants(session: AsrtSandboxSession | undefined): Win
   };
 }
 
+function filesystemDenyEntryKey(entry: FilesystemPathEntry): string {
+  return typeof entry === "string" ? `pattern:${entry}` : `literal:${entry.path}`;
+}
+
 function checkWindowsWrapDenyUnion(session: AsrtSandboxSession | undefined, filesystem: PerCommandFilesystem | undefined): WindowsWrapDenies | undefined {
   if (process.platform !== "win32" || session === undefined || filesystem === undefined || !hasConfiguredDenies(filesystem)) return;
   assertWindowsPolicyBudget(filesystem, true);
   const { windowsWrapDenyRead, windowsWrapDenyWrite } = session;
   const knownRead = new Set([...(_baseTrustedSettings?.denyRead ?? []), ...windowsWrapDenyRead]);
-  const knownWrite = new Set([...(_baseTrustedSettings?.denyWrite ?? []), ...windowsWrapDenyWrite]);
+  const knownWrite = new Map(windowsWrapDenyWrite);
+  for (const entry of _baseTrustedSettings?.denyWrite ?? []) knownWrite.set(filesystemDenyEntryKey(entry), entry);
   const read = [...new Set(filesystem.denyRead)].filter(path => !knownRead.has(path));
-  const write = [...new Set(filesystem.denyWrite)].filter(path => !knownWrite.has(path));
-  if (read.length === 0 && write.length === 0) return;
+  const write = new Map<string, FilesystemPathEntry>();
+  for (const entry of filesystem.denyWrite ?? []) {
+    const key = filesystemDenyEntryKey(entry);
+    if (!knownWrite.has(key)) write.set(key, entry);
+  }
+  if (read.length === 0 && write.size === 0) return;
   assertWindowsPolicyBudget({
     denyRead: [...knownRead, ...read],
-    denyWrite: [...knownWrite, ...write],
+    denyWrite: [...knownWrite.values(), ...write.values()],
   }, true);
-  return { read, write };
+  return { read, write: [...write.values()] };
 }
 
 function withWindowsWrapDenyAdmission<T>(
@@ -437,7 +446,7 @@ function commitWindowsWrapDenies(
   const additions = checkWindowsWrapDenyUnion(session, filesystem);
   if (additions === undefined) return;
   for (const path of additions.read) session.windowsWrapDenyRead.add(path);
-  for (const path of additions.write) session.windowsWrapDenyWrite.add(path);
+  for (const entry of additions.write) session.windowsWrapDenyWrite.set(filesystemDenyEntryKey(entry), entry);
   session.windowsDenyRevision += additions.read.length + additions.write.length;
 }
 
@@ -459,7 +468,7 @@ function withWorkerUnixSockets(
     base = {
       ...base,
       denyRead: [...(base.denyRead ?? []), ...sandboxSession.windowsWrapDenyRead],
-      denyWrite: [...(base.denyWrite ?? []), ...sandboxSession.windowsWrapDenyWrite],
+      denyWrite: [...(base.denyWrite ?? []), ...sandboxSession.windowsWrapDenyWrite.values()],
     };
   }
   const dirs = [..._workerUnixSocketDirs]
@@ -665,7 +674,8 @@ function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead
     ...(filesystem.allowRead !== undefined ? { allowRead: filesystem.allowRead.map(normalize) } : {}),
     ...(filesystem.allowWrite !== undefined ? { allowWrite: filesystem.allowWrite.map(normalize) } : {}),
     ...(filesystem.denyRead !== undefined ? { denyRead: filesystem.denyRead.map(normalize) } : {}),
-    ...(filesystem.denyWrite !== undefined ? { denyWrite: filesystem.denyWrite.map(normalize) } : {}),
+    ...(filesystem.denyWrite !== undefined ? { denyWrite: filesystem.denyWrite.map(entry => typeof entry === "string"
+      ? normalize(entry) : { ...entry, path: normalizePathForSandbox(entry.path, { literal: true }) }) } : {}),
   };
   // Refuse requested roots before discovery can narrow them away.
   assertWindowsMachineRootWriteGrants(admitted.allowWrite ?? []);
@@ -745,16 +755,17 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
   const floor = getProtectedReadDenyPaths();
   const pierces = filesystem.floorPierces ?? [];
-  const sensitiveWriteDenies = getDefaultSensitiveWriteDenyPaths();
+  const sensitiveWriteDenies = getDefaultSensitiveWriteDenyEntries();
+  const sensitiveWritePaths = spelledPathEntries(sensitiveWriteDenies, "denyWrite");
   const mandatory = buildMandatorySandboxWritePolicy(
     pinned.allowWrite ?? [], _baseTrustedSettings?.userDataDir,
-    sensitiveWriteDenies, sensitiveWriteDenies.filter(path => isAbsolute(path) && !containsGlobCharsWin(path)),
+    sensitiveWritePaths, sensitiveWritePaths.filter(path => isAbsolute(path) && !containsGlobCharsWin(path)),
   );
   // Pattern denies cannot be represented by a fixed literal container policy, including future matches.
-  const literalDenies = (entries: readonly FilesystemPathEntry[]): readonly string[] => [...new Set(entries.flatMap(entry => {
+  const literalDenies = (entries: readonly FilesystemPathEntry[], write = false): readonly string[] => [...new Set(entries.flatMap(entry => {
     const raw = typeof entry === "string" ? entry : entry.path;
     if (/^\/(?!\/)/.test(raw)) return [];
-    const expanded = expandLeadingTilde(expandWindowsEnvRefs(raw));
+    const expanded = write && typeof entry !== "string" ? raw : expandLeadingTilde(expandWindowsEnvRefs(raw));
     if (containsGlobCharsWin(expanded) || !win32.isAbsolute(expanded) || isUncPath(expanded)) {
       throw new Error("Container filesystem deny cannot be represented literally");
     }
@@ -780,7 +791,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
       ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
       ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
     ])]),
-    denyWrite: Object.freeze([...literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite])]),
+    denyWrite: Object.freeze([...literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite], true)]),
     protectedFloor: Object.freeze(protectedFloor),
     floorPierces: Object.freeze([...pierces]),
   });
@@ -843,7 +854,7 @@ export function buildPerCommandSandboxCustomConfig(
     };
     if (process.platform === "win32") {
       configured.denyRead = [...new Set(configured.denyRead)];
-      configured.denyWrite = [...new Set(configured.denyWrite)];
+      configured.denyWrite = [...new Map(configured.denyWrite.map(entry => [filesystemDenyEntryKey(entry), entry])).values()];
       assertWindowsPolicyBudget(configured, true);
     }
     const grants = admitFilesystemPolicy(configured);
@@ -882,12 +893,13 @@ export function buildPerCommandSandboxCustomConfig(
         readDenyEvidence,
       );
     }
-    const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
+    const sensitiveDenyWrite = getDefaultSensitiveWriteDenyEntries(_baseTrustedSettings?.userDataDir);
+    const sensitiveWritePaths = spelledPathEntries(sensitiveDenyWrite, "denyWrite");
     const mandatory = buildMandatorySandboxWritePolicy(
       admittedWindowsPolicies.get(grants)?.allowWrite ?? grants.allowWrite,
       _baseTrustedSettings?.userDataDir,
-      sensitiveDenyWrite,
-      sensitiveDenyWrite.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
+      sensitiveWritePaths,
+      sensitiveWritePaths.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
     );
     fs.allowWrite = process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
     const reasonKeys = {
@@ -1375,12 +1387,12 @@ export function getProtectedReadDenyFloor(): readonly string[] {
 }
 
 // The protected read deny covering `path`, if any. A plugin's chosen directory is refused when one does: its read half would re-allow the deny on every platform, and on Linux its write half would too.
-export function protectedReadDenyCovering(path: string, floor: readonly string[] = getProtectedReadDenyPaths()): string | undefined {
+export function protectedReadDenyCovering(path: string, floor: readonly FilesystemPathEntry[] = getProtectedReadDenyPaths()): string | undefined {
   return protectedReadDenyMatcher(floor)(path);
 }
 
 // protectedReadDenyCovering for many paths against one floor: each entry compiles once, not once per path and ancestor.
-export function protectedReadDenyMatcher(floor: readonly string[] = getProtectedReadDenyPaths()): (path: string) => string | undefined {
+export function protectedReadDenyMatcher(floor: readonly FilesystemPathEntry[] = getProtectedReadDenyPaths()): (path: string) => string | undefined {
   const covering = readDenyCovering(floor);
   return (path) => covering(canonicalizePathForMatch(path));
 }
@@ -1446,13 +1458,18 @@ function withholdUnder(
 }
 
 // readDenyCoversPath over a fixed list: the first entry, in list order, that covers a path. Each entry is canonicalized and compiled once per call of this function instead of once per tested path and ancestor, so a check of P paths against D entries costs D compiles, not P x D x depth.
-function readDenyCovering(denied: readonly string[]): (canonicalPath: string) => string | undefined {
+function readDenyCovering(denied: readonly FilesystemPathEntry[]): (canonicalPath: string) => string | undefined {
   // Compiled on first use, as readDenyCoversPath reaches an entry only when no earlier one covered the path.
   const matchers = new Map<number, (candidate: string) => boolean>();
-  const matcher = (index: number): (candidate: string) => boolean => {
+  const matcher = (index: number, entry: FilesystemPathEntry): (candidate: string) => boolean => {
     let match = matchers.get(index);
     if (match === undefined) {
-      match = compileGlobMatcher(canonicalizePathForMatch(expandLeadingTilde(denied[index]!)));
+      if (typeof entry === "string") {
+        match = compileGlobMatcher(canonicalizePathForMatch(expandLeadingTilde(entry)));
+      } else {
+        const literal = canonicalizePathForMatch(entry.path).replace(/\/+$/, "");
+        match = candidate => candidate === literal;
+      }
       matchers.set(index, match);
     }
     return match;
@@ -1465,9 +1482,9 @@ function readDenyCovering(denied: readonly string[]): (canonicalPath: string) =>
     }
     for (let index = 0; index < denied.length; index += 1) {
       const entry = denied[index]!;
-      if (/[\[\]]/.test(entry) || (process.platform === "win32" && entry.includes("%"))) return entry;
-      const match = matcher(index);
-      if (candidates.some((candidate) => match(candidate) || match(`${candidate}/`))) return entry;
+      if (typeof entry === "string" && (/[\[\]]/.test(entry) || (process.platform === "win32" && entry.includes("%")))) return entry;
+      const match = matcher(index, entry);
+      if (candidates.some((candidate) => match(candidate) || match(`${candidate}/`))) return typeof entry === "string" ? entry : entry.path;
     }
     return undefined;
   };
@@ -1627,9 +1644,11 @@ function posixOnlyDenyPaths(): Set<string> {
 function expandedWindowsDenyGrants(
   grants: readonly FilesystemPathEntry[],
   profile: string | undefined,
+  preserveLiterals = false,
 ): string[] {
   // Match runtime home expansion before judging whether a deny is disjoint.
   return grants.flatMap((entry) => {
+    if (preserveLiterals && typeof entry !== "string") return [entry.path];
     const raw = expandWindowsEnvRefs(typeof entry === "string" ? entry : entry.path);
     const grant = profile === undefined ? raw : raw === "~" ? profile : /^~[\\/]/.test(raw) ? profile + raw.slice(1) : raw;
     if (typeof entry !== "string" && entry.literal) return [grant];
@@ -1676,12 +1695,13 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   // Only the OS profile qualifies for omission; a HOME elsewhere or an unresolved profile keeps every row.
   const profile = windowsProfileHome();
   const expandedGrants = expandedWindowsDenyGrants(grants, profile);
-  const expandedWriteGrants = expandedWindowsDenyGrants(writeGrants, profile);
+  const expandedWriteGrants = expandedWindowsDenyGrants(writeGrants, profile, kind === "write");
   const retainedMachineRows = new Set<T>();
   const expandedPaths = new Map<T, string>();
   entries = entries.filter((entry) => {
     try {
-      const path = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path)));
+      const raw = typeof entry === "string" ? entry : entry.path;
+      const path = stripExtendedPathPrefix(kind === "write" && typeof entry !== "string" ? raw : expandWindowsEnvRefs(expandLeadingTilde(raw)));
       expandedPaths.set(entry, path);
       if (machineRoots === undefined) {
         retainedMachineRows.add(entry);
@@ -1896,9 +1916,16 @@ export function getDefaultSensitiveWriteDenyPaths(
   userDataDir = _baseTrustedSettings?.userDataDir,
   resolveDocumentsPath = _baseTrustedSettings?.resolveWindowsDocumentsPath,
 ): string[] {
+  return spelledPathEntries(getDefaultSensitiveWriteDenyEntries(userDataDir, resolveDocumentsPath), "denyWrite");
+}
+
+export function getDefaultSensitiveWriteDenyEntries(
+  userDataDir = _baseTrustedSettings?.userDataDir,
+  resolveDocumentsPath = _baseTrustedSettings?.resolveWindowsDocumentsPath,
+): FilesystemPathEntry[] {
   const floor = buildSensitiveWriteFloor(userDataDir, resolveDocumentsPath);
   if (!floor.bounded) throw new Error(WINDOWS_PROFILE_WRITE_FLOOR_ERROR);
-  return floor.paths;
+  return floor.entries;
 }
 
 function buildSensitiveWriteFloor(userDataDir: string | undefined, resolveDocumentsPath: (() => string) | undefined) {
@@ -1933,16 +1960,17 @@ function buildSensitiveWriteFloor(userDataDir: string | undefined, resolveDocume
     dirname(dirname(getVendoredSrtWinExePath())),
   ];
   const seen = new Set<string>();
-  const out: string[] = [];
+  const profilePaths = new Set(profiles?.paths);
+  const out: FilesystemPathEntry[] = [];
   for (const p of [...readDeny, ...writePersistence]) {
     // Lexical key: a link alias is a separate spelling the sandbox must deny.
     const key = caseFoldForMatch(resolve(p));
     if (!seen.has(key)) {
       seen.add(key);
-      out.push(p);
+      out.push(profilePaths.has(p) ? Object.freeze({ path: p, literal: true }) : p);
     }
   }
-  return { paths: out, bounded: profiles?.bounded ?? true };
+  return { entries: out, bounded: profiles?.bounded ?? true };
 }
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
@@ -1998,19 +2026,19 @@ export function buildSandboxConfig(
   }
   // denyWrite floor: same boot-level belt as denyRead for callers that do not supply per-command filesystem.denyWrite. Per-command wraps still restate this SOT because ASRT's customConfig filesystem section replaces the shared arrays, but the session config now has a real persistence-vector floor too.
   const writeFloor = buildSensitiveWriteFloor(trustedSettings.userDataDir, trustedSettings.resolveWindowsDocumentsPath);
-  const sensitiveDenyWrite = writeFloor.paths;
+  const sensitiveWritePaths = spelledPathEntries(writeFloor.entries, "denyWrite");
   if (!writeFloor.bounded && liveGrants.allowWrite?.length) throw new Error(WINDOWS_PROFILE_WRITE_FLOOR_ERROR);
   const requestedWrite = admittedWindowsPolicies.get(trustedSettings)?.allowWrite ?? trustedSettings.allowWrite ?? [];
   const mandatory = buildMandatorySandboxWritePolicy(
     writeFloor.bounded ? requestedWrite : [],
     trustedSettings.userDataDir,
-    sensitiveDenyWrite,
-    sensitiveDenyWrite.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
+    sensitiveWritePaths,
+    sensitiveWritePaths.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
   );
   const denyWriteUnion: FilesystemPathEntry[] = [];
   const denyWriteSeen = new Set<string>();
-  for (const p of [...sensitiveDenyWrite, ...mandatory.denyWrite, ...(trustedSettings.denyWrite ?? [])]) {
-    const key = typeof p === "string" ? `pattern:${p}` : `literal:${p.path}`;
+  for (const p of [...writeFloor.entries, ...mandatory.denyWrite, ...(trustedSettings.denyWrite ?? [])]) {
+    const key = filesystemDenyEntryKey(p);
     if (!denyWriteSeen.has(key)) {
       denyWriteSeen.add(key);
       denyWriteUnion.push(p);
@@ -2332,10 +2360,10 @@ async function discardFailedAsrtInitialization(
 function checkWindowsSandboxStampTargets(filesystem: Partial<FilesystemConfig> | undefined): void {
   if (process.platform !== "win32" || !AVE_HOME_ISOLATION_GUARD_ACTIVE) return;
   // Check the deny path's runtime expansion without subjecting protective rows to grant admission.
-  const targets = expandWindowsFsPaths([
-    ...(filesystem?.denyRead ?? []), ...(filesystem?.denyWrite ?? []),
+  const targets = [...expandWindowsFsPaths([
+    ...(filesystem?.denyRead ?? []),
     ...(filesystem?.allowWrite ?? []), ...(filesystem?.allowRead ?? []),
-  ], { mode: "deny" }).filter(path => !isUncPath(path));
+  ], { mode: "deny" }), ...expandWindowsAclDenyLists([], filesystem?.denyWrite).denyWrite].filter(path => !isUncPath(path));
   checkSandboxStampTargets(targets);
 }
 
@@ -2389,7 +2417,7 @@ async function initializeSandboxRuntime(
     : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = initialSettings;
-  sandboxSession = { windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsPendingWrapDenies: new Set(), windowsDenyRevision: 0 };
+  sandboxSession = { windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Map(), windowsPendingWrapDenies: new Set(), windowsDenyRevision: 0 };
   const session = sandboxSession;
   let fullConfig: SandboxRuntimeConfig;
   windowsProfileReadDenyWarnings.clear();
@@ -2982,7 +3010,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     for (const kind of ["denyRead", "denyWrite"] as const) {
       // Raw rows include omitted targets and unmatched patterns from initialization and every earlier wrap.
       for (const entry of [...(settings[kind] ?? []), ...pending.filesystem[kind]]) {
-        const overlap = overlappingWindowsDeny(entry, allowWrite);
+        const overlap = overlappingWindowsDeny(entry, allowWrite, kind === "denyWrite");
         if (overlap === undefined) continue;
         const { expanded, path, glob } = overlap;
         if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
@@ -3169,16 +3197,18 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
       throw new Error(`Windows filesystem grant is inside the Ave home outside a re-allowed child: ${path}`);
     }
   }
+  const writeDenyCovering = write.length > 0 ? protectedReadDenyMatcher(getDefaultSensitiveWriteDenyEntries()) : undefined;
   for (const path of write) {
-    if (protectedReadDenyCovering(path, getDefaultSensitiveWriteDenyPaths())) {
+    if (writeDenyCovering?.(path) !== undefined) {
       throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
     }
   }
 }
 
-function overlappingWindowsDeny(entry: FilesystemPathEntry, allowWrite: readonly string[]) {
+function overlappingWindowsDeny(entry: FilesystemPathEntry, allowWrite: readonly string[], preserveLiteral = false) {
   if (allowWrite.length === 0) return;
-  const expanded = expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path));
+  const raw = typeof entry === "string" ? entry : entry.path;
+  const expanded = preserveLiteral && typeof entry !== "string" ? raw : expandWindowsEnvRefs(expandLeadingTilde(raw));
   const path = stripExtendedPathPrefix(expanded);
   const glob = (typeof entry === "string" || !entry.literal) && containsGlobCharsWin(path);
   const boundary = glob ? globPatternBaseDir(toForwardSlashes(path)) : path;
@@ -3190,7 +3220,8 @@ function assertWindowsGrantDenySnapshot(session: AsrtSandboxSession, revision: n
   assertWindowsSession(session, revision);
   if (allowWrite.length === 0) return;
   for (const { read, write } of session.windowsPendingWrapDenies) {
-    if ([...read, ...write].some(entry => overlappingWindowsDeny(entry, allowWrite) !== undefined)) {
+    if (read.some(entry => overlappingWindowsDeny(entry, allowWrite) !== undefined)
+      || write.some(entry => overlappingWindowsDeny(entry, allowWrite, true) !== undefined)) {
       throw new Error("Windows deny obligations changed while verifying the write grant");
     }
   }

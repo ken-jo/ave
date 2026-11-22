@@ -10,6 +10,7 @@ const ENGINES = ["WindowsPowerShell", "PowerShell"];
 const profilesIn = (documents: string): string[] => ENGINES.flatMap(engine => [
   join(documents, engine, "profile.ps1"), join(documents, engine, "Microsoft.PowerShell_profile.ps1"),
 ]);
+const literalDeny = (path: string) => ({ path, literal: true });
 
 vi.mock("node:os", async importOriginal => ({
   ...await importOriginal<typeof import("node:os")>(),
@@ -52,8 +53,8 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     expect(grants).toEqual({ readwrite: [documents], readonly: present, denied: missing });
 
     const config = buildSandboxConfig({ allowWrite: [documents], resolveWindowsDocumentsPath, windows: { externalConfinement: true } });
-    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining([...present, ...missing]));
-    for (const path of adjacent) expect(config.filesystem.denyWrite).not.toContain(path);
+    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining([...present, ...missing].map(literalDeny)));
+    for (const path of adjacent) expect(config.filesystem.denyWrite).not.toContainEqual(literalDeny(path));
 
     const extension = admitMxcExtensionFilesystem({ allowWrite: [documents], allowRead: [], denyWrite }, {
       readRoots: [], writeRoots: [documents], hostStorageRoots: [],
@@ -131,7 +132,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     });
 
     expect(config.filesystem.allowWrite).toContainEqual(expect.objectContaining({ path: parent, literal: true }));
-    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining([...profilesIn(missingDocuments), ...profilesIn(defaultDocuments)]));
+    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining([...profilesIn(missingDocuments), ...profilesIn(defaultDocuments)].map(literalDeny)));
   });
 
   it.each([
@@ -146,7 +147,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     });
 
     expect(config.filesystem.allowWrite).toEqual([]);
-    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining(profilesIn(defaultDocuments)));
+    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining(profilesIn(defaultDocuments).map(literalDeny)));
   });
 
   it("protects default profile locations when Documents is outside local grants", () => {

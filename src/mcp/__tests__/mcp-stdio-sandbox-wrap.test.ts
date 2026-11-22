@@ -78,6 +78,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     sandboxTempEnvLaunch: actual.sandboxTempEnvLaunch,
     sandboxTempPrincipalDirName: actual.sandboxTempPrincipalDirName,
     getDefaultSensitiveReadDenyPaths: actual.getDefaultSensitiveReadDenyPaths,
+    getDefaultSensitiveWriteDenyEntries: actual.getDefaultSensitiveWriteDenyEntries,
     getDefaultSensitiveWriteDenyPaths: actual.getDefaultSensitiveWriteDenyPaths,
     appOwnedSandboxPrivateRoots: actual.appOwnedSandboxPrivateRoots,
   };
