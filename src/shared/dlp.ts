@@ -530,8 +530,9 @@ function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string 
       "$1[REDACTED:TOKEN]",
     )
     .replace(/\bbearer\s+[A-Za-z0-9._\-~+/=]+/gi, "Bearer [REDACTED:TOKEN]")
+    // Signed URLs carry a signature and a session token as query values.
     .replace(
-      /([?&](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token))=([^&\s]+)/gi,
+      /([?&](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|(?:[a-z0-9]+-)*(?:signature|security-token)|sig))=([^&\s]+)/gi,
       "$1=[REDACTED:TOKEN]",
     )
     .replace(
