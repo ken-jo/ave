@@ -96,11 +96,17 @@ export async function stageRunHarness(opts: {
   let lastRequestedOrigin: string | undefined;
   /** The last terminal run event of each origin since its latest start, for waits created after it. */
   const failures = new Map<string, Error>();
+  /** Origins whose run was started or spawned a child and has not ended. */
+  const inFlight = new Set<string>();
 
   function failChildWaits(reason: string, originSessionId?: string, terminal = false): void {
     const error = new Error(`Child wait ended: ${reason}`);
     if (terminal && originSessionId !== undefined) failures.set(originSessionId, error);
     for (const changed of childChanges) changed({ error, originSessionId });
+  }
+  function endRun(reason: string, originSessionId: string): void {
+    failChildWaits(reason, originSessionId, true);
+    inFlight.delete(originSessionId);
   }
 
   const runner = {
@@ -121,7 +127,10 @@ export async function stageRunHarness(opts: {
         },
       };
       children.push(child);
-      if (input.originSessionId !== undefined) failures.delete(input.originSessionId);
+      if (input.originSessionId !== undefined) {
+        failures.delete(input.originSessionId);
+        inFlight.add(input.originSessionId);
+      }
       try {
         hooks?.onLinked?.({ childSessionId: sessionId });
         const scripted = opts.script?.(input);
@@ -196,7 +205,7 @@ export async function stageRunHarness(opts: {
             if (!prior?.runSessionId) failChildWaits(`${phase}: ${event.message ?? "child did not register"}`, workBoardOriginSessionId(itemId), true);
           } else if (event.message !== "restored" && event.reasonCode !== "run-end-confirmed"
             && (phase === "done" || phase === "denied" || phase === "cancelled" || phase === "error")) {
-            failChildWaits(`${phase}: ${event.reasonCode ?? event.message ?? "run ended"}`, workBoardOriginSessionId(itemId), true);
+            endRun(`${phase}: ${event.reasonCode ?? event.message ?? "run ended"}`, workBoardOriginSessionId(itemId));
           }
         }
         events.push(event);
@@ -210,27 +219,22 @@ export async function stageRunHarness(opts: {
       async runItem(...args: Parameters<typeof current.runItem>) {
         const [itemId] = args;
         const origin = workBoardOriginSessionId(itemId);
-        const previous = lastRequestedOrigin;
         if (engine === wrapped) {
           lastRequestedOrigin = origin;
           failures.delete(origin);
+          inFlight.add(origin);
         }
         const first = children.length;
         const spawned = () => children.slice(first).some(child => child.input.originSessionId === origin);
-        // A start that ended before any child of it spawned is not the one aggregate waits follow afterwards.
-        const ended = (reason: string) => {
-          failChildWaits(reason, origin, true);
-          if (!spawned() && lastRequestedOrigin === origin) lastRequestedOrigin = previous;
-        };
         try {
           const result = await current.runItem(...args);
           // The run already in progress is unaffected by a second start.
           if (result.status === "already_running") return result;
-          if (engine === wrapped && result.status !== "awaiting_approval") ended(`${result.status}: ${"reason" in result ? result.reason : "run ended"}`);
+          if (engine === wrapped && result.status !== "awaiting_approval") endRun(`${result.status}: ${"reason" in result ? result.reason : "run ended"}`, origin);
           else if (engine === wrapped && !spawned()) failChildWaits("awaiting_approval: run ended without the requested child", origin);
           return result;
         } catch (error) {
-          if (engine === wrapped) ended(String(error));
+          if (engine === wrapped) endRun(String(error), origin);
           throw error;
         }
       },
@@ -244,7 +248,11 @@ export async function stageRunHarness(opts: {
       },
       cancelRun(itemId: number) {
         const result = current.cancelRun(itemId);
-        if (result.ok && engine === wrapped) failChildWaits("run cancelled", workBoardOriginSessionId(itemId));
+        // An accepted Stop ends the run for waits even while the run's class holds its end.
+        if (result.ok && engine === wrapped) {
+          failChildWaits("run cancelled", workBoardOriginSessionId(itemId));
+          inFlight.delete(workBoardOriginSessionId(itemId));
+        }
         return result;
       },
     };
@@ -256,6 +264,7 @@ export async function stageRunHarness(opts: {
     failChildWaits("engine replaced");
     lastRequestedOrigin = undefined;
     failures.clear();
+    inFlight.clear();
     board = new WorkBoardStore(boardPath);
     runWork = observeEngineWork();
     engine = engineOn(board);
@@ -335,31 +344,38 @@ export async function stageRunHarness(opts: {
       listeners.add(changed);
     });
   }
-  function waitForChildren(get: () => FakeChild[], done: (list: FakeChild[]) => boolean, itemId?: number): Promise<FakeChild[]> {
+  /** An aggregate wait (no `itemId`) takes failures of every item in flight while it waits, and is created failed only when each of them
+   * has failed. A live count also takes failures of items whose live child it counted; a spawn count ignores an item it has already
+   * counted a child of while another item is still in flight. */
+  function waitForChildren(get: () => FakeChild[], done: (list: FakeChild[]) => boolean, countsLive: boolean, itemId?: number): Promise<FakeChild[]> {
     if (closed) return Promise.reject(new Error("Child wait ended: harness cleaned up"));
     const current = get();
     if (done(current)) return Promise.resolve(current);
-    // An aggregate count takes failures of the most recent start and of every item whose live child it has counted.
-    let origin = itemId === undefined ? lastRequestedOrigin : workBoardOriginSessionId(itemId);
-    const counted = new Set<string>();
-    const count = (list: FakeChild[]) => {
-      if (itemId === undefined) for (const child of list) if (!child.ended && child.input.originSessionId) counted.add(child.input.originSessionId);
+    const origin = itemId === undefined ? undefined : workBoardOriginSessionId(itemId);
+    const scope = new Set<string>();
+    const widen = (list: FakeChild[]) => {
+      if (origin !== undefined) return;
+      for (const from of inFlight) scope.add(from);
+      if (countsLive) for (const child of list) if (!child.ended && child.input.originSessionId) scope.add(child.input.originSessionId);
     };
-    count(current);
-    const ended = [origin, ...counted].find(from => from !== undefined && failures.has(from));
-    if (ended !== undefined) return Promise.reject(failures.get(ended));
+    widen(current);
+    const candidates = origin !== undefined ? [origin] : inFlight.size > 0 ? [...inFlight] : lastRequestedOrigin !== undefined ? [lastRequestedOrigin] : [];
+    if (candidates.length > 0 && candidates.every(from => failures.has(from))) return Promise.reject(failures.get(candidates.at(-1) ?? ""));
     return new Promise((resolve, reject) => {
       function changed(failure?: ChildWaitFailure) {
-        origin ??= lastRequestedOrigin;
         const value = get();
-        count(value);
+        widen(value);
         if (done(value)) {
           childChanges.delete(changed);
           resolve(value);
           return;
         }
-        const from = failure?.originSessionId;
-        if (!failure || (origin !== undefined && from !== undefined && from !== origin && !counted.has(from))) return;
+        if (!failure) return;
+        const from = failure.originSessionId;
+        if (from !== undefined && origin !== undefined && from !== origin) return;
+        if (from !== undefined && origin === undefined && scope.size > 0
+          && (!scope.has(from) || (!countsLive && value.some(child => child.input.originSessionId === from)
+            && [...inFlight].some(other => other !== from)))) return;
         childChanges.delete(changed);
         reject(failure.error);
       }
@@ -368,9 +384,9 @@ export async function stageRunHarness(opts: {
   }
   const forItem = (list: FakeChild[], itemId?: number) =>
     itemId === undefined ? list : list.filter(child => child.input.originSessionId === workBoardOriginSessionId(itemId));
-  const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(live(), itemId), active => active.length === count, itemId);
+  const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(live(), itemId), active => active.length === count, true, itemId);
   const waitForLive = untilLive;
-  const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(children, itemId), spawned => spawned.length >= count, itemId);
+  const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(children, itemId), spawned => spawned.length >= count, false, itemId);
   const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");

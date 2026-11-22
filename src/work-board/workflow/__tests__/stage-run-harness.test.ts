@@ -3,6 +3,8 @@ import { setImmediate } from "node:timers/promises";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
+import { workBoardOriginSessionId } from "../../../shared/work-board-types.js";
+import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
 it.each(["refused", "failed", "ended", "cancelled"] as const)("settles child waits when the expected run is %s", async outcome => {
@@ -184,17 +186,16 @@ it.each(["registered", "ended before preparation", "ended after release"] as con
   }
 });
 
-it.each(["cancelled", "ended"] as const)("an aggregate child wait settles when an earlier item it counts is %s", async outcome => {
+it.each(["cancelled", "ended", "cancelled before its child"] as const)("an aggregate child wait settles when an earlier item it counts is %s", async outcome => {
   const release = deferred<void>();
-  let prepares = 0;
+  let held = 0;
   const h = await stageRunHarness({
     observeRunWork: true,
     wiring: (_store, { workspace }) => ({
       workspace: {
         ...workspace,
         prepare: async (...args) => {
-          prepares += 1;
-          if (prepares > 1) await release.promise;
+          if (args[0].itemId === held) await release.promise;
           return workspace.prepare(...args);
         },
       },
@@ -204,21 +205,24 @@ it.each(["cancelled", "ended"] as const)("an aggregate child wait settles when a
   const version = await h.confirm([autoStageOf("a")]);
   const earlier = await h.addItem(version);
   const later = await h.addItem(version);
+  held = outcome === "cancelled before its child" ? earlier : later;
   try {
     runs.push(h.start(earlier, h.local(version)));
-    const [child] = await h.untilLive(1);
+    if (held === later) await h.untilLive(1);
     runs.push(h.start(later, h.local(version)));
+    const [child] = await h.untilLive(1);
     const waits = Promise.allSettled([h.waitForLive(2), h.untilLive(2)]);
-    if (outcome === "cancelled") expect(h.engine.cancelRun(earlier)).toEqual({ ok: true });
-    else child.finish();
-    await runs[0];
+    if (outcome === "ended") child.finish();
+    else expect(h.engine.cancelRun(earlier)).toEqual({ ok: true });
+    // A held preparation keeps the cancelled start pending until the release below.
+    if (held === later) await runs[0];
     const result = await Promise.race([waits, setImmediate("still pending")]);
-    const reason = { cancelled: /cancelled/, ended: /done/ }[outcome];
+    const reason = outcome === "ended" ? /done/ : /cancelled/;
     expect(result).toEqual(Array.from({ length: 2 }, () => ({
       status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(reason) }),
     })));
   } finally {
-    h.engine.cancelRun(later);
+    h.engine.cancelRun(held);
     release.resolve();
     for (const child of h.live()) child.finish();
     await Promise.allSettled(runs);
@@ -453,6 +457,86 @@ it("a second start of a running item leaves its child waits pending", async () =
     await h.drainRunWork();
     for (const child of h.live()) child.finish();
     await running;
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+/** Holds the preparation of the stages `held` names until `release` resolves. */
+function holdingPrepare(held: (itemId: number, stageId: string) => boolean, release: Promise<void>) {
+  return {
+    observeRunWork: true,
+    wiring: (_store: unknown, { workspace }: { workspace: StageWorkspaceProvider }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (...args: Parameters<StageWorkspaceProvider["prepare"]>) => {
+          if (held(args[0].itemId, args[1].id)) await release;
+          return workspace.prepare(...args);
+        },
+      },
+    }),
+  };
+}
+
+it.each(["ended", "refused"] as const)("an aggregate child wait created after a later item %s keeps following an earlier item in flight", async outcome => {
+  const release = deferred<void>();
+  let earlier = 0;
+  const h = await stageRunHarness(holdingPrepare((itemId, stageId) => itemId === earlier && (outcome === "ended" || stageId === "b"), release.promise));
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm(outcome === "ended" ? [autoStageOf("a")] : [autoStageOf("a"), autoStageOf("b")]);
+    earlier = await h.addItem(version);
+    const later = await h.addItem(version);
+    runs.push(h.start(earlier, h.local(version)));
+    if (outcome === "ended") {
+      runs.push(h.start(later, h.local(version)));
+      (await h.untilLive(1, later))[0].finish();
+      expect(await runs[1]).toMatchObject({ status: "completed" });
+    } else {
+      await h.untilLive(1, earlier);
+      expect(await h.start(later, h.local(version, h.dir))).toMatchObject({ status: "error" });
+    }
+    const count = outcome === "ended" ? 1 : 2;
+    const wait = Promise.allSettled([h.untilLive(count)]);
+    expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
+    release.resolve();
+    const [result] = await wait;
+    expect(result).toEqual({ status: "fulfilled", value: h.live() });
+    expect(h.live().map(child => child.input.originSessionId)).toEqual(Array.from({ length: count }, () => workBoardOriginSessionId(earlier)));
+  } finally {
+    release.resolve();
+    await h.drainRunWork();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("an aggregate spawn count outlives the normal end of an earlier item it counted", async () => {
+  const release = deferred<void>();
+  let later = 0;
+  const h = await stageRunHarness(holdingPrepare(itemId => itemId === later, release.promise));
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const earlier = await h.addItem(version);
+    later = await h.addItem(version);
+    runs.push(h.start(earlier, h.local(version)));
+    const [child] = await h.untilLive(1, earlier);
+    runs.push(h.start(later, h.local(version)));
+    const wait = Promise.allSettled([h.untilSpawned(2)]);
+    child.finish();
+    expect(await runs[0]).toMatchObject({ status: "completed" });
+    expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
+    release.resolve();
+    expect(await wait).toEqual([{ status: "fulfilled", value: h.children }]);
+    expect(h.children).toHaveLength(2);
+  } finally {
+    release.resolve();
+    await h.drainRunWork();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
     await h.drainRunWork();
     await h.cleanup();
   }
