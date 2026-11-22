@@ -2275,12 +2275,16 @@ function logUnreleasedWindowsAces(report: SandboxResetReport | undefined): void 
     unreleased.map(({ step, status, count, targets }) => `${step} ${status} x${count} [${targets.map(target => step === "deny restore" ? windowsAclTargetLabel(target, status) : windowsAclTargetKey(target)).join(",")}]`).join(", "));
 }
 
-// Logging a failed reset's rows never replaces the reset's own error.
-function logFailedResetRows(error: unknown): void {
+// Logging a reset's rows never fails a reset that succeeded, skips its release mark, or replaces a failed reset's error.
+function logResetRows(report: SandboxResetReport | undefined): void {
   try {
-    logUnreleasedWindowsAces(failedResetReport(error));
+    logUnreleasedWindowsAces(report);
   } catch {
-    log.warn("sandbox runtime reset: the failed reset's dropped ACE rows could not be logged");
+    try {
+      log.warn("sandbox runtime reset: the dropped ACE rows could not be logged");
+    } catch {
+      // The log sink itself failed; nothing is left to report through.
+    }
   }
 }
 
@@ -2296,12 +2300,16 @@ async function discardFailedAsrtInitialization(
   sandboxSession = undefined;
   _workerUnixSocketDirs.clear();
   try {
-    logUnreleasedWindowsAces(await SandboxManager.reset());
+    logResetRows(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } catch (error) {
-    logFailedResetRows(error);
+    logResetRows(failedResetReport(error));
     // The caller must still receive the probe error and boot must remain degraded; a reset failure cannot make the capability verified.
-    log.error("discarding a failed initialization: sandbox runtime reset failed: %s", errorMessage(error));
+    try {
+      log.error("discarding a failed initialization: sandbox runtime reset failed: %s", errorMessage(error));
+    } catch {
+      // The probe error still reaches the caller.
+    }
   }
 }
 
@@ -3272,10 +3280,10 @@ export async function resetAsrtSandbox(): Promise<void> {
     // A failed Windows ACL release (carried patch part 12), or an invocation relay port still bound (part 3), rejects after the rest of the
     // teardown; the release then stays pending, so the private helper copy is kept for the runtime's exit handler and the next boot's recovery
     // to retry, and a later reset retries the relay.
-    logUnreleasedWindowsAces(await SandboxManager.reset());
+    logResetRows(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } catch (error) {
-    logFailedResetRows(error);
+    logResetRows(failedResetReport(error));
     throw error;
   } finally {
     // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
