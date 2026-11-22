@@ -89,6 +89,7 @@ src/core/__tests__/work-board-briefing.test.ts
 src/core/__tests__/work-board-engine.test.ts
 src/core/__tests__/work-board-live-steps.test.ts
 src/core/__tests__/work-board-run-flow.test.ts
+src/core/__tests__/work-board-stage-isolation.test.ts
 src/core/__tests__/work-board-stage-revoke.test.ts
 src/core/__tests__/work-board-stage-run.test.ts
 src/core/__tests__/work-board-stage-settle.test.ts
@@ -697,6 +698,7 @@ src/permissions/__tests__/shell-protected-write-floor.test.ts
 src/permissions/__tests__/shell-read-classification-evasion.test.ts
 src/permissions/__tests__/shell-rule-version.test.ts
 src/permissions/__tests__/shell-static-analysis.test.ts
+src/permissions/__tests__/stage-workspace-binding.test.ts
 src/permissions/__tests__/terminal-egress-observation.test.ts
 src/permissions/__tests__/test-resources.test.ts
 src/permissions/__tests__/upstream-proxy-native.test.ts
@@ -1026,6 +1028,8 @@ src/work-board/workflow/__tests__/run-workspace-retention.test.ts
 src/work-board/workflow/__tests__/stage-graph.test.ts
 src/work-board/workflow/__tests__/stage-machine.test.ts
 src/work-board/workflow/__tests__/stage-prompt.test.ts
+src/work-board/workflow/__tests__/stage-workspaces-folder.test.ts
+src/work-board/workflow/__tests__/stage-workspaces-git.test.ts
 test/renderer/assistant-card-contrast.test.tsx
 test/renderer/plugin-load-refusal-visibility.test.tsx
 test/scripts/asrt-bwrap-ownership.test.ts

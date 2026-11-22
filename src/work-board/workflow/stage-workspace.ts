@@ -26,13 +26,3 @@ export interface StageWorkspaceProvider {
   /** Boot: drop what no active run owns. */
   sweep(activeRunIds: readonly string[]): Promise<void>;
 }
-
-/** The default until a real provider is wired: no template run can start. */
-export const unavailableWorkspaceProvider: StageWorkspaceProvider = {
-  open: async () => ({ ok: false, code: "workspace-unavailable" }),
-  prepare: async () => ({ ok: false, code: "workspace-unavailable" }),
-  seal: async () => ({ ok: false, code: "workspace-unavailable" }),
-  integrate: async () => { throw new Error("stage workspaces are not available"); },
-  release: async () => {},
-  sweep: async () => {},
-};
