@@ -116,6 +116,12 @@ async function subject(mode: "auto" | "default" = "auto") {
   registry.register(makeWriteProbeTool(execute));
   const hooks = new ScriptHookManager();
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks, audit);
+  const releaseHolds: Array<() => void> = [];
+  const hold = () => {
+    const held = deferred<void>();
+    releaseHolds.push(held.resolve);
+    return held;
+  };
   const pending: Promise<unknown>[] = [];
   const track = <T>(run: Promise<T>): Promise<T> => {
     pending.push(run);
@@ -128,6 +134,7 @@ async function subject(mode: "auto" | "default" = "auto") {
   const selector = new LlmApprovalSentenceSelector({ complete: selectComplete }, "review-model");
   cleanup.push(async () => {
     gate.disposeAll();
+    for (const release of releaseHolds) release();
     await Promise.allSettled(pending);
     await audit.close();
   });
@@ -170,16 +177,14 @@ async function subject(mode: "auto" | "default" = "auto") {
   };
   const holdNextPreToolUse = () => {
     const original = hooks.runPreToolUse.bind(hooks);
-    let enter!: () => void;
-    let release!: () => void;
-    const reached = new Promise<void>((resolve) => { enter = resolve; });
-    const held = new Promise<void>((resolve) => { release = resolve; });
+    const reached = deferred<void>();
+    const held = hold();
     vi.spyOn(hooks, "runPreToolUse").mockImplementationOnce(async (...args) => {
-      enter();
-      await held;
+      reached.resolve();
+      await held.promise;
       return original(...args);
     });
-    return { reached, release };
+    return { reached: reached.promise, release: held.resolve };
   };
   const queueCard = (overrides: Partial<ApprovalRequestInput> = {}) => {
     const request: ApprovalRequestInput = {
@@ -194,7 +199,7 @@ async function subject(mode: "auto" | "default" = "auto") {
     };
     return { request, result: track(gate.requestAndWait(request)) };
   };
-  return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
+  return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, hold, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
 
 describe("live native approval ownership", () => {
@@ -330,15 +335,13 @@ describe("live native approval ownership", () => {
       expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
       return;
     }
-    let release!: () => void;
-    let reached!: () => void;
-    const held = new Promise<void>((resolve) => { release = resolve; });
-    const entered = new Promise<void>((resolve) => { reached = resolve; });
+    const { promise: held, resolve: release } = f.hold();
+    const entered = deferred<void>();
     const add = f.manager.addRulePersist.bind(f.manager);
-    vi.spyOn(f.manager, "addRulePersist").mockImplementationOnce(async (...args) => { reached(); await held; await add(...args); });
+    vi.spyOn(f.manager, "addRulePersist").mockImplementationOnce(async (...args) => { entered.resolve(); await held; await add(...args); });
     const saving = save();
     try {
-      await entered;
+      await entered.promise;
       if (scenario === "parallel saves") {
         expect(await save()).toMatchObject({ ok: true });
         release();
@@ -566,9 +569,12 @@ describe("live native approval ownership", () => {
     const held = lane === "late pause" ? f.holdNextPreToolUse() : undefined;
     const pending = f.start();
     if (held) {
-      await held.reached;
-      await f.pause();
-      held.release();
+      try {
+        await held.reached;
+        await f.pause();
+      } finally {
+        held.release();
+      }
     }
     const card = await f.waitForCard();
     const decision = allowOnceCardAnswer(card);
@@ -678,7 +684,7 @@ describe("live native approval ownership", () => {
     const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
     f.registry.register(bash);
     const askReached = deferred<void>();
-    const releaseAsk = deferred<void>();
+    const releaseAsk = f.hold();
     const appendEntry = f.audit.appendPermissionAuditEntry.bind(f.audit);
     const append = vi.spyOn(f.audit, "appendPermissionAuditEntry").mockImplementationOnce(async (entry) => {
       askReached.resolve();
@@ -692,9 +698,13 @@ describe("live native approval ownership", () => {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
     });
-    await askReached.promise;
-    const closing = closeFixtures();
-    releaseAsk.resolve();
+    let closing: Promise<void>;
+    try {
+      await askReached.promise;
+      closing = closeFixtures();
+    } finally {
+      releaseAsk.resolve();
+    }
     await closing;
 
     expect(await running).toMatchObject([{ is_error: true }]);
