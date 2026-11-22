@@ -2275,6 +2275,15 @@ function logUnreleasedWindowsAces(report: SandboxResetReport | undefined): void 
     unreleased.map(({ step, status, count, targets }) => `${step} ${status} x${count} [${targets.map(target => step === "deny restore" ? windowsAclTargetLabel(target, status) : windowsAclTargetKey(target)).join(",")}]`).join(", "));
 }
 
+// Logging a failed reset's rows never replaces the reset's own error.
+function logFailedResetRows(error: unknown): void {
+  try {
+    logUnreleasedWindowsAces(failedResetReport(error));
+  } catch {
+    log.warn("sandbox runtime reset: the failed reset's dropped ACE rows could not be logged");
+  }
+}
+
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.
 async function discardFailedAsrtInitialization(
   SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
@@ -2290,7 +2299,7 @@ async function discardFailedAsrtInitialization(
     logUnreleasedWindowsAces(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } catch (error) {
-    logUnreleasedWindowsAces(failedResetReport(error));
+    logFailedResetRows(error);
     // The caller must still receive the probe error and boot must remain degraded; a reset failure cannot make the capability verified.
     log.error("discarding a failed initialization: sandbox runtime reset failed: %s", errorMessage(error));
   }
@@ -3266,7 +3275,7 @@ export async function resetAsrtSandbox(): Promise<void> {
     logUnreleasedWindowsAces(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } catch (error) {
-    logUnreleasedWindowsAces(failedResetReport(error));
+    logFailedResetRows(error);
     throw error;
   } finally {
     // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).

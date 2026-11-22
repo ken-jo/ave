@@ -99,6 +99,17 @@ describe("sandbox runtime release at exit", () => {
     expect(isSrtWinRuntimeReleasePending()).toBe(true);
   });
 
+  it("rejects with the reset's own error when the rows it carries cannot be logged", async () => {
+    const failure = Object.assign(new Error("srt-win acl: release failed"), {
+      windowsAclUnreleased: [{ step: "grant revoke", status: "missing", count: 1, targets: null }],
+    });
+    manager.reset.mockRejectedValueOnce(failure);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(resetAsrtSandbox()).rejects.toBe(failure);
+    expect(warn.mock.calls.flat().map(String).join("\n")).toContain("the failed reset's dropped ACE rows could not be logged");
+    expect(isSrtWinRuntimeReleasePending()).toBe(true);
+  });
+
   it("fails the quit release when the runtime could not run its ACL revoke, and keeps the copy for a retry", async () => {
     const revoke = vi.fn(() => undefined);
     setWindowsAclReleaseForTesting({ sandboxUserSid: "S-1-5-21-1", srtWin: executable, revoke, restore: () => [] });
