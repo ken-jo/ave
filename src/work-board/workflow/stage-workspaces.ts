@@ -8,7 +8,7 @@ import type { RunWorkspace, TemplateStage } from "../../shared/workflow-template
 import { isStageId } from "../template-graph.js";
 import { plainFolderIgnore } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
-import { holdDir, type OwnedDir } from "./owned-fs.js";
+import { holdDir, nodeIdOf, type OwnedDir, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
@@ -349,11 +349,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
-  async function prepareFolder(at: Held, stage: TemplateStage, dir: string): Promise<Refusal | null> {
+  async function prepareFolder(at: Held, stage: TemplateStage): Promise<Refusal | null> {
     const { runRoot, file } = at;
     const inputs = stage.inputFiles ?? [];
     if (file.projectRoot === undefined && inputs.some(input => input.from === "project")) return "inputs-need-project";
-    at.run.make(stageDirName(stage.id));
+    const target = at.run.make(stageDirName(stage.id));
     const seeded: Record<string, string> = {};
     let files = 0;
     let bytes = 0;
@@ -361,25 +361,32 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const plain = file.projectRoot !== undefined && file.ignoreRules !== true ? plainFolderIgnore(git, runRoot, file.projectRoot, { check: () => at.run.check(), makeTemp: () => at.run.makeTemp(IGNORE_PREFIX), remove: scratch => at.run.remove(basename(scratch.path), scratch.id) }) : undefined;
     try {
       for (const input of inputs) {
-        let source: string;
+        let source: SourceRoot;
         let paths: string[];
+        let expect: Map<string, string> | undefined;
         if (input.from === "project") {
-          source = file.projectRoot as string;
-          const listed = await listSeedFiles(source, input.paths, seedRules(plain?.ignored ?? ignoreRulesOf(file)));
+          // The folder that is listed is the one the files are then read from.
+          const root = file.projectRoot as string;
+          const id = nodeIdOf(root);
+          if (id === undefined) return "seed-unreadable";
+          source = { path: root, id };
+          const listed = await listSeedFiles(root, input.paths, seedRules(plain?.ignored ?? ignoreRulesOf(file)));
           if (!listed.ok) return listed.code;
           paths = listed.files.map(entry => entry.path);
           files += listed.files.length;
           bytes += listed.files.reduce((sum, entry) => sum + entry.size, 0);
         } else {
           // That stage's collected files, as they are in the output folder now.
-          source = join(runRoot, OUT_DIR);
+          const out = at.run.existing(OUT_DIR);
+          if (out === undefined) return "seed-unreadable";
+          source = out;
           paths = Object.entries(file.out).filter(([, owner]) => owner.stageId === input.stageId).map(([path]) => path);
+          expect = new Map(paths.map(path => [path, file.out[path]?.sha256 ?? ""]));
           files += paths.length;
           bytes += paths.reduce((sum, path) => sum + (file.out[path]?.size ?? 0), 0);
         }
         if (files > limits.files || bytes > limits.bytes) return "seed-too-large";
-        at.run.check();
-        for (const copied of await copySeedFiles(source, dir, runRoot, paths)) seeded[copied.path] = copied.sha256;
+        for (const copied of await copySeedFiles(source, target, paths, expect)) seeded[copied.path] = copied.sha256;
       }
     } catch {
       return "seed-unreadable";
@@ -414,7 +421,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (existing !== undefined) await removeStage(found, stage.id);
       file.stages[stage.id] = { ready: false, attempt };
       writeRunFile(found, file);
-      const refused = file.kind === "git" ? await prepareGit(found, stage, dir) : await prepareFolder(found, stage, dir);
+      const refused = file.kind === "git" ? await prepareGit(found, stage, dir) : await prepareFolder(found, stage);
       if (refused !== null) {
         if (file.stages[stage.id] !== undefined) await removeStage(found, stage.id).catch(() => undefined);
         return { ok: false as const, code: refused };
@@ -440,11 +447,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return head === entry.base ? { ok: true } : { ok: true, sealCommit: head };
   }
 
-  async function sealFolder(entry: StageEntry, dir: string): Promise<{ ok: true } | { ok: false; code: Refusal }> {
-    const listed = await listSeedFiles(dir, entry.outputs ?? ["**"], seedRules());
+  async function sealFolder(entry: StageEntry, stage: OwnedDir): Promise<{ ok: true } | { ok: false; code: Refusal }> {
+    const listed = await listSeedFiles(stage.path, entry.outputs ?? ["**"], seedRules());
     if (!listed.ok) return listed;
     const manifest: OutputFile[] = [];
-    for (const item of listed.files) manifest.push({ path: item.path, ...(await hashSeedFile(join(dir, item.path))) });
+    for (const item of listed.files) manifest.push({ path: item.path, ...(await hashSeedFile(stage, item.path)) });
     entry.manifest = manifest;
     return { ok: true };
   }
@@ -454,11 +461,15 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const found = locate(run);
       const entry = found?.file.stages[stageId];
       const dir = found ? join(found.runRoot, stageDirName(stageId)) : "";
-      if (!found || entry?.ready !== true || !plainDirectory(dir)) return { ok: false as const, code: "workspace-unavailable" as const };
+      if (!found || entry?.ready !== true) return { ok: false as const, code: "workspace-unavailable" as const };
+      let stage: OwnedDir | undefined;
+      try { stage = found.run.existing(stageDirName(stageId)); } catch { /* a link is no stage folder */ }
+      if (stage === undefined) return { ok: false as const, code: "workspace-unavailable" as const };
+      const held = stage;
       // One seal per attempt: a repeated call returns it without another snapshot.
       if (entry.sealed === true) return { ok: true as const, ...(entry.sealCommit !== undefined ? { sealCommit: entry.sealCommit } : {}) };
       try {
-        const sealed: { ok: true; sealCommit?: string } | { ok: false; code: Refusal } = found.file.kind === "git" ? await sealGit(run, found.file, stageId, entry, dir) : await sealFolder(entry, dir);
+        const sealed: { ok: true; sealCommit?: string } | { ok: false; code: Refusal } = found.file.kind === "git" ? await sealGit(run, found.file, stageId, entry, dir) : await sealFolder(entry, held);
         if (!sealed.ok) return sealed;
         entry.sealed = true;
         if (sealed.sealCommit !== undefined) entry.sealCommit = sealed.sealCommit;
@@ -528,11 +539,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   async function integrateFolder(run: RunRef, at: Held, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
-    const { runRoot, file } = at;
+    const { file } = at;
     if (file.joins[joinId] === true) return { ok: true };
     if (stageIds.some(stageId => file.stages[stageId]?.sealed !== true)) throw new Error("a stage of the join is not sealed");
-    const outDir = join(runRoot, OUT_DIR);
-    if (!plainDirectory(outDir)) throw new Error("the run has no output folder");
+    const out = at.run.existing(OUT_DIR);
+    if (out === undefined) throw new Error("the run has no output folder");
+    const outDir = out.path;
+    const stageDir = (stageId: string): OwnedDir => {
+      const dir = at.run.existing(stageDirName(stageId));
+      if (dir === undefined) throw new Error("a stage of the join has no folder");
+      return dir;
+    };
     const next = new Map(Object.entries(file.out));
     const contested = new Map<string, Set<string>>();
     const copies: { stageId: string; path: string; sha256: string; size: number }[] = [];
@@ -559,7 +576,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const [path, stages] of [...contested].sort(([a], [b]) => a < b ? -1 : 1)) {
       // A file the user put at the contested path is the resolution: it stays, and no stage's copy replaces it.
       const placed = join(outDir, path);
-      const onDisk = lstatSync(placed, { throwIfNoEntry: false })?.isFile() === true ? await hashSeedFile(placed) : undefined;
+      const onDisk = lstatSync(placed, { throwIfNoEntry: false })?.isFile() === true ? await hashSeedFile(out, path) : undefined;
       const recorded = file.out[path]?.sha256;
       if (onDisk !== undefined && onDisk.sha256 !== recorded) next.set(path, { ...onDisk, stageId: [...stages].at(-1) as string });
       else files.push({ path, stageIds: [...stages] });
@@ -569,16 +586,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     // Checked before anything is written: each sealed file is still what was sealed, and a file the host did not put in the output folder stays.
     for (const copy of copies) {
       if (contested.has(copy.path)) continue;
-      if ((await hashSeedFile(join(runRoot, stageDirName(copy.stageId), copy.path))).sha256 !== copy.sha256) throw new Error("a sealed stage file changed before it was collected");
+      if ((await hashSeedFile(stageDir(copy.stageId), copy.path)).sha256 !== copy.sha256) throw new Error("a sealed stage file changed before it was collected");
       const target = join(outDir, copy.path);
-      const there = lstatSync(target, { throwIfNoEntry: false })?.isFile() === true ? await hashSeedFile(target) : undefined;
+      const there = lstatSync(target, { throwIfNoEntry: false })?.isFile() === true ? await hashSeedFile(out, copy.path) : undefined;
       if (there !== undefined && there.sha256 !== copy.sha256 && there.sha256 !== file.out[copy.path]?.sha256) next.set(copy.path, { ...there, stageId: copy.stageId });
       else wanted.push(copy);
     }
-    for (const copy of wanted) {
-      at.run.check();
-      await copySeedFiles(join(runRoot, stageDirName(copy.stageId)), outDir, runRoot, [copy.path]);
-    }
+    // Each copy is the sealed content, or it does not stay.
+    for (const copy of wanted) await copySeedFiles(stageDir(copy.stageId), out, [copy.path], new Map([[copy.path, copy.sha256]]));
     file.out = Object.fromEntries(next);
     file.joins[joinId] = true;
     writeRunFile(at, file);

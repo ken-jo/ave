@@ -7,7 +7,7 @@ import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from ".
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
 import { namesFoldCase, plainFolderIgnore } from "../folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
-import { holdDir } from "../owned-fs.js";
+import { holdDir, nodeIdOf } from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE } from "../workspace-layout.js";
@@ -375,16 +375,81 @@ describe("folder stage workspaces", () => {
     expect(tree(await stageRoot(handle, "s3", { inputFiles: [fromProject("notes.txt")] }))).toEqual(["notes.txt"]);
   });
 
-  it("refuses a destination outside the run root", async () => {
+  it("copies only into the folder it holds: no path leaves it, no link is written through, and a copy that is not the expected content does not stay", async () => {
     const handle = await start(project);
-    const stage = await stageRoot(handle, "s1");
-    await expect(copySeedFiles(project, join(base, "elsewhere"), handle.runRoot, ["notes.txt"])).rejects.toThrow("outside the run root");
-    await expect(copySeedFiles(project, stage, handle.runRoot, ["../../../escape.txt"])).rejects.toThrow("not a relative path");
-    // A link planted in the stage folder is not written through.
-    symlinkSync(join(base, "outside-target"), join(stage, "src"), "junction");
-    await expect(copySeedFiles(project, stage, handle.runRoot, ["src/a.ts"])).rejects.toThrow();
-    expect(existsSync(join(base, "elsewhere"))).toBe(false);
-    expect(existsSync(join(base, "outside-target"))).toBe(false);
+    const stage = holdDir(await stageRoot(handle, "s1"));
+    const source = { path: project, id: nodeIdOf(project) as string };
+    const outside = join(base, "outside-target");
+    write(outside, "victim.txt", "outside\n");
+    await expect(copySeedFiles(source, stage, ["../../../escape.txt"])).rejects.toThrow("not a relative path");
+    // A link planted in the stage folder is not written through, as a folder or as the file's own name.
+    symlinkSync(outside, join(stage.path, "src"), "junction");
+    await expect(copySeedFiles(source, stage, ["src/deep/b.ts"])).rejects.toThrow();
+    linkSync(join(outside, "victim.txt"), join(stage.path, "notes.txt"));
+    expect(await copySeedFiles(source, stage, ["notes.txt"])).toMatchObject([{ path: "notes.txt", size: 6 }]);
+    expect(read(stage.path, "notes.txt")).toBe("notes\n");
+    expect(tree(outside)).toEqual(["victim.txt"]);
+    expect(read(outside, "victim.txt")).toBe("outside\n");
+    await expect(copySeedFiles(source, stage, ["docs/guide.md"], new Map([["docs/guide.md", "0".repeat(64)]]))).rejects.toThrow();
+    expect(existsSync(join(stage.path, "docs", "guide.md"))).toBe(false);
+    // A source folder that is no longer the one held is not read.
+    await expect(copySeedFiles({ path: outside, id: source.id }, stage, ["victim.txt"])).rejects.toThrow();
+    expect(isInside(handle.runRoot, stage.path)).toBe(true);
+  });
+
+  it("a stage folder whose subfolder became a link gets no copy through it", async () => {
+    const outside = join(base, "outside");
+    mkdirSync(outside);
+    let stage = "";
+    const handle = await start(project, { sensitive: () => {
+      if (stage !== "" && !existsSync(join(stage, "src"))) symlinkSync(outside, join(stage, "src"), "junction");
+      return false;
+    } });
+    stage = join(handle.runRoot, "s1");
+    expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/deep/b.ts")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+    expect(readdirSync(outside)).toEqual([]);
+    expect(existsSync(stage)).toBe(false);
+  });
+
+  it("an output folder junction gets no collected file through it", async () => {
+    const handle = await start(project);
+    const stage = await stageRoot(handle, "s1", { outputs: ["report/**"] });
+    write(stage, "report/deep/r.md", "report\n");
+    await handle.provider.seal(handle.run, "s1");
+    const outside = join(base, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(handle.out, "report"), "junction");
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow();
+    expect(readdirSync(outside)).toEqual([]);
+    rmSync(join(handle.out, "report"));
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
+    expect(read(handle.out, "report/deep/r.md")).toBe("report\n");
+  });
+
+  it("an output folder replaced by a junction, or a collected file by other content, seeds nothing from there", async () => {
+    const handle = await start(project);
+    const first = await stageRoot(handle, "s1", { outputs: ["plan.md"] });
+    write(first, "plan.md", "the plan\n");
+    await handle.provider.seal(handle.run, "s1");
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
+    const fromFirst = { inputFiles: [{ from: "stage" as const, stageId: "s1" }] };
+    // The collected file is no longer what was collected.
+    write(handle.out, "plan.md", "edited since\n");
+    expect(await handle.provider.prepare(handle.run, stageOf("s2", fromFirst), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+    write(handle.out, "plan.md", "the plan\n");
+    const away = join(base, "out-away");
+    const outside = join(base, "outside");
+    write(outside, "plan.md", "the plan\n");
+    renameSync(handle.out, away);
+    symlinkSync(outside, handle.out, "junction");
+    try {
+      expect(await handle.provider.prepare(handle.run, stageOf("s2", fromFirst), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+      expect(existsSync(join(handle.runRoot, "s2"))).toBe(false);
+    } finally {
+      rmSync(handle.out);
+      renameSync(away, handle.out);
+    }
+    expect(tree(await stageRoot(handle, "s2", fromFirst))).toEqual(["plan.md"]);
   });
 
   it("collects outputs into _out and reports the same path from two stages as a conflict", async () => {
