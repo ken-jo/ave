@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, existsSync, statSync } from "node:fs";
-import { delimiter, join, parse } from "node:path";
+import { accessSync, existsSync, mkdtempSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join, parse, win32 } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -53,9 +55,9 @@ describe("resolveHostGit", () => {
       .mockReturnValueOnce({ isFile: () => true } as ReturnType<typeof statSync>);
     const { resolveHostGit } = await import("../host-git-executable.js");
 
-    expect(resolveHostGit({ packaged: false })).toBe(join(host, binary));
+    expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     vi.stubEnv("PATH", join(root, "changed-bin"));
-    expect(resolveHostGit({ packaged: false })).toBe(join(host, binary));
+    expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary)]);
   });
 
@@ -72,7 +74,7 @@ describe("resolveHostGit", () => {
     expect(execFileSync).not.toHaveBeenCalled();
     vi.mocked(accessSync).mockReset();
     vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
-    expect(resolveHostGit({ packaged: false })).toBe(join(host, binary));
+    expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
   });
 
   it("rejects Windows UNC and device PATH entries before filesystem probes", async () => {
@@ -93,6 +95,7 @@ describe("resolveHostGit", () => {
     const originalExecPath = process.execPath;
     Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
     setProcessPlatform("win32");
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     vi.stubEnv("PATH", "D:\\Tools\\Git\\cmd");
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
@@ -103,11 +106,71 @@ describe("resolveHostGit", () => {
       return "git version 2.56.0";
     });
     try {
-      expect(resolveHostGit({ packaged: true })).toBe(launchable ? bundled : system);
-      expect(resolveHostGit({ packaged: true })).toBe(launchable ? bundled : system);
+      expect(resolveHostGit({ packaged: true })?.path).toBe(launchable ? bundled : system);
+      expect(resolveHostGit({ packaged: true })?.path).toBe(launchable ? bundled : system);
       expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual([bundled]);
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath });
+    }
+  });
+
+  it("runs the bundled probe with a host-owned environment and no trace output", async () => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    vi.mocked(accessSync).mockImplementation(actual.accessSync);
+    vi.mocked(statSync).mockImplementation(actual.statSync);
+    const systemGit = resolveHostGit({ packaged: false });
+    if (systemGit === null) throw new Error("The trace regression requires an installed Git");
+    vi.resetModules();
+
+    const install = mkdtempSync(join(tmpdir(), "ave-git-probe-"));
+    const trace = join(install, "trace.jsonl");
+    const originalExecPath = process.execPath;
+    const installRoot = join("C:/Ave", "git");
+    const cwd = join(installRoot, "cmd");
+    const safePath = process.env.PATH;
+    try {
+      const bundled = join(cwd, "git.exe");
+      vi.mocked(accessSync).mockReset();
+      vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+      vi.mocked(existsSync).mockReturnValue(true);
+      setProcessPlatform("win32");
+      Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
+      vi.stubEnv("SystemRoot", "C:\\Windows");
+      vi.stubEnv("PATH", "D:\\untrusted;\\\\example\\share");
+      vi.stubEnv("GIT_TRACE2_EVENT", trace);
+      vi.stubEnv("GIT_TRACE", trace);
+      vi.stubEnv("Git_Exec_Path", join(install, "other"));
+      vi.mocked(execFileSync).mockImplementation((_file, args, options) => {
+        // Forward Git settings to a real probe without searching the test's hostile PATH.
+        return childProcess.execFileSync(systemGit.path, args as readonly string[], {
+          ...options,
+          cwd: install,
+          env: options?.env ?? { ...process.env, PATH: safePath },
+          encoding: "utf8",
+        });
+      });
+      const { resolveHostGit: discover } = await import("../host-git-executable.js");
+      const selected = discover({ packaged: true });
+      expect.soft(actual.existsSync(trace)).toBe(false);
+      const expectedOptions = {
+        cwd,
+        env: {
+          PATH: [cwd, join(installRoot, "ucrt64", "bin"), join(installRoot, "usr", "bin"),
+            win32.join("C:\\Windows", "System32"), "C:\\Windows"].join(";"),
+          SystemRoot: "C:\\Windows",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_GLOBAL: "NUL",
+          GIT_ALLOW_PROTOCOL: "",
+        },
+      };
+      expect(execFileSync).toHaveBeenCalledWith(bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
+      expect(selected).toEqual({ path: bundled, options: expectedOptions });
+    } finally {
+      Object.defineProperty(process, "execPath", { value: originalExecPath });
+      setProcessPlatform(platform);
+      await cleanupTmpDir(install);
     }
   });
 });

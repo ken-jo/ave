@@ -247,21 +247,16 @@ function askGitIgnores(repoRoot: string, path: string): boolean | undefined {
   if (!hasGitEntry(repoRoot)) return false;
   const git = resolveHostGit({ packaged: isConfigured() ? getIsPackaged() : isPackagedElectronProcess() });
   if (git === null) return undefined;
-  const env = { ...process.env };
-  // Inherited Git settings can redirect the query. Windows matches environment names without case.
-  const gitVariable = process.platform === "win32" ? /^GIT_/iu : /^GIT_/u;
-  for (const key of Object.keys(env)) if (gitVariable.test(key)) delete env[key];
-  env.GIT_ALLOW_PROTOCOL = "";
   try {
     // Older Git must refuse the option before it can read a missing object.
     const args = buildHostGitArgs(["--no-lazy-fetch", "-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
       configArgs: ["-c", "protocol.allow=never"],
     });
-    execFileSync(git, args, {
+    execFileSync(git.path, args, {
+      ...git.options,
       windowsHide: true,
       stdio: "ignore",
       timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs,
-      env,
     });
     return true; // exit 0: ignored
   } catch {

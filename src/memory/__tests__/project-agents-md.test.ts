@@ -5,6 +5,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
   lastEnv: undefined as NodeJS.ProcessEnv | undefined,
+  lastCwd: undefined as string | undefined,
   traceEnv: undefined as NodeJS.ProcessEnv | undefined,
   intercept: false,
 }));
@@ -12,10 +13,11 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execFileSync: ((file: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+    execFileSync: ((file: string, args: readonly string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
       if (args.includes("check-ignore")) {
         gitCalls.checkIgnore.push(file);
         gitCalls.lastEnv = options.env;
+        gitCalls.lastCwd = options.cwd;
         if (gitCalls.intercept) return Buffer.alloc(0);
         if (gitCalls.traceEnv) options = { ...options, env: { ...options.env, ...gitCalls.traceEnv } };
       }
@@ -509,10 +511,13 @@ describe("discoverDirectoryInstructions", () => {
       expect(layers.map((layer) => layer.content)).toEqual(["generated rule"]);
       expect(gitCalls.checkIgnore).toHaveLength(before);
       const fixtureGit = join(project, "fixture-git");
-      resolve.mockReturnValue(fixtureGit);
+      const options = { cwd: join(project, "installer"), env: { GIT_ALLOW_PROTOCOL: "" } };
+      resolve.mockReturnValue({ path: fixtureGit, options });
       gitCalls.intercept = true;
       expect(discover(project, join("build", "x.js"), new Set(), opts)).toEqual([]);
       expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit]);
+      expect(gitCalls.lastEnv).toBe(options.env);
+      expect(gitCalls.lastCwd).toBe(options.cwd);
     } finally {
       gitCalls.intercept = false;
       vi.doUnmock("../../shared/host-git-executable.js");

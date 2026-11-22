@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { dirname, join, posix } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "./verified-executable.js";
+import { windowsSystemRoot } from "./windows-system-path.js";
 
 export interface InstallerGitInstall {
   path: string;
@@ -110,31 +111,62 @@ function canRunSystemGit(path: string): boolean {
   }
 }
 
-function canRunInstallerGit(path: string): boolean {
+interface HostGitLaunch {
+  path: string;
+  options: { cwd?: string; env: NodeJS.ProcessEnv };
+}
+
+function probeInstallerGit(install: InstallerGitInstall): HostGitLaunch | undefined {
   try {
-    const output = execFileSync(path, ["--no-lazy-fetch", "--version"], {
-      cwd: dirname(path), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
+    const cwd = dirname(install.path);
+    const systemRoot = windowsSystemRoot();
+    const pathEntries = [
+      cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin"),
+      win32.join(systemRoot, "System32"), systemRoot,
+    ];
+    if (pathEntries.some((entry) => entry.includes(";"))) return undefined;
+    const options = {
+      cwd,
+      env: {
+        PATH: pathEntries.join(";"),
+        SystemRoot: systemRoot,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "NUL",
+        GIT_ALLOW_PROTOCOL: "",
+      },
+    };
+    const output = execFileSync(install.path, ["--no-lazy-fetch", "--version"], {
+      ...options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
       timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 4096,
     });
-    return output.startsWith("git version ");
+    return output.startsWith("git version ") ? { path: install.path, options } : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
-let hostGitPath: string | undefined;
+function systemGitEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  const gitVariable = process.platform === "win32" ? /^GIT_/iu : /^GIT_/u;
+  for (const key of Object.keys(env)) if (gitVariable.test(key)) delete env[key];
+  env.GIT_ALLOW_PROTOCOL = "";
+  return env;
+}
+
+let hostGit: HostGitLaunch | string | undefined;
 
 /** Verified calls require a protected installation. Discovery caches a selected executable and checks again after a miss. */
-export function resolveHostGit(policy: "verified" | { packaged: boolean }): string | null {
+export function resolveHostGit(policy: "verified"): string | null;
+export function resolveHostGit(policy: { packaged: boolean }): HostGitLaunch | null;
+export function resolveHostGit(policy: "verified" | { packaged: boolean }): HostGitLaunch | string | null {
   if (policy === "verified") {
     const candidates = VERIFIED_GIT_INSTALLATIONS[process.platform];
     return candidates === undefined ? null : resolveVerifiedExecutable(candidates)?.executable ?? null;
   }
-  if (hostGitPath === undefined) {
+  if (hostGit === undefined) {
     const bundled = findInstallerGit(installerGitRoot(policy.packaged));
-    hostGitPath = bundled !== null && canRunInstallerGit(bundled.path)
-      ? bundled.path
-      : systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit);
+    hostGit = (bundled === null ? undefined : probeInstallerGit(bundled))
+      ?? systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit);
   }
-  return hostGitPath ?? null;
+  return typeof hostGit === "string" ? { path: hostGit, options: { env: systemGitEnvironment() } } : hostGit ?? null;
 }
