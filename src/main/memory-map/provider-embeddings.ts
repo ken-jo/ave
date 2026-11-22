@@ -14,6 +14,7 @@ import type { MemoryMapCatalog } from './catalog.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import { LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { MemoryMapHostError } from './errors.js';
+import type { ProviderEgress } from './provider-egress.js';
 
 const EMBEDDING_BATCH_SIZE = 16;
 const SDK_EMBEDDING_MODELS: Record<string, string[]> = {
@@ -28,7 +29,7 @@ export class ProviderEmbeddings {
   private suspended = false;
   suspend(): void { this.suspended = true; }
   resume(): void { this.suspended = false; }
-  constructor(private readonly settings: SettingsService, private readonly networkFetch: typeof fetch, private readonly runWorker: MemoryWorkerRunner = runMemoryWorker) {}
+  constructor(private readonly settings: SettingsService, private readonly send: ProviderEgress, private readonly runWorker: MemoryWorkerRunner = runMemoryWorker) {}
   namespace(): EmbeddingNamespace {
     const config = this.settings.get('memoryEmbedding');
     return config?.source === 'provider' ? providerNamespace(config.providerId ?? '', config.modelId ?? '') : LOCAL_NAMESPACE;
@@ -81,18 +82,24 @@ export class ProviderEmbeddings {
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
     await this.validate(providerId, modelId);
     const route = this.route(providerId);
-    if (!route.baseUrl || !this.networkFetch) throw new MemoryMapHostError('provider-unavailable');
+    if (!route.baseUrl || !this.send) throw new MemoryMapHostError('provider-unavailable');
     const configAtStart = JSON.stringify(this.settings.get('llm'));
     const presetAtStart = JSON.stringify(route.preset);
     const assertCurrent = () => {
       this.consent(providerId, modelId, signal);
       if (configAtStart !== JSON.stringify(this.settings.get('llm')) || presetAtStart !== JSON.stringify(this.route(providerId).preset)) throw new MemoryMapHostError('request-stale');
     };
-    const egress: typeof fetch = (input, init) => {
+    let egressError: MemoryMapHostError | undefined;
+    const egress: typeof fetch = async (input, init) => {
       assertCurrent();
       const url = new URL(typeof input === 'string' || input instanceof URL ? input.toString() : input.url);
       if (url.origin !== new URL(route.baseUrl!).origin) throw new MemoryMapHostError('provider-unavailable');
-      return this.networkFetch(input, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal });
+      try {
+        return await this.send(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }, assertCurrent);
+      } catch (error) {
+        if (error instanceof MemoryMapHostError) egressError = error;
+        throw error;
+      }
     };
     const transport = selectProviderRuntimeFetch({ vendor: route.vendor, baseUrl: route.baseUrl, providerMetadata: route.preset, llmFetch: createSafeLlmFetch(egress), networkFetch: egress }) ?? createPublicModelProviderFetch(route.baseUrl, egress);
     const fetchImpl = transport;
@@ -114,6 +121,7 @@ export class ProviderEmbeddings {
         return vector.map(value => value / norm);
       });
     } catch (error) {
+      if (egressError) throw egressError;
       if (error instanceof MemoryMapHostError) throw error;
       throw new MemoryMapHostError(signal.aborted ? 'request-stale' : 'provider-embedding-failed');
     }

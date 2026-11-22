@@ -9,12 +9,13 @@ import type { MemoryMapProgress } from '../../../shared/memory-map.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
 import { ProviderEmbeddings, providerNamespace } from '../provider-embeddings.js';
 import { buildGraph } from '../graph.js';
+import { createMemoryProviderEgress } from '../provider-egress.js';
 import type { MemoryWorkerRunner } from '../worker-client.js';
 import { MemoryMapHost } from '../host.js';
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const close of cleanup.splice(0).reverse()) await close(); });
-async function fixture() {
+async function fixture(allowedDomains = ['127.0.0.1']) {
   const requests: { model: string; input: string[] }[] = [];
   let dimensions = 3; let inconsistent = false; let fail = false; let responseWait: Promise<void> | undefined;
   const key = 'fixture-private-credential';
@@ -42,15 +43,25 @@ async function fixture() {
     if (task.kind !== 'project') throw new Error('Unexpected worker task');
     return await buildGraph(task.input, { embed: async () => { throw new Error('Unexpected local embedding'); }, dispose: async () => {} }, report ?? (() => {})) as T;
   };
-  const provider = new ProviderEmbeddings(settings, chokepoint, worker);
+  const audit = vi.fn();
+  const provider = new ProviderEmbeddings(settings, createMemoryProviderEgress(chokepoint, allowedDomains, audit), worker);
   const root = await mkdtemp(join(tmpdir(), 'memory-provider-')); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const namespace: FeatureNamespaceHandle = { dir: root, readJson: async (_, fallback) => { try { return JSON.parse(await readFile(join(root, 'snapshot.json'), 'utf8')); } catch { return fallback; } }, writeJson: async (name, value) => writeFile(join(root, name), JSON.stringify(value)), childDir: async name => { await mkdir(join(root, name), { recursive: true }); return join(root, name); }, createFile: name => open(join(root, name), 'wx') };
   const catalog = { authorizationScopeId: 'scope', excluded: 0, records: Array.from({ length: 2 }, (_, i) => ({ memoryId: 'id-' + i, contentRevision: 'r-' + i, title: 'Title ' + i, text: 'Private memory ' + i, sourceKind: 'user' as const })) };
   const progress: MemoryMapProgress[] = [];
   const host = new MemoryMapHost({ namespace, provider, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
-  return { pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
+  return { pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
+  it('denies a consented provider absent from the host allow-list before sending credentials or text', async () => {
+    const f = await fixture([]);
+    f.consent();
+    await expect(f.provider.embed(f.provider.namespace(), ['Private'], new AbortController().signal))
+      .rejects.toMatchObject({ code: 'provider-unavailable' });
+    expect(f.chokepoint).not.toHaveBeenCalled();
+    expect(f.requests).toEqual([]);
+    expect(f.audit).toHaveBeenCalledWith(expect.objectContaining({ allowed: false }));
+  });
   it('refuses every send without matching current versioned consent', async () => {
     const f = await fixture(); const selected = providerNamespace('openai-compatible', 'embed-a');
     for (const consent of [undefined, { version: 1, providerId: 'other', modelId: 'embed-a', timestamp: new Date().toISOString() }, { version: 1, providerId: 'openai-compatible', modelId: 'other', timestamp: new Date().toISOString() }, { version: 0, providerId: 'openai-compatible', modelId: 'embed-a', timestamp: new Date().toISOString() }]) {

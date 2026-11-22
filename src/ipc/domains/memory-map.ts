@@ -10,12 +10,30 @@ import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js
 import { readGraphCatalog, memoryFacets } from '../../main/memory-map/catalog.js';
 import { MEMORY_EMBEDDING_CONSENT_VERSION } from '../../shared/memory-embedding-config.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
+import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
+import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
 import { defaultWorkspaceProject } from '../../main/project-root-authorization.js';
 import { sendToWebContents } from '../safe-send.js';
 import type { ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
+const MEMORY_EMBEDDING_ALLOWED_DOMAINS = [
+  'api.openai.com',
+  'generativelanguage.googleapis.com',
+  ...LLM_VENDORS.flatMap(vendor => {
+    const url = getLlmVendorSettings(undefined, vendor).baseUrl;
+    return url?.startsWith('https:') ? [new URL(url).hostname] : [];
+  }),
+];
 type ScopeResolver = (raw: unknown) => { ok: true; options: ProjectScopedMemoryOptions } | { ok: false; error: string };
 export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeResolver): void {
-  const provider = new ProviderEmbeddings(deps.settingsService, deps.singleHopNetworkFetch);
+  const send = createMemoryProviderEgress(deps.singleHopNetworkFetch, MEMORY_EMBEDDING_ALLOWED_DOMAINS, entry => {
+    deps.auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: 'memory-embeddings',
+      type: 'tool_call',
+      input: entry.allowed ? `host_fetch ${entry.origin} method=${entry.method}` : `host_fetch denied: ${entry.reason}`,
+    });
+  });
+  const provider = new ProviderEmbeddings(deps.settingsService, send);
   let settingsGeneration = 0;
   let settingsWrite: Promise<unknown> = Promise.resolve();
   let buildEvent: IpcMainInvokeEvent | undefined; let modelEvent: IpcMainInvokeEvent | undefined;
