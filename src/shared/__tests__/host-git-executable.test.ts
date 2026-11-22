@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, parse, win32 } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { requireFixtureGit } from "../../__tests__/support/fixture-git-executable.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -355,16 +356,9 @@ describe("resolveHostGit", () => {
   });
 
   it("runs the bundled probe with a host-owned environment and no trace output", async () => {
-    const { resolveHostGit } = await import("../host-git-executable.js");
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
     const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    vi.mocked(accessSync).mockImplementation(actual.accessSync);
-    vi.mocked(statSync).mockImplementation(actual.statSync);
-    const systemGit = resolveHostGit({ packaged: false });
-    if (systemGit === null) throw new Error("The trace regression requires an installed Git");
-    vi.resetModules();
-    const { configureHostResources } = await import("../../main/host-resources.js");
-    configureHostResources({ resourcePath: join(root, "host-resources"), isPackaged: true });
+    const systemGit = requireFixtureGit(childProcess.spawnSync);
 
     const install = mkdtempSync(join(tmpdir(), "ave-git-probe-"));
     const trace = join(install, "trace.jsonl");
@@ -385,8 +379,7 @@ describe("resolveHostGit", () => {
       vi.stubEnv("GIT_TRACE", trace);
       vi.stubEnv("Git_Exec_Path", join(install, "other"));
       vi.mocked(execFileSync).mockImplementation((_file, _args, options) => {
-        // Exercise the child environment on any installed version.
-        return childProcess.execFileSync(systemGit.path, ["--version"], {
+        return childProcess.execFileSync(systemGit.path, ["--no-lazy-fetch", "--version"], {
           ...options,
           cwd: install,
           env: options?.env ?? { ...process.env, PATH: safePath },
