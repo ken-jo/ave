@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } from "../../shared/ave-home.js";
@@ -73,6 +73,7 @@ const plainDirectory = (path: string): boolean => {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   return stat?.isDirectory() === true && !stat.isSymbolicLink();
 };
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 /** Every field a later call relies on, so a partial or foreign file is no record. */
 function isRunFile(value: unknown): value is RunFileV1 {
@@ -124,6 +125,15 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (folderIdentity(at.runRoot) !== at.identity) throw new Error("the run folder is no longer the one that was read");
   }
 
+  /** A record belongs to the one folder `open` makes for its run, item and project, and a git record names the run's own branch from a
+   * commit. A record copied or restored anywhere else, or naming another branch, is no record: it directs no cleanup. */
+  function ownsFolder(runRoot: string, file: RunFileV1): boolean {
+    const root = file.projectRoot;
+    if (root !== undefined && !isAbsolute(root)) return false;
+    if (file.kind === "git" && (root === undefined || file.branch !== runBranch(file.runId) || !OBJECT_ID.test(file.baseCommit ?? ""))) return false;
+    return samePath(runRoot, runRootOf(aveHome(), root === undefined ? undefined : process.platform === "win32" ? root.toLowerCase() : root, file.itemId, file.runId));
+  }
+
   function readRunFile(runRoot: string): RunFileV1 | null {
     const path = join(runRoot, RUN_FILE);
     try {
@@ -131,7 +141,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const stat = lstatSync(path);
       if (!stat.isFile() || stat.nlink !== 1) return null;
       const file: unknown = JSON.parse(readFileSync(path, "utf8"));
-      return isRunFile(file) ? file : null;
+      return isRunFile(file) && ownsFolder(runRoot, file) ? file : null;
     } catch {
       return null;
     }
@@ -588,7 +598,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       }
       await git.run(root, ["worktree", "prune"]).catch(() => undefined);
       // The branch is the run's result; it goes only when nothing was collected onto it.
-      await git.run(root, ["update-ref", "-d", `refs/heads/${file.branch}`, file.baseCommit]).catch(() => undefined);
+      await git.run(root, ["update-ref", "-d", `refs/heads/${runBranch(file.runId)}`, file.baseCommit]).catch(() => undefined);
     }
     if (file.kind === "folder" && existsSync(join(runRoot, OUT_DIR))) {
       if (output === "keep") return;

@@ -1,12 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHostGit } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { JOIN_DIR, runBranch } from "../workspace-layout.js";
+import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
 import { stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 let base: string;
@@ -309,5 +309,50 @@ describe("git stage workspaces", () => {
     expect(existsSync(root)).toBe(true);
     write(root, "new.txt", "new\n");
     expect((await restarted.seal(kept.run, "s1")).ok).toBe(true);
+  });
+
+  it("a record copied into another folder, or naming another repository or branch, directs no cleanup", async () => {
+    const other = join(base, "other");
+    mkdirSync(other);
+    userGit(other, "init", "-q");
+    userGit(other, "config", "user.name", "Bob Example");
+    userGit(other, "config", "user.email", "bob@example.com");
+    write(other, "o.txt", "one\n");
+    userGit(other, "add", "-A");
+    userGit(other, "commit", "-q", "-m", "first");
+    userGit(other, "branch", "keep");
+    userGit(repo, "branch", "keep");
+    const handle = start();
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    const runRoot = open.workspace.runRoot;
+    const stage = await stageRoot(handle, "s1");
+    const record = readFileSync(join(runRoot, RUN_FILE), "utf8");
+    const sweepWith = async (changed: Record<string, unknown>): Promise<void> => {
+      writeFileSync(join(runRoot, RUN_FILE), JSON.stringify({ ...JSON.parse(record) as Record<string, unknown>, ...changed }));
+      await createStageWorkspaceProvider({ git: createHostGit({ env }) }).sweep([]);
+    };
+    try {
+      // The run's folder, its record naming another repository and a branch of that one at its commit.
+      await sweepWith({ projectRoot: other, branch: "keep", baseCommit: userGit(other, "rev-parse", "HEAD") });
+      // Its own repository, and a branch that is not the run's.
+      await sweepWith({ branch: "keep" });
+      await sweepWith({ baseCommit: "HEAD" });
+      expect(userGit(other, "branch", "--list", "keep")).toContain("keep");
+      expect(userGit(repo, "branch", "--list", "keep")).toContain("keep");
+      expect(existsSync(join(stage, "a.txt"))).toBe(true);
+
+      // The record as it was, copied beside a folder of the same name under another project's folder.
+      const copy = join(dirname(dirname(runRoot)), "elsewhere-0a1b2c3d", basename(runRoot));
+      write(copy, "s1/kept.txt", "kept\n");
+      writeFileSync(join(copy, RUN_FILE), record);
+      writeFileSync(join(runRoot, RUN_FILE), record);
+      await createStageWorkspaceProvider({ git: createHostGit({ env }) }).sweep([handle.run.runId]);
+      expect(existsSync(join(copy, "s1", "kept.txt"))).toBe(true);
+      expect(existsSync(join(copy, RUN_FILE))).toBe(true);
+      rmSync(dirname(copy), { recursive: true, force: true });
+    } finally {
+      writeFileSync(join(runRoot, RUN_FILE), record);
+    }
   });
 });
