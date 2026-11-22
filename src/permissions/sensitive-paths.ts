@@ -28,9 +28,9 @@
  *   - Ave-internal sensitive paths: secrets/, audit*, recently-denied,
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, type BigIntStats } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, sep, resolve as pathResolve, relative as pathRelative, posix } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, sep, resolve as pathResolve, relative as pathRelative, posix } from "node:path";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import { globMatch } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
@@ -839,6 +839,99 @@ export type KeyMaterialAudience = "agent" | "person";
 /** Match ordinary secret evidence, including host stores, against a normalized absolute spelling. */
 export function isSensitivePath(absPath: string, effect: PathEffect = "write", audience: KeyMaterialAudience = "agent"): string | null {
   return absPath ? createPathSensitivityMatcher(effect, undefined, canonicalizePathForMatch, false, audience)(absPath) : null;
+}
+
+/**
+ * A folder listing reuses the cached pattern index. Each row serially samples the recorded chains for reused policy
+ * roots, comparing device, inode, type, ctime, and readlink text. Failed validation falls back to live canonicalization.
+ * A concurrent change after a sample can leave that row's observation stale. File-tool permission and execution keep
+ * their own checks.
+ */
+export function createSensitivePathCheck(effect: PathEffect = "write", audience: KeyMaterialAudience = "agent"): (absPath: string) => string | null {
+  const decision = createRevalidatingCanonicalizer();
+  return (absPath) => absPath ? createPathSensitivityMatcher(effect, undefined, decision(), false, audience)(absPath) : null;
+}
+
+// One lstat: identity, type, change time and link target; null when nothing is there; undefined when it cannot vouch for a
+// resolution through it (an error or an entry without an identity). The change time moves when the entry or one inside it
+// is renamed, which an alias spelling such as an 8.3 name would not otherwise show.
+type ChainEntry = { dev: bigint; ino: bigint; type: bigint; changed: bigint; link?: string } | null;
+
+function readChainEntry(path: string): ChainEntry | undefined {
+  try {
+    const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (entry === undefined) return null;
+    if (entry.ino === 0n) return undefined;
+    const read = { dev: entry.dev, ino: entry.ino, type: entry.mode & BigInt(constants.S_IFMT), changed: entry.ctimeNs };
+    return entry.isSymbolicLink() ? { ...read, link: readlinkSync(path) } : read;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOTDIR" ? null : undefined;
+  }
+}
+
+function sameChainEntry(left: ChainEntry | undefined, right: ChainEntry): boolean {
+  if (left === undefined || left === null || right === null) return left === right;
+  return left.dev === right.dev && left.ino === right.ino && left.type === right.type && left.changed === right.changed
+    && left.link === right.link;
+}
+
+// Record each entry from the volume root that resolving `path` passes through, and each entry of the targets of links on
+// the way. False when the walk meets what it cannot vouch for, or would touch what resolution never touches: a network or
+// device location, a target with "..", a drive-relative or root-relative target, or too many links.
+function recordResolutionChain(path: string, read: (path: string) => ChainEntry | undefined, entries: Map<string, ChainEntry>, links = { count: 0 }): boolean {
+  const resolved = pathResolve(path);
+  if (process.platform === "win32" ? !/^[A-Za-z]:\\/u.test(resolved) : !resolved.startsWith("/")) return false;
+  const { root } = parse(resolved);
+  const names = resolved.slice(root.length).split(sep).filter(Boolean);
+  let prefix = root;
+  for (const name of ["", ...names]) {
+    if (name) prefix = join(prefix, name);
+    const key = process.platform === "win32" ? prefix.charAt(0).toUpperCase() + prefix.slice(1) : prefix;
+    const entry = read(key);
+    if (entry === undefined) return false;
+    entries.set(key, entry);
+    if (entry === null) return true;
+    if (entry.link === undefined) continue;
+    const target = entry.link;
+    if (++links.count > MAX_WALK_UP || target.split(/[\\/]/u).includes("..")) return false;
+    const absolute = process.platform === "win32" ? /^[A-Za-z]:[\\/]/u.test(target) : target.startsWith("/");
+    if (!absolute && (isAbsolute(target) || /^[A-Za-z]:/u.test(target))) return false;
+    if (!recordResolutionChain(absolute ? target : join(dirname(key), target), read, entries, links)) return false;
+  }
+  return true;
+}
+
+// Share witness samples across cache lookups for one row. Validate both the requested and canonical chains.
+// Seeding a cache entry compares the recorded witness with a fresh read after resolution.
+function createRevalidatingCanonicalizer(): () => (path: string) => string {
+  const seen = new Set<string>();
+  const resolved = new Map<string, { canonical: string; entries: Map<string, ChainEntry> }>();
+  return () => {
+    const readings = new Map<string, ChainEntry | undefined>();
+    const read = (path: string): ChainEntry | undefined => {
+      if (!readings.has(path)) readings.set(path, readChainEntry(path));
+      return readings.get(path);
+    };
+    const holds = (entries: Map<string, ChainEntry>, reader: (path: string) => ChainEntry | undefined) =>
+      [...entries].every(([path, entry]) => sameChainEntry(reader(path), entry));
+    return (path) => {
+      const cached = resolved.get(path);
+      if (cached !== undefined && holds(cached.entries, read)) return cached.canonical;
+      resolved.delete(path);
+      if (!seen.has(path)) {
+        seen.add(path);
+        return canonicalizePathForMatch(path);
+      }
+      const entries = new Map<string, ChainEntry>();
+      const recorded = !isWindowsNetworkOrDevicePath(path) && recordResolutionChain(path, read, entries);
+      const canonical = canonicalizePathForMatch(path);
+      // Reuse only a resolution whose entries read the same before and after it.
+      if (recorded && recordResolutionChain(canonical, read, entries) && holds(entries, readChainEntry)) {
+        resolved.set(path, { canonical, entries });
+      }
+      return canonical;
+    };
+  };
 }
 
 /**

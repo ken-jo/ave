@@ -1,9 +1,10 @@
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import * as fsModule from "node:fs";
+import fsModule, { type Dirent } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -37,8 +38,15 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
 
 import { registerWorkspaceHandlers } from "../workspace.js";
 import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
-import * as sensitivePaths from "../../../permissions/sensitive-paths.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
+import { configureHostResources } from "../../../main/host-resources.js";
+import {
+  allowKeyMaterialInspectionUnder,
+  createPermissionPathEvidence,
+  isSensitivePath,
+  KEY_MATERIAL_SCAN_BYTES,
+  protectRuntimeSettingsPath,
+} from "../../../permissions/sensitive-paths.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
@@ -101,6 +109,43 @@ function linkFile(target: string, path: string): void {
 }
 const needsFileLinks = (skip: (note?: string) => void): void => { if (!fileLinks) skip("file symlinks need a privilege this host lacks"); };
 
+const listDir = (dir: string) => invoke(CHANNELS.workspace.listDir, frameEvent(), dir) as Promise<ListResult>;
+const listedNames = (res: ListResult) => (res.entries ?? []).map((entry) => entry.name).sort();
+const directoryLink = process.platform === "win32" ? "junction" : "dir";
+function retarget(link: string, target: string): void {
+  unlinkSync(link);
+  symlinkSync(target, link, directoryLink);
+}
+type TestFinished = (fn: () => void) => void;
+// Host resources are process-wide and cannot be unset; later tests see a location that holds nothing.
+function useHostResources(resourcePath: string, onTestFinished: TestFinished): void {
+  configureHostResources({ resourcePath, isPackaged: true });
+  onTestFinished(() => configureHostResources({ resourcePath: join(root, "no-host-resources"), isPackaged: true }));
+}
+// Runs `change` once the listing of `dir` has classified its first `rows` entries in name order.
+function changeDuringListing(dir: string, rows: number, change: () => void, onTestFinished: TestFinished): () => boolean {
+  const readdir = fsModule.promises.readdir.bind(fsModule.promises) as (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
+  let changed = false;
+  const spy = vi.spyOn(fsModule.promises, "readdir").mockImplementation((async (path: string, options: { withFileTypes: true }) => {
+    const entries = await readdir(path, options);
+    if (path !== dir || changed) return entries;
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    const entry = entries[rows - 1];
+    if (entry === undefined) return entries;
+    const isFile = entry.isFile.bind(entry);
+    entry.isFile = () => {
+      if (!changed) {
+        changed = true;
+        change();
+      }
+      return isFile();
+    };
+    return entries;
+  }) as never);
+  onTestFinished(() => spy.mockRestore());
+  return () => changed;
+}
+
 beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-")));
   outside = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-outside-")));
@@ -156,23 +201,183 @@ describe("workspace.searchFiles in one folder", () => {
 });
 
 describe("workspace.listDir folder-view entries", () => {
-  it("sorts before it caps, so a folder past the first 1,000 names is still listed, and counts what the cap left out", async () => {
-    const many = join(root, "many");
-    mkdirSync(many);
-    try {
-      for (let i = 0; i < 1_100; i += 1) writeFileSync(join(many, `f${String(i).padStart(4, "0")}.txt`), "x");
-      mkdirSync(join(many, "zz-folder"));
-      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult & { omitted?: number };
-      expect(res.ok).toBe(true);
-      expect(res.entries).toHaveLength(1_000);
-      expect(res.entries?.[0]).toMatchObject({ name: "zz-folder", type: "directory" });
-      expect(res.entries?.[1]?.name).toBe("f0000.txt");
-      expect(res.entries?.[999]?.name).toBe("f0998.txt");
-      expect(res.truncated).toBe(true);
-      expect(res.omitted).toBe(101);
-    } finally {
-      rmSync(many, { recursive: true, force: true });
+  it("sorts before it caps, so a folder past the first 1,000 names is still listed, and counts what the cap left out", async ({ onTestFinished }) => {
+    const many = mkdtempSync(join(root, "sort-cap-"));
+    onTestFinished(() => rmSync(many, { recursive: true, force: true }));
+    for (let i = 0; i < 1_100; i += 1) writeFileSync(join(many, `f${String(i).padStart(4, "0")}.txt`), "x");
+    mkdirSync(join(many, "zz-folder"));
+    const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult & { omitted?: number };
+    expect(res.ok).toBe(true);
+    expect(res.entries).toHaveLength(1_000);
+    expect(res.entries?.[0]).toMatchObject({ name: "zz-folder", type: "directory" });
+    expect(res.entries?.[1]?.name).toBe("f0000.txt");
+    expect(res.entries?.[999]?.name).toBe("f0998.txt");
+    expect(res.truncated).toBe(true);
+    expect(res.omitted).toBe(101);
+  });
+
+  it("does not resolve every policy root again for each listed entry", async ({ onTestFinished }) => {
+    const scratch = mkdtempSync(join(root, "sibling-cost-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "isolated-home");
+    mkdirSync(dir);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    mkdirSync(join(scratch, "resources", "skill-scripts"), { recursive: true });
+    useHostResources(join(scratch, "resources"), onTestFinished);
+    writeFileSync(join(dir, "first.txt"), "");
+    const realpath = vi.spyOn(fsModule.realpathSync, "native");
+    const lstat = vi.spyOn(fsModule, "lstatSync");
+    syncBuiltinESMExports();
+    onTestFinished(() => {
+      realpath.mockRestore();
+      lstat.mockRestore();
+      syncBuiltinESMExports();
+    });
+
+    const rows: Array<{ name: string; realpaths: number; lstats: number }> = [];
+    const readdir = fsModule.promises.readdir.bind(fsModule.promises) as (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
+    const readEntries = vi.spyOn(fsModule.promises, "readdir").mockImplementation((async (path: string, options: { withFileTypes: true }) => {
+      const entries = await readdir(path, options);
+      if (path !== dir) return entries;
+      for (const entry of entries) {
+        const isSymbolicLink = entry.isSymbolicLink.bind(entry);
+        entry.isSymbolicLink = () => {
+          // The handler tests the link bit before classifying each row and can test it again for the same row.
+          if (rows.at(-1)?.name !== entry.name) {
+            rows.push({ name: entry.name, realpaths: realpath.mock.calls.length, lstats: lstat.mock.calls.length });
+          }
+          return isSymbolicLink();
+        };
+      }
+      return entries;
+    }) as never);
+    onTestFinished(() => readEntries.mockRestore());
+
+    const policyPrefix = `${home.replaceAll("\\", "/").toLowerCase()}/`;
+    const isPolicyRoot = ([path]: [unknown, ...unknown[]]) => String(path).replaceAll("\\", "/").toLowerCase().startsWith(policyPrefix);
+    const resolutions = async (entries: number) => {
+      realpath.mockClear();
+      lstat.mockClear();
+      rows.length = 0;
+      expect((await listDir(dir)).entries).toHaveLength(entries);
+      expect(rows).toHaveLength(entries);
+      return realpath.mock.calls.length;
+    };
+    // Warm process-wide caches before comparing two requests.
+    await resolutions(1);
+    const one = await resolutions(1);
+    for (let i = 1; i < 33; i += 1) writeFileSync(join(dir, `sibling-${i}.txt`), "");
+    const perEntry = (await resolutions(33) - one) / 32;
+    // An entry may pay a few checks of its own (about 8 here); resolving the policy roots again costs over a hundred.
+    expect(perEntry).toBeLessThanOrEqual(20);
+    // Include cold resolutions and witness seeding in the row budgets.
+    for (const [index, row] of rows.entries()) {
+      const next = rows[index + 1];
+      const realpaths = realpath.mock.calls.slice(row.realpaths, next?.realpaths).filter(isPolicyRoot).length;
+      const lstats = lstat.mock.calls.slice(row.lstats, next?.lstats).filter(isPolicyRoot).length;
+      expect(realpaths, `${row.name} policy-root realpaths`).toBeLessThanOrEqual(64);
+      expect(lstats, `${row.name} policy-root lstats`).toBeLessThanOrEqual(192);
     }
+  });
+
+  it("hides a folder that becomes the host's script resources partway through a listing", async ({ onTestFinished }) => {
+    const scratch = mkdtempSync(join(root, "script-retarget-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const departed = join(scratch, "departed");
+    const target = join(dir, "d-next-scripts");
+    for (const path of [dir, departed, target, join(scratch, "resources")]) mkdirSync(path);
+    for (const name of ["a-1.txt", "a-2.txt", "a-3.txt"]) writeFileSync(join(dir, name), "");
+    const scripts = join(scratch, "resources", "skill-scripts");
+    symlinkSync(departed, scripts, directoryLink);
+    useHostResources(join(scratch, "resources"), onTestFinished);
+    // Matchers that outlive one lookup, used before the change.
+    const toolPolicy = fileAccessPolicy.createFilePathPolicy("write");
+    const evidence = createPermissionPathEvidence(dir);
+    const secretFor = (path: string) => evidence({ lexical: path, canonical: path, effect: "write" }).secret;
+    expect(toolPolicy.sensitive(departed)).toBe("host-script-resources");
+    expect(secretFor(departed)).toBe("host-script-resources");
+    expect(isSensitivePath(target, "write", "person")).toBeNull();
+    // Later rows reuse what the first rows resolved.
+    const changed = changeDuringListing(dir, 3, () => retarget(scripts, target), onTestFinished);
+    const res = await listDir(dir);
+    expect(changed()).toBe(true);
+    expect(isSensitivePath(target, "write", "person")).toBe("host-script-resources");
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden, tool: toolPolicy.sensitive(target), evidence: secretFor(target) })
+      .toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 1, tool: "host-script-resources", evidence: "host-script-resources" });
+  });
+
+  it("hides a folder that becomes a relocated Ave home location partway through a listing", async ({ onTestFinished }) => {
+    const scratch = mkdtempSync(join(root, "home-retarget-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    const departed = join(scratch, "departed");
+    const target = join(dir, "d-next-certs");
+    for (const path of [dir, home, departed, target]) mkdirSync(path);
+    for (const name of ["a-1.txt", "a-2.txt", "a-3.txt"]) writeFileSync(join(dir, name), "");
+    const certs = join(home, "certs");
+    symlinkSync(departed, certs, directoryLink);
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    expect(isSensitivePath(departed, "write", "person")).toBe("ave-home:certs");
+    expect(isSensitivePath(target, "write", "person")).toBeNull();
+    const changed = changeDuringListing(dir, 3, () => retarget(certs, target), onTestFinished);
+    const res = await listDir(dir);
+    expect(changed()).toBe(true);
+    expect(isSensitivePath(target, "write", "person")).toBe("ave-home:certs");
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 1 });
+  });
+
+  it("hides exactly the entries a separate sensitivity check of each one hides", async ({ onTestFinished }) => {
+    const scratch = mkdtempSync(join(root, "mixed-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    mkdirSync(dir);
+    mkdirSync(home);
+    const file = (name: string, data: string | Buffer = "") => {
+      writeFileSync(join(dir, name), data);
+      return join(dir, name);
+    };
+    for (const name of ["skill-scripts", ".SSH", "relocated-certs", "plain-folder"]) mkdirSync(join(dir, name));
+    symlinkSync(join(dir, "relocated-certs"), join(home, "certs"), directoryLink);
+    symlinkSync(join(dir, ".SSH"), join(dir, "innocent-link"), directoryLink);
+    symlinkSync(join(dir, "plain-folder"), join(dir, ".AWS"), directoryLink);
+    file(".env", "SECRET=1\n");
+    file(".ENV.Production");
+    file(".env.example");
+    file("ordinary.txt");
+    file("meeting.KEY", "no key");
+    // The header is written in two parts so no scanner takes this test file for key material.
+    file("private.pem", "-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n");
+    file("long.pem", Buffer.alloc(KEY_MATERIAL_SCAN_BYTES + 1, "x"));
+    const settingsOff = protectRuntimeSettingsPath(file("runtime-preferences.conf"));
+    onTestFinished(settingsOff);
+    const grantOff = allowKeyMaterialInspectionUnder(() => [dir]);
+    onTestFinished(grantOff);
+    vi.stubEnv("AVE_HOME", home);
+    vi.stubEnv("AVE_SECRET_KEY_FILE", file("runtime-data.bin"));
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    useHostResources(dir, onTestFinished);
+    const res = await listDir(dir);
+    const decisions = Object.fromEntries((await fsModule.promises.readdir(dir)).map((name) =>
+      [name, isSensitivePath(join(dir, name), "write", "person")]));
+    // Names differing only in case match where the platform folds case.
+    const folded = process.platform === "win32" || process.platform === "darwin";
+    expect(decisions).toEqual({
+      ".AWS": folded ? "**/.aws/**" : null, ".env": "**/.env", ".env.example": null,
+      ".ENV.Production": folded ? "**/.env.*" : null, ".SSH": folded ? "**/.ssh/**" : null,
+      "innocent-link": null, "long.pem": null, "meeting.KEY": null, "ordinary.txt": null, "plain-folder": null,
+      "private.pem": "**/*.pem", "relocated-certs": "ave-home:certs", "runtime-data.bin": "runtime-secret-key",
+      "runtime-preferences.conf": "runtime-settings-file", "skill-scripts": "host-script-resources",
+    });
+    expect(res.ok).toBe(true);
+    expect(listedNames(res)).toEqual(Object.keys(decisions).filter((name) => decisions[name] === null).sort());
+    expect(res.hidden).toBe(Object.values(decisions).filter((reason) => reason !== null).length);
   });
 
   it("reports nothing omitted for a folder under the cap", async () => {
@@ -251,17 +456,23 @@ describe("workspace.listDir folder-view entries", () => {
       writeFileSync(join(dir, name), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
     }
     const storedNames = await fsModule.promises.readdir(dir);
-    const sensitivity = vi.spyOn(sensitivePaths, "isSensitivePath");
+    // Protected from writes only, so it is hidden only while the listing applies the write policy.
+    writeFileSync(join(dir, "runtime-preferences.conf"), "");
+    const settingsOff = protectRuntimeSettingsPath(join(dir, "runtime-preferences.conf"));
+    const opened = vi.spyOn(fsModule, "openSync");
+    syncBuiltinESMExports();
     try {
       const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
-      expect(res).toMatchObject({ ok: true, hidden: 0 });
+      expect(res).toMatchObject({ ok: true, hidden: 1 });
       expect(res.entries?.map((entry) => entry.name).sort()).toEqual(storedNames.sort());
-      const inspectedPaths = sensitivity.mock.calls
-        .filter(([, effect, audience]) => effect === "write" && audience === "person")
-        .map(([path]) => path);
+      const inspectedPaths = opened.mock.calls
+        .map(([path]) => path)
+        .filter((path): path is string => typeof path === "string" && dirname(path) === dir);
       expect(inspectedPaths.sort()).toEqual(storedNames.map((name) => join(dir, name)).sort());
     } finally {
-      sensitivity.mockRestore();
+      settingsOff();
+      opened.mockRestore();
+      syncBuiltinESMExports();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -301,18 +512,14 @@ describe("workspace.listDir folder-view entries", () => {
     expect(res).toMatchObject({ ok: false, error: "not-found" });
   });
 
-  it("sets truncated at the 1,001st entry", async () => {
-    const many = join(root, "many");
-    mkdirSync(many);
+  it("sets truncated at the 1,001st entry", async ({ onTestFinished }) => {
+    const many = mkdtempSync(join(root, "truncation-"));
+    onTestFinished(() => rmSync(many, { recursive: true, force: true }));
     for (let i = 0; i < 1_001; i += 1) writeFileSync(join(many, `f${i}.txt`), "");
-    try {
-      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult;
-      expect(res.ok).toBe(true);
-      expect(res.entries).toHaveLength(1_000);
-      expect(res.truncated).toBe(true);
-    } finally {
-      rmSync(many, { recursive: true, force: true });
-    }
+    const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult;
+    expect(res.ok).toBe(true);
+    expect(res.entries).toHaveLength(1_000);
+    expect(res.truncated).toBe(true);
   });
 });
 
