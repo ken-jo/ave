@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchBytesWithRetry } from "./lib/fetch-with-retry.mjs";
+import { verifyPinnedAttestations } from "./lib/uv-archive-attestation.mjs";
 import { UV_TARGETS, getUvTargetByDir, resolveUvTarget } from "./uv-targets.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,12 +25,14 @@ function usage() {
     "  --target <dir>     Download one target dir. Repeatable. Example: linux-x64",
     "  --all              Download every known target",
     "  --list-targets     Print known target dirs",
+    "  --verify-attestation Verify every pinned archive without extracting binaries",
   ].join("\n");
 }
 
 function parseArgs() {
   const args = process.argv.slice(2);
   let mode = "current";
+  let verifyAttestation = false;
   const targets = [];
 
   for (let i = 0; i < args.length; i += 1) {
@@ -44,6 +47,10 @@ function parseArgs() {
     }
     if (arg === "--current") {
       mode = "current";
+      continue;
+    }
+    if (arg === "--verify-attestation") {
+      verifyAttestation = true;
       continue;
     }
     if (arg === "--all") {
@@ -66,7 +73,7 @@ function parseArgs() {
     fail(`Unknown argument: ${arg}\n\n${usage()}`);
   }
 
-  return { mode, targets };
+  return { mode, targets, verifyAttestation };
 }
 
 const CLI_ARGS = parseArgs();
@@ -266,22 +273,7 @@ async function verifyArchiveSha256(target, archiveBuffer) {
   return { archiveName, archiveSha256: actual, source: "uv-targets" };
 }
 
-async function downloadTarget(target) {
-  const destDir = path.join(PROJECT_ROOT, "resources", "uv", target.dir);
-  const destBin = path.join(destDir, target.bin);
-  const metadataPath = path.join(destDir, METADATA_FILE);
-
-  if (existsSync(destBin)) {
-    const cached = await validateCachedTarget(target, destDir, destBin);
-    if (cached.valid) {
-      log(`SKIP (verified cache): ${path.relative(PROJECT_ROOT, destBin)}`);
-      return;
-    }
-    log(`CACHE STALE (${cached.reason}): ${path.relative(PROJECT_ROOT, destBin)} — redownloading`);
-  }
-
-  await mkdir(destDir, { recursive: true });
-
+async function readVerifiedArchive(target) {
   const url = `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${target.archive}`;
 
   const archiveCache = process.env.AVE_UV_DOWNLOAD_CACHE_DIR;
@@ -303,6 +295,25 @@ async function downloadTarget(target) {
     await rename(temporary, cachedArchive);
   }
   if (cacheHit) log(`Reused verified archive: ${target.archive}`);
+  return { buffer, verification };
+}
+
+async function downloadTarget(target) {
+  const destDir = path.join(PROJECT_ROOT, "resources", "uv", target.dir);
+  const destBin = path.join(destDir, target.bin);
+  const metadataPath = path.join(destDir, METADATA_FILE);
+
+  if (existsSync(destBin)) {
+    const cached = await validateCachedTarget(target, destDir, destBin);
+    if (cached.valid) {
+      log(`SKIP (verified cache): ${path.relative(PROJECT_ROOT, destBin)}`);
+      return;
+    }
+    log(`CACHE STALE (${cached.reason}): ${path.relative(PROJECT_ROOT, destBin)} — redownloading`);
+  }
+
+  await mkdir(destDir, { recursive: true });
+  const { buffer, verification } = await readVerifiedArchive(target);
 
   let fileData;
   if (target.type === "tar.gz") {
@@ -336,6 +347,10 @@ async function downloadTarget(target) {
 }
 
 async function main() {
+  if (CLI_ARGS.verifyAttestation) {
+    await verifyPinnedAttestations({ loadArchive: async (target) => (await readVerifiedArchive(target)).buffer });
+    return;
+  }
   const targets = selectedTargets();
   log(`uv version: ${UV_VERSION}`);
   log(`대상 디렉토리: ${path.join(PROJECT_ROOT, "resources", "uv")}`);
