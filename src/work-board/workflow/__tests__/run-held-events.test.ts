@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { deferred } from "../../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
 import { WorkflowRunStore } from "../../../main/workflow-run-store.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry, type PassConditionRegistry } from "../stage-gates.js";
@@ -558,6 +558,8 @@ it("waits for held-event removal after a registered gate claims its effect and t
 
     const dropStarted = deferred<void>();
     const allowDrop = deferred<void>();
+    const runWorkDrained = deferred<void>();
+    const allowDrain = deferred<void>();
     const dropHeld = h.board.runs.dropHeld.bind(h.board.runs);
     const drop = vi.spyOn(h.board.runs, "dropHeld").mockImplementationOnce(async (...args) => {
       dropStarted.resolve();
@@ -565,22 +567,33 @@ it("waits for held-event removal after a registered gate claims its effect and t
       await dropHeld(...args);
     });
     const drainRunWork = h.drainRunWork;
-    const joinReplay = vi.spyOn(h, "drainRunWork");
+    const joinReplay = vi.spyOn(h, "drainRunWork").mockImplementationOnce(async options => {
+      await drainRunWork(options);
+      runWorkDrained.resolve();
+      await allowDrain.promise;
+    });
 
     lose(false);
-    const replayed = replayHeldEvents(h).then(() => {
-      expect(runsOnDisk(h).heldEvents).toBeUndefined();
-    });
+    let replayFinished = false;
+    const replayed = replayHeldEvents(h).finally(() => { replayFinished = true; });
     try {
-      await Promise.race([dropStarted.promise, replayed]);
+      await Promise.race([dropStarted.promise, runWorkDrained.promise, replayed]);
+      expect(replayFinished).toBe(false);
       expect(evaluate).toHaveBeenCalledOnce();
       expect(runsOnDisk(h).heldEvents).toEqual([identity]);
+      // A reader may join the writer. Release the write before checking the separate drain wait.
+      allowDrop.resolve();
+      await Promise.race([runWorkDrained.promise, replayed]);
+      expect(joinReplay).toHaveBeenCalledOnce();
+      await afterQueuedCallbacks();
+      expect(replayFinished).toBe(false);
     } finally {
       allowDrop.resolve();
+      allowDrain.resolve();
       await drainRunWork();
     }
     await replayed;
-    expect(joinReplay).toHaveBeenCalledOnce();
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
     expect(drop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ itemId: id, runId }), {
       stage: "a", attempt: 1, kind: "stage_ended",
     });
