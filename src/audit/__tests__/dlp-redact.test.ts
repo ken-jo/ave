@@ -476,6 +476,9 @@ describe("query credentials — signed URLs, encoded keys and serialization deli
       ['<a href="https://x.example/?token=abc">link</a>', '<a href="https://x.example/?token=[REDACTED:TOKEN]">link</a>'],
       ["curl 'https://x.example/?token=abc' -o out", "curl 'https://x.example/?token=[REDACTED:TOKEN]' -o out"],
       ['{"dir":"C:\\\\","url":"https://x.example/?token=abc","next":1}', '{"dir":"C:\\\\","url":"https://x.example/?token=[REDACTED:TOKEN]","next":1}'],
+      ['{"url":"https://x.example/?token=abc\\\\","next":1}', '{"url":"https://x.example/?token=[REDACTED:TOKEN]","next":1}'],
+      ["<img src=https://x.example/?token=abc\\>", "<img src=https://x.example/?token=[REDACTED:TOKEN]>"],
+      ["curl 'https://x.example/?token=abc\\' -o out", "curl 'https://x.example/?token=[REDACTED:TOKEN]' -o out"],
     ]) expect(scrubSecretsForLLM(text)).toBe(masked);
     const nested = JSON.stringify(JSON.stringify({ command: 'curl "https://x.example/?token=abc" -o out' }));
     expect(JSON.parse(JSON.parse(scrubSecretsForLLM(nested)))).toEqual({ command: 'curl "https://x.example/?token=[REDACTED:TOKEN]" -o out' });

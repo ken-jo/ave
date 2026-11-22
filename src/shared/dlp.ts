@@ -544,10 +544,11 @@ function decodeQueryKey(key: string): string {
   return key;
 }
 
-/** A quote and an odd run of backslashes before it form one closer; an even run escapes only itself. */
+/** A double quote and an odd run of backslashes before it form one closer; an even run escapes only itself. */
 function closerAt(text: string, index: number): string {
   const char = text.charAt(index);
   if (char === "<" || char === ">") return ">";
+  if (char !== '"') return char;
   let run = index;
   while (text[run - 1] === "\\") run--;
   return (index - run) % 2 === 0 ? char : text.slice(run, index + 1);
@@ -581,9 +582,11 @@ function queryValueEnd(text: string, start: number, ampersand: string, open: (cl
     let quote = end;
     while (text[quote] === "\\") quote++;
     if (quote > end && text.startsWith("u0026", quote)) return end;
-    if (quote < text.length && "\"'`>".includes(text.charAt(quote)) && open(closerAt(text, quote), start)) {
+    const closer = quote < text.length && "\"'`>".includes(text.charAt(quote)) ? closerAt(text, quote) : "";
+    if (closer && open(closer, start)) {
       SERIALIZATION_AFTER.lastIndex = quote + 1;
-      if (SERIALIZATION_AFTER.test(text)) return end;
+      // Backslashes that do not escape the closer stay in the masked value.
+      if (SERIALIZATION_AFTER.test(text)) return quote + 1 - closer.length;
     }
     end = quote > end ? quote : end + 1;
   }
