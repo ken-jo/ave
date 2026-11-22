@@ -104,3 +104,51 @@ it("boot sweep removes folders of runs that are no longer active only", () => wi
   expect(existsSync(prepared.workspace.root)).toBe(false);
   expect(readFileSync(join(folderOf(first), "kept.md"), "utf8")).toBe("kept\n");
 }));
+
+it("the run output folder stays when the run settles and goes when its item is removed", () => withProductionParts(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  void h.start(id, h.local(version));
+  const [first] = await h.untilLive(1);
+  const runRoot = dirname(folderOf(first));
+  const out = join(runRoot, "_out");
+  writeFileSync(join(out, "result.md"), "collected\n");
+  const runId = (await h.item(id)).runId ?? "";
+
+  expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  await h.until(id, item => item.runStatus === "cancelled");
+  await vi.waitFor(() => expect(existsSync(folderOf(first))).toBe(false), { timeout: 5000 });
+  // Settled, its stage folders released: the row still lists the run, so its record and its output stay.
+  expect((await h.runOf(runId))?.settled?.status).toBe("cancelled");
+  expect(readFileSync(join(out, "result.md"), "utf8")).toBe("collected\n");
+  expect(existsSync(join(runRoot, "_run.json"))).toBe(true);
+
+  expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+  expect(await h.runOf(runId)).toBeNull();
+  await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
+}));
+
+it("a delete of a live run's item keeps the output folder until the run has settled and its record is gone", () => withProductionParts(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  const [first] = await h.untilLive(1);
+  const runRoot = dirname(folderOf(first));
+  const out = join(runRoot, "_out");
+  const runId = (await h.item(id)).runId ?? "";
+  // What is on disk at each step of the delete: the intent stored, then the write that ends the run.
+  const seen: string[] = [];
+  const note = (step: string): void => { seen.push(`${step}:${existsSync(out) ? "out" : "gone"}`); };
+  const markDeleted = h.board.runs.markDeleted.bind(h.board.runs);
+  vi.spyOn(h.board.runs, "markDeleted").mockImplementation(async (...args) => { const marked = await markDeleted(...args); note("intent"); return marked; });
+  const settleRun = h.board.runs.settleRun.bind(h.board.runs);
+  vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (...args) => { const settled = await settleRun(...args); note("settled"); return settled; });
+
+  expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+  expect(await run).toMatchObject({ status: "cancelled", reason: "item-removed" });
+  expect(seen[0]).toBe("intent:out");
+  expect(seen).toContain("settled:out");
+  expect(seen.filter(step => step.endsWith(":gone"))).toEqual([]);
+  await vi.waitFor(async () => expect(await h.runOf(runId)).toBeNull(), { timeout: 5000 });
+  await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
+}));

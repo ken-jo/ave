@@ -8,7 +8,7 @@ import type { StageInputDecl } from "../../../shared/workflow-template-types.js"
 import { createHostGit } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
-import { OUT_DIR } from "../workspace-layout.js";
+import { OUT_DIR, RUN_FILE } from "../workspace-layout.js";
 import { copySeedFiles, listSeedFiles } from "../workspace-seed.js";
 import { stageOf, writeUnder as write } from "./stage-fixtures.js";
 
@@ -231,5 +231,28 @@ describe("folder stage workspaces", () => {
     await handle.provider.seal(handle.run, "s3");
     expect(await handle.provider.integrate(handle.run, "j3", ["s3"])).toMatchObject({ ok: false, conflict: { reason: "same-path", files: [{ path: "plan.md", stageIds: ["s2", "s3"] }] } });
     expect(read(handle.out, "plan.md")).toBe("the plan, revised\n");
+  });
+
+  it("release keeps _out and the record; discard removes them and the emptied run folder", async () => {
+    const handle = await start(project);
+    const first = await stageRoot(handle, "s1", { outputs: ["plan.md"] });
+    write(first, "plan.md", "the plan\n");
+    await handle.provider.seal(handle.run, "s1");
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
+    const other = await start(project);
+
+    await handle.provider.release(handle.run, "all");
+    expect(existsSync(first)).toBe(false);
+    expect(read(handle.out, "plan.md")).toBe("the plan\n");
+    expect(existsSync(join(handle.runRoot, RUN_FILE))).toBe(true);
+
+    // As after a restart: a provider that never saw the run finds it by its id.
+    await createStageWorkspaceProvider({ git: createHostGit({ env }) }).discard(handle.run.runId);
+    expect(existsSync(handle.runRoot)).toBe(false);
+    // Another run of the same project is untouched, and a run that is not there is a no-op.
+    expect(existsSync(other.out)).toBe(true);
+    await handle.provider.discard(handle.run.runId);
+    await handle.provider.discard("run-on-no-record");
+    expect(read(project, "notes.txt")).toBe("notes\n");
   });
 });

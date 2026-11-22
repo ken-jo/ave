@@ -145,6 +145,7 @@ export async function stageRunHarness(opts: {
     seal: async (_run, stageId) => { workspaceCalls.push(`seal:${stageId}`); return { ok: true }; },
     integrate: async (_run, joinId) => { workspaceCalls.push(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
     release: async () => undefined,
+    discard: async () => undefined,
     sweep: async (active) => { sweeps.push([...active]); },
     ...opts.workspace,
   };

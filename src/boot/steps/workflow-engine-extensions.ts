@@ -1,3 +1,4 @@
+import { createLogger } from "../../lib/logger.js";
 import { authoriseRunSource } from "../../work-board/workflow/run-authority.js";
 import { createPassConditionRegistry } from "../../work-board/workflow/stage-gates.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
@@ -5,6 +6,8 @@ import { boardRunState } from "../../work-board/workflow/run-state.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
+
+const log = createLogger("ave");
 
 type WorkflowEngineExtensions = Pick<
   StageRunEngineDeps,
@@ -15,9 +18,14 @@ type WorkflowEngineExtensions = Pick<
  * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
  * no lane only an all-read-only version may run unattended. */
 export function workflowEngineExtensions(store: WorkBoardStore): WorkflowEngineExtensions {
+  const workspace = createStageWorkspaceProvider();
+  // A run's output folder lives as long as its item: it goes with the removal that drops the settled run's record.
+  store.runs.onRunsRemoved = (runIds) => {
+    for (const runId of runIds) void workspace.discard(runId).catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message));
+  };
   return {
     runs: boardRunState(store),
-    workspace: createStageWorkspaceProvider(),
+    workspace,
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),

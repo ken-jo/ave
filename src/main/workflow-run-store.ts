@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { repeatsKey, rewriteKeepingBytes, WorkBoardWriteRefusal } from "./storage/rewrite-keeping-bytes.js";
 import { AVE_HOME_INPUT_MAX_BYTES, AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { createLogger } from "../lib/logger.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
@@ -10,6 +11,8 @@ import { requireTemplate, WorkflowTemplateError } from "../work-board/template-g
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
 import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 import type { MarkerOp, RunClass, RunFileFacts } from "./run-classification.js";
+
+const log = createLogger("ave");
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
@@ -71,7 +74,7 @@ function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult;
 }
 
 // Applies `retain` to every readable entry. An unreadable or repeated entry is never offered and always stays as it is.
-function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
+function retainRuns(file: RunsFile, retain: WorkflowRunRetention, removed: string[] = []): boolean {
   const count = new Map<unknown, number>();
   for (const entry of file.runs) if (isRecord(entry)) count.set(entry.runId, (count.get(entry.runId) ?? 0) + 1);
   let changed = false;
@@ -82,7 +85,7 @@ function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
     catch (error) { if (error instanceof WorkflowTemplateError) { kept.push(entry); continue; } throw error; }
     const next = retain(structuredClone(entry));
     if (next === null) {
-      if (entry.settled === undefined) kept.push(entry); else changed = true;
+      if (entry.settled === undefined) kept.push(entry); else { changed = true; removed.push(entry.runId); }
       continue;
     }
     assertWorkflowRunRecord(next);
@@ -203,6 +206,8 @@ function bindingOf(run: WorkflowRunRecord): string {
 export class WorkflowRunStore {
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
   private unknown: DeleteMarker[] = [];
+  /** Told which settled runs a write removed, once that write is on disk: what a run keeps for its item's lifetime goes then. */
+  onRunsRemoved: ((runIds: readonly string[]) => void) | undefined;
 
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "workflow-runs.json")) {}
 
@@ -541,11 +546,19 @@ export class WorkflowRunStore {
     });
   }
 
+  // The listener's failure is its own: the removal is already stored.
+  private runsRemoved(runIds: readonly string[]): void {
+    if (runIds.length === 0) return;
+    try { this.onRunsRemoved?.(runIds); }
+    catch (error) { log.warn("[workflow-run-store] removed runs were not announced: %s", (error as Error).message); }
+  }
+
   /** Apply `retain` to every readable run. Nothing is written while the file awaits review or when no run changes. */
   async prune(retain: WorkflowRunRetention): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      if (file !== undefined && retainRuns(file, retain)) await this.commit(file);
+      const removed: string[] = [];
+      if (file !== undefined && retainRuns(file, retain, removed) && await this.commit(file)) this.runsRemoved(removed);
     });
   }
 
@@ -574,7 +587,8 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> => {
       const file = await this.read();
       if (file === undefined) return { status: "pending-review" };
-      if (retain) retainRuns(file, retain);
+      const removed: string[] = [];
+      if (retain) retainRuns(file, retain, removed);
       const { result, index } = lookup(file, runId);
       if (result.status === "invalid" || result.status === "pending-review") return result;
       const stored = result.status === "found" ? result.run.settled : undefined;
@@ -595,6 +609,7 @@ export class WorkflowRunStore {
       }
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
       if (!(await this.commit(file))) return { status: "too-large" };
+      this.runsRemoved(removed);
       return { status: "stored", run: structuredClone(run) };
     });
   }

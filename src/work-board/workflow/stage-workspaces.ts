@@ -100,7 +100,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   /** The run's folder and record, found again after a restart by the run's slug. */
-  function locate(run: RunRef): { runRoot: string; file: RunFileV1 } | null {
+  function locate(run: Pick<RunRef, "runId">): { runRoot: string; file: RunFileV1 } | null {
     const slug = runSlug(run.runId);
     const known = roots.get(run.runId);
     const candidates = known !== undefined ? [known]
@@ -501,8 +501,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
-  /** Stage folders, and for "all" the integration worktree and the record; the run branch and the output folder stay. */
-  async function releaseIn(runRoot: string, file: RunFileV1, stageIds: readonly string[] | "all"): Promise<void> {
+  /** Stage folders, and for "all" the integration worktree and the record; the run branch stays, and so does the output folder with
+   * its record unless `output` is "drop". */
+  async function releaseIn(runRoot: string, file: RunFileV1, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<void> {
     for (const stageId of stageIds === "all" ? Object.keys(file.stages) : stageIds) {
       if (file.stages[stageId] !== undefined) await removeStage(runRoot, file, stageId);
     }
@@ -518,7 +519,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       // The branch is the run's result; it goes only when nothing was collected onto it.
       await git.run(root, ["update-ref", "-d", `refs/heads/${file.branch}`, file.baseCommit]).catch(() => undefined);
     }
-    if (file.kind === "folder" && existsSync(join(runRoot, OUT_DIR))) return;
+    if (file.kind === "folder" && existsSync(join(runRoot, OUT_DIR))) {
+      if (output === "keep") return;
+      removeFolder(runRoot, join(runRoot, OUT_DIR));
+    }
     rmSync(join(runRoot, RUN_FILE), { force: true });
     // Only empty folders go from here on.
     for (const folder of [runRoot, dirname(runRoot)]) {
@@ -532,6 +536,15 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (!found) return;
       await releaseIn(found.runRoot, found.file, stageIds);
       if (stageIds === "all") roots.delete(run.runId);
+    });
+  }
+
+  function discard(runId: string): Promise<void> {
+    return serial(runId, async () => {
+      const found = locate({ runId });
+      if (!found) return;
+      await releaseIn(found.runRoot, found.file, "all", "drop");
+      roots.delete(runId);
     });
   }
 
@@ -553,5 +566,5 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
-  return { open, prepare, seal, integrate, release, sweep };
+  return { open, prepare, seal, integrate, release, discard, sweep };
 }

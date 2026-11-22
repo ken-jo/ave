@@ -23,6 +23,8 @@ export interface StageWorkspaceProvider {
   integrate(run: RunRef, joinId: string, stageIds: readonly string[]): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
   /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. */
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
+  /** Everything the run left under the run root, the output folder included: for a run whose record is gone. The run branch stays. */
+  discard(runId: string): Promise<void>;
   /** Boot: drop what no active run owns. */
   sweep(activeRunIds: readonly string[]): Promise<void>;
 }
