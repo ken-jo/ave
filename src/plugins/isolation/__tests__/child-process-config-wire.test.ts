@@ -2,13 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createServer, type Server, type Socket } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { Writable } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
@@ -257,17 +257,26 @@ function stall() {
 `;
 }
 
-function observeStall(child: ChildProcess | undefined) {
+function observeStall(child: Pick<ChildProcess, "stderr"> | undefined) {
   if (!child?.stderr) throw new Error("missing child diagnostics");
   const entered = deferred<void>();
   const digest = deferred<string>();
   let resumed = false;
-  createInterface({ input: child.stderr }).on("line", (line) => {
+  const lines = createInterface({ input: child.stderr });
+  const drained = new Promise<void>((resolve) => lines.once("close", resolve));
+  lines.on("line", (line) => {
     if (line === "plugin stalled") entered.resolve();
     if (line === "plugin resumed") resumed = true;
     if (line.startsWith("pressure digest ")) digest.resolve(line.slice("pressure digest ".length));
   });
-  return { entered: entered.promise, digest: digest.promise, didResume: () => resumed };
+  return {
+    entered: entered.promise,
+    digest: digest.promise,
+    async outcomeAfterExit<T>(exited: Promise<T>) {
+      const [exit] = await Promise.all([exited, drained]);
+      return { exit, resumed };
+    },
+  };
 }
 
 function acknowledgeNextRawWrite(output: Writable): Promise<Error | null | undefined> {
@@ -501,6 +510,17 @@ export const createPlugin = async () => {
     expect(readFileSync(marker, "utf8")).toBe("ended");
   }, 180_000);
 
+  it("includes a resume marker delivered on stderr after child exit", async () => {
+    const child = new EventEmitter();
+    const stderr = new PassThrough();
+    const state = observeStall({ stderr });
+    const outcome = state.outcomeAfterExit(once(child, "exit"));
+    child.emit("exit", 1, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    stderr.end("plugin resumed\n");
+    expect(await outcome).toEqual({ exit: [1, null], resumed: true });
+  });
+
   it.each([
     ["stdio", "an interval"],
     ["loopback", "an interval"],
@@ -545,8 +565,10 @@ export const createPlugin = async () => ({
 
       // This unconfined link never sends a signal on pipe closure.
       try {
-        expect(await exited).toEqual(process.platform === "win32" ? [1, null] : [null, "SIGKILL"]);
-        expect(state.didResume()).toBe(false);
+        expect(await state.outcomeAfterExit(exited)).toEqual({
+          exit: process.platform === "win32" ? [1, null] : [null, "SIGKILL"],
+          resumed: false,
+        });
       } finally {
         release?.destroy();
       }
