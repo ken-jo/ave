@@ -5,6 +5,8 @@ import { win32SystemBinary } from '../../../../shared/windows-system-path.js';
 import { serveInferenceChild } from '../../inference-child-serve.js';
 
 const telemetryAtStart = process.env.ORT_DISABLE_TELEMETRY ?? null;
+const hasNodeIpcChannel = process.channel !== undefined;
+const hasNodeChannelFdAtStart = process.env.NODE_CHANNEL_FD !== undefined;
 
 function open(options: { host: string; port: number } | { path: string }): Promise<{ socket?: Socket; code?: string }> {
   return new Promise(resolve => {
@@ -49,5 +51,9 @@ serveInferenceChild(async (task, files) => {
   const unix = unixPath === undefined ? undefined : await open({ path: unixPath });
   unix?.socket?.destroy();
   direct.socket?.destroy();
-  return { telemetryAtStart, direct: direct.socket ? 'connected' : direct.code, proxy: await viaProxy(port), unix: unix?.socket ? 'connected' : unix?.code, modelRead, windowsSystemCwd, runtime: await loadRuntime(files.model) };
+  return {
+    telemetryAtStart, hasNodeIpcChannel, hasNodeChannelFd: hasNodeChannelFdAtStart || process.env.NODE_CHANNEL_FD !== undefined,
+    direct: direct.socket ? 'connected' : direct.code, proxy: await viaProxy(port), unix: unix?.socket ? 'connected' : unix?.code,
+    modelRead, windowsSystemCwd, runtime: await loadRuntime(files.model),
+  };
 }).then(() => process.exit(0), () => process.exit(1));

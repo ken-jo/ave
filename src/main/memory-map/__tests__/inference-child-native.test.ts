@@ -139,10 +139,15 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
     const modelFile = join(modelDir, model.name);
     expect(readFileSync(modelFile)).toEqual(Buffer.alloc(model.bytes));
     const before = listenerConnections.length;
-    const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; unix?: string; modelRead: string; windowsSystemCwd?: boolean; runtime: string }>(
+    const report = await runMemoryWorker<{
+      telemetryAtStart: string | null; hasNodeIpcChannel: boolean; hasNodeChannelFd: boolean;
+      direct: string; proxy: string; unix?: string; modelRead: string; windowsSystemCwd?: boolean; runtime: string;
+    }>(
       modelDir, { kind: 'embed', text: JSON.stringify({ port: listenerPort, unixPath, modelFile }) }, AbortSignal.timeout(120_000));
     console.info(`[memory-map-child] ${JSON.stringify(report)} decisions=${JSON.stringify(decisions)}`);
     expect(report.telemetryAtStart).toBe('1');
+    expect(report.hasNodeIpcChannel).toBe(false);
+    expect(report.hasNodeChannelFd).toBe(false);
     expect(report.direct, JSON.stringify(report)).not.toBe('connected');
     if (unixPath !== undefined) expect(report.unix).toMatch(/^(?:EACCES|EPERM)$/u);
     expect(report.proxy, JSON.stringify(report)).not.toMatch(/^HTTP\/1\.[01] 200/u);
