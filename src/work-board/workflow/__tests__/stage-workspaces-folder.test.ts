@@ -149,6 +149,9 @@ describe("folder stage workspaces", () => {
     write(project, "docs/draft.md", "draft\n");
     write(project, ".gitignore", "build/\n*.log\n!keep.log\nnotes.txt\n");
     write(project, "docs/.gitignore", "draft.md\n");
+    // The user's own excludes file is not one of the folder's ignore files.
+    write(base, "user-excludes", "src/\n");
+    writeFileSync(join(base, "gitconfig"), `[core]\n\tautocrlf = false\n\texcludesFile = ${join(base, "user-excludes").split(sep).join("/")}\n`);
 
     const handle = await start(project);
     const root = await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] });

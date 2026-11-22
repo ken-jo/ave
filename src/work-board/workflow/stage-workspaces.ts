@@ -179,7 +179,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   /** A plain folder honours its own `.gitignore` files, read by git's matcher. `check-ignore` runs only against a repository, so an
    * empty one is made in the run root on first need and removed by `done`; the folder is its work tree for that call and nothing is
-   * written into it. Without an ignore file above a path git is not run. */
+   * written into it. Without an ignore file above a path git is not run, and the user's own excludes file never applies. */
   function plainFolderIgnore(runRoot: string, root: string): { ignored: NonNullable<SeedRules["ignored"]>; done: () => void } {
     const scratch = join(runRoot, IGNORE_DIR);
     let made = false;
@@ -205,7 +205,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           made = true;
         }
         const checked = await git.run(root, [`--git-dir=${join(scratch, ".git")}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
-          { stdin: paths.map(path => `${path}\0`).join("") });
+          { stdin: paths.map(path => `${path}\0`).join(""), drivers: ["-c", "core.excludesFile="] });
         if (checked.code !== 0 && checked.code !== 1) throw new Error("the folder's ignore rules could not be read");
         return new Set(nul(checked.stdout));
       },
