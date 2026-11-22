@@ -72,6 +72,7 @@ import {
   connectToAnnouncedChild,
   encodeChildEnv,
 } from "./child-loopback-link.js";
+import { pacePluginChildInput } from "./plugin-child-credit.js";
 import {
   createBoundHostApiDispatchTable,
   type DispatchableHostApi,
@@ -676,6 +677,7 @@ export async function spawnConfinedPluginChild(
       input = connected;
       output = connected;
     }
+    if (spec.launch.kind === "entry") ({ input, output } = pacePluginChildInput(input, output));
     return {
       pid: hasProcess() ? child.pid : undefined,
       confinement,

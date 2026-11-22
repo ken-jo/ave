@@ -162,6 +162,7 @@ import {
   encodeChildEnv,
   parseChildLaunchArgs,
 } from "../child-loopback-link.js";
+import { pacePluginChildInput, pluginChildInputCredit } from "../plugin-child-credit.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import { PluginChildTerminationUnverifiedError, type ChildLink } from "../plugin-child-transport.js";
 import {
@@ -1988,6 +1989,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       }, (socket) => {
         if (opts.ignoresEof) socket.allowHalfOpen = true;
         const service = servePluginChild(socket, socket);
+        socket.on("data", (chunk: Buffer) => socket.write(pluginChildInputCredit(chunk.length)));
         const onClose = own("loopback child service", () => service.hostGone());
         const socketClosed = () => {
           void onClose().catch(() => undefined);
@@ -2256,8 +2258,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     own("loopback socket error listener", () => socket.off("error", onError));
     socket.on("error", onError);
     const link: ChildLink = {
-      input: socket,
-      output: socket,
+      ...pacePluginChildInput(socket, socket),
       terminate: () => socket.destroy(),
       onGone: (handler) => void exited.then(handler),
       onFault: () => undefined,

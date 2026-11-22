@@ -1,6 +1,7 @@
 /** Exercise config delivery across a real JSON process boundary; in-memory sharing cannot prove marshalling. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,8 @@ import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from "../child-loopback-link.js";
+import { OUTBOUND_QUEUE_BYTES_MAX } from "../child-stream-multiplex.js";
+import { pacePluginChildInput } from "../plugin-child-credit.js";
 import { SECRET_REDACTED_SENTINEL } from "../host-api-wire.js";
 import {
   emitPluginConfigChange,
@@ -87,7 +90,11 @@ const MANIFEST = {
   ],
 } as PluginManifest;
 
-async function spawnPlainChild(childEntryPath: string, canTerminate = true, transport = "stdio"): Promise<ChildLink> {
+async function spawnPlainChild(
+  childEntryPath: string,
+  canTerminate = true,
+  transport = "stdio",
+): Promise<ChildLink & { disconnect(): void }> {
   const args = transport === "loopback" ? [CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({})] : [];
   const child = spawn(process.execPath, [childEntryPath, ...args], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -107,9 +114,10 @@ async function spawnPlainChild(childEntryPath: string, canTerminate = true, tran
     exited: new Promise((resolve) => child.once("exit", () => resolve("test child exited"))),
     timeoutMs: 10_000,
   }) : undefined;
+  const rawOutput = socket ?? child.stdin;
   return {
-    input: socket ?? child.stdout,
-    output: socket ?? child.stdin,
+    ...pacePluginChildInput(socket ?? child.stdout, rawOutput),
+    disconnect: () => rawOutput.end(),
     terminate: () => { if (canTerminate) child.kill("SIGTERM"); },
     onGone: (handler) => {
       child.once("exit", (code, signal) =>
@@ -351,7 +359,11 @@ export const createPlugin = async () => ({
       });
       void instance.start().catch(() => undefined);
       await started;
-      link.output.end();
+      if (pluginWork === "a blocked event loop") {
+        link.output.write(Buffer.alloc(1024 * 1024, 0x20));
+        expect(link.output.writableLength).toBeGreaterThan(0);
+      }
+      link.disconnect();
 
       // This unconfined link never sends a signal on pipe closure.
       expect(await exited).toEqual(process.platform === "win32"
@@ -361,4 +373,72 @@ export const createPlugin = async () => ({
     },
     180_000,
   );
+
+  it.each(["stdio", "loopback"])("paces %s while stalled and delivers beyond the previous queue bound in order", async (transport) => {
+    const root = temporaryRoot!;
+    const entryPath = join(root, "pressure-plugin.mjs");
+    const frame = Buffer.alloc(1024 * 1024, 0x20);
+    const frameCount = Math.ceil(OUTBOUND_QUEUE_BYTES_MAX / frame.length) + 2;
+    const totalBytes = frame.length * frameCount;
+    const marker = join(root, "pressure-digest.txt");
+    writeFileSync(entryPath, `import { writeFileSync, writeSync } from "node:fs";
+import { createHash } from "node:crypto";
+export const createPlugin = async () => ({
+  handlers: {},
+  start: () => {
+    const hash = createHash("sha256");
+    let received = 0;
+    process.stdin.on("data", (chunk) => {
+      hash.update(chunk);
+      received += chunk.length;
+      if (received === ${totalBytes}) writeFileSync(${JSON.stringify(marker)}, hash.digest("hex"));
+    });
+    writeSync(2, "plugin stalled\\n");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4500);
+  },
+});
+`);
+    const { hostApi } = hostApiFor();
+    const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+    const link = await spawnPlainChild(childEntryPath, false, transport);
+    const instance = await plainSessionFactory({ manifest: { ...MANIFEST, tools: [] }, entryPath, childEntryPath, link })({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    const child = [...spawnedChildren][0]!;
+    let diagnostics = "";
+    child.stderr!.on("data", (chunk: Buffer) => { diagnostics += chunk.toString(); });
+    void instance.start().catch(() => undefined);
+    await waitFor(() => diagnostics.includes("plugin stalled\n"), "the plugin stall");
+    const expected = createHash("sha256");
+    let completed = 0;
+    const transfer = (async () => {
+      for (let index = 0; index < frameCount; index += 1) {
+        const prefix = JSON.stringify({ jsonrpc: "2.0", method: "notifications/pressure", params: { index } });
+        frame.fill(0x20);
+        frame.write(prefix);
+        frame[frame.length - 1] = 0x0a;
+        expected.update(frame);
+        await new Promise<void>((resolve, reject) => link.output.write(frame, (error) => {
+          if (error) reject(error);
+          else resolve();
+        }));
+        completed += 1;
+      }
+    })();
+    const result = transfer.then(() => undefined, (error: unknown) => error);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(completed).toBe(0);
+    expect(await result).toBeUndefined();
+    await waitFor(() => {
+      try {
+        return readFileSync(marker, "utf8").length === 64;
+      } catch {
+        return false;
+      }
+    }, "the digest of all frames");
+    expect(readFileSync(marker, "utf8")).toBe(expected.digest("hex"));
+    await instance.stop?.();
+  }, 180_000);
 });

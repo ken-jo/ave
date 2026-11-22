@@ -1,10 +1,11 @@
+import { writeSync } from "node:fs";
 import { Socket } from "node:net";
 import { PassThrough, Writable } from "node:stream";
 import { Worker, parentPort } from "node:worker_threads";
 import { errorMessage } from "../../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { OUTBOUND_QUEUE_BYTES_MAX } from "./child-stream-multiplex.js";
 import { acceptHostOverLoopback } from "./child-loopback-link.js";
+import { PLUGIN_CHILD_INPUT_BYTES_MAX, pluginChildInputCredit } from "./plugin-child-credit.js";
 
 type OwnerMessage = Uint8Array | null | { readonly announce: string } | { readonly error?: string };
 
@@ -22,8 +23,13 @@ export function openPluginChildInput(entry: URL, transport: PluginChildInputOwne
   const workerData: PluginChildInputOwner = { queuedBytes, transport };
   const reader = new Worker(entry, { workerData });
   let written: ((error?: Error) => void) | undefined;
+  let closed = false;
   const output = new Writable({
     write(chunk: Buffer, _encoding, callback) {
+      if (closed) {
+        callback(new Error("Plugin child channel closed"));
+        return;
+      }
       written = callback;
       const bytes = Uint8Array.from(chunk);
       reader.postMessage(bytes, [bytes.buffer]);
@@ -34,6 +40,7 @@ export function openPluginChildInput(entry: URL, transport: PluginChildInputOwne
   });
   reader.on("message", (message: OwnerMessage) => {
     if (message === null) {
+      closed = true;
       input.end();
       written?.(new Error("Plugin child channel closed"));
       written = undefined;
@@ -41,7 +48,13 @@ export function openPluginChildInput(entry: URL, transport: PluginChildInputOwne
       return;
     }
     if (message instanceof Uint8Array) {
-      input.write(message, () => Atomics.sub(queuedBytes, 0, message.byteLength));
+      input.write(message, (error) => {
+        Atomics.sub(queuedBytes, 0, message.byteLength);
+        if (!closed && !error) {
+          const reply = transport === "stdio" ? stdout : output;
+          reply.write(pluginChildInputCredit(message.byteLength));
+        }
+      });
     } else if ("announce" in message) {
       stdout.write(message.announce);
     } else {
@@ -78,7 +91,11 @@ export async function ownPluginChildInput({ transport, queuedBytes }: PluginChil
     input.destroy();
   };
   input.once("end", handleLoss);
-  input.once("error", handleLoss);
+  const fail = (reason: string): void => {
+    writeSync(2, `[plugin-child] ${reason}\n`);
+    handleLoss();
+  };
+  input.once("error", (error) => fail(`channel error: ${errorMessage(error)}`));
   input.once("close", handleLoss);
   port.on("message", (chunk: Uint8Array | null) => {
     if (chunk === null) handleLoss();
@@ -88,10 +105,9 @@ export async function ownPluginChildInput({ transport, queuedBytes }: PluginChil
     });
   });
   input.on("data", (chunk: Buffer) => {
-    // Keep reading to observe EOF independently, with the same bound as the host's outbound queue.
-    if (Atomics.add(queuedBytes, 0, chunk.byteLength) + chunk.byteLength > OUTBOUND_QUEUE_BYTES_MAX) {
-      process.stderr.write("[plugin-child] stdin queue exceeds limit\n");
-      handleLoss();
+    // A valid host waits for consumption of its current write. The owner can always read through to EOF.
+    if (Atomics.add(queuedBytes, 0, chunk.byteLength) + chunk.byteLength > PLUGIN_CHILD_INPUT_BYTES_MAX) {
+      fail("host input exceeded the credit window");
       return;
     }
     const bytes = Uint8Array.from(chunk);
