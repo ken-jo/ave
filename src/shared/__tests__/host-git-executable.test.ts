@@ -29,9 +29,9 @@ describe("resolveHostGit", () => {
       .mockReturnValueOnce({ isFile: () => true } as ReturnType<typeof statSync>);
     const { resolveHostGit } = await import("../host-git-executable.js");
 
-    expect(resolveHostGit(false)).toBe(join(host, binary));
+    expect(resolveHostGit({ packaged: false })).toBe(join(host, binary));
     vi.stubEnv("PATH", join(root, "changed-bin"));
-    expect(resolveHostGit(false)).toBe(join(host, binary));
+    expect(resolveHostGit({ packaged: false })).toBe(join(host, binary));
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary)]);
   });
 
@@ -40,12 +40,12 @@ describe("resolveHostGit", () => {
     vi.mocked(accessSync).mockImplementation(() => { throw new Error("missing"); });
     const { resolveHostGit, systemGitCandidates } = await import("../host-git-executable.js");
 
-    expect(resolveHostGit(false)).toBeNull();
+    expect(resolveHostGit({ packaged: false })).toBeNull();
     const fallbacks = systemGitCandidates(process.platform, undefined);
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual(fallbacks);
     vi.stubEnv("PATH", host);
     vi.mocked(accessSync).mockReset();
-    expect(resolveHostGit(false)).toBeNull();
+    expect(resolveHostGit({ packaged: false })).toBeNull();
     expect(accessSync).not.toHaveBeenCalled();
   });
 });

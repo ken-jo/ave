@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
+import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "./verified-executable.js";
 
 export interface InstallerGitInstall {
   path: string;
@@ -12,6 +13,20 @@ export interface InstallerGitInstall {
 const MINGIT_PREFIXES = ["ucrt64", "clangarm64"] as const;
 export const DARWIN_GIT_SHIM = "/usr/bin/git";
 export const DARWIN_CLT_PROBE = "/usr/bin/xcode-select";
+const VERIFIED_GIT_INSTALLATIONS: Readonly<Partial<Record<NodeJS.Platform, readonly VerifiedExecutableCandidate[]>>> = Object.freeze({
+  darwin: Object.freeze([
+    { executable: "/Library/Developer/CommandLineTools/usr/bin/git", installationRoots: ["/Library/Developer/CommandLineTools"] },
+    { executable: "/opt/git/bin/git", installationRoots: ["/opt/git"] },
+  ]),
+  linux: Object.freeze([
+    { executable: "/usr/bin/git", installationRoots: ["/usr/bin/git"] },
+    { executable: "/opt/git/bin/git", installationRoots: ["/opt/git"] },
+  ]),
+});
+
+export function supportsVerifiedHostGit(): boolean {
+  return VERIFIED_GIT_INSTALLATIONS[process.platform] !== undefined;
+}
 
 export function installerGitRoot(
   packaged: boolean,
@@ -81,10 +96,14 @@ function canRunSystemGit(path: string): boolean {
 
 let hostGitPath: string | null | undefined;
 
-/** Cache the executable (or its absence) for synchronous project instruction lookups. */
-export function resolveHostGit(packaged: boolean): string | null {
+/** Verified calls require a protected installation. Discovery caches its own result. */
+export function resolveHostGit(policy: "verified" | { packaged: boolean }): string | null {
+  if (policy === "verified") {
+    const candidates = VERIFIED_GIT_INSTALLATIONS[process.platform];
+    return candidates === undefined ? null : resolveVerifiedExecutable(candidates)?.executable ?? null;
+  }
   if (hostGitPath === undefined) {
-    hostGitPath = findInstallerGit(installerGitRoot(packaged))?.path
+    hostGitPath = findInstallerGit(installerGitRoot(policy.packaged))?.path
       ?? systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit)
       ?? null;
   }

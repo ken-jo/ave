@@ -245,7 +245,7 @@ function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts 
 function askGitIgnores(repoRoot: string, path: string): boolean {
   if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   if (!hasGitEntry(repoRoot)) return false;
-  const git = resolveHostGit(isConfigured() ? getIsPackaged() : isPackagedElectronProcess());
+  const git = resolveHostGit({ packaged: isConfigured() ? getIsPackaged() : isPackagedElectronProcess() });
   if (git === null) return false;
   const env = { ...process.env };
   // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
