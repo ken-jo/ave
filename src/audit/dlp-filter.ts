@@ -189,8 +189,8 @@ export function redactFsPath(path: string): string {
 interface HomeForm {
   literal: RegExp;
   marker: string;
-  /** The first group is a leading separator kept after a URL authority. */
-  authority?: boolean;
+  /** The first group is a root kept before the marker. */
+  keep?: boolean;
 }
 
 interface HomeDetector extends HomeForm {
@@ -207,34 +207,47 @@ interface HomeRedaction {
 
 const HOME_DECODE_LAYERS = 3;
 
+/** A quote, apostrophe or backtick that opens a span right before the match. */
+const QUOTE_OPENED = String.raw`(?<=(?:^|[^\p{L}\p{N}])["'\x60])`;
+
 /**
- * Any account's profile: letters, marks, digits, `._-` and inner apostrophes, each also percent-encoded up to the
- * decode bound, after separators that may be encoded too. Words after a space belong to the name only when a
- * separator, or in a path value its end, follows them.
+ * Any account's profile: letters, marks, digits, `._-` and apostrophes before a letter or digit, each also
+ * percent-encoded up to the decode bound or a JSON `\u` escape, after separators encoded the same ways, under a
+ * drive, UNC, `/users/` or `/home/` root. Words after a space join the name before a separator in a path value
+ * (or at its end) and in a quoted span that starts with the home (or at its closing quote); in other text the
+ * name stops at whitespace.
  */
-function genericHomeForms(pathValue: boolean): readonly HomeForm[] {
-  const escaped = (hex: string): string => `%(?:25){0,${HOME_DECODE_LAYERS - 1}}(?:${hex})`;
+function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
+  const json = (hex: string): string => String.raw`\\{1,7}u00(?:${hex})`;
+  const escaped = (hex: string): string => `(?:%(?:25){0,${HOME_DECODE_LAYERS - 1}}(?:${hex})|${json(hex)})`;
   const slash = `(?:\\/|${escaped("2f")})`;
   const separator = `(?:[\\\\/]|${escaped("2f|5c")})`;
   const colon = `(?::|${escaped("3a")})`;
-  const unit = `(?:[\\p{L}\\p{M}\\p{N}._-]|'(?=[\\p{L}\\p{N}])|${escaped(String.raw`2[0de]|3\d|[46][1-9a-f]|[57][\da]|5f|[89a-f][\da-f]`)})`;
+  const letter = String.raw`3\d|[46][1-9a-f]|[57][\da]|[89a-f][\da-f]`;
+  const unit = `(?:[\\p{L}\\p{M}\\p{N}._-]|'(?=[\\p{L}\\p{N}])|${escaped(`2[0de]|5f|${letter}`)}`
+    + `|${escaped("27")}(?=[\\p{L}\\p{N}]|${escaped(letter)})|\\\\{1,7}u(?!00)[\\da-f]{4})`;
   // A drive profile joined directly to a name starts the next home.
   const nameUnit = `(?:(?![a-z]${colon}${separator}+users${separator}+${unit})${unit})`;
-  const end = pathValue ? `(?=${separator}|[?#]|$)` : `(?=${separator})`;
-  const name = `${nameUnit}+(?:(?: +[\\p{L}\\p{N}]${nameUnit}*)+${end})?`;
-  const form = (prefix: string, marker: string, authority = false): HomeForm => ({ literal: new RegExp(prefix + name, "giu"), marker, authority });
-  return [
-    form(`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]"),
-    form(`file${colon}${slash}{3}users${slash}`, "file://[home]"),
-    form(`file${colon}${slash}{3}home${slash}`, "file://[home]"),
-    form(`[a-z]${colon}${separator}+users${separator}+`, "[home]"),
-    form(`(${slash})users${slash}`, "[home]", true),
-    form(`(${slash})home${slash}`, "[home]", true),
+  const joined = (end: string): string => `${nameUnit}+(?:(?: +[\\p{L}\\p{N}]${nameUnit}*)+${end})?`;
+  const roots: [prefix: string, marker: string, keep?: boolean][] = [
+    [`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]"],
+    [`file${colon}${slash}{3}users${slash}`, "file://[home]"],
+    [`file${colon}${slash}{3}home${slash}`, "file://[home]"],
+    // A UNC root keeps its server and share.
+    [String.raw`((?<!\\)\\{2,}[^\s\\/]+\\+(?:[^\s\\/]+\\+)?)(?:users|home)\\+`, "[home]", true],
+    [`[a-z]${colon}${separator}+users${separator}+`, "[home]"],
+    [`${slash}users${slash}`, "[home]"],
+    [`${slash}home${slash}`, "[home]"],
   ];
+  const forms = (name: string, opened = ""): HomeForm[] =>
+    roots.map(([prefix, marker, keep]) => ({ literal: new RegExp(opened + prefix + name, "giu"), marker, keep }));
+  return mode === "path"
+    ? forms(joined(`(?=${separator}|[?#]|$)`))
+    : [...forms(joined(`(?=${separator}|["'\\x60])`), QUOTE_OPENED), ...forms(`${nameUnit}+`)];
 }
 
-const GENERIC_HOME_FORMS = genericHomeForms(false);
-const GENERIC_PATH_HOME_FORMS = genericHomeForms(true);
+const GENERIC_HOME_FORMS = genericHomeForms("text");
+const GENERIC_PATH_HOME_FORMS = genericHomeForms("path");
 const LARGE_ESCAPE_TOKEN = 4096;
 const HOME_TOKEN_MARKER = "[home-token]";
 const SINGLE_DECODE_FAMILY = ["full"] as const;
@@ -296,16 +309,23 @@ function hasJsonContainer(text: string): boolean {
   return false;
 }
 
-/** A URL authority, plain or percent-encoded, ends here. */
-const AFTER_AUTHORITY = /(?<=(?:^|[^a-z\d+.-])[a-z][a-z\d+.-]*(?::\/\/|%(?:25){0,2}3a%(?:25){0,2}2f%(?:25){0,2}2f)[^\s/\\?#%]+)/iuy;
+/** A URL authority, plain or percent-encoded and with escaped host bytes, ends here. */
+const AFTER_AUTHORITY = /(?<=(?:^|[^a-z\d+.-])[a-z][a-z\d+.-]*(?::\/\/|%(?:25){0,2}3a%(?:25){0,2}2f%(?:25){0,2}2f)(?:[^\s/\\?#%]|%(?:25){0,2}(?!2f|5c|3f|23)[\da-f]{2})+)/iuy;
+const LEADING_SLASH = /\/|%(?:25){0,2}2f|\\{1,7}u002f/iuy;
 
-function followsAuthority(text: string, start: number): boolean {
+/** The separator that ends a URL authority stays before the marker of a home path that follows it. */
+function keptRoot(text: string, match: RegExpExecArray | RegExpMatchArray, keep: boolean | undefined): string {
+  if (keep) return match[1] ?? "";
+  const start = match.index ?? 0;
+  LEADING_SLASH.lastIndex = start;
+  const slash = LEADING_SLASH.exec(text)?.[0];
+  if (slash === undefined) return "";
   AFTER_AUTHORITY.lastIndex = start;
-  return AFTER_AUTHORITY.test(text);
+  return AFTER_AUTHORITY.test(text) ? slash : "";
 }
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
-  for (const { literal, marker, authority } of forms) {
+  for (const { literal, marker, keep } of forms) {
     let copied = 0;
     let pieces: string[] | undefined;
     let insideJson: boolean | undefined;
@@ -322,7 +342,7 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
         }
       }
       pieces ??= [];
-      pieces.push(text.slice(copied, start), authority && followsAuthority(text, start) ? `${match[1] ?? ""}${marker}` : marker);
+      pieces.push(text.slice(copied, start), `${keptRoot(text, match, keep)}${marker}`);
       copied = end;
     }
     if (pieces) text = pieces.join("") + text.slice(copied);

@@ -16,8 +16,14 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     ["a non-ASCII name", "open /home/Bobé/notes.txt now", "open [home]/notes.txt now"],
     ["a name without ASCII", "open /home/예시/notes.txt now", "open [home]/notes.txt now"],
     ["a combining mark", "open /Users/demo\u0301/a now", "open [home]/a now"],
-    ["a name with a space", "open /home/Demo Smith/notes.txt now", "open [home]/notes.txt now"],
-    ["a drive profile with a space", String.raw`open C:\Users\Demo Smith\notes.txt now`, String.raw`open [home]\notes.txt now`],
+    ["an unquoted name up to whitespace", "cp /home/bob src/x", "cp [home] src/x"],
+    ["a quoted name with a space", 'cp "/home/Demo Smith" src/x', 'cp "[home]" src/x'],
+    ["a quoted drive profile with a space", String.raw`cp "C:\Users\Demo Smith\x" y`, String.raw`cp "[home]\x" y`],
+    ["a code span with a space", "see `/home/Demo Smith/x` or 'C:\\Users\\Demo Smith\\y'", "see `[home]/x` or '[home]\\y'"],
+    ["a UNC profile", String.raw`open \\example\share\Users\bob\notes.txt now`, String.raw`open \\example\share\[home]\notes.txt now`],
+    ["a quoted UNC profile with a space", String.raw`open "\\example\Users\Demo Smith\notes.txt"`, String.raw`open "\\example\[home]\notes.txt"`],
+    ["an encoded apostrophe", "open /home/y%27brien/notes.txt now", "open [home]/notes.txt now"],
+    ["an escaped URL authority", "see file://example%2Dhost/Users/bob/x", "see file://example%2Dhost/[home]/x"],
     ["a URL name with an encoded space", "open file:///C:/Users/Demo%20Smith/notes.txt now", "open file://[home]/notes.txt now"],
     ["an encoded path in a query", "get ?path=%2Fhome%2Fbob%2Fx now", "get ?path=[home]%2Fx now"],
     ["a name with an apostrophe", "open /home/y'brien/notes.txt now", "open [home]/notes.txt now"],
@@ -39,10 +45,26 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     expect(JSON.parse(redactHomePathsInText(line))).toEqual({ p: "[home]/x", q: String.raw`[home]\y`, r: "https://docs.example/[home]" });
   });
 
+  it("reads names and separators escaped in a JSON string", async () => {
+    const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
+    const line = '{"p":"/home/bob\\u00e9/x","q":"\\u002fhome\\u002fbob/y","r":"/home/\\uc608\\uc81c/z","s":"\\\\\\\\example\\\\Users\\\\bob\\\\w","next":1}';
+    expect(JSON.parse(redactHomePathsInText(line))).toEqual({ p: "[home]/x", q: "[home]/y", r: "[home]/z", s: String.raw`\\example\[home]\w`, next: 1 });
+  });
+
+  it("keeps the arguments of a serialized command", async () => {
+    const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, platform);
+    const line = JSON.stringify({ a: "cp /home/bob src/x", b: 'cp "/home/Demo Smith" src/x' });
+    expect(JSON.parse(redactHomePathsInText(line))).toEqual({ a: "cp [home] src/x", b: 'cp "[home]" src/x' });
+    expect(redactJudgeText("cp /home/bob src/x")).toBe("cp [home] src/x");
+  });
+
   it.each([
     ["/home/bob/x", "[home]/x"],
     [String.raw`C:\Users\Demo Smith\x`, String.raw`[home]\x`],
     ["/home/Demo Smith", "[home]"],
+    ["/home/Demo Smith/x", "[home]/x"],
+    [String.raw`\\example\Users\Demo Smith\notes.txt`, String.raw`\\example\[home]\notes.txt`],
+    ["file://example%2Dhost/Users/bob/x", "file://example%2Dhost/[home]/x"],
     ["file:///home/bob%C3%A9/x?y=1", "file://[home]/x?y=1"],
     ["file:///C:/Users/Bobé/x", "file://[home]/x"],
     ["https://docs.example/users/bob/api", "https://docs.example/[home]/api"],
@@ -68,6 +90,15 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
   });
 });
 
+it.each([
+  ["linux", "/home/Demo Smith", "open /home/Demo Smith/notes.txt now", "open [home]/notes.txt now"],
+  ["win32", String.raw`C:\Users\Demo Smith`, String.raw`open C:\Users\Demo Smith\notes.txt now`, String.raw`open [home]\notes.txt now`],
+  ["linux", "/home/bob", "see https://example.test/home/bob/x", "see https://example.test/[home]/x"],
+] as const)("redacts the %s home %s in full in unquoted text", async (platform, home, input, expected) => {
+  const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
+  expect(redactHomePathsInText(input)).toBe(expected);
+});
+
 it("scans adversarial home text and paths in linear time", async () => {
   const { redactFsPath, redactHomePathsInText } = await loadHomeRedactors("/srv/fixtures/habitat", "linux");
   const SMALL = 4 * 1024;
@@ -76,6 +107,8 @@ it("scans adversarial home text and paths in linear time", async () => {
   const families = [
     ["x y ", "/home/"], ["/home/x y", ""], [DRIVE_BOB, ""], ["%C3", "/home/"], ["a", "https://"], ["a:/users/", "/home/"],
     ["%2525", "/home/"], ["x ", "C:\\Users\\"], ["/users/x", "https://x.example"],
+    ["\\\\a\\b", ""], ["a", "\\\\"], ["\\", ""], ["x y ", '"/home/'], ['"/home/x y ', ""], ["\\u00e9", "/home/"],
+    ["\\u002fhome", ""], ["%27", "/home/"], ["%2D", "file://"],
   ] as const;
   for (const [unit, head] of families) {
     for (const redact of [redactHomePathsInText, redactFsPath]) {
