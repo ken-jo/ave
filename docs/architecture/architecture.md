@@ -3317,14 +3317,12 @@ in its directory.
   recorded under that invocation's token only. Without MXC, shells keep the
   approved host route. Without either, the gate degrades as before. Extension
   holders and all MCP stdio wraps keep their separate confinement selection
-  and D2 local-network policy.
-
-  The persistent conversation PTY, including the side-chat terminal, stays off
-  MXC and reads the process-wide capability so its background descendants can
-  survive individual commands. An MXC shell, its proxy listener, and its
-  process tree are scoped to one invocation. There is no managed MXC shell job,
-  so background processes in that container end with the invocation's
-  containment.
+  and D2 local-network policy. The persistent conversation PTY, including the
+  side-chat terminal, stays off MXC and reads the process-wide capability so
+  its background descendants can survive individual commands. An MXC shell,
+  its proxy listener, and its process tree are scoped to one invocation. There
+  is no managed MXC shell job, so background processes in that container end
+  with the invocation's containment.
 
 - **Filesystem.** The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a
