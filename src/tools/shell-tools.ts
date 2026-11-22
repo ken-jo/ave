@@ -2360,8 +2360,25 @@ function clipUtf8(text: string, maxBytes: number): string {
   return `${bytes.subarray(0, end).toString("utf8")}…`;
 }
 
+function validatedErrorCode(error: unknown): string | undefined {
+  try {
+    const code: unknown = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// "shown" keeps a system error's message; "code" keeps only its validated code, since a Node spawn, spawnSync or fs error names host
+// paths in its message, `syscall`, `path` and `spawnargs`.
+type SystemErrorText = "shown" | "code";
+
 // The text of a string or a verified Error, bounded before anything reads it further; any other value has none.
-function boundedFailureText(error: unknown): string | undefined {
+function boundedFailureText(error: unknown, systemErrors: SystemErrorText): string | undefined {
+  if (systemErrors === "code" && error instanceof Error && ("syscall" in error || "path" in error || "spawnargs" in error)) {
+    const code = validatedErrorCode(error);
+    return code === undefined ? "host system error" : `host system error ${code}`;
+  }
   const raw: unknown = typeof error === "string" ? error : error instanceof Error ? error.message : undefined;
   if (typeof raw !== "string") return undefined;
   if (raw.length > FAILURE_SCAN_CHARS) return `failure message omitted (${raw.length} characters)`;
@@ -2369,10 +2386,10 @@ function boundedFailureText(error: unknown): string | undefined {
 }
 
 // A failure followed by up to two causes its text does not already carry. Each read stands alone, so an unreadable cause never erases its error.
-function failureMessage(error: unknown): string {
+function failureMessage(error: unknown, systemErrors: SystemErrorText): string {
   let text: string;
   try {
-    text = boundedFailureText(error) ?? FAILURE_UNAVAILABLE;
+    text = boundedFailureText(error, systemErrors) ?? FAILURE_UNAVAILABLE;
   } catch {
     return FAILURE_UNAVAILABLE;
   }
@@ -2383,7 +2400,7 @@ function failureMessage(error: unknown): string {
       const cause: unknown = current instanceof Error ? current.cause : undefined;
       if (cause === undefined || seen.includes(cause)) break;
       seen.push(cause);
-      const causeText = boundedFailureText(cause);
+      const causeText = boundedFailureText(cause, systemErrors);
       if (causeText !== undefined && !text.includes(causeText)) text = `${text}: ${causeText}`;
     } catch {
       break;
@@ -2403,7 +2420,7 @@ function aggregateMembers(error: unknown): readonly unknown[] | undefined {
 
 // Never throws. An aggregate already on the path is shown by its message, so a member shared by two branches still shows in both.
 // Every member is read on its own: one that cannot be read shows as unavailable and leaves the others standing.
-function shellFailureText(errors: readonly unknown[]): string {
+function shellFailureText(errors: readonly unknown[], systemErrors: SystemErrorText = "shown"): string {
   const shown: string[] = [];
   let more = 0;
   const visit = (list: readonly unknown[], ancestors: readonly unknown[]): void => {
@@ -2422,7 +2439,7 @@ function shellFailureText(errors: readonly unknown[]): string {
       try {
         const error = list[index];
         const members = ancestors.length < FAILURE_DEPTH && !ancestors.includes(error) ? aggregateMembers(error) : undefined;
-        if (members === undefined) shown.push(failureMessage(error));
+        if (members === undefined) shown.push(failureMessage(error, systemErrors));
         else visit(members, [...ancestors, error]);
       } catch {
         shown.push(FAILURE_UNAVAILABLE);
@@ -2460,11 +2477,11 @@ async function attachFilesystemBlock(result: SpawnResult, commandId: string, com
 }
 
 // Release failures make the result an error, like an ASRT cleanup failure.
-function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly unknown[]): T {
+function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly unknown[], systemErrors: SystemErrorText = "shown"): T {
   if (failures.length === 0) return result;
   return carrySandboxBlock(result, {
     ...result,
-    output: `${result.output}\nShell resource release failed: ${shellFailureText(failures)}`,
+    output: `${result.output}\nShell resource release failed: ${shellFailureText(failures, systemErrors)}`,
     isError: true,
     metadata: { ...result.metadata, sandboxCleanupFailed: true },
   });
@@ -2492,13 +2509,8 @@ function mxcSpawnFailure(details: string): ToolExecutionResult {
 
 // Node's launcher errors name the launcher's absolute path (message, `syscall`, `path`, `spawnargs`): only a validated code is kept.
 function launcherError(error: unknown): Error {
-  let code: unknown;
-  try {
-    code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-  } catch {
-    code = undefined;
-  }
-  return new Error(typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) ? `container launcher error ${code}` : "container launcher error");
+  const code = validatedErrorCode(error);
+  return new Error(code === undefined ? "container launcher error" : `container launcher error ${code}`);
 }
 
 // The parser's output and stderr are never shown: how it ended is reported in fixed words.
@@ -4211,7 +4223,8 @@ async function spawnPowerShellInMxc(
     if (signal?.aborted === true && error === signal.reason) {
       return withReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } }, released);
     }
-    return withReleaseFailures(mxcSpawnFailure(`${failurePrefix}${shellFailureText([error])}`), released);
+    // Pre-spawn steps run host helpers (path facts, the policy pipe) whose system errors name their install paths.
+    return withReleaseFailures(mxcSpawnFailure(`${failurePrefix}${shellFailureText([error], "code")}`), released, "code");
   }
   const spawned = child;
   const egressToken = token;

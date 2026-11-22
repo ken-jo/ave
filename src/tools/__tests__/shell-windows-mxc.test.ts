@@ -1191,6 +1191,20 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result.output).not.toContain("bob");
   });
 
+  it("reports a host helper's system error before the spawn by its code alone, in the failure and in its release", async () => {
+    bootMxcShells();
+    const helper = String.raw`D:\example\resources\windows-path-kind\x64\ave-path-kind.exe`;
+    const systemError = () => Object.assign(new Error(`spawnSync ${helper} ETIMEDOUT`), { code: "ETIMEDOUT", syscall: `spawnSync ${helper}`, path: helper, spawnargs: ["--dacl"] });
+    const container = failCommandContainerRelease({ prepareRejects: new Error("path facts are unavailable for 2 entries", { cause: systemError() }), egressThrows: systemError() });
+    const result = await executePowerShell(context("ps-mxc-system-error"));
+    expect(result.output.split("\n")).toEqual([
+      "PowerShell spawn failed: path facts are unavailable for 2 entries: host system error ETIMEDOUT",
+      "Shell resource release failed: host system error ETIMEDOUT",
+    ]);
+    expect(result.output).not.toContain(String.raw`D:\example`);
+    expect(existsSync(container.home())).toBe(false);
+  });
+
   it("refuses a sandboxed Bash command with the PowerShell guidance instead of running it", async () => {
     bootMxcShells();
     const result = await new BashTool().execute({ command: "echo hi", timeoutSeconds: 7 }, context("bash-mxc"));
