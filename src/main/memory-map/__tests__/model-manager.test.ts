@@ -31,7 +31,7 @@ async function fixture(body = 'model', namespaceName = '', beforeSave?: () => vo
   return { manager, root, files, saved: () => saved, setSaved: (path: string) => { saved = path; }, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 async function linkedFixture(beforeSave?: () => void) {
-  const f = await fixture('model', 'via-link/ave/models', beforeSave);
+  const f = await fixture('model', join('via-link', 'ave', 'models'), beforeSave);
   try {
     const realRoot = join(f.root, 'real-root');
     const parent = join(realRoot, 'ave', 'models', 'multilingual-e5-small');
