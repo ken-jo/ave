@@ -7,6 +7,7 @@ import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { preparePythonDownloadMirror } from "../../.github/scripts/python-download-mirror.mjs";
 import { PYTHON_VERSION } from "../../.github/scripts/python-archive-cache.mjs";
+import { fetchBytesWithRetry } from "../../scripts/lib/fetch-with-retry.mjs";
 import { resolveUvTarget } from "../../scripts/uv-targets.mjs";
 
 const roots: string[] = [];
@@ -60,6 +61,42 @@ describe("interpreter archive staging", () => {
     const listDownloads = vi.fn(selection);
     await expect(preparePythonDownloadMirror({ uv: "unused", mirrorRoot: temporaryRoot(), listDownloads })).resolves.toBeNull();
     expect(listDownloads).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["HTTP 404", new Response(null, { status: 404 })],
+    ["network error", new TypeError("fetch failed", { cause: { code: "ECONNRESET" } })],
+  ])("falls back to the same release path after a preferred mirror %s", async (_failure, outcome) => {
+    vi.stubEnv("GITHUB_TOKEN", "fixture-token");
+    vi.stubEnv("UV_PYTHON_INSTALL_MIRROR", "");
+    const root = temporaryRoot();
+    const download = vi.fn<typeof fetchBytesWithRetry>((url, options) => fetchBytesWithRetry(url, {
+      ...options,
+      fetchImpl: async () => {
+        if (url === legacyRelease) return new Response("fallback archive");
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      },
+      sleep: async () => {},
+    }));
+
+    await expect(preparePythonDownloadMirror({ uv: "unused", mirrorRoot: root, listDownloads: selection, download }))
+      .resolves.toBeTypeOf("string");
+    expect(download.mock.calls.map(([url]) => url)).toEqual([release, legacyRelease]);
+    expect(readFileSync(join(root, decodeURIComponent(releasePath)), "utf8")).toBe("fallback archive");
+  });
+
+  it.each(["Digest mismatch", "Attestation mismatch"])("does not fall back on %s", async (message) => {
+    vi.stubEnv("GITHUB_TOKEN", "fixture-token");
+    vi.stubEnv("UV_PYTHON_INSTALL_MIRROR", "");
+    const root = temporaryRoot();
+    const failure = new Error(message);
+    const download = vi.fn().mockRejectedValue(failure);
+
+    await expect(preparePythonDownloadMirror({ uv: "unused", mirrorRoot: root, listDownloads: selection, download }))
+      .rejects.toBe(failure);
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(readdirSync(root)).toEqual([]);
   });
 
   it.each([

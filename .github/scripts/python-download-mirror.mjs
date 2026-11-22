@@ -4,14 +4,13 @@ import { appendFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fetchBytesWithRetry } from "../../scripts/lib/fetch-with-retry.mjs";
+import { DownloadHttpError, fetchBytesWithRetry, isTransientNetworkError } from "../../scripts/lib/fetch-with-retry.mjs";
 import { resolveUvTarget } from "../../scripts/uv-targets.mjs";
 import { PYTHON_VERSION } from "./python-archive-cache.mjs";
 
-const RELEASE_BASES = [
-  "https://releases.astral.sh/github/python-build-standalone/releases/download/",
-  "https://github.com/astral-sh/python-build-standalone/releases/download/",
-];
+const PREFERRED_RELEASE_BASE = "https://releases.astral.sh/github/python-build-standalone/releases/download/";
+const FALLBACK_RELEASE_BASE = "https://github.com/astral-sh/python-build-standalone/releases/download/";
+const RELEASE_BASES = [PREFERRED_RELEASE_BASE, FALLBACK_RELEASE_BASE];
 
 // The install command keeps distribution selection and checksum verification.
 // A local mirror supplies the selected archive.
@@ -31,7 +30,15 @@ export async function preparePythonDownloadMirror({ uv, mirrorRoot, listDownload
   if (!/^\d+\/[^/]+\.tar\.gz$/.test(suffix) || !/^\d+\/[\w.+-]+\.tar\.gz$/.test(relativePath) || relativePath.includes("..")) {
     throw new Error("Invalid managed interpreter release path");
   }
-  const bytes = await download(url, { httpError: (response) => `Interpreter archive download failed with HTTP ${response.status}` });
+  const downloadOptions = { httpError: (response) => `Interpreter archive download failed with HTTP ${response.status}` };
+  let bytes;
+  try {
+    bytes = await download(url, downloadOptions);
+  } catch (error) {
+    const notFound = error instanceof DownloadHttpError && error.status === 404;
+    if (releaseBase !== PREFERRED_RELEASE_BASE || (!notFound && !isTransientNetworkError(error))) throw error;
+    bytes = await download(`${FALLBACK_RELEASE_BASE}${suffix}`, downloadOptions);
+  }
   const destination = join(mirrorRoot, relativePath);
   await mkdir(dirname(destination), { recursive: true });
   const temporary = `${destination}.${randomUUID()}.tmp`;
