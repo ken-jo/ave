@@ -336,3 +336,72 @@ it("a rerun's stage that fails before registration settles its child waits after
     await h.cleanup();
   }
 });
+
+it("a child wait outlives the restored end of the item's earlier run", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  let running: ReturnType<typeof h.start> | undefined;
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const first = h.start(id, h.local(version));
+    (await h.untilLive(1, id))[0].finish();
+    expect(await first).toMatchObject({ status: "completed" });
+    h.editRow(id, row => ({ ...row, runStatus: "executing" }));
+    h.makeEngine();
+    const shown = h.events.length;
+    const wait = h.untilLive(1, id);
+    await h.engine.adoptParkedTemplateRuns();
+    expect(h.events.slice(shown)).toContainEqual(expect.objectContaining({ itemId: id, phase: "done", message: "restored" }));
+    const settled = vi.fn();
+    void wait.then(settled, settled);
+    await setImmediate();
+    expect(settled).not.toHaveBeenCalled();
+
+    running = h.start(id, h.local(version));
+    const [child] = await wait;
+    expect(h.live()).toEqual([child]);
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  } finally {
+    for (const child of h.live()) child.finish();
+    await running;
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("a child wait outlives the confirmed end of the item's earlier stopped run", async () => {
+  const relinked = deferred<void>();
+  let links = 0;
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    workflow: { runScope: { sessionLinked: () => { if (++links === 2) relinked.resolve(); }, sessionEnded: () => {}, runEnded: () => {} } },
+  });
+  let running: ReturnType<typeof h.start> | undefined;
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const first = h.start(id, h.local(version));
+    await h.untilLive(1, id);
+    const runId = (await h.item(id)).runId ?? "";
+    const updateRun = h.board.updateRun.bind(h.board);
+    const failing = vi.spyOn(h.board, "updateRun").mockImplementation(async (itemId, target, mutate) =>
+      target === runId ? { status: "pending-review" } : updateRun(itemId, target, mutate));
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    expect(await first).toMatchObject({ status: "cancelled", reasonCode: "run-end-unconfirmed" });
+    failing.mockRestore();
+
+    const shown = h.events.length;
+    running = h.start(id, h.local(version));
+    const wait = Promise.allSettled([h.untilLive(1, id)]);
+    await relinked.promise;
+    expect(h.events.slice(shown)).toContainEqual(expect.objectContaining({ itemId: id, phase: "cancelled", reasonCode: "run-end-confirmed" }));
+    expect(await wait).toEqual([{ status: "fulfilled", value: h.live() }]);
+    expect(h.live()).toHaveLength(1);
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  } finally {
+    for (const child of h.live()) child.finish();
+    await running;
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
