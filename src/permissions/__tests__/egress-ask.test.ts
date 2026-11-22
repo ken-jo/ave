@@ -20,6 +20,8 @@ import { EgressGrantStore, egressDestinationNetwork } from "../egress-grants.js"
 import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
 import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-identity.js";
+import * as denyMonitor from "../egress-deny-monitor.js";
+import * as terminalObservation from "../../tools/agent-terminal-observation.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
@@ -161,7 +163,8 @@ describe("egress ask callback — refused home folder", () => {
 });
 
 describe("egress ask callback — attribution", () => {
-  it("refuses offline service destinations before identity, grants, routing or endpoint allowlists", async () => {
+  // The identity is judged first only so that the refusal is attributed to a verified worker alone.
+  it("refuses offline service destinations before grants, routing or endpoint allowlists, attributed only to a verified worker", async () => {
     owners.set(WORKER_TOKEN, { kind: "worker", role: "worker", pluginId: undefined, network: "offline" });
     const allowlist = vi.fn(() => ["*"]);
     const identity = vi.fn(() => "kernel-channel" as const);
@@ -174,11 +177,15 @@ describe("egress ask callback — attribution", () => {
     });
     expect(await ask({ host: "model.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "listener", phase: "name" }))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
-    expect(identity).not.toHaveBeenCalled();
+    expect(await ask({ host: "model.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", phase: "name" }))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(allowlist).not.toHaveBeenCalled();
     expect(rule).not.toHaveBeenCalled();
     expect(asked).toEqual([]);
-    expect(audit).toHaveLength(1);
+    expect(audit.map((row) => [row.reason, row.invocation.kind])).toEqual([
+      [EGRESS_DENY_REASONS.offline, "worker"],
+      [EGRESS_DENY_REASONS.unattributed, "unattributed"],
+    ]);
   });
 
   it("distinguishes host-owned listeners from shared labels and terminal scope", async () => {
@@ -222,11 +229,12 @@ describe("egress ask callback — attribution", () => {
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     expect(await ask({ host: "example.com", port: 443 }, undefined))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    // A key that names nobody, or that it refused, is not handed back for the proxy's own record either.
     expect(await ask({ host: "example.com", port: 443 }, listener("f".repeat(32))))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     // A live shell's key presented on the shared front end: it may have been read off that shell, so it vouches for nobody.
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(asked).toEqual([]);
     expect(audit.map((row) => [row.decision, row.basis, row.invocation])).toEqual([
       ["deny", "policy", { kind: "unattributed" }],
@@ -258,7 +266,7 @@ describe("egress ask callback — attribution", () => {
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
       .toBe(true);
     expect(await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
   });
 
   it("denies a malformed destination", async () => {
@@ -690,7 +698,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
 
   it("refuses a terminal identity that only the proxy username vouches for on a kernel-channel host", async () => {
     expect(await callback()({ host: "github.com", port: 443 }, { attributionKey: TERMINAL_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(asked).toEqual([]);
   });
 });
@@ -832,6 +840,76 @@ describe("egress ask callback — shell calls", () => {
     release({ allow: true, scope: "once" });
     expect(await Promise.all([first, second])).toEqual([true, true]);
     expect(asked).toHaveLength(1);
+  });
+
+  it("attributes nothing to a key whose identity it refused: no deny-monitor note, observation, audit owner or proxy record", async () => {
+    const notes = vi.spyOn(denyMonitor, "noteCallbackDecision");
+    const observations = vi.spyOn(terminalObservation, "observeAgentTerminalEgressDecision");
+    const sharedFront = { attributionKey: SHELL_TOKEN, identity: "username" as const, addresses: [], resolution: "pinned" as const };
+    expect(await callback()({ host: "github.com", port: 443 }, sharedFront))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(notes.mock.calls).toEqual([[undefined, "github.com", 443]]);
+    expect(observations.mock.calls.map(([key]) => key)).toEqual([undefined]);
+    expect(audit.map((row) => row.invocation)).toEqual([{ kind: "unattributed" }]);
+    expect(asked).toEqual([]);
+    // The listener's own key is accepted and attributed as before.
+    expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN)))
+      .toEqual({ allow: false, reason: "denied by the user" });
+    expect(notes.mock.calls.at(-1)).toEqual([SHELL_TOKEN, "github.com", 443]);
+    expect(observations.mock.calls.at(-1)?.[0]).toBe(SHELL_TOKEN);
+  });
+
+  it.each(["remembered grant", "allow rule", "held answer", "prompt answer"] as const)("gives a %s allow only to an invocation that is still live", async (path) => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    const github = { host: "github.com", port: 443 };
+    const connection = listener(SHELL_TOKEN, ["140.82.112.3"]);
+    if (path === "remembered grant") {
+      await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
+      expect(await callback()(github, connection)).toBe(true);
+      controller.abort();
+    } else if (path === "allow rule") {
+      networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
+      expect(await callback()(github, connection)).toBe(true);
+      controller.abort();
+    } else if (path === "held answer") {
+      answer = async () => ({ allow: true, scope: "session" });
+      const raw = rawCallback();
+      expect(await raw(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
+      controller.abort();
+      expect(await raw(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" }))
+        .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    } else {
+      // The person answers after the call was cancelled.
+      answer = async () => { controller.abort(); return { allow: true, scope: "session" }; };
+    }
+    expect(await callback()(github, connection)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(audit.at(-1)).toMatchObject({ decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    if (path === "held answer" || path === "prompt answer") {
+      // Nothing it answered became a grant another call in the conversation could use.
+      answer = async () => ({ allow: false, reason: "denied by the user" });
+      expect(await callback()(github, listener(OTHER_SHELL_TOKEN, ["140.82.112.3"]))).toEqual({ allow: false, reason: "denied by the user" });
+    }
+  });
+
+  it("gives nothing to a token whose owner was replaced", async () => {
+    networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
+    const github = { host: "github.com", port: 443 };
+    const lookups = { count: 0 };
+    const replaced = createEgressAskCallback({
+      identityStrength: () => strength,
+      // The token is looked up once to judge it, then names another call.
+      ownerOf: (token) => (token === SHELL_TOKEN && lookups.count++ > 0 ? { ...interactiveShell } : owners.get(token)),
+      abortSignalOf: () => undefined,
+      workerAllowedDomains: () => [],
+      grants,
+      networkRule: (subject) => networkRule(subject),
+      shellAskEnabled: () => true,
+      requester: () => undefined,
+      audit: (entry) => audit.push(entry),
+    });
+    expect(await replaced(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" }))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
   });
 
   it("hands the ask the call's abort signal", async () => {
@@ -1007,7 +1085,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     const byName = (token: string | undefined, host: string, port = 443) =>
       raw({ host, port }, { attributionKey: token, identity: "listener", phase: "name" });
     expect(await byName(undefined, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
-    expect(await byName("f".repeat(32), "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(await byName("f".repeat(32), "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(await byName(WORKER_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.workerOffList });
     expect(await byName(SHELL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(await byName(TERMINAL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });

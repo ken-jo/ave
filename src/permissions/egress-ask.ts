@@ -339,28 +339,32 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     return allow("prompt", scope);
   };
 
+  // An ended invocation keeps no authority: its owner must still hold the token, and the token's signal must not have aborted.
+  const ownerIsLive = (token: string, owner: EgressInvocationOwner): boolean =>
+    deps.ownerOf(token) === owner && deps.abortSignalOf(token)?.aborted !== true;
+
+  // `verified` receives the key and owner once the key's identity is accepted; nothing else is attributed to anyone.
   const decide = async (
     host: string,
     port: number | undefined,
     context: Parameters<SandboxAskCallback>[1],
-  ): Promise<{ owner: EgressInvocationOwner | undefined; decision: Decision }> => {
+    verified: { key?: string; owner?: EgressInvocationOwner },
+  ): Promise<Decision> => {
     const token = context?.attributionKey;
-    if (token === undefined) return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
+    if (token === undefined) return deny("policy", EGRESS_DENY_REASONS.unattributed);
     const owner = deps.ownerOf(token);
-    if (owner === undefined) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
-    if (owner.kind === "worker" && owner.network === "offline") {
-      return { owner, decision: deny("policy", EGRESS_DENY_REASONS.offline) };
-    }
+    if (owner === undefined) return deny("policy", EGRESS_DENY_REASONS.unattributed);
     // Where this kind of process has its own listener only the listener vouches for who connected; a key that came from the proxy username alone may have been read off another process, so it names nobody.
     const strength = deps.identityStrength(owner.kind === "worker" ? "extension" : "shell", owner.kind === "terminal" ? undefined : context);
     if ((strength === "kernel-channel" || (owner.kind === "shell" && owner.requiresListener === true))
       && context?.identity !== "listener") {
-      return { owner: undefined, decision: deny("policy", EGRESS_DENY_REASONS.unattributed) };
+      return deny("policy", EGRESS_DENY_REASONS.unattributed);
     }
+    verified.key = token;
+    verified.owner = owner;
+    if (owner.kind === "worker" && owner.network === "offline") return deny("policy", EGRESS_DENY_REASONS.offline);
     const canonicalHost = canonicalEgressHost(host);
-    if (canonicalHost === undefined || !isValidEgressPort(port)) {
-      return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
-    }
+    if (canonicalHost === undefined || !isValidEgressPort(port)) return deny("policy", EGRESS_DENY_REASONS.malformed);
     const destination: EgressDestination = { host: canonicalHost, port };
     const phase: unknown = context?.phase;
     let network: EgressDestinationNetwork;
@@ -374,26 +378,23 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       const resolution: unknown = raw.resolution;
       if (!Array.isArray(addresses) || !addresses.every((a): a is string => typeof a === "string")
         || (resolution !== "pinned" && resolution !== "upstream")) {
-        return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
+        return deny("policy", EGRESS_DENY_REASONS.malformed);
       }
       // A name the upstream proxy resolves (this host could not, or a plain-HTTP request names it to the upstream) was never checked: it is offered at most This session, and no persistent grant covers it, unless its name alone already says more.
       const judged = egressDestinationNetwork(canonicalHost, addresses);
       network = resolution === "upstream" && judged === "public" ? "unverified" : judged;
     } else {
-      return { owner, decision: deny("policy", EGRESS_DENY_REASONS.malformed) };
+      return deny("policy", EGRESS_DENY_REASONS.malformed);
     }
-    if (network === "reserved") return { owner, decision: deny("policy", EGRESS_DENY_REASONS.reserved) };
+    if (network === "reserved") return deny("policy", EGRESS_DENY_REASONS.reserved);
     const resolvedPhase = phase === "resolved";
     const pass = (decision: Decision): Decision =>
       resolvedPhase || !decision.allow ? decision : provisional(decision.basis, decision.scope);
     switch (owner.kind) {
       case "worker":
-        return {
-          owner,
-          decision: egressAllowlistMatches(deps.workerAllowedDomains(owner.pluginId), destination)
-            ? pass(allow("extension-allowlist", null))
-            : deny("policy", EGRESS_DENY_REASONS.workerOffList),
-        };
+        return egressAllowlistMatches(deps.workerAllowedDomains(owner.pluginId), destination)
+          ? pass(allow("extension-allowlist", null))
+          : deny("policy", EGRESS_DENY_REASONS.workerOffList);
       case "terminal":
       case "shell": {
         // Matched by origin: a shell grant never covers a terminal, nor the reverse.
@@ -408,58 +409,65 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         if (evaluation?.permission.decision === "deny") {
           if (evaluation.permission.reasonCode === "no-approver" && owner.kind === "shell") owner.context.onNoApprover?.();
           const ruleDenied = evaluation.rule?.decision === "deny";
-          return { owner, decision: deny(ruleDenied ? "rule" : "policy", ruleDenied ? `${EGRESS_DENY_REASONS.denyRule} ${evaluation.rule!.pattern}` : evaluation.permission.reason) };
+          return deny(ruleDenied ? "rule" : "policy", ruleDenied ? `${EGRESS_DENY_REASONS.denyRule} ${evaluation.rule!.pattern}` : evaluation.permission.reason);
         }
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.
           const held = takeHeldAnswer(key);
           if (held !== undefined && held.network === network && (owner.kind === "terminal"
             || held.policyEpoch === evaluation?.policyEpoch && held.approvalIdentity === evaluation?.approvalIdentity)) {
-            return { owner, decision: await grantAnswer(token, owner, grantDestination, held.scope, held.scopes, held.oneConnection) };
+            if (!ownerIsLive(token, owner)) return deny("policy", EGRESS_DENY_REASONS.unattributed);
+            return await grantAnswer(token, owner, grantDestination, held.scope, held.scopes, held.oneConnection);
           }
         }
         if (owner.kind === "shell" && evaluation?.permission.decision === "allow") {
           if (granted !== undefined && evaluation.permission.reasonCode === "remembered-approval") {
             if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
-            return { owner, decision: pass(allow("grant", granted)) };
+            return pass(allow("grant", granted));
           }
-          return { owner, decision: pass(allow(evaluation.rule?.decision === "allow" ? "rule" : "policy", null)) };
+          return pass(allow(evaluation.rule?.decision === "allow" ? "rule" : "policy", null));
         }
         for (;;) {
           // Physical terminal grants remain outside agent policy. Shell grants have already passed the common pipeline.
           if (owner.kind === "terminal" && granted !== undefined) {
             if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
-            return { owner, decision: pass(allow("grant", granted)) };
+            return pass(allow("grant", granted));
           }
-          if (owner.kind === "terminal" && !deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
+          if (owner.kind === "terminal" && !deps.shellAskEnabled()) return deny("policy", EGRESS_DENY_REASONS.askOff);
           // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
           const answer = await ask(token, owner, destination, network, strength, evaluation);
-          if (answer === ASK_AGAIN) return decide(host, port, context);
-          if (!answer.allow) return { owner, decision: answer.decision };
-          if (resolvedPhase) return { owner, decision: await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes, answer.oneConnection) };
+          if (answer === ASK_AGAIN) return decide(host, port, context, verified);
+          if (!answer.allow) return answer.decision;
+          // An answer that arrives after the invocation ended grants nothing.
+          if (!ownerIsLive(token, owner)) return deny("policy", EGRESS_DENY_REASONS.unattributed);
+          if (resolvedPhase) return await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes, answer.oneConnection);
           holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime(),
             ...(answer.oneConnection ? { oneConnection: true as const } : {}),
             ...(answer.policyEpoch ? { policyEpoch: answer.policyEpoch, approvalIdentity: answer.approvalIdentity } : {}) });
-          return { owner, decision: provisional("prompt", answer.scope) };
+          return provisional("prompt", answer.scope);
         }
       }
     }
   };
 
   return async ({ host, port }, context) => {
-    let owner: EgressInvocationOwner | undefined;
+    const verified: { key?: string; owner?: EgressInvocationOwner } = {};
     let decision: Decision;
     try {
-      ({ owner, decision } = await decide(host, port, context));
+      decision = await decide(host, port, context, verified);
     } catch (error) {
-      owner = context?.attributionKey === undefined ? undefined : deps.ownerOf(context.attributionKey);
       decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
+    }
+    const { key, owner } = verified;
+    // Every allow, provisional, remembered and policy ones included, is given only to an invocation that is still live.
+    if (decision.allow && (key === undefined || owner === undefined || !ownerIsLive(key, owner))) {
+      decision = deny("policy", EGRESS_DENY_REASONS.unattributed);
     }
     // A name-phase allow is not a decision yet: the resolved phase gives it.
     if (decision.provisional === true) return true;
     // The proxy logs this refusal; the deny monitor must not write a second decision row for it.
-    if (!decision.allow) noteCallbackDecision(context?.attributionKey, host, port);
-    observeAgentTerminalEgressDecision(context?.attributionKey, {
+    if (!decision.allow) noteCallbackDecision(key, host, port);
+    observeAgentTerminalEgressDecision(key, {
       host: String(host), port: isValidEgressPort(port) ? port : null, decision: decision.allow ? "allow" : "deny",
       basis: decision.basis, scope: decision.scope, reason: decision.reason,
     });
@@ -477,6 +485,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     } catch {
       // The audit sink reports its own failures; a row that could not be written must not turn an answer into a different one.
     }
-    return decision.allow ? true : { allow: false, reason: decision.reason ?? EGRESS_DENY_REASONS.failed };
+    if (decision.allow) return true;
+    const reason = decision.reason ?? EGRESS_DENY_REASONS.failed;
+    // A key that was not accepted must not attribute the proxy's record of this refusal either.
+    return key === undefined && context?.attributionKey !== undefined ? { allow: false, reason, unattributed: true } : { allow: false, reason };
   };
 }
