@@ -59,7 +59,9 @@ import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissio
 import { permissionsFilePath } from "../../permissions/permissions-store.js";
 import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
 import { egressGrantFilePath } from "../../permissions/egress-grants.js";
+import * as egressHostListener from "../../permissions/egress-host-listener.js";
 import { egressInvocationOwner, onEgressInvocationReleased } from "../../permissions/egress-invocations.js";
+import * as mxcWindows from "../../permissions/mxc-windows.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -77,6 +79,8 @@ import {
 } from "../../boot/steps/windows-sandbox-plan.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import type { PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
 import { POWERSHELL_EGRESS_PROXY_PRELUDE } from "../powershell-launch.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -233,6 +237,7 @@ describe("builtin shell — Windows MXC containers", () => {
     mxcLaunchMock.prepare.mockReset();
     mxcLaunchMock.release.mockClear();
     installationMock.resolve.mockReset();
+    vi.restoreAllMocks();
   });
 
   it("observes only the approved command container and excludes its internal parser", async () => {
@@ -522,6 +527,88 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
     expect(egressInvocationOwner(container.token())).toBeUndefined();
     expect(existsSync(container.home())).toBe(false);
+  });
+
+  async function configureCommandLauncher(
+    openTransport: typeof mxcWindows.openMxcRequestTransport,
+    observerError: Error,
+  ) {
+    const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
+    const prepareParser = mxcLaunchMock.prepare.getMockImplementation();
+    if (prepareParser === undefined) throw new Error("Missing parser launch fixture");
+    const closeRelay = vi.fn(async () => {});
+    vi.spyOn(egressHostListener, "openHostEgressListener").mockResolvedValue({
+      port: 9,
+      proxyAuthorization: "Basic eA==",
+      registerPort: vi.fn(),
+      recordRefusal: vi.fn(),
+      close: closeRelay,
+    });
+    vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
+    vi.spyOn(mxcWindows, "openMxcRequestTransport").mockImplementation(openTransport);
+    mxcLaunchMock.prepare.mockImplementation((input: PrepareMxcShellLaunchInput) => {
+      if (isParserLaunch(input)) return prepareParser(input);
+      releaseListenerCleanups.push(onEgressInvocationReleased((token) => {
+        if (token === input.egressToken) throw observerError;
+      }));
+      return prepareMxcShellLaunch({ ...input, exists: (path) => path === WXC_EXEC || input.exists(path) });
+    });
+    return closeRelay;
+  }
+
+  it.each(["consent revocation", "cancellation"] as const)("reports the transport open failure first after %s during preparation", async (trigger) => {
+    bootMxcShells();
+    const abort = new AbortController();
+    const opening = deferred<void>();
+    const transportFailure = deferred<Error>();
+    const closeRelay = await configureCommandLauncher(async () => {
+      opening.resolve();
+      throw await transportFailure.promise;
+    }, new Error("invocation release observer failed"));
+    const execution = executePowerShell({ ...context("ps-mxc-open-error"), abortSignal: abort.signal });
+    await Promise.race([opening.promise, execution.then(() => { throw new Error("shell settled before opening the transport"); })]);
+    if (trigger === "consent revocation") setWindowsShellLocalNetworkAccess(false);
+    else abort.abort();
+    transportFailure.resolve(new Error("policy transport open failed"));
+    const result = await execution;
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result.output).toMatch(/^PowerShell spawn failed: policy transport open failed.*invocation release observer failed/u);
+    expect(closeRelay).toHaveBeenCalledOnce();
+  });
+
+  it.each(["result", "async log"] as const)("reports both container release failures with redaction in the %s", async (sink) => {
+    bootMxcShells();
+    const observerMessage = "invocation release observer failed";
+    const transportMessage = "policy helper termination was not confirmed";
+    const release = vi.fn(async () => {
+      throw new Error(`${transportMessage} at /home/bob/policy with api_key=transport-secret-example`);
+    });
+    const closeRelay = await configureCommandLauncher(async () => ({ args: ["--config-base64", "eyJ9"], bindChild: vi.fn(), release }),
+      new Error(String.raw`${observerMessage} at C:\Users\alice\observer with password=observer-secret-example`));
+    let rendered: string;
+    if (sink === "result") {
+      const result = await executePowerShell(context("ps-mxc-both-release-failures"));
+      expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true, sandboxed: true } });
+      rendered = result.output;
+    } else {
+      const logged = deferred<unknown>();
+      vi.spyOn(console, "error").mockImplementation((message: unknown, details: unknown) => {
+        if (message === "[shell-tasks] shell resource release failed after the result settled") logged.resolve(details);
+      });
+      const setupError = new Error("could not start shell observation");
+      setAgentTerminalObservationSink({ start: () => { throw setupError; }, egress: vi.fn(), releaseSessions: vi.fn() });
+      const identity = { sessionId: "observed-shell", turnId: "observed-turn", toolUseId: "ps-mxc-both-release-failures" };
+      await expect(runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+        () => executePowerShell(context(identity.toolUseId))))).rejects.toBe(setupError);
+      const entry = await logged.promise;
+      expect(entry).toMatchObject({ label: "tool:powershell:mxc", failures: expect.any(Array) });
+      rendered = JSON.stringify(entry);
+    }
+    expect(rendered).toContain(`${observerMessage} at [home]`);
+    expect(rendered).toContain(`${transportMessage} at [home]`);
+    expect(rendered).not.toMatch(/alice|bob|observer-secret-example|transport-secret-example/u);
+    expect(release).toHaveBeenCalledOnce();
+    expect(closeRelay).toHaveBeenCalledOnce();
   });
 
   it("settles with the error and still releases the launch, HOME and egress when output finalization throws", async () => {

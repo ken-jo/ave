@@ -11,6 +11,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createLogger } from "../lib/logger.js";
 import { beginAgentTerminalObservation, type AgentTerminalObservationInput, type AgentTerminalObservationLease } from "./agent-terminal-observation.js";
 import { errorMessage } from "../shared/error-message.js";
+import { redactHomePathsInText } from "../audit/dlp-filter.js";
+import { scrubDiagnosticSecrets } from "../shared/dlp.js";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { endConversationTerminalSession } from "../main/terminal/pty-manager.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -2340,6 +2342,14 @@ async function annotateSandboxCommandResult(
   };
 }
 
+function shellFailureMessages(error: unknown, seen = new Set<AggregateError>()): string[] {
+  if (error instanceof AggregateError && error.errors.length > 0 && !seen.has(error)) {
+    seen.add(error);
+    return error.errors.flatMap((member: unknown) => shellFailureMessages(member, seen));
+  }
+  return [redactHomePathsInText(scrubDiagnosticSecrets(errorMessage(error)))];
+}
+
 // Every step runs in order even after an earlier one throws or rejects.
 // Only a returned promise is awaited, so leading sync steps stay synchronous.
 async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>): Promise<string[]> {
@@ -2348,7 +2358,7 @@ async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>)
     try {
       const pending = step();
       if (pending instanceof Promise) await pending;
-    } catch (err) { failures.push(errorMessage(err)); }
+    } catch (err) { failures.push(...shellFailureMessages(err)); }
   }
   return failures;
 }
@@ -4047,7 +4057,7 @@ async function spawnPowerShellInMxc(
     });
   } catch (err) {
     return withReleaseFailures({
-      output: `PowerShell spawn failed: ${(err as Error).message}`,
+      output: `PowerShell spawn failed: ${shellFailureMessages(err).join("; ")}`,
       isError: true,
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
     }, await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]));

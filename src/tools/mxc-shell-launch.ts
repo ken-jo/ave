@@ -190,7 +190,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
       release,
     };
   } catch (error) {
-    await release();
+    try {
+      await release();
+    } catch (releaseError) {
+      throw new AggregateError([error, releaseError], "Container shell preparation and release failed");
+    }
     throw error;
   }
 }
