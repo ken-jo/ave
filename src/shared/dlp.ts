@@ -553,8 +553,8 @@ function queryValueEnd(text: string, start: number, ampersand: string): number {
   return end;
 }
 
-/** A whole value that is a hexadecimal digest, or base64 text mixing upper case, lower case and digits. */
-function signatureValueEnd(text: string, start: number, ampersand: string): number {
+/** A run that is a hexadecimal digest, or base64 text mixing upper case, lower case and digits, whatever punctuation follows it. */
+function signatureValueEnd(text: string, start: number): number {
   let end = start;
   let length = 0;
   let classes = 0;
@@ -570,7 +570,7 @@ function signatureValueEnd(text: string, start: number, ampersand: string): numb
     end += encoded?.length ?? 1;
   }
   const signature = hex ? length >= 32 : length >= 16 && classes === 7;
-  return signature && queryValueEnd(text, end, ampersand) === end ? end : start;
+  return signature ? end : start;
 }
 
 /** Mask credential query values, and signed-URL signatures and session tokens. */
@@ -585,7 +585,7 @@ function maskQueryCredentials(text: string): string {
     // An encoded `=` belongs to a nested URL, whose own parameters end at its `&`.
     const ampersand = equals === "=" ? "" : `${equals.slice(0, -2)}26`;
     const end = QUERY_CREDENTIAL_KEY.test(key) ? queryValueEnd(text, start, ampersand)
-      : QUERY_SIGNATURE_KEY.test(key) ? signatureValueEnd(text, start, ampersand) : start;
+      : QUERY_SIGNATURE_KEY.test(key) ? signatureValueEnd(text, start) : start;
     if (end === start) {
       QUERY_PARAMETER.lastIndex = start;
       continue;

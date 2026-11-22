@@ -433,6 +433,16 @@ describe("query credentials — signed URLs, encoded keys and serialization deli
     ]) expect(scrub(text)).toBe(text);
   });
 
+  it.each(bothScrubbers)("%s masks a bare signature before the punctuation that follows it", (_name, scrub) => {
+    for (const [text, masked] of [
+      [`[clip](https://media.example/c?Expires=1&Signature=${hexSignature})`, "[clip](https://media.example/c?Expires=1&Signature=[REDACTED:TOKEN])"],
+      [`see https://blobs.example/a?sv=1&sig=${base64Signature}. Next`, "see https://blobs.example/a?sv=1&sig=[REDACTED:TOKEN]. Next"],
+      [`https://blobs.example/a?sig=${hexSignature}, next`, "https://blobs.example/a?sig=[REDACTED:TOKEN], next"],
+      [`https://media.example/c?Signature=${hexSignature}#t=10`, "https://media.example/c?Signature=[REDACTED:TOKEN]#t=10"],
+      [`https://media.example/c?Signature=${hexSignature};x`, "https://media.example/c?Signature=[REDACTED:TOKEN];x"],
+    ]) expect(scrub(text)).toBe(masked);
+  });
+
   it("ends a query value at the quotes, escaped quotes and whitespace of its serialization", () => {
     const line = JSON.stringify({ msg: `GET https://objects.example/r?X-Example-Signature=${hexSignature}`, url: "https://x.example/mcp?api_key=SECRETVALUE123", next: 1 });
     expect(JSON.parse(scrubSecretsForLLM(line))).toEqual({
