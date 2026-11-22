@@ -287,7 +287,14 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(observed).toEqual([]);
   });
 
-  it.each(["consent", "cancel", "release"] as const)("keeps both endpoints closed to traffic when %s ends admission during a bind", async (revocation) => {
+  it.each([
+    ["consent", "relay"],
+    ["cancel", "relay"],
+    ["release", "relay"],
+    ["consent", "frontend"],
+    ["cancel", "frontend"],
+    ["release", "frontend"],
+  ] as const)("closes bound endpoints before preparation resumes when %s ends admission at the %s", async (revocation, boundary) => {
     const controller = new AbortController();
     const pendingInvocation = openEgressInvocation(invocation.owner, { abortSignal: controller.signal });
     cleanups.push(pendingInvocation.release);
@@ -299,30 +306,28 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     vi.spyOn(hostListener, "openHostEgressListener").mockImplementationOnce(async (...args) => {
       const relay = await openRelay(...args);
       backendBound.resolve(relay);
+      if (boundary === "relay") await completeBind.promise;
       return relay;
     });
-    vi.spyOn(frontendListener, "openInvocationProxyListener").mockImplementationOnce(async (...args) => {
-      const listener = await openFrontend(...args);
-      frontendBound.resolve(listener.port);
-      await completeBind.promise;
-      return listener;
-    });
+    if (boundary === "frontend") {
+      vi.spyOn(frontendListener, "openInvocationProxyListener").mockImplementationOnce(async (...args) => {
+        const listener = await openFrontend(...args);
+        frontendBound.resolve(listener.port);
+        await completeBind.promise;
+        return listener;
+      });
+    }
 
     const launch = launchShell(pendingInvocation.token, false);
     const result = Promise.allSettled([launch]);
-    let responses: PromiseSettledResult<number | undefined>[];
-    let ownerRemoved: boolean;
-    let endpoints: [number, Awaited<ReturnType<typeof openRelay>>];
     try {
-      endpoints = await Promise.race([
-        Promise.all([frontendBound.promise, backendBound.promise]),
+      const [backend, frontend] = await Promise.race([
+        Promise.all([backendBound.promise, boundary === "frontend" ? frontendBound.promise : undefined]),
         launch.then(() => { throw new Error("Launch returned before the bind completed"); }),
       ]);
-      const [frontend, backend] = endpoints;
-      responses = await Promise.allSettled([
-        request(frontend, "Basic ignored"),
-        request(backend.port, backend.proxyAuthorization),
-      ]);
+      const endpoints: Array<readonly [number, string]> = [[backend.port, backend.proxyAuthorization]];
+      if (frontend !== undefined) endpoints.push([frontend, "Basic ignored"]);
+      const responses = await Promise.allSettled(endpoints.map(([port, authorization]) => request(port, authorization)));
       if (revocation === "consent") {
         setWindowsShellLocalNetworkAccess(false);
         setWindowsShellLocalNetworkAccess(true);
@@ -331,17 +336,16 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       } else {
         pendingInvocation.release();
       }
-      ownerRemoved = egressInvocationOwner(pendingInvocation.token) === undefined;
+      for (const [port, authorization] of endpoints) {
+        await expect(request(port, authorization)).rejects.toMatchObject({ code: "ECONNREFUSED" });
+      }
+      expect(egressInvocationOwner(pendingInvocation.token)).toBeUndefined();
+      expect(responses.map(({ status }) => status)).toEqual(endpoints.map(() => "rejected"));
+      expect(observed).toEqual([]);
     } finally {
       completeBind.resolve();
       await result;
     }
-    expect(responses.map(({ status }) => status)).toEqual(["rejected", "rejected"]);
-    expect(observed).toEqual([]);
     expect((await result)[0]?.status).toBe("rejected");
-    expect(ownerRemoved).toBe(true);
-    const [frontend, backend] = endpoints;
-    await expect(request(frontend, "Basic ignored")).rejects.toMatchObject({ code: "ECONNREFUSED" });
-    await expect(request(backend.port, backend.proxyAuthorization)).rejects.toMatchObject({ code: "ECONNREFUSED" });
   });
 });
