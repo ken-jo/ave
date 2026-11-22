@@ -30,13 +30,18 @@ function ownerOf(node: ts.Node): string {
   return names.join(">");
 }
 
+/** Each file's syntax, parsed once: a parse starts a compiler session, and most queries ask about the same few files. */
+const syntaxOf = new Map<string, unknown>();
+
 /** Every node that `pick` matches in the non-test files `where` takes, as "file#owner". */
 function find(where: (file: string, text: string) => boolean, pick: (node: ts.Node) => boolean): string[] {
-  const files = new Map([...sources].filter(([file, text]) => where(file, text)));
-  const parsed = parseSourceTexts(files);
-  expect([...parsed.keys()].sort()).toEqual([...files.keys()].sort());
+  const files = [...sources].filter(([file, text]) => where(file, text)).map(([file]) => file);
+  const unparsed = new Map(files.filter(file => !syntaxOf.has(file)).map(file => [file, sources.get(file) as string]));
+  for (const [file, syntax] of parseSourceTexts(unparsed)) syntaxOf.set(file, syntax);
+  expect(files.filter(file => !syntaxOf.has(file))).toEqual([]);
   const found: string[] = [];
-  for (const [file, syntax] of parsed) {
+  for (const file of files) {
+    const syntax = syntaxOf.get(file);
     const visit = (node: ts.Node): void => {
       if (pick(node)) found.push(`${file}#${ownerOf(node)}`);
       node.forEachChild(visit);
@@ -46,8 +51,8 @@ function find(where: (file: string, text: string) => boolean, pick: (node: ts.No
   return found.sort();
 }
 
-/** Every call of `name`, as `name(...)` or `x.name(...)`. */
-const callsOf = (name: string): string[] => find((_, text) => text.includes(name), (node) => {
+/** Every call of `name`, as `name(...)` or `x.name(...)`, in every file or in `only`. */
+const callsOf = (name: string, only?: string): string[] => find((file, text) => (only === undefined || file === only) && text.includes(name), (node) => {
   if (!ts.isCallExpression(node)) return false;
   const callee = node.expression;
   return (ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined) === name;
@@ -85,17 +90,17 @@ it("writes how a run ended only in the run store's one settle write, which the s
   expect(find(runModules, node => (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken || ts.isDeleteExpression(node))
     && isSettledAccess(ts.isBinaryExpression(node) ? node.left : node.expression))).toEqual([]);
   expect(callsOf("settleRun")).toEqual([`${STORE}#WorkBoardStore>settleRemovedRun`, `${STORE}#WorkBoardStore>settleUnstarted`, `${STORE}#WorkBoardStore>updateRun`]);
-  expect(inFile(RUN_STATE, callsOf("settleRemovedRun"))).toEqual(["boardRunState>update"]);
-  for (const name of ["put", "update"]) expect(inFile(STORE, callsOf(name))).not.toContain("WorkBoardStore>updateRun");
+  expect(inFile(RUN_STATE, callsOf("settleRemovedRun", RUN_STATE))).toEqual(["boardRunState>update"]);
+  for (const name of ["put", "update"]) expect(inFile(STORE, callsOf(name, STORE))).not.toContain("WorkBoardStore>updateRun");
 });
 
 it("ends a run with its row removed only from its class or a due intent", () => {
-  expect(inFile(ENGINE, callsOf("classes")).sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>confirmSettles", "createStageRunEngine>drain", "createStageRunEngine>writeRun"]);
-  expect(inFile(ENGINE, callsOf("deleted"))).toEqual(["createStageRunEngine>takeOverIntents"]);
-  expect(inFile(ENGINE, callsOf("adoption"))).toEqual(["createStageRunEngine>adoptRuns"]);
-  expect(inFile(ENGINE, callsOf("rowRemoved"))).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);
-  expect(inFile(ENGINE, callsOf("byClass"))).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>writeRun"]);
-  expect(inFile(ENGINE, callsOf("removedHeld"))).toEqual(["createStageRunEngine>takeOverDeleted", "createStageRunEngine>takeOverIntents"]);
+  expect(inFile(ENGINE, callsOf("classes", ENGINE)).sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>confirmSettles", "createStageRunEngine>drain", "createStageRunEngine>writeRun"]);
+  expect(inFile(ENGINE, callsOf("deleted", ENGINE))).toEqual(["createStageRunEngine>takeOverIntents"]);
+  expect(inFile(ENGINE, callsOf("adoption", ENGINE))).toEqual(["createStageRunEngine>adoptRuns"]);
+  expect(inFile(ENGINE, callsOf("rowRemoved", ENGINE))).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);
+  expect(inFile(ENGINE, callsOf("byClass", ENGINE))).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>writeRun"]);
+  expect(inFile(ENGINE, callsOf("removedHeld", ENGINE))).toEqual(["createStageRunEngine>takeOverDeleted", "createStageRunEngine>takeOverIntents"]);
 });
 
 it("never adopts an unsettled named candidate without classifying it", async () => {
