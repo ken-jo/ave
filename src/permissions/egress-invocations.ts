@@ -79,7 +79,7 @@ export interface EgressInvocationRelease {
 
 interface LiveInvocation {
   readonly owner: EgressInvocationOwner;
-  readonly abortSignal: AbortSignal | undefined;
+  readonly abortSignal: AbortSignal;
   readonly release: () => void;
 }
 
@@ -94,12 +94,25 @@ export function openEgressInvocation(owner: EgressInvocationOwner, options: Egre
   // 128 random bits do not collide in practice; a collision would silently merge two owners, so it is re-drawn rather than assumed away.
   while (live.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   let processGroup: number | undefined;
+  const ended = new AbortController();
+  const abortSignal = options.abortSignal === undefined ? ended.signal : AbortSignal.any([options.abortSignal, ended.signal]);
+  // Every observer runs; their failures are thrown together afterwards.
   const release = (): void => {
     if (live.get(token)?.release !== release) return;
     live.delete(token);
-    for (const listener of releaseListeners) listener(token, { owner, processGroup });
+    ended.abort(new Error("Egress invocation was released"));
+    const failures: unknown[] = [];
+    for (const listener of [...releaseListeners]) {
+      try {
+        listener(token, { owner, processGroup });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "egress invocation release observers failed");
   };
-  live.set(token, { owner, abortSignal: options.abortSignal, release });
+  live.set(token, { owner, abortSignal, release });
   return {
     token,
     owner,
@@ -120,7 +133,7 @@ export function egressInvocationOwner(token: string): EgressInvocationOwner | un
   return live.get(token)?.owner;
 }
 
-// The abort signal a live invocation was opened with, if any.
+// A live invocation's signal: aborted with the signal it was opened with, or when its token is released.
 export function egressInvocationAbortSignal(token: string): AbortSignal | undefined {
   return live.get(token)?.abortSignal;
 }
