@@ -337,8 +337,8 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
   it("passes the decoded attribution key to the ask callback, by name first and resolved only after a name allow", () => {
     const manager = readInstalled("dist/sandbox/sandbox-manager.js");
     const byName = functionBody(manager, /\nasync function decideByName\(/u);
-    // The same `encodedCommand` the deny path hands recordOutboundDeny.
-    expect(byName).toMatch(/recordOutboundDeny\(host, port, reason, encodedCommand\)/u);
+    // The same `encodedCommand` the deny path hands recordOutboundDeny, unless the callback refused that key itself.
+    expect(byName).toMatch(/recordOutboundDeny\(host, port, reason, unattributed \? undefined : encodedCommand\)/u);
     // Decoded once; the per-command lists (0.0.80) are looked up by the same key.
     expect(byName).toMatch(
       /const attributionKey = encodedCommand\s+\? decodeSandboxedCommand\(encodedCommand\)\s+: undefined;/u,
@@ -358,6 +358,8 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(ask).toMatch(/if \(answer === true\)/u);
     // When it throws, the request is refused.
     expect(ask).toMatch(/catch \(error\) \{\n[\s\S]{0,200}?return denied\('permission prompt failed'\);\n\s+\}\n\}/u);
+    // A refusal that did not accept the key is recorded without it.
+    expect(ask).toMatch(/return denied\(denialReasonOf\(answer\) \?\? 'user denied', typeof answer === 'object' && answer !== null && answer\.unattributed === true\);/u);
     const decide = functionBody(manager, /\nasync function decideDestination\(/u);
     // Order: name phase, then the plan (routes and DNS), then the resolved phase.
     const order = ["decideByName(", "planDestination(", "confirmResolvedDestination("].map((call) => decide.indexOf(call));
@@ -372,7 +374,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       /export type SandboxAskResolvedContext = SandboxAskIdentity & \{\s+phase: 'resolved';\s+\/\*\*[\s\S]*?\*\/\s+addresses: readonly string\[\];\s+\/\*\*[\s\S]*?\*\/\s+resolution: 'pinned' \| 'upstream';\s+\};/u,
     );
     expect(schemas).toMatch(
-      /export type SandboxAskCallback = \(params: NetworkHostPattern, context\?: SandboxAskContext\) => Promise<boolean \| \{\s+allow: false;\s+reason: string;\s+\}>;/u,
+      /export type SandboxAskCallback = \(params: NetworkHostPattern, context\?: SandboxAskContext\) => Promise<boolean \| \{\s+allow: false;\s+reason: string;\s+unattributed\?: true;\s+\}>;/u,
     );
     expect(readInstalled("dist/index.d.ts")).toMatch(/export type \{ SandboxAskCallback, SandboxAskContext, SandboxAskNameContext, SandboxAskResolvedContext,/u);
   });

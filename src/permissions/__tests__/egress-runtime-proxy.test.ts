@@ -182,11 +182,18 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     const stronger = (await listEgressGrants()).filter((grant) => grant.scope === "always");
     expect(stronger).toEqual([expect.objectContaining({ scope: "always", origin: "shell", ...DESTINATION, network: "public" })]);
 
-    scope = "once";
+    // A key its relay owns is learned from that relay alone: named by a proxy username it attributes nothing.
     runtime.observed.length = 0;
-    await expectResponse(connect(runtime.sharedPort, proxyAuthorization(invocation.token, runtime.credential)), 200);
+    await expectResponse(connect(runtime.sharedPort, proxyAuthorization(invocation.token, runtime.credential)), 403);
+    expect(runtime.observed.every(({ context }) => context?.attributionKey === undefined)).toBe(true);
+    expect(runtime.requestAndWait).toHaveBeenCalledOnce();
+
+    scope = "once";
+    const shared = openShell();
+    runtime.observed.length = 0;
+    await expectResponse(connect(runtime.sharedPort, proxyAuthorization(shared.token, runtime.credential)), 200);
     expect(runtime.observed.every(({ context }) => context?.identity === "username"
-      && context.attributionKey === invocation.token)).toBe(true);
+      && context.attributionKey === shared.token)).toBe(true);
     expect(runtime.requestAndWait).toHaveBeenCalledTimes(2);
     expect(runtime.requestAndWait.mock.calls[1]?.[0]).toMatchObject({
       forceExplicit: true, durableApprovalRecordAllowed: false,
