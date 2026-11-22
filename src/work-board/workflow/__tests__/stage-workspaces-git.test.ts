@@ -389,4 +389,34 @@ describe("git stage workspaces", () => {
       }
     }
   });
+
+  it("a refused open leaves a branch it did not make and takes back the one it made", async () => {
+    // A branch of the run's name that was there before, once with a commit of its own and once at the commit the run would start from.
+    for (const ahead of [true, false]) {
+      const taken = start();
+      const branch = runBranch(taken.run.runId);
+      userGit(repo, "branch", branch);
+      if (ahead) {
+        userGit(repo, "checkout", "-q", branch);
+        write(repo, "mine.txt", "mine\n");
+        commitAll("mine");
+        userGit(repo, "checkout", "-q", "main");
+      }
+      const head = userGit(repo, "rev-parse", branch);
+      expect(await taken.provider.open(taken.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+      expect(userGit(repo, "rev-parse", branch)).toBe(head);
+      userGit(repo, "branch", "-D", branch);
+    }
+
+    // The worktree is made, branch and all, and the call then counts as failed.
+    const real = createHostGit({ env });
+    const run: HostGit["run"] = async (cwd, args, call) => {
+      const result = await real.run(cwd, args, call);
+      return args[0] === "worktree" && args[1] === "add" ? { ...result, code: 128 } : result;
+    };
+    const failed = start();
+    expect(await createStageWorkspaceProvider({ git: { run, drivers: real.drivers } }).open(failed.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+    expect(userGit(repo, "branch", "--list", runBranch(failed.run.runId))).toBe("");
+    expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
+  });
 });

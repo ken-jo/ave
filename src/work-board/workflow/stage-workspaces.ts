@@ -297,6 +297,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (identity === null) return { ok: false, code: "home-boundary-unverified" };
     const at = { runRoot, identity };
     let gitKind = false;
+    /** The commit the run's branch was asked to start from, once this call is the one that makes it. */
+    let branchFrom: string | undefined;
 
     const file: RunFileV1 = { v: 1, runId: run.runId, itemId: run.itemId, kind: "folder", ...(canonical !== undefined ? { projectRoot: canonical } : {}), stages: {}, joins: {}, out: {} };
     try {
@@ -307,7 +309,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         // A filter the repository requires for checkout is never run, so such a repository gets no git workspace.
         if (drivers.requiredFilters.length > 0 && await usesFilter(canonical, drivers.requiredFilters)) throw new HostGitError("unavailable", "a required filter driver");
         const branch = runBranch(run.runId);
+        // A branch of that name that is already there is not this run's: it is neither used nor, below, removed.
+        if ((await git.run(canonical, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).code !== 1) throw new HostGitError("unavailable", "the run's branch is taken");
         assertHeld(at);
+        branchFrom = project.baseCommit;
         await gitOut(canonical, ["worktree", "add", "-b", branch, join(runRoot, JOIN_DIR), project.baseCommit], { drivers: drivers.config });
         Object.assign(file, { kind: "git", branch, baseCommit: project.baseCommit });
         writeRunFile(at, file);
@@ -326,7 +331,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (canonical !== undefined && gitKind) {
         discardRoot();
         await forgetWorktrees(canonical, runRoot);
-        await git.run(canonical, ["branch", "-D", runBranch(run.runId)]).catch(() => undefined);
+        // Only the branch this call made, and only while it is still where it was made.
+        if (branchFrom !== undefined) await git.run(canonical, ["update-ref", "-d", `refs/heads/${runBranch(run.runId)}`, branchFrom]).catch(() => undefined);
       } else discardRoot();
       return { ok: false, code: canonical !== undefined ? "git-unavailable" : "workspace-unavailable" };
     }
