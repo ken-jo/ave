@@ -182,6 +182,8 @@ export async function stageRunHarness(opts: {
       ...opts.wiring?.(store, { workspace }),
       ...(runWork ? { _observeDetachedWorkForTest: runWork.observe } : {}),
     } satisfies WorkflowDeps;
+    // A replaced engine's later events never show that this engine's child registered.
+    const own: WorkBoardRunEvent[] = [];
     const current = createWorkBoardEngine({
       store,
       getRunner: () => runner,
@@ -189,7 +191,7 @@ export async function stageRunHarness(opts: {
         const { itemId, phase, stageId, attempt } = event;
         if (engine === wrapped) {
           if (phase === "stage_failed") {
-            const prior = events.findLast(candidate => candidate.itemId === itemId && candidate.phase === "executing"
+            const prior = own.findLast(candidate => candidate.itemId === itemId && candidate.phase === "executing"
               && (candidate.stageId === undefined ? candidate.message === undefined : candidate.stageId === stageId && candidate.attempt === attempt));
             if (!prior?.runSessionId) failChildWaits(`${phase}: ${event.message ?? "child did not register"}`, workBoardOriginSessionId(itemId), true);
           } else if (event.message !== "restored" && event.reasonCode !== "run-end-confirmed"
@@ -198,6 +200,7 @@ export async function stageRunHarness(opts: {
           }
         }
         events.push(event);
+        own.push(event);
         for (const changed of progressChanges) changed();
       },
       workflow,

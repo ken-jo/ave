@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { setImmediate } from "node:timers/promises";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
@@ -258,6 +259,79 @@ it("a child wait created after a failed relaunch settles at once", async () => {
     expect(h.children).toHaveLength(1);
   } finally {
     for (const child of h.live()) child.finish();
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("a rerun's stage that fails before registration settles its child waits after the replaced engine links the same attempt", async () => {
+  const held = deferred<void>();
+  const release = deferred<void>();
+  const rerunPreparing = deferred<void>();
+  const rerunRelease = deferred<void>();
+  let engines = 0;
+  let prepared = false;
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (store, { workspace }) => {
+      const engine = engines++;
+      const runs = boardRunState(store);
+      return {
+        runs: {
+          ...runs,
+          update: async (...args: Parameters<typeof runs.update>) => {
+            const result = await runs.update(...args);
+            if (engine === 0 && prepared) {
+              held.resolve();
+              await release.promise;
+            }
+            return result;
+          },
+        },
+        workspace: {
+          ...workspace,
+          prepare: async (...args) => {
+            if (engine === 0) prepared = true;
+            else {
+              rerunPreparing.resolve();
+              await rerunRelease.promise;
+              throw new Error("rerun preparation failed");
+            }
+            return workspace.prepare(...args);
+          },
+        },
+      };
+    },
+  });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    runs.push(h.start(id, h.local(version)));
+    await held.promise;
+    h.makeEngine();
+    await h.engine.adoptParkedTemplateRuns();
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    await h.drainRunWork();
+
+    const rerun = h.events.length;
+    runs.push(h.start(id, h.local(version)));
+    const waits = Promise.allSettled([h.untilSpawned(2, id), h.untilLive(2, id)]);
+    await rerunPreparing.promise;
+    release.resolve();
+    await h.waitForProgress(event => h.events.indexOf(event) >= rerun && event.stageId === "a" && event.attempt === 1 && event.runSessionId !== undefined);
+    rerunRelease.resolve();
+    await h.waitForProgress(event => h.events.indexOf(event) >= rerun && event.phase === "stage_failed" && event.stageId === "a" && event.attempt === 1);
+    await h.drainRunWork();
+    const result = await Promise.race([waits, setImmediate("still pending")]);
+    expect(result).toEqual(Array.from({ length: 2 }, () => ({
+      status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }),
+    })));
+  } finally {
+    release.resolve();
+    rerunRelease.resolve();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
     await h.drainRunWork();
     await h.cleanup();
   }
