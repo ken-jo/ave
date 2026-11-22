@@ -54,6 +54,20 @@ function isFullyQualified(path: string, platform: NodeJS.Platform): boolean {
   return platform === "win32" ? /^[A-Za-z]:[\\/]/u.test(path) : posix.isAbsolute(path);
 }
 
+function windowsPathEntries(searchPath: string): string[] {
+  const entries: string[] = [];
+  for (let start = 0; start < searchPath.length;) {
+    const quote = searchPath[start];
+    const quoted = quote === '"' || quote === "'";
+    const closingQuote = quoted ? searchPath.indexOf(quote, start + 1) : start;
+    const separator = closingQuote === -1 ? -1 : searchPath.indexOf(";", closingQuote);
+    const end = separator === -1 ? searchPath.length : separator;
+    entries.push(searchPath.slice(start, end).trim().replace(/^["']|["']$/gu, ""));
+    start = end + 1;
+  }
+  return entries;
+}
+
 export function systemGitCandidates(
   platform: NodeJS.Platform,
   searchPath: string | undefined,
@@ -61,8 +75,9 @@ export function systemGitCandidates(
   const windows = platform === "win32";
   const seen = new Set<string>();
   const fromPath: string[] = [];
-  for (const rawEntry of (searchPath ?? "").split(windows ? ";" : ":")) {
-    const entry = rawEntry.trim().replace(/^"(.*)"$/u, "$1");
+  const path = searchPath ?? "";
+  const entries = windows ? windowsPathEntries(path) : path.split(":").map((entry) => entry.trim().replace(/^"(.*)"$/u, "$1"));
+  for (const entry of entries) {
     if (!isFullyQualified(entry, platform)) continue;
     fromPath.push(windows ? `${entry.replace(/[\\/]+$/u, "")}\\git.exe` : posix.join(entry, "git"));
   }

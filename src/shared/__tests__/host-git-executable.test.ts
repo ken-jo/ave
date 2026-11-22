@@ -21,6 +21,18 @@ const host = join(root, "host-bin");
 const binary = process.platform === "win32" ? "git.exe" : "git";
 const platform = process.platform;
 
+describe("systemGitCandidates", () => {
+  it("keeps semicolons inside quoted Windows PATH entries", async () => {
+    const { systemGitCandidates } = await import("../host-git-executable.js");
+    expect(systemGitCandidates("win32", `"D:\\Tools;Git\\cmd";'D:\\More;Tools\\Git';;D:\\Last`)).toEqual([
+      "D:\\Tools;Git\\cmd\\git.exe",
+      "D:\\More;Tools\\Git\\git.exe",
+      "D:\\Last\\git.exe",
+      "C:\\Program Files\\Git\\cmd\\git.exe",
+    ]);
+  });
+});
+
 describe("resolveHostGit", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -59,6 +71,19 @@ describe("resolveHostGit", () => {
     vi.mocked(accessSync).mockReset();
     expect(resolveHostGit({ packaged: false })).toBeNull();
     expect(accessSync).not.toHaveBeenCalled();
+  });
+
+  it("rejects Windows UNC and device PATH entries before filesystem probes", async () => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    setProcessPlatform("win32");
+    vi.stubEnv("PATH", '\\\\example\\share;"//example/share;tools";\\\\?\\D:\\Tools;D:\\Tools');
+    vi.mocked(accessSync).mockImplementation(() => { throw new Error("missing"); });
+    expect(resolveHostGit({ packaged: false })).toBeNull();
+    expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([
+      "D:\\Tools\\git.exe", "C:\\Program Files\\Git\\cmd\\git.exe",
+    ]);
+    expect(statSync).not.toHaveBeenCalled();
+    expect(existsSync).not.toHaveBeenCalled();
   });
 
   it.each([true, false])("uses the bundled Windows executable only when it runs (%s)", async (launchable) => {
