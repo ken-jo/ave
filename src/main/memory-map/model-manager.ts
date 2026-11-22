@@ -159,23 +159,37 @@ export class LocalModelManager {
       }
     }));
   }
+  private async verifyManagedSlot(path: string, signal: AbortSignal): Promise<string> {
+    const directory = await this.checkedDirectory(path);
+    if (directory === undefined) throw new MemoryModelError('model-integrity-failed');
+    const folder = await verifyModelFolder(directory, this.files, signal);
+    if (!(await this.isManagedPath(folder))) throw new MemoryModelError('model-integrity-failed');
+    return folder;
+  }
   private async install(signal: AbortSignal, stage: (name: string, folder: string) => Promise<void>): Promise<void> {
     await this.checkedDirectory(this.namespace.dir);
     await this.checkedDirectory(join(this.namespace.dir, 'multilingual-e5-small'));
     const parent = await this.namespace.childDir('multilingual-e5-small');
-    const name = `multilingual-e5-small/${LOCAL_MODEL_REVISION}.tmp-${randomUUID()}`;
+    const id = randomUUID();
+    const name = `multilingual-e5-small/${LOCAL_MODEL_REVISION}.tmp-${id}`;
     const staging = await this.namespace.childDir(name, { exclusive: true });
-    const final = join(parent, LOCAL_MODEL_REVISION);
+    let final = join(parent, LOCAL_MODEL_REVISION);
     try {
       await stage(name, staging);
       signal.throwIfAborted();
+      let validated: string | undefined;
       try { await rename(staging, final); }
       catch (error) {
-        if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
-        await verifyModelFolder(final, this.files, signal);
+        if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        try { validated = await this.verifyManagedSlot(final, signal); }
+        catch (validationError) {
+          signal.throwIfAborted();
+          if (!(validationError instanceof MemoryModelError)) throw validationError;
+          final = join(parent, `${LOCAL_MODEL_REVISION}-${id}`);
+          await rename(staging, final);
+        }
       }
-      const validated = await realpath(final);
-      if (!(await this.isManagedPath(validated))) throw new MemoryModelError('model-integrity-failed');
+      validated ??= await this.verifyManagedSlot(final, signal);
       signal.throwIfAborted();
       await this.options.savePath(validated);
     } finally { await rm(staging, { recursive: true, force: true }); }

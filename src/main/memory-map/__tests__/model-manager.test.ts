@@ -62,6 +62,38 @@ describe('local model lifecycle', () => {
       expect(await readFile(join(active, 'weights.bin'), 'utf8')).toBe('model');
     } finally { await f.close(); }
   });
+  it.each(['adoption', 'download'] as const)('recovers a corrupt managed slot through %s', async action => {
+    const f = await fixture();
+    try {
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      const corrupt = f.saved();
+      assert.ok(corrupt);
+      await writeFile(join(corrupt, 'weights.bin'), 'wrong');
+      const external = await mkdtemp(join(tmpdir(), 'legacy-model-'));
+      roots.push(external);
+      await writeFile(join(external, 'weights.bin'), 'model');
+      f.setSaved(external);
+
+      const result = await (action === 'adoption' ? f.manager.adoptExistingFolder(external) : f.manager.download());
+      expect(result).toMatchObject({ status: 'ready' });
+      const active = await f.manager.validatedPath();
+      expect(active).toBe(f.saved());
+      expect(active).not.toBe(external);
+      expect(active).not.toBe(corrupt);
+      expect(await readFile(join(active, 'weights.bin'), 'utf8')).toBe('model');
+      expect(await readFile(join(corrupt, 'weights.bin'), 'utf8')).toBe('wrong');
+    } finally { await f.close(); }
+  });
+  it('reuses a valid revision slot', async () => {
+    const f = await fixture();
+    try {
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      const installed = f.saved();
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      expect(await f.manager.validatedPath()).toBe(installed);
+      expect(await readdir(join(f.root, 'multilingual-e5-small'))).toHaveLength(1);
+    } finally { await f.close(); }
+  });
   it('refuses a saved external path until the folder is adopted', async () => {
     const f = await fixture();
     try {
