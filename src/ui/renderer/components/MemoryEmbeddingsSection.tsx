@@ -16,7 +16,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const [source, setSource] = useState<'local' | 'provider'>('local');
   const [providerId, setProviderId] = useState('');
   const [modelId, setModelId] = useState('');
-  const [consent, setConsent] = useState(false);
+  const [acknowledgedEndpointId, setAcknowledgedEndpointId] = useState<string>();
   const generation = useRef(0);
   useEffect(() => {
     let active = true;
@@ -36,10 +36,10 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       setProviderId(result.value.namespace.providerId ?? ''); setModelId(result.value.source === 'provider' ? result.value.namespace.modelId : '');
       const route = result.value.providers.find(provider => provider.id === result.value.namespace.providerId)?.route;
       const savedConsent = result.value.consent;
-      setConsent(savedConsent?.version === MEMORY_EMBEDDING_CONSENT_VERSION
+      setAcknowledgedEndpointId(savedConsent?.version === MEMORY_EMBEDDING_CONSENT_VERSION
         && savedConsent.providerId === result.value.namespace.providerId
         && savedConsent.modelId === result.value.namespace.modelId
-        && savedConsent.endpointId === route?.endpointId);
+        && savedConsent.endpointId === route?.endpointId ? savedConsent.endpointId : undefined);
     } }).catch(() => {});
     return () => { active = false; generation.current++; stop(); };
   }, [api]);
@@ -60,6 +60,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   };
   const selectedProvider = settings?.providers.find(value => value.id === providerId);
   const route = selectedProvider?.route;
+  const consent = route !== undefined && route.endpointId === acknowledgedEndpointId;
   const canAcknowledge = Boolean(route && selectedProvider?.models.includes(modelId));
   const handleSave = async (nextSource = source) => {
     let selection: MemoryEmbeddingSelection = { source: 'local' };
@@ -73,7 +74,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       if (!result.ok) {
         setError(result.error);
         if (result.error === 'request-stale' && nextSource === 'provider') {
-          setConsent(false);
+          setAcknowledgedEndpointId(undefined);
           const refreshed = await api.settingsGet();
           if (refreshed.ok) {
             setSettings(refreshed.value);
@@ -86,7 +87,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       } else {
         setSettings(result.value);
         setSource(result.value.source);
-        if (result.value.source === 'local') setConsent(false);
+        if (result.value.source === 'local') setAcknowledgedEndpointId(undefined);
       }
     } catch { setError('provider-embedding-failed'); }
     finally { setBusy(false); }
@@ -96,7 +97,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       void handleSave('local');
       return;
     }
-    setConsent(checked);
+    setAcknowledgedEndpointId(checked ? route?.endpointId : undefined);
   };
   const downloading = !localRuntimeUnavailable && status?.status === "downloading";
   return <section data-settings-section="memory-embeddings" tabIndex={-1} aria-labelledby="memory-embeddings-heading" className="space-y-3 rounded-lg border p-4">
@@ -106,14 +107,14 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
       <legend>{t('memoryEmbeddings.source')}</legend>
       <div className="flex gap-4">
         <label><input type="radio" name="memory-embedding-source" checked={source === 'local'} disabled={busy || !settings} onChange={() => void handleSave('local')}/>{t('memoryEmbeddings.local')}</label>
-        <label><input type="radio" name="memory-embedding-source" checked={source === 'provider'} disabled={busy || !settings} onChange={() => { setSource('provider'); setConsent(false); }}/>{t('memoryEmbeddings.provider')}</label>
+        <label><input type="radio" name="memory-embedding-source" checked={source === 'provider'} disabled={busy || !settings} onChange={() => { setSource('provider'); setAcknowledgedEndpointId(undefined); }}/>{t('memoryEmbeddings.provider')}</label>
       </div>
       {source === 'provider' && <>
-        <label className="block">{t('memoryEmbeddings.provider')}<select className="ml-2 rounded border bg-background p-1" value={providerId} disabled={busy} onChange={event => { setProviderId(event.target.value); setModelId(''); setConsent(false); }}>
+        <label className="block">{t('memoryEmbeddings.provider')}<select className="ml-2 rounded border bg-background p-1" value={providerId} disabled={busy} onChange={event => { setProviderId(event.target.value); setModelId(''); setAcknowledgedEndpointId(undefined); }}>
           <option value="">{t('memoryEmbeddings.chooseProvider')}</option>
           {settings?.providers?.map(provider => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
         </select></label>
-        <label className="block">{t('memoryEmbeddings.model')}<select className="ml-2 rounded border bg-background p-1" value={modelId} disabled={busy || !selectedProvider?.models.length} onChange={event => { setModelId(event.target.value); setConsent(false); }}>
+        <label className="block">{t('memoryEmbeddings.model')}<select className="ml-2 rounded border bg-background p-1" value={modelId} disabled={busy || !selectedProvider?.models.length} onChange={event => { setModelId(event.target.value); setAcknowledgedEndpointId(undefined); }}>
           <option value="">{t('memoryEmbeddings.chooseModel')}</option>
           {selectedProvider?.models.map(model => <option key={model} value={model}>{model}</option>)}
         </select></label>

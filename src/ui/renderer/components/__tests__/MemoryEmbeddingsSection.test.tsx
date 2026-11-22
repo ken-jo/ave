@@ -18,12 +18,17 @@ const { handlers } = vi.hoisted(() => ({
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => handlers.set(channel, handler) } }));
 
 describe('memory embeddings settings', () => {
-  it('refuses consent from a mounted form after the destination changes', async () => {
+  it.each(['before Save', 'during Save'])('requires a fresh acknowledgement when the destination changes %s', async when => {
     const api = createMemoryMapApi();
     const event = { senderFrame: { url: 'file:///app/index.html' } } as IpcMainInvokeEvent;
-    let baseUrl = 'https://api.openai.com/v1';
+    const initialBaseUrl = 'https://api.openai.com/v1';
+    const replacementBaseUrl = 'https://api.mistral.ai/v1';
+    let baseUrl = initialBaseUrl;
     let config: MemoryEmbeddingConfig | undefined;
-    const set = vi.fn(async (_key: string, value: MemoryEmbeddingConfig) => { config = value; });
+    const set = vi.fn(async (_key: string, value: MemoryEmbeddingConfig) => {
+      config = value;
+      if (when === 'during Save') baseUrl = replacementBaseUrl;
+    });
     const transport = vi.fn();
     registerMemoryMapHandlers({
       auditLogger: { log: vi.fn() },
@@ -61,20 +66,27 @@ describe('memory embeddings settings', () => {
     fireEvent.click(acknowledgement);
     const save = screen.getByRole('button', { name: '저장' });
     expect(save).toBeEnabled();
-    baseUrl = 'https://api.mistral.ai/v1';
+    if (when === 'before Save') baseUrl = replacementBaseUrl;
     fireEvent.click(save);
     await waitFor(() => expect(api.settingsSet).toHaveBeenCalledOnce());
-    expect(await api.settingsSet.mock.results[0]?.value).toEqual({ ok: false, error: 'request-stale' });
+    const firstResult = await api.settingsSet.mock.results[0]?.value;
     expect(previousDestination).toBeTruthy();
-    expect(set).not.toHaveBeenCalled();
-    expect(await invoke('build')).toMatchObject({ ok: false });
+    if (when === 'before Save') {
+      expect(firstResult).toEqual({ ok: false, error: 'request-stale' });
+      expect(set).not.toHaveBeenCalled();
+      expect(await invoke('build')).toMatchObject({ ok: false });
+    } else {
+      expect(firstResult).toMatchObject({ ok: true });
+      expect(firstResult?.ok && firstResult.value.consent).toBeUndefined();
+      expect(set).toHaveBeenCalledOnce();
+    }
     expect(transport).not.toHaveBeenCalled();
     expect(await screen.findByText(/https:\/\/api\.mistral\.ai/)).toBeTruthy();
     expect(acknowledgement).not.toBeChecked();
     expect(save).toBeDisabled();
     fireEvent.click(acknowledgement);
     fireEvent.click(save);
-    await waitFor(() => expect(set).toHaveBeenCalledOnce());
+    await waitFor(() => expect(set).toHaveBeenCalledTimes(when === 'before Save' ? 1 : 2));
     const [first, second] = api.settingsSet.mock.calls.map(([selection]) => selection.source === 'provider' ? selection.endpointId : undefined);
     expect(first).toBeDefined();
     expect(second).not.toBe(first);
