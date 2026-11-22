@@ -535,8 +535,13 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       restore: ({ onExit }) => { onExit(true); return []; },
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await expect(resetAsrtSandbox()).rejects.toThrow("Sandbox reset left 1 invocation relay port bound");
+    const failure: unknown = await resetAsrtSandbox().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("Sandbox reset left 1 invocation relay port bound");
+    // The rows' raw targets stay off every enumerable path of the error.
+    expect(Object.getOwnPropertyDescriptor(failure, "windowsAclUnreleased")?.enumerable).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"), expect.stringMatching(/^grant revoke missing x1 \[/u));
+    for (const argument of warn.mock.calls.flat()) expect(String(argument)).not.toContain(String.raw`D:\example\gone`);
     warn.mockClear();
     // The rest of the session ended; the relay is still owned, and drops what connects.
     expect(await probePort(sharedPort, sockets)).toBe("refused");
