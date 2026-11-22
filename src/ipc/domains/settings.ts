@@ -656,7 +656,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
       return { ok: false, error: "a2a-remote-settings-main-owned" };
     }
-    if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "memoryEmbedding")) {
+    if (partial && typeof partial === "object" && Object.hasOwn(partial, "memoryEmbedding")) {
       return { ok: false, error: "invalid-input" };
     }
     // Where the sandbox egress proxy sends allowed connections: written only through the

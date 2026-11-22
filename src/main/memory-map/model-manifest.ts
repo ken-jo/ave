@@ -10,5 +10,5 @@ export const MODEL_FILES: readonly ModelFile[] = Object.freeze([
 ]);
 export function modelFileUrl(name: string): string {
   if (!MODEL_FILES.some(file => file.name === name)) throw new Error('Unknown model file');
-  return 'https://huggingface.co/' + LOCAL_MODEL_ID + '/resolve/' + LOCAL_MODEL_REVISION + '/onnx/' + name;
+  return `https://huggingface.co/${LOCAL_MODEL_ID}/resolve/${LOCAL_MODEL_REVISION}/onnx/${name}`;
 }

@@ -14,6 +14,7 @@ export function MemoryQuestionBox({ api, snapshot, scope, filters, onMatches, on
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<MemoryMapError | null>(null);
   const generation = useRef(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A changed query context invalidates the question and pending response.
   useEffect(() => {
     generation.current++;
     setQuestion(''); setAnswer(null); setError(null); setAsking(false); onMatches(new Set());
@@ -57,7 +58,7 @@ export function MemoryQuestionBox({ api, snapshot, scope, filters, onMatches, on
     {asking && <p role="status" className="text-xs">{t('memoryMap.asking')}</p>}
     {error && <p role="alert" className="text-xs text-destructive">{t(`memoryMap.error.${error}`)}</p>}
     {answer && <div role="status" className="max-h-48 space-y-3 overflow-auto text-xs">
-      {answer.matches.length === 0 ? <p>{t('memoryMap.noMatches')}</p> : answer.answerParts.map((part, index) => <p key={index} className="whitespace-pre-wrap break-words">{part.text}{' '}{part.sourceMemoryIds.map(id => {
+      {answer.matches.length === 0 ? <p>{t('memoryMap.noMatches')}</p> : answer.answerParts.map(part => <p key={part.citation} className="whitespace-pre-wrap break-words">{part.text}{' '}{part.sourceMemoryIds.map(id => {
         const match = answer.matches.find(row => row.memoryId === id && row.citation === part.citation);
         const point = snapshot.points.find(row => row.memoryId === id);
         return match && point ? <button type="button" key={id} aria-label={t('memoryMap.citation', { number: part.citation, title: point.title })} onClick={() => onSelect(id)} className="mx-1 rounded border px-2 py-1 font-medium hover:bg-accent">[{part.citation}]</button> : null;

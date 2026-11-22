@@ -126,7 +126,8 @@ export class ProviderEmbeddings {
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
     await this.validate(providerId, modelId);
     const route = this.route(providerId);
-    if (!route.baseUrl) throw new MemoryMapHostError('provider-unavailable');
+    const { baseUrl } = route;
+    if (!baseUrl) throw new MemoryMapHostError('provider-unavailable');
     const assertCurrent = () => {
       this.assertConsent(namespace, signal);
       assertAuthority?.();
@@ -135,7 +136,7 @@ export class ProviderEmbeddings {
     const egress: typeof fetch = async (input, init) => {
       assertCurrent();
       const url = new URL(typeof input === 'string' || input instanceof URL ? input.toString() : input.url);
-      if (url.origin !== new URL(route.baseUrl!).origin) throw new MemoryMapHostError('provider-unavailable');
+      if (url.origin !== new URL(baseUrl).origin) throw new MemoryMapHostError('provider-unavailable');
       try {
         return await this.egress.send(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }, assertCurrent);
       } catch (error) {
@@ -184,9 +185,9 @@ export class ProviderEmbeddings {
     for (let offset = 0; offset < missing.length; offset += EMBEDDING_BATCH_SIZE) {
       const batch = missing.slice(offset, offset + EMBEDDING_BATCH_SIZE);
       assertAuthority(batch);
-      const vectors = await this.embed(selected, batch.map(record => record.title + '\n' + record.text), signal, () => assertAuthority(batch));
-      selected = { ...selected, dimensions: selected.dimensions || vectors[0]!.length };
-      batch.forEach((record, index) => { cache[vectorKey(record, selected)] = vectors[index]!; });
+      const vectors = await this.embed(selected, batch.map(record => `${record.title}\n${record.text}`), signal, () => assertAuthority(batch));
+      selected = { ...selected, dimensions: selected.dimensions || vectors[0].length };
+      batch.forEach((record, index) => { cache[vectorKey(record, selected)] = vectors[index]; });
       completed += batch.length; onProgress({ jobId, phase: 'embedding', completed, total: records.length });
     }
     if (!selected.dimensions) throw new MemoryMapHostError('provider-embedding-failed');

@@ -31,7 +31,7 @@ export function readGraphCatalog(manager: MemoryManager, options: ProjectScopedM
     if (!isGraphMemory(note)) return [];
     filenames?.set(note.id, note.filename);
     return [{ memoryId: note.id, contentRevision: graphMemoryRevision(note), title: note.title, text: note.content, sourceKind: note.source ?? 'unknown',
-      ...(note.projectRoot ? { projectId: digest(projectRootKey(note.projectRoot)!), projectName: note.projectName ?? note.projectRoot.split(/[\\/]/).at(-1)! } : {}) }];
+      ...(note.projectRoot ? { projectId: digest(projectRootKey(note.projectRoot) as string), projectName: note.projectName ?? note.projectRoot.split(/[\\/]/).slice(-1)[0] } : {}) }];
   }).sort((a, b) => a.memoryId.localeCompare(b.memoryId));
   return { records, excluded: notes.length - records.length, authorizationScopeId: memoryMapScopeId(options) };
 }
@@ -39,7 +39,7 @@ export function memoryFacets(records: MemoryMapRecord[]): MemoryFacets {
   const sources = new Map<MemoryMapRecord['sourceKind'], number>(); const projects = new Map<string, { name: string; count: number }>();
   for (const record of records) {
     sources.set(record.sourceKind, (sources.get(record.sourceKind) ?? 0) + 1);
-    if (record.projectId) { const prior = projects.get(record.projectId); projects.set(record.projectId, { name: record.projectName!, count: (prior?.count ?? 0) + 1 }); }
+    if (record.projectId) { const prior = projects.get(record.projectId); projects.set(record.projectId, { name: record.projectName as string, count: (prior?.count ?? 0) + 1 }); }
   }
   return { sources: [...sources].map(([sourceKind, count]) => ({ sourceKind, count })), projects: [...projects].map(([projectId, row]) => ({ projectId, ...row })), playbooks: [] };
 }

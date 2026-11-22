@@ -137,7 +137,7 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     assertLocalEmbeddingRuntime();
     const selection = await dialog.showOpenDialog({ properties: ['openDirectory'] });
     if (selection.canceled || !selection.filePaths[0]) return null;
-    host.cancel(); modelEvent = event; return model.useExisting(selection.filePaths[0]);
+    host.cancel(); modelEvent = event; return model.adoptExistingFolder(selection.filePaths[0]);
   });
   handle(CHANNELS.memoryMap.settingsGet, z.undefined(), settings);
   handle(CHANNELS.memoryMap.settingsSet, MemoryEmbeddingSettingsSchema, async input => {

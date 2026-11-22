@@ -15,25 +15,25 @@ export async function createLocalEmbedder(folder: string): Promise<Embedder> {
   process.env.ORT_DISABLE_TELEMETRY = '1';
   const { InferenceSession, Tensor } = await import('onnxruntime-node');
   const tokenizer = new Tokenizer(JSON.parse(await readFile(join(folder, 'tokenizer.json'), 'utf8')), JSON.parse(await readFile(join(folder, 'tokenizer_config.json'), 'utf8')));
-  const session = await InferenceSession.create(join(folder, MODEL_FILES[0]!.name), { executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1 });
+  const session = await InferenceSession.create(join(folder, MODEL_FILES[0].name), { executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1 });
   if (session.inputNames.join(',') !== 'input_ids,attention_mask,token_type_ids' || !session.outputNames.includes('last_hidden_state')) {
     await session.release(); throw new Error('Unexpected local embedding model contract');
   }
   return {
     async embed(text) {
-      const encoded = tokenizer.encode('query: ' + text, { return_token_type_ids: true });
-      const trim = (values: number[]) => values.length > 512 ? [...values.slice(0, 511), values.at(-1)!] : values;
+      const encoded = tokenizer.encode(`query: ${text}`, { return_token_type_ids: true });
+      const trim = (values: number[]) => values.length > 512 ? [...values.slice(0, 511), values[values.length - 1]] : values;
       const ids = trim(encoded.ids); const mask = trim(encoded.attention_mask); const types = trim(encoded.token_type_ids);
       const tensor = (values: number[]) => new Tensor('int64', BigInt64Array.from(values, BigInt), [1, ids.length]);
       const feeds = { input_ids: tensor(ids), attention_mask: tensor(mask), token_type_ids: tensor(types) };
       const outputs = await session.run(feeds);
       try {
         const output = outputs.last_hidden_state;
-        if (!output || output.dims.length !== 3 || output.dims[0] !== 1 || output.dims[1] !== ids.length || output.dims[2] !== 384) throw new Error('Expected token embeddings with 384 dimensions');
+        if (output?.dims.length !== 3 || output.dims[0] !== 1 || output.dims[1] !== ids.length || output.dims[2] !== 384) throw new Error('Expected token embeddings with 384 dimensions');
         const pooled = Array<number>(384).fill(0); let count = 0;
         for (let i = 0; i < ids.length; i++) if (mask[i]) {
           count++;
-          for (let d = 0; d < 384; d++) pooled[d] = pooled[d]! + Number(output.data[i * 384 + d]);
+          for (let d = 0; d < 384; d++) pooled[d] = pooled[d] + Number(output.data[i * 384 + d]);
         }
         if (!count) throw new Error('Embedding attention mask is empty');
         return normalizeVector(pooled.map(n => n / count));

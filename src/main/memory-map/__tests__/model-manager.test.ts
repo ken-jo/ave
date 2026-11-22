@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, open, readFile, readdir, rm } from 'node:fs/promises';
@@ -20,7 +21,7 @@ async function fixture(body = 'model') {
   const server = createServer((_, response) => { response.end(body); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
-  const manager = new LocalModelManager({ namespace, files, readPath: () => saved, savePath: path => { saved = path; }, downloadFile: (_, signal) => fetch('http://127.0.0.1:' + port, { signal }) });
+  const manager = new LocalModelManager({ namespace, files, readPath: () => saved, savePath: path => { saved = path; }, downloadFile: (_, signal) => fetch(`http://127.0.0.1:${port}`, { signal }) });
   return { manager, root, files, saved: () => saved, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 describe('local model lifecycle', () => {
@@ -30,7 +31,9 @@ describe('local model lifecycle', () => {
       expect((await f.manager.status()).status).toBe('unconfigured');
       expect(f.saved()).toBeUndefined();
       expect(await f.manager.download()).toMatchObject({ status: 'ready', completedFiles: 1, receivedBytes: 5 });
-      expect(await readFile(join(f.saved()!, 'weights.bin'), 'utf8')).toBe('model');
+      const saved = f.saved();
+      assert.ok(saved);
+      expect(await readFile(join(saved, 'weights.bin'), 'utf8')).toBe('model');
       expect((await f.manager.status()).status).toBe('ready');
     } finally { await f.close(); }
   });
@@ -47,9 +50,9 @@ describe('local model lifecycle', () => {
     try {
       const nested = join(f.root, 'existing/onnx'); await mkdir(nested, { recursive: true }); await writeFile(join(nested, 'weights.bin'), 'model');
       expect(await verifyModelFolder(join(f.root, 'existing'), f.files)).toBe(await verifyModelFolder(nested, f.files));
-      expect((await f.manager.useExisting(join(f.root, 'existing'))).status).toBe('ready');
+      expect((await f.manager.adoptExistingFolder(join(f.root, 'existing'))).status).toBe('ready');
       await writeFile(join(nested, 'weights.bin'), 'wrong');
-      expect(await f.manager.useExisting(nested)).toMatchObject({ status: 'failed', error: 'model-integrity-failed' });
+      expect(await f.manager.adoptExistingFolder(nested)).toMatchObject({ status: 'failed', error: 'model-integrity-failed' });
     } finally { await f.close(); }
   });
   it('cancels in-flight streaming and cannot commit the partial folder', async () => {

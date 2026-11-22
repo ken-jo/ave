@@ -1,10 +1,13 @@
+import assert from 'node:assert/strict';
 import { describe, expect, it } from 'vitest';
 import { createLocalEmbedder } from '../embedding.js';
 import { verifyModelFolder } from '../model-manager.js';
 import { cosine } from '../graph.js';
 describe('local embedding model qualification', () => {
   it.skipIf(!process.env.AVE_E5_MODEL_DIR)('embeds multilingual paraphrases closer than unrelated text', async () => {
-    const folder = await verifyModelFolder(process.env.AVE_E5_MODEL_DIR!);
+    const modelDir = process.env.AVE_E5_MODEL_DIR;
+    assert.ok(modelDir);
+    const folder = await verifyModelFolder(modelDir);
     const embedder = await createLocalEmbedder(folder);
     try {
       const ko = await embedder.embed('설정에서 로컬 메모리 검색을 활성화하세요.');

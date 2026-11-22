@@ -133,7 +133,7 @@ export class MemoryMapHost {
     const report = (progress: MemoryMapProgress) => { if (generation === this.generation) { if (this.pending && progress.phase === 'embedding') this.pending.coverage = { ...this.pending.coverage, embedded: progress.completed, pending: progress.total - progress.completed }; this.options.onProgress?.(progress); } };
     if (selected.source === 'provider') stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
     const result = selected.source === 'provider'
-      ? await this.options.provider!.build(catalog, selected, saved, controller.signal, report, assertAuthority)
+      ? await (this.options.provider as ProviderEmbeddings).build(catalog, selected, saved, controller.signal, report, assertAuthority)
       : await this.runWorker<{ snapshot: GraphSnapshot; cache: VectorCache }>(folder, { kind: 'build', input: { ...catalog, cache, namespace: LOCAL_NAMESPACE, jobId: randomUUID() } }, controller.signal, report);
     if (!current()) throw new MemoryMapHostError('request-stale');
     this.validateSnapshot(result.snapshot, catalog);
@@ -154,7 +154,7 @@ export class MemoryMapHost {
     const queryGeneration = ++this.queryGeneration;
     const controller = new AbortController(); this.queryController = controller;
     const snapshot = await this.get(readCatalog);
-    if (!snapshot || snapshot.status !== 'ready' || snapshot.snapshotId !== request.snapshotId) throw new MemoryMapHostError('graph-stale');
+    if (snapshot?.status !== 'ready' || snapshot.snapshotId !== request.snapshotId) throw new MemoryMapHostError('graph-stale');
     const selected = snapshot.model.namespace;
     const folder = selected.source === 'local' ? await this.options.validatedModelPath() : '';
     if (queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale');
@@ -165,7 +165,7 @@ export class MemoryMapHost {
     };
     const stopWatching = selected.source === 'provider' ? this.options.watchAuthority?.(() => controller.abort()) : undefined;
     let vector: number[];
-    try { vector = selected.source === 'provider' ? (await this.options.provider!.embed(selected, [request.question], controller.signal, assertAuthority))[0]! : await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal); }
+    try { vector = selected.source === 'provider' ? (await (this.options.provider as ProviderEmbeddings).embed(selected, [request.question], controller.signal, assertAuthority))[0] : await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal); }
     catch (error) { if (controller.signal.aborted || queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale'); throw error; }
     finally { stopWatching?.(); }
     if (controller.signal.aborted || queryGeneration !== this.queryGeneration || snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(readCatalog().records) || catalog.authorizationScopeId !== readCatalog().authorizationScopeId) throw new MemoryMapHostError('request-stale');

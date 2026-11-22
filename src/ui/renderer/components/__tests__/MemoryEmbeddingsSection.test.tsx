@@ -192,15 +192,15 @@ describe('memory embeddings settings', () => {
     const stop = api.onModelProgress.mock.results;
     const view = render(<MemoryEmbeddingsSection api={api} />);
     await screen.findByText('모델이 설정되지 않았습니다');
-    act(() => api.onModelProgress.mock.calls[0]![0]({ status: 'downloading', receivedBytes: 1024, totalBytes: 2048, completedFiles: 1, totalFiles: 4 }));
+    act(() => api.onModelProgress.mock.calls[0][0]({ status: 'downloading', receivedBytes: 1024, totalBytes: 2048, completedFiles: 1, totalFiles: 4 }));
     expect(screen.getByRole('progressbar')).toHaveAttribute('value', '1024');
     expect(screen.getByText('1,024 / 2,048 바이트')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '다운로드 취소' }));
     await waitFor(() => expect(api.modelCancel).toHaveBeenCalledOnce());
-    act(() => api.onModelProgress.mock.calls[0]![0]({ status: 'ready', receivedBytes: 2048, totalBytes: 2048, completedFiles: 4, totalFiles: 4 }));
+    act(() => api.onModelProgress.mock.calls[0][0]({ status: 'ready', receivedBytes: 2048, totalBytes: 2048, completedFiles: 4, totalFiles: 4 }));
     expect(await screen.findByText(/revision-1/)).toBeTruthy();
     view.unmount();
-    expect(stop[0]!.value).toHaveBeenCalledOnce();
+    expect(stop[0].value).toHaveBeenCalledOnce();
   });
   it('offers retry with a translated failure and accepts an existing model', async () => {
     const api = createMemoryMapApi();

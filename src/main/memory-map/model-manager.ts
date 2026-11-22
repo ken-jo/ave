@@ -80,7 +80,7 @@ export class LocalModelManager {
     })();
     return this.task;
   }
-  useExisting(folder: string): Promise<MemoryModelStatus> {
+  adoptExistingFolder(folder: string): Promise<MemoryModelStatus> {
     return this.run(async signal => {
       if (!folder) throw new MemoryModelError('model-folder-invalid');
       const path = await verifyModelFolder(folder, this.files, signal);
@@ -91,7 +91,7 @@ export class LocalModelManager {
   download(): Promise<MemoryModelStatus> {
     return this.run(async signal => {
       const parent = await this.namespace.childDir('multilingual-e5-small');
-      const name = 'multilingual-e5-small/' + LOCAL_MODEL_REVISION + '.tmp-' + randomUUID();
+      const name = `multilingual-e5-small/${LOCAL_MODEL_REVISION}.tmp-${randomUUID()}`;
       const staging = await this.namespace.childDir(name, { exclusive: true });
       const final = join(parent, LOCAL_MODEL_REVISION);
       this.publish({ status: 'downloading', receivedBytes: 0, totalBytes: this.files.reduce((n, f) => n + f.bytes, 0), completedFiles: 0, totalFiles: this.files.length });
@@ -102,7 +102,7 @@ export class LocalModelManager {
             ? this.options.downloadFile(file.name, signal)
             : fetch(modelFileUrl(file.name), { signal, redirect: 'follow' }));
           if (!response.ok || !response.body) throw new MemoryModelError('model-download-failed');
-          const handle = await this.namespace.createFile(name + '/' + file.name);
+          const handle = await this.namespace.createFile(`${name}/${file.name}`);
           const hash = createHash('sha256');
           let received = 0;
           const reader = response.body.getReader();

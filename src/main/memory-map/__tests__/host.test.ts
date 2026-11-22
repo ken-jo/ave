@@ -39,7 +39,7 @@ describe('memory graph publication', () => {
   it('refuses persisted identities outside the current authorized catalog', async () => {
     const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const snapshot = await host.build(() => f.catalog);
-    snapshot.points[0]!.memoryId = 'outside';
+    snapshot.points[0].memoryId = 'outside';
     await f.namespace.writeJson('snapshot.json', { snapshot, cache: {} });
     const restarted = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     await expect(restarted.get(() => f.catalog)).rejects.toThrow('identity is invalid');
