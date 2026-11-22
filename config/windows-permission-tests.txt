@@ -99,6 +99,7 @@ src/permissions/__tests__/policy-home.test.ts
 src/shared/__tests__/windows-configuration-handles.test.ts
 src/permissions/__tests__/permission-manager-meta-override.test.ts
 src/tools/__tests__/executor.test.ts
+src/tools/__tests__/executor-shutdown-admission.test.ts
 src/tools/__tests__/registry-meta-governance.test.ts
 src/tools/__tests__/executor-rationale-batch.test.ts
 src/tools/__tests__/executor-broker-shell-route.test.ts

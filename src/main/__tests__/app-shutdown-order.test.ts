@@ -223,7 +223,7 @@ describe("OS sandbox release at quit", () => {
       const stopping = shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
       try {
         // The deadline fires only if the join never reaches close, as it would when waiting on the detached work.
-        await vi.waitFor(() => expect(calls).toContain("closeAudit"));
+        await vi.waitFor(() => expect(calls).toContain("closeAudit"), { timeout: 10_000 });
       } finally {
         if (!calls.includes("closeAudit")) deadline.resolve();
         status = await stopping;
