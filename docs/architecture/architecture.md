@@ -3393,18 +3393,16 @@ in its directory.
   reuse. Origin and destination class further limit the scopes; terminal
   tabs and extensions keep their own policy.
 - **DNS is not confined.** Name resolution goes through the host's DNS client
-  service, outside the container's WFP filter: inside a container
-  `example.com` resolved and an unknown name came back NXDOMAIN (measured), so
-  the query left the host. A command can therefore carry data out to an
-  external authoritative DNS server by looking up names it chooses under a
-  domain that server answers for, without touching the proxy: an exfiltration
-  channel the proxy never sees. MXC shell and extension plans report
-  `dns: "host-resolver"` and `rawIp: "unknown"`. Direct UDP port 53 and ICMP
-  blocking remain unverified. Protocol-level verification needs administrator
-  access for WFP observation, and the direct connection checks above do not
-  establish coverage for either protocol. Plan coverage is reporting metadata.
-  Settings uses it to disclose both limits. Launch and admission policies do
-  not enforce this coverage metadata.
+  service, outside the container's WFP filter. Inside a container, `example.com`
+  resolved and an unknown name returned NXDOMAIN. The host DNS client cache can
+  answer both lookups, so these results establish access to the host resolver.
+  The resolver remains a potential egress path outside the proxy. MXC shell
+  and extension plans report `dns: "host-resolver"` and `rawIp: "unknown"`.
+  The direct port 53 refusal above lacks protocol attribution. Direct UDP port
+  53 and ICMP blocking remain unverified. Host-side WFP observation can identify
+  filtering decisions, and receiver-side evidence can confirm traffic arrival.
+  Plan coverage is reporting metadata. Settings uses it to disclose both limits.
+  Launch and admission policies do not enforce this coverage metadata.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`. The pinned SDK describes
   host-loopback allow as stateful outbound connectivity at baseline; native
