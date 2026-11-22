@@ -10,7 +10,7 @@ import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE } from "../workspace-layout.js";
-import { copySeedFiles, listSeedFiles } from "../workspace-seed.js";
+import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
 import { stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 let base: string;
@@ -248,6 +248,28 @@ describe("folder stage workspaces", () => {
       expect(watched.made.map(folder => relative(handle.runRoot, folder)), name).toEqual([expect.stringMatching(/^_ignore-[^\\/]+$/u)]);
       expect(there.every(Boolean), name).toBe(true);
       expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.json"]);
+    }
+  });
+
+  it("a home relocated beneath the project gets no matcher repository: the stage is refused and nothing is made in the project", async () => {
+    write(project, "debug.log", "log\n");
+    write(project, ".gitignore", "*.log\n");
+    const home = process.env.AVE_HOME;
+    mkdirSync(join(project, "profile"));
+    process.env.AVE_HOME = join(project, "profile");
+    try {
+      const watched = watchedGit();
+      const handle = await start(project, { git: watched.git });
+      expect(isInside(realpathSync.native(project), realpathSync.native(handle.runRoot))).toBe(true);
+      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/**")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+      expect(watched.made).toEqual([]);
+      expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
+      // A stage with no project input needs no rules and is prepared as before.
+      expect(tree(await stageRoot(handle, "s2"))).toEqual([]);
+      await handle.provider.release(handle.run, "all");
+      opened.splice(opened.indexOf(handle), 1);
+    } finally {
+      if (home === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = home;
     }
   });
 

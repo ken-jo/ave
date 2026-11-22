@@ -1,9 +1,9 @@
-import { lstatSync, mkdtempSync } from "node:fs";
+import { lstatSync, mkdtempSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import type { HostGit } from "./host-git.js";
 import { IGNORE_PREFIX } from "./workspace-layout.js";
-import type { SeedRules } from "./workspace-seed.js";
+import { isInside, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
 
@@ -11,10 +11,18 @@ const log = createLogger("work-board-stage-workspace");
  * from a configuration file, a variable or the repository the host made for it. */
 const MATCHER_CONFIG = ["-c", "core.excludesFile=", "-c", `core.ignoreCase=${process.platform === "win32" || process.platform === "darwin"}`] as const;
 
+/** Whether `path` is `folder` or lies beneath it, as both really are on disk. */
+function physicallyWithin(folder: string, path: string): boolean {
+  const real = (value: string): string => process.platform === "win32" ? realpathSync.native(value).toLowerCase() : realpathSync.native(value);
+  const [outer, inner] = [real(folder), real(path)];
+  return outer === inner || isInside(outer, inner);
+}
+
 /**
  * A plain folder honours its own `.gitignore` files, read by git's matcher. `check-ignore` runs only against a repository, so an empty one
  * is made on first need in a folder of its own under the run root, and `done` removes it through `remove` whatever happened in between; the
- * folder is its work tree for that call and nothing is written into it. Without an ignore file above a path git is not run.
+ * folder is its work tree for that call and nothing is written into it. Without an ignore file above a path git is not run. A run root that
+ * lies inside the folder gets no repository: the call throws before anything is made.
  */
 export function plainFolderIgnore(git: HostGit, runRoot: string, root: string, remove: (scratch: string) => void): { ignored: NonNullable<SeedRules["ignored"]>; done: () => void } {
   let scratch: string | undefined;
@@ -35,6 +43,8 @@ export function plainFolderIgnore(git: HostGit, runRoot: string, root: string, r
       });
       if (!reached) return new Set<string>();
       if (scratch === undefined) {
+        // A home relocated beneath the project would put the repository into the folder the host only reads.
+        if (physicallyWithin(root, runRoot)) throw new Error("the run root lies inside the project");
         scratch = mkdtempSync(join(runRoot, IGNORE_PREFIX));
         const made = await git.run(runRoot, ["init", "-q", "--template=", scratch], { isolated: true });
         if (made.code !== 0) throw new Error("the ignore matcher's repository could not be made");
