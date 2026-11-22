@@ -157,6 +157,26 @@ describe("ToolExecutor admission across the quit seal", () => {
     },
   );
 
+  it.each(["executeAll", "executeConversationBatch"] as const)(
+    "leaves the queued tools of a batch that already exited out of the seal (%s)",
+    async (path) => {
+      const { ledger, executor, executes, rows, hostShutdownRows, toolUses } = await freshExecutor(2);
+      const options = {
+        sessionId: "sess-exited",
+        permissionContext: userPermissionContext(),
+        onToolResult: async () => { throw new Error("journal write failed"); },
+      };
+      const exited = path === "executeAll"
+        ? executor.executeAll(toolUses, options)
+        : executor.executeConversationBatch(toolUses, { ...options, interceptedMetaToolHandler: async () => null });
+      await expect(exited).rejects.toThrow("journal write failed");
+      ledger.sealToolInvocations();
+      await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
+      expect(executes[1]).not.toHaveBeenCalled();
+      expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(0);
+    },
+  );
+
   it("refuses a call that reaches the executor after close without failing the quit", async () => {
     const { ledger, executor, executes, toolUses } = await freshExecutor(1);
     ledger.sealToolInvocations();
