@@ -1009,6 +1009,7 @@ src/work-board/__tests__/work-report.test.ts
 src/work-board/workflow/__tests__/gate-check-refused.test.ts
 src/work-board/workflow/__tests__/gate-effect-token.test.ts
 src/work-board/workflow/__tests__/host-git.test.ts
+src/work-board/workflow/__tests__/owned-fs.test.ts
 src/work-board/workflow/__tests__/run-adoption-classification.test.ts
 src/work-board/workflow/__tests__/run-authority.test.ts
 src/work-board/workflow/__tests__/run-drain-order-control.test.ts

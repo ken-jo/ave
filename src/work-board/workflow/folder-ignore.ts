@@ -1,9 +1,10 @@
-import { lstatSync, mkdtempSync, readdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdtempSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import type { HostGit } from "./host-git.js";
+import { realWithin } from "./owned-fs.js";
 import { IGNORE_PREFIX } from "./workspace-layout.js";
-import { isInside, type SeedRules } from "./workspace-seed.js";
+import type { SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
 
@@ -44,13 +45,6 @@ export function namesFoldCase(directory: string, fs: NameReader = onDisk): boole
   throw new Error("the folder's file name rule cannot be told");
 }
 
-/** Whether `path` is `folder` or lies beneath it, as both really are on disk. */
-function physicallyWithin(folder: string, path: string): boolean {
-  const real = (value: string): string => process.platform === "win32" ? realpathSync.native(value).toLowerCase() : realpathSync.native(value);
-  const [outer, inner] = [real(folder), real(path)];
-  return outer === inner || isInside(outer, inner);
-}
-
 /**
  * A plain folder honours its own `.gitignore` files, read by git's matcher. `check-ignore` runs only against a repository, so an empty one
  * is made on first need in a folder of its own under the run root, and `done` removes it through `held.remove` whatever happened in between;
@@ -86,7 +80,7 @@ export function plainFolderIgnore(git: HostGit, runRoot: string, root: string, h
       }
       if (scratch === undefined) {
         // A home relocated beneath the project would put the repository into the folder the host only reads.
-        if (physicallyWithin(root, runRoot)) throw new Error("the run root lies inside the project");
+        if (realWithin(root, runRoot)) throw new Error("the run root lies inside the project");
         held.check();
         scratch = mkdtempSync(join(runRoot, IGNORE_PREFIX));
         held.check();
