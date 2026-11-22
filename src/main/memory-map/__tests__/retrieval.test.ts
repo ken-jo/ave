@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { retrieveMatches } from '../retrieval.js';
 import { LOCAL_NAMESPACE, vectorKey, type VectorCache } from '../graph.js';
+import { vector } from '../../../__tests__/support/memory-map-vector.js';
 import type { MemoryMapRecord } from '../../../shared/memory-map.js';
-const vector = (x = 1) => [x, Math.sqrt(1-x*x), ...Array<number>(382).fill(0)];
 const identity = { snapshotId: 'snapshot', catalogRevision: 'revision', queryId: 'query' };
 const record = (i: number): MemoryMapRecord => ({ memoryId: String(i), contentRevision: `revision-${i}`, title: 'Title', text: `Memory text ${i}`, sourceKind: 'user', projectId: 'alpha', projectName: 'Alpha' });
 describe('extractive memory retrieval', () => {

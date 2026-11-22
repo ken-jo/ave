@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildGraph, semanticLinks, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
+import { vector } from '../../../__tests__/support/memory-map-vector.js';
 import type { MemoryMapRecord } from '../../../shared/memory-map.js';
 const record = (i: number): MemoryMapRecord => ({ memoryId: String(i).padStart(4, '0'), contentRevision: 'revision', title: 'Title', text: 'Body', sourceKind: 'user' });
-const vector = (x = 1): number[] => [x, Math.sqrt(1-x*x), ...Array<number>(382).fill(0)];
 describe('memory embedding graph', () => {
   it('uses original vector neighbours, canonical pairs, degree six and the total budget', () => {
     const records = Array.from({ length: 24 }, (_, i) => record(i));
