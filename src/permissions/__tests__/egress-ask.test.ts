@@ -961,6 +961,47 @@ describe("egress ask callback — shell calls", () => {
     expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
   });
 
+  it.each([["held answer", SHELL_TOKEN], ["pending ask", TERMINAL_TOKEN]] as const)("never credits an earlier invocation's %s to a later one under the same token and owner", async (path, token) => {
+    const first = new AbortController();
+    signals.set(token, first.signal);
+    const github = { host: "github.com", port: 443 };
+    const byName = { attributionKey: token, identity: "listener", phase: "name" } as const;
+    const resolved = { ...byName, phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" } as const;
+    const raw = rawCallback();
+    const replace = (): void => {
+      first.abort();
+      signals.set(token, new AbortController().signal);
+    };
+    if (path === "held answer") {
+      answer = async () => ({ allow: true, scope: "session" });
+      expect(await raw(github, byName)).toBe(true);
+      replace();
+      answer = async () => ({ allow: false, reason: "denied by the user" });
+      expect(await raw(github, resolved)).toEqual({ allow: false, reason: "denied by the user" });
+      expect(asked).toHaveLength(2);
+      return;
+    }
+    const replies: ((reply: EgressApprovalAnswer) => void)[] = [];
+    let onAsk = (): void => {};
+    answer = () => new Promise((resolve) => { replies.push(resolve); onAsk(); });
+    const asking = new Promise<void>((resolve) => { onAsk = resolve; });
+    const earlier = raw(github, resolved);
+    await asking;
+    replace();
+    let lookedUp!: (scope: undefined) => void;
+    vi.spyOn(grants, "matchingScope").mockImplementationOnce(() => new Promise((resolve) => { lookedUp = resolve; }));
+    let laterAsked = false;
+    onAsk = () => { laterAsked = true; };
+    const later = raw(github, resolved);
+    // Nothing awaits between a terminal's grant lookup and its ask, so the later connection reaches the ask before the earlier card's answer lands.
+    lookedUp(undefined);
+    replies[0]?.({ allow: true, scope: "tab" });
+    expect(await earlier).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(laterAsked).toBe(true);
+    replies[1]?.({ allow: false, reason: "denied by the user" });
+    expect(await later).toEqual({ allow: false, reason: "denied by the user" });
+  });
+
   it("hands the ask the call's abort signal", async () => {
     const controller = new AbortController();
     signals.set(SHELL_TOKEN, controller.signal);

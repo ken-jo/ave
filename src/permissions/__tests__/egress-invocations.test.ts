@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   egressInvocationAbortSignal,
   onEgressInvocationReleased,
@@ -6,6 +6,16 @@ import {
   releaseEgressInvocation,
   type EgressInvocationOwner,
 } from "../egress-invocations.js";
+
+// Tokens the next draws return, in order; the real generator once it is empty.
+const draws = vi.hoisted(() => [] as string[]);
+vi.mock("node:crypto", async (original) => {
+  const crypto = await original<typeof import("node:crypto")>();
+  return { ...crypto, randomBytes: (size: number) => {
+    const next = draws.shift();
+    return next === undefined ? crypto.randomBytes(size) : Buffer.from(next, "hex");
+  } };
+});
 
 const SHELL: EgressInvocationOwner = {
   kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
@@ -64,5 +74,18 @@ describe("egress invocation release", () => {
     opener.abort();
     expect(signal?.aborted).toBe(true);
     invocation.release();
+  });
+
+  it("never draws a live or released token again", () => {
+    const released = openEgressInvocation(SHELL);
+    released.release();
+    const running = openEgressInvocation(SHELL);
+    const fresh = "c".repeat(32);
+    draws.push(released.token, running.token, fresh);
+    const next = openEgressInvocation(SHELL);
+    expect(next.token).toBe(fresh);
+    expect(draws).toEqual([]);
+    next.release();
+    running.release();
   });
 });

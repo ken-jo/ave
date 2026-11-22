@@ -415,6 +415,9 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     const open = functionBody(manager, /\nasync function openInvocationListener\(/u);
     expect(open).toMatch(/if \(retiredInvocationKeys\.has\(key\)\)/u);
     expect(open).toMatch(/if \(invocationListeners\.size >= MAX_INVOCATION_LISTENERS\)/u);
+    // A Windows host relay key is never reopened either, beside a live relay or after retirement.
+    const relay = functionBody(manager, /\nexport async function openHostInvocationProxy\(/u);
+    expect(relay).toMatch(/if \(retiredInvocationKeys\.has\(key\) \|\| \[\.\.\.hostInvocationProxies\]\.some\(relay => relay\.key === key\)\)/u);
     // macOS: a loopback port the wrap's profile alone may reach.
     expect(open).toMatch(/await listenOn\(mux\.server, 0, '127\.0\.0\.1'\);/u);
     const filter = functionBody(manager, /\nfunction invocationListenerFilter\(/u);

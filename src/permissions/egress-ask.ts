@@ -150,9 +150,10 @@ interface HeldAnswer {
   readonly approvalIdentity?: string;
 }
 
-// The verified invocation: its signal when its key was accepted, and whether it is still that invocation.
+// The verified invocation: its signal when its key was accepted, its number, and whether it is still that invocation.
 interface LiveInvocation {
   readonly signal: AbortSignal | undefined;
+  readonly generation: number;
   readonly live: () => boolean;
 }
 
@@ -207,11 +208,15 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
   const now = deps.now ?? (() => new Date());
   const terminalAskTimeoutMs = deps.terminalAskTimeoutMs ?? TERMINAL_EGRESS_ASK_TIMEOUT_MS;
 
+  // Each verified invocation's number, so a token that comes to name a later invocation never meets an earlier one's pending ask or held answer.
+  const generations = new WeakMap<object, number>();
+  let generationCount = 0;
+
   // Answers given by name, per (invocation, destination), one per connection that asked, waiting for that connection's resolved phase.
   const heldAnswers = new Map<string, HeldAnswer[]>();
   let heldCount = 0;
-  const holdKey = (token: string, destination: EgressDestination, strength: EgressIdentityStrength): string =>
-    `${token}\n${destination.host}\n${destination.port}\n${strength}`;
+  const holdKey = (token: string, generation: number, destination: EgressDestination, strength: EgressIdentityStrength): string =>
+    `${token}\n${generation}\n${destination.host}\n${destination.port}\n${strength}`;
   const holdAnswer = (key: string, answer: HeldAnswer): void => {
     // Bounded: past the cap the oldest held answers are dropped, and their connections are asked again in the resolved phase (never allowed).
     while (heldCount >= MAX_HELD_ANSWERS) {
@@ -235,6 +240,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
 
   const ask = async (
     token: string,
+    generation: number,
     owner: ShellEgressOwner | TerminalEgressOwner,
     destination: EgressDestination,
     network: Exclude<EgressDestinationNetwork, "reserved">,
@@ -242,7 +248,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     evaluation?: ShellNetworkPermissionEvaluation,
   ): Promise<AskAnswer | typeof ASK_AGAIN> => {
     // One card (or banner) per (invocation, destination, class): a client that opens several connections to one host while it is up waits on the same answer. A terminal tab's shell is one invocation, so this coalesces per tab.
-    const key = `${token}\n${destination.host}\n${destination.port}\n${network}\n${strength}\n${evaluation?.policyEpoch ?? ""}\n${evaluation?.approvalIdentity ?? ""}`;
+    const key = `${token}\n${generation}\n${destination.host}\n${destination.port}\n${network}\n${strength}\n${evaluation?.policyEpoch ?? ""}\n${evaluation?.approvalIdentity ?? ""}`;
     let pending = pendingAsks.get(key);
     if (pending === undefined) {
       const entry = { answer: startAsk(token, owner, destination, network, strength, evaluation).finally(() => pendingAsks.delete(key)), onceTaken: false };
@@ -378,8 +384,12 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     }
     // An ended invocation keeps no authority: the token must still name this owner and the signal it had here, unaborted.
     const signal = deps.abortSignalOf(token);
+    const identity: object = signal ?? owner;
+    let generation = generations.get(identity);
+    if (generation === undefined) generations.set(identity, (generation = ++generationCount));
     const invocation: LiveInvocation = {
       signal,
+      generation,
       live: () => deps.ownerOf(token) === owner && deps.abortSignalOf(token) === signal && signal?.aborted !== true,
     };
     verified.key = token;
@@ -424,7 +434,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         const subject = grantSubject(token, owner);
         const grantDestination = { ...destination, network };
         const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network);
-        const key = holdKey(token, destination, strength);
+        const key = holdKey(token, invocation.generation, destination, strength);
         const granted = await deps.grants.matchingScope(subject, grantDestination, eligibleScopes);
         const evaluation = owner.kind === "shell" ? await deps.evaluateShellPermission({ destination,
           context: deps.shellAskEnabled() ? owner.context : { ...owner.context, approvalSurface: "unavailable" },
@@ -459,7 +469,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           }
           if (owner.kind === "terminal" && !deps.shellAskEnabled()) return deny("policy", EGRESS_DENY_REASONS.askOff);
           // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
-          const answer = await ask(token, owner, destination, network, strength, evaluation);
+          const answer = await ask(token, invocation.generation, owner, destination, network, strength, evaluation);
           if (answer === ASK_AGAIN) return decide(host, port, context, verified);
           if (!answer.allow) return answer.decision;
           // An answer that arrives after the invocation ended grants nothing.

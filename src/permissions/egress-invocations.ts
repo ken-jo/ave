@@ -84,6 +84,8 @@ interface LiveInvocation {
 }
 
 const live = new Map<string, LiveInvocation>();
+// Released tokens are never drawn again, so a key names one invocation for the life of the process. Grows by one token per invocation.
+const retired = new Set<string>();
 const releaseListeners = new Set<(token: string, release: EgressInvocationRelease) => void>();
 
 // The token length in characters: 16 random bytes, hex-encoded.
@@ -92,7 +94,7 @@ export const EGRESS_INVOCATION_TOKEN_LENGTH = 32;
 export function openEgressInvocation(owner: EgressInvocationOwner, options: EgressInvocationOptions = {}): EgressInvocation {
   let token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   // 128 random bits do not collide in practice; a collision would silently merge two owners, so it is re-drawn rather than assumed away.
-  while (live.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
+  while (live.has(token) || retired.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   let processGroup: number | undefined;
   const ended = new AbortController();
   const abortSignal = options.abortSignal === undefined ? ended.signal : AbortSignal.any([options.abortSignal, ended.signal]);
@@ -100,6 +102,7 @@ export function openEgressInvocation(owner: EgressInvocationOwner, options: Egre
   const release = (): void => {
     if (live.get(token)?.release !== release) return;
     live.delete(token);
+    retired.add(token);
     ended.abort(new Error("Egress invocation was released"));
     const failures: unknown[] = [];
     for (const listener of [...releaseListeners]) {

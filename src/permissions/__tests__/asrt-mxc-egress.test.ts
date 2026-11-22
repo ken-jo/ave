@@ -299,20 +299,26 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(open).not.toHaveBeenCalled();
   });
 
+  it("opens one relay per key for the session: never beside a live relay, nor after its relay closed", async () => {
+    const relay = await openRelay();
+    await expect(openRelay()).rejects.toThrow(/already had a relay/u);
+    await expect(launchShell().then(() => undefined)).rejects.toThrow(/already had a relay/u);
+    await relay.close();
+    await expect(openRelay()).rejects.toThrow(/already had a relay/u);
+    expect(observed).toEqual([]);
+  });
+
   it("refuses a mismatched relay credential, proxy hops and an ended invocation before approval", async () => {
     const relay = await openRelay();
-    const sameInvocation = await openRelay();
     const other = openInvocation(invocation.owner);
     const otherRelay = await openRelay(other.token);
-    expect(await request(relay.port, sameInvocation.proxyAuthorization)).toBe(407);
-    expect(await request(sameInvocation.port, relay.proxyAuthorization)).toBe(407);
     expect(await request(relay.port, otherRelay.proxyAuthorization)).toBe(407);
+    expect(await request(otherRelay.port, relay.proxyAuthorization)).toBe(407);
     for (const port of [sharedPort, relay.port]) {
       expect(await request(relay.port, relay.proxyAuthorization, "GET", `http://127.0.0.1:${port}/`)).toBe(403);
     }
     expect(observed).toEqual([]);
-    const launch = await launchShell(invocation.token, false);
-    await launch.release();
+    invocation.release();
     const requestApproval = vi.fn(requester);
     requester = requestApproval;
     expect(await request(relay.port, relay.proxyAuthorization)).toBe(403);
