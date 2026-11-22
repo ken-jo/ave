@@ -8,11 +8,11 @@ import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
-import { holdDir, type NodeId, type OwnedDir, OwnedFsError, realWithin, type SourceRoot } from "./owned-fs.js";
+import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
-import { isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
+import { isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, registeredIn, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -35,11 +35,6 @@ export interface StageWorkspaceOptions {
   /** How a folder's names and their identities are read when a plain project's case rule is asked for; the default reads the disk. */
   nameReader?: NameReader;
 }
-
-/** Which directory a path is, when it is a real one; a link or a file is none. */
-const realDirId = (path: string): NodeId | undefined => {
-  try { return holdDir(path).id; } catch { return undefined; }
-};
 
 /** The mismatches already reported in this process, by run folder. */
 const warnedOnce = new Set<string>();
@@ -130,8 +125,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   /**
    * The registration git made for a folder of the run, read from the folder's `.git` file and taken only when the two name each other by
-   * identity: the admin folder lies in this repository's `worktrees`, and its `gitdir` file points into this very folder. Any other is
-   * not the run's.
+   * identity: the admin folder lies in this repository's `worktrees`, and its `gitdir` file points into this very folder of this very run
+   * folder. Any other is not the run's.
    */
   function captureRegistration(at: Held, folder: OwnedDir): Registration | undefined {
     const repo = at.file.repo;
@@ -146,7 +141,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const text = held?.readFile("gitdir")?.toString("utf8");
       if (held === undefined || text === undefined) return undefined;
       const gitdir = resolve(admin, text.trimEnd());
-      return basename(gitdir) === ".git" && realDirId(dirname(gitdir)) === folder.id ? { admin, id: held.id, gitdir } : undefined;
+      const own = basename(gitdir) === ".git" && realDirId(dirname(gitdir)) === folder.id && realDirId(dirname(dirname(gitdir))) === at.run.id;
+      return own ? { admin, id: held.id, gitdir } : undefined;
     } catch {
       return undefined;
     }
@@ -166,14 +162,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   /** Where a recorded registration is in the repository's `worktrees`, as long as it is still the admin folder that was recorded and
-   * still points at the run's folder; undefined when it is gone, a throw when another thing is there. */
-  function ownRegistration(at: Held, registration: Registration): { worktrees: OwnedDir; name: string } | undefined {
+   * still points at the run's folder; undefined when it is gone, a throw when another thing is there. The run's folder is removed before
+   * its registration: while something has its name, that is the directory the record names. */
+  function ownRegistration(at: Held, key: string, registration: Registration): { worktrees: OwnedDir; name: string } | undefined {
     const repo = at.file.repo;
     if (repo === undefined) throw new OwnedFsError("changed", "the record names no repository");
     const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
     if (worktrees === undefined) return undefined;
     const name = basename(registration.admin);
-    if (!samePath(dirname(dirname(registration.gitdir)), at.runRoot)) throw new OwnedFsError("changed", "the registration points outside the run's folder");
+    if (!registeredIn(at.run.id, key, registration.gitdir)) throw new OwnedFsError("changed", "the registration points outside the run's folder");
+    const folder = nodeIdOf(dirname(registration.gitdir));
+    if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
     if (realDirId(dirname(registration.admin)) !== worktrees.id) throw new OwnedFsError("changed", "the registration is not in the run's repository");
     if (worktrees.entryId(name) === undefined) return undefined;
     const text = worktrees.child(name, registration.id)?.readFile("gitdir")?.toString("utf8");
@@ -187,7 +186,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const registration = at.file.registrations[key];
     if (registration === undefined) return;
     await assertRepository(at);
-    const found = ownRegistration(at, registration);
+    const found = ownRegistration(at, key, registration);
     if (found !== undefined) await found.worktrees.remove(found.name, registration.id);
     delete at.file.registrations[key];
     writeRunFile(at, at.file);
@@ -773,7 +772,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       return [{ field: "self", side: "host" }];
     }
     for (const [key, registration] of Object.entries(file.registrations)) {
-      try { ownRegistration(at, registration); } catch { found.push({ field: `registrations.${key}`, side: "repo" }); }
+      try { ownRegistration(at, key, registration); } catch { found.push({ field: `registrations.${key}`, side: "repo" }); }
     }
     return found;
   }

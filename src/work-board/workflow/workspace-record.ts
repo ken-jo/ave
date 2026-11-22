@@ -1,6 +1,6 @@
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { isStageId } from "../template-graph.js";
-import type { NodeId } from "./owned-fs.js";
+import { type NodeId, realDirId } from "./owned-fs.js";
 import { JOIN_DIR, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
 
 export interface OutputFile { path: string; sha256: string; size: number }
@@ -95,6 +95,17 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
 }
 
 /**
+ * Whether a registration's `gitdir` names the `.git` file of the run's folder for `key`. Git writes that path as it really is on disk,
+ * which need not be the text the host reached the run folder by (a link above the home). So the run folder is told by which directory
+ * it is, and only the folder's own name is compared; a path whose run folder cannot be identified names nothing.
+ */
+export function registeredIn(run: NodeId, key: string, gitdir: string): boolean {
+  const folder = dirname(gitdir);
+  const fold = (name: string): string => process.platform === "win32" ? name.toLowerCase() : name;
+  return basename(gitdir) === ".git" && fold(basename(folder)) === fold(key === JOIN_DIR ? JOIN_DIR : stageDirName(key)) && realDirId(dirname(folder)) === run;
+}
+
+/**
  * Whether a record of the right shape is the one `open` wrote into this very folder: the folder is the directory the record names as
  * itself, at the one path its run, item and project give, and what it says of the repository is what `open` writes for that run. A
  * record copied or restored anywhere, or edited to name something else, is no record: it directs nothing.
@@ -107,8 +118,7 @@ export function recordFits(home: string, run: { path: string; id: NodeId }, file
     if (file.branch !== runBranch(file.runId) || !OBJECT_ID.test(file.baseCommit ?? "")) return false;
     if (!file.refs.every(ref => ref.name === `refs/heads/${file.branch}` && ref.oid === file.baseCommit)) return false;
   }
-  return Object.entries(file.registrations).every(([key, entry]) =>
-    samePath(entry.gitdir, join(run.path, key === JOIN_DIR ? JOIN_DIR : stageDirName(key), ".git")));
+  return Object.entries(file.registrations).every(([key, entry]) => registeredIn(run.id, key, entry.gitdir));
 }
 
 /** The fields that name the owner: a record that differs in one of them from the one seen earlier is another run's. */

@@ -390,4 +390,29 @@ describe("git stage workspaces", () => {
     expect(userGit(repo, "branch", "--list", runBranch(failed.run.runId))).toBe("");
     expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
   });
+
+  it("a home reached through a link runs a git workspace from open to release", async () => {
+    // Git names a worktree by its path as it really is on disk; the host reaches the home by the path it was given.
+    mkdirSync(join(base, "real", "home"), { recursive: true });
+    symlinkSync(join(base, "real"), join(base, "link"), "junction");
+    const before = process.env.AVE_HOME;
+    process.env.AVE_HOME = join(base, "link", "home");
+    try {
+      const handle = start();
+      const open = await handle.provider.open(handle.run, repo);
+      expect(open).toMatchObject({ ok: true, workspace: { kind: "git" } });
+      if (!open.ok) throw new Error("expected a workspace");
+      write(await stageRoot(handle, "s1"), "from-s1.txt", "s1\n");
+      await sealed(handle, "s1");
+      expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
+      expect(userGit(repo, "show", `${runBranch(handle.run.runId)}:from-s1.txt`)).toBe("s1");
+      // Found again by a provider that has only the disk to go by.
+      await createStageWorkspaceProvider({ git: createHostGit({ env }) }).release(handle.run, "all");
+      expect(existsSync(open.workspace.runRoot)).toBe(false);
+      expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
+      expect(readdirSync(join(repo, ".git", "worktrees"))).toEqual([]);
+    } finally {
+      if (before === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = before;
+    }
+  });
 });

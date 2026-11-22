@@ -35,6 +35,16 @@ export function nodeIdOf(path: string): NodeId | undefined {
   return stat === undefined ? undefined : idOf(stat);
 }
 
+/** Which directory a path is, when it is a real one; a link, a file or a path that cannot be read is none. */
+export function realDirId(path: string): NodeId | undefined {
+  try {
+    const stat = stats(path);
+    return realDir(stat) ? idOf(stat) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Whether `inner` is `outer` or lies beneath it, as both really are on disk. */
 export function realWithin(outer: string, inner: string): boolean {
   const real = (value: string): string => process.platform === "win32" ? realpathSync.native(value).toLowerCase() : realpathSync.native(value);
