@@ -12,7 +12,7 @@ export interface InstallerGitInstall {
 }
 
 const MINGIT_PREFIXES = ["ucrt64", "clangarm64"] as const;
-const BUNDLED_GIT_HELPER_RETRY_MS = 10_000;
+const BUNDLED_GIT_RETRY_MS = 10_000;
 export const DARWIN_GIT_SHIM = "/usr/bin/git";
 export const DARWIN_CLT_PROBE = "/usr/bin/xcode-select";
 const VERIFIED_GIT_INSTALLATIONS: Readonly<Partial<Record<NodeJS.Platform, readonly VerifiedExecutableCandidate[]>>> = Object.freeze({
@@ -117,18 +117,12 @@ interface HostGitLaunch {
   options: { cwd?: string; env: NodeJS.ProcessEnv };
 }
 
-let retrySystemDirectoryAt = 0;
+let retryBundledGitAt = 0;
 
 function probeInstallerGit(install: InstallerGitInstall): HostGitLaunch | undefined {
-  if (performance.now() < retrySystemDirectoryAt) return undefined;
-  let systemDirectory: string;
+  if (performance.now() < retryBundledGitAt) return undefined;
   try {
-    systemDirectory = queryWindowsSystemDirectorySync();
-  } catch {
-    retrySystemDirectoryAt = performance.now() + BUNDLED_GIT_HELPER_RETRY_MS;
-    return undefined;
-  }
-  try {
+    const systemDirectory = queryWindowsSystemDirectorySync();
     const cwd = dirname(install.path);
     const systemRoot = win32.dirname(systemDirectory);
     const pathEntries = [
@@ -151,10 +145,12 @@ function probeInstallerGit(install: InstallerGitInstall): HostGitLaunch | undefi
       ...options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
       timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 4096,
     });
-    return output.startsWith("git version ") ? { path: install.path, options } : undefined;
+    if (output.startsWith("git version ")) return { path: install.path, options };
   } catch {
-    return undefined;
+    // Retry the bundle after a failed directory query or executable probe.
   }
+  retryBundledGitAt = performance.now() + BUNDLED_GIT_RETRY_MS;
+  return undefined;
 }
 
 function systemGitEnvironment(): NodeJS.ProcessEnv {

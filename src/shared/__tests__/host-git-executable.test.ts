@@ -126,7 +126,12 @@ describe("resolveHostGit", () => {
     }
   });
 
-  it.each(["a valid helper reply", "system Git"])("bounds failed helper attempts and discovers %s", async (recovery) => {
+  it.each([
+    { failure: "invalid helper reply", recovery: "the bundle" },
+    { failure: "invalid helper reply", recovery: "system Git" },
+    { failure: "probe timeout", recovery: "the bundle" },
+    { failure: "unexpected version reply", recovery: "the bundle" },
+  ])("bounds retries after $failure and discovers $recovery", async ({ failure, recovery }) => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     const originalExecPath = process.execPath;
     Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
@@ -137,22 +142,34 @@ describe("resolveHostGit", () => {
     vi.stubEnv("PATH", "D:\\Tools\\Git\\cmd");
     vi.mocked(existsSync).mockReturnValue(true);
     vi.mocked(statSync).mockImplementation((path) => ({ isFile: () => path === bundled }) as ReturnType<typeof statSync>);
-    vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("relative"));
+    const helperFailed = failure === "invalid helper reply";
+    const expectedProbes = helperFailed ? 0 : 1;
+    if (helperFailed) vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("relative"));
+    if (failure === "probe timeout") {
+      vi.mocked(execFileSync).mockImplementation(() => {
+        throw Object.assign(new Error("probe timed out"), { code: "ETIMEDOUT" });
+      });
+    } else {
+      vi.mocked(execFileSync).mockReturnValue("unexpected output");
+    }
     try {
       for (let attempt = 0; attempt < 4; attempt++) {
         expect(resolveHostGit({ packaged: true })).toBeNull();
       }
       expect.soft(spawnSync).toHaveBeenCalledTimes(1);
-      expect(execFileSync).not.toHaveBeenCalled();
-
-      if (recovery === "a valid helper reply") {
-        vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("C:\\Windows\\System32"));
-        vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
+      expect.soft(execFileSync).toHaveBeenCalledTimes(expectedProbes);
+      expect(vi.mocked(accessSync).mock.calls.filter(([candidate]) => candidate === system)).toHaveLength(4);
+      if (recovery === "the bundle") {
         now.mockReturnValue(10_099);
         expect(resolveHostGit({ packaged: true })).toBeNull();
+        expect.soft(spawnSync).toHaveBeenCalledTimes(1);
+        expect.soft(execFileSync).toHaveBeenCalledTimes(expectedProbes);
+        vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("C:\\Windows\\System32"));
+        vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
         now.mockReturnValue(10_100);
         expect(resolveHostGit({ packaged: true })?.path).toBe(bundled);
-        expect(spawnSync).toHaveBeenCalledTimes(2);
+        expect.soft(spawnSync).toHaveBeenCalledTimes(2);
+        expect(execFileSync).toHaveBeenCalledTimes(expectedProbes + 1);
       } else {
         vi.mocked(statSync).mockImplementation((path) => ({ isFile: () => path === bundled || path === system }) as ReturnType<typeof statSync>);
         expect(resolveHostGit({ packaged: true })?.path).toBe(system);
