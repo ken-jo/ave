@@ -1,4 +1,9 @@
-/** Held events (work-board-run-ending.md): a scheduler event whose run write finds the row not naming the run while its class holds it. */
+/**
+ * Held events (work-board-run-ending.md): a scheduler event whose run write finds the row not naming the run while its class holds it.
+ * `testTimeout` bounds hangs caused by product regressions such as awaiting a detached launch in the startup handler
+ * (rv-heldev3 P2 (a)) or skipping dispatch or the busy decrement (rv-heldev3 P2 (b)). `afterEach` releases the gates,
+ * finishes fake children, and disposes fixtures even when the test body is stranded.
+ */
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
