@@ -22,6 +22,8 @@ const trackMock = vi.fn();
 const admissionMock = vi.fn();
 // Whether the host runs under the OS sandbox. The primitive follows this one answer: wrap while it is true, spawn the caller's command as given while it is false. Defaults to true so the composition cases below see the wrap.
 const sandboxActiveMock = vi.fn<() => boolean>();
+// The offline-service gate, which an owner marked offline follows instead of the extension setting.
+const offlineActiveMock = vi.fn<() => boolean>();
 
 const TEMP_ROOT = "/home/u/.ave/sandbox/tmp";
 const HOME_ROOT = "/home/u/.ave/sandbox/home";
@@ -40,6 +42,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   }),
   isAsrtSandboxActive: () => sandboxActiveMock(),
   isPluginWorkerConfinementActive: () => sandboxActiveMock(),
+  isOfflineProcessConfinementActive: () => offlineActiveMock(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   // The floor carries the sandbox private roots, as the real one does on macOS and Linux; the primitive's own directories are re-allowed under it.
@@ -68,6 +71,8 @@ beforeEach(() => {
   wrapWorkerCommandMock.mockResolvedValue({ argv: ["/bin/sandbox", "--", "sh", "-c", "x"], env: {} });
   sandboxActiveMock.mockReset();
   sandboxActiveMock.mockReturnValue(true);
+  offlineActiveMock.mockReset();
+  offlineActiveMock.mockReturnValue(true);
   spawnMock.mockReset();
   spawnMock.mockImplementation(() => fakeChild());
   trackMock.mockReset();
@@ -233,6 +238,26 @@ describe("spawnConfinedChild", () => {
     // The sandbox HOME's own TEMP is per process there; no env launcher.
     const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
     expect(cmdline).not.toContain("TMPDIR=");
+  });
+
+  it("refuses an offline owner while the OS sandbox is not active, before any wrap or spawn", async () => {
+    sandboxActiveMock.mockReturnValue(false);
+    offlineActiveMock.mockReturnValue(false);
+    await expect(spawnConfinedChild({ egressOwner: { ...EGRESS_OWNER, pluginId: undefined, network: "offline" },
+      command: "/usr/bin/node", args: [], label: "offline-service", grantMode: "deny-only", baseEnv: {},
+    })).rejects.toThrow("needs the OS sandbox");
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("wraps an offline owner on the offline gate with extension confinement off, and grants it no write root", async () => {
+    sandboxActiveMock.mockReturnValue(false);
+    const { confinement } = await spawnConfinedChild({ egressOwner: { ...EGRESS_OWNER, pluginId: undefined, network: "offline" },
+      command: "/usr/bin/node", args: [], label: "offline-service", grantMode: "deny-only", baseEnv: {},
+    });
+    expect(confinement).toBe("linux-bubblewrap");
+    expect(lastFilesystem().allowWrite).toEqual([]);
+    expect(spawnMock).toHaveBeenCalledWith("/bin/sandbox", expect.anything(), expect.anything());
   });
 
   it("carries the plugins-root deny to the wrap under allow-list, beside the floor and never in place of it", async () => {

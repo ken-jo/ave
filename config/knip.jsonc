@@ -95,7 +95,9 @@
         "src/engine/__tests__/fixtures/mid-stream-writer.ts",
         // The srt-win exit-order test runs it as a separate process so its
         // exit handlers fire for real; spawned BY PATH.
-        "src/permissions/__tests__/fixtures/srt-win-exit-order-child.ts"
+        "src/permissions/__tests__/fixtures/srt-win-exit-order-child.ts",
+        // The memory-map inference child stand-in, bundled and spawned BY PATH.
+        "src/main/memory-map/__tests__/fixtures/inference-probe-child.ts"
       ]
     },
     "web": {
