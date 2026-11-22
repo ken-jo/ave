@@ -7,11 +7,14 @@ import { boundStageWorkspace, isOwnStageWorkspacePath } from "../../permissions/
 import { aveHome } from "../../shared/ave-home.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+/** The provider the production wiring chose for the engine now running. */
+let production: StageWorkspaceProvider;
 async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<void> {
-  const h = await stageRunHarness({ wiring: store => workflowEngineExtensions(store) });
+  const h = await stageRunHarness({ wiring: (store) => { const parts = workflowEngineExtensions(store); production = parts.workspace; return parts; } });
   try {
     await run(h);
   } finally {
@@ -126,6 +129,40 @@ it("the run output folder stays when the run settles and goes when its item is r
   expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
   expect(await h.runOf(runId)).toBeNull();
   await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
+}));
+
+it("a superseded run keeps its output folder when its record goes, until its item is removed", () => withProductionParts(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const runRoots: string[] = [];
+  const runIds: string[] = [];
+  for (const round of [1, 2]) {
+    void h.start(id, h.local(version));
+    const child = (await h.untilSpawned(round))[round - 1];
+    if (child === undefined) throw new Error("no stage child");
+    await vi.waitFor(() => expect(existsSync(folderOf(child))).toBe(true), { timeout: 5000 });
+    runRoots.push(dirname(folderOf(child)));
+    writeFileSync(join(dirname(folderOf(child)), "_out", "result.md"), `collected ${round}\n`);
+    runIds.push((await h.item(id)).runId ?? "");
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    await h.until(id, item => item.runStatus === "cancelled");
+    await vi.waitFor(() => expect(existsSync(folderOf(child))).toBe(false), { timeout: 5000 });
+  }
+  const [first, second] = runRoots as [string, string];
+  expect(first).not.toBe(second);
+
+  // Retention lets the superseded run's record go while the row is still listed.
+  const discarded = vi.spyOn(production, "discard");
+  await h.board.runs.prune(run => run.runId === runIds[0] ? null : run);
+  expect(await h.runOf(runIds[0] ?? "")).toBeNull();
+  await vi.waitFor(() => expect(discarded).toHaveBeenCalled(), { timeout: 5000 });
+  await discarded.mock.results.at(-1)?.value;
+  expect(readFileSync(join(first, "_out", "result.md"), "utf8")).toBe("collected 1\n");
+  expect(existsSync(join(first, "_run.json"))).toBe(true);
+
+  expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+  await vi.waitFor(() => expect(existsSync(second)).toBe(false), { timeout: 5000 });
+  await vi.waitFor(() => expect(existsSync(first)).toBe(false), { timeout: 5000 });
 }));
 
 it("a delete of a live run's item keeps the output folder until the run has settled and its record is gone", () => withProductionParts(async (h) => {

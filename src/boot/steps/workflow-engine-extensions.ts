@@ -18,10 +18,17 @@ type WorkflowEngineExtensions = Pick<
  * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
  * no lane only an all-read-only version may run unattended. */
 export function workflowEngineExtensions(store: WorkBoardStore): WorkflowEngineExtensions {
-  const workspace = createStageWorkspaceProvider();
-  // A run's output folder lives as long as its item: it goes with the removal that drops the settled run's record.
-  store.runs.onRunsRemoved = (runIds) => {
-    for (const runId of runIds) void workspace.discard(runId).catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message));
+  // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
+  // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
+  const workspace = createStageWorkspaceProvider({
+    removable: async () => {
+      const [runs, standing] = await Promise.all([store.runs.view(), store.runRowsOnDisk()]);
+      if (standing === undefined) return undefined;
+      return run => runs.missing?.(run.runId) === true && standing(run) === "gone";
+    },
+  });
+  store.runs.onRunsRemoved = () => {
+    void workspace.discard().catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message));
   };
   return {
     runs: boardRunState(store),

@@ -53,6 +53,9 @@ export interface StageWorkspaceOptions {
   /** The secret-file test; the default is the permission layer's own. */
   sensitive?: (absolutePath: string) => boolean;
   seedLimits?: { files: number; bytes: number };
+  /** Which runs may lose their output folder: those with no record whose item is gone, as the stores are now. With none, or an
+   * answer of undefined, nothing is discarded. */
+  removable?: () => Promise<((run: { runId: string; itemId: number }) => boolean) | undefined>;
 }
 
 const samePath = (left: string, right: string): boolean => {
@@ -539,30 +542,42 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
-  function discard(runId: string): Promise<void> {
-    return serial(runId, async () => {
-      const found = locate({ runId });
-      if (!found) return;
-      await releaseIn(found.runRoot, found.file, "all", "drop");
-      roots.delete(runId);
-    });
-  }
-
-  async function sweep(activeRunIds: readonly string[]): Promise<void> {
+  /** Every run folder that holds its own record. A folder without one was not made by a run the host can name; it is left alone. */
+  function recordedRuns(): { runRoot: string; file: RunFileV1 }[] {
     const base = worktreesRoot();
-    if (!plainDirectory(base)) return;
-    const active = new Set(activeRunIds.map(runSlug));
+    if (!plainDirectory(base)) return [];
+    const found: { runRoot: string; file: RunFileV1 }[] = [];
     for (const project of readdirSync(base)) {
       if (!plainDirectory(join(base, project))) continue;
       for (const slug of readdirSync(join(base, project))) {
         const runRoot = join(base, project, slug);
-        if (active.has(slug) || !plainDirectory(runRoot)) continue;
+        if (!plainDirectory(runRoot)) continue;
         const file = readRunFile(runRoot);
-        // A folder with no record was not made by a run the host can name; it is left alone.
-        if (file === null || runSlug(file.runId) !== slug || active.has(runSlug(file.runId))) continue;
-        await serial(file.runId, () => releaseIn(runRoot, file, "all")).catch(() => undefined);
-        roots.delete(file.runId);
+        if (file !== null && runSlug(file.runId) === slug && Number.isInteger(file.itemId)) found.push({ runRoot, file });
       }
+    }
+    return found;
+  }
+
+  async function discard(): Promise<void> {
+    const removable = await options.removable?.();
+    if (removable === undefined) return;
+    for (const { runRoot, file } of recordedRuns()) {
+      if (!removable({ runId: file.runId, itemId: file.itemId })) continue;
+      await serial(file.runId, async () => {
+        const current = readRunFile(runRoot);
+        if (current?.runId === file.runId) await releaseIn(runRoot, current, "all", "drop");
+      });
+      roots.delete(file.runId);
+    }
+  }
+
+  async function sweep(activeRunIds: readonly string[]): Promise<void> {
+    const active = new Set(activeRunIds.map(runSlug));
+    for (const { runRoot, file } of recordedRuns()) {
+      if (active.has(runSlug(file.runId))) continue;
+      await serial(file.runId, () => releaseIn(runRoot, file, "all")).catch(() => undefined);
+      roots.delete(file.runId);
     }
   }
 

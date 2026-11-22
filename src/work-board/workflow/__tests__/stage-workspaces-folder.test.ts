@@ -252,7 +252,7 @@ describe("folder stage workspaces", () => {
     expect(read(handle.out, "plan.md")).toBe("the plan, revised\n");
   });
 
-  it("release keeps _out and the record; discard removes them and the emptied run folder", async () => {
+  it("release keeps _out and the record; discard removes them and the emptied run folder, for removable runs only", async () => {
     const handle = await start(project);
     const first = await stageRoot(handle, "s1", { outputs: ["plan.md"] });
     write(first, "plan.md", "the plan\n");
@@ -266,12 +266,19 @@ describe("folder stage workspaces", () => {
     expect(existsSync(join(handle.runRoot, RUN_FILE))).toBe(true);
 
     // As after a restart: a provider that never saw the run finds it by its id.
-    await createStageWorkspaceProvider({ git: createHostGit({ env }) }).discard(handle.run.runId);
+    // With nothing to say which runs are removable, and with an answer that could not be had, nothing goes.
+    await createStageWorkspaceProvider({ git: createHostGit({ env }) }).discard();
+    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => undefined }).discard();
+    expect(read(handle.out, "plan.md")).toBe("the plan\n");
+    // As after a restart: a provider that never saw the run finds it by its record.
+    const asked: { runId: string; itemId: number }[] = [];
+    const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => (run) => { asked.push(run); return run.runId === handle.run.runId; } });
+    await restarted.discard();
     expect(existsSync(handle.runRoot)).toBe(false);
-    // Another run of the same project is untouched, and a run that is not there is a no-op.
+    expect(asked).toEqual(expect.arrayContaining([{ runId: handle.run.runId, itemId: handle.run.itemId }, { runId: other.run.runId, itemId: other.run.itemId }]));
+    // Another run of the same project is untouched, and a second pass is a no-op.
     expect(existsSync(other.out)).toBe(true);
-    await handle.provider.discard(handle.run.runId);
-    await handle.provider.discard("run-on-no-record");
+    await restarted.discard();
     expect(read(project, "notes.txt")).toBe("notes\n");
   });
 });
