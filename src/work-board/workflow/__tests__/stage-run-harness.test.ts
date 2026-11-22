@@ -590,3 +590,36 @@ it.each(["cancelled", "completes while the other item has failed"] as const)("an
     await h.cleanup();
   }
 });
+
+it("a second start of a running item keeps the item's standing failure", async () => {
+  const linked = deferred<void>();
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      runScope: { sessionLinked: () => linked.resolve(), sessionEnded: () => {}, runEnded: () => {} },
+      workspace: {
+        ...workspace,
+        prepare: async (...args) => {
+          if (args[1].id === "a") throw new Error("preparation failed");
+          return workspace.prepare(...args);
+        },
+      },
+    }),
+  });
+  let running: ReturnType<typeof h.start> | undefined;
+  try {
+    const version = await h.confirm([stageOf("a"), stageOf("b")]);
+    const id = await h.addItem(version);
+    running = h.start(id, h.local(version));
+    await linked.promise;
+    await h.drainRunWork();
+    expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "stage_failed", stageId: "a" }));
+    expect(await h.start(id, h.local(version))).toMatchObject({ status: "already_running" });
+    await expect(Promise.race([h.untilLive(2, id), setImmediate("still pending")])).rejects.toThrow(/stage_failed/);
+  } finally {
+    for (const child of h.live()) child.finish();
+    await running;
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});

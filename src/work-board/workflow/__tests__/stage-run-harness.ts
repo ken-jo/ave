@@ -225,6 +225,7 @@ export async function stageRunHarness(opts: {
       async runItem(...args: Parameters<typeof current.runItem>) {
         const [itemId] = args;
         const origin = workBoardOriginSessionId(itemId);
+        const standing = failures.get(origin);
         if (engine === wrapped) {
           lastRequestedOrigin = origin;
           failures.delete(origin);
@@ -234,8 +235,11 @@ export async function stageRunHarness(opts: {
         const spawned = () => children.slice(first).some(child => child.input.originSessionId === origin);
         try {
           const result = await current.runItem(...args);
-          // The run already in progress is unaffected by a second start.
-          if (result.status === "already_running") return result;
+          // The run already in progress is unaffected by a second start: its failure stands unless a newer one arrived.
+          if (result.status === "already_running") {
+            if (engine === wrapped && standing !== undefined && !failures.has(origin)) failures.set(origin, standing);
+            return result;
+          }
           if (engine === wrapped && result.status !== "awaiting_approval") endRun(`${result.status}: ${"reason" in result ? result.reason : "run ended"}`, origin, result.status === "completed");
           else if (engine === wrapped && !spawned()) failChildWaits("awaiting_approval: run ended without the requested child", origin);
           return result;
