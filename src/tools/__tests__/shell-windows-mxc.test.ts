@@ -624,6 +624,36 @@ describe("builtin shell — Windows MXC containers", () => {
     await vi.waitFor(() => expect(command.homeExists()).toBe(false));
   });
 
+  it("revokes the command's egress at the job's exit and releases its launch while output finalization is pending", async () => {
+    bootMxcShells();
+    const command = captureCommandLaunch();
+    const launchReleased = deferred<void>();
+    mxcLaunchMock.release.mockImplementation(async () => {
+      if (command.revoked()) launchReleased.resolve();
+    });
+    const spawn = childProcessMock.spawn.getMockImplementation();
+    if (spawn === undefined) throw new Error("Missing child spawn fixture");
+    childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) =>
+      file === WXC_EXEC && !args.includes(PARSER_REQUEST) ? fakeChild("x".repeat(13_000), 0) : spawn(file, args, options));
+    const finalizing = deferred<void>();
+    const published = deferred<{ version: 1; captureId: string; status: "complete" }>();
+    const finish = vi.fn(() => { finalizing.resolve(); return published.promise; });
+    const toolUseId = "ps-mxc-pending-finalizer";
+    const execution = executePowerShell({ ...context(toolUseId), metadata: { toolUseId,
+      toolOutputCaptureFactory: () => ({ captureId: "capture", append: () => true, waitForDrain: async () => {}, finish }) } });
+    await finalizing.promise;
+    // The job has exited: the command's authority ended with it, before its output is published.
+    expect(command.revoked()).toBe(true);
+    expect(command.egressLive()).toBe(false);
+    await launchReleased.promise;
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+    published.resolve({ version: 1, captureId: "capture", status: "complete" });
+    const result = await execution;
+    expect(result.isError).toBe(false);
+    expect(finish).toHaveBeenCalledOnce();
+    expect(command.homeExists()).toBe(false);
+  });
+
   it("settles and releases everything when the remote authority refresh rejects", async () => {
     bootMxcShells();
     const container = failCommandContainerRelease({});

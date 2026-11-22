@@ -4161,7 +4161,6 @@ async function spawnPowerShellInMxc(
     if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw controllerRevoked;
     observation = parserResponse === undefined ? startShellObservation(command, cwd,
       { mode: "isolated", detail: "filesystem/process confinement" }, token) : undefined;
-    lifecycle.defer(() => endObservation(null, "failed"));
     if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
     assertManagedChildProcessAdmissionOpen(MXC_SHELL_LABEL);
     if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
@@ -4180,7 +4179,9 @@ async function spawnPowerShellInMxc(
       env: buildSafeChildEnv({}),
     });
   } catch (error) {
-    const released = await lifecycle.dispose();
+    lifecycle.revoke();
+    const ended = await runReleaseSteps([() => endObservation(null, "failed")]);
+    const released = [...ended, ...await lifecycle.dispose()];
     if (error === controllerRevoked) {
       logReleaseFailures(MXC_SHELL_LABEL, released);
       throw error;
@@ -4196,8 +4197,8 @@ async function spawnPowerShellInMxc(
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     // The launcher's exit ends the container job, and with it everything the command started.
     const jobLive = (): boolean => spawned.pid !== undefined && spawned.exitCode === null && spawned.signalCode === null;
-    // Disposal waits for the job to exit, and the result is formatted after it. A result that settles
-    // first carries generic details, and the release outcome is logged once known.
+    // The job's exit revokes the invocation and starts disposal; a result formatted after the job exited
+    // joins that disposal, while one that settles first carries generic details and the outcome is logged.
     const release = async (result: () => ToolExecutionResult, failures: readonly unknown[]): Promise<ToolExecutionResult> => {
       if (!jobLive()) {
         const released = await lifecycle.dispose();
@@ -4244,9 +4245,11 @@ async function spawnPowerShellInMxc(
       })();
     });
     try {
+      // A confirmed exit, or a spawn that failed with no pid, revokes the invocation and starts its disposal
+      // at once; output finalization never holds its authority.
       lifecycle.jobStarted(new Promise<void>((resolve) => {
-        spawned.once("exit", () => resolve());
-        spawned.once("error", () => { if (spawned.pid === undefined) resolve(); });
+        spawned.once("exit", () => { resolve(); void lifecycle.dispose(); });
+        spawned.once("error", () => { if (spawned.pid === undefined) { resolve(); void lifecycle.dispose(); } });
       }));
       closed = checkedShellClose(spawned, waitForClose);
       trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
