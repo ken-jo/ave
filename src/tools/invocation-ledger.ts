@@ -15,12 +15,13 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal): {
   signal: AbortSignal;
   settle(): void;
 } {
+  const signal = AbortSignal.any(parent ? [shutdown.signal, parent] : [shutdown.signal]);
   if (auditClosed) log.error("tool invocation admitted after audit close: %s", tool);
   let resolve!: () => void;
   const completion = new Promise<void>((done) => { resolve = done; });
   pending.add(completion);
   return {
-    signal: AbortSignal.any(parent ? [shutdown.signal, parent] : [shutdown.signal]),
+    signal,
     settle() {
       pending.delete(completion);
       resolve();

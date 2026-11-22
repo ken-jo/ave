@@ -67,6 +67,24 @@ it("finishes draining a rejected settlement and surfaces its failure", async () 
   expect(ledger.pendingToolInvocationCount()).toBe(0);
 });
 
+it("registers nothing when the linked signal cannot be built", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  expect(() => ledger.admitToolInvocation("invalid", {} as AbortSignal)).toThrow(TypeError);
+  expect(ledger.pendingToolInvocationCount()).toBe(0);
+});
+
+it("keeps other admissions pending when one settles repeatedly", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const first = ledger.admitToolInvocation("first");
+  const second = ledger.admitToolInvocation("second");
+  first.settle();
+  first.settle();
+  expect(ledger.pendingToolInvocationCount()).toBe(1);
+  second.settle();
+  second.settle();
+  expect(ledger.pendingToolInvocationCount()).toBe(0);
+});
+
 it("diagnoses an invocation admitted after the audit logger closed", async () => {
   const ledger = await import("../invocation-ledger.js");
   ledger.sealToolInvocations();
