@@ -1226,6 +1226,19 @@ describe("builtin shell — Windows MXC containers", () => {
       expect.objectContaining({ label: "tool:powershell:mxc", err: error.message }));
   });
 
+  it("reports a system error raised after its job ended by its code alone and logs its redacted full text", async () => {
+    bootMxcShells();
+    const failure = helperSystemError("EPERM");
+    const command = captureCommandLaunch(() => { throw failure; });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await executePowerShell(context("ps-mxc-ended-system-error"));
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result.output).toBe("PowerShell spawn failed: host system error EPERM");
+    expect(log).toHaveBeenCalledWith("[shell-tasks] contained shell failed with no live job",
+      expect.objectContaining({ label: "tool:powershell:mxc", err: failure.message }));
+    expect(command.homeExists()).toBe(false);
+  });
+
   it.each(["cancellation", "finished command"] as const)("reports a system error in the release after %s by its code alone", async (ending) => {
     bootMxcShells();
     const failure = helperSystemError("ETIMEDOUT");

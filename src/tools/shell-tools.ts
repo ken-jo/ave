@@ -4250,11 +4250,12 @@ async function spawnPowerShellInMxc(
       void lifecycle.dispose().then((released) => logReleaseFailures(MXC_SHELL_LABEL, released));
       return withContainedReleaseFailures(result(), failures);
     };
-    // A failure's details while the job is live are withheld from the result and logged.
+    // A failure's redacted full text is logged; the result withholds it while the job is live and shows system errors by code after.
     const spawnFailure = (error: unknown): ToolExecutionResult => {
-      if (!jobLive()) return mxcSpawnFailure(shellFailureText([error]));
-      shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([error]) }, "contained shell failed while its job was live");
-      return mxcSpawnFailure(FAILURE_UNAVAILABLE);
+      const live = jobLive();
+      shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([error]) },
+        live ? "contained shell failed while its job was live" : "contained shell failed with no live job");
+      return mxcSpawnFailure(live ? FAILURE_UNAVAILABLE : shellFailureText([error], "code"));
     };
     // A fault inside finalization still settles, ends the observation, and still disposes.
     const fault = (error: unknown): void => {
