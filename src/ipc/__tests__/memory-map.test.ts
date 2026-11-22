@@ -105,6 +105,34 @@ describe('memory map host boundary', () => {
     expect(set).not.toHaveBeenCalled();
     expect(transport).not.toHaveBeenCalled();
   });
+  it.each(['https://embeddings.example.com/v1', 'http://api.openai.com/v1'])('refuses a policy-ineligible provider route %s', async baseUrl => {
+    const set = vi.fn();
+    const transport = vi.fn();
+    registerMemoryMapHandlers({
+      auditLogger: { log: state.audit },
+      singleHopNetworkFetch: transport,
+      settingsService: {
+        get: (key: string) => key === 'llm' ? {
+          vendors: { openai: { baseUrl } },
+          modelListCache: { saved: {
+            vendor: 'openai', baseUrl, endpoint: baseUrl + '/models', models: ['embed-a'],
+            modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }],
+          } },
+        } : undefined,
+        hasStoredSecret: async (name: string) => name === 'llm.apiKey.openai',
+        set,
+      },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    const endpointId = await providerEndpointId();
+    expect(await invoke('settingsGet')).toMatchObject({ ok: true, value: {
+      providerAvailable: false,
+      providers: [{ id: 'openai', models: [], reason: 'provider-route-ineligible' }],
+    } });
+    expect(await invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'embed-a', endpointId, consent: true }))
+      .toEqual({ ok: false, error: 'provider-route-ineligible' });
+    expect(set).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+  });
   it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
     const event = { ...hostEvent, senderFrame: { url: 'ave-mcp-app://isolated/index.html' } } as unknown as IpcMainInvokeEvent;
     expect(await invoke(key, {}, event)).toEqual({ ok: false, error: 'unauthorized-frame' });

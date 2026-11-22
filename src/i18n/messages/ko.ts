@@ -87,6 +87,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryMap.error.graph-stale": "메모리가 변경되었습니다. 지도를 다시 만드세요.",
   "memoryMap.error.graph-build-failed": "메모리 지도를 만들 수 없습니다.",
   "memoryMap.error.request-stale": "새 요청으로 대체되었습니다.",
+  "memoryMap.error.provider-route-ineligible": "호스트의 메모리 임베딩 정책에 따라 이 전송 대상을 사용할 수 없습니다.",
   "memoryMap.error.provider-unavailable": "이 제공자를 사용할 수 없습니다. 저장된 설정을 확인하세요.",
   "memoryMap.error.model-download-failed": "로컬 모델을 다운로드할 수 없습니다.",
   "memoryMap.error.model-folder-invalid": "로컬 모델이 있는 폴더를 선택하세요.",

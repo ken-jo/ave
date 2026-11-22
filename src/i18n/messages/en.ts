@@ -85,6 +85,7 @@ export const en = {
   "memoryMap.error.graph-stale": "Memories changed. Rebuild the map.",
   "memoryMap.error.graph-build-failed": "The memory map could not be built.",
   "memoryMap.error.request-stale": "This request was replaced.",
+  "memoryMap.error.provider-route-ineligible": "This destination is unavailable under the host’s memory embedding policy.",
   "memoryMap.error.provider-unavailable": "This provider is unavailable. Check its saved configuration.",
   "memoryMap.error.model-download-failed": "The local model could not be downloaded.",
   "memoryMap.error.model-folder-invalid": "Choose a folder containing the local model.",

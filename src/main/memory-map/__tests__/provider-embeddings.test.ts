@@ -38,7 +38,7 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
       endpointId: provider.namespace().modelRevision, timestamp: new Date().toISOString(),
     };
   };
-  const llm = { vendors: { 'openai-compatible': { baseUrl } }, modelListCache: { saved: { vendor: 'openai-compatible', baseUrl, endpoint: baseUrl + '/models', models: ['embed-a', 'embed-b'], modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }, { id: 'embed-b', outputModalities: ['embedding'] }], fetchedAt: new Date().toISOString() } } };
+  const llm = { vendors: { 'openai-compatible': { baseUrl }, claude: { baseUrl } }, modelListCache: { saved: { vendor: 'openai-compatible', baseUrl, endpoint: baseUrl + '/models', models: ['embed-a', 'embed-b'], modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }, { id: 'embed-b', outputModalities: ['embedding'] }], fetchedAt: new Date().toISOString() } } };
   const settings = { get: (name: string) => name === 'memoryEmbedding' ? config : name === 'llm' ? llm : {}, hasStoredSecret: vi.fn(async (name: string) => name === 'llm.apiKey.openai-compatible' || name === 'llm.apiKey.claude'), getSecret: vi.fn(async () => key) } as unknown as SettingsService;
   const nativeFetch = globalThis.fetch;
   const chokepoint = vi.fn<typeof fetch>((input, init) => nativeFetch(input, init));
@@ -67,10 +67,23 @@ describe('provider memory embeddings', () => {
     const f = await fixture([]);
     f.consent();
     await expect(f.provider.embed(f.provider.namespace(), ['Private'], new AbortController().signal))
-      .rejects.toMatchObject({ code: 'provider-unavailable' });
+      .rejects.toMatchObject({ code: 'provider-route-ineligible' });
     expect(f.chokepoint).not.toHaveBeenCalled();
     expect(f.requests).toEqual([]);
-    expect(f.audit).toHaveBeenCalledWith(expect.objectContaining({ allowed: false }));
+  });
+  it('keeps the transport boundary deny-by-default for unlisted hosts and public cleartext', async () => {
+    const transport = vi.fn();
+    const audit = vi.fn();
+    const egress = createMemoryProviderEgress(transport, ['embeddings.example.com'], audit);
+    for (const [target, reason] of [
+      ['https://sub.embeddings.example.com/v1', 'not-allowlisted'],
+      ['http://embeddings.example.com/v1', 'non-https'],
+    ] as const) {
+      await expect(egress.send(new URL(target), { method: 'POST', body: 'Private' }, () => {}))
+        .rejects.toMatchObject({ code: 'provider-unavailable' });
+      expect(audit).toHaveBeenLastCalledWith({ allowed: false, reason });
+    }
+    expect(transport).not.toHaveBeenCalled();
   });
   it('refuses every send without matching current versioned consent', async () => {
     const f = await fixture(); const selected = f.provider.namespace();
@@ -171,7 +184,7 @@ describe('provider memory embeddings', () => {
   });
   it('refuses configured providers without embedding support with a stable reason', async () => {
     const f = await fixture();
-    expect((await f.provider.providers()).find(value => value.id === 'claude')).toEqual({ id: 'claude', models: [], reason: 'provider-no-embedding-model' });
+    expect((await f.provider.providers()).find(value => value.id === 'claude')).toMatchObject({ id: 'claude', models: [], reason: 'provider-no-embedding-model' });
     await expect(f.provider.validate('claude', 'chat-only')).rejects.toThrow('provider-no-embedding-model');
     f.consent(); await expect(f.provider.embed({ ...f.provider.namespace(), modelId: 'chat-only' }, ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
     expect(f.chokepoint).not.toHaveBeenCalled();

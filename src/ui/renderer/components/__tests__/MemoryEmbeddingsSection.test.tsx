@@ -116,14 +116,16 @@ describe('memory embeddings settings', () => {
     fireEvent.click(screen.getByRole('radio', { name: '로컬' }));
     await waitFor(() => expect(api.settingsSet).toHaveBeenLastCalledWith({ source: 'local' }));
   });
-  it('shows translated refusal for a configured provider without embeddings', async () => {
+  it.each(['provider-no-embedding-model', 'provider-route-ineligible'] as const)('shows translated refusal for %s', async reason => {
     const api = createMemoryMapApi(); const result = await api.settingsGet(); if (!result.ok) throw new Error('Missing settings');
-    api.settingsGet.mockResolvedValue({ ok: true, value: { ...result.value, providers: [{ id: 'no-embedding', models: [], reason: 'provider-no-embedding-model' }] } });
+    api.settingsGet.mockResolvedValue({ ok: true, value: { ...result.value, providers: [{ id: 'no-embedding', models: [], route: ROUTE, reason }] } });
     render(<MemoryEmbeddingsSection api={api} />);
     await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
     fireEvent.click(screen.getByRole('radio', { name: '제공자' })); fireEvent.change(screen.getByRole('combobox', { name: '제공자' }), { target: { value: 'no-embedding' } });
-    expect(screen.getByText(ko['memoryMap.error.provider-no-embedding-model'])).toBeTruthy();
-    expect(screen.getByRole('combobox', { name: '임베딩 모델' })).toBeDisabled(); expect(screen.getByRole('button', { name: '저장' })).toBeDisabled();
+    expect(screen.getByText(ko[`memoryMap.error.${reason}`])).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: '임베딩 모델' })).toBeDisabled();
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: '저장' })).toBeDisabled();
   });
   it('keeps setup explicit and reports failed folder validation and retry', async () => {
     const api = createMemoryMapApi();

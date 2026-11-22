@@ -26,7 +26,7 @@ export class ProviderEmbeddings {
   private suspended = false;
   suspend(): void { this.suspended = true; }
   resume(): void { this.suspended = false; }
-  constructor(private readonly settings: SettingsService, private readonly send: ProviderEgress, private readonly runWorker: MemoryWorkerRunner = runMemoryWorker) {}
+  constructor(private readonly settings: SettingsService, private readonly egress: ProviderEgress, private readonly runWorker: MemoryWorkerRunner = runMemoryWorker) {}
   namespace(): EmbeddingNamespace {
     const config = this.settings.get('memoryEmbedding');
     if (config?.source !== 'provider') return LOCAL_NAMESPACE;
@@ -95,24 +95,30 @@ export class ProviderEmbeddings {
       const { vendor, block, baseUrl, preset } = route;
       const keyless = preset ? preset.requiresApiKey === false && Boolean(baseUrl) : Boolean(this.settings.get('llm')?.vendors?.[vendor]?.baseUrl && block.model) && canUseLlmVendorWithoutApiKey(vendor, block);
       if (!keyless && !await this.settings.hasStoredSecret(route.secret)) continue;
-      let models: string[] = [];
+      const destination = this.describeRoute(route);
+      const entry = { id, ...(destination ? { route: destination } : {}) };
+      if (!this.egress.isRouteEligible(baseUrl)) {
+        result.push({ ...entry, models: [], reason: 'provider-route-ineligible' });
+        continue;
+      }
+      const models: string[] = [];
       const compatible = isOpenAICompatibleVendor(vendor) && (vendor !== 'openai-compatible' || !block.wire || block.wire === 'openai-chat' || block.wire === 'openai-responses' || Boolean(preset));
-      if (SDK_EMBEDDING_MODELS[vendor] && (!block.baseUrl || block.baseUrl === DEFAULT_ENDPOINTS[vendor])) models = [...SDK_EMBEDDING_MODELS[vendor]!];
+      const builtInModels = SDK_EMBEDDING_MODELS[vendor];
+      if (builtInModels && (!block.baseUrl || block.baseUrl === DEFAULT_ENDPOINTS[vendor])) models.push(...builtInModels);
       for (const cached of Object.values(this.settings.get('llm')?.modelListCache ?? {})) {
         if (cached.vendor !== vendor || (preset ? cached.credentialScope !== preset.providerId || cached.baseUrl !== baseUrl : cached.credentialScope || !isDefaultModelListEndpoint(this.settings.get('llm').vendors, vendor, cached.endpoint))) continue;
         if (compatible || vendor === 'azure-foundry' || vendor === 'openai' || vendor === 'gemini' || (vendor === 'openai-compatible' && block.wire === 'google-gemini')) {
           for (const entry of cached.modelEntries ?? []) if (entry.outputModalities?.includes('embedding') && cached.models.includes(entry.id)) models.push(entry.id);
         }
       }
-      const destination = this.describeRoute(route);
-      result.push({ id, models: [...new Set(models)], ...(destination ? { route: destination } : {}), ...(!models.length ? { reason: 'provider-no-embedding-model' as const } : {}) });
+      result.push({ ...entry, models: [...new Set(models)], ...(!models.length ? { reason: 'provider-no-embedding-model' as const } : {}) });
     }
     return result;
   }
   async validate(providerId: string, modelId: string): Promise<void> {
     const provider = (await this.providers()).find(value => value.id === providerId);
     if (!provider) throw new MemoryMapHostError('provider-unavailable');
-    if (!provider.models.includes(modelId)) throw new MemoryMapHostError('provider-no-embedding-model');
+    if (!provider.models.includes(modelId)) throw new MemoryMapHostError(provider.reason ?? 'provider-no-embedding-model');
   }
   async embed(namespace: EmbeddingNamespace, values: string[], signal: AbortSignal, assertAuthority?: () => void): Promise<number[][]> {
     const providerId = namespace.providerId ?? ''; const modelId = namespace.modelId;
@@ -120,7 +126,7 @@ export class ProviderEmbeddings {
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
     await this.validate(providerId, modelId);
     const route = this.route(providerId);
-    if (!route.baseUrl || !this.send) throw new MemoryMapHostError('provider-unavailable');
+    if (!route.baseUrl) throw new MemoryMapHostError('provider-unavailable');
     const assertCurrent = () => {
       this.assertConsent(namespace, signal);
       assertAuthority?.();
@@ -131,7 +137,7 @@ export class ProviderEmbeddings {
       const url = new URL(typeof input === 'string' || input instanceof URL ? input.toString() : input.url);
       if (url.origin !== new URL(route.baseUrl!).origin) throw new MemoryMapHostError('provider-unavailable');
       try {
-        return await this.send(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }, assertCurrent);
+        return await this.egress.send(url, { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal }, assertCurrent);
       } catch (error) {
         if (error instanceof MemoryMapHostError) egressError = error;
         throw error;
