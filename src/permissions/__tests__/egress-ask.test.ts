@@ -961,6 +961,20 @@ describe("egress ask callback — shell calls", () => {
     expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
   });
 
+  it("reports no missing approver for a call that ended while its policy was evaluated", async () => {
+    const onNoApprover = vi.fn();
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, headless: true, approvalSurface: "unavailable", onNoApprover } });
+    const github = { host: "github.com", port: 443 };
+    expect(await callback()(github, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
+    expect(onNoApprover).toHaveBeenCalledOnce();
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    networkRule = async () => { controller.abort(); return undefined; };
+    expect(await callback()(github, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(onNoApprover).toHaveBeenCalledOnce();
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
+  });
+
   it.each([["held answer", SHELL_TOKEN], ["pending ask", TERMINAL_TOKEN]] as const)("never credits an earlier invocation's %s to a later one under the same token and owner", async (path, token) => {
     const first = new AbortController();
     signals.set(token, first.signal);

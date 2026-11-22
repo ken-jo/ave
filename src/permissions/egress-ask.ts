@@ -442,13 +442,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         const evaluation = owner.kind === "shell" ? await deps.evaluateShellPermission({ destination,
           context: deps.shellAskEnabled() ? owner.context : { ...owner.context, approvalSurface: "unavailable" },
           network, scopes: eligibleScopes, ...(granted === undefined ? {} : { rememberedGrant: granted }) }) : undefined;
+        // From here to the no-approver notice, the prompt, the held-answer take, the grant call or the use note nothing awaits, so an invocation that ended during the lookups above gets none of them.
+        if (!invocation.live()) return unattributed();
         if (evaluation?.permission.decision === "deny") {
           if (evaluation.permission.reasonCode === "no-approver" && owner.kind === "shell") owner.context.onNoApprover?.();
           const ruleDenied = evaluation.rule?.decision === "deny";
           return deny(ruleDenied ? "rule" : "policy", ruleDenied ? `${EGRESS_DENY_REASONS.denyRule} ${evaluation.rule!.pattern}` : evaluation.permission.reason);
         }
-        // From here to the prompt, the held-answer take, the grant call or the use note nothing awaits, so an invocation that ended during the lookups above gets none of them.
-        if (!invocation.live()) return unattributed();
         if (resolvedPhase) {
           // An answer given by name becomes a grant only for the class it was given for.
           const held = takeHeldAnswer(key);
