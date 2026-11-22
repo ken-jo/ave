@@ -22,6 +22,17 @@ async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<
   }
 }
 const folderOf = (child: Harness["children"][number]): string => child.input.projectRoot ?? "";
+/** As a stop between a record's removal and the discard, or a board recovery, leaves it: a run folder with an output folder and no run
+ * record. */
+async function left(run: { itemId: number; runId: string; runKey: string }): Promise<string> {
+  const leftover = createStageWorkspaceProvider();
+  const opened = await leftover.open(run, undefined);
+  if (!opened.ok || opened.workspace.kind !== "folder") throw new Error("no folder workspace");
+  const prepared = await leftover.prepare(run, stageOf("a"), 1);
+  if (!prepared.ok) throw new Error(prepared.code);
+  writeFileSync(join(opened.workspace.runRoot, "_out", "result.md"), "left behind\n");
+  return opened.workspace.runRoot;
+}
 
 it("two stages run in two folders under the home, each bound to its own session", () => withProductionParts(async (h) => {
   const version = await h.confirm([stageOf("a"), stageOf("b")]);
@@ -122,16 +133,6 @@ it("boot sweep removes the output folder and record of a run with no record whos
   expect(h.engine.cancelRun(id)).toEqual({ ok: true });
   await h.until(id, item => item.runStatus === "cancelled");
 
-  // As a stop between a record's removal and the discard leaves them: run folders with an output folder and no run record.
-  const leftover = createStageWorkspaceProvider();
-  const left = async (run: { itemId: number; runId: string; runKey: string }): Promise<string> => {
-    const opened = await leftover.open(run, undefined);
-    if (!opened.ok || opened.workspace.kind !== "folder") throw new Error("no folder workspace");
-    const prepared = await leftover.prepare(run, stageOf("a"), 1);
-    if (!prepared.ok) throw new Error(prepared.code);
-    writeFileSync(join(opened.workspace.runRoot, "_out", "result.md"), "left behind\n");
-    return opened.workspace.runRoot;
-  };
   const itemGone = await left({ itemId: 99, runId: "run-of-a-removed-item", runKey: "key" });
   const itemListed = await left({ itemId: id, runId: "run-of-a-listed-item", runKey: "key" });
   const outside = join(h.dir, "outside");
@@ -288,4 +289,21 @@ it("a discard whose first read of the stores is older than an item keeps the wor
   expect(dirname(folderOf(child))).toBe(runRoot);
   expect(h.engine.cancelRun(id)).toEqual({ ok: true });
   await h.until(id, item => item.runStatus === "cancelled");
+}));
+
+it("deleting a row whose runs have no record left removes their output folders", () => withProductionParts(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const other = await h.addItem(version);
+  const ofRow = await left({ itemId: id, runId: "recordless-run-of-the-deleted-row", runKey: "key" });
+  const ofOther = await left({ itemId: other, runId: "recordless-run-of-a-listed-row", runKey: "key" });
+  // No run record goes with this delete, so no run removal is announced for it.
+  const announced = vi.fn();
+  h.board.runs.onRunsRemoved = announced;
+
+  expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+  await vi.waitFor(() => expect(existsSync(ofRow)).toBe(false), { timeout: 5000 });
+  expect(announced).not.toHaveBeenCalled();
+  expect(readFileSync(join(ofOther, "_out", "result.md"), "utf8")).toBe("left behind\n");
+  expect(existsSync(join(ofOther, "_run.json"))).toBe(true);
 }));

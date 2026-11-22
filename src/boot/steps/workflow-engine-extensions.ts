@@ -21,9 +21,12 @@ export function workflowEngineExtensions(store: WorkBoardStore): WorkflowEngineE
   // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
-  store.runs.onRunsRemoved = () => {
+  // A row can also go when none of its runs has a record left to remove, so both a removed record and a removed row ask.
+  const discard = (): void => {
     void workspace.discard().catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message));
   };
+  store.runs.onRunsRemoved = discard;
+  store.onItemRemoved = discard;
   return {
     runs: boardRunState(store),
     workspace,
