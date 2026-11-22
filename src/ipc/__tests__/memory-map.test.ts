@@ -6,6 +6,7 @@ import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { MemoryEmbeddingConfig } from '../../shared/memory-embedding-config.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
+import { MemoryMapHostError } from '../../main/memory-map/errors.js';
 const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
@@ -43,6 +44,11 @@ beforeEach(() => {
 });
 afterEach(() => { Object.defineProperty(process, 'platform', originalPlatform); });
 describe('memory map host boundary', () => {
+  it('returns a distinct error for an oversized local build', async () => {
+    state.build.mockRejectedValueOnce(new MemoryMapHostError('catalog-too-large'));
+    await expect(invoke('build')).resolves.toEqual({ ok: false, error: 'catalog-too-large' });
+  });
+
   it.each([undefined, '/example/verified-model'])('refuses local operations while the OS sandbox cannot confine inference, with model folder %s', async localModelPath => {
     state.localConfined = false;
     state.status.mockResolvedValue({ status: localModelPath ? 'ready' : 'unconfigured' });

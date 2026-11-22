@@ -4,7 +4,7 @@ import { mainDir } from '../main-paths.js';
 import { runInferenceChild } from './inference-child.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import type { GraphBuildInput } from './graph.js';
-export type MemoryInferenceTask = { kind: 'build'; input: GraphBuildInput } | { kind: 'embed'; text: string };
+export type MemoryInferenceTask = { kind: 'embed-batch'; texts: string[]; jobId: string } | { kind: 'embed'; text: string };
 export type MemoryWorkerTask = MemoryInferenceTask | { kind: 'project'; input: GraphBuildInput };
 export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void) => Promise<T>;
 export const runMemoryWorker: MemoryWorkerRunner = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> => {

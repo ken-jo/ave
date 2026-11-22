@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MemoryMapHost } from '../host.js';
-import { buildGraph } from '../graph.js';
+import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
+import { checkedInferenceFrameBytes, INFERENCE_FILES } from '../inference-request.js';
 import type { MemoryMapCatalog } from '../catalog.js';
 import type { MemoryWorkerRunner } from '../worker-client.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
@@ -19,12 +20,55 @@ async function fixture() {
   };
   const catalog: MemoryMapCatalog = { authorizationScopeId: 'scope', excluded: 0, records: [{ memoryId: 'id', contentRevision: 'hash', title: 'Title', text: 'Private body', sourceKind: 'user' }] };
   const runWorker: MemoryWorkerRunner = async <T>(_folder: string, task: Parameters<MemoryWorkerRunner>[1]) => {
-    if (task.kind !== 'build') throw new Error('Unexpected task');
-    return await buildGraph(task.input, { embed: async () => [1, ...Array<number>(383).fill(0)], dispose: async () => {} }, () => {}) as T;
+    if (task.kind === 'embed-batch') return task.texts.map(() => [1, ...Array<number>(383).fill(0)]) as T;
+    if (task.kind !== 'project') throw new Error('Unexpected task');
+    return await buildGraph(task.input, {
+      embed: async () => { throw new Error('Projection requires cached vectors'); }, dispose: async () => {},
+    }, () => {}) as T;
   };
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
+  it('rebuilds with 4,000 cached vectors and only sends uncached note text to inference', async () => {
+    const f = await fixture();
+    const base = await buildGraph({ ...f.catalog, records: [], namespace: LOCAL_NAMESPACE, cache: {}, jobId: 'seed' }, {
+      embed: async () => { throw new Error('Unexpected embedding'); }, dispose: async () => {},
+    }, () => {});
+    const samples = Array.from({ length: 384 }, (_, index) => Math.sin(index + 1));
+    const norm = Math.hypot(...samples);
+    const vector = samples.map(sample => sample / norm);
+    const records = Array.from({ length: 4_001 }, (_, index) => ({
+      ...f.catalog.records[0], memoryId: `note-${index}`, text: 'Cached content '.repeat(40),
+    }));
+    const [uncached] = records.splice(4_000);
+    uncached.text = 'Only the new note needs inference';
+    const cache = Object.fromEntries(records.map(record => [vectorKey(record, LOCAL_NAMESPACE), vector]));
+    await f.namespace.writeJson('snapshot.json', { snapshot: base.snapshot, cache });
+    f.catalog.records = [...records, uncached];
+    const inferenceTasks: unknown[] = [];
+    const runWorker: MemoryWorkerRunner = async <T>(_folder: string, task: Parameters<MemoryWorkerRunner>[1]) => {
+      if (task.kind === 'project') {
+        expect(Object.keys(task.input.cache)).toHaveLength(4_001);
+        expect(task.input.cache[vectorKey(records[0], LOCAL_NAMESPACE)]).toEqual(vector);
+        expect(task.input.cache[vectorKey(uncached, LOCAL_NAMESPACE)]).toEqual(vector);
+        return { cache: task.input.cache, snapshot: {
+          ...base.snapshot, catalogRevision: catalogRevision(task.input.records),
+          coverage: { eligible: 4_001, embedded: 4_001, pending: 0, excluded: 0 },
+          points: task.input.records.map(({ text, ...record }) => ({ ...record, x: 0, y: 0 })),
+        } } as T;
+      }
+      checkedInferenceFrameBytes([Buffer.byteLength(JSON.stringify(task)), ...INFERENCE_FILES.map(file => file.bytes)]);
+      inferenceTasks.push(task);
+      return [vector] as T;
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker });
+    const result = await host.build(() => f.catalog);
+    expect(result.coverage.embedded).toBe(4_001);
+    expect(inferenceTasks).toEqual([{ kind: 'embed-batch', jobId: expect.any(String), texts: [`${uncached.title}\n${uncached.text}`] }]);
+    await expect(host.build(() => f.catalog)).resolves.toEqual(result);
+    expect(inferenceTasks).toHaveLength(1);
+  });
+
   it('atomically publishes vectors and coordinates, and invalidates changed or deleted sources', async () => {
     const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const result = await host.build(() => f.catalog);

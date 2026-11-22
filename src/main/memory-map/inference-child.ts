@@ -156,7 +156,7 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
       try { message = JSON.parse(line) as typeof message; } catch { finish(new Error('Memory worker failed')); return; }
       if (message.kind === 'progress') { if (message.progress !== undefined) onProgress?.(message.progress); }
       else if (message.kind === 'result') finish(undefined, message.value as T);
-      else if (message.kind === 'error' && (message.error === 'invalid-input' || message.error === 'model-integrity-failed')) finish(new MemoryMapHostError(message.error));
+      else if (message.kind === 'error' && (message.error === 'invalid-input' || message.error === 'model-integrity-failed' || message.error === 'catalog-too-large')) finish(new MemoryMapHostError(message.error));
       else finish(new Error('Memory worker failed'));
     });
     lines.once('close', () => finish(new Error('Memory worker exited before completion')));

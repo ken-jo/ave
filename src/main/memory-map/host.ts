@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { GraphSnapshot, MemoryMapProgress, MemoryMapFilters, RetrievalAnswer, EmbeddingNamespace, MemoryMapRecord } from '../../shared/memory-map.js';
 import { openFeatureNamespace, writeFileAtomicAtPathIf, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
-import { catalogRevision, LOCAL_NAMESPACE, type VectorCache } from './graph.js';
+import { catalogRevision, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import type { MemoryMapCatalog, ReadMemoryMapCatalog } from './catalog.js';
 import { MemoryMapHostError } from './errors.js';
@@ -20,6 +20,7 @@ interface HostOptions {
   watchAuthority?: (cancel: () => void) => () => void;
   onProgress?: (progress: MemoryMapProgress) => void;
 }
+interface GraphBuildResult { snapshot: GraphSnapshot; cache: VectorCache }
 export class MemoryMapHost {
   private readonly namespace: FeatureNamespaceHandle;
   protected readonly runWorker: MemoryWorkerRunner;
@@ -94,6 +95,36 @@ export class MemoryMapHost {
     if (this.snapshot) this.validateSnapshot(this.snapshot, catalog);
     return this.pending ?? this.snapshot;
   }
+  private async buildLocal(catalog: MemoryMapCatalog, folder: string, savedCache: VectorCache, signal: AbortSignal, report: (progress: MemoryMapProgress) => void, assertCurrent: () => void): Promise<GraphBuildResult> {
+    const jobId = randomUUID();
+    const total = catalog.records.length;
+    const cache: VectorCache = {};
+    const missing: { record: MemoryMapRecord; key: string }[] = [];
+    for (const record of catalog.records) {
+      const key = vectorKey(record, LOCAL_NAMESPACE);
+      const vector = savedCache[key];
+      if (vector) cache[key] = vector;
+      else missing.push({ record, key });
+    }
+    const cached = total - missing.length;
+    if (cached) report({ jobId, phase: 'embedding', completed: cached, total });
+    if (missing.length) {
+      const texts = missing.map(({ record }) => `${record.title}\n${record.text}`);
+      const vectors = await this.runWorker<number[][]>(folder, { kind: 'embed-batch', texts, jobId }, signal, progress => {
+        const completed = progress.completed;
+        const entry = missing[completed - 1];
+        if (progress.phase === 'embedding' && entry) {
+          report({ jobId, phase: 'embedding', completed: cached + completed, total, memoryId: entry.record.memoryId });
+        }
+      });
+      if (vectors.length !== missing.length) throw new Error('Memory and vector counts differ');
+      missing.forEach(({ key }, index) => { cache[key] = vectors[index]; });
+    }
+    assertCurrent();
+    return this.runWorker<GraphBuildResult>('', { kind: 'project', input: { ...catalog, cache, namespace: LOCAL_NAMESPACE, jobId } }, signal, progress => {
+      if (progress.phase !== 'embedding') report(progress);
+    });
+  }
   async build(readCatalog: ReadMemoryMapCatalog): Promise<GraphSnapshot> {
     const catalog = readCatalog(); this.activate(catalog); this.cancel(); this.hydrated = true;
     const selected = this.selectedNamespace();
@@ -134,7 +165,9 @@ export class MemoryMapHost {
     if (selected.source === 'provider') stopWatching = this.options.watchAuthority?.(() => { if (active()) this.cancel(); });
     const result = selected.source === 'provider'
       ? await (this.options.provider as ProviderEmbeddings).build(catalog, selected, saved, controller.signal, report, assertAuthority)
-      : await this.runWorker<{ snapshot: GraphSnapshot; cache: VectorCache }>(folder, { kind: 'build', input: { ...catalog, cache, namespace: LOCAL_NAMESPACE, jobId: randomUUID() } }, controller.signal, report);
+      : await this.buildLocal(catalog, folder, cache, controller.signal, report, () => {
+        if (!current()) throw new MemoryMapHostError('request-stale');
+      });
     if (!current()) throw new MemoryMapHostError('request-stale');
     this.validateSnapshot(result.snapshot, catalog);
     await this.namespace.childDir('');

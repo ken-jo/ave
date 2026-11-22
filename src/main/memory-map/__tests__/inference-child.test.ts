@@ -10,6 +10,7 @@ import { setProcessPlatform } from '../../../__tests__/support/process-platform.
 import type { ConfinedChildSpec } from '../../../permissions/confined-child.js';
 import { parseChildLaunchArgs } from '../../../plugins/isolation/child-loopback-link.js';
 import { runInferenceChild } from '../inference-child.js';
+import { MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
 const { spawn, grant, createHome, connectLoopback } = vi.hoisted(() => ({
@@ -81,9 +82,14 @@ function serveReply(beforeWrite?: (received: number) => void) {
 
 describe('inference model stream', () => {
   it('refuses an oversized UTF-8 task before allocating its wire buffer or launching the child', async () => {
-    const task = { kind: 'embed', text: '한'.repeat(Math.ceil(32 * 1024 * 1024 / 3)) } as const;
+    const batch = { kind: 'embed-batch' as const, texts: ['한글'], jobId: 'job' };
+    const taskJson = JSON.stringify(batch);
+    const measure = Buffer.byteLength;
+    const byteLength = vi.spyOn(Buffer, 'byteLength').mockImplementation((value, encoding) =>
+      value === taskJson ? MAX_INFERENCE_TASK_BYTES + 1 : measure(value, encoding));
     spawn.mockRejectedValue(new Error('Unexpected child launch'));
-    await expect(runInferenceChild(folder, task, new AbortController().signal)).rejects.toMatchObject({ code: 'invalid-input' });
+    await expect(runInferenceChild(folder, batch, new AbortController().signal)).rejects.toMatchObject({ code: 'catalog-too-large' });
+    expect(byteLength).toHaveBeenCalledWith(taskJson, 'utf8');
     expect(spawn).not.toHaveBeenCalled();
   });
 
@@ -95,11 +101,11 @@ describe('inference model stream', () => {
     expect(requestWrite).not.toHaveBeenCalled();
   });
 
-  it('preserves a typed refusal from the child', async () => {
+  it.each(['model-integrity-failed', 'catalog-too-large'])('preserves a %s refusal from the child', async code => {
     const { child } = serveReply(received => {
-      if (received === 0) child.stdout.write('{"kind":"error","error":"model-integrity-failed"}\n');
+      if (received === 0) child.stdout.write(`${JSON.stringify({ kind: 'error', error: code })}\n`);
     });
-    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'model-integrity-failed' });
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code });
   });
 
   it.each(['linux', 'win32'] as const)('delivers the request through the protocol transport using exactly three pipes on %s', async platform => {

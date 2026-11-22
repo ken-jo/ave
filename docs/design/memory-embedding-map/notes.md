@@ -137,6 +137,20 @@ Local inference runs only in a separate child process that the OS sandbox keeps 
 
 Without an active sandbox (turned off, still starting, or a Windows extension plan that would refuse the confined start) local embeddings are unavailable with that reason; the host never falls back to in-process inference. The projection worker thread shares the host process and only projects cached vectors.
 
+Local builds send only uncached title and body strings to the inference child.
+The host merges the returned vectors by memory identity, content revision and
+model namespace before handing them to the projection worker. Cached vectors
+and note metadata do not count toward the inference request limit.
+
+The batch JSON budget is 194,900,080 bytes. It covers 4,000 uncached managed
+notes at the 120 UTF-16 unit title and 8,000 unit body limits. The worst-case
+JSON encoding uses six bytes per unit, plus two bytes for the escaped newline,
+two quotes and one comma per note. The empty batch envelope with a UUID is
+80 bytes. Legacy notes can come from files up to 512 KiB, so the budget can
+hold fewer of them. The catalog has no count limit. Both endpoints check the
+actual UTF-8 task length and the exact model file lengths before accepting the
+frame. Oversized requests return `catalog-too-large`.
+
 On Windows the child starts in the system directory, which the sandbox account can already read. It receives the usual fresh process HOME environment without an ACL grant to that profile.
 
 **Windows residual:** the native runtime can emit ETW TraceLogging events. They go to the operating system's local event-tracing sessions, not through a socket the process opens, so the network block neither applies to them nor needs to. Whether the OS sends diagnostic data anywhere is governed by the system's diagnostic-data setting, not by Ave. Whether the runtime honours the environment opt-out for these events is not verified here.

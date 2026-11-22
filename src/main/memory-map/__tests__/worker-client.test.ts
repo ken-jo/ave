@@ -15,15 +15,14 @@ vi.mock('node:child_process', async importOriginal => {
 import { runMemoryWorker } from '../worker-client.js';
 import { LOCAL_NAMESPACE } from '../graph.js';
 describe('memory worker lifecycle', () => {
-  it.each(['embed', 'build'] as const)('refuses %s without the OS sandbox and starts neither a thread nor a process', async kind => {
+  it.each(['embed', 'embed-batch'] as const)('refuses %s without the OS sandbox and starts neither a thread nor a process', async kind => {
     const root = await mkdtemp(join(tmpdir(), 'memory-worker-'));
     state.mainDir = root; state.threads = 0; state.spawns = 0;
     try {
       // A stand-in at both entries: whichever one a fallback reached would answer.
       await writeFile(join(root, 'memory-map-worker.js'), `require('node:worker_threads').parentPort.postMessage({ kind: 'result', value: 'in-process' });`);
       await writeFile(join(root, 'memory-map-child.js'), `process.stdout.write(JSON.stringify({ kind: 'result', value: 'unconfined' }) + '\\n');`);
-      const input = { jobId: 'job', records: [], cache: {}, excluded: 0, authorizationScopeId: 'scope', namespace: LOCAL_NAMESPACE };
-      const task = kind === 'embed' ? { kind, text: 'question' } : { kind, input };
+      const task = kind === 'embed' ? { kind, text: 'question' } : { kind, texts: ['note'], jobId: 'job' };
       await expect(runMemoryWorker(root, task, new AbortController().signal)).rejects.toMatchObject({ code: 'local-runtime-unavailable' });
       expect(state.threads).toBe(0);
       expect(state.spawns).toBe(0);

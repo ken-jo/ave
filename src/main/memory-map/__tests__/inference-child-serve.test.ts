@@ -2,6 +2,7 @@ import { duplexPair } from 'node:stream';
 import { setImmediate } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
 import { serveInferenceChild } from '../inference-child-serve.js';
+import { checkedInferenceFrameBytes, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 
 const { accept } = vi.hoisted(() => ({ accept: vi.fn() }));
 vi.mock('../../../plugins/isolation/child-loopback-link.js', () => ({
@@ -37,7 +38,7 @@ it('takes the child loopback deadlines from the transport policy', async () => {
 });
 
 it.each([
-  { lengths: [32 * 1024 * 1024 + 1, 2, 3, 4], error: 'invalid-input' },
+  { lengths: [MAX_INFERENCE_TASK_BYTES + 1, 2, 3, 4], error: 'catalog-too-large' },
   { lengths: [32, 2, 3, 0xffff_ffff], error: 'model-integrity-failed' },
 ])('refuses a $error frame from its split prefix before reading or allocating the payload', async ({ lengths, error }) => {
   const { host, replies } = connectFixture();
@@ -56,6 +57,11 @@ it.each([
     expect(handle).not.toHaveBeenCalled();
     expect(alloc.mock.calls.some(([bytes]) => bytes >= lengths.reduce((sum, length) => sum + length, 0))).toBe(false);
   } finally { alloc.mockRestore(); host.destroy(); }
+});
+
+it('requires a positive task length and accepts the exact ceiling with the pinned file lengths', () => {
+  expect(() => checkedInferenceFrameBytes([0, 2, 3, 4])).toThrow('invalid-input');
+  expect(checkedInferenceFrameBytes([MAX_INFERENCE_TASK_BYTES, 2, 3, 4])).toBe(MAX_INFERENCE_TASK_BYTES + 25);
 });
 
 it('dispatches one complete request across split prefix and payload writes', async () => {

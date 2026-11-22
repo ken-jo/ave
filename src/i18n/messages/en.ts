@@ -78,6 +78,7 @@ export const en = {
   "memoryEmbeddings.download": "Download local model",
   "memoryEmbeddings.existing": "Use existing model",
   "memoryMap.error.invalid-input": "Invalid memory map request.",
+  "memoryMap.error.catalog-too-large": "The uncached notes are too large to build a local memory map. Try a smaller memory scope.",
   "memoryMap.error.project-not-allowed": "This memory scope is unavailable.",
   "memoryMap.error.model-unconfigured": "Set up a local embedding model first.",
   "memoryMap.error.local-runtime-unavailable": "Local embeddings are unavailable because the OS sandbox that keeps the local model off the network is not active.",

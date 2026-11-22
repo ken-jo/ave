@@ -80,6 +80,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryEmbeddings.download": "로컬 모델 다운로드",
   "memoryEmbeddings.existing": "기존 모델 사용",
   "memoryMap.error.invalid-input": "메모리 지도 요청이 올바르지 않습니다.",
+  "memoryMap.error.catalog-too-large": "아직 임베딩되지 않은 메모리의 용량이 너무 커서 로컬 메모리 지도를 만들 수 없습니다. 메모리 범위를 줄여 보세요.",
   "memoryMap.error.project-not-allowed": "이 메모리 범위에 접근할 수 없습니다.",
   "memoryMap.error.model-unconfigured": "먼저 로컬 임베딩 모델을 설정하세요.",
   "memoryMap.error.local-runtime-unavailable": "로컬 모델을 네트워크에서 차단하는 OS 샌드박스가 활성화되어 있지 않아 로컬 임베딩을 사용할 수 없습니다.",
