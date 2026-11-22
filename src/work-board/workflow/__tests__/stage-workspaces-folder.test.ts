@@ -624,6 +624,18 @@ describe("folder stage workspaces", () => {
     expect(tree(handle.out)).toEqual([]);
   });
 
+  it("outputs spelled with the two small sigmas are one path where names fold case", async () => {
+    // One capital letter stands for both: a fold to small letters would keep them apart.
+    const nameReader: NameReader = { list: directory => readdirSync(directory), id: path => `1:${path.toLowerCase()}` };
+    const handle = await start(project, { nameReader });
+    write(await stageRoot(handle, "s1"), "σ.md", "from s1\n");
+    write(await stageRoot(handle, "s2"), "ς.md", "from s2\n");
+    expect(await handle.provider.seal(handle.run, "s1")).toEqual({ ok: true });
+    expect(await handle.provider.seal(handle.run, "s2")).toEqual({ ok: true });
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false, conflict: { reason: "same-path", files: [{ path: "σ.md", stageIds: ["s1", "s2"] }] } });
+    expect(tree(handle.out)).toEqual([]);
+  });
+
   it("collects outputs into _out and reports the same path from two stages as a conflict", async () => {
     const handle = await start(project);
     const first = await stageRoot(handle, "s1", { outputs: ["report/**"] });

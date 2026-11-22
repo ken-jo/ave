@@ -673,14 +673,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     };
     const next = new Map(Object.entries(file.out));
     // Where the output folder's names fold case, two paths that differ by case alone are one file: the run folder's own entries tell.
+    // Paths are folded to capitals, as such file systems do. It is not the volume's own table: a pair this fold joins and the volume
+    // keeps apart is contested for nothing, and one the volume joins by another rule (composed and decomposed letters) is not seen.
     const folds = projectFoldsCase(at.run.path, options.nameReader) === true;
-    const spelled = new Map([...next.keys()].map(path => [folds ? path.toLowerCase() : path, path]));
+    const fold = (path: string): string => folds ? path.toUpperCase() : path;
+    const spelled = new Map([...next.keys()].map(path => [fold(path), path]));
     const contested = new Map<string, Set<string>>();
     const copies: { stageId: string; path: string; sha256: string; size: number }[] = [];
     for (const stageId of stageIds) {
       const entry = file.stages[stageId] as StageEntry;
       for (const item of entry.manifest ?? []) {
-        const folded = folds ? item.path.toLowerCase() : item.path;
+        const folded = fold(item.path);
         const known = spelled.get(folded) ?? item.path;
         const held = next.get(known);
         if (held === undefined || (known === item.path && held.sha256 === item.sha256)) {
