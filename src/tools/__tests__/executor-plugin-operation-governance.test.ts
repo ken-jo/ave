@@ -16,6 +16,7 @@ import { currentEffectLedger } from "../../permissions/effect-ledger.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
+import { pendingToolInvocationCount } from "../invocation-ledger.js";
 import { ToolRegistry } from "../registry.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import type { HostPluginGenerationState } from "../../plugins/plugin-host-generation.js";
@@ -1070,7 +1071,8 @@ describe("ToolExecutor plugin operation governance", () => {
     expect(write).toHaveBeenCalledTimes(1);
   });
 
-  it("holds the exclusive domain lease until a signal-ignoring write settles", async () => {
+  it("holds the exclusive domain lease and tracks the audit until a signal-ignoring write settles", async () => {
+    const pendingBeforeWrite = pendingToolInvocationCount();
     vi.useFakeTimers();
     try {
       const { executor, read, write, auditLogger } = setup();
@@ -1107,6 +1109,7 @@ describe("ToolExecutor plugin operation governance", () => {
       await writeStarted;
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
       const [timedOutResult] = await timedOutWrite;
+      expect(pendingToolInvocationCount()).toBe(pendingBeforeWrite + 1);
       expect(timedOutResult.is_error).toBe(true);
       // Plugin ceiling failures must be retryable and name the host bound; plugins have no timeout field to escalate.
       expect(timedOutResult.content).toContain("domain_write");
@@ -1123,6 +1126,7 @@ describe("ToolExecutor plugin operation governance", () => {
 
       releaseWrite();
       await readback;
+      expect(pendingToolInvocationCount()).toBe(pendingBeforeWrite);
       expect(read).toHaveBeenCalledTimes(2);
       expect(auditLogger.appendPermissionAuditEntry).toHaveBeenCalledWith(
         expect.objectContaining({

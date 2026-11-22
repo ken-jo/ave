@@ -1,3 +1,5 @@
+import { HostExitAbortError } from "../shared/host-exit-abort.js";
+import { sealToolInvocations, joinToolInvocations, markToolInvocationAuditClosed } from "../tools/invocation-ledger.js";
 import { requireDesktopHost } from "./host-runtime.js";
 /** Lifecycle closures share mutable boot context so timers and event disposers survive window recreation. */
 import {
@@ -131,22 +133,21 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.stopWorkBoardDueSoon?.());
         attempt(() => ctx.alertsService.stop());
 
-        attempt(() => ctx.conversationLoop.abortCurrentTurn(new Error("application shutdown"),
-          ),
-        );
-        attempt(() => ctx.sideChatConversationLoop.abortCurrentTurn(new Error("application shutdown"),
-          ),
-        );
+        attempt(() => ctx.conversationLoop.abortCurrentTurn(new HostExitAbortError()));
+        attempt(() => ctx.sideChatConversationLoop.abortCurrentTurn(new HostExitAbortError()));
         for (const paneLoop of ctx.paneChatLoops.all()) {
-          attempt(() => paneLoop.abortCurrentTurn(new Error("application shutdown")));
+          attempt(() => paneLoop.abortCurrentTurn(new HostExitAbortError()));
         }
         attempt(() => ctx.rationaleHostService?.shutdown());
 
+        attempt(sealToolInvocations);
         attempt(() => ctx.approvalGate.disposeAll());
         attempt(() => ctx.askUserQuestionGate.disposeAll());
         attempt(() => ctx.mcpGovernance.stopPolicyRefresh());
         await attemptAsync(() => ctx.mcpManager.disconnectAll());
+        await attemptAsync(async () => { await joinToolInvocations(); });
         await attemptAsync(() => ctx.bootAuditLogger.close());
+        markToolInvocationAuditClosed();
         await attemptAsync(() => ctx.auditService.stop());
         await attemptAsync(() => ctx.tracing.shutdown());
 

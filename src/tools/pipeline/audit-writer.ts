@@ -1,3 +1,5 @@
+import { appendToolInvocationAudit, recordToolInvocationAuditFailure } from "../invocation-ledger.js";
+import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
 // Every ordinary tool denial must finalize through auditToolCall so PermissionDenied fires exactly once.
 import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
@@ -93,7 +95,9 @@ export class AuditWriter {
   }): Promise<void> {
     if (!this.auditLogger.isPermissionAuditChainReady()) {
       if (this.requirePermissionAuditChain) {
-        throw new Error("permission audit chain is not initialized");
+        const error = new Error("permission audit chain is not initialized");
+        recordToolInvocationAuditFailure(error);
+        throw error;
       }
       return;
     }
@@ -114,7 +118,7 @@ export class AuditWriter {
       trustOrigin: auditTrustOrigin(args.permissionContext),
     };
     try {
-      await this.auditLogger.appendPermissionAuditEntry(entry);
+      await appendToolInvocationAudit(this.auditLogger, entry);
     } catch (err) {
       if (this.requirePermissionAuditChain) {
         throw err;
@@ -156,12 +160,14 @@ export class AuditWriter {
     });
     if (!this.auditLogger.isPermissionAuditChainReady()) {
       if (this.requirePermissionAuditChain) {
-        throw new Error("permission audit chain is not initialized");
+        const error = new Error("permission audit chain is not initialized");
+        recordToolInvocationAuditFailure(error);
+        throw error;
       }
       return;
     }
     try {
-      await this.auditLogger.appendPermissionAuditEntry(entry);
+      await appendToolInvocationAudit(this.auditLogger, entry);
     } catch (err) {
       if (this.requirePermissionAuditChain) {
         throw err;
@@ -189,7 +195,7 @@ export class AuditWriter {
     category?: ToolCategory,
     cwd?: string,
     auditDirectory?: string,
-    terminationReason?: "ok" | "ceiling" | "user-abort" | "error" | "indeterminate",
+    terminationReason?: ToolAuditTerminationReason,
     hookChain?: HookResult[],
     audit?: ToolExecutionAuditMetadata,
     suppressPermissionDeniedLifecycle = false,
@@ -205,6 +211,7 @@ export class AuditWriter {
       permission?.decision === "deny" &&
       permissionContext !== undefined &&
       terminationReason !== "user-abort" &&
+      terminationReason !== "host-shutdown" &&
       !governedTool &&
       !suppressPermissionDeniedLifecycle
     ) {
@@ -271,12 +278,14 @@ export class AuditWriter {
     });
     if (!this.auditLogger.isPermissionAuditChainReady()) {
       if (this.requirePermissionAuditChain) {
-        throw new Error("permission audit chain is not initialized");
+        const error = new Error("permission audit chain is not initialized");
+        recordToolInvocationAuditFailure(error);
+        throw error;
       }
       return;
     }
     try {
-      await this.auditLogger.appendPermissionAuditEntry(entry);
+      await appendToolInvocationAudit(this.auditLogger, entry);
     } catch (err) {
       if (this.requirePermissionAuditChain) {
         throw err;

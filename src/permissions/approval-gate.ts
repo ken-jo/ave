@@ -1,3 +1,4 @@
+import { HostExitAbortError, isHostExitAbort } from "../shared/host-exit-abort.js";
 import { browserOrigin } from "../shared/browser-tools.js";
 import { isBrowserSiteChoice, type BrowserSiteChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
@@ -1328,17 +1329,20 @@ export class ApprovalGate {
     });
 
     // Aborted turns receive host-rejected deny-once with no remembered pattern, never a user-authored denial. Share the cancelled audit marker with host retirement and retain the stop reason to distinguish owner Stop from host tile release.
-    const abortCause = (): string => {
-      const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : abortSignal?.reason;
+    const abortCause = (reason: unknown): string => {
       if (reason instanceof Error) return reason.message;
       return typeof reason === "string" ? reason : "unspecified";
     };
     const denyForAbortedTurn = (): ApprovalDecision => {
+      const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : abortSignal?.reason;
+      const cancellation = isHostExitAbort(reason)
+        ? "host-shutdown"
+        : `turn-abort cause=${JSON.stringify(abortCause(reason))}`;
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
         type: "approval",
-        output: `[approval:cancelled] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} reason=turn-abort cause=${JSON.stringify(abortCause())} → deny-once`,
+        output: `[approval:cancelled] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} reason=${cancellation} → deny-once`,
       });
       return markHostApprovalRejectedDecision({
         requestId: fullReq.id,
@@ -2093,9 +2097,15 @@ export class ApprovalGate {
 
   // Permanently close admission, cancel approval stages, and deny parked requests during app shutdown.
   disposeAll(): void {
-    this.lifetime.abort(new Error("approval gate shutdown"));
+    this.lifetime.abort(new HostExitAbortError());
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:cancelled] ${id} ${formatApprovalAuditFields(entry, entry.executionPlan)} reason=host-shutdown → deny-once`,
+      });
       entry.resolve(
         markHostApprovalRejectedDecision({
           requestId: id,

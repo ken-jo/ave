@@ -1,3 +1,4 @@
+import { isHostExitAbort } from "../../shared/host-exit-abort.js";
 // Keep complementary containment relaxation and read-approval blocks together in invocation-authorization.
 // A denied write must never become allowed; read relaxation must retain exactly the same conditions.
 import {
@@ -93,6 +94,7 @@ export interface UserAbortDeps {
   executionCwd: string;
   startTime: number;
   auditWriter: AuditWriter;
+  abortSignal?: AbortSignal;
   audit?: ToolExecutionAuditMetadata;
 }
 
@@ -111,13 +113,15 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     executionCwd,
     startTime,
     auditWriter,
+    abortSignal,
     audit,
   } = deps;
   const msg = t("be_executor.toolExecutionCancelled");
   const durationMs = Date.now() - startTime;
+  const hostShutdown = isHostExitAbort(abortSignal?.reason);
   const abortedPermission: PermissionCheckResult = {
     decision: "deny",
-    reason: "user aborted turn",
+    reason: hostShutdown ? "host-shutdown" : "user aborted turn",
     };
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
@@ -136,7 +140,7 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     invocationCategory,
     executionCwd,
     undefined,
-    "user-abort",
+    hostShutdown ? "host-shutdown" : "user-abort",
     undefined,
     audit,
   );

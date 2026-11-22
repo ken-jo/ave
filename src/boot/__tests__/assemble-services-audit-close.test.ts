@@ -1,0 +1,167 @@
+import { deferred } from "../../__tests__/support/deferred.js";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeMockWebContents } from "../../__tests__/test-helpers.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
+import type { PermissionAuditEntry, PermissionAuditEntryInput } from "../../audit/audit-schema.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../permissions/approval-gate.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
+import { ToolRegistry } from "../../tools/registry.js";
+import { makeWriteProbeTool } from "../../tools/__tests__/approval-memory-test-fixtures.js";
+import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
+import type { ReadyBootContext } from "../context.js";
+
+const nextMacrotask = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+class ObservedAuditLogger extends AuditLogger {
+  readonly order: string[] = [];
+  beforeAppend?: (entry: PermissionAuditEntryInput, written: Promise<PermissionAuditEntry>) => Promise<void>;
+  beforeDeny?: () => Promise<void>;
+
+  override async appendPermissionAuditEntry(entry: PermissionAuditEntryInput): Promise<PermissionAuditEntry> {
+    if (entry.decision === "deny") await this.beforeDeny?.();
+    const written = super.appendPermissionAuditEntry(entry);
+    await this.beforeAppend?.(entry, written);
+    const row = await written;
+    this.order.push(`append:${entry.decision}`);
+    return row;
+  }
+
+  override close(): Promise<void> {
+    this.order.push("close");
+    return super.close();
+  }
+}
+
+function shutdownContext(audit: AuditLogger, approvalGate: ApprovalGate, abortCurrentTurn = () => {}): ReadyBootContext {
+  const stop = () => {};
+  return {
+    disposeRefreshActiveLlmWildcard: stop,
+    memoryMaintenanceCoordinator: { stop },
+    memoryCaptureService: { stop },
+    preferenceRefreshService: { stop },
+    routinesScheduler: { stop },
+    alertsService: { stop },
+    conversationLoop: { abortCurrentTurn },
+    sideChatConversationLoop: { abortCurrentTurn: stop },
+    paneChatLoops: { all: () => [] },
+    approvalGate,
+    askUserQuestionGate: { disposeAll: stop },
+    mcpGovernance: { stopPolicyRefresh: stop },
+    mcpManager: { disconnectAll: async () => {} },
+    bootAuditLogger: audit,
+    auditService: { stop },
+    tracing: { shutdown: async () => {} },
+    lateBinding: { pluginToolInvokerRef: {} },
+  } as unknown as ReadyBootContext;
+}
+
+describe("shutdown permission audit ordering", () => {
+  let root: string;
+  let workspace: string;
+  let audit: ObservedAuditLogger;
+  let gate: ApprovalGate | undefined;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    root = mkdtempSync(join(tmpdir(), "ave-shutdown-audit-"));
+    workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    vi.stubEnv("AVE_HOME", join(root, "host-home"));
+    audit = new ObservedAuditLogger(join(root, "audit"));
+    await audit.setupPermissionAuditChain("synthetic-shutdown-audit-secret");
+  });
+
+  afterEach(async () => {
+    gate?.disposeAll();
+    gate = undefined;
+    vi.restoreAllMocks();
+    await audit.close();
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(root);
+  });
+
+  it.each([
+    { state: "pending ask", withTurn: false, queued: false, appendFails: false },
+    { state: "pending turn ask", withTurn: true, queued: false, appendFails: false },
+    { state: "queued ask append", withTurn: false, queued: true, appendFails: false },
+    { state: "pending ask and a failed terminal append", withTurn: false, queued: false, appendFails: true },
+  ])("quit with a $state writes the deny row before the audit logger closes", async ({ withTurn, queued, appendFails }) => {
+    // The process-wide ledger is fresh for each simulated process.
+    const { assembleAppServices: assemble } = await import("../assemble-services.js");
+    const { ToolExecutor: Executor } = await import("../../tools/executor.js");
+    const { HostExitAbortError } = await import("../../shared/host-exit-abort.js");
+    const controller = withTurn ? new AbortController() : undefined;
+    const wc = makeMockWebContents();
+    const sent = deferred<void>();
+    const askQueued = deferred<void>();
+    const quitStarted = deferred<void>();
+    wc.send.mockImplementation((channel: string) => {
+      if (channel === IPC_APPROVAL_REQUEST) sent.resolve();
+    });
+    const approvalGate = new ApprovalGate(wc as never, undefined, undefined, audit);
+    gate = approvalGate;
+    audit.beforeDeny = async () => {
+      await nextMacrotask();
+      if (appendFails) throw new Error("terminal permission audit unavailable");
+    };
+    audit.beforeAppend = async (entry) => {
+      if (queued && entry.decision === "ask") {
+        askQueued.resolve();
+        await quitStarted.promise;
+        await nextMacrotask();
+      }
+    };
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    const executor = new Executor(registry, undefined, manager, undefined, approvalGate, undefined, audit);
+    const invocation = executor.executeAll([{
+      id: "shutdown-write-probe",
+      name: "write_probe",
+      input: { path: join(workspace, "notes.txt") },
+    }], {
+      sessionId: "shutdown-session",
+      executionCwd: workspace,
+      ...(controller ? { abortSignal: controller.signal } : {}),
+      permissionContext: userPermissionContext({ additionalDirectories: [workspace] }),
+    });
+    const result = Promise.allSettled([invocation]);
+    await Promise.race([
+      queued ? askQueued.promise : sent.promise,
+      invocation.then((results) => { throw new Error(`Invocation finished before ask: ${results[0]?.content}`); }),
+    ]);
+    if (!queued) expect(approvalGate.pendingCount).toBe(1);
+
+    const app = assemble(shutdownContext(audit, approvalGate, () => controller?.abort(new HostExitAbortError())));
+    if (!app.shutdown) throw new Error("Shutdown handler missing");
+    const shutdown = app.shutdown();
+    quitStarted.resolve();
+    if (appendFails) {
+      await expect(shutdown).rejects.toMatchObject({
+        errors: [expect.objectContaining({ message: "shutdown invocation audit failed" })],
+      });
+      expect(await result).toMatchObject([{ status: "rejected" }]);
+      expect(audit.order).toEqual(["append:ask", "close"]);
+      return;
+    }
+    await shutdown;
+    const [outcome] = await result;
+    const rows = readFileSync(audit.getPermissionAuditLogFile(), "utf8")
+      .trim().split("\n").map((line) => JSON.parse(line) as PermissionAuditEntryInput);
+
+    expect(rows).toMatchObject([
+      { decision: "ask", toolUseId: "shutdown-write-probe" },
+      { decision: "deny", toolUseId: "shutdown-write-probe", denyReasons: [{ reason: "host-shutdown" }] },
+    ]);
+    expect(audit.order).toEqual(["append:ask", "append:deny", "close"]);
+    expect(approvalGate.pendingCount).toBe(0);
+    expect(execute).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ status: "fulfilled", value: [{ is_error: true }] });
+  });
+
+});

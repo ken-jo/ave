@@ -1,5 +1,7 @@
 
 
+export type ToolAuditTerminationReason = "ok" | "ceiling" | "user-abort" | "host-shutdown" | "error" | "indeterminate";
+
 import { randomUUID } from "node:crypto";
 import type { RunModelSettings } from "../shared/run-model-settings.js";
 import type { ModelUsageSegment } from "../shared/model-pricing.js";
@@ -310,7 +312,7 @@ export interface AuditEntry {
     permissionReason?: string;
     rateLimitRemaining?: number;
     /** Distinguish policy timeout, caller cancellation, and other failures for incident analysis. */
-    terminationReason?: "ok" | "ceiling" | "user-abort" | "error" | "indeterminate";
+    terminationReason?: ToolAuditTerminationReason;
   }>;
   tokenUsage?: AuditTokenUsage;
   usageByModel?: AuditUsageByModelSegment[];

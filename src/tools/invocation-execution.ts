@@ -1,3 +1,6 @@
+import { appendToolInvocationAudit, trackToolInvocationSettlement } from "./invocation-ledger.js";
+import { isHostExitAbort } from "../shared/host-exit-abort.js";
+import type { ToolAuditTerminationReason } from "../audit/audit-logger.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -405,6 +408,7 @@ export async function executeAuthorizedToolInvocation(
         executionCwd,
         startTime,
         auditWriter: services.auditWriter,
+        abortSignal,
         audit: currentAuditMetadata(),
       }));
     }
@@ -468,12 +472,7 @@ export async function executeAuthorizedToolInvocation(
   let outputArtifact: ToolOutputArtifactInfo | undefined;
   let ownedOutputCapture: ToolOutputCapture | undefined;
   let outputArtifactDelivered = false;
-  let terminationReason:
-    | "ok"
-    | "ceiling"
-    | "user-abort"
-    | "error"
-    | "indeterminate" = "ok";
+  let terminationReason: ToolAuditTerminationReason = "ok";
   let consumedPluginOperationGrantId: string | undefined;
   let deferredOperationSettlement: Promise<unknown> | undefined;
   let indeterminateAuditPersisted = false;
@@ -592,12 +591,12 @@ export async function executeAuthorizedToolInvocation(
           },
         } as const;
         if (consumed.ok) {
-          await services.auditLogger.appendPermissionAuditEntry({
+          await appendToolInvocationAudit(services.auditLogger, {
             ...commonGrantAudit,
             decision: "allow",
             });
         } else {
-          await services.auditLogger.appendPermissionAuditEntry({
+          await appendToolInvocationAudit(services.auditLogger, {
             ...commonGrantAudit,
             decision: "deny",
             denyReasons: [{
@@ -1241,7 +1240,7 @@ export async function executeAuthorizedToolInvocation(
   ) {
     deferredOperationSettlement = outcome.settlement;
     terminationReason = "indeterminate";
-    await services.auditLogger.appendPermissionAuditEntry({
+    await appendToolInvocationAudit(services.auditLogger, {
       ts: new Date().toISOString(),
       auditId: randomUUID(),
       tool: toolUse.name,
@@ -1306,7 +1305,10 @@ export async function executeAuthorizedToolInvocation(
     ) {
       interruptionReason = outcome.reason;
     }
-    if (!outcome.settlement || cancellationSettlement) {
+    const hostShutdown = outcome.reason === "user-abort" && isHostExitAbort(abortSignal?.reason);
+    if (hostShutdown && terminationReason !== "indeterminate") {
+      terminationReason = "host-shutdown";
+    } else if (!outcome.settlement || cancellationSettlement) {
       terminationReason = outcome.reason;
     }
     // Ceiling expiry is a RETRYABLE tool error, never a throw that ends the
@@ -1445,10 +1447,10 @@ export async function executeAuthorizedToolInvocation(
       const pluginId = pluginOperationPrincipal.ownerPluginId;
       const operation = resolvedPluginOperation.operation;
       const grantId = consumedPluginOperationGrantId;
-      void deferredOperationSettlement
+      const settlementAudit = deferredOperationSettlement
         .then(async () => {
           try {
-            await services.auditLogger.appendPermissionAuditEntry({
+            await appendToolInvocationAudit(services.auditLogger, {
               ts: new Date().toISOString(),
               auditId: randomUUID(),
               tool: toolUse.name,
@@ -1470,6 +1472,7 @@ export async function executeAuthorizedToolInvocation(
               toolUse.name,
               errorMessage(error),
             );
+            throw error;
           }
         }, (error) => {
           log.error(
@@ -1477,7 +1480,9 @@ export async function executeAuthorizedToolInvocation(
             toolUse.name,
             errorMessage(error),
           );
+          throw error;
         });
+      trackToolInvocationSettlement(settlementAudit);
     } else if (operationExecutionLease && deferredOperationSettlement) {
       void deferredOperationSettlement.catch((error) => {
         log.error(
@@ -1515,7 +1520,7 @@ export async function executeAuthorizedToolInvocation(
         displayContent,
         true,
         startTime,
-        permissionResult,
+        isHostExitAbort(abortSignal?.reason) ? { decision: "deny", reason: "host-shutdown" } : permissionResult,
         rateResult.remaining,
         invocationPermissionContext,
         invocationCategory,

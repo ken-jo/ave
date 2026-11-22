@@ -1,3 +1,4 @@
+import { appendToolInvocationAudit } from "./invocation-ledger.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -385,7 +386,7 @@ export async function runToolInvocation(
             trustOrigin: opts.permissionContext?.trustOrigin ?? "unknown" as const, tool: toolUse.name,
             source: services.toolRegistry.findByName(toolUse.name)?.source ?? "builtin" as const,
             category: services.toolRegistry.findByName(toolUse.name)?.category ?? "meta" as const, hookChain };
-          await services.auditLogger.appendPermissionAuditEntry({ ...common, decision: "deny",
+          await appendToolInvocationAudit(services.auditLogger, { ...common, decision: "deny",
             denyReasons: [{ reason, source: "hook-input-mutation" }] });
         } else if (services.requirePermissionAuditChain) {
           throw new Error("Hook mutation requires the permission audit chain");
@@ -515,7 +516,7 @@ async function runToolInvocationAttempt(
           ...(inputSnapshot && invocationRef ? { rerun: async () => {
             const replayRootBinding = issueReplayRootBinding(executionCwd, invocationRef.rootDigest);
             if (!replayRootBinding) throw new Error("The replay project root changed");
-            const result = await runToolInvocation(services, { ...toolUse, id: randomUUID(), input: structuredClone(inputSnapshot) }, randomUUID(), 0, {
+            const result = await services.executeReplay({ ...toolUse, id: randomUUID(), input: structuredClone(inputSnapshot) }, {
               sessionId, executionCwd, replayRootBinding, approvalReasonPrefix,
               ...(invocationRef.replayOrigin!.overlayTriggerOrigin === undefined ? {} : { overlayTriggerOrigin: invocationRef.replayOrigin!.overlayTriggerOrigin }),
               permissionContext: { ...permissionContext!, trustOrigin: invocationRef.replayOrigin!.trustOrigin, otherPrincipal: invocationRef.replayOrigin!.otherPrincipal, headless: false, ownerUnattended: false, approvalSurface: undefined, manualRerun: true },
@@ -742,6 +743,7 @@ async function runToolInvocationAttempt(
       executionCwd,
       startTime,
       auditWriter: services.auditWriter,
+      abortSignal,
       audit: currentAuditMetadata(input),
     });
 

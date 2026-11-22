@@ -1,5 +1,8 @@
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BootContext } from "../../context.js";
+import { makeMockWebContents } from "../../../__tests__/test-helpers.js";
+import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
+import type { BootContext, ReadyBootContext } from "../../context.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { PluginRuntimeDetachedOperationError } from "../../../plugins/runtime/detached-operation.js";
 
@@ -32,6 +35,7 @@ vi.mock("../../../tools/executor.js", () => ({
     setSkillAdmissionCheck = vi.fn();
     revokePluginOperationAccount = mocks.revokePluginOperationAccount;
     executeAll = mocks.executeAll;
+    inspectPluginOperationGrant = vi.fn(() => ({ operation: "update", approvalArgs: {} }));
   },
 }));
 
@@ -58,7 +62,8 @@ vi.mock("../../../ipc/domains/permissions.js", () => ({
   broadcastPermissionConfigChanged: vi.fn(),
 }));
 
-vi.mock("../../../permissions/sandbox-capability.js", () => ({
+vi.mock("../../../permissions/sandbox-capability.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/sandbox-capability.js")>(),
   isActiveSandboxFilesystemContainedForPluginEffects: vi.fn(() => false),
 }));
 
@@ -511,4 +516,80 @@ describe("setupPluginToolExecutor approval lane by effective chain origin", () =
     expect(laneOfExecutorCall(0)).toBe(true);
     expect(laneOfExecutorCall(1)).toBe(true);
   });
+});
+
+it("writes a host-shutdown denial for a parked plugin operation grant before audit close", async () => {
+  const { assembleAppServices } = await import("../../assemble-services.js");
+  const ctx = makeContext();
+  const stop = () => {};
+  const card = deferred<void>();
+  const order: unknown[] = [];
+  const surface = makeMockWebContents();
+  surface.send.mockImplementation((channel: string) => {
+    if (channel === IPC_APPROVAL_REQUEST) card.resolve();
+  });
+  const approvalGate = new ApprovalGate(surface as never);
+  const generationLease = {
+    generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+    release: vi.fn(),
+  };
+  mocks.resolvePluginOperationAccount.mockReturnValue({
+    accountScopeHash: "account-scope", accountHash: "account",
+  });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate,
+    bootAuditLogger: {
+      appendPermissionAuditEntry: async (row: unknown) => {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        order.push(row);
+      },
+      close: async () => { order.push("close"); },
+    },
+    pluginBundleLifecycle: {
+      acquire: async () => generationLease,
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+    disposeRefreshActiveLlmWildcard: stop,
+    memoryMaintenanceCoordinator: { stop },
+    memoryCaptureService: { stop },
+    preferenceRefreshService: { stop },
+    routinesScheduler: { stop },
+    alertsService: { stop },
+    conversationLoop: { abortCurrentTurn: stop },
+    sideChatConversationLoop: { abortCurrentTurn: stop },
+    paneChatLoops: { all: () => [] },
+    askUserQuestionGate: { disposeAll: stop },
+    mcpGovernance: { stopPolicyRefresh: stop },
+    mcpManager: { disconnectAll: async () => {} },
+    auditService: { stop },
+    tracing: { shutdown: async () => {} },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  const grant = ctx.requestPluginOperationGrant({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  });
+  const result = Promise.allSettled([grant]);
+  await Promise.race([
+    card.promise,
+    result.then(([outcome]) => {
+      if (outcome.status === "rejected") throw outcome.reason;
+      throw new Error("Grant issued before the approval card opened");
+    }),
+  ]);
+  await expect(assembleAppServices(ctx as ReadyBootContext).shutdown?.()).resolves.toBeUndefined();
+  expect(await result).toMatchObject([{
+    status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("operation grant denied") }),
+  }]);
+  expect(order).toEqual([
+    expect.objectContaining({
+      decision: "deny",
+      denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }],
+      pluginOperation: { pluginId, operation: "update", outcome: "denied" },
+    }),
+    "close",
+  ]);
+  expect(generationLease.release).toHaveBeenCalledOnce();
 });
