@@ -2996,6 +2996,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   if (_baseTrustedSettings !== baseTrustedSettings || session.windowsLiveGrantRevision !== grantRevision) {
     throw new Error("Windows sandbox policy changed while stamping the worker grant");
   }
+  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite));
   timeStep("preflightMs", () => assertStillValid?.());
   if (stampFailure !== undefined) throw stampFailure;
   // Resolved after every refusal above, so a refused turn starts no holder.

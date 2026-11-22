@@ -8,12 +8,14 @@ import * as sandboxUtils from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbo
 import * as windowsHelpers from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as evidence from "../../shared/windows-read-deny-evidence.js";
 import * as srtWinIntegrity from "../srt-win-integrity.js";
 import * as denyAcl from "../windows-deny-acl.js";
+import { registerWorkspaceDirectorySource } from "../workspace-authorized-roots.js";
 import {
   buildPerCommandSandboxCustomConfig, buildSandboxConfig, grantWindowsWorkerFilesystemAccess,
   initializeAsrtSandbox, isAsrtSandboxActive, registerWorkerUnixSocketDir,
@@ -376,6 +378,42 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       (await spawning).release();
     }
     expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a worker grant when a workspace root is added inside it during the stamp", async () => {
+    captureRuntime();
+    const directory = join(root, "directory-grant");
+    const workspace = join(directory, "workspace");
+    mkdirSync(workspace, { recursive: true });
+    await initializeAsrtSandbox({ denyRead: [join(directory, "denied")] });
+    const source = {
+      directories: [] as string[],
+      getTurnAdditionalDirectories() { return this.directories; },
+      getSessionExecutionCwd: () => root,
+    };
+    registerWorkspaceDirectorySource(source);
+    const entered = deferred<void>();
+    const finishStamp = deferred<void>();
+    vi.mocked(windowsHelpers.stampWindowsAclAsync).mockImplementationOnce(() => {
+      entered.resolve();
+      return finishStamp.promise;
+    });
+    const holder = vi.fn(() => process.pid + 1);
+    const spawn = vi.fn();
+    const outcome = grantWindowsWorkerFilesystemAccess({ holderPid: holder, allowWrite: [directory] })
+      .then(held => { spawn(); held.release(); });
+    try {
+      expect(await Promise.race([entered.promise.then(() => "stamping"), outcome.then(() => "settled")])).toBe("stamping");
+      source.directories.push(workspace);
+    } finally {
+      finishStamp.resolve();
+      await outcome.catch(() => {});
+      source.directories.length = 0;
+    }
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    expect(holder).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    await expect(outcome).rejects.toThrow("Windows filesystem grant refuses an ancestor of the workspace or Ave home");
   });
 
   it("invalidates a pending grant and waits for the stamp before restoring the session ACLs", async () => {
