@@ -1,21 +1,19 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { Tokenizer } from '@huggingface/tokenizers';
-import { assertLocalEmbeddingRuntime } from './local-runtime.js';
-import { MODEL_FILES } from './model-manifest.js';
 export interface Embedder { embed(text: string): Promise<number[]>; dispose(): Promise<void> }
+/** The verified model, tokenizer and tokenizer config, read by the host and handed to the inference child. */
+export interface LocalModelBytes { model: Uint8Array; tokenizer: Uint8Array; tokenizerConfig: Uint8Array }
 export function normalizeVector(vector: number[]): number[] {
   if (vector.length !== 384 || vector.some(n => !Number.isFinite(n))) throw new Error('Expected 384 finite embedding dimensions');
   const norm = Math.hypot(...vector);
   if (norm === 0) throw new Error('Embedding has zero norm');
   return vector.map(n => n / norm);
 }
-export async function createLocalEmbedder(folder: string): Promise<Embedder> {
-  assertLocalEmbeddingRuntime();
+export async function createLocalEmbedder(files: LocalModelBytes): Promise<Embedder> {
   process.env.ORT_DISABLE_TELEMETRY = '1';
   const { InferenceSession, Tensor } = await import('onnxruntime-node');
-  const tokenizer = new Tokenizer(JSON.parse(await readFile(join(folder, 'tokenizer.json'), 'utf8')), JSON.parse(await readFile(join(folder, 'tokenizer_config.json'), 'utf8')));
-  const session = await InferenceSession.create(join(folder, MODEL_FILES[0]!.name), { executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1 });
+  const text = new TextDecoder('utf-8', { fatal: true });
+  const tokenizer = new Tokenizer(JSON.parse(text.decode(files.tokenizer)), JSON.parse(text.decode(files.tokenizerConfig)));
+  const session = await InferenceSession.create(files.model, { executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1 });
   if (session.inputNames.join(',') !== 'input_ids,attention_mask,token_type_ids' || !session.outputNames.includes('last_hidden_state')) {
     await session.release(); throw new Error('Unexpected local embedding model contract');
   }

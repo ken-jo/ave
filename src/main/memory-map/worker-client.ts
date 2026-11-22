@@ -1,20 +1,18 @@
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { mainDir } from '../main-paths.js';
-import { assertLocalEmbeddingRuntime } from './local-runtime.js';
+import { runInferenceChild } from './inference-child.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import type { GraphBuildInput } from './graph.js';
-export type MemoryWorkerTask = { kind: 'build' | 'project'; input: GraphBuildInput } | { kind: 'embed'; text: string };
+export type MemoryInferenceTask = { kind: 'build'; input: GraphBuildInput } | { kind: 'embed'; text: string };
+export type MemoryWorkerTask = MemoryInferenceTask | { kind: 'project'; input: GraphBuildInput };
 export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void) => Promise<T>;
 export const runMemoryWorker: MemoryWorkerRunner = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> => {
   signal.throwIfAborted();
-  if (task.kind !== 'project') {
-    assertLocalEmbeddingRuntime();
-    // Native add-ons observe the host environment, outside the worker's copy.
-    process.env.ORT_DISABLE_TELEMETRY = '1';
-  }
+  // The local model loads only in the network-confined child; this thread projects cached vectors.
+  if (task.kind !== 'project') return runInferenceChild<T>(folder, task, signal, onProgress);
   const entry = join(mainDir, 'memory-map-worker.js');
-  const worker = new Worker(entry, { workerData: { folder, task }, env: { ...process.env, ORT_DISABLE_TELEMETRY: '1' } });
+  const worker = new Worker(entry, { workerData: { task } });
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (error?: Error, result?: T) => {

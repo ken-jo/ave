@@ -1,18 +1,13 @@
 import { parentPort, workerData } from 'node:worker_threads';
-import { createLocalEmbedder } from './embedding.js';
 import { buildGraph } from './graph.js';
 import type { MemoryWorkerTask } from './worker-client.js';
-interface WorkerInput { folder: string; task: MemoryWorkerTask }
+// Projection only: this thread shares the host's process, so it never loads the local model.
 async function run(): Promise<void> {
   if (!parentPort) throw new Error('Memory worker requires a parent port');
-  const data = workerData as WorkerInput;
-  const embedder = data.task.kind === 'project' ? {
-    embed: async (): Promise<number[]> => { throw new Error('Projection requires cached vectors'); }, dispose: async () => {},
-  } : await createLocalEmbedder(data.folder);
-  let value: unknown;
-  try {
-    value = data.task.kind !== 'embed' ? await buildGraph(data.task.input, embedder, progress => parentPort!.postMessage({ kind: 'progress', progress })) : await embedder.embed(data.task.text);
-  } finally { await embedder.dispose(); }
+  const task = (workerData as { task: MemoryWorkerTask }).task;
+  if (task.kind !== 'project') throw new Error('The projection worker does not run local inference');
+  const embedder = { embed: async (): Promise<number[]> => { throw new Error('Projection requires cached vectors'); }, dispose: async () => {} };
+  const value = await buildGraph(task.input, embedder, progress => parentPort!.postMessage({ kind: 'progress', progress }));
   parentPort.postMessage({ kind: 'result', value });
   parentPort.close();
 }
