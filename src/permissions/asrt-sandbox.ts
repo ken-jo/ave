@@ -2804,15 +2804,16 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
 }
 
 // Windows worker grants name a dedicated holder PID. Apply session denies before access, then publish the logical config; use one verified binary descriptor throughout.
-// Each turn captures obligations and reads, stamps, verifies and grants without yielding.
+// Each turn keeps the read, stamp, verification and grant serialized. Final verification and grant do not yield.
 const windowsGrantTurns = createSerialQueue();
+let windowsGrantStamp: Promise<void> | undefined;
 
 interface WindowsWorkerFilesystemGrantRequest {
   // A function starts the holder when the turn starts, so a refused turn starts none.
   readonly holderPid: number | (() => number);
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
-  // Checked when the queued turn starts, before the holder or any ACL change; a throw refuses the turn.
+  // Checked at admission and again after stamping, before any allow ACL is granted.
   readonly assertStillValid?: () => void;
 }
 
@@ -2886,13 +2887,13 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     throw new Error("Windows filesystem grant identity is unproven: requested target is missing");
   }
   timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
-  const {
-    getWindowsSandboxUserStatus,
-    grantWindowsAcl,
-    stampWindowsAcl,
-    revokeWindowsAcl,
-    resolveSrtWin,
-  } = await import("@anthropic-ai/sandbox-runtime");
+  const [
+    { getWindowsSandboxUserStatus, grantWindowsAcl, revokeWindowsAcl, resolveSrtWin },
+    { stampWindowsAclAsync },
+  ] = await Promise.all([
+    import("@anthropic-ai/sandbox-runtime"),
+    import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js"),
+  ]);
 
   if (sandboxSession !== session || !active) {
     throw new Error("Windows filesystem grant session was reset");
@@ -2925,6 +2926,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 
   const settings = timeStep("configMs", () => withWorkerUnixSockets(baseTrustedSettings));
   const revision = session.windowsDenyRevision;
+  const grantRevision = session.windowsLiveGrantRevision;
   const pending = timeStep("configMs", () => {
     const liveGrants = snapshotWindowsLiveGrants(session);
     return buildSandboxConfig(settings, _baseReadDenyEvidence, {
@@ -2956,13 +2958,20 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const denyRead = rows.filter((row, index) => row.read || (previous[index]!.denyMask & ~WINDOWS_WRITE_DENY_MASK) !== 0).map(row => row.path);
   const denyWrite = targets;
   assertWindowsPolicyBudget({ denyRead, denyWrite }, hasConfiguredDenies(settings));
+  let stampFailure: Error | undefined;
   if (targets.length > 0) {
-    let stampFailure: unknown;
+    const stampStarted = performance.now();
     try {
-      timeStep("stampMs", () => stampWindowsAcl({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin }));
+      windowsGrantStamp = stampWindowsAclAsync({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin });
+      await windowsGrantStamp;
     } catch (error) {
-      stampFailure = error;
-      log.warn(`[sandbox-deny-target] Refusing Windows filesystem grant: ${errorMessage(error)}`);
+      stampFailure = error instanceof Error ? error : new Error(errorMessage(error));
+    } finally {
+      windowsGrantStamp = undefined;
+      timing.steps.stampMs += performance.now() - stampStarted;
+    }
+    if (stampFailure !== undefined) {
+      log.warn(`[sandbox-deny-target] Refusing Windows filesystem grant: ${stampFailure.message}`);
     }
     // Verify even after a partial stamp. Never release the session holder on failure.
     try {
@@ -2981,10 +2990,14 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
       session.windowsDenyFailure = new Error("Windows deny DACL verification failed; reset the sandbox session", { cause: error });
       throw session.windowsDenyFailure;
     }
-    if (stampFailure !== undefined) throw stampFailure;
   }
 
   assertWindowsGrantDenySnapshot(session, revision, allowWrite);
+  if (_baseTrustedSettings !== baseTrustedSettings || session.windowsLiveGrantRevision !== grantRevision) {
+    throw new Error("Windows sandbox policy changed while stamping the worker grant");
+  }
+  timeStep("preflightMs", () => assertStillValid?.());
+  if (stampFailure !== undefined) throw stampFailure;
   // Resolved after every refusal above, so a refused turn starts no holder.
   const holderPid = timeStep("preflightMs", () => typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid());
   if (allowRead.length > 0 || allowWrite.length > 0) {
@@ -3245,6 +3258,8 @@ export async function resetAsrtSandbox(): Promise<void> {
   _workerUnixSocketDirs.clear();
   // Invalidate admission before the first await; pending wraps must not reach
   // the native runtime once teardown has been requested.
+  // Let an in-flight grant stamp settle before restoring its session deny ACLs.
+  if (windowsGrantStamp !== undefined) await windowsGrantStamp.catch(() => {});
   const SandboxManager = await loadSandboxManager();
   try {
     // A failed Windows ACL release rejects (carried patch part 12) after the rest of the teardown; the release then stays pending, so the private

@@ -329,10 +329,13 @@ vi.mock("@anthropic-ai/sandbox-runtime", async (original) => {
     resolveSrtWin: () => ({ path: srtPath }),
     getWindowsSandboxUserStatus: () => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-100-200-300-2002" }),
     grantWindowsAcl: runtime.grant,
-    stampWindowsAcl: runtime.stamp,
     revokeWindowsAcl: runtime.revoke,
   };
 });
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => ({
+  ...(await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>()),
+  stampWindowsAclAsync: async (opts: unknown) => runtime.stamp(opts),
+}));
 vi.mock("../srt-win-integrity.js", async (original) => ({
   ...await original<typeof import("../srt-win-integrity.js")>(),
   prepareSrtWinExecutable: () => srtPath,
