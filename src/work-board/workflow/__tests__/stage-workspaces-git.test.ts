@@ -328,7 +328,7 @@ describe("git stage workspaces", () => {
     expect(existsSync(join(stage, "a.txt"))).toBe(false);
   });
 
-  it("a run folder swapped for a link while its worktrees are released is not deleted through, by the host or by git", async () => {
+  it("a run folder swapped for a link while it is released is not deleted through, by the host or by git", async () => {
     const handle = start();
     const open = await handle.provider.open(handle.run, repo);
     if (!open.ok) throw new Error(open.code);
@@ -338,10 +338,10 @@ describe("git stage workspaces", () => {
     const restored = join(base, "restored");
     const real = createHostGit({ env });
     const calls: string[] = [];
-    // As a restore of the home does, at the first worktree call of the release: the folder is moved away and a link stands in its place.
+    // As a restore of the home does, at the first git call of the release: the folder is moved away and a link stands in its place.
     const run: HostGit["run"] = async (cwd, args, call) => {
       calls.push(args.join(" "));
-      if (args[0] === "worktree" && !existsSync(restored)) {
+      if (!existsSync(restored)) {
         renameSync(runRoot, restored);
         symlinkSync(restored, runRoot, "junction");
       }
@@ -349,11 +349,9 @@ describe("git stage workspaces", () => {
     };
     try {
       await createStageWorkspaceProvider({ git: { run, drivers: real.drivers } }).release(handle.run, "all").catch(() => undefined);
-      expect(existsSync(restored)).toBe(true);
-      expect(readFileSync(join(restored, "s2", "sentinel.txt"), "utf8")).toBe("outside\n");
-      expect(existsSync(join(restored, "s2", "a.txt"))).toBe(true);
-      expect(existsSync(join(restored, JOIN_DIR, "a.txt"))).toBe(true);
-      expect(calls.filter(call => /^worktree remove|^branch -D/u.test(call))).toEqual([]);
+      // What was still there when the link took the folder's place stays; the repository's worktree list is the host's to edit, not git's.
+      expect(readdirSync(restored)).toEqual([RUN_FILE]);
+      expect(calls.filter(call => /^worktree|^branch/u.test(call))).toEqual([]);
     } finally {
       if (existsSync(restored)) {
         rmSync(runRoot);

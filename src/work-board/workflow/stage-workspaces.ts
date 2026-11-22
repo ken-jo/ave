@@ -12,8 +12,8 @@ import { holdDir, type NodeId, type OwnedDir, OwnedFsError, realWithin, type Sou
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
-import { isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
-import { copySeedFiles, hashSeedFile, isInside, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
+import { isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
+import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
 
@@ -39,6 +39,8 @@ const realDirId = (path: string): NodeId | undefined => {
   try { return holdDir(path).id; } catch { return undefined; }
 };
 
+/** Git writes the two files that tie a worktree to its registration as absolute paths, whatever the repository is configured to. */
+const ABSOLUTE_LINKS = ["-c", "worktree.useRelativePaths=false"];
 const NUL = "\0";
 const nul = (text: string): string[] => text.split(NUL).filter(entry => entry !== "");
 const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
@@ -123,22 +125,66 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   /**
-   * Lets the repository forget the worktrees of this run whose folders the host removed. Git removes no folder for the host: a path it
-   * were given could be another folder by the time git opens it. Its prune drops every registration whose folder is missing, so it runs
-   * only when each of those lies in this run's folder; with another one missing too, the run's registrations stay for a later prune.
+   * The registration git made for a folder of the run, read from the folder's `.git` file and taken only when the two name each other by
+   * identity: the admin folder lies in this repository's `worktrees`, and its `gitdir` file points into this very folder. Any other is
+   * not the run's.
    */
-  async function forgetWorktrees(root: string, runRoot: string): Promise<void> {
-    const listed = await git.run(root, ["worktree", "list", "--porcelain", "-z"]).catch(() => undefined);
-    if (listed === undefined || listed.code !== 0) return;
-    const missing = listed.stdout.split(NUL + NUL).map(entry => entry.split(NUL))
-      .filter(lines => lines.some(line => line === "prunable" || line.startsWith("prunable ")))
-      .map(lines => lines.find(line => line.startsWith("worktree "))?.slice("worktree ".length));
-    if (missing.length === 0) return;
-    if (missing.some(path => path === undefined || !isInside(runRoot, resolve(path)))) {
-      log.warn("a run's worktree registrations stay: the repository has others whose folders are missing");
-      return;
+  function captureRegistration(at: Held, folder: OwnedDir): Registration | undefined {
+    const repo = at.file.repo;
+    if (repo === undefined) return undefined;
+    try {
+      const named = /^gitdir: (.+?)\r?\n?$/u.exec(folder.readFile(".git")?.toString("utf8") ?? "");
+      if (named?.[1] === undefined) return undefined;
+      const admin = resolve(folder.path, named[1]);
+      const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
+      if (worktrees === undefined || realDirId(dirname(admin)) !== worktrees.id) return undefined;
+      const held = worktrees.existing(basename(admin));
+      const text = held?.readFile("gitdir")?.toString("utf8");
+      if (held === undefined || text === undefined) return undefined;
+      const gitdir = resolve(admin, text.trimEnd());
+      return basename(gitdir) === ".git" && realDirId(dirname(gitdir)) === folder.id ? { admin, id: held.id, gitdir } : undefined;
+    } catch {
+      return undefined;
     }
-    await git.run(root, ["worktree", "prune"]).catch(() => undefined);
+  }
+
+  /** Records the registration of a folder git was asked to fill, whatever git then answered; a stop between git's write and the host's is
+   * made up for the same way before the folder is removed. */
+  function recordRegistration(at: Held, key: string, folder: OwnedDir | undefined): Registration | undefined {
+    const known = at.file.registrations[key];
+    if (known !== undefined || folder === undefined) return known;
+    const registration = captureRegistration(at, folder);
+    if (registration !== undefined) {
+      at.file.registrations[key] = registration;
+      writeRunFile(at, at.file);
+    }
+    return registration;
+  }
+
+  /** Where a recorded registration is in the repository's `worktrees`, as long as it is still the admin folder that was recorded and
+   * still points at the run's folder; undefined when it is gone, a throw when another thing is there. */
+  function ownRegistration(at: Held, registration: Registration): { worktrees: OwnedDir; name: string } | undefined {
+    const repo = at.file.repo;
+    if (repo === undefined) throw new OwnedFsError("changed", "the record names no repository");
+    const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
+    if (worktrees === undefined) return undefined;
+    const name = basename(registration.admin);
+    if (realDirId(dirname(registration.admin)) !== worktrees.id) throw new OwnedFsError("changed", "the registration is not in the run's repository");
+    if (worktrees.entryId(name) === undefined) return undefined;
+    const text = worktrees.child(name, registration.id)?.readFile("gitdir")?.toString("utf8");
+    if (text === undefined || !samePath(resolve(registration.admin, text.trimEnd()), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");
+    return { worktrees, name };
+  }
+
+  /** Takes the run's own registration out of the repository, host-side and by identity. Git's prune is never run: it would drop every
+   * registration whose folder is missing, the user's too. */
+  async function removeRegistration(at: Held, key: string): Promise<void> {
+    const registration = at.file.registrations[key];
+    if (registration === undefined) return;
+    const found = ownRegistration(at, registration);
+    if (found !== undefined) await found.worktrees.remove(found.name, registration.id);
+    delete at.file.registrations[key];
+    writeRunFile(at, at.file);
   }
 
   async function gitOut(cwd: string, args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> {
@@ -288,7 +334,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       file.refs = [{ name: ref, oid: baseCommit }];
       writeRunFile(at, file);
       joined.check();
-      await gitOut(project.root, ["worktree", "add", joined.path, branch], { drivers: gitRun.drivers });
+      const added = await git.run(project.root, ["worktree", "add", joined.path, branch], { drivers: [...gitRun.drivers, ...ABSOLUTE_LINKS] }).catch(() => undefined);
+      if (recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, joined.id)) === undefined || added?.code !== 0) throw new Error("the integration worktree was not made");
       joined.check();
       if ((await gitOut(joined.path, ["symbolic-ref", "-q", "HEAD"])).trim() !== ref) throw new Error("the integration worktree is not on the run's branch");
       roots.set(basename(runRoot), runRoot);
@@ -304,14 +351,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   /** The stage's folder and its entry. The folder goes only as the directory the record names; of a stage that got no further than its
-   * entry, whatever holds its name is unlinked, never followed. With `repo` false the repository is not told. */
+   * entry, whatever holds its name is unlinked, never followed. Its registration follows it; with `repo` false the repository is left as it is. */
   async function removeStage(at: Held, stageId: string, repo = true): Promise<void> {
-    const { runRoot, file } = at;
+    const { file } = at;
     const name = stageDirName(stageId);
-    if (at.run.entryId(name) !== undefined) {
-      await at.run.remove(name, file.stages[stageId]?.dir);
-      if (repo && file.kind === "git" && file.project !== undefined) await forgetWorktrees(file.project.root, runRoot);
-    }
+    const dir = file.stages[stageId]?.dir;
+    if (repo && file.kind === "git" && dir !== undefined) recordRegistration(at, stageId, at.run.child(name, dir));
+    await at.run.remove(name, dir);
+    if (repo) await removeRegistration(at, stageId);
     delete file.stages[stageId];
     writeRunFile(at, file);
   }
@@ -325,7 +372,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const head = (await gitOut(root, ["rev-parse", "--verify", `refs/heads/${file.branch}^{commit}`])).trim();
       // The stage folder is the host's own before git fills it, and still that folder each time something is removed from it.
       held.check();
-      await gitOut(root, ["worktree", "add", "--detach", held.path, head], { drivers: drivers.config });
+      const added = await git.run(root, ["worktree", "add", "--detach", held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS] }).catch(() => undefined);
+      if (recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
       held.check();
       // A tracked secret file is not handed to a stage.
       const tracked = nul(await gitOut(held.path, ["ls-files", "-z"]));
@@ -343,7 +391,6 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       return null;
     } catch {
       await removeStage(at, stage.id).catch(() => undefined);
-      await forgetWorktrees(root, at.runRoot);
       return "git-unavailable";
     }
   }
@@ -659,6 +706,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     node("joinDir", JOIN_DIR, file.joinDir);
     node("outDir", OUT_DIR, file.outDir);
     if (file.project !== undefined && realDirId(file.project.root) !== file.project.id) found.push({ field: "project.id", side: "repo" });
+    for (const [key, registration] of Object.entries(file.registrations)) {
+      try { ownRegistration(at, registration); } catch { found.push({ field: `registrations.${key}`, side: "repo" }); }
+    }
     return found;
   }
 
@@ -669,7 +719,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * goes, and nothing in the repository is touched: its branch and worktree list stay as they are.
    */
   async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<void> {
-    const { runRoot, file } = at;
+    const { file } = at;
     if (stageIds !== "all") {
       for (const stageId of stageIds) if (file.stages[stageId] !== undefined) await removeStage(at, stageId);
       return;
@@ -686,9 +736,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     await clearIgnoreFolders(at);
     const root = file.project?.root;
     if (file.kind === "git" && root !== undefined && file.branch !== undefined && file.baseCommit !== undefined) {
+      if (repo && file.joinDir !== undefined) recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, file.joinDir));
       await at.run.remove(JOIN_DIR, file.joinDir);
       if (repo) {
-        await forgetWorktrees(root, runRoot);
+        await removeRegistration(at, JOIN_DIR);
         await deleteRunRefs(at);
       }
     }

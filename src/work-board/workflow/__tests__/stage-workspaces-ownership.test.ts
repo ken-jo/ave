@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
@@ -29,6 +29,8 @@ afterEach(async () => {
   if (!shared) await fx.done();
 });
 
+/** The exit code of plain git, for a call that may fail. */
+const code = (cwd: string, ...args: string[]): number | null => spawnSync("git", args, { cwd, env: fx.env, encoding: "utf8" }).status;
 /** The admin folder a worktree's `.git` file names. */
 const adminOf = (worktree: string): string => resolve(worktree, readFileSync(join(worktree, ".git"), "utf8").replace(/^gitdir: /u, "").trim());
 
@@ -38,7 +40,7 @@ const adminOf = (worktree: string): string => resolve(worktree, readFileSync(joi
  */
 interface Scene {
   target: GitHandle; runRoot: string; record: string; written: string; stage: string; admin: string; branch: string;
-  base: string; other: GitHandle; userwt: string; userAdmin: string; elsewhere: string;
+  base: string; other: GitHandle; otherRoot: string; userwt: string; userAdmin: string; elsewhere: string;
 }
 
 async function scene(): Promise<Scene> {
@@ -60,7 +62,8 @@ async function scene(): Promise<Scene> {
   await sealed(target, "s1");
 
   const other = fx.start({}, 8);
-  if (!(await other.provider.open(other.run, repo)).ok) throw new Error("open refused");
+  const otherOpen = await other.provider.open(other.run, repo);
+  if (!otherOpen.ok) throw new Error(otherOpen.code);
   write(await stageRoot(other, "s1"), "new.txt", "new\n");
   await sealed(other, "s1");
   expect(await other.provider.integrate(other.run, "j1", ["s1"])).toEqual({ ok: true });
@@ -68,7 +71,7 @@ async function scene(): Promise<Scene> {
   const record = join(runRoot, RUN_FILE);
   return {
     target, runRoot, record, written: readFileSync(record, "utf8"), stage, admin: adminOf(join(runRoot, JOIN_DIR)), branch: runBranch(target.run.runId),
-    base, other, userwt, userAdmin: adminOf(userwt), elsewhere,
+    base, other, otherRoot: otherOpen.workspace.runRoot, userwt, userAdmin: adminOf(userwt), elsewhere,
   };
 }
 
@@ -112,6 +115,9 @@ const refused: Row[] = [
 /** A field that names the project or its repository: the run folder is still the run's and goes; the repository is left as it is. */
 const repositoryLeft: Row[] = [
   ["project.id", ["project", "id"], () => "1:1"],
+  ["registrations._join.admin", ["registrations", "_join", "admin"], at => at.userAdmin],
+  ["registrations._join.id", ["registrations", "_join", "id"], () => "1:1"],
+  ["registrations._join.gitdir", ["registrations", "_join", "gitdir"], at => join(at.otherRoot, JOIN_DIR, ".git")],
 ];
 
 describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run", (operation) => {
@@ -159,7 +165,7 @@ describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run"
     expect(existsSync(at.runRoot)).toBe(false);
     expectRepositoryUntouched(at);
     expectUsersOwn(at);
-    expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining(field)]);
+    expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining(field.split(".").slice(0, 2).join("."))]);
   });
 });
 
@@ -167,8 +173,6 @@ describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run"
 const makesBranch = (args: readonly string[]): boolean => args.includes("-b") || (args[0] === "update-ref" && args.length === 4 && args[3] === "");
 
 describe("the run branch", () => {
-  const code = (cwd: string, ...args: string[]): number | null => spawnSync("git", args, { cwd, env: fx.env, encoding: "utf8" }).status;
-
   it("update-ref with an empty old value creates only an absent ref", () => {
     const { repo, userGit } = fx;
     const base = userGit(repo, "rev-parse", "HEAD");
@@ -243,5 +247,100 @@ describe("the run branch", () => {
     const root = realpathSync.native(repo);
     expect(existsSync(runRootOf(realpathSync.native(aveHome()), process.platform === "win32" ? root.toLowerCase() : root, handle.run.itemId, handle.run.runId))).toBe(false);
     expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
+  });
+});
+
+describe("worktree registrations", () => {
+  const worktrees = (): string => join(fx.repo, ".git", "worktrees");
+  const admins = (): string[] => existsSync(worktrees()) ? readdirSync(worktrees()).sort() : [];
+  const added = (folder: string, ...config: string[]): number | null => {
+    mkdirSync(folder, { recursive: true });
+    return code(fx.repo, ...config, "worktree", "add", "--detach", folder, "HEAD");
+  };
+  /** The user's worktree whose folder is gone: git would call it prunable. */
+  function missingUserWorktree(): string {
+    const userwt = join(fx.base, "userwt");
+    expect(added(userwt)).toBe(0);
+    const admin = adminOf(userwt);
+    rmSync(userwt, { recursive: true, force: true });
+    return admin;
+  }
+
+  it.skipIf(process.platform !== "win32")("a failed worktree add removes the folder it was given", () => {
+    const { repo, userGit } = fx;
+    // A tree with a name no folder here can hold: the checkout of the new worktree fails after git registered it.
+    userGit(repo, "-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", `100644,${userGit(repo, "rev-parse", "HEAD:a.txt")},bad:name`);
+    userGit(repo, "-c", "core.protectNTFS=false", "commit", "-q", "-m", "a name that cannot be checked out");
+    const folder = join(fx.base, "failed");
+    expect(added(folder)).not.toBe(0);
+    expect(existsSync(folder)).toBe(false);
+    expect(admins()).toEqual([]);
+  });
+
+  it("a second worktree with a taken basename gets a suffixed admin name", () => {
+    const first = join(fx.base, "one", "_join");
+    const second = join(fx.base, "two", "_join");
+    expect([added(first), added(second)]).toEqual([0, 0]);
+    expect(basename(adminOf(first))).toBe("_join");
+    expect(basename(adminOf(second))).not.toBe("_join");
+    expect(admins()).toHaveLength(2);
+  });
+
+  it("a missing registration blocks an add to its path until its admin folder goes", () => {
+    const folder = join(fx.base, "again");
+    expect(added(folder)).toBe(0);
+    const admin = adminOf(folder);
+    rmSync(folder, { recursive: true, force: true });
+    expect(added(folder)).toBe(128);
+    rmSync(admin, { recursive: true, force: true });
+    expect(added(folder)).toBe(0);
+  });
+
+  it("the .git file and the admin gitdir name each other", () => {
+    for (const relative of ["false", "true"]) {
+      const folder = join(fx.base, `links-${relative}`);
+      expect(added(folder, "-c", `worktree.useRelativePaths=${relative}`), relative).toBe(0);
+      const link = readFileSync(join(folder, ".git"), "utf8").replace(/^gitdir: /u, "").trim();
+      expect(isAbsolute(link), relative).toBe(relative === "false");
+      const admin = resolve(folder, link);
+      expect(realpathSync.native(dirname(admin)), relative).toBe(realpathSync.native(worktrees()));
+      expect(realpathSync.native(resolve(admin, readFileSync(join(admin, "gitdir"), "utf8").trim())), relative).toBe(realpathSync.native(join(folder, ".git")));
+    }
+  });
+
+  it("a stage retry succeeds beside the user's missing worktree", async () => {
+    const userAdmin = missingUserWorktree();
+    const handle = fx.start();
+    expect(await handle.provider.open(handle.run, fx.repo)).toMatchObject({ ok: true });
+    await stageRoot(handle, "s1");
+    await handle.provider.release(handle.run, ["s1"]);
+    expect(existsSync(join(await stageRoot(handle, "s1", 2), "a.txt"))).toBe(true);
+    expect(existsSync(userAdmin)).toBe(true);
+  });
+
+  it("release takes the run's registrations even while the user has a missing worktree", async () => {
+    const userAdmin = missingUserWorktree();
+    const handle = fx.start();
+    expect(await handle.provider.open(handle.run, fx.repo)).toMatchObject({ ok: true });
+    await stageRoot(handle, "s1");
+    expect(admins()).toHaveLength(3);
+    await handle.provider.release(handle.run, "all");
+    expect(admins()).toEqual([basename(userAdmin)]);
+  });
+
+  it("release leaves malformed, duplicate and copied registrations alone", async () => {
+    const dupwt = join(fx.base, "dupwt");
+    expect(added(dupwt)).toBe(0);
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error(open.code);
+    const ours = [adminOf(join(open.workspace.runRoot, JOIN_DIR)), adminOf(await stageRoot(handle, "s1"))];
+    write(worktrees(), "broken/HEAD", "ref: refs/heads/main\n");
+    cpSync(adminOf(dupwt), join(worktrees(), "dupwt2"), { recursive: true });
+    cpSync(ours[0] as string, join(worktrees(), "_joincopy"), { recursive: true });
+    await handle.provider.release(handle.run, "all");
+    expect(ours.map(admin => existsSync(admin))).toEqual([false, false]);
+    expect(admins()).toEqual(["_joincopy", "broken", "dupwt", "dupwt2"]);
+    expect(existsSync(open.workspace.runRoot)).toBe(false);
   });
 });
