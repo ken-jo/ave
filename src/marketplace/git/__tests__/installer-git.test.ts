@@ -45,9 +45,11 @@ describe("findInstallerGit", () => {
 describe("installerRunnerOptions", () => {
   it("uses schannel and the copy's own toolchain tools", () => {
     const root = "C:\\Ave\\git";
-    const options = installerRunnerOptions({ path: join(root, "cmd", "git.exe"), root, prefix: "ucrt64" });
+    const systemRoot = "D:\\Windows";
+    const systemDirectory = `${systemRoot}\\System32`;
+    const options = installerRunnerOptions({ path: join(root, "cmd", "git.exe"), root, prefix: "ucrt64", systemDirectory, systemRoot });
     expect(options.installerConfig).toEqual({ "http.sslBackend": "schannel" });
-    expect(options.installerEnv).toEqual({ GIT_EXEC_PATH: join(root, "ucrt64", "libexec", "git-core") });
-    expect(options.installerPathPrefix?.split(";")).toEqual([join(root, "ucrt64", "bin"), join(root, "usr", "bin")]);
+    expect(options.installerEnv).toEqual({ GIT_EXEC_PATH: join(root, "ucrt64", "libexec", "git-core"), SystemRoot: systemRoot, WINDIR: systemRoot });
+    expect(options.installerPathPrefix?.split(";")).toEqual([join(root, "ucrt64", "bin"), join(root, "usr", "bin"), systemDirectory, systemRoot]);
   });
 });

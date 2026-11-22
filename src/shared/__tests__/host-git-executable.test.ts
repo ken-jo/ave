@@ -40,12 +40,15 @@ describe("systemGitCandidates", () => {
       "C:\\Program Files\\Git\\cmd\\git.exe",
     ]);
   });
+
+
 });
 
 describe("resolveHostGit", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.resetAllMocks();
+    vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
     vi.stubEnv("PATHEXT", ".CMD;.EXE;.BAT");
     const { configureHostResources } = await import("../../main/host-resources.js");
     configureHostResources({ resourcePath: join(root, "host-resources"), isPackaged: true });
@@ -62,13 +65,14 @@ describe("resolveHostGit", () => {
     vi.stubEnv("PATH", [other, host].join(delimiter));
     vi.mocked(statSync)
       .mockReturnValueOnce({ isFile: () => false } as ReturnType<typeof statSync>)
-      .mockReturnValueOnce({ isFile: () => true } as ReturnType<typeof statSync>);
+      .mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
     const { resolveHostGit } = await import("../host-git-executable.js");
 
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     vi.stubEnv("PATH", join(root, "changed-bin"));
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary)]);
+    expect(execFileSync).toHaveBeenCalledExactlyOnceWith(join(host, binary), ["--no-lazy-fetch", "--version"], expect.anything());
   });
 
   it("ignores relative and empty PATH entries and discovers an executable after a miss", async () => {
@@ -85,6 +89,54 @@ describe("resolveHostGit", () => {
     vi.mocked(accessSync).mockReset();
     vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
+  });
+
+  it("skips an executable that cannot start or rejects the required option", async () => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    const missing = join(root, "unlaunchable");
+    const old = join(root, "unsupported");
+    const selected = join(host, binary);
+    vi.stubEnv("PATH", [missing, old, host].join(delimiter));
+    vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    vi.mocked(execFileSync).mockImplementation((file, args) => {
+      if (file === join(missing, binary)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      if (file === join(old, binary)) {
+        if (Array.isArray(args) && args.includes("--no-lazy-fetch")) throw Object.assign(new Error("unknown option"), { status: 129 });
+        return "git version 2.44.0";
+      }
+      return "git version 2.56.0";
+    });
+    expect(resolveHostGit({ packaged: false })?.path).toBe(selected);
+  });
+
+  it.each([
+    { reason: "failed directory proof", layout: true, onPath: false },
+    { reason: "failed directory proof with bundle and aliases on PATH", layout: true, onPath: true },
+    { reason: "missing bundle layout with bundle and aliases on PATH", layout: false, onPath: true },
+  ])("both callers select the same system executable after $reason", async ({ layout, onPath }) => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    const { detectGitRuntime } = await import("../../marketplace/git/detect.js");
+    const originalExecPath = process.execPath;
+    const installer = join("C:/Ave", "git");
+    const systemExecutable = "D:\\SystemGit\\git.exe";
+    try {
+      setProcessPlatform("win32");
+      Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
+      vi.stubEnv("PATH", onPath ? "D:\\Hardlink;D:\\Junction;c:/ave/git/cmd;D:\\SystemGit" : "D:\\SystemGit");
+      vi.mocked(existsSync).mockReturnValue(layout);
+      vi.mocked(statSync).mockImplementation((file) => ({
+        isFile: () => true, dev: 1n, ino: file === systemExecutable ? 2n : 1n,
+      }) as ReturnType<typeof statSync>);
+      vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("relative"));
+
+      expect.soft(resolveHostGit({ packaged: true })?.path).toBe(systemExecutable);
+      expect.soft(detectGitRuntime(installer)).toMatchObject({ state: "ready", git: { kind: "system", path: systemExecutable } });
+      expect(spawnSync).toHaveBeenCalledTimes(layout ? 1 : 0);
+      expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual([systemExecutable]);
+    } finally {
+      Object.defineProperty(process, "execPath", { value: originalExecPath });
+      setProcessPlatform(platform);
+    }
   });
 
   it("rejects Windows UNC and device PATH entries before filesystem probes", async () => {
@@ -120,7 +172,9 @@ describe("resolveHostGit", () => {
       const expected = bundle === "available" ? bundled : system;
       expect.soft(resolveHostGit({ packaged: true })?.path).toBe(expected);
       expect.soft(resolveHostGit({ packaged: true })?.path).toBe(expected);
-      expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(bundle === "unverified" ? [] : [bundled]);
+      expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(
+        bundle === "unverified" ? [system] : bundle === "unlaunchable" ? [bundled, system] : [bundled],
+      );
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath });
     }
@@ -172,9 +226,10 @@ describe("resolveHostGit", () => {
         expect(execFileSync).toHaveBeenCalledTimes(expectedProbes + 1);
       } else {
         vi.mocked(statSync).mockImplementation((path) => ({ isFile: () => path === bundled || path === system }) as ReturnType<typeof statSync>);
+        vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
         expect(resolveHostGit({ packaged: true })?.path).toBe(system);
         expect(spawnSync).toHaveBeenCalledTimes(1);
-        expect(execFileSync).not.toHaveBeenCalled();
+        expect(execFileSync).toHaveBeenCalledExactlyOnceWith(system, ["--no-lazy-fetch", "--version"], expect.anything());
       }
     } finally {
       now.mockRestore();
@@ -186,6 +241,7 @@ describe("resolveHostGit", () => {
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
     const { setIsPackaged } = await import("../../boot/dev-flags.js");
     const { discoverDirectoryInstructions } = await import("../../memory/project-agents-md.js");
+    const { detectGitRuntime } = await import("../../marketplace/git/detect.js");
     const project = mkdtempSync(join(tmpdir(), "ave-git-query-"));
     const originalExecPath = process.execPath;
     const installRoot = join("C:/Ave", "git");
@@ -211,6 +267,9 @@ describe("resolveHostGit", () => {
       vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
 
       expect(discoverDirectoryInstructions(project, join("src", "file.ts"), new Set(), { homeDir: project })).toEqual([]);
+      expect(detectGitRuntime(installRoot)).toMatchObject({
+        state: "ready", git: { kind: "installer", path: bundled, installer: { systemDirectory, systemRoot } },
+      });
       const expectedOptions = {
         cwd,
         env: {

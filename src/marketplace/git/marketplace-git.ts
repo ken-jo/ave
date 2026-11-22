@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { MarketplaceError } from "../errors.js";
 import { AskpassBroker } from "./askpass.js";
 import { installerRunnerOptions } from "./installer-git.js";
-import { detectGitRuntime, nodeGitDetectionDeps, type GitDetectionDeps, type GitExecutable } from "./detect.js";
+import { detectGitRuntime, type GitExecutable } from "./detect.js";
 import { readCopiedCredentialConfig, writeGeneratedGlobalConfig, type CopiedConfigEntry } from "./global-config.js";
 import { GitRunner, type GitCommands, type GitRemote, type GitRunnerOptions } from "./run-git.js";
 
@@ -14,7 +14,6 @@ export interface MarketplaceGitOptions {
   installerRoot: string | null;
   getToken: (host: string, sourceId: string) => Promise<string | null>;
   resolveProxy?: GitRunnerOptions["resolveProxy"];
-  detectionDeps?: GitDetectionDeps;
 }
 
 interface BuiltRunner {
@@ -41,8 +40,8 @@ export class MarketplaceGit {
     return this.broker;
   }
 
-  private async detect(): Promise<GitExecutable> {
-    const detection = await detectGitRuntime(this.options.detectionDeps ?? nodeGitDetectionDeps(this.options.installerRoot));
+  private detect(): GitExecutable {
+    const detection = detectGitRuntime(this.options.installerRoot);
     if (detection.state === "ready") return detection.git;
     if (detection.systemTooOld) {
       throw new MarketplaceError(
@@ -54,14 +53,14 @@ export class MarketplaceGit {
   }
 
   private async build(): Promise<BuiltRunner> {
-    const git = await this.detect();
+    const git = this.detect();
     await mkdir(this.options.envRoot, { recursive: true, mode: 0o700 });
     const emptyDir = join(this.options.envRoot, "empty");
     await mkdir(emptyDir, { recursive: true });
     const globalConfigPath = join(this.options.envRoot, "gitconfig");
-    const copied = await readCopiedCredentialConfig(git.path);
+    const installed = git.kind === "installer" ? installerRunnerOptions(git.installer) : {};
+    const copied = await readCopiedCredentialConfig(git.path, installed.installerEnv);
     await writeGeneratedGlobalConfig(globalConfigPath, copied);
-    const installed = git.kind === "installer" ? installerRunnerOptions(git.installer!) : {};
     const runner = new GitRunner({
       git,
       globalConfigPath,

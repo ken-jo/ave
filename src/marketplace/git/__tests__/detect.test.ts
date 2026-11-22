@@ -1,29 +1,30 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  detectGitRuntime,
-  type GitDetectionDeps,
-  gitRuntimeStatus,
-  nodeGitDetectionDeps,
-} from "../detect.js";
-import { type InstallerGitInstall, systemGitCandidates } from "../../../shared/host-git-executable.js";
-import { parseGitVersion } from "../git-version.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { parseGitVersion } from "../../../shared/git-version.js";
+import { systemGitCandidates } from "../../../shared/host-git-executable.js";
+import { gitRuntimeStatus } from "../detect.js";
 
-const probe = vi.hoisted(() => ({ paths: [] as string[], intercept: false }));
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:child_process")>();
+const probe = vi.hoisted(() => ({
+  versions: new Map<string, string>(),
+  calls: vi.fn<(file: string, args: readonly string[]) => string>(),
+}));
+
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+  execFileSync: probe.calls,
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
-    execFile: ((file: string, args: string[], options: object, callback: (error: Error | null, stdout: string) => void) => {
-      if (probe.intercept) {
-        probe.paths.push(file);
-        callback(null, "git version 2.50.1");
-        return;
-      }
-      return actual.execFile(file, args, options, callback);
-    }) as typeof actual.execFile,
+    accessSync(file: string, mode?: number) {
+      if (!probe.versions.has(file)) throw new Error("missing fixture");
+      actual.accessSync(file, mode);
+    },
   };
 });
 
@@ -46,184 +47,76 @@ describe("parseGitVersion", () => {
 describe("systemGitCandidates", () => {
   it("searches PATH in order, then the well-known locations, without duplicates", () => {
     expect(systemGitCandidates("darwin", "/opt/homebrew/bin:relative:/usr/bin")).toEqual([
-      "/opt/homebrew/bin/git",
-      "/usr/bin/git",
-      "/usr/local/bin/git",
+      "/opt/homebrew/bin/git", "/usr/bin/git", "/usr/local/bin/git",
     ]);
     expect(systemGitCandidates("win32", 'C:\\Tools\\Git\\cmd;"C:\\Program Files\\Git\\cmd\\";.\\bin')).toEqual([
-      "C:\\Tools\\Git\\cmd\\git.exe",
-      "C:\\Program Files\\Git\\cmd\\git.exe",
+      "C:\\Tools\\Git\\cmd\\git.exe", "C:\\Program Files\\Git\\cmd\\git.exe",
     ]);
   });
 
   it("uses the explicit native executable name when searching Windows PATH", () => {
     const path = ";;.;bin;C:drive-relative;\\root-relative;C:\\Tools\\Git\\cmd";
-    const fallback = "C:\\Program Files\\Git\\cmd\\git.exe";
-    expect(systemGitCandidates("win32", path)).toEqual(["C:\\Tools\\Git\\cmd\\git.exe", fallback]);
+    expect(systemGitCandidates("win32", path)).toEqual([
+      "C:\\Tools\\Git\\cmd\\git.exe", "C:\\Program Files\\Git\\cmd\\git.exe",
+    ]);
   });
 });
 
-function fakeDeps(overrides: Partial<GitDetectionDeps> & { versions: Record<string, string> }): GitDetectionDeps {
-  return {
-    platform: "linux",
-    searchPath: "/a:/b",
-    isExecutableFile: async (path) => path in overrides.versions,
-    readVersion: async (path) => overrides.versions[path] ?? null,
-    commandLineToolsInstalled: async () => true,
-    findInstallerGit: async () => null,
-    ...overrides,
-  };
-}
-
-const INSTALLED: InstallerGitInstall = {
-  path: "C:\\Program Files\\Ave\\git\\cmd\\git.exe",
-  root: "C:\\Program Files\\Ave\\git",
-  prefix: "ucrt64",
-};
-
 describe("detectGitRuntime", () => {
-  it.each(["2.50.1", "2.40.0"])("detects Windows PATH Git %s without .EXE in PATHEXT", async (version) => {
-    const searchPath = "D:\\Tools\\Git\\cmd";
-    const path = `${searchPath}\\git.exe`;
-    vi.stubEnv("PATHEXT", ".CMD;.BAT");
-    try {
-      const detection = await detectGitRuntime({
-        ...nodeGitDetectionDeps(null),
-        ...fakeDeps({ platform: "win32", searchPath, versions: { [path]: `git version ${version}` } }),
-      });
-      expect(detection).toMatchObject(version === "2.50.1"
-        ? { state: "ready", git: { kind: "system", path } }
-        : { state: "missing", systemTooOld: { path, version } });
-    } finally {
-      vi.unstubAllEnvs();
+  let root: string;
+  let old: string;
+  let supported: string;
+  const executable = process.platform === "win32" ? "git.exe" : "git";
+
+  beforeEach(() => {
+    vi.resetModules();
+    probe.calls.mockReset();
+    root = mkdtempSync(join(tmpdir(), "ave-fake-git-"));
+    old = mkdtempSync(join(root, "old-"));
+    supported = mkdtempSync(join(root, "supported-"));
+    for (const [dir, version] of [[old, "2.45.0"], [supported, "2.45.1"]] as const) {
+      const path = join(dir, executable);
+      writeFileSync(path, "fixture executable", { mode: 0o755 });
+      probe.versions.set(path, version);
     }
-  });
-
-  it("prefers the installer's copy over a usable system git", async () => {
-    const detection = await detectGitRuntime(
-      fakeDeps({
-        versions: { "/a/git": "git version 2.50.1", [INSTALLED.path]: "git version 2.53.0" },
-        findInstallerGit: async () => INSTALLED,
-      }),
-    );
-    expect(detection).toEqual({
-      state: "ready",
-      git: { kind: "installer", path: INSTALLED.path, installer: INSTALLED, version: { major: 2, minor: 53, patch: 0, text: "2.53.0" } },
+    probe.calls.mockImplementation((file, args) => {
+      const version = probe.versions.get(file);
+      if (!version) throw new Error("unexpected probe");
+      if (version === "2.45.0" && args.includes("--no-lazy-fetch")) {
+        throw Object.assign(new Error("unknown option"), { status: 129 });
+      }
+      return `git version ${version}`;
     });
   });
 
-  it("falls back to the system git when the installer's copy does not run", async () => {
-    const detection = await detectGitRuntime(
-      fakeDeps({ versions: { "/b/git": "git version 2.50.1" }, findInstallerGit: async () => INSTALLED }),
-    );
-    expect(detection).toMatchObject({ state: "ready", git: { kind: "system", path: "/b/git" } });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    probe.versions.clear();
+    await cleanupTmpDir(root);
   });
 
-  it("falls back to the system git when the installer's copy reports too old a version", async () => {
-    const detection = await detectGitRuntime(
-      fakeDeps({
-        versions: { "/b/git": "git version 2.50.1", [INSTALLED.path]: "git version 2.40.0" },
-        findInstallerGit: async () => INSTALLED,
-      }),
-    );
-    expect(detection).toMatchObject({ state: "ready", git: { kind: "system", path: "/b/git" } });
+  it("probes an absolute executable even when PATHEXT omits .EXE", async () => {
+    vi.stubEnv("PATH", ["", ".", "project/bin", supported].join(delimiter));
+    vi.stubEnv("PATHEXT", ".CMD;.BAT");
+    const { detectGitRuntime } = await import("../detect.js");
+    const path = join(supported, executable);
+    expect(detectGitRuntime(null)).toMatchObject({ state: "ready", git: { kind: "system", path } });
+    expect(probe.calls.mock.calls.map(([file, args]) => [file, args])).toEqual([[path, ["--no-lazy-fetch", "--version"]]]);
   });
 
-  it("picks the first usable system git and remembers an older one it skipped", async () => {
-    const detection = await detectGitRuntime(
-      fakeDeps({ versions: { "/a/git": "git version 2.30.0", "/b/git": "git version 2.50.1" } }),
-    );
-    expect(detection).toMatchObject({
-      state: "ready",
-      git: { kind: "system", path: "/b/git" },
-      systemTooOld: { path: "/a/git", version: "2.30.0" },
-    });
-  });
-
-  it("reports missing, with the too-old system git, when nothing is usable", async () => {
-    expect(await detectGitRuntime(fakeDeps({ versions: {} }))).toEqual({ state: "missing" });
-    expect(await detectGitRuntime(fakeDeps({ versions: { "/a/git": "git version 2.45.0" } }))).toEqual({
-      state: "missing",
-      systemTooOld: { path: "/a/git", version: "2.45.0" },
+  it("reports an older Git and chooses a later one that supports the required option", async () => {
+    vi.stubEnv("PATH", old);
+    const { detectGitRuntime } = await import("../detect.js");
+    const systemTooOld = { path: join(old, executable), version: "2.45.0" };
+    expect(detectGitRuntime(null)).toEqual({ state: "missing", systemTooOld });
+    vi.stubEnv("PATH", [old, supported].join(delimiter));
+    expect(detectGitRuntime(null)).toMatchObject({
+      state: "ready", git: { kind: "system", path: join(supported, executable) }, systemTooOld,
     });
   });
 
   it("keeps paths out of the renderer status", () => {
-    expect(
-      gitRuntimeStatus({ state: "missing", systemTooOld: { path: "/a/git", version: "2.45.0" } }, true),
-    ).toEqual({ state: "missing", active: null, systemTooOld: { version: "2.45.0" }, installerProvides: true });
-  });
-
-  it("never runs the macOS /usr/bin/git shim without the Command Line Tools", async () => {
-    const ran: string[] = [];
-    const deps = fakeDeps({
-      platform: "darwin",
-      searchPath: "/usr/bin",
-      versions: { "/usr/bin/git": "git version 2.39.5 (Apple Git-154)" },
-      commandLineToolsInstalled: async () => false,
-      readVersion: async (path) => {
-        ran.push(path);
-        return "git version 2.39.5 (Apple Git-154)";
-      },
-    });
-    expect(await detectGitRuntime(deps)).toEqual({ state: "missing" });
-    expect(ran).toEqual([]);
-  });
-});
-
-describe("detectGitRuntime with real executables", () => {
-  let dir: string;
-
-  function fakeGit(name: string, version: string): string {
-    const bin = join(dir, name);
-    mkdirSync(bin, { recursive: true });
-    const path = join(bin, "git");
-    writeFileSync(path, `#!/bin/sh\necho "git version ${version}"\n`);
-    chmodSync(path, 0o755);
-    return bin;
-  }
-
-  beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), "ave-fake-git-"));
-  });
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
-
-  it("probes the absolute host Git path from PATH", async () => {
-    const bin = join(dir, "host");
-    const path = join(bin, process.platform === "win32" ? "git.exe" : "git");
-    mkdirSync(bin);
-    writeFileSync(path, "fixture executable", { mode: 0o755 });
-    const deps = nodeGitDetectionDeps(null);
-    probe.intercept = true;
-    try {
-      const searchPath = ["", ".", "project/bin", bin].join(delimiter);
-      expect(await detectGitRuntime({ ...deps, searchPath })).toMatchObject({
-        state: "ready",
-        git: { kind: "system", path },
-      });
-      expect(probe.paths).toEqual([path]);
-    } finally {
-      probe.intercept = false;
-    }
-  });
-
-  it.skipIf(process.platform === "win32")("refuses 2.45.0 and accepts 2.45.1", async () => {
-    const old = fakeGit("old", "2.45.0");
-    const ok = fakeGit("ok", "2.45.1");
-    const inDir = (path: string) => path.startsWith(dir);
-    const real = nodeGitDetectionDeps(null);
-    const deps: GitDetectionDeps = {
-      ...real,
-      platform: "linux",
-      isExecutableFile: async (path) => inDir(path) && (await real.isExecutableFile(path)),
-    };
-    expect(await detectGitRuntime({ ...deps, searchPath: old })).toEqual({
-      state: "missing",
-      systemTooOld: { path: join(old, "git"), version: "2.45.0" },
-    });
-    expect(await detectGitRuntime({ ...deps, searchPath: `${old}:${ok}` })).toMatchObject({
-      state: "ready",
-      git: { kind: "system", path: join(ok, "git"), version: { text: "2.45.1" } },
-    });
+    expect(gitRuntimeStatus({ state: "missing", systemTooOld: { path: "/a/git", version: "2.45.0" } }, true))
+      .toEqual({ state: "missing", active: null, systemTooOld: { version: "2.45.0" }, installerProvides: true });
   });
 });
