@@ -45,7 +45,7 @@ useVerifiedAveHomePrivacy();
 
 function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prependArgs: string[] }): string {
   const require = createRequire(import.meta.url);
-  const helperUrl = pathToFileURL(require.resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")).href;
+  const helperPath = require.resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js");
   const pure = new Set(["parseWindowsBinShell", "expandWindowsFsPaths", "rankWindowsFsAccess", "parseWindowsSandboxError",
     "windowsInstallInstructions", "windowsStateDir", "setWindowsAclRecoveryListener", "expandWindowsAclDenyLists", "assertWindowsAclPolicyBudget"]);
   const substitutes: Record<string, string> = {
@@ -56,7 +56,9 @@ function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prepend
   };
   const adapter = join(root, "windows-adapter.mjs");
   writeFileSync(adapter, [
-    `import * as actual from ${JSON.stringify(helperUrl)};`,
+    'import { createRequire } from "node:module";',
+    // Load the real helpers even when the worker stamp is mocked in this suite.
+    `const actual = createRequire(import.meta.url)(${JSON.stringify(helperPath)});`,
     `const fixture = ${JSON.stringify(srtWin)};`,
     'function guard(args) { if (!args.some(arg => arg?.srtWin?.exe === fixture.exe && JSON.stringify(arg.srtWin.prependArgs) === JSON.stringify(fixture.prependArgs))) throw new Error("Fixture srtWin required"); }',
     ...Object.entries(windowsHelpers).map(([name, value]) => {
@@ -146,10 +148,13 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   });
 
   afterEach(async () => {
-    if (isAsrtSandboxActive()) await resetAsrtSandbox();
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-    rmSync(root, { recursive: true, force: true });
+    try {
+      if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   function captureRuntime() {
@@ -211,7 +216,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       'process.stdout.write(JSON.stringify(outcomes));',
     ].join("\n"));
     const srtWin = { exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, prependArgs: [script] };
-    // Native dependency imports bypass module spies; substitute only the helper adapter in an isolated runtime copy.
+    // Run the isolated manager with the guarded helper adapter so its ACL calls use the fixture executable.
     const require = createRequire(import.meta.url);
     const managerUrl = pathToFileURL(require.resolve("@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js"));
     const adapter = writeFixtureWindowsAdapter(root, srtWin);
