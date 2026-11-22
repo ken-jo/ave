@@ -1,12 +1,15 @@
 import '../../../../../test/renderer/setup.js';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../../../../ipc/types.js';
 import { registerMemoryMapHandlers } from '../../../../ipc/domains/memory-map.js';
 import { CHANNELS } from '../../../../contract/app-contract.js';
 import type { MemoryEmbeddingConfig } from '../../../../shared/memory-embedding-config.js';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
+import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
+import { getLocale, setLocale } from '../../../../i18n/index.js';
+import { SettingsEditorProvider, _unregisteredSettingsControlsForTest } from '../../context/SettingsEditorContext.js';
 import { MemoryEmbeddingsSection } from '../MemoryEmbeddingsSection.js';
 import { en } from '../../../../i18n/messages/en.js';
 import { ko } from '../../../../i18n/messages/ko.js';
@@ -17,7 +20,43 @@ const { handlers } = vi.hoisted(() => ({
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => handlers.set(channel, handler) } }));
 
+const previousLocale = getLocale();
+afterEach(() => { setLocale(previousLocale); });
+
 describe('memory embeddings settings', () => {
+  it.each([['en', en], ['ko', ko]] as const)('registers the localized embedding source and resets it through the memory map API (%s)', async (locale, messages) => {
+    setLocale(locale);
+    const api = createMemoryMapApi();
+    const local = await api.settingsGet();
+    if (!local.ok) throw new Error('Missing settings');
+    const providerId = 'configured';
+    const modelId = 'embed-a';
+    api.settingsGet.mockResolvedValue({ ok: true, value: {
+      ...local.value,
+      source: 'provider',
+      namespace: { ...local.value.namespace, source: 'provider', providerId, modelId },
+      providers: [{ id: providerId, models: [modelId], route: ROUTE }],
+    } });
+    api.settingsSet.mockResolvedValue(local);
+    const { api: settingsApi } = makeMockAveApi();
+    const view = render(<SettingsEditorProvider api={settingsApi as never} modifiedOnly={false}>
+      <MemoryEmbeddingsSection api={api} />
+    </SettingsEditorProvider>);
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: messages['memoryEmbeddings.provider'] })).toBeChecked());
+    await waitFor(() => expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]));
+    const marker = '[data-setting-control-id="memoryEmbedding.source"][data-setting-registered="true"]';
+    await waitFor(() => expect(view.container.querySelector(marker)).toHaveAttribute('data-setting-modified', 'true'));
+    expect(screen.getByRole('combobox', { name: messages['memoryEmbeddings.model'] })).toHaveValue(modelId);
+
+    const reset = view.getByLabelText(messages['settingsEditor.resetLabel'].replace('{label}', messages['memoryEmbeddings.source']));
+    fireEvent.click(reset);
+    await waitFor(() => expect(screen.getByRole('radio', { name: messages['memoryEmbeddings.local'] })).toBeChecked());
+    expect(api.settingsSet).toHaveBeenCalledWith({ source: 'local' });
+    expect(settingsApi.updateSettings).not.toHaveBeenCalled();
+    await waitFor(() => expect(view.container.querySelector(marker)).toHaveAttribute('data-setting-modified', 'false'));
+  });
+
   it.each(['before Save', 'during Save'])('requires a fresh acknowledgement when the destination changes %s', async when => {
     const api = createMemoryMapApi();
     const event = { senderFrame: { url: 'file:///app/index.html' } } as IpcMainInvokeEvent;

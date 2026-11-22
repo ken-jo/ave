@@ -4,6 +4,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { MemoryMapApi, MemoryMapError, MemoryEmbeddingSettings, MemoryEmbeddingSelection } from "../../../shared/memory-map.js";
 import { MEMORY_EMBEDDING_CONSENT_VERSION } from '../../../shared/memory-embedding-config.js';
 import type { MemoryModelStatus } from "../../../shared/memory-model.js";
+import { SettingsControlActions, useSettingsControl } from "../context/SettingsEditorContext.js";
 
 export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
   const { t } = useTranslation();
@@ -89,6 +90,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
         setSource(result.value.source);
         if (result.value.source === 'local') setAcknowledgedEndpointId(undefined);
       }
+      return result;
     } catch { setError('provider-embedding-failed'); }
     finally { setBusy(false); }
   };
@@ -99,11 +101,22 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     }
     setAcknowledgedEndpointId(checked ? route?.endpointId : undefined);
   };
+  const sourceControl = useSettingsControl({
+    id: "memoryEmbedding.source",
+    section: "memory-embeddings",
+    label: t("memoryEmbeddings.source"),
+    modified: settings?.source === "provider",
+    disabledReason: busy ? t("settingsContent.saving") : undefined,
+    reset: async () => {
+      const result = await handleSave("local");
+      if (!result?.ok) throw new Error("Memory embedding source reset failed");
+    },
+  });
   const downloading = !localRuntimeUnavailable && status?.status === "downloading";
   return <section data-settings-section="memory-embeddings" tabIndex={-1} aria-labelledby="memory-embeddings-heading" className="space-y-3 rounded-lg border p-4">
     <h2 id="memory-embeddings-heading" className="text-sm font-semibold">{t("memoryEmbeddings.title")}</h2>
     <p className="text-xs text-muted-foreground">{t("memoryEmbeddings.localDefault")}</p>
-    <fieldset className="space-y-3 text-xs">
+    <fieldset {...sourceControl} className="space-y-3 text-xs">
       <legend>{t('memoryEmbeddings.source')}</legend>
       <div className="flex gap-4">
         <label><input type="radio" name="memory-embedding-source" checked={source === 'local'} disabled={busy || !settings} onChange={() => void handleSave('local')}/>{t('memoryEmbeddings.local')}</label>
@@ -137,5 +150,6 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
         <Button variant="outline" size="sm" disabled={busy || localRuntimeUnavailable || !status} onClick={() => void handleAction("existing")}>{t("memoryEmbeddings.existing")}</Button>
       </>}
     </div>
+    <SettingsControlActions section="memory-embeddings" />
   </section>;
 }
