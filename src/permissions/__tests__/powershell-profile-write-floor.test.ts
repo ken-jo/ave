@@ -8,6 +8,11 @@ import { rankMxcFilesystem } from "../mxc-windows.js";
 
 const ENGINES = ["WindowsPowerShell", "PowerShell"];
 
+vi.mock("node:os", async importOriginal => ({
+  ...await importOriginal<typeof import("node:os")>(),
+  userInfo: () => ({ homedir: process.env.USERPROFILE, username: "alice", uid: -1, gid: -1, shell: null }),
+}));
+
 describe.skipIf(process.platform !== "win32")("Windows profile write floor", () => {
   let root: string;
   let documents: string;
@@ -16,6 +21,13 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
 
   beforeEach(() => {
     root = realpathSync.native(mkdtempSync(join(tmpdir(), "profile-write-floor-")));
+    const home = join(root, "alice");
+    const aveHome = join(root, "ave-home");
+    mkdirSync(home);
+    mkdirSync(aveHome);
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("AVE_HOME", aveHome);
     documents = join(root, "relocated", "Documents");
     for (const engine of ENGINES) mkdirSync(join(documents, engine), { recursive: true });
   });
@@ -63,14 +75,26 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     }
   });
 
+  it("protects a missing engine directory under a case-changed grant", () => {
+    const defaultDocuments = join(root, "alice", "Documents");
+    const adjacent = join(defaultDocuments, "work");
+    mkdirSync(adjacent, { recursive: true });
+    const denyWrite = getDefaultSensitiveWriteDenyPaths(undefined, () => defaultDocuments);
+    const extension = admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [defaultDocuments.toUpperCase(), adjacent], denyWrite }, {
+      readRoots: [], writeRoots: [defaultDocuments], hostStorageRoots: [],
+    });
+
+    const grants = rankMxcFilesystem(extension.policy, existsSync);
+    expect(grants.denied).toEqual(expect.arrayContaining(ENGINES.map(engine => join(defaultDocuments, engine))));
+    expect(grants.readwrite).toContain(adjacent);
+  });
+
   it.each([
     { reason: "lookup error", resolveDocumentsPath: () => { throw new Error("Documents lookup failed"); } },
     { reason: "empty result", resolveDocumentsPath: () => "" },
     { reason: "network location outside local grants", resolveDocumentsPath: () => "\\\\server\\share\\Documents" },
   ])("protects default profile locations after a $reason", ({ resolveDocumentsPath }) => {
     const home = join(root, "alice");
-    mkdirSync(home);
-    vi.stubEnv("USERPROFILE", home);
     const denyWrite = getDefaultSensitiveWriteDenyPaths(undefined, resolveDocumentsPath);
 
     expect(denyWrite).toEqual(expect.arrayContaining(ENGINES.flatMap(engine => [
