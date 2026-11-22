@@ -521,47 +521,69 @@ function maskAuthorizationValues(text: string): string {
   return out + text.slice(copied);
 }
 
-/** A URL nested in another URL's query carries its separators, keys and values percent-encoded up to three layers. */
-const QUERY_PARAMETER = /(?:[?&]|%(?:25){0,2}(?:3f|26))((?:[\w.~-]|%(?:25){0,2}(?!25|26|3d|3f)[\da-f]{2})+)(=|%(?:25){0,2}3d)/giu;
-const QUERY_ESCAPE = /%(?:25){0,2}([\da-f]{2})/iuy;
-const QUERY_CREDENTIAL_KEY = /^(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|(?:x-[a-z\d]+-)?security-token|x-[a-z\d]+-signature)$/iu;
-/** A bare signature name also names ordinary options such as `?sig=sha256`. */
-const QUERY_SIGNATURE_KEY = /^(?:signature|sig)$/iu;
+/**
+ * Separators, keys and `=` are plain, percent-encoded up to three layers as in a URL nested in another's query,
+ * or JSON `\u00XX` escapes up to three serialization layers.
+ */
+const QUERY_PARAMETER = /(?:[?&]|%(?:25){0,2}(?:3f|26)|\\{1,7}u00(?:3f|26))((?:[\w.~-]|%(?:25){0,2}(?!25|26|3d|3f)[\da-f]{2}|\\{1,7}u00(?!26|3d|3f)[2-7][\da-f])+)(=|%(?:25){0,2}3d|\\{1,7}u003d)/giu;
+const QUERY_ESCAPE = /%(?:25){0,2}([\da-f]{2})|\\{1,7}u00([\da-f]{2})/iuy;
+const QUERY_CREDENTIAL_KEY = /^(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|(?:x-[a-z\d]+-)?security-token)$/iu;
+/** Signature names also name ordinary options such as `?sig=sha256`. */
+const QUERY_SIGNATURE_KEY = /^(?:signature|sig|x-[a-z\d]+-signature)$/iu;
+/** Parameters a signed URL carries next to its signature. */
+const SIGNED_QUERY_KEY = /^(?:expires|key-pair-id|policy|se|sv|signature-?version|x-[a-z\d]+-(?:algorithm|credential|date|expires|security-token|signedheaders))$/iu;
+const QUERY_BREAK = /[\s"'`<>]/u;
+/** What follows a closing quote: the end, a break, a tag end, a separator before the next field, or closing brackets. */
+const SERIALIZATION_AFTER = /$|[\s&>]|[,;:|](?=$|[\s"'`\\{[])|[)\]}]+(?=$|[\s&,;:|"'`\\<])/uy;
 
 function decodeQueryKey(key: string): string {
-  for (let layer = 0; layer < 3 && key.includes("%"); layer++) {
-    key = key.replace(/%([0-7][\da-f])/giu, (_escape: string, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+  for (let layer = 0; layer < 3 && /[%\\]/u.test(key); layer++) {
+    key = key.replace(/%([0-7][\da-f])|\\+u00([0-7][\da-f])/giu,
+      (_escape: string, percent?: string, json?: string) => String.fromCharCode(Number.parseInt(percent ?? json ?? "", 16)));
   }
   return key;
 }
 
-/** Quotes, whitespace, `&` and an escaped closing quote belong to the surrounding text or serialization. */
-function queryValueEnd(text: string, start: number, ampersand: string): number {
+/**
+ * A credential value runs to `&` or whitespace. A quote, backtick or `>` ends it only where it closes an opener
+ * earlier in the text and serialization follows, so a quote inside the value stays masked.
+ */
+function queryValueEnd(text: string, start: number, ampersand: string, opener: (closer: string) => number): number {
+  const closes = (closer: string, after: number): boolean => {
+    const open = opener(closer);
+    SERIALIZATION_AFTER.lastIndex = after;
+    return open >= 0 && open < start && SERIALIZATION_AFTER.test(text);
+  };
   let end = start;
   while (end < text.length) {
     const char = text.charAt(end);
-    if (char === "&" || isWhitespace(char) || "\"'`<>".includes(char) || ampersand && text.startsWith(ampersand, end)) return end;
-    if (char !== "\\") {
-      end++;
+    if (char === "&" || isWhitespace(char) || ampersand && text.startsWith(ampersand, end)) return end;
+    if (char === "\\") {
+      let run = end + 1;
+      while (text[run] === "\\") run++;
+      if (text.startsWith("u0026", run) || text[run] === '"' && closes('\\"', run + 1)) return end;
+      end = run;
       continue;
     }
-    let run = end + 1;
-    while (text[run] === "\\") run++;
-    if (text[run] === '"') return end;
-    end = run;
+    if ("\"'`>".includes(char) && closes(char, end + 1)) return end;
+    end++;
   }
   return end;
 }
 
-/** A run that is a hexadecimal digest, or base64 text mixing upper case, lower case and digits, whatever punctuation follows it. */
-function signatureValueEnd(text: string, start: number): number {
+/**
+ * A signature is a run of base64 or hexadecimal characters, whatever punctuation follows it. Outside a signed
+ * query the run must be a hexadecimal digest, or base64 text mixing upper case, lower case and digits.
+ */
+function signatureValueEnd(text: string, start: number, signed: boolean): number {
   let end = start;
   let length = 0;
   let classes = 0;
   let hex = true;
   while (end < text.length) {
     QUERY_ESCAPE.lastIndex = end;
-    const [encoded, byte] = QUERY_ESCAPE.exec(text) ?? [];
+    const [encoded, percent, json] = QUERY_ESCAPE.exec(text) ?? [];
+    const byte = percent ?? json;
     const char = byte === undefined ? text.charAt(end) : String.fromCharCode(Number.parseInt(byte, 16));
     if (!/^[\w+/=~-]$/u.test(char)) break;
     classes |= /\d/u.test(char) ? 1 : /[a-z]/u.test(char) ? 2 : /[A-Z]/u.test(char) ? 4 : 0;
@@ -569,30 +591,61 @@ function signatureValueEnd(text: string, start: number): number {
     length++;
     end += encoded?.length ?? 1;
   }
-  const signature = hex ? length >= 32 : length >= 16 && classes === 7;
+  const signature = signed || (hex ? length >= 32 : length >= 16 && classes === 7);
   return signature ? end : start;
 }
 
-/** Mask credential query values, and signed-URL signatures and session tokens. */
+interface QueryParameter {
+  index: number;
+  start: number;
+  key: string;
+  ampersand: string;
+  query: number;
+}
+
+/** Parameters of one query share its percent-encoding layer and are not split by whitespace, quotes or `<>`. */
+function queryParameters(text: string): { parameters: QueryParameter[]; signed: Set<number> } {
+  const parameters: QueryParameter[] = [];
+  const signed = new Set<number>();
+  const queries = new Map<number, number>();
+  let previous = 0;
+  for (const match of text.matchAll(QUERY_PARAMETER)) {
+    const [parameter, rawKey = "", equals = "="] = match;
+    const separator = parameter.slice(0, parameter.length - rawKey.length - equals.length);
+    if (QUERY_BREAK.test(text.slice(previous, match.index))) queries.clear();
+    previous = match.index;
+    const layer = separator.startsWith("%") ? (separator.length - 1) / 2 : 0;
+    if (/3f$|\?/iu.test(separator) || !queries.has(layer)) queries.set(layer, parameters.length);
+    const query = queries.get(layer) ?? parameters.length;
+    const key = decodeQueryKey(rawKey);
+    if (SIGNED_QUERY_KEY.test(key)) signed.add(query);
+    // An encoded `=` belongs to a nested URL, whose own parameters end at its `&`.
+    const ampersand = equals === "=" || equals.startsWith("\\") ? "" : `${equals.slice(0, -2)}26`;
+    parameters.push({ index: match.index, start: match.index + parameter.length, key, ampersand, query });
+  }
+  return { parameters, signed };
+}
+
+/** Mask credential query values, and signatures in a signed query or of a signature shape. */
 function maskQueryCredentials(text: string): string {
+  const { parameters, signed } = queryParameters(text);
+  const openers = new Map<string, number>();
+  const opener = (closer: string): number => {
+    const cached = openers.get(closer);
+    if (cached !== undefined) return cached;
+    const index = text.indexOf(closer === ">" ? "<" : closer);
+    openers.set(closer, index);
+    return index;
+  };
   let out = "";
   let copied = 0;
-  QUERY_PARAMETER.lastIndex = 0;
-  for (let match = QUERY_PARAMETER.exec(text); match !== null; match = QUERY_PARAMETER.exec(text)) {
-    const [parameter, rawKey = "", equals = "="] = match;
-    const start = match.index + parameter.length;
-    const key = decodeQueryKey(rawKey);
-    // An encoded `=` belongs to a nested URL, whose own parameters end at its `&`.
-    const ampersand = equals === "=" ? "" : `${equals.slice(0, -2)}26`;
-    const end = QUERY_CREDENTIAL_KEY.test(key) ? queryValueEnd(text, start, ampersand)
-      : QUERY_SIGNATURE_KEY.test(key) ? signatureValueEnd(text, start) : start;
-    if (end === start) {
-      QUERY_PARAMETER.lastIndex = start;
-      continue;
-    }
+  for (const { index, start, key, ampersand, query } of parameters) {
+    if (index < copied) continue;
+    const end = QUERY_CREDENTIAL_KEY.test(key) ? queryValueEnd(text, start, ampersand, opener)
+      : QUERY_SIGNATURE_KEY.test(key) ? signatureValueEnd(text, start, signed.has(query)) : start;
+    if (end === start) continue;
     out += `${text.slice(copied, start)}[REDACTED:TOKEN]`;
     copied = end;
-    QUERY_PARAMETER.lastIndex = end;
   }
   return out + text.slice(copied);
 }

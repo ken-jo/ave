@@ -395,7 +395,7 @@ describe("memory_write — credential guard", () => {
 
   it("stores docs that name a digest option in a query", async () => {
     const { store, saveMemory } = makeStore();
-    const result = await run({ title: "Digest option", content: "Pass `?sig=sha256` to pick the digest, or `?signature=on&sig=hmac` to show it." }, store);
+    const result = await run({ title: "Digest option", content: "Pass `?sig=sha256` or `?x-example-signature=sha256` to pick the digest, or `?signature=on&sig=hmac` to show it." }, store);
     expect(result.isError).toBe(false);
     expect(saveMemory).toHaveBeenCalledTimes(1);
   });

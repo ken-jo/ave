@@ -186,6 +186,7 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
       "url https://x.example/mcp?api_key=SECRETPARAM123",
       `GET https://objects.example/r?X-Example-Date=20261122T000000Z&X-Example-Signature=${signature}`,
       `GET https://blobs.example/a.txt?sv=2026-01-01&sig=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo%3D`,
+      'GET https://x.example/?token=abc"def&x=1',
     ]);
     const entry = new AdmZip(await build()).getEntry("logs/ave-2025-06-04.log");
     if (!entry) throw new Error("log entry is missing");
@@ -194,6 +195,7 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
       { level: 30, msg: "url https://x.example/mcp?api_key=[REDACTED:TOKEN]" },
       { level: 30, msg: "GET https://objects.example/r?X-Example-Date=20261122T000000Z&X-Example-Signature=[REDACTED:TOKEN]" },
       { level: 30, msg: "GET https://blobs.example/a.txt?sv=2026-01-01&sig=[REDACTED:TOKEN]" },
+      { level: 30, msg: "GET https://x.example/?token=[REDACTED:TOKEN]&x=1" },
     ]);
   });
 

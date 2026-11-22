@@ -430,7 +430,42 @@ describe("query credentials — signed URLs, encoded keys and serialization deli
       "?signature=on&sig=hmac",
       "https://docs.example/search?q=signature&signatures=on&design=sig",
       "https://docs.example/a?sig=0123456789abcdef",
+      "Set ?x-example-signature=sha256 to pick the digest.",
+      JSON.stringify({ a: "https://x.example/?Expires=1&b=2", c: "https://y.example/?sig=abcdefghijklmnopqrstuv" }),
     ]) expect(scrub(text)).toBe(text);
+  });
+
+  it.each(bothScrubbers)("%s masks an opaque signature in a signed query", (_name, scrub) => {
+    for (const [text, masked] of [
+      ["https://example.test/?Expires=123&Key-Pair-Id=EXAMPLE&Signature=abcdefghijklmnopqrstuvwx",
+        "https://example.test/?Expires=123&Key-Pair-Id=EXAMPLE&Signature=[REDACTED:TOKEN]"],
+      ["https://blobs.example/a.txt?sv=2026-01-01&sp=r&sig=lowercaseonlysignature", "https://blobs.example/a.txt?sv=2026-01-01&sp=r&sig=[REDACTED:TOKEN]"],
+      ["https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Date%3D1%26X-Example-Signature%3Dlowercasesig%26a%3D1&state=1",
+        "https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Date%3D1%26X-Example-Signature%3D[REDACTED:TOKEN]%26a%3D1&state=1"],
+    ]) expect(scrub(text)).toBe(masked);
+  });
+
+  it.each(bothScrubbers)("%s reads query syntax escaped in a JSON string", (_name, scrub) => {
+    const line = '{"url":"https://example.test/?\\u0073ig=0123456789abcdef0123456789abcdef","next":1}';
+    expect(scrub(line)).toBe('{"url":"https://example.test/?\\u0073ig=[REDACTED:TOKEN]","next":1}');
+  });
+
+  it("keeps a quote inside a credential value masked", () => {
+    expect(scrubSecretsForLLM('https://x.example/?token=abc"def&x=1')).toBe("https://x.example/?token=[REDACTED:TOKEN]&x=1");
+    expect(scrubSecretsForLLM("see ?token=abc\", next")).toBe("see ?token=[REDACTED:TOKEN] next");
+    for (const tail of ['",cd', '")cd', "':cd"]) {
+      expect(scrubSecretsForLLM(`"'https://x.example/?token=ab${tail}&x=1`)).toBe("\"'https://x.example/?token=[REDACTED:TOKEN]&x=1");
+    }
+    const line = JSON.stringify({ msg: 'GET https://x.example/?token=abc"def&x=1', next: 1 });
+    expect(JSON.parse(scrubSecretsForLLM(line))).toEqual({ msg: "GET https://x.example/?token=[REDACTED:TOKEN]&x=1", next: 1 });
+    for (const text of ['https://x.example/?token=abc"def&x=1', line]) expect(scrubDiagnosticSecrets(text)).not.toContain("def");
+  });
+
+  it("keeps the parameters after a JSON-escaped ampersand", () => {
+    const line = '{"url":"https://example.test/?token=abc\\u0026next=1","next":1}';
+    expect(scrubSecretsForLLM(line)).toBe('{"url":"https://example.test/?token=[REDACTED:TOKEN]\\u0026next=1","next":1}');
+    expect(JSON.parse(scrubSecretsForLLM(line))).toEqual({ url: "https://example.test/?token=[REDACTED:TOKEN]&next=1", next: 1 });
+    expect(scrubDiagnosticSecrets(line)).not.toContain("abc");
   });
 
   it.each(bothScrubbers)("%s masks a bare signature before the punctuation that follows it", (_name, scrub) => {
@@ -977,6 +1012,7 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         // Read long backslash runs once per key window rather than once per step.
         `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
         fill("?a%26"), fill("&a%41"), fill("%253f"), fill("&sig=a1B"), `&sig=${fill("a1B%3D")}`, `?token=${fill("\\")}`, `?token=a${fill("%2526")}`,
+        fill("\\u0026token=a"), fill("?\\u0073ig=a1B"), fill('?token=a"'), `"?token=${fill('a\\"')}`, fill("&Expires=1&sig=a"), `?token=${fill("\\\\u0026")}`,
       ];
     };
     const small = familiesAt(SMALL);
