@@ -975,6 +975,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_pythonRuntime.errPythonVerifyFailed": "Python 검증 실패 (exit {code})\nstdout: {stdout}\nstderr: {stderr}",
   "be_pythonRuntime.errRuntimeVerifyFailed": "Python 런타임 검증 실패.\n원인: {message}",
   "be_pythonRuntime.errRebuildNeeded": "Python 런타임을 다시 만들어야 합니다. 네트워크에 연결한 뒤 Ave를 다시 시작하세요.\n원인: {message}",
+  "be_pythonRuntime.errUnsafeVenvClear": "관리되는 런타임 위치를 벗어난 가상 환경은 교체할 수 없습니다.",
 
   // be_renderHtml
   "be_renderHtml.toolDescription": "HTML을 별도 창으로 열어 사용자에게 시각적으로 보여줍니다. Electron BrowserWindow(별도 프로세스) + 엄격한 CSP로 격리되며, 무한 루프가 있어도 메인 UI는 멈추지 않고 모든 네트워크 요청은 차단됩니다. 허용: 인라인 CSS, data: URI 이미지/폰트, 인라인 <script>, on* 이벤트 핸들러, Function/eval, <input>/<canvas>/<svg> 등을 이용한 동적 상호작용(슬라이더로 차트 갱신 등). 불가: 외부 URL 로드(script/css/img/font/fetch/WebSocket 전부), 부모 문서 접근, 폼 제출, top-level navigation, <a> 외부 링크, localStorage. 차트·대시보드·인터랙티브 데모·표·다이어그램처럼 마크다운으로 표현하기 어려운 결과에 사용하세요. 라이브러리가 필요하면 코드 전체를 인라인으로 포함시켜야 합니다. 디자인 가이드: 현재 Ave 앱 테마 색상과 어울리도록 페이지를 구성하세요. 배경·텍스트·강조색은 가능하면 CSS 변수 hsl(var(--background)), hsl(var(--foreground)), hsl(var(--primary)), hsl(var(--muted)), hsl(var(--border)) 등을 사용하고, 카드/차트/버튼은 앱의 차분한 작업형 UI 톤에 맞춰 과한 그라데이션보다 명확한 계층·여백·대비를 우선하세요.",

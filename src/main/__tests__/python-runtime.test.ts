@@ -7,10 +7,12 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
 import type { EventEmitter } from "node:events";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, type as osType } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
+import { resolveUvTarget } from "../../../scripts/uv-targets.mjs";
 import { configureHostResources } from "../host-resources.js";
 import { initializeAveHomeFixture, protectAveHomeFixture } from "../../__tests__/support/ave-home-privacy.js";
 
@@ -380,9 +382,9 @@ describe("PythonRuntimeBootstrapper", () => {
   });
 
   it.each([false, true])("replaces an existing virtual environment during setup with forceSetup=%s", async (forceSetup) => {
-    const runtimeDir = mkdtempSync(path.join(tmpdir(), "ave-existing-python-"));
-    registryTempRoots.push(runtimeDir);
+    const runtimeDir = path.join(process.env.AVE_HOME!, "runtime");
     const venvDir = path.join(runtimeDir, "venv");
+    registryTempRoots.push(venvDir);
     mkdirSync(venvDir);
     writeFileSync(path.join(venvDir, "pyvenv.cfg"), "version_info = 3.12.3\n");
     const lockFilePath = path.join(runtimeDir, "python-requirements.lock");
@@ -392,14 +394,61 @@ describe("PythonRuntimeBootstrapper", () => {
       mockedAccess.mockReset().mockResolvedValue(undefined);
     }
 
-    const bootstrapper = new PythonRuntimeBootstrapper({ runtimeDir, lockFilePath, forceSetup });
+    const bootstrapper = new PythonRuntimeBootstrapper({ lockFilePath, forceSetup });
     await bootstrapper.ensureReady(null);
 
     expect(mockedSpawn).toHaveBeenCalledWith(
       expect.any(String),
-      ["venv", venvDir, "--python", "3.12", "--clear"],
+      ["venv", realpathSync(venvDir), "--python", "3.12", "--clear"],
       expect.anything(),
     );
+  });
+
+  it.each([process.platform === "win32" ? "junction" : "dir"] as const)("refuses to clear through a linked runtime ancestor (%s)", async (linkType) => {
+    const externalRoot = mkdtempSync(path.join(tmpdir(), "ave-external-python-"));
+    registryTempRoots.push(externalRoot);
+    const externalVenv = path.join(externalRoot, "venv");
+    mkdirSync(externalVenv);
+    const marker = path.join(externalVenv, "pyvenv.cfg");
+    writeFileSync(marker, "keep");
+
+    const lock = "example==1.0\n";
+    const hash = createHash("sha256").update(lock).digest("hex").slice(0, 24);
+    const target = resolveUvTarget(process.platform, process.arch);
+    const managedRoot = path.join(process.env.AVE_HOME!, "runtime", "python-envs");
+    mkdirSync(managedRoot, { recursive: true });
+    const runtimeLink = path.join(managedRoot, `${target.dir}-py312-${hash}`);
+    symlinkSync(externalRoot, runtimeLink, linkType);
+    mockedAccess.mockImplementation(async (file) => {
+      if (String(file).endsWith(".ready")) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    mockedReadFile.mockResolvedValueOnce("{}").mockResolvedValueOnce(lock);
+    mockedSpawn.mockImplementation(() => makeSpawnMock());
+    try {
+      const result = new PythonRuntimeBootstrapper().ensureReadyForPluginManifest(
+        path.join(externalRoot, "plugin.json"), null,
+      );
+      await expect(result).rejects.toThrow(t("be_pythonRuntime.errUnsafeVenvClear"));
+      expect(mockedSpawn).not.toHaveBeenCalled();
+      expect(readFileSync(marker, "utf8")).toBe("keep");
+    } finally {
+      unlinkSync(runtimeLink);
+    }
+  });
+
+  it("refuses to clear a virtual environment under an injected runtime root", async () => {
+    const runtimeDir = mkdtempSync(path.join(tmpdir(), "ave-injected-python-"));
+    registryTempRoots.push(runtimeDir);
+    const venvDir = path.join(runtimeDir, "venv");
+    mkdirSync(venvDir);
+    writeFileSync(path.join(venvDir, "pyvenv.cfg"), "keep");
+    setupPythonRuntimeSetupSpawns();
+    const bootstrapper = new PythonRuntimeBootstrapper({
+      runtimeDir, lockFilePath: path.join(runtimeDir, "python-requirements.lock"),
+    });
+
+    await expect(bootstrapper.ensureReady(null)).rejects.toThrow(t("be_pythonRuntime.errUnsafeVenvClear"));
+    expect(mockedSpawn).not.toHaveBeenCalled();
   });
 
   it.each(["unrelated directory", "linked virtual environment"])("leaves clearing disabled for an existing %s", async (target) => {
