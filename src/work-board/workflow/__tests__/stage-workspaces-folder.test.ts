@@ -429,8 +429,7 @@ describe("folder stage workspaces", () => {
     write(project, "child/.gitignore", "BUILD.LOG\n");
     write(project, "child/build.log", "built\n");
     const root = realpathSync.native(project);
-    const real = projectFoldsCase(root);
-    if (real === undefined) throw new Error("the fixture's root has names with letters");
+    const real = diskId(join(root, "CHILD")) === diskId(join(root, "child"));
     // The root answers the opposite of what the disk does; every other folder answers as the disk does.
     const nameReader: NameReader = {
       list: directory => readdirSync(directory),
@@ -481,9 +480,7 @@ describe("folder stage workspaces", () => {
     });
 
     it("takes its case rule from a folder made and removed in the run folder on the same volume", async () => {
-      expect(projectFoldsCase(project)).toBeUndefined();
-      const folds = projectFoldsCase(base);
-      if (folds === undefined) throw new Error("the fixture's base has names with letters");
+      const folds = diskId(join(base, "PROJECT")) === diskId(project);
       const before = tree(project);
       const watched = watchedGit();
       const handle = await start(project, { git: watched.git });
