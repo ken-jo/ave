@@ -85,6 +85,7 @@ import { POWERSHELL_EGRESS_PROXY_PRELUDE } from "../powershell-launch.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const WXC_EXEC = String.raw`C:\Program Files\Ave\resources\mxc\x64\wxc-exec.exe`;
+const FIXTURE_WORKSPACE = String.raw`C:\ave-fixture\workspace`;
 const CONTAINER_OUTPUT = "output relayed from the container";
 const PARSER_REQUEST = "eyJwYXJzZXIiOnRydWV9";
 
@@ -551,7 +552,15 @@ describe("builtin shell — Windows MXC containers", () => {
       releaseListenerCleanups.push(onEgressInvocationReleased((token) => {
         if (token === input.egressToken) throw observerError;
       }));
-      return prepareMxcShellLaunch({ ...input, exists: (path) => path === WXC_EXEC || input.exists(path) });
+      // Every host-derived field is fixed, so a POSIX run reaches the transport as a Windows one does.
+      return prepareMxcShellLaunch({
+        ...input,
+        cwd: FIXTURE_WORKSPACE,
+        filesystem: { allowWrite: [FIXTURE_WORKSPACE], allowRead: [], denyRead: [], denyWrite: [], floorPierces: [] },
+        env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\ave-fixture\home\AppData\Local` },
+        exists: (path) => path === WXC_EXEC || path === FIXTURE_WORKSPACE,
+        list: () => [],
+      });
     });
     return closeRelay;
   }
@@ -573,6 +582,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const result = await execution;
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
     expect(result.output).toMatch(/^PowerShell spawn failed: policy transport open failed.*invocation release observer failed/u);
+    expect(mxcWindows.openMxcRequestTransport).toHaveBeenCalledOnce();
     expect(closeRelay).toHaveBeenCalledOnce();
   });
 
@@ -607,6 +617,7 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(rendered).toContain(`${observerMessage} at [home]`);
     expect(rendered).toContain(`${transportMessage} at [home]`);
     expect(rendered).not.toMatch(/alice|bob|observer-secret-example|transport-secret-example/u);
+    expect(mxcWindows.openMxcRequestTransport).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
     expect(closeRelay).toHaveBeenCalledOnce();
   });
