@@ -9,6 +9,7 @@ import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { errorMessage } from "../shared/error-message.js";
+import { createLogger } from "../lib/logger.js";
 import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressContext, ShellEgressOwner, TerminalEgressOwner } from "./egress-invocations.js";
 import {
@@ -173,6 +174,8 @@ const allow = (basis: EgressDecisionBasis, scope: EgressGrantScope | null): Deci
   ({ allow: true, basis, scope, reason: null });
 const provisional = (basis: EgressDecisionBasis, scope: EgressGrantScope | null): Decision =>
   ({ allow: true, basis, scope, reason: null, provisional: true });
+const log = createLogger("egress-ask");
+
 const unattributed = (): Decision =>
   ({ allow: false, basis: "policy", scope: null, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
 
@@ -493,7 +496,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     try {
       decision = await decide(host, port, context, verified);
     } catch (error) {
-      decision = verified.invocation?.live() === false ? unattributed() : deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
+      if (verified.invocation?.live() === false) {
+        // The refusal names nobody once the call ended; its failure is still kept for diagnosis.
+        log.warn({ reason: maskSensitiveData(errorMessage(error)).masked }, "egress decision failed after its invocation ended");
+        decision = unattributed();
+      } else {
+        decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
+      }
     }
     // Every allow, provisional, remembered and policy ones included, is given only to an invocation that is still live.
     if (decision.allow && verified.invocation?.live() !== true) decision = unattributed();

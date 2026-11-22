@@ -650,7 +650,9 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     const pending = callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     await untilAsked(1);
     tab.abort(new Error("terminal tab closed"));
-    expect(await pending).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    const result = await pending;
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -983,11 +985,19 @@ describe("egress ask callback — shell calls", () => {
       if (path === "failed ask") throw new Error("approval surface failed");
       return { allow: false, reason: "denied by the user" };
     };
-    const result = await rawCallback()({ host: "github.com", port: 443 },
-      { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
-    expect(asked).toHaveLength(1);
-    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
-    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await rawCallback()({ host: "github.com", port: 443 },
+        { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+      expect(asked).toHaveLength(1);
+      expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+      expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+      // The failure the refusal no longer names is still kept for diagnosis.
+      const failureLogs = warn.mock.calls.filter(([message]) => message === "[egress-ask] egress decision failed after its invocation ended");
+      expect(failureLogs).toEqual(path === "failed ask" ? [[expect.any(String), { reason: "approval surface failed" }]] : []);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it.each([["held answer", SHELL_TOKEN], ["pending ask", TERMINAL_TOKEN]] as const)("never credits an earlier invocation's %s to a later one under the same token and owner", async (path, token) => {
