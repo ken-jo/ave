@@ -915,17 +915,22 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
       if (!readings.has(path)) readings.set(path, readChainEntry(path));
       return readings.get(path);
     };
-    // Many policy roots share a changed directory. A confirmation serves the row while that directory reads the same.
-    const spellings = new Map<string, { directory: NonNullable<ChainEntry>; confirmed: boolean }>();
-    const confirmsSpelling = (path: string, directory: NonNullable<ChainEntry>): boolean => {
-      const known = spellings.get(path);
-      if (known !== undefined && sameChainEntry(directory, known.directory)) return known.confirmed;
+    // Many policy roots share a changed directory. Its confirmations serve the row while it reads the same.
+    const spellings = new Map<string, { directory: NonNullable<ChainEntry>; confirmed: Map<string, boolean> }>();
+    const confirmsSpelling = (changed: string, directory: NonNullable<ChainEntry>, path: string): boolean => {
+      let known = spellings.get(changed);
+      if (known === undefined || !sameChainEntry(directory, known.directory)) {
+        known = { directory, confirmed: new Map() };
+        spellings.set(changed, known);
+      }
+      const recorded = known.confirmed.get(path);
+      if (recorded !== undefined) return recorded;
       let confirmed = false;
       try {
         verifyLocalFilesystemChain(path);
         confirmed = foldCanonicalPathSeparators(realpathSync.native(path)) === foldCanonicalPathSeparators(path);
       } catch { /* Unconfirmed spellings require live resolution. */ }
-      spellings.set(path, { directory, confirmed });
+      known.confirmed.set(path, confirmed);
       return confirmed;
     };
     const holds = ({ entries, direct }: ResolutionWitness) => {
@@ -938,7 +943,7 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
         if (!current || entry?.type !== BigInt(constants.S_IFDIR) || !sameChainEntry(current, entry, false)) return false;
         // A spelling proves only its own prefix, and a missing child of a changed directory may now exist or be a link.
         const next = entries[index + 1];
-        return next?.[1] !== null && confirmsSpelling(next?.[0] ?? path, current);
+        return next?.[1] !== null && confirmsSpelling(path, current, next?.[0] ?? path);
       });
     };
     return (path) => {
