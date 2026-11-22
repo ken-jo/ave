@@ -1,3 +1,4 @@
+import { abortRunningTurnsForExit } from "../engine/turn/turn-journal.js";
 import { HostExitAbortError } from "../shared/host-exit-abort.js";
 import { sealToolInvocations, joinToolInvocations, markToolInvocationAuditClosed } from "../tools/invocation-ledger.js";
 import { requireDesktopHost } from "./host-runtime.js";
@@ -141,6 +142,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.rationaleHostService?.shutdown());
 
         attempt(sealToolInvocations);
+        attempt(abortRunningTurnsForExit);
         attempt(() => ctx.approvalGate.disposeAll());
         attempt(() => ctx.askUserQuestionGate.disposeAll());
         attempt(() => ctx.mcpGovernance.stopPolicyRefresh());

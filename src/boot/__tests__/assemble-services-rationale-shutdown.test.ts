@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BootContext } from "../context.js";
+import { registerRunningTurn } from "../../engine/turn/turn-journal.js";
 import { assembleAppServices } from "../assemble-services.js";
 
 vi.mock("../../main/auth-window-service.js", () => ({
@@ -64,7 +65,9 @@ describe("assembleAppServices rationale shutdown", () => {
     } as unknown as BootContext;
 
     const services = assembleAppServices(ctx);
+    const runningTurn = registerRunningTurn(mark("running-turn-abort"));
     const shutdown = services.shutdown();
+    runningTurn.settle();
 
     await expect(shutdown).rejects.toThrow("application service shutdown failed");
     expect(order).toEqual([
@@ -81,6 +84,7 @@ describe("assembleAppServices rationale shutdown", () => {
       "pane-abort-2",
       "rationale",
       "invocations-seal",
+      "running-turn-abort",
       "approval",
       "ask",
       "mcp-policy",
