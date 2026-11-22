@@ -1,10 +1,10 @@
-import { execFile, execFileSync, type ExecFileOptions } from "node:child_process";
 import { accessSync, constants, existsSync, realpathSync, statSync, type BigIntStats } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { dirname, join, posix, win32 } from "node:path";
 import { queryWindowsSystemDirectory, queryWindowsSystemDirectorySync } from "../main/windows-path-kind-launcher.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
+import { runGitProbeAsync, runGitProbeSync } from "./host-git-probe.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "./verified-executable.js";
 
@@ -216,37 +216,8 @@ export interface GitDiscovery {
   systemTooOld?: { path: string; version: string };
 }
 
-interface ProbeOutput {
-  stdout: string;
-  exitCode?: number;
-}
-
-const GIT_PROBE_OPTIONS = {
-  encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 4096,
-} as const;
-
-type ProbeOptions = Pick<ExecFileOptions, "cwd" | "env">;
-
-function runProbeSync(path: string, args: string[], options: ProbeOptions): ProbeOutput {
-  try {
-    return { stdout: execFileSync(path, args, { ...GIT_PROBE_OPTIONS, ...options, stdio: ["ignore", "pipe", "pipe"] }), exitCode: 0 };
-  } catch (error) {
-    return { stdout: "", exitCode: (error as { status?: number }).status };
-  }
-}
-
-function runProbeAsync(path: string, args: string[], options: ProbeOptions): Promise<ProbeOutput> {
-  return new Promise<ProbeOutput>((resolve) => {
-    const child = execFile(path, args, { ...GIT_PROBE_OPTIONS, ...options }, (error, stdout) => resolve({
-      stdout,
-      exitCode: error ? (typeof error.code === "number" ? error.code : undefined) : 0,
-    }));
-    child.stdin?.end();
-  }).catch(() => ({ stdout: "" }));
-}
-
-function runProbe(path: string, args: string[], options: ProbeOptions = {}) {
-  return check(() => runProbeSync(path, args, options), () => runProbeAsync(path, args, options));
+function runProbe(path: string, args: string[], options: Parameters<typeof runGitProbeAsync>[2] = {}) {
+  return check(() => runGitProbeSync(path, args, options), () => runGitProbeAsync(path, args, options));
 }
 
 function* findInstallerLayout(root: string, path: string): GitChecks<InstallerGitInstall | null> {

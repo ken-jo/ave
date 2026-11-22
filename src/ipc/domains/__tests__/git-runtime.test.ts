@@ -1,7 +1,8 @@
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitProbeChild } from "../../../__tests__/support/git-probe-child.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +14,7 @@ const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
-  execFile: vi.fn(),
+  spawn: vi.fn(),
   execFileSync: vi.fn(),
   spawnSync: vi.fn(),
 }));
@@ -68,11 +69,10 @@ describe("git runtime IPC boundary", () => {
       vi.stubEnv("PATH", directory);
       writeFileSync(executable, "Git fixture", { mode: 0o755 });
       vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
-      vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => {
-        completeProbe = () => callback?.(null, "git version 2.56.0", "");
+      vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => {
+        completeProbe = () => complete("git version 2.56.0");
         started.resolve();
-        return {} as ReturnType<typeof execFile>;
-      });
+      }));
       const { registerGitRuntimeHandlers } = await import("../git-runtime.js");
       registerGitRuntimeHandlers({ auditLogger: { log: vi.fn() }, getMainWindow: () => null } as never);
 
@@ -84,7 +84,7 @@ describe("git runtime IPC boundary", () => {
         .resolves.toEqual({ ok: false, error: "unauthorized-frame" });
       expect(execFileSync).not.toHaveBeenCalled();
       expect(spawnSync).not.toHaveBeenCalled();
-      expect(execFile).toHaveBeenCalledExactlyOnceWith(executable, ["--no-lazy-fetch", "--version"], expect.anything(), expect.any(Function));
+      expect(spawn).toHaveBeenCalledExactlyOnceWith(executable, ["--no-lazy-fetch", "--version"], expect.anything());
 
       completeProbe?.();
       const ready = { ok: true, status: { state: "ready", active: { kind: "system", version: "2.56.0" } } };

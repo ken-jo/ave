@@ -1,6 +1,6 @@
 /** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { type ExecFileException, execFileSync, type ExecFileOptions } from "node:child_process";
+import { type ExecFileException, execFileSync, type ExecFileOptions, type SpawnOptions } from "node:child_process";
 
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
@@ -16,13 +16,13 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
+    spawn: ((file: string, args: readonly string[], options: SpawnOptions) =>
+      file === gitCalls.versionFixture && args.includes("--version")
+        ? gitProbeChild((complete) => complete("git version 2.56.0"))
+        : actual.spawn(file, args, options)) as typeof actual.spawn,
     execFile: ((file: string, args: readonly string[], options: ExecFileOptions,
       callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
     ) => {
-      if (file === gitCalls.versionFixture && args.includes("--version")) {
-        callback(null, "git version 2.56.0", "");
-        return {};
-      }
       if (args.includes("check-ignore")) {
         gitCalls.checkIgnore.push(file);
         gitCalls.lastEnv = options.env;
@@ -68,6 +68,7 @@ import {
   PROJECT_AGENTS_MD_MAX_TOTAL_BYTES,
   PROJECT_INSTRUCTIONS_MAX_IMPORT_DEPTH,
 } from "../project-agents-md.js";
+import { gitProbeChild } from "../../__tests__/support/git-probe-child.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { requireFixtureGit } from "../../__tests__/support/fixture-git-executable.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";

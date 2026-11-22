@@ -14,7 +14,7 @@ export function requireFixtureGit(spawn: FixtureGitProbe = spawnSync) {
   const pathApi = process.platform === "win32" ? win32 : posix;
   const configured = process.env.AVE_TEST_GIT_EXECUTABLE ?? DEFAULT_FIXTURE_GIT[process.platform];
   if (!configured || !pathApi.isAbsolute(configured)) throw new Error("Set AVE_TEST_GIT_EXECUTABLE to an absolute Git executable");
-  const path = pathApi.normalize(configured);
+  const path = process.platform === "win32" ? win32.normalize(configured) : configured;
   const options = {
     env: buildSafeChildEnv({
       GIT_CONFIG_NOSYSTEM: "1",

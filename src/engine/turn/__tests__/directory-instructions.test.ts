@@ -1,9 +1,10 @@
 // Attach first-touch directory instructions once per session and revalidate changed launch chains.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitProbeChild } from "../../../__tests__/support/git-probe-child.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
@@ -25,7 +26,7 @@ import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
-  return { ...actual, execFile: vi.fn(actual.execFile), execFileSync: vi.fn(actual.execFileSync), spawnSync: vi.fn(actual.spawnSync) };
+  return { ...actual, execFile: vi.fn(actual.execFile), execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn), spawnSync: vi.fn(actual.spawnSync) };
 });
 
 let project: string;
@@ -76,13 +77,12 @@ describe("directoryInstructionsForToolResult", () => {
     let pending: Promise<unknown>[] = [];
     vi.mocked(execFileSync).mockClear().mockReturnValue("git version 2.56.0");
     vi.mocked(spawnSync).mockClear();
-    vi.mocked(execFile).mockClear().mockImplementation((_file, args, _options, callback) => {
-      if (Array.isArray(args) && args.includes("--version")) {
-        finishProbe = () => callback?.(null, "git version 2.56.0", "");
-        started.resolve();
-      } else {
-        callback?.(Object.assign(new Error("not ignored"), { code: 1 }), "", "");
-      }
+    vi.mocked(spawn).mockClear().mockImplementation(() => gitProbeChild((complete) => {
+      finishProbe = () => complete("git version 2.56.0");
+      started.resolve();
+    }));
+    vi.mocked(execFile).mockClear().mockImplementation((_file, _args, _options, callback) => {
+      callback?.(Object.assign(new Error("not ignored"), { code: 1 }), "", "");
       return {} as ReturnType<typeof execFile>;
     });
     try {
@@ -94,7 +94,7 @@ describe("directoryInstructionsForToolResult", () => {
       expect(frame).toBe("independent frame");
       expect(execFileSync).not.toHaveBeenCalled();
       expect(spawnSync).not.toHaveBeenCalled();
-      expect(execFile).toHaveBeenCalledExactlyOnceWith(git, ["--no-lazy-fetch", "--version"], expect.anything(), expect.any(Function));
+      expect(spawn).toHaveBeenCalledExactlyOnceWith(git, ["--no-lazy-fetch", "--version"], expect.anything());
       finishProbe?.();
       await expect(first).resolves.toMatchObject({ text: expect.stringContaining("src rule") });
       await expect(second).resolves.toMatchObject({ text: expect.stringContaining("src rule") });
@@ -103,6 +103,7 @@ describe("directoryInstructionsForToolResult", () => {
       finishProbe?.();
       await Promise.allSettled(pending);
       vi.mocked(execFile).mockReset();
+      vi.mocked(spawn).mockReset();
       vi.mocked(execFileSync).mockReset();
       vi.unstubAllEnvs();
     }

@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { gitProbeChild } from "../../../__tests__/support/git-probe-child.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { parseGitVersion } from "../../../shared/git-version.js";
 import { systemGitCandidates } from "../../../shared/host-git-executable.js";
@@ -14,20 +15,13 @@ const probe = vi.hoisted(() => ({
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
-  execFile(file: string, args: readonly string[], _options: unknown,
-    callback: (error: (Error & { code?: number }) | null, stdout: string) => void,
-  ) {
-    let output: string;
+  spawn: (file: string, args: readonly string[]) => gitProbeChild((complete) => {
     try {
-      output = probe.calls(file, args);
+      complete(probe.calls(file, args));
     } catch (error) {
-      const code = (error as { status?: number }).status;
-      callback(Object.assign(new Error("probe failed"), { code }), "");
-      return {};
+      complete("", (error as { status?: number }).status ?? null);
     }
-    callback(null, output);
-    return {};
-  },
+  }),
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {

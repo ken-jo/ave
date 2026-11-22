@@ -1,16 +1,18 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { expect, it, vi } from "vitest";
+import { gitProbeChild } from "../../../__tests__/support/git-probe-child.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { spawnManaged } from "../../../main/managed-child-processes.js";
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   execFile: vi.fn(),
+  spawn: vi.fn(),
 }));
 vi.mock("../../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
 vi.mock("../askpass.js", () => ({
@@ -34,10 +36,13 @@ it.each([
       await writeFile(candidates[index]!, "git fixture", { mode: 0o755 });
     }));
     const probes: string[] = [];
-    vi.mocked(execFile).mockImplementation((file, args, _options, callback) => {
-      if (Array.isArray(args) && args.includes("--version")) probes.push(file);
-      callback?.(null, args?.includes("--version") ? "git version 2.56.0" : "", "");
+    vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => {
+      callback?.(null, "", "");
       return {} as ReturnType<typeof execFile>;
+    });
+    vi.mocked(spawn).mockImplementation((file) => {
+      probes.push(file);
+      return gitProbeChild((complete) => complete("git version 2.56.0"));
     });
     let failLaunch = false;
     vi.mocked(spawnManaged).mockImplementation((file) => {

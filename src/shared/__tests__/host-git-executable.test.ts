@@ -1,8 +1,9 @@
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { accessSync, existsSync, mkdtempSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, parse, win32 } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { gitProbeChild } from "../../__tests__/support/git-probe-child.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { requireFixtureGit } from "../../__tests__/support/fixture-git-executable.js";
@@ -11,6 +12,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   execFile: vi.fn(),
+  spawn: vi.fn(),
   execFileSync: vi.fn(),
   spawnSync: vi.fn(),
 }));
@@ -186,17 +188,18 @@ describe("resolveHostGit", () => {
       writeFileSync(staged, "replaced with a different identity", { mode: 0o755 });
       vi.stubEnv("PATH", fixture);
       vi.mocked(statSync).mockImplementation((file) => fs.statSync(file, { bigint: true }));
-      vi.mocked(execFile).mockImplementationOnce((_file, _args, _options, callback) => {
-        started.resolve(() => callback?.(null, "git version 2.55.0", ""));
-        return {} as ReturnType<typeof execFile>;
-      }).mockImplementationOnce((_file, _args, _options, callback) => {
+      vi.mocked(accessSync).mockImplementation((file) => {
+        if (file !== path) throw new Error("missing fixture");
+      });
+      vi.mocked(spawn).mockImplementationOnce(() => gitProbeChild((complete) => {
+        started.resolve(() => complete("git version 2.55.0"));
+      })).mockImplementationOnce(() => gitProbeChild((complete) => {
         if (replaceAgain) {
           writeFileSync(staged, "third identity", { mode: 0o755 });
           renameSync(staged, path);
         }
-        callback?.(null, "git version 2.56.0", "");
-        return {} as ReturnType<typeof execFile>;
-      });
+        complete("git version 2.56.0");
+      }));
 
       const first = discoverHostGitAsync(null);
       const second = discoverHostGitAsync(null);
@@ -206,7 +209,7 @@ describe("resolveHostGit", () => {
       const expected = replaceAgain ? null : { path, version: { text: "2.56.0" } };
       await expect(first).resolves.toMatchObject({ git: expected });
       await expect(second).resolves.toMatchObject({ git: expected });
-      expect(vi.mocked(execFile).mock.calls.map(([file]) => file)).toEqual([path, path]);
+      expect(vi.mocked(spawn).mock.calls.map(([file]) => file)).toEqual([path, path]);
     } finally {
       await cleanupTmpDir(fixture);
     }
@@ -231,17 +234,17 @@ describe("resolveHostGit", () => {
         isFile: () => true, dev: 1n, ino: file === systemExecutable ? 2n : 1n,
       }) as ReturnType<typeof statSync>);
       const nativeReply = Buffer.from("relative");
-      vi.mocked(execFile).mockImplementation((_file, args, _options, callback) => {
-        const reply = Array.isArray(args) && args.includes("--system-directory") ? nativeReply : "git version 2.56.0";
-        callback?.(null, reply, Buffer.isBuffer(reply) ? Buffer.alloc(0) : "");
+      vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => {
+        callback?.(null, nativeReply, Buffer.alloc(0));
         return {} as ReturnType<typeof execFile>;
       });
+      vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => complete("git version 2.56.0")));
 
       expect.soft(await detectGitRuntime(installer)).toMatchObject({ state: "ready", git: { kind: "system", path: systemExecutable } });
       expect.soft(resolveHostGit({ packaged: true })?.path).toBe(systemExecutable);
       expect(spawnSync).not.toHaveBeenCalled();
       expect(execFileSync).not.toHaveBeenCalled();
-      const asyncProbes = vi.mocked(execFile).mock.calls.map(([file, args]) => [file, args]);
+      const asyncProbes = [...vi.mocked(execFile).mock.calls, ...vi.mocked(spawn).mock.calls].map(([file, args]) => [file, args]);
       const helper = join(root, "host-resources", "windows-path-kind", process.arch, "ave-path-kind.exe");
       expect(asyncProbes).toEqual([
         ...(layout ? [[helper, ["--system-directory"]]] : []),
@@ -303,21 +306,17 @@ describe("resolveHostGit", () => {
         dev: 1n, ino: file === "/toolchain/git" ? 2n : 1n,
       } as ReturnType<typeof statSync>;
     });
-    vi.mocked(execFile).mockImplementation((file, _args, _options, callback) => {
-      if (file === "/usr/bin/xcode-select" && !installed) {
-        callback?.(Object.assign(new Error("missing tools"), { code: 1 }), "", "");
-      } else {
-        callback?.(null, file === "/usr/bin/xcode-select" ? "/developer\n" : "git version 2.56.0", "");
-      }
-      return {} as ReturnType<typeof execFile>;
-    });
+    vi.mocked(spawn).mockImplementation((file) => gitProbeChild((complete) => {
+      if (file === "/usr/bin/xcode-select") complete(installed ? "/developer\n" : "", installed ? 0 : 1);
+      else complete("git version 2.56.0");
+    }));
 
     await expect(detectGitRuntime(null)).resolves.toMatchObject({ git: { path: "/alias/git" } });
     await expect(detectGitRuntime(null)).resolves.toMatchObject({ git: { path: "/alias/git" } });
-    expect(execFile).toHaveBeenCalledTimes(2);
+    expect(spawn).toHaveBeenCalledTimes(2);
     installed = false;
     await expect(detectGitRuntime(null)).resolves.toMatchObject({ git: { path: "/toolchain/git" } });
-    expect(vi.mocked(execFile).mock.calls.map(([path]) => path)).toEqual([
+    expect(vi.mocked(spawn).mock.calls.map(([path]) => path)).toEqual([
       "/usr/bin/xcode-select", "/alias/git", "/usr/bin/xcode-select", "/toolchain/git",
     ]);
   });
@@ -446,10 +445,17 @@ describe("resolveHostGit", () => {
       vi.mocked(statSync).mockImplementation((path) => path === bundled
         ? { isFile: () => true } as ReturnType<typeof statSync>
         : actual.statSync(path));
-      vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply(systemDirectory));
-      vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
+      vi.mocked(execFile).mockImplementation((_file, args, _options, callback) => {
+        if (Array.isArray(args) && args.includes("--system-directory")) {
+          callback?.(null, systemDirectoryReply(systemDirectory).stdout, Buffer.alloc(0));
+        } else {
+          callback?.(null, "", "");
+        }
+        return {} as ReturnType<typeof execFile>;
+      });
+      vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => complete("git version 2.56.0")));
 
-      expect(discoverDirectoryInstructions(project, join("src", "file.ts"), new Set(), { homeDir: project })).toEqual([]);
+      await expect(discoverDirectoryInstructions(project, join("src", "file.ts"), new Set(), { homeDir: project })).resolves.toEqual([]);
       expect(await detectGitRuntime(installRoot)).toMatchObject({
         state: "ready", git: { kind: "installer", path: bundled, installer: { systemDirectory, systemRoot } },
       });
@@ -465,16 +471,18 @@ describe("resolveHostGit", () => {
           GIT_ALLOW_PROTOCOL: "",
         },
       };
-      expect(execFileSync).toHaveBeenCalledTimes(2);
-      expect.soft(execFileSync).toHaveBeenNthCalledWith(1, bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
-      expect.soft(execFileSync).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions));
-      expect(spawnSync).toHaveBeenCalledExactlyOnceWith(helper, ["--system-directory"], expect.objectContaining({
+      expect(execFileSync).not.toHaveBeenCalled();
+      expect(spawnSync).not.toHaveBeenCalled();
+      expect(spawn).toHaveBeenCalledExactlyOnceWith(bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
+      expect(execFile).toHaveBeenCalledTimes(2);
+      expect.soft(execFile).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions), expect.any(Function));
+      expect(execFile).toHaveBeenNthCalledWith(1, helper, ["--system-directory"], expect.objectContaining({
         shell: false,
         env: {
           HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
           TEMP: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", WINDIR: "", NODE_V8_COVERAGE: "",
         },
-      }));
+      }), expect.any(Function));
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath });
       setProcessPlatform(platform);
