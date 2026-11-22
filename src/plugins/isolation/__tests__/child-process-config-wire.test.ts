@@ -11,6 +11,7 @@ import { derivePluginChildEnvelope } from "../out-of-process-plugin.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
+import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from "../child-loopback-link.js";
 import { SECRET_REDACTED_SENTINEL } from "../host-api-wire.js";
 import {
   emitPluginConfigChange,
@@ -86,8 +87,9 @@ const MANIFEST = {
   ],
 } as PluginManifest;
 
-function spawnPlainChild(childEntryPath: string, canTerminate = true): ChildLink {
-  const child = spawn(process.execPath, [childEntryPath], {
+async function spawnPlainChild(childEntryPath: string, canTerminate = true, transport = "stdio"): Promise<ChildLink> {
+  const args = transport === "loopback" ? [CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({})] : [];
+  const child = spawn(process.execPath, [childEntryPath, ...args], {
     stdio: ["pipe", "pipe", "pipe"],
     // Set ELECTRON_RUN_AS_NODE so the executable acts as Node and exposes no main-process API.
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
@@ -100,9 +102,14 @@ function spawnPlainChild(childEntryPath: string, canTerminate = true): ChildLink
   }
   // A fault with a live PID is not exit; only terminal exit or spawn-without-process means gone.
   const hasProcess = (): boolean => typeof child.pid === "number" && child.pid > 0;
+  const socket = transport === "loopback" ? await connectToAnnouncedChild({
+    stdout: child.stdout,
+    exited: new Promise((resolve) => child.once("exit", () => resolve("test child exited"))),
+    timeoutMs: 10_000,
+  }) : undefined;
   return {
-    input: child.stdout,
-    output: child.stdin,
+    input: socket ?? child.stdout,
+    output: socket ?? child.stdin,
     terminate: () => { if (canTerminate) child.kill("SIGTERM"); },
     onGone: (handler) => {
       child.once("exit", (code, signal) =>
@@ -125,7 +132,7 @@ function plainSessionFactory(spec: {
   readonly manifest: PluginManifest;
   readonly entryPath: string;
   readonly childEntryPath: string;
-  readonly canTerminate?: boolean;
+  readonly link?: ChildLink;
 }): (context: PluginRuntimeContext) => Promise<RuntimePlugin> {
   return async (context) => {
     const envelope = derivePluginChildEnvelope({
@@ -138,7 +145,7 @@ function plainSessionFactory(spec: {
       pluginId: spec.manifest.id,
       manifest: spec.manifest,
       hostProtocolVersion: "5",
-      link: spawnPlainChild(spec.childEntryPath, spec.canTerminate),
+      link: spec.link ?? await spawnPlainChild(spec.childEntryPath),
       context,
       entryPath: spec.entryPath,
       table: createBoundHostApiDispatchTable(context.hostApi, envelope),
@@ -291,9 +298,14 @@ export const createPlugin = async () => {
     expect(readFileSync(marker, "utf8")).toBe("cleaned");
   }, 180_000);
 
-  it.each(["an interval", "a blocked event loop"])(
-    "exits after host pipe loss with %s",
-    async (pluginWork) => {
+  it.each([
+    ["stdio", "an interval"],
+    ["stdio", "a blocked event loop"],
+    ["loopback", "an interval"],
+    ["loopback", "a blocked event loop"],
+  ])(
+    "exits after %s host loss with %s",
+    async (transport, pluginWork) => {
       const root = temporaryRoot;
       if (!root) throw new Error("missing plugin fixture directory");
       const entryPath = join(root, "pipe-loss-plugin.mjs");
@@ -305,15 +317,17 @@ export const createPlugin = async () => ({
     if (${JSON.stringify(pluginWork)} === "an interval") {
       setInterval(() => {}, 100);
     } else {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4500);
+      writeSync(2, "plugin resumed\\n");
     }
   },
 });
 `);
       const { hostApi } = hostApiFor();
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const link = await spawnPlainChild(childEntryPath, false, transport);
       const factory = plainSessionFactory({
-        manifest: { ...MANIFEST, tools: [] }, entryPath, canTerminate: false,
-        childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
+        manifest: { ...MANIFEST, tools: [] }, entryPath, childEntryPath, link,
       });
       const instance = await factory({
         pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
@@ -321,15 +335,15 @@ export const createPlugin = async () => ({
         userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
       });
       const child = [...spawnedChildren][0];
-      if (!child?.stdin || !child.stderr || !instance.start) {
+      if (!child?.stderr || !instance.start) {
         throw new Error("missing plugin pipes or start hook");
       }
-      const { stdin, stderr } = child;
+      const { stderr } = child;
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
         child.once("exit", (code, signal) => resolve({ code, signal }));
       });
+      let diagnostics = "";
       const started = new Promise<void>((resolve) => {
-        let diagnostics = "";
         stderr.on("data", (chunk: Buffer) => {
           diagnostics += chunk.toString();
           if (diagnostics.includes("plugin started\n")) resolve();
@@ -337,12 +351,13 @@ export const createPlugin = async () => ({
       });
       void instance.start().catch(() => undefined);
       await started;
-      stdin.end();
+      link.output.end();
 
       // This unconfined link never sends a signal on pipe closure.
       expect(await exited).toEqual(process.platform === "win32"
         ? { code: 1, signal: null }
         : { code: null, signal: "SIGKILL" });
+      expect(diagnostics).not.toContain("plugin resumed");
     },
     180_000,
   );

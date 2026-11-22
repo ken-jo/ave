@@ -4,8 +4,7 @@ import { Console } from "node:console";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isMainThread, workerData } from "node:worker_threads";
-import { openPluginChildStdin, readPluginChildStdin } from "./plugin-child-stdin.js";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { openPluginChildInput, ownPluginChildInput, type PluginChildInputOwner } from "./plugin-child-stdin.js";
 import { importPluginFactory } from "../runtime/plugin-loader.js";
 import { frameMessage } from "../../mcp/stdio-framing.js";
 import {
@@ -38,7 +37,6 @@ import {
 } from "../../mcp/protocol-constants.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
-  acceptHostOverLoopback,
   parseChildLaunchArgs,
   serveStdioRelay,
   type ChildLaunchMode,
@@ -298,12 +296,12 @@ function isProcessEntryModule(): boolean {
   return realpathSync.native(entry) === realpathSync.native(fileURLToPath(import.meta.url));
 }
 
-/** The stdio child exits when host pipes close. */
-function serveOverStdio(): void {
-  const input = openPluginChildStdin(new URL(import.meta.url));
+function serveReferenceChild(transport: PluginChildInputOwner["transport"]): void {
+  const stdout = claimProtocolStdout();
+  const { input, output } = openPluginChildInput(new URL(import.meta.url), transport, stdout);
   // Expose the bridged stream to plugin stdin listeners, including EOF cleanup.
   Object.defineProperty(process, "stdin", { get: () => input });
-  const service = servePluginChild(input, claimProtocolStdout());
+  const service = servePluginChild(input, transport === "stdio" ? stdout : output);
   let hostGone = false;
   const end = (): void => {
     if (hostGone) return;
@@ -312,37 +310,6 @@ function serveOverStdio(): void {
   };
   input.once("end", end);
   input.once("close", end);
-}
-
-/** Apply the intended Windows environment, authenticate loopback, and fail nonzero before connection on errors. */
-function serveOverLoopback(env: Readonly<Record<string, string>>): void {
-  for (const [name, value] of Object.entries(env)) process.env[name] = value;
-  const announce = (line: string): void => {
-    process.stdout.write(line);
-  };
-  acceptHostOverLoopback({ announce, acceptTimeoutMs: 60_000, handshakeTimeoutMs: 10_000 }).then(
-    (socket) => {
-      // Keep stray stdout diagnostic-only even when the protocol uses a socket.
-      claimProtocolStdout();
-      const service = servePluginChild(socket, socket);
-      const end = (): void => {
-        service.hostGone();
-        process.exitCode = 0;
-        setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
-      };
-      socket.on("end", end);
-      socket.on("close", end);
-      socket.on("error", (error) => {
-        process.stderr.write(`[plugin-child] channel error: ${error.message}\n`);
-        end();
-      });
-      socket.resume();
-    },
-    (error: unknown) => {
-      process.stderr.write(`[plugin-child] ${errorMessage(error)}; ending\n`);
-      process.exit(1);
-    },
-  );
 }
 
 /** The relay loads no plugin; it runs the authenticated program and maps channel EOF to stdin closure. */
@@ -367,7 +334,7 @@ function serveAsRelay(): void {
 /** Guard the process entry so test imports cannot take over stdio. */
 if (isProcessEntryModule()) {
   if (!isMainThread) {
-    readPluginChildStdin(workerData as Int32Array);
+    await ownPluginChildInput(workerData as PluginChildInputOwner);
   } else {
     launchPluginChild();
   }
@@ -381,7 +348,12 @@ function launchPluginChild(): void {
     process.stderr.write(`[plugin-child] ${errorMessage(error)}; ending\n`);
     process.exit(1);
   }
-  if (mode.transport === "loopback") serveOverLoopback(mode.env);
-  else if (mode.transport === "relay") serveAsRelay();
-  else serveOverStdio();
+  if (mode.transport === "relay") {
+    serveAsRelay();
+    return;
+  }
+  if (mode.transport === "loopback") {
+    for (const [name, value] of Object.entries(mode.env)) process.env[name] = value;
+  }
+  serveReferenceChild(mode.transport);
 }
