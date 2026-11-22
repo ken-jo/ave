@@ -35,7 +35,9 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
 
 import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
 import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
+import { onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
+import { isWindowsShellLocalNetworkAccessAllowed, setWindowsShellLocalNetworkAccess } from "../../permissions/sandbox-capability.js";
 
 const WS = String.raw`C:\work\repo`;
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
@@ -196,5 +198,41 @@ describe("prepareMxcShellLaunch", () => {
     await launch.release();
     expect(release).toHaveBeenCalledOnce();
     expect(await portAccepts(launch.proxyPort)).toBe(false);
+  });
+
+  it.skipIf(process.platform !== "win32").each(["release", "cancel", "consent"] as const)("releases the policy pipe even when a release observer throws during %s", async (trigger) => {
+    const controller = new AbortController();
+    const consent = isWindowsShellLocalNetworkAccessAllowed();
+    const invocation = openEgressInvocation({
+      kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
+      context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" },
+    }, { abortSignal: controller.signal });
+    const releasePipe = vi.fn(async () => {});
+    vi.spyOn(policyPipe, "openMxcPolicyPipe").mockResolvedValue({ bindChild: () => {}, release: releasePipe });
+    h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
+    const failure = new Error("Invocation release observer failed");
+    const unsubscribe = onEgressInvocationReleased((token) => {
+      if (token === invocation.token) throw failure;
+    });
+    let launch: Awaited<ReturnType<typeof prepareMxcShellLaunch>> | undefined;
+    try {
+      launch = await prepareMxcShellLaunch({ ...INPUT, egressToken: invocation.token, commandLine: "x".repeat(25_000) });
+      if (trigger === "release") launch.activate();
+      else if (trigger === "cancel") controller.abort();
+      else setWindowsShellLocalNetworkAccess(!consent);
+      const [result] = await Promise.allSettled([Promise.resolve().then(launch.release)]);
+      expect(releasePipe).toHaveBeenCalledOnce();
+      expect(h.closeRelay).toHaveBeenCalledOnce();
+      expect(await portAccepts(launch.proxyPort)).toBe(false);
+      expect(result).toEqual({ status: "rejected", reason: failure });
+      await expect(launch.release()).rejects.toBe(failure);
+      expect(releasePipe).toHaveBeenCalledOnce();
+      expect(h.closeRelay).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribe();
+      await launch?.release().catch(() => {});
+      invocation.release();
+      if (trigger === "consent") setWindowsShellLocalNetworkAccess(consent);
+    }
   });
 });

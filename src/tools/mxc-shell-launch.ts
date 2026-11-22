@@ -93,6 +93,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
     assertCanBind: assertAdmission,
     acceptsConnections: () => active && !lifetime.signal.aborted,
   };
+  let observerFailure: { error: unknown } | undefined;
   const stopWatchingAdmission = (): void => {
     invocationSignal?.removeEventListener("abort", closeAdmission);
     unsubscribeRelease();
@@ -102,7 +103,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
     if (lifetime.signal.aborted) return;
     lifetime.abort();
     stopWatchingAdmission();
-    releaseEgressInvocation(token);
+    try {
+      releaseEgressInvocation(token);
+    } catch (error) {
+      observerFailure = { error };
+    }
   };
   const unsubscribeRelease = onEgressInvocationReleased((released) => {
     if (released === token) closeAdmission();
@@ -116,14 +121,20 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
   let transport: Awaited<ReturnType<typeof openMxcRequestTransport>> | undefined;
   let releasing: Promise<void> | undefined;
   const release = (): Promise<void> => {
-    closeAdmission();
-    releasing ??= (async () => {
+    releasing ??= Promise.resolve().then(async () => {
       try {
-        await transport?.release();
-      } finally {
-        await Promise.all([listener?.close(), relay?.close()]);
+        try {
+          await transport?.release();
+        } finally {
+          await Promise.all([listener?.close(), relay?.close()]);
+        }
+      } catch (error) {
+        if (observerFailure === undefined) throw error;
+        throw new AggregateError([observerFailure.error, error], "Container shell release failed in an observer and during cleanup");
       }
-    })();
+      if (observerFailure !== undefined) throw observerFailure.error;
+    });
+    closeAdmission();
     return releasing;
   };
   try {

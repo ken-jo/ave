@@ -4067,7 +4067,12 @@ async function spawnPowerShellInMxc(
   let observation: AgentTerminalObservationLease | undefined;
   try { observation = parserResponse === undefined ? startShellObservation(command, cwd,
     { mode: "isolated", detail: "filesystem/process confinement" }, egress.token) : undefined; }
-  catch (error) { void launch.release(); sandboxHome.cleanup(); egress.release(); throw error; }
+  catch (error) {
+    void runReleaseSteps([() => launch.release()]).then((failures) => logReleaseFailures("tool:powershell:mxc", failures));
+    sandboxHome.cleanup();
+    egress.release();
+    throw error;
+  }
 
   return await new Promise<ToolExecutionResult>((resolveResult) => {
     let child: PipedChild;
