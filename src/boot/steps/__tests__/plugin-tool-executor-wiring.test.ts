@@ -685,6 +685,27 @@ it("writes a host-shutdown denial for a parked plugin operation grant before aud
   expect(generationLease.release).toHaveBeenCalledOnce();
 });
 
+it("refuses a plugin operation grant requested after the audit closed without failing the shutdown", async () => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ledger = await import("../../../tools/invocation-ledger.js");
+  const ctx = makeContext();
+  const acquire = vi.fn();
+  Object.assign(ctx, { pluginBundleLifecycle: { acquire, acquireExact: acquire, runWithLease: vi.fn() } });
+  await setupPluginToolExecutor(ctx);
+  const request = ctx.requestPluginOperationGrant;
+  if (!request) throw new Error("Plugin grant handler missing");
+  ledger.sealToolInvocations();
+  let outcome: PromiseSettledResult<unknown> | undefined;
+  await expect(ledger.closeToolInvocationAudit(async () => {
+    [outcome] = await Promise.allSettled([
+      request({ pluginId, toolName: "update_record", input: {}, appSessionId: "late-window" }),
+    ]);
+  })).resolves.toBe(0);
+  expect(outcome).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("application shutdown") }) });
+  expect(acquire).not.toHaveBeenCalled();
+});
+
 it("revokes an issued plugin operation grant instead of delivering it after the shutdown seal", async () => {
   vi.resetModules();
   const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");

@@ -1,4 +1,4 @@
-import { admitToolInvocation, appendToolInvocationAudit } from "../tools/invocation-ledger.js";
+import { admitToolInvocationWhileAuditOpen, appendToolInvocationAudit } from "../tools/invocation-ledger.js";
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { t } from "../i18n/index.js";
@@ -113,15 +113,21 @@ export async function applyPermissionModeCommand(
   const completion = new Promise<void>((resolve) => { release = resolve; });
   const tail = preceding.then(() => completion);
   modeChanges.set(deps.permissionManager, tail);
-  const admission = admitToolInvocation("/permission mode");
+  // A closed audit has no row left for the denial; refuse instead of admitting.
+  const admission = admitToolInvocationWhileAuditOpen("/permission mode");
   await preceding;
   try {
+    if (!admission) return hostShutdownCancelled();
     return await applyPermissionModeChange(cmd, deps, admission.signal);
   } finally {
-    admission.settle();
+    admission?.settle();
     release();
     if (modeChanges.get(deps.permissionManager) === tail) modeChanges.delete(deps.permissionManager);
   }
+}
+
+function hostShutdownCancelled() {
+  return { ok: false as const, error: "host-shutdown", message: t("be_executor.toolExecutionCancelled") };
 }
 
 async function applyPermissionModeChange(
@@ -129,11 +135,7 @@ async function applyPermissionModeChange(
   deps: PermissionModeApplyDeps,
   signal: AbortSignal,
 ): Promise<PermissionModeApplyResult> {
-  const cancelled = {
-    ok: false as const,
-    error: "host-shutdown",
-    message: t("be_executor.toolExecutionCancelled"),
-  };
+  const cancelled = hostShutdownCancelled();
   if (signal.aborted) return cancelled;
   const previous = deps.permissionManager.getMode();
 

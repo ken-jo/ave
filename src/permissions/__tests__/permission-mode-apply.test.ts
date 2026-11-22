@@ -443,6 +443,22 @@ describe("durable mode change across a restart", () => {
 });
 
 describe("mode change at quit", () => {
+  it("refuses a mode change that arrives after the audit closed without failing the shutdown", async () => {
+    vi.resetModules();
+    const { applyPermissionModeCommand: apply } = await import("../permission-mode-apply.js");
+    const ledger = await import("../../tools/invocation-ledger.js");
+    const deps = makeDeps();
+    ledger.sealToolInvocations();
+    let result: unknown;
+    await expect(ledger.closeToolInvocationAudit(async () => {
+      result = await apply(durableAuto, { ...deps, approvalBypass: { source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true } } as never);
+    })).resolves.toBe(0);
+    expect(result).toMatchObject({ ok: false, error: "host-shutdown" });
+    expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
+    expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
+    expect(deps.auditLogger.appendPermissionAuditEntry).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("applies no mode when quit seals admission during the mode audit (durable=%s)", async (durable) => {
     // A sealed ledger is process-wide; load a fresh one.
     vi.resetModules();

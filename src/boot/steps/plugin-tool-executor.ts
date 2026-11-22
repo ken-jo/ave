@@ -1,4 +1,4 @@
-import { admitToolInvocation, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
+import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
@@ -592,7 +592,9 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     origin = "ui",
     expectedGenerationId,
   }) => {
-    const admission = admitToolInvocation(toolName);
+    // A closed audit has no row left for the denial; refuse instead of admitting.
+    const admission = admitToolInvocationWhileAuditOpen(toolName);
+    if (!admission) throw new HostExitAbortError();
     try {
       const lifecycle = ctx.pluginBundleLifecycle;
       if (!lifecycle) {
