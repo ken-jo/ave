@@ -1,4 +1,4 @@
-import { admitToolInvocationWhileAuditOpen, claimAtToolInvocationSeal } from "./invocation-ledger.js";
+import { admitToolInvocationWhileAuditOpen, claimAtToolInvocationSeal, toolInvocationsSealed } from "./invocation-ledger.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { t } from "../i18n/index.js";
 import { randomUUID } from "node:crypto";
@@ -459,6 +459,17 @@ export class ToolExecutor {
       completedToolUseIds: string[],
     ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> => {
       if (isInterceptedMetaTool(toolUse) && interceptedMetaToolHandler) {
+        // The handler changes session activation outside the ledger, so quit refuses it instead.
+        if (toolInvocationsSealed()) {
+          const refused: ToolResult = {
+            tool_use_id: toolUse.id,
+            content: t("be_executor.toolExecutionCancelled"),
+            is_error: true,
+            durationMs: 0,
+          };
+          await opts.onToolResult?.(refused);
+          return refused;
+        }
         let intercepted: ToolResult | null = null;
         try {
           intercepted = await interceptedMetaToolHandler(toolUse);

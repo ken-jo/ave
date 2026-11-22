@@ -14,7 +14,7 @@ afterEach(async () => {
 });
 
 /** Each call loads a fresh module graph, so a sealed ledger never leaks into another test. */
-async function freshExecutor(toolCount: number) {
+async function freshExecutor(toolCount: number, metaToolNames: string[] = []) {
   vi.resetModules();
   const ledger = await import("../invocation-ledger.js");
   const { ToolExecutor } = await import("../executor.js");
@@ -41,6 +41,17 @@ async function freshExecutor(toolCount: number) {
       isReadOnly: () => false,
       jsonSchema: { type: "object", properties: { value: { type: "string" } } },
       execute: async () => ({ output: String(await execute()), isError: false }),
+    }));
+  }
+  for (const name of metaToolNames) {
+    registry.register(createDynamicTool({
+      name,
+      description: "Intercepted meta tool probe",
+      source: "builtin",
+      category: "read",
+      isReadOnly: () => true,
+      jsonSchema: { type: "object", properties: {} },
+      execute: async () => ({ output: "unintercepted", isError: false }),
     }));
   }
   const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
@@ -178,6 +189,34 @@ describe("ToolExecutor admission across the quit seal", () => {
       expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(0);
     },
   );
+
+  it("does not hand an intercepted meta tool to its handler after the seal", async () => {
+    const { ledger, executor, cancelled } = await freshExecutor(0, ["request_plugin"]);
+    const activated: string[] = [];
+    const handler = vi.fn(async (toolUse: { id: string; name: string }) => {
+      activated.push(toolUse.name);
+      return { tool_use_id: toolUse.id, content: "activated", durationMs: 0 };
+    });
+    ledger.sealToolInvocations();
+    const delivered: string[] = [];
+    const outcome = await executor.executeConversationBatch(
+      [{ id: "tu-meta", name: "request_plugin", input: {} }],
+      {
+        sessionId: "sess-meta",
+        executionCwd: process.cwd(),
+        permissionContext: userPermissionContext(),
+        interceptedMetaToolHandler: handler,
+        onToolResult: async (result) => { delivered.push(result.tool_use_id); },
+      },
+    );
+    expect(handler).not.toHaveBeenCalled();
+    expect(activated).toEqual([]);
+    expect(outcome).toMatchObject({
+      outcome: "completed",
+      results: [{ tool_use_id: "tu-meta", is_error: true, content: cancelled }],
+    });
+    expect(delivered).toEqual(["tu-meta"]);
+  });
 
   it("refuses a call that reaches the executor after close without failing the quit", async () => {
     const { ledger, executor, executes, toolUses } = await freshExecutor(1);
