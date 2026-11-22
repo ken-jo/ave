@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { setImmediate } from "node:timers/promises";
 import { deferred } from "../../../__tests__/support/deferred.js";
-import { autoStageOf } from "./stage-fixtures.js";
+import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
 it.each(["refused", "failed", "ended", "cancelled"] as const)("settles child waits when the expected run is %s", async outcome => {
@@ -221,6 +221,43 @@ it.each(["cancelled", "ended"] as const)("an aggregate child wait settles when a
     release.resolve();
     for (const child of h.live()) child.finish();
     await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("a child wait created after a failed relaunch settles at once", async () => {
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (run, stage, attempt) => {
+          if (attempt === 2) throw new Error("relaunch preparation failed");
+          return workspace.prepare(run, stage, attempt);
+        },
+      },
+    }),
+  });
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    (await h.untilLive(1, id))[0].finish({ ok: false, summary: "failed", error: "failed" });
+    expect(await run).toMatchObject({ status: "awaiting_approval" });
+    const { runId } = await h.item(id);
+    expect(await h.engine.retryStage(id, { runId: runId ?? "", stageId: "a" })).toEqual({ ok: true });
+    await h.drainRunWork();
+    expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 2, status: "failed" });
+
+    const waits = Promise.allSettled([h.untilSpawned(2, id), h.untilLive(1, id), h.untilLive(1)]);
+    const result = await Promise.race([waits, setImmediate("still pending")]);
+    expect(result).toEqual(Array.from({ length: 3 }, () => ({
+      status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }),
+    })));
+    expect(h.children).toHaveLength(1);
+  } finally {
+    for (const child of h.live()) child.finish();
     await h.drainRunWork();
     await h.cleanup();
   }
