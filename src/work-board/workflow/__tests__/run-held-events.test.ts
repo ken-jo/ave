@@ -564,20 +564,14 @@ it("waits for held-event removal after a registered gate claims its effect and t
       await allowDrop.promise;
       await dropHeld(...args);
     });
-    const drainStarted = deferred<void>();
     const drainRunWork = h.drainRunWork;
-    vi.spyOn(h, "drainRunWork").mockImplementationOnce(() => {
-      drainStarted.resolve();
-      return drainRunWork();
-    });
+    const joinReplay = vi.spyOn(h, "drainRunWork");
 
     lose(false);
     const replayed = replayHeldEvents(h).then(() => {
       expect(runsOnDisk(h).heldEvents).toBeUndefined();
     });
     try {
-      // Keep the write paused until the reader joins the drain or tries to read the file.
-      await Promise.race([drainStarted.promise, replayed]);
       await Promise.race([dropStarted.promise, replayed]);
       expect(evaluate).toHaveBeenCalledOnce();
       expect(runsOnDisk(h).heldEvents).toEqual([identity]);
@@ -586,6 +580,7 @@ it("waits for held-event removal after a registered gate claims its effect and t
       await drainRunWork();
     }
     await replayed;
+    expect(joinReplay).toHaveBeenCalledOnce();
     expect(drop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ itemId: id, runId }), {
       stage: "a", attempt: 1, kind: "stage_ended",
     });
