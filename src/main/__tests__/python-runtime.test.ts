@@ -317,7 +317,7 @@ describe("PythonRuntimeBootstrapper", () => {
     const uvEnv = (uvCall![2] as SpawnOptionsWithoutStdio).env!;
     expect(uvEnv.HTTP_PROXY).toBe("http://proxy.example.com:8080");
     expect(uvEnv.HTTPS_PROXY).toBe("http://proxy.example.com:8080");
-    expect(uvEnv.NO_PROXY).toBe("astral.sh");
+    expect(uvEnv.NO_PROXY?.split(",")).toEqual(expect.arrayContaining(["astral.sh", "releases.astral.sh"]));
     expect(uvEnv.UV_SYSTEM_CERTS).toBe("1");
     expect(uvEnv.UV_NATIVE_TLS).toBeUndefined();
     // Derived, never inherited: nothing here came from this process's own env.
@@ -332,8 +332,8 @@ describe("PythonRuntimeBootstrapper", () => {
     expect(verifyEnv.HTTPS_PROXY).toBeUndefined();
     expect(verifyEnv.UV_SYSTEM_CERTS).toBeUndefined();
 
-    // Four probe URLs, resolved once for the whole provision.
-    expect(resolveOsProxy).toHaveBeenCalledTimes(4);
+    expect(resolveOsProxy).toHaveBeenCalledWith("https://releases.astral.sh/github/python-build-standalone/releases/download/");
+    expect(resolveOsProxy).toHaveBeenCalledTimes(5);
   });
 
   it(".ready sentinel이 없으면 uv spawn을 호출한다", async () => {
@@ -973,7 +973,7 @@ describe("PythonRuntimeBootstrapper", () => {
     mockedAccess
       .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // no ready sentinel: the runtime folder was reset
       .mockResolvedValueOnce(undefined); // uv binary materialized from the app bundle
-    mockedSpawn.mockReturnValueOnce(makeSpawnFailMock(2, "error: Failed to fetch: https://github.com/astral-sh/python-build-standalone"));
+    mockedSpawn.mockReturnValueOnce(makeSpawnFailMock(2, "error: Failed to fetch: https://releases.astral.sh/github/python-build-standalone"));
     const writes = vi.mocked(fsMock.writeFile).mock.calls.length;
 
     const failure = await new PythonRuntimeBootstrapper().ensureReady(makeBrowserWindow()).then(() => undefined, (error: Error) => error);

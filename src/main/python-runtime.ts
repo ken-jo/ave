@@ -106,6 +106,7 @@ export function buildPipSyncFallbackArgs(
 const UV_EGRESS_PROBE_URLS = [
   "https://pypi.org/simple/",
   "https://files.pythonhosted.org/",
+  "https://releases.astral.sh/github/python-build-standalone/releases/download/",
   "https://github.com/astral-sh/python-build-standalone/releases/",
   "https://astral.sh/",
 ] as const;

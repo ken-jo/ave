@@ -8,26 +8,31 @@ import { fetchBytesWithRetry } from "../../scripts/lib/fetch-with-retry.mjs";
 import { resolveUvTarget } from "../../scripts/uv-targets.mjs";
 import { PYTHON_VERSION } from "./python-archive-cache.mjs";
 
-const RELEASE_BASE = "https://github.com/astral-sh/python-build-standalone/releases/download/";
+const RELEASE_BASES = [
+  "https://releases.astral.sh/github/python-build-standalone/releases/download/",
+  "https://github.com/astral-sh/python-build-standalone/releases/download/",
+];
 
 // The install command keeps distribution selection and checksum verification.
-// A local mirror supplies the selected archive after an authenticated download.
+// A local mirror supplies the selected archive.
 export async function preparePythonDownloadMirror({ uv, mirrorRoot, listDownloads, download = fetchBytesWithRetry }) {
   if (!(process.env.GITHUB_TOKEN || process.env.GH_TOKEN) || process.env.UV_PYTHON_INSTALL_MIRROR) return null;
   const output = listDownloads ? listDownloads() : execFileSync(uv, [
     "python", "list", "--only-downloads", "--show-urls", "--output-format", "json", PYTHON_VERSION,
   ], { encoding: "utf8", windowsHide: true, env: { ...process.env, UV_CACHE_DIR: join(mirrorRoot, "uv-cache") } });
   const candidates = JSON.parse(output).filter((entry) => entry.implementation === "cpython" && entry.variant === "default");
-  if (candidates.length !== 1 || !candidates[0].url?.startsWith(RELEASE_BASE)) {
+  const url = candidates[0]?.url;
+  const releaseBase = typeof url === "string" ? RELEASE_BASES.find((base) => url.startsWith(base)) : undefined;
+  if (candidates.length !== 1 || !releaseBase) {
     throw new Error("Cannot identify the managed interpreter release");
   }
-  const url = candidates[0].url;
-  const suffix = url.slice(RELEASE_BASE.length);
-  if (!/^\d+\/[^/]+\.tar\.gz$/.test(suffix) || decodeURIComponent(suffix).includes("..")) {
+  const suffix = url.slice(releaseBase.length);
+  const relativePath = decodeURIComponent(suffix);
+  if (!/^\d+\/[^/]+\.tar\.gz$/.test(suffix) || !/^\d+\/[\w.+-]+\.tar\.gz$/.test(relativePath) || relativePath.includes("..")) {
     throw new Error("Invalid managed interpreter release path");
   }
   const bytes = await download(url, { httpError: (response) => `Interpreter archive download failed with HTTP ${response.status}` });
-  const destination = join(mirrorRoot, decodeURIComponent(suffix));
+  const destination = join(mirrorRoot, relativePath);
   await mkdir(dirname(destination), { recursive: true });
   const temporary = `${destination}.${randomUUID()}.tmp`;
   await writeFile(temporary, bytes);
