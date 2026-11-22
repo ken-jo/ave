@@ -1,4 +1,5 @@
 /** Template runs on the production parts: every stage child works in its own real folder under the home, bound to its session. */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -333,4 +334,27 @@ it("a start refused because its row was deleted while its workspace was opened l
     expect(runRoot, deleted).not.toBe("");
     expect(existsSync(runRoot), deleted).toBe(false);
   }
+}));
+
+it("removing an unreadable row whose runs have no record left removes their output folders, and no other row's", () => withProductionParts(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const other = await h.addItem(version);
+  const ofRow = await left({ itemId: id, runId: "recordless-run-of-the-unreadable-row", runKey: "key" });
+  const ofOther = await left({ itemId: other, runId: "recordless-run-of-a-surviving-row", runKey: "key" });
+  const announced = vi.fn();
+  h.board.runs.onRunsRemoved = announced;
+
+  // The row no longer validates, so it is listed as a card and removed as one.
+  h.editRow(id, row => ({ ...row, priority: 42 }));
+  await h.board.load();
+  const listed = await h.board.list();
+  const entry = (JSON.parse(readFileSync(h.boardPath, "utf8")) as { items: { id?: unknown }[] }).items.find(row => row.id === id);
+  const card = (listed.status === "ok" ? listed.unreadableRows ?? [] : []).find(row => row.hash === createHash("sha256").update(JSON.stringify(entry)).digest("hex"));
+  if (card === undefined) throw new Error("the row is not listed as unreadable");
+  expect(await h.board.removeUnreadable(card, () => true)).toMatchObject({ status: "deleted" });
+  await vi.waitFor(() => expect(existsSync(ofRow)).toBe(false), { timeout: 5000 });
+  expect(announced).not.toHaveBeenCalled();
+  expect(readFileSync(join(ofOther, "_out", "result.md"), "utf8")).toBe("left behind\n");
+  expect(existsSync(join(ofOther, "_run.json"))).toBe(true);
 }));
