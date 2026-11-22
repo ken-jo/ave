@@ -3622,12 +3622,24 @@ with its own owner rule:
     plugin lockfiles when a plugin next needs them. Until a rebuild
     succeeds, the plugin reports "Python runtime rebuild needed" and does
     not start. There is no offline fallback to older contents.
+    A venv rebuild passes `uv venv --clear` only for a path whose realpath
+    stays inside the managed `runtime` directory. Residual: a path component
+    swapped between that check and the clear. Swapping one requires write
+    access to Ave's own `runtime` directory or its ancestors, so the attacker
+    would be the same user. That is outside Ave's threat model, the same scope
+    as the CI cleanup decision. uv 0.13.9 also canonicalizes the path again
+    before it removes anything.
     Python provisioning sets `UV_SYSTEM_CERTS=1` so the bundled platform
     verifier uses the OS trust store and certificate policy. Certificate chains
     can be accepted or rejected differently from the earlier combination of
     native roots and WebPKI. See the [0.11.0 changelog](https://github.com/astral-sh/uv/releases/tag/0.11.0#breaking-changes).
-    Representative corporate-proxy validation is unavailable. Run a real
-    provisioning check on Windows and macOS before merge.
+    Real provisioning with uv 0.13.9 passed on Windows over a direct route
+    with system trust, and on macOS through an HTTPS CONNECT proxy.
+    Residual: a TLS-inspecting corporate proxy was not available to test.
+  - CI's interpreter mirror falls back to the GitHub release URL. That fetch
+    keeps the default redirect behaviour: the final host is not pinned, and the
+    auth header is dropped on a cross-origin redirect. uv's digest check still
+    applies to the downloaded archive.
   - No sandbox grant names `runtime` itself, so a grant entry left by a
     crash never lands on the boundary's own DACL. The sandbox account
     crosses the owner-only boundary through bypass-traverse.
