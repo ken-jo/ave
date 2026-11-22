@@ -10,8 +10,8 @@ export const MAX_SEED_BYTES = 512 * 1024 * 1024;
 const MAX_SEED_SCAN = 100_000;
 
 export interface SeedFile { path: string; size: number; sha256: string }
-export interface SeedSkip { path: string; why: "link" | "secret" | "ignored" | "not-a-file" }
-export type SeedRefusal = "seed-too-large" | "seed-unreadable";
+interface SeedSkip { path: string; why: "link" | "secret" | "ignored" | "not-a-file" }
+type SeedRefusal = "seed-too-large" | "seed-unreadable";
 type Listed = { ok: true; files: { path: string; size: number }[]; skipped: SeedSkip[] } | { ok: false; code: SeedRefusal };
 
 export interface SeedRules {

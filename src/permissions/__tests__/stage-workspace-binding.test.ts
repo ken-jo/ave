@@ -4,13 +4,13 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { aveHomeReadBoundaryCovering, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { PermissionManager } from "../permission-manager.js";
 import { bindStageWorkspace, boundStageWorkspace, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
 
-useVerifiedAveHomePrivacy();
+installVerifiedAveHomePrivacy();
 
 const STAGE = "stage-session";
 const GRANDCHILD = "grandchild-session";

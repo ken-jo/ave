@@ -12,7 +12,7 @@ const HARDENED_CONFIG = [
 /** Variables that would redirect the repository, answer a prompt, supply an identity or start a program. */
 const DROPPED_ENV = /^(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|GIT_SSH|GIT_SSH_COMMAND|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE))$/iu;
 
-export interface HostGitResult { code: number; stdout: string; stderr: string }
+interface HostGitResult { code: number; stdout: string; stderr: string }
 export class HostGitError extends Error {
   constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "driver-name", message: string) { super(message); }
 }

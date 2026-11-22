@@ -11,7 +11,7 @@ export const RUN_FILE = "_run.json";
 const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
 
 /** `<name≤24, [a-z0-9-]>-<8 hex of sha256(canonical root)>`, or `board-<itemId>` with no project. */
-export function projectSlug(canonicalRoot: string | undefined, itemId: number): string {
+function projectSlug(canonicalRoot: string | undefined, itemId: number): string {
   if (canonicalRoot === undefined) return `board-${itemId}`;
   const root = canonicalRoot.replace(/\\/g, "/").replace(/\/+$/u, "");
   const name = basename(root).toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 24).replace(/-+$/u, "") || "project";

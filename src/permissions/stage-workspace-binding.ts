@@ -25,20 +25,20 @@ function isStageWorkspaceSegments(segments: readonly string[]): boolean {
  * component, in the spelling given and on disk, is a real directory.
  */
 export function bindStageWorkspace(sessionId: string, workspaceRoot: string): void {
-  const refuse = (): never => { throw new Error("not a stage workspace folder"); };
-  if (sessionId === "" || !isAbsolute(workspaceRoot) || segmentsOf(workspaceRoot).includes("..")) refuse();
+  const refused = new Error("not a stage workspace folder");
+  if (sessionId === "" || !isAbsolute(workspaceRoot) || segmentsOf(workspaceRoot).includes("..")) throw refused;
   const home = realpathSync.native(aveHome());
   const physical = realpathSync.native(workspaceRoot);
   const segments = below(home, physical);
-  if (segments === null || segments.length !== 4 || !isStageWorkspaceSegments(segments)) return refuse();
+  if (segments === null || segments.length !== 4 || !isStageWorkspaceSegments(segments)) throw refused;
   // The spelling given must already be the physical one: a link on the way would be followed again at every later use.
   const spelled = below(home, resolve(workspaceRoot)) ?? below(resolve(aveHome()), resolve(workspaceRoot));
-  if (spelled === null || spelled.join("/") !== segments.join("/")) refuse();
+  if (spelled === null || spelled.join("/") !== segments.join("/")) throw refused;
   let cursor = home;
   for (const segment of ["", ...segments]) {
     cursor = join(cursor, segment);
     const stat = lstatSync(cursor);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) refuse();
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw refused;
   }
   bindings.set(sessionId, physical);
 }
