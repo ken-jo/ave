@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -27,11 +27,22 @@ export function resolveWindowsPathKindHelper(): string {
   return binary;
 }
 
-export function queryWindowsDocumentsDirectory(): string {
-  const bytes = execFileSync(resolveWindowsPathKindHelper(), ["--documents-directory"], {
-    windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBuffer: 128 * 1024,
+export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const helper = resolveWindowsPathKindHelper();
+  return new Promise((resolve, reject) => {
+    execFile(helper, ["--documents-directory"], {
+      windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsDocumentsLookupMs, encoding: "buffer", maxBuffer: 128 * 1024, signal,
+    }, (error, stdout) => {
+      try {
+        signal?.throwIfAborted();
+        if (error) throw error;
+        resolve(decodeWindowsNativeReply(stdout).replace(/\r?\n$/u, ""));
+      } catch (cause) {
+        reject(cause);
+      }
+    });
   });
-  return decodeWindowsNativeReply(bytes).replace(/\r?\n$/u, "");
 }
 
 // QueryDosDeviceW opens nothing on the drive; no-mapping is a classification, while helper failure is a broken-install error.

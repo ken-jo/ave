@@ -18,6 +18,7 @@ import { buildSandboxedChildEnv, buildUserTerminalEnv } from "../../tools/safe-e
 import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyEntries,
+  runWithSandboxWritePreflight,
   wrapTerminalCommand,
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
@@ -702,7 +703,6 @@ async function spawnNewTerminal(
       innerPtyCommand = innerPty.innerPtyShellCommand;
     }
     const cmdline = buildShellCommand(shell, tempDir, innerPtyCommand);
-    const filesystem = { allowWrite, allowRead, denyRead, denyWrite: getDefaultSensitiveWriteDenyEntries() };
     const ptyOptions = { name: "xterm-256color", cols, rows, cwd };
 
     let ownTty: string | undefined;
@@ -738,10 +738,11 @@ async function spawnNewTerminal(
       egressAbort.abort(new Error("terminal shell ended"));
       egress.release();
     });
-    wrapped =
-      ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal });
+    wrapped = await runWithSandboxWritePreflight(owner.abort.signal, () => {
+      const filesystem = { allowWrite, allowRead, denyRead, denyWrite: getDefaultSensitiveWriteDenyEntries() };
+      const options = { filesystem, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal };
+      return ownTty === undefined ? wrapWorkerCommand(cmdline, options) : wrapTerminalCommand(cmdline, { ...options, ownTty });
+    });
     const { argv, env } = wrapped;
     const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); releaseEgress(); });
     const gitPolicyChanged = prepareTerminalGitPolicyCheck(wrapped.filesystemPolicy, wrapped.gitControlSnapshot);

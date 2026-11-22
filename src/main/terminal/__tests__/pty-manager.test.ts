@@ -67,6 +67,7 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   sandboxTempEnvLaunch: (await vi.importActual<typeof import("../../../permissions/asrt-sandbox.js")>(
     "../../../permissions/asrt-sandbox.js",
   )).sandboxTempEnvLaunch,
+  runWithSandboxWritePreflight: async (_signal: AbortSignal, compose: () => unknown) => compose(),
   isAsrtSandboxActive: () => gateActive,
   isShellSandboxActive: () => gateActive,
   wrapWorkerCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapWorkerCommandMock(command, options), options),

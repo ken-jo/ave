@@ -40,6 +40,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   }),
   isAsrtSandboxActive: () => sandboxActiveMock(),
   isPluginWorkerConfinementActive: () => sandboxActiveMock(),
+  runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   // The floor carries the sandbox private roots, as the real one does on macOS and Linux; the primitive's own directories are re-allowed under it.

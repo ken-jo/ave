@@ -35,7 +35,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
   };
   const host: BootHost = {
     userDataPath: app.getPath("userData"),
-    ...(process.platform === "win32" ? { resolveWindowsDocumentsPath: queryWindowsDocumentsDirectory } : {}),
+    ...(process.platform === "win32" ? { queryWindowsDocumentsPath: queryWindowsDocumentsDirectory } : {}),
     resourcePath: desktopResourcePath(projectRoot),
     systemLocale: app.getPreferredSystemLanguages()[0] ?? "en",
     isPackaged: app.isPackaged,

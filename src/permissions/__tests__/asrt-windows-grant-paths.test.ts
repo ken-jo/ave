@@ -22,7 +22,7 @@ import * as defaultWorkspace from "../../main/default-workspace-root.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
-import { admitMxcExtensionFilesystem, buildSandboxConfig, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -108,6 +108,35 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     });
     expect(policy.allowWrite).toEqual([target]);
     expect(policy.denyWrite).toContain(profile);
+  });
+
+  it("uses one Documents lookup for a wrap and refuses writes after a lookup timeout", async () => {
+    const documents = join(fixture, "relocated", "Documents");
+    const profile = join(documents, "PowerShell", "profile.ps1");
+    mkdirSync(dirname(profile), { recursive: true });
+    writeFileSync(profile, "");
+    const query = vi.fn<() => Promise<string>>().mockResolvedValue(documents);
+    await initializeAsrtSandbox({ queryWindowsDocumentsPath: query });
+    expect(query).toHaveBeenCalledTimes(1);
+    query.mockClear();
+    const wrap = vi.spyOn(runtime.SandboxManager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["fixture"], env: {} });
+
+    const compose = () => runWithSandboxWritePreflight(undefined, () => wrapToolCommand("echo confined", {
+      commandId: TEST_COMMAND_ID,
+      filesystem: { denyWrite: getDefaultSensitiveWriteDenyEntries() },
+    }));
+    const result = await compose();
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.filesystemPolicy?.denyWrite).toContainEqual({ path: profile, literal: true });
+
+    query.mockRejectedValueOnce(new Error("Documents helper timed out"));
+    await expect(compose()).rejects.toThrow("Windows profile write floor could not establish all profile paths");
+
+    query.mockRejectedValueOnce(new Error("Documents helper timed out"));
+    await expect(wrapToolCommand("echo confined", { commandId: TEST_COMMAND_ID }))
+      .rejects.toThrow("Windows profile write floor could not establish all profile paths");
+    expect(query).toHaveBeenCalledTimes(3);
+    expect(wrap).toHaveBeenCalledTimes(1);
   });
 
   it.each([0, 5000, 5001])("logs numeric grant and release timings without identities at %s ms", async duration => {
