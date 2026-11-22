@@ -745,12 +745,65 @@ it.each(["accepted", "refused"] as const)("a %s retry sets aside the item's stan
     if (outcome === "accepted") {
       expect(await wait).toEqual([{ status: "fulfilled", value: [expect.anything()] }]);
     } else {
-      expect(await wait).toEqual([
+      expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
         { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
       ]);
       await expect(h.untilLive(1, id)).rejects.toThrow(/stage_failed/);
     }
   } finally {
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("an accepted gate decision puts its item back in flight for aggregate child waits", async () => {
+  const relaunching = deferred<void>();
+  const relaunch = deferred<void>();
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (...args) => {
+          if (args[2] === 2) {
+            relaunching.resolve();
+            await relaunch.promise;
+            throw new Error("relaunch preparation failed");
+          }
+          return workspace.prepare(...args);
+        },
+      },
+    }),
+  });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const other = await h.addItem(version);
+    runs.push(h.start(id, h.local(version)));
+    (await h.untilLive(1, id))[0].finish();
+    await h.untilStage(id, "a", "awaiting_gate");
+    await runs[0];
+    h.makeEngine();
+    await h.engine.adoptParkedTemplateRuns();
+    // The other item stays in flight, parked on its failed stage with no live child.
+    runs.push(h.start(other, h.local(version)));
+    (await h.untilLive(1, other))[0].finish({ ok: false, summary: "failed", error: "failed" });
+    expect(await runs[1]).toMatchObject({ status: "awaiting_approval" });
+    const decision = h.decide(id, "a", "request_changes", "again");
+    await relaunching.promise;
+    expect(await decision).toMatchObject({ ok: true, status: "changes_requested" });
+    const wait = Promise.allSettled([h.untilLive(1)]);
+    relaunch.resolve();
+    await h.drainRunWork();
+    expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
+      { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
+    ]);
+  } finally {
+    relaunch.resolve();
+    await h.drainRunWork();
     for (const child of h.live()) child.finish();
     await Promise.allSettled(runs);
     await h.drainRunWork();

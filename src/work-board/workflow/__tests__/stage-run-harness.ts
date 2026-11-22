@@ -225,15 +225,19 @@ export async function stageRunHarness(opts: {
     // A retry or decision supersedes the item's standing failure for the length of the call; a refusal brings it back.
     async function restart<T extends { ok: boolean }>(itemId: number, call: () => Promise<T>): Promise<T> {
       const origin = workBoardOriginSessionId(itemId);
-      const before = engine === wrapped ? failures.get(origin) : undefined;
+      const tracked = engine === wrapped;
+      const before = tracked ? failures.get(origin) : undefined;
+      const wasInFlight = inFlight.has(origin);
+      // In flight from the start: an accepted call may end the run before it returns.
+      if (tracked) inFlight.add(origin);
       if (before !== undefined) failures.delete(origin);
       let result: T | undefined;
       try {
         result = await call();
         return result;
       } finally {
-        if (result?.ok && engine === wrapped) inFlight.add(origin);
-        else if (before !== undefined && engine === wrapped && !failures.has(origin)) {
+        if (!result?.ok && tracked && engine === wrapped && !wasInFlight) inFlight.delete(origin);
+        if (!result?.ok && before !== undefined && engine === wrapped && !failures.has(origin)) {
           failures.set(origin, before);
           for (const changed of childChanges) changed({ error: before, originSessionId: origin });
         }
