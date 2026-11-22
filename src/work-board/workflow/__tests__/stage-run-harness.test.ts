@@ -810,3 +810,86 @@ it("an accepted gate decision puts its item back in flight for aggregate child w
     await h.cleanup();
   }
 });
+
+/** An item whose first retry's relaunch failed: its failed stage stands and its run is parked. */
+async function failedRelaunch(hold?: Promise<void>) {
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (...args) => {
+          if (args[2] === 2) throw new Error("relaunch preparation failed");
+          if (args[2] === 3) await hold;
+          return workspace.prepare(...args);
+        },
+      },
+    }),
+  });
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version);
+  const run = h.start(id, h.local(version));
+  (await h.untilLive(1, id))[0].finish({ ok: false, summary: "failed", error: "failed" });
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  const { runId = "" } = await h.item(id);
+  expect(await h.engine.retryStage(id, { runId, stageId: "a" })).toEqual({ ok: true });
+  await h.drainRunWork();
+  await expect(h.untilLive(1, id)).rejects.toThrow(/stage_failed/);
+  return { h, version, id, runId };
+}
+
+it("a refused retry that overlaps an accepted one leaves the accepted retry's start standing", async () => {
+  const release = deferred<void>();
+  const { h, id, runId } = await failedRelaunch(release.promise);
+  try {
+    const refused = h.engine.retryStage(id, { runId: "run-other", stageId: "a" });
+    const retried = h.engine.retryStage(id, { runId, stageId: "a" });
+    expect(await refused).toMatchObject({ ok: false });
+    expect(await retried).toEqual({ ok: true });
+    const wait = Promise.allSettled([h.untilLive(1, id)]);
+    expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
+    release.resolve();
+    expect(await wait).toEqual([{ status: "fulfilled", value: [expect.objectContaining({ ended: false })] }]);
+  } finally {
+    release.resolve();
+    await h.drainRunWork();
+    for (const child of h.live()) child.finish();
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("a second start of a parked item settles a child wait created while it ran with the item's standing failure", async () => {
+  const { h, version, id } = await failedRelaunch();
+  try {
+    const again = h.start(id, h.local(version));
+    const wait = Promise.allSettled([h.untilLive(1, id)]);
+    expect(await again).toMatchObject({ status: "already_running" });
+    expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
+      { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
+    ]);
+  } finally {
+    for (const child of h.live()) child.finish();
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("refused retries of a failed item leave an aggregate wait on another item's children pending", async () => {
+  const { h, version, id } = await failedRelaunch();
+  const runs: Promise<unknown>[] = [];
+  try {
+    const other = await h.addItem(version);
+    runs.push(h.start(other, h.local(version)));
+    await h.untilLive(1, other);
+    const wait = Promise.allSettled([h.untilLive(2)]);
+    const refusals = await Promise.all([1, 2].map(() => h.engine.retryStage(id, { runId: "run-other", stageId: "a" })));
+    expect(refusals).toEqual([expect.objectContaining({ ok: false }), expect.objectContaining({ ok: false })]);
+    expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
+  } finally {
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
