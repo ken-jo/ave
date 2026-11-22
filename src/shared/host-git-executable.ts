@@ -71,12 +71,22 @@ function isFullyQualified(path: string, platform: NodeJS.Platform): boolean {
 function windowsPathEntries(searchPath: string): string[] {
   const entries: string[] = [];
   for (let start = 0; start < searchPath.length;) {
+    while (/\s/u.test(searchPath.charAt(start))) start++;
     const quote = searchPath[start];
     const quoted = quote === '"' || quote === "'";
     const closingQuote = quoted ? searchPath.indexOf(quote, start + 1) : start;
-    const separator = closingQuote === -1 ? -1 : searchPath.indexOf(";", closingQuote);
+    if (closingQuote === -1) break;
+    const separator = searchPath.indexOf(";", closingQuote);
     const end = separator === -1 ? searchPath.length : separator;
-    entries.push(searchPath.slice(start, end).trim().replace(/^["']|["']$/gu, ""));
+    if (quoted) {
+      if (searchPath.slice(closingQuote + 1, end).trim() === "") {
+        entries.push(searchPath.slice(start + 1, closingQuote));
+      }
+    } else {
+      const entry = searchPath.slice(start, end).trim();
+      if (entry.includes('"')) break;
+      entries.push(entry);
+    }
     start = end + 1;
   }
   return entries;

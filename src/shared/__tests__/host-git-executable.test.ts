@@ -41,7 +41,12 @@ describe("systemGitCandidates", () => {
     ]);
   });
 
-
+  it("handles whitespace before a quoted entry and discards malformed entries intact", async () => {
+    const { systemGitCandidates } = await import("../host-git-executable.js");
+    expect(systemGitCandidates("win32", 'D:\\First;  "D:\\Tools;Git\\cmd" ; "D:\\Invalid;D:\\Partial"junk;D:\\Last; "D:\\Open;D:\\Partial')).toEqual([
+      "D:\\First\\git.exe", "D:\\Tools;Git\\cmd\\git.exe", "D:\\Last\\git.exe", "C:\\Program Files\\Git\\cmd\\git.exe",
+    ]);
+  });
 });
 
 describe("resolveHostGit", () => {
