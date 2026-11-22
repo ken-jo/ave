@@ -35,6 +35,11 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal): {
   };
 }
 
+/** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */
+export function admitToolInvocationWhileAuditOpen(tool: string, parent?: AbortSignal): ReturnType<typeof admitToolInvocation> | undefined {
+  return auditClosed ? undefined : admitToolInvocation(tool, parent);
+}
+
 /** True once the seal aborted admission; a caller refusing work then has no denial to record. */
 export function toolInvocationsSealed(): boolean {
   return shutdown.signal.aborted;

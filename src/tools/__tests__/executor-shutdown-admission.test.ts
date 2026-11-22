@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,11 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
 const roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) await cleanupTmpDir(root); });
+const loggers: Array<{ close(): Promise<void> }> = [];
+afterEach(async () => {
+  for (const logger of loggers.splice(0)) await logger.close();
+  for (const root of roots.splice(0)) await cleanupTmpDir(root);
+});
 
 /** Each call loads a fresh module graph, so a sealed ledger never leaks into another test. */
 async function freshExecutor(toolCount: number) {
@@ -23,6 +28,8 @@ async function freshExecutor(toolCount: number) {
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.checkDetailed = () => ({ decision: "allow", reason: "shutdown admission probe" });
   const audit = new AuditLogger(join(root, "audit"));
+  loggers.push(audit);
+  await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
   const executes = Array.from({ length: toolCount }, (_, index) => vi.fn(async () => `done ${index}`));
   const registry = new ToolRegistry();
   executes.forEach((execute, index) => registry.register(createDynamicTool({
@@ -48,6 +55,20 @@ async function freshExecutor(toolCount: number) {
 }
 
 describe("ToolExecutor admission across the quit seal", () => {
+  it("writes one host-shutdown deny row before close for a tool arriving between seal and close", async () => {
+    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses } = await freshExecutor(1);
+    ledger.sealToolInvocations();
+    const running = executor.executeAll(toolUses, { sessionId: "sess-seal-open", permissionContext: userPermissionContext() });
+    let rowsAtClose: Array<Record<string, unknown>> = [];
+    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const [result] = await running;
+    await expect(join).resolves.toBe(1);
+    expect(result.is_error).toBe(true);
+    expect(executes[0]).not.toHaveBeenCalled();
+    expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toHaveLength(1);
+    expect(hostShutdownRows(rows(), "tu-queued-0")).toHaveLength(1);
+  });
+
   it("refuses a queued tool after the seal while the previous result callback waits on the journal", async () => {
     const { ledger, executor, executes, toolUses, cancelled } = await freshExecutor(2);
     let firstDelivered!: () => void;
