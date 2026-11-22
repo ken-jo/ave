@@ -14,16 +14,24 @@ export function pluginChildInputCredit(bytes: number): Buffer {
   return credit;
 }
 
+interface PendingWrite {
+  remaining: number;
+  done(error?: Error | null): void;
+}
+
 /** Pace the reference runtime's input without pausing its owner while it watches for EOF. */
 export function pacePluginChildInput(source: Readable, sink: Writable): {
   input: Readable;
   output: Writable;
 } {
-  let pending: { remaining: number; done: (error?: Error | null) => void } | undefined;
+  let pending: PendingWrite | undefined;
   const credit = Buffer.alloc(CREDIT_BYTES);
   let creditRemaining = 0;
+  let creditWrite: PendingWrite | undefined;
   const input = new Transform({
-    transform(chunk: Buffer, _encoding, done) {
+    writableObjectMode: true,
+    writableHighWaterMark: 1,
+    transform({ chunk, write }: { chunk: Buffer; write: PendingWrite | undefined }, _encoding, done) {
       let offset = 0;
       while (offset < chunk.length) {
         if (creditRemaining === 0) {
@@ -33,8 +41,13 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
             break;
           }
           if (marker > offset) this.push(chunk.subarray(offset, marker));
+          creditWrite = write;
           creditRemaining = CREDIT_BYTES;
           offset = marker + 1;
+        }
+        if (!creditWrite || creditWrite !== write || creditWrite !== pending || creditWrite.remaining === 0) {
+          done(new Error("Invalid plugin child input credit"));
+          return;
         }
         const count = Math.min(creditRemaining, chunk.length - offset);
         chunk.copy(credit, CREDIT_BYTES - creditRemaining, offset, offset + count);
@@ -42,16 +55,16 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
         creditRemaining -= count;
         if (creditRemaining > 0) continue;
         const bytes = credit.readUInt32BE();
-        if (!pending || bytes === 0 || bytes > pending.remaining) {
+        if (bytes === 0 || bytes > creditWrite.remaining) {
           done(new Error("Invalid plugin child input credit"));
           return;
         }
-        pending.remaining -= bytes;
-        if (pending.remaining === 0) {
-          const { done: delivered } = pending;
-          pending = undefined;
-          delivered();
-        }
+        creditWrite.remaining -= bytes;
+        creditWrite = undefined;
+      }
+      if (write && pending === write && write.remaining === 0) {
+        pending = undefined;
+        write.done();
       }
       done();
     },
@@ -93,7 +106,15 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
   sink.once("finish", () => {
     if (!output.writableEnded || pending) output.destroy();
   });
-  source.pipe(input);
+  const accept = (chunk: Buffer): void => {
+    // Snapshot on arrival, before the transform can queue the chunk or complete a write.
+    if (!input.write({ chunk, write: pending })) source.pause();
+  };
+  input.on("drain", () => source.resume());
+  input.once("close", () => source.off("data", accept));
+  source.once("end", () => input.end());
+  if (source.readableEnded) input.end();
+  else source.on("data", accept);
   if (source.destroyed && !source.readableEnded) input.destroy();
   if (sink.destroyed || sink.writableFinished) output.destroy();
   return { input, output };
