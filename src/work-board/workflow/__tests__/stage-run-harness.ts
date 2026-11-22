@@ -309,36 +309,40 @@ export async function stageRunHarness(opts: {
       listeners.add(changed);
     });
   }
-  function waitForChildren(get: () => FakeChild[] | undefined, itemId?: number): Promise<FakeChild[]> {
+  function waitForChildren(get: () => FakeChild[], done: (list: FakeChild[]) => boolean, itemId?: number): Promise<FakeChild[]> {
     if (closed) return Promise.reject(new Error("Child wait ended: harness cleaned up"));
     const current = get();
-    if (current !== undefined) return Promise.resolve(current);
-    // Aggregate counts still follow the most recent start for failure signals.
+    if (done(current)) return Promise.resolve(current);
+    // An aggregate count takes failures of the most recent start and of every item whose live child it has counted.
     let origin = itemId === undefined ? lastRequestedOrigin : workBoardOriginSessionId(itemId);
+    const counted = new Set<string>();
+    const count = (list: FakeChild[]) => {
+      if (itemId === undefined) for (const child of list) if (!child.ended && child.input.originSessionId) counted.add(child.input.originSessionId);
+    };
+    count(current);
     return new Promise((resolve, reject) => {
       function changed(failure?: ChildWaitFailure) {
         origin ??= lastRequestedOrigin;
-        if (origin !== undefined && failure?.originSessionId !== undefined && origin !== failure.originSessionId) return;
         const value = get();
-        if (value === undefined && !failure) return;
+        count(value);
+        if (done(value)) {
+          childChanges.delete(changed);
+          resolve(value);
+          return;
+        }
+        const from = failure?.originSessionId;
+        if (!failure || (origin !== undefined && from !== undefined && from !== origin && !counted.has(from))) return;
         childChanges.delete(changed);
-        if (value !== undefined) resolve(value);
-        else reject(failure?.error);
+        reject(failure.error);
       }
       childChanges.add(changed);
     });
   }
   const forItem = (list: FakeChild[], itemId?: number) =>
     itemId === undefined ? list : list.filter(child => child.input.originSessionId === workBoardOriginSessionId(itemId));
-  const untilLive = (count: number, itemId?: number) => waitForChildren(() => {
-    const active = forItem(live(), itemId);
-    return active.length === count ? active : undefined;
-  }, itemId);
+  const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(live(), itemId), active => active.length === count, itemId);
   const waitForLive = untilLive;
-  const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => {
-    const spawned = forItem(children, itemId);
-    return spawned.length >= count ? spawned : undefined;
-  }, itemId);
+  const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(children, itemId), spawned => spawned.length >= count, itemId);
   const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");

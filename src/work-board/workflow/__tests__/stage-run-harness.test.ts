@@ -182,3 +182,46 @@ it.each(["registered", "ended before preparation", "ended after release"] as con
     }
   }
 });
+
+it.each(["cancelled", "ended"] as const)("an aggregate child wait settles when an earlier item it counts is %s", async outcome => {
+  const release = deferred<void>();
+  let prepares = 0;
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (...args) => {
+          prepares += 1;
+          if (prepares > 1) await release.promise;
+          return workspace.prepare(...args);
+        },
+      },
+    }),
+  });
+  const runs: Promise<unknown>[] = [];
+  const version = await h.confirm([autoStageOf("a")]);
+  const earlier = await h.addItem(version);
+  const later = await h.addItem(version);
+  try {
+    runs.push(h.start(earlier, h.local(version)));
+    const [child] = await h.untilLive(1);
+    runs.push(h.start(later, h.local(version)));
+    const waits = Promise.allSettled([h.waitForLive(2), h.untilLive(2)]);
+    if (outcome === "cancelled") expect(h.engine.cancelRun(earlier)).toEqual({ ok: true });
+    else child.finish();
+    await runs[0];
+    const result = await Promise.race([waits, setImmediate("still pending")]);
+    const reason = { cancelled: /cancelled/, ended: /done/ }[outcome];
+    expect(result).toEqual(Array.from({ length: 2 }, () => ({
+      status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(reason) }),
+    })));
+  } finally {
+    h.engine.cancelRun(later);
+    release.resolve();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
