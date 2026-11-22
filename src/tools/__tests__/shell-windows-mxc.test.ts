@@ -985,6 +985,7 @@ describe("builtin shell — Windows MXC containers", () => {
       return error;
     }, "failure details unavailable"],
     ["a thrown string", () => "plain failure text", "plain failure text"],
+    ["a thrown value that is not an error", () => ({ toString: () => "x".repeat(1_000_000) }), "failure details unavailable"],
     ["an error and the causes its text lacks", () => new Error("transport failed", { cause: new Error("pipe busy", { cause: new Error("transport failed") }) }),
       "transport failed: pipe busy"],
     ["an unreadable cause", () => {
