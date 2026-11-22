@@ -180,6 +180,23 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
     expect(allText).toContain("[REDACTED:JWT]");
   });
 
+  it("log lines with query credentials stay one JSON object each", async () => {
+    const signature = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
+    writeLogLines("ave-2025-06-04.log", [
+      "url https://x.example/mcp?api_key=SECRETPARAM123",
+      `GET https://objects.example/r?X-Example-Date=20261122T000000Z&X-Example-Signature=${signature}`,
+      `GET https://blobs.example/a.txt?sv=2026-01-01&sig=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo%3D`,
+    ]);
+    const entry = new AdmZip(await build()).getEntry("logs/ave-2025-06-04.log");
+    if (!entry) throw new Error("log entry is missing");
+    const lines = entry.getData().toString("utf-8").trimEnd().split("\n").map((line) => JSON.parse(line) as { level: number; msg: string });
+    expect(lines).toEqual([
+      { level: 30, msg: "url https://x.example/mcp?api_key=[REDACTED:TOKEN]" },
+      { level: 30, msg: "GET https://objects.example/r?X-Example-Date=20261122T000000Z&X-Example-Signature=[REDACTED:TOKEN]" },
+      { level: 30, msg: "GET https://blobs.example/a.txt?sv=2026-01-01&sig=[REDACTED:TOKEN]" },
+    ]);
+  });
+
   it("credential-class secrets in audit input/output are scrubbed", async () => {
     const logger = new AuditLogger(auditDir);
     logger.log({

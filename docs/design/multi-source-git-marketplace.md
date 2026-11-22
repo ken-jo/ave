@@ -2649,7 +2649,15 @@ other opaque secret) is masked only in these positions:
   `password`, `passwd`, `pwd`, `apikey`, `accesskey`, `privatekey`,
   `credential` or `bearer`, or has `auth` or `pat` as a
   whole segment (`AZURE_DEVOPS_EXT_PAT=…`, `pat=…`; not `path=`);
-- a query parameter `api_key`, `token`, `access_token` or `refresh_token`.
+- a query parameter `api_key`, `token`, `access_token` or `refresh_token`,
+  a session `security-token` or prefixed `x-<name>-security-token`, or a
+  prefixed `x-<name>-signature`; a bare `signature` or `sig` only when its
+  whole value is a hexadecimal digest of 32 or more characters or base64 text
+  of 16 or more mixing upper case, lower case and digits, so `?sig=sha256`
+  passes. Keys, `=` and `&` may be percent-encoded up to three layers, as in
+  a URL nested in another's query. A value ends at `&` (an encoded one for a
+  nested URL), whitespace, a quote, a backtick, `<`, `>` or an escaped
+  closing quote, so the JSON or shell text around it stays intact.
 
 Anywhere else such a value passes unchanged, so a 52-character base32 digest
 in build metadata (`1.0.0+<digest>`) is kept.

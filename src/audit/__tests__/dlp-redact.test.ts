@@ -397,6 +397,56 @@ describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
   });
 });
 
+describe("query credentials — signed URLs, encoded keys and serialization delimiters", () => {
+  const hexSignature = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
+  const base64Signature = "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo%3D";
+  const sessionToken = "IQoJb3JpZ2luX2VjEXAMPLEsessionTOKENvalue0123456789";
+  const bothScrubbers = [["scrubSecretsForLLM", scrubSecretsForLLM], ["scrubDiagnosticSecrets", scrubDiagnosticSecrets]] as const;
+
+  it.each([
+    [`https://objects.example/report.csv?X-Example-Date=20261122T000000Z&X-Example-SignedHeaders=host&X-Example-Signature=${hexSignature}`,
+      "https://objects.example/report.csv?X-Example-Date=20261122T000000Z&X-Example-SignedHeaders=host&X-Example-Signature=[REDACTED:TOKEN]"],
+    [`https://objects.example/report.csv?X-Example-Security-Token=${sessionToken}&X-Example-Signature=${hexSignature}`,
+      "https://objects.example/report.csv?X-Example-Security-Token=[REDACTED:TOKEN]&X-Example-Signature=[REDACTED:TOKEN]"],
+    [`https://media.example/clip.mp4?Expires=1795000000&Signature=${hexSignature}&Key-Pair-Id=K2EXAMPLE`,
+      "https://media.example/clip.mp4?Expires=1795000000&Signature=[REDACTED:TOKEN]&Key-Pair-Id=K2EXAMPLE"],
+    [`https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&sig=${base64Signature}`, "https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&sig=[REDACTED:TOKEN]"],
+    [`https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%73ig=${base64Signature}`, "https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%73ig=[REDACTED:TOKEN]"],
+    [`https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%2573ig=${base64Signature}`, "https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%2573ig=[REDACTED:TOKEN]"],
+    [`https://objects.example/r?X-Example%2DSignature=${hexSignature}`, "https://objects.example/r?X-Example%2DSignature=[REDACTED:TOKEN]"],
+    ["https://x.example/?%74oken=abc123", "https://x.example/?%74oken=[REDACTED:TOKEN]"],
+    [`https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Signature%3D${hexSignature}%26a%3D1&state=1`,
+      "https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Signature%3D[REDACTED:TOKEN]%26a%3D1&state=1"],
+  ])("masks the signature or session token of %s and keeps its other parameters", (url, masked) => {
+    expect(scrubSecretsForLLM(url)).toBe(masked);
+    const diagnostic = scrubDiagnosticSecrets(url);
+    for (const secret of [hexSignature, base64Signature, sessionToken, "abc123"]) expect(diagnostic).not.toContain(secret);
+    expect(holdsCredential(url)).toBe(true);
+  });
+
+  it.each(bothScrubbers)("%s keeps a signature name used as an ordinary option", (_name, scrub) => {
+    for (const text of [
+      "use ?sig=sha256 to select the digest",
+      "?signature=on&sig=hmac",
+      "https://docs.example/search?q=signature&signatures=on&design=sig",
+      "https://docs.example/a?sig=0123456789abcdef",
+    ]) expect(scrub(text)).toBe(text);
+  });
+
+  it("ends a query value at the quotes, escaped quotes and whitespace of its serialization", () => {
+    const line = JSON.stringify({ msg: `GET https://objects.example/r?X-Example-Signature=${hexSignature}`, url: "https://x.example/mcp?api_key=SECRETVALUE123", next: 1 });
+    expect(JSON.parse(scrubSecretsForLLM(line))).toEqual({
+      msg: "GET https://objects.example/r?X-Example-Signature=[REDACTED:TOKEN]",
+      url: "https://x.example/mcp?api_key=[REDACTED:TOKEN]",
+      next: 1,
+    });
+    const nested = JSON.stringify(line);
+    expect(JSON.parse(JSON.parse(scrubSecretsForLLM(nested)) as string)).toEqual(JSON.parse(scrubSecretsForLLM(line)));
+    expect(scrubSecretsForLLM("curl 'https://x.example/?token=abc123' -o out")).toBe("curl 'https://x.example/?token=[REDACTED:TOKEN]' -o out");
+    expect(scrubSecretsForLLM("<a href=\"https://x.example/?access_token=abc123\">x</a>")).toBe("<a href=\"https://x.example/?access_token=[REDACTED:TOKEN]\">x</a>");
+  });
+});
+
 describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details", () => {
   it("redacts a password in any scheme's userinfo, up to the authority's last @", () => {
     const out = scrubDiagnosticSecrets(
@@ -916,6 +966,7 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         `"${fill("authorization\\u003a")}`, `\\"${fill("authorization\n")}\\": x`, fill('"x" authorization '),
         // Read long backslash runs once per key window rather than once per step.
         `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
+        fill("?a%26"), fill("&a%41"), fill("%253f"), fill("&sig=a1B"), `&sig=${fill("a1B%3D")}`, `?token=${fill("\\")}`, `?token=a${fill("%2526")}`,
       ];
     };
     const small = familiesAt(SMALL);

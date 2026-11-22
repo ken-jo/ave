@@ -521,6 +521,82 @@ function maskAuthorizationValues(text: string): string {
   return out + text.slice(copied);
 }
 
+/** A URL nested in another URL's query carries its separators, keys and values percent-encoded up to three layers. */
+const QUERY_PARAMETER = /(?:[?&]|%(?:25){0,2}(?:3f|26))((?:[\w.~-]|%(?:25){0,2}(?!25|26|3d|3f)[\da-f]{2})+)(=|%(?:25){0,2}3d)/giu;
+const QUERY_ESCAPE = /%(?:25){0,2}([\da-f]{2})/iuy;
+const QUERY_CREDENTIAL_KEY = /^(?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|(?:x-[a-z\d]+-)?security-token|x-[a-z\d]+-signature)$/iu;
+/** A bare signature name also names ordinary options such as `?sig=sha256`. */
+const QUERY_SIGNATURE_KEY = /^(?:signature|sig)$/iu;
+
+function decodeQueryKey(key: string): string {
+  for (let layer = 0; layer < 3 && key.includes("%"); layer++) {
+    key = key.replace(/%([0-7][\da-f])/giu, (_escape: string, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
+  }
+  return key;
+}
+
+/** Quotes, whitespace, `&` and an escaped closing quote belong to the surrounding text or serialization. */
+function queryValueEnd(text: string, start: number, ampersand: string): number {
+  let end = start;
+  while (end < text.length) {
+    const char = text.charAt(end);
+    if (char === "&" || isWhitespace(char) || "\"'`<>".includes(char) || ampersand && text.startsWith(ampersand, end)) return end;
+    if (char !== "\\") {
+      end++;
+      continue;
+    }
+    let run = end + 1;
+    while (text[run] === "\\") run++;
+    if (text[run] === '"') return end;
+    end = run;
+  }
+  return end;
+}
+
+/** A whole value that is a hexadecimal digest, or base64 text mixing upper case, lower case and digits. */
+function signatureValueEnd(text: string, start: number, ampersand: string): number {
+  let end = start;
+  let length = 0;
+  let classes = 0;
+  let hex = true;
+  while (end < text.length) {
+    QUERY_ESCAPE.lastIndex = end;
+    const [encoded, byte] = QUERY_ESCAPE.exec(text) ?? [];
+    const char = byte === undefined ? text.charAt(end) : String.fromCharCode(Number.parseInt(byte, 16));
+    if (!/^[\w+/=~-]$/u.test(char)) break;
+    classes |= /\d/u.test(char) ? 1 : /[a-z]/u.test(char) ? 2 : /[A-Z]/u.test(char) ? 4 : 0;
+    hex &&= /^[\da-f]$/iu.test(char);
+    length++;
+    end += encoded?.length ?? 1;
+  }
+  const signature = hex ? length >= 32 : length >= 16 && classes === 7;
+  return signature && queryValueEnd(text, end, ampersand) === end ? end : start;
+}
+
+/** Mask credential query values, and signed-URL signatures and session tokens. */
+function maskQueryCredentials(text: string): string {
+  let out = "";
+  let copied = 0;
+  QUERY_PARAMETER.lastIndex = 0;
+  for (let match = QUERY_PARAMETER.exec(text); match !== null; match = QUERY_PARAMETER.exec(text)) {
+    const [parameter, rawKey = "", equals = "="] = match;
+    const start = match.index + parameter.length;
+    const key = decodeQueryKey(rawKey);
+    // An encoded `=` belongs to a nested URL, whose own parameters end at its `&`.
+    const ampersand = equals === "=" ? "" : `${equals.slice(0, -2)}26`;
+    const end = QUERY_CREDENTIAL_KEY.test(key) ? queryValueEnd(text, start, ampersand)
+      : QUERY_SIGNATURE_KEY.test(key) ? signatureValueEnd(text, start, ampersand) : start;
+    if (end === start) {
+      QUERY_PARAMETER.lastIndex = start;
+      continue;
+    }
+    out += `${text.slice(copied, start)}[REDACTED:TOKEN]`;
+    copied = end;
+    QUERY_PARAMETER.lastIndex = end;
+  }
+  return out + text.slice(copied);
+}
+
 /** Both modes detect real formats and contexts; broad model-bound mode also masks bare vendor prefixes. */
 function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string {
   let out = text
@@ -529,11 +605,8 @@ function scrubCredentialShapes(text: string, mode: "broad" | "precise"): string 
       /((?:x-api-key|x-auth-token)\s*:\s*)[A-Za-z0-9._\-~+/=]+/gi,
       "$1[REDACTED:TOKEN]",
     )
-    .replace(/\bbearer\s+[A-Za-z0-9._\-~+/=]+/gi, "Bearer [REDACTED:TOKEN]")
-    .replace(
-      /([?&](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token))=([^&\s]+)/gi,
-      "$1=[REDACTED:TOKEN]",
-    )
+    .replace(/\bbearer\s+[A-Za-z0-9._\-~+/=]+/gi, "Bearer [REDACTED:TOKEN]");
+  out = maskQueryCredentials(out)
     .replace(
       /(["'](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|x-api-key|x-auth-token|aws[_-]?secret[_-]?access[_-]?key)["']\s*:\s*["'])[^"']+(["'])/gi,
       "$1[REDACTED:TOKEN]$2",

@@ -3506,6 +3506,14 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Query credential masking
+
+Both scrubbers in `src/shared/dlp.ts` mask credential query values, signed-URL
+signatures and session tokens, by the credential detector contract in
+[multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md).
+A value ends before the delimiters of the text that carries it, so a scrubbed
+JSON log line in a diagnostics bundle stays one valid object.
+
 ### Home path redaction
 
 The redactor identifies tokens in the original audit or display text. It
