@@ -495,4 +495,26 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     // The failed relay left the registry, so ending the session does not meet its failure again.
     await expect(resetAsrtSandbox()).resolves.toBeUndefined();
   });
+
+  it("ends the session when a relay's close fails during that teardown", async () => {
+    await hostListener.openHostEgressListener(invocation.token);
+    const closeAll = http.Server.prototype.closeAllConnections;
+    const stuck: http.Server[] = [];
+    // The shared proxy closes first; the relay's close, which follows it, fails.
+    vi.spyOn(http.Server.prototype, "closeAllConnections")
+      .mockImplementationOnce(function (this: http.Server) { closeAll.call(this); })
+      .mockImplementationOnce(function (this: http.Server) {
+        stuck.push(this);
+        throw new Error("relay close failed");
+      });
+    try {
+      await expect(resetAsrtSandbox()).resolves.toBeUndefined();
+    } finally {
+      for (const server of stuck) {
+        closeAll.call(server);
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
+    expect(stuck).toHaveLength(1);
+  });
 });

@@ -4255,8 +4255,8 @@ index 810b0aa..5e71736 100644
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
 +    // Ave patch (invocation listeners): the session is over, so every
-+    // listener (ended ones kept bound on macOS included) goes.
-+    await Promise.all([...hostInvocationProxies].map(relay => relay.close()));
++    // listener (ended ones kept bound on macOS included) goes; a relay's failed close is logged, so teardown completes.
++    await Promise.all([...hostInvocationProxies].map(relay => relay.close().catch(() => logForDebugging('Error closing invocation relay', { level: 'error' }))));
 +    const lanes = [...invocationListeners.values()];
 +    invocationListeners.clear();
 +    retiredInvocationKeys.clear();
