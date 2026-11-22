@@ -472,49 +472,54 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(again).toHaveBeenCalledOnce();
   });
 
-  it("removes a relay whose close failed and keeps its key unattributable on the shared front end", async () => {
+  it("unbinds a relay whose connection drain throws, rejects its close and keeps its key unattributable on the shared front end", async () => {
     // Not left to teardown: its close is the failure under test.
     const relay = await hostListener.openHostEgressListener(invocation.token);
-    const failure = new Error("relay close failed");
-    const closeAll = http.Server.prototype.closeAllConnections;
-    const stuck: http.Server[] = [];
-    vi.spyOn(http.Server.prototype, "closeAllConnections").mockImplementationOnce(function (this: http.Server) {
-      stuck.push(this);
-      throw failure;
-    });
-    try {
-      await expect(relay.close()).rejects.toBe(failure);
-    } finally {
-      for (const server of stuck) {
-        closeAll.call(server);
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-      }
-    }
+    const failure = new Error("relay drain failed");
+    vi.spyOn(http.Server.prototype, "closeAllConnections").mockImplementationOnce(() => { throw failure; });
+    await expect(relay.close()).rejects.toBe(failure);
+    // The drain's failure did not skip the unbind.
+    expect(await probePort(relay.port, sockets)).toBe("refused");
     expect(await request(sharedPort, sharedAuthorization(invocation.token))).toBe(403);
     expectSharedDenial(0, undefined);
-    // The failed relay left the registry, so ending the session does not meet its failure again.
+    // The unbound relay left the registry, so ending the session does not meet its failure again.
     await expect(resetAsrtSandbox()).resolves.toBeUndefined();
   });
 
-  it("ends the session when a relay's close fails during that teardown", async () => {
-    await hostListener.openHostEgressListener(invocation.token);
+  it("ends the session and unbinds a relay whose drain throws during that teardown", async () => {
+    const relay = await hostListener.openHostEgressListener(invocation.token);
     const closeAll = http.Server.prototype.closeAllConnections;
-    const stuck: http.Server[] = [];
-    // The shared proxy closes first; the relay's close, which follows it, fails.
+    const drained: http.Server[] = [];
+    // The shared proxy closes first; the relay's drain, which follows it, throws.
     vi.spyOn(http.Server.prototype, "closeAllConnections")
       .mockImplementationOnce(function (this: http.Server) { closeAll.call(this); })
       .mockImplementationOnce(function (this: http.Server) {
-        stuck.push(this);
-        throw new Error("relay close failed");
+        drained.push(this);
+        throw new Error("relay drain failed");
       });
-    try {
-      await expect(resetAsrtSandbox()).resolves.toBeUndefined();
-    } finally {
-      for (const server of stuck) {
-        closeAll.call(server);
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+    await expect(resetAsrtSandbox()).resolves.toBeUndefined();
+    expect(drained).toHaveLength(1);
+    for (const port of [relay.port, sharedPort]) expect(await probePort(port, sockets)).toBe("refused");
+  });
+
+  it("fails the session's reset after the rest of its teardown while a relay's port stays bound, and releases it at the next", async () => {
+    const relay = await hostListener.openHostEgressListener(invocation.token);
+    const close = http.Server.prototype.close;
+    let refuse = true;
+    vi.spyOn(http.Server.prototype, "close").mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
+      const address = this.address();
+      if (refuse && address !== null && typeof address === "object" && address.port === relay.port) {
+        queueMicrotask(() => callback?.(new Error("relay unbind failed")));
+        return this;
       }
-    }
-    expect(stuck).toHaveLength(1);
+      return close.call(this, callback);
+    });
+    await expect(resetAsrtSandbox()).rejects.toThrow("Sandbox reset left 1 invocation relay port bound");
+    // The rest of the session ended; the relay is still owned, and drops what connects.
+    expect(await probePort(sharedPort, sockets)).toBe("refused");
+    expect(await probePort(relay.port, sockets)).toBe("dropped");
+    refuse = false;
+    await expect(resetAsrtSandbox()).resolves.toBeUndefined();
+    expect(await probePort(relay.port, sockets)).toBe("refused");
   });
 });

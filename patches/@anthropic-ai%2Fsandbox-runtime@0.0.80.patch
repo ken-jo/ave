@@ -76,8 +76,11 @@ the installed package.
    and closes it once nothing can reach the port. A key an invocation listener
    or host relay owns is never attributed from a shared front end's proxy
    username, and a callback denial marked `unattributed: true` is recorded
-   without its key. reset() logs a relay close that fails and completes the
-   rest of its teardown.
+   without its key. A relay's key is retired as soon as its admission ends.
+   Its close attempts the unbind even when the connection drain throws,
+   rejects on either failure, and keeps the relay owned until its port is
+   unbound. reset() logs a relay close that fails, completes the rest of its
+   teardown, and then rejects while a relay port is still bound.
 
 4. Upstream routes (Ave): `SandboxManager.setParentProxyRouter(router)`
    replaces the single static `parentProxy` with a per-destination hook. The
@@ -1984,7 +1987,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..71ab29747995b93fa457fee0cb6a20c8
 +export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
  //# sourceMappingURL=sandbox-manager.d.ts.map
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa..5e71736 100644
+index 810b0aa..ffec2c6 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -2634,7 +2637,7 @@ index 810b0aa..5e71736 100644
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +1013,902 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +1013,933 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -2675,6 +2678,8 @@ index 810b0aa..5e71736 100644
 +    // until the relay is closed, so nothing left running can reach a reused one.
 +    const revoke = () => {
 +        lane.ended = true;
++        // Retired at once: the key attributes nothing again, whatever the close does.
++        retiredInvocationKeys.add(key);
 +        destroyInvocationSockets(lane);
 +    };
 +    const relay = {
@@ -2684,14 +2689,16 @@ index 810b0aa..5e71736 100644
 +            revoke();
 +            admission?.signal.removeEventListener('abort', revoke);
 +            return closing ??= (async () => {
++                await lane.ready?.catch(() => { });
 +                try {
-+                    await lane.ready?.catch(() => { });
 +                    await disposeInvocationListener(lane);
 +                }
 +                finally {
-+                    // A closed relay's key stays unattributable on the shared front end.
-+                    retiredInvocationKeys.add(key);
-+                    hostInvocationProxies.delete(relay);
++                    // The relay stays owned, by a later close or the session's reset, until its port is unbound.
++                    if (lane.http?.listening === true)
++                        closing = undefined;
++                    else
++                        hostInvocationProxies.delete(relay);
 +                }
 +            })();
 +        },
@@ -2715,7 +2722,7 @@ index 810b0aa..5e71736 100644
 +            lane.port = http.address().port;
 +            if (lane.port < start || lane.port > end)
 +                break;
-+            await new Promise(resolve => http.close(() => resolve()));
++            await closeInvocationHttpServer(http);
 +            if (attempt >= 32)
 +                throw new Error('openHostInvocationProxy: no port outside the shared proxy range');
 +        }
@@ -3396,7 +3403,7 @@ index 810b0aa..5e71736 100644
 +    catch (error) {
 +        invocationListeners.delete(key);
 +        retiredInvocationKeys.add(key);
-+        void disposeInvocationListener(lane);
++        void disposeInvocationListener(lane).catch(() => logForDebugging('Error closing invocation listener', { level: 'error' }));
 +        throw error;
 +    }
 +    if (lane.ended) {
@@ -3423,13 +3430,38 @@ index 810b0aa..5e71736 100644
 +        socket.destroy();
 +    lane.sockets?.clear();
 +}
-+/** Close every server of a listener (its front end included). */
++/**
++ * Close an invocation's HTTP server. The unbind is attempted even when the
++ * connection drain throws; either failure, other than an already-unbound
++ * server, rejects.
++ */
++function closeInvocationHttpServer(server) {
++    let drainFailure;
++    try {
++        if (typeof server.closeAllConnections === 'function')
++            server.closeAllConnections();
++    }
++    catch (error) {
++        drainFailure = error;
++    }
++    return new Promise((resolve, reject) => {
++        server.close(error => {
++            if (error && error.code !== 'ERR_SERVER_NOT_RUNNING' && error.message !== 'Server is not running.')
++                reject(error);
++            else if (drainFailure !== undefined)
++                reject(drainFailure);
++            else
++                resolve();
++        });
++    });
++}
++/** Close every server of a listener (its front end included); rejects when its HTTP server's close failed. */
 +async function disposeInvocationListener(lane) {
 +    lane.ended = true;
 +    destroyInvocationSockets(lane);
 +    // Close the backend before the front end, which also closes its listener.
-+    await Promise.all([
-+        lane.http ? forceCloseHttpServer(lane.http) : undefined,
++    const [backend] = await Promise.allSettled([
++        lane.http ? closeInvocationHttpServer(lane.http) : undefined,
 +        lane.socks?.close().catch(() => { }),
 +    ]);
 +    if (lane.mux)
@@ -3442,6 +3474,8 @@ index 810b0aa..5e71736 100644
 +            // best effort: the path is never reused either way
 +        }
 +    }
++    if (backend.status === 'rejected')
++        throw backend.reason;
 +}
 +/**
 + * Ave patch (invocation listeners). End an invocation's listener: from now
@@ -3508,7 +3542,7 @@ index 810b0aa..5e71736 100644
 +        }
 +        invocationListeners.delete(key);
 +        retiredInvocationKeys.add(key);
-+        await disposeInvocationListener(lane);
++        await disposeInvocationListener(lane).catch(() => logForDebugging('Error closing invocation listener', { level: 'error' }));
 +    })();
 +}
 +/** The open listener for a wrap's commandId, or undefined. Throws for an ended one. */
@@ -3537,7 +3571,7 @@ index 810b0aa..5e71736 100644
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -604,6 +1925,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
+@@ -604,6 +1956,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
          throw error;
      }
  }
@@ -3760,7 +3794,7 @@ index 810b0aa..5e71736 100644
  async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor) {
      // Return if already initializing
      if (initializationPromise) {
-@@ -616,7 +2153,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +2184,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3773,7 +3807,7 @@ index 810b0aa..5e71736 100644
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,171 +2247,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,171 +2278,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -3957,7 +3991,7 @@ index 810b0aa..5e71736 100644
      }
      // Initialize network infrastructure
      initializationPromise = (async () => {
-@@ -992,6 +2381,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +2412,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -3970,7 +4004,7 @@ index 810b0aa..5e71736 100644
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1306,16 +2701,14 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
+@@ -1306,16 +2732,14 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
      // creates a placeholder chain and stamps it (deny lands on the
      // exact target path). `mode: 'grant'` drops them (a grant on
      // nothing is meaningless).
@@ -3992,7 +4026,7 @@ index 810b0aa..5e71736 100644
  }
  /**
   * The `mode: "mask"` files, as credential denies: an ACL cannot redirect a
-@@ -1515,6 +2908,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2939,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -4002,7 +4036,7 @@ index 810b0aa..5e71736 100644
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +3106,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3137,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -4024,7 +4058,7 @@ index 810b0aa..5e71736 100644
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3127,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3158,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -4067,7 +4101,7 @@ index 810b0aa..5e71736 100644
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3176,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3207,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -4076,7 +4110,7 @@ index 810b0aa..5e71736 100644
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3193,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3224,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -4084,7 +4118,7 @@ index 810b0aa..5e71736 100644
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3229,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3260,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -4101,7 +4135,7 @@ index 810b0aa..5e71736 100644
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1877,16 +3294,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
+@@ -1877,16 +3325,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
              maskedFiles.length > 0) {
              const sessRead = new Set(windowsFsStampedSet?.denyRead ?? []);
              const sessWrite = new Set(windowsFsStampedSet?.denyWrite ?? []);
@@ -4119,7 +4153,7 @@ index 810b0aa..5e71736 100644
                  held: windowsFsStampedSet,
              });
              perExecDenyRead = ranked.denyRead.filter(p => !sessRead.has(p));
-@@ -1950,7 +3361,7 @@ function getConfig() {
+@@ -1950,7 +3392,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -4128,7 +4162,7 @@ index 810b0aa..5e71736 100644
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3400,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3431,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -4136,7 +4170,7 @@ index 810b0aa..5e71736 100644
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2113,7 +3525,30 @@ function forceCloseHttpServer(server) {
+@@ -2113,7 +3556,30 @@ function forceCloseHttpServer(server) {
          });
      });
  }
@@ -4168,7 +4202,7 @@ index 810b0aa..5e71736 100644
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3558,54 @@ async function reset() {
+@@ -2123,28 +3589,54 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -4242,7 +4276,7 @@ index 810b0aa..5e71736 100644
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3683,8 @@ async function reset() {
+@@ -2222,6 +3714,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -4251,13 +4285,15 @@ index 810b0aa..5e71736 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3692,37 @@ async function reset() {
+@@ -2229,7 +3723,48 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
 +    // Ave patch (invocation listeners): the session is over, so every
-+    // listener (ended ones kept bound on macOS included) goes; a relay's failed close is logged, so teardown completes.
++    // listener (ended ones kept bound on macOS included) goes. A relay's failed close is logged; one whose port is
++    // still bound stays owned, and the reset fails once the rest of its teardown is done.
 +    await Promise.all([...hostInvocationProxies].map(relay => relay.close().catch(() => logForDebugging('Error closing invocation relay', { level: 'error' }))));
++    const boundRelays = hostInvocationProxies.size;
 +    const lanes = [...invocationListeners.values()];
 +    invocationListeners.clear();
 +    retiredInvocationKeys.clear();
@@ -4270,16 +4306,25 @@ index 810b0aa..5e71736 100644
 +            clearTimeout(lane.quarantine);
 +    }
 +    invocationAskCallback = undefined;
-+    await Promise.all(lanes.map(lane => lane.ready?.catch(() => { }).then(() => disposeInvocationListener(lane))));
++    await Promise.all(lanes.map(lane => lane.ready?.catch(() => { }).then(() => disposeInvocationListener(lane))
++        .catch(() => logForDebugging('Error closing invocation listener', { level: 'error' }))));
 +    if (privateSocketDir !== undefined) {
 +        fs.rmSync(privateSocketDir, { recursive: true, force: true });
 +        privateSocketDir = undefined;
 +    }
      maskedFileStore.dispose();
 +    windowsIsolationTask = undefined;
++    const failures = [];
 +    if (aclReleaseFailures.length > 0) {
-+        throw new WindowsSandboxError('acl_release_failed', `Windows sandbox ACL release incomplete: ${aclReleaseFailures.join('; ')}`);
++        failures.push(new WindowsSandboxError('acl_release_failed', `Windows sandbox ACL release incomplete: ${aclReleaseFailures.join('; ')}`));
 +    }
++    if (boundRelays > 0) {
++        failures.push(new Error(`Sandbox reset left ${boundRelays} invocation relay port${boundRelays === 1 ? '' : 's'} bound`));
++    }
++    if (failures.length > 1)
++        throw new AggregateError(failures, 'Sandbox reset incomplete');
++    if (failures.length === 1)
++        throw failures[0];
 +    return {
 +        windowsAclUnreleased: [...aclReleaseStale].map(([key, targets]) => {
 +            const [step, status] = key.split('\n');
@@ -4289,7 +4334,7 @@ index 810b0aa..5e71736 100644
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2314,6 +3807,7 @@ function getLinuxGlobPatternWarnings() {
+@@ -2314,6 +3849,7 @@ function getLinuxGlobPatternWarnings() {
   */
  export const SandboxManager = {
      initialize,
@@ -4297,7 +4342,7 @@ index 810b0aa..5e71736 100644
      isSupportedPlatform,
      isSandboxingEnabled,
      checkDependencies,
-@@ -2336,6 +3830,12 @@ export const SandboxManager = {
+@@ -2336,6 +3872,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,

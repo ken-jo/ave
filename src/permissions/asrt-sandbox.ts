@@ -3247,8 +3247,9 @@ export async function resetAsrtSandbox(): Promise<void> {
   // the native runtime once teardown has been requested.
   const SandboxManager = await loadSandboxManager();
   try {
-    // A failed Windows ACL release rejects (carried patch part 12) after the rest of the teardown; the release then stays pending, so the private
-    // helper copy is kept for the runtime's exit handler and the next boot's recovery to retry.
+    // A failed Windows ACL release (carried patch part 12), or an invocation relay port still bound (part 3), rejects after the rest of the
+    // teardown; the release then stays pending, so the private helper copy is kept for the runtime's exit handler and the next boot's recovery
+    // to retry, and a later reset retries the relay.
     logUnreleasedWindowsAces(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } finally {
