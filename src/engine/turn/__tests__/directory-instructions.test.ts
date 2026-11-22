@@ -1,8 +1,10 @@
 // Attach first-touch directory instructions once per session and revalidate changed launch chains.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
@@ -20,6 +22,11 @@ import {
 } from "../directory-instructions.js";
 import { makeConversationPermissionDeps } from "../../__tests__/support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../../__tests__/support/user-keyboard-turn.js";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFile: vi.fn(actual.execFile), execFileSync: vi.fn(actual.execFileSync), spawnSync: vi.fn(actual.spawnSync) };
+});
 
 let project: string;
 
@@ -46,7 +53,7 @@ function attach(attached: Map<string, number>, overrides: Partial<Parameters<typ
   });
 }
 
-function toolResultRow(result: NonNullable<ReturnType<typeof attach>>, meta: GenericMessage["meta"] = {}): GenericMessage {
+function toolResultRow(result: NonNullable<Awaited<ReturnType<typeof attach>>>, meta: GenericMessage["meta"] = {}): GenericMessage {
   return {
     role: "tool_result",
     toolUseId: "call_1",
@@ -57,35 +64,79 @@ function toolResultRow(result: NonNullable<ReturnType<typeof attach>>, meta: Gen
 }
 
 describe("directoryInstructionsForToolResult", () => {
-  it("frames the file as project-provided and attaches it only once", () => {
+  it("lets an independent frame finish while project Git discovery is pending", async () => {
+    const bin = join(project, "host-bin");
+    const git = join(bin, process.platform === "win32" ? "git.exe" : "git");
+    mkdirSync(bin);
+    mkdirSync(join(project, ".git"));
+    writeFileSync(git, "executable fixture", { mode: 0o755 });
+    vi.stubEnv("PATH", bin);
+    const started = deferred<void>();
+    let finishProbe: (() => void) | undefined;
+    let pending: Promise<unknown>[] = [];
+    vi.mocked(execFileSync).mockClear().mockReturnValue("git version 2.56.0");
+    vi.mocked(spawnSync).mockClear();
+    vi.mocked(execFile).mockClear().mockImplementation((_file, args, _options, callback) => {
+      if (Array.isArray(args) && args.includes("--version")) {
+        finishProbe = () => callback?.(null, "git version 2.56.0", "");
+        started.resolve();
+      } else {
+        callback?.(Object.assign(new Error("not ignored"), { code: 1 }), "", "");
+      }
+      return {} as ReturnType<typeof execFile>;
+    });
+    try {
+      const first = Promise.resolve(attach(new Map()));
+      const second = Promise.resolve(attach(new Map()));
+      pending = [first, second];
+      expect(await Promise.race([started.promise.then(() => "probe"), first.then(() => "attached")])).toBe("probe");
+      const frame = await new Promise((resolve) => setImmediate(() => resolve("independent frame")));
+      expect(frame).toBe("independent frame");
+      expect(execFileSync).not.toHaveBeenCalled();
+      expect(spawnSync).not.toHaveBeenCalled();
+      expect(execFile).toHaveBeenCalledExactlyOnceWith(git, ["--no-lazy-fetch", "--version"], expect.anything(), expect.any(Function));
+      finishProbe?.();
+      await expect(first).resolves.toMatchObject({ text: expect.stringContaining("src rule") });
+      await expect(second).resolves.toMatchObject({ text: expect.stringContaining("src rule") });
+      expect(vi.mocked(execFile).mock.calls.filter(([, args]) => Array.isArray(args) && args.includes("check-ignore"))).toHaveLength(2);
+    } finally {
+      finishProbe?.();
+      await Promise.allSettled(pending);
+      vi.mocked(execFile).mockReset();
+      vi.mocked(execFileSync).mockReset();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("frames the file as project-provided and attaches it only once", async () => {
     const attached = new Map<string, number>();
-    const result = attach(attached);
+    const result = await attach(attached);
     expect(result?.text).toContain('trust="project-provided"');
     expect(result?.text).toContain("src rule");
     expect(result?.attached).toEqual([{ source: join("src", "AGENTS.md"), bytes: Buffer.byteLength(result!.text, "utf-8") }]);
-    expect(attach(attached)).toBeUndefined();
+    expect(await attach(attached)).toBeUndefined();
   });
 
-  it("attaches nothing for failed calls, non-builtin tools, inputs without a path, or stubbed results", () => {
-    expect(attach(new Map(), { isError: true })).toBeUndefined();
-    expect(attach(new Map(), { source: "mcp" })).toBeUndefined();
-    expect(attach(new Map(), { toolInput: { command: "ls src" } })).toBeUndefined();
-    expect(attach(new Map(), { projectRoot: undefined })).toBeUndefined();
-    expect(attach(new Map(), { stubbedOnWire: true })).toBeUndefined();
+  it("attaches nothing for failed calls, non-builtin tools, inputs without a path, or stubbed results", async () => {
+    expect(await attach(new Map(), { isError: true })).toBeUndefined();
+    expect(await attach(new Map(), { source: "mcp" })).toBeUndefined();
+    expect(await attach(new Map(), { toolInput: { command: "ls src" } })).toBeUndefined();
+    expect(await attach(new Map(), { projectRoot: undefined })).toBeUndefined();
+    expect(await attach(new Map(), { stubbedOnWire: true })).toBeUndefined();
   });
 });
 
 describe("directory instructions and compaction", () => {
-  it("counts a file as attached only while a row carrying it reaches the provider", () => {
-    const first = attach(new Map())!;
+  it("counts a file as attached only while a row carrying it reaches the provider", async () => {
+    const first = (await attach(new Map()))!;
     const row = toolResultRow(first);
-    expect(attach(liveDirectoryInstructions([row]))).toBeUndefined();
+    expect(await attach(liveDirectoryInstructions([row]))).toBeUndefined();
 
     const stubbed = toolResultRow(first, { compactedAt: new Date().toISOString() });
     expect(liveDirectoryInstructions([stubbed]).size).toBe(0);
-    expect(attach(liveDirectoryInstructions([stubbed]))?.text).toContain("src rule");
+    expect((await attach(liveDirectoryInstructions([stubbed])))?.text).toContain("src rule");
 
-    expect(attach(liveDirectoryInstructions([]))?.text).toContain("src rule");
+    expect((await attach(liveDirectoryInstructions([])))?.text).toContain("src rule");
   });
 });
 
@@ -156,10 +207,10 @@ describe("directory instructions in the query loop", () => {
 });
 
 describe("directory instruction budgets", () => {
-  it("cuts a long file so the whole tool result stays under the per-result cap", () => {
+  it("cuts a long file so the whole tool result stays under the per-result cap", async () => {
     const lines = Array.from({ length: 150 }, (_, index) => `rule line ${index}: ${"x".repeat(80)}`);
     writeFileSync(join(project, "src", "AGENTS.md"), lines.join("\n"));
-    const result = attach(new Map())!;
+    const result = (await attach(new Map()))!;
     expect(result.text).toContain("rule line 0");
     expect(result.text).not.toContain("rule line 149");
     expect(result.text).toContain(join("src", "AGENTS.md"));
@@ -167,20 +218,20 @@ describe("directory instruction budgets", () => {
     expect(stored.meta.truncated).toBeUndefined();
   });
 
-  it("waits for a later touch when the tool output already fills the result budget", () => {
+  it("waits for a later touch when the tool output already fills the result budget", async () => {
     const attached = new Map<string, number>();
     const fullOutput = "x".repeat(MAX_TOOL_RESULT_TOKENS * 4);
-    expect(attach(attached, { toolResultContent: fullOutput })).toBeUndefined();
+    expect(await attach(attached, { toolResultContent: fullOutput })).toBeUndefined();
     expect(attached.size).toBe(0);
-    expect(attach(attached)?.text).toContain("src rule");
+    expect((await attach(attached))?.text).toContain("src rule");
   });
 
-  it("stops attaching once the live blocks reach the session cap", () => {
+  it("stops attaching once the live blocks reach the session cap", async () => {
     const full = new Map([["other/AGENTS.md", DIRECTORY_INSTRUCTIONS_SESSION_MAX_BYTES]]);
-    expect(attach(full)).toBeUndefined();
+    expect(await attach(full)).toBeUndefined();
     const almost = new Map([["other/AGENTS.md", DIRECTORY_INSTRUCTIONS_SESSION_MAX_BYTES - 10]]);
-    expect(attach(almost)).toBeUndefined();
-    expect(attach(new Map())?.text).toContain("src rule");
+    expect(await attach(almost)).toBeUndefined();
+    expect((await attach(new Map()))?.text).toContain("src rule");
   });
 });
 

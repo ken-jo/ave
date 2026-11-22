@@ -456,6 +456,14 @@ export function resolveHostGit(policy: "verified" | { packaged: boolean }): Host
     return candidates === undefined ? null : resolveVerifiedExecutable(candidates)?.executable ?? null;
   }
   const { git } = discoverHostGitSync(installerGitRoot(policy.packaged));
+  return gitLaunch(git);
+}
+
+function gitLaunch(git: DiscoveredGit | null): HostGitLaunch | null {
   if (!git) return null;
   return { path: git.path, options: git.installer ? git.options : { env: systemGitEnvironment() } };
+}
+
+export function withHostGitLaunch<T>(packaged: boolean, use: (git: HostGitLaunch | null) => Promise<T>): Promise<T> {
+  return withHostGitRecovery(installerGitRoot(packaged), ({ git }) => use(gitLaunch(git)));
 }

@@ -1,6 +1,6 @@
 /** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { type ExecFileException, execFileSync, type ExecFileOptions } from "node:child_process";
 
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
@@ -16,34 +16,45 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execFileSync: ((file: string, args: readonly string[], options: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
-      if (file === gitCalls.versionFixture && args.includes("--version")) return "git version 2.56.0";
+    execFile: ((file: string, args: readonly string[], options: ExecFileOptions,
+      callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
+    ) => {
+      if (file === gitCalls.versionFixture && args.includes("--version")) {
+        callback(null, "git version 2.56.0", "");
+        return {};
+      }
       if (args.includes("check-ignore")) {
         gitCalls.checkIgnore.push(file);
         gitCalls.lastEnv = options.env;
-        gitCalls.lastCwd = options.cwd;
-        if (gitCalls.intercept) return gitCalls.intercept(args);
-        if (gitCalls.ignoreFixture?.path === file) {
-          const path = args.at(-1)?.replaceAll("\\", "/") ?? "";
-          if (gitCalls.ignoreFixture.patterns.some((pattern) => pattern.endsWith("/") ? path.startsWith(pattern) : path === pattern)) {
-            return Buffer.alloc(0);
+        gitCalls.lastCwd = options.cwd?.toString();
+        if (gitCalls.intercept || gitCalls.ignoreFixture?.path === file) {
+          try {
+            if (gitCalls.intercept) gitCalls.intercept(args);
+            else {
+              const target = args.at(-1)?.replaceAll("\\", "/") ?? "";
+              const ignored = gitCalls.ignoreFixture?.patterns.some((pattern) => pattern.endsWith("/") ? target.startsWith(pattern) : target === pattern);
+              if (!ignored) throw Object.assign(new Error("not ignored"), { code: 1 });
+            }
+            callback(null, "", "");
+          } catch (error) {
+            callback(error as ExecFileException, "", "");
           }
-          throw Object.assign(new Error("not ignored"), { status: 1 });
+          return {};
         }
         options = { ...options, env: { ...options.env, ...FIXTURE_GIT_CONFIG, ...gitCalls.traceEnv } };
       }
-      return actual.execFileSync(file, args, options);
-    }) as typeof actual.execFileSync,
+      return actual.execFile(file, args, options, callback);
+    }) as typeof actual.execFile,
   };
 });
 vi.mock("../../shared/host-git-executable.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/host-git-executable.js")>();
   return {
     ...actual,
-    resolveHostGit: (policy: { packaged: boolean }) => {
+    withHostGitLaunch: ((packaged, use) => {
       const path = gitCalls.explicitFixture ?? gitCalls.ignoreFixture?.path;
-      return path ? { path, options: { env: { GIT_ALLOW_PROTOCOL: "" } } } : actual.resolveHostGit(policy);
-    },
+      return path ? use({ path, options: { env: { GIT_ALLOW_PROTOCOL: "" } } }) : actual.withHostGitLaunch(packaged, use);
+    }) as typeof actual.withHostGitLaunch,
   };
 });
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
@@ -100,7 +111,7 @@ it("uses an absolute host Git path even with an executable in the project and re
     gitCalls.intercept = () => Buffer.alloc(0);
     const before = gitCalls.checkIgnore.length;
     const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
-    expect(discover(project, join("build", "x.js"), new Set())).toEqual([]);
+    expect(await discover(project, join("build", "x.js"), new Set())).toEqual([]);
     expect(gitCalls.checkIgnore.slice(before)).toEqual([join(host, binary)]);
   } finally {
     gitCalls.versionFixture = undefined;
@@ -133,7 +144,7 @@ it.each([
     const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
     const before = gitCalls.checkIgnore.length;
 
-    discover(project, join("build", "file.ts"), new Set());
+    await discover(project, join("build", "file.ts"), new Set());
     expect(gitCalls.checkIgnore.slice(before)).toEqual([expected]);
     expect(spawn).toHaveBeenCalledExactlyOnceWith(expected, ["--no-lazy-fetch", "--version"], expect.anything());
   } finally {
@@ -177,7 +188,7 @@ it("keeps the ignore query local when a skip-worktree ignore blob is missing", a
     gitCalls.explicitFixture = fixture.path;
     const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
     const before = gitCalls.checkIgnore.length;
-    const layers = discover(project, join("build", "x.js"), new Set());
+    const layers = await discover(project, join("build", "x.js"), new Set());
     expect(gitCalls.checkIgnore.slice(before)).toEqual([fixture.path]);
     const events = readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ event: "cmd_name", name: "check-ignore" })]));
@@ -188,6 +199,42 @@ it("keeps the ignore query local when a skip-worktree ignore blob is missing", a
     gitCalls.explicitFixture = undefined;
     gitCalls.traceEnv = undefined;
     await cleanupTmpDir(root);
+  }
+});
+
+it("rediscovers when the cached Git cannot launch check-ignore", async () => {
+  const project = mkdtempSync(join(tmpdir(), "ave-ignore-git-launch-"));
+  const dirs = ["first", "second"].map((name) => join(project, name));
+  const candidates = dirs.map((dir) => join(dir, process.platform === "win32" ? "git.exe" : "git"));
+  const [first, second] = candidates as [string, string];
+  try {
+    mkdirSync(join(project, ".git"));
+    mkdirSync(join(project, "build"));
+    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+    for (const [index, dir] of dirs.entries()) {
+      mkdirSync(dir);
+      writeFileSync(candidates[index]!, "fixture executable", { mode: 0o755 });
+    }
+    vi.stubEnv("PATH", dirs.join(delimiter));
+    vi.resetModules();
+    const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
+    gitCalls.versionFixture = first;
+    gitCalls.intercept = () => Buffer.alloc(0);
+    await expect(discover(project, join("build", "file.ts"), new Set())).resolves.toEqual([]);
+
+    const before = gitCalls.checkIgnore.length;
+    gitCalls.versionFixture = second;
+    gitCalls.intercept = () => {
+      if (gitCalls.checkIgnore.at(-1) === first) throw Object.assign(new Error("cannot launch"), { code: "ENOENT", path: first });
+      return Buffer.alloc(0);
+    };
+    await expect(discover(project, join("build", "file.ts"), new Set())).resolves.toEqual([]);
+    expect(gitCalls.checkIgnore.slice(before)).toEqual([first, second]);
+  } finally {
+    gitCalls.versionFixture = undefined;
+    gitCalls.intercept = undefined;
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(project);
   }
 });
 
@@ -205,12 +252,12 @@ it("strips inherited Git variables case-insensitively on Windows", async () => {
     vi.resetModules();
     const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
     gitCalls.intercept = () => Buffer.alloc(0);
-    discover(project, join("build", "x.js"), new Set());
+    await discover(project, join("build", "x.js"), new Set());
     setProcessPlatform("win32");
     vi.stubEnv("Git_ExeC_PatH", join(project, "helper"));
     vi.stubEnv("GIT_DIR", join(project, "elsewhere"));
     gitCalls.lastEnv = undefined;
-    discover(project, join("build", "x.js"), new Set());
+    await discover(project, join("build", "x.js"), new Set());
     expect(gitCalls.lastEnv).toBeDefined();
     expect(gitCalls.lastEnv).not.toHaveProperty("Git_ExeC_PatH");
     expect(gitCalls.lastEnv).not.toHaveProperty("GIT_DIR");
@@ -512,50 +559,50 @@ describe("discoverDirectoryInstructions", () => {
     await cleanupTmpDir(project);
   });
 
-  it("returns the files between the project root and the touched path, root-first", () => {
-    const layers = discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
+  it("returns the files between the project root and the touched path, root-first", async () => {
+    const layers = await discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
     expect(layers.map((layer) => layer.content)).toEqual(["src rule", "api rule"]);
   });
 
-  it("skips files already attached and never repeats the launch layer", () => {
+  it("skips files already attached and never repeats the launch layer", async () => {
     const attached = new Set([join("src", "AGENTS.md")]);
-    const layers = discoverDirectoryInstructions(project, join(project, "src", "api"), attached);
+    const layers = await discoverDirectoryInstructions(project, join(project, "src", "api"), attached);
     expect(layers.map((layer) => layer.relativePath)).toEqual([join("src", "api", "CLAUDE.md")]);
-    expect(discoverDirectoryInstructions(project, "README.md", new Set())).toEqual([]);
+    expect(await discoverDirectoryInstructions(project, "README.md", new Set())).toEqual([]);
   });
 
-  it("ignores paths outside the project root", () => {
-    expect(discoverDirectoryInstructions(project, join(tmpdir(), "elsewhere", "x.ts"), new Set())).toEqual([]);
-    expect(discoverDirectoryInstructions(project, "../outside.ts", new Set())).toEqual([]);
+  it("ignores paths outside the project root", async () => {
+    expect(await discoverDirectoryInstructions(project, join(tmpdir(), "elsewhere", "x.ts"), new Set())).toEqual([]);
+    expect(await discoverDirectoryInstructions(project, "../outside.ts", new Set())).toEqual([]);
   });
 
-  it("stops at node_modules", () => {
+  it("stops at node_modules", async () => {
     mkdirSync(join(project, "src", "node_modules", "dep"), { recursive: true });
     writeFileSync(join(project, "src", "node_modules", "AGENTS.md"), "node_modules rule");
     writeFileSync(join(project, "src", "node_modules", "dep", "AGENTS.md"), "dependency rule");
-    const layers = discoverDirectoryInstructions(project, join("src", "node_modules", "dep", "index.js"), new Set());
+    const layers = await discoverDirectoryInstructions(project, join("src", "node_modules", "dep", "index.js"), new Set());
     expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
   });
 
-  it("stops at a nested repository whose .git is a directory", () => {
+  it("stops at a nested repository whose .git is a directory", async () => {
     mkdirSync(join(project, "src", "vendor", "clone", ".git"), { recursive: true });
     mkdirSync(join(project, "src", "vendor", "clone", "lib"), { recursive: true });
     writeFileSync(join(project, "src", "vendor", "AGENTS.md"), "vendor dir rule");
     writeFileSync(join(project, "src", "vendor", "clone", "AGENTS.md"), "third-party rule");
     writeFileSync(join(project, "src", "vendor", "clone", "lib", "AGENTS.md"), "third-party lib rule");
-    const layers = discoverDirectoryInstructions(project, join("src", "vendor", "clone", "lib", "x.ts"), new Set());
+    const layers = await discoverDirectoryInstructions(project, join("src", "vendor", "clone", "lib", "x.ts"), new Set());
     expect(layers.map((layer) => layer.content)).toEqual(["src rule", "vendor dir rule"]);
   });
 
-  it("stops at a submodule whose .git is a file", () => {
+  it("stops at a submodule whose .git is a file", async () => {
     mkdirSync(join(project, "src", "sub"), { recursive: true });
     writeFileSync(join(project, "src", "sub", ".git"), "gitdir: ../../.git/modules/sub");
     writeFileSync(join(project, "src", "sub", "AGENTS.md"), "submodule rule");
-    const layers = discoverDirectoryInstructions(project, join("src", "sub", "file.ts"), new Set());
+    const layers = await discoverDirectoryInstructions(project, join("src", "sub", "file.ts"), new Set());
     expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
   });
 
-  it("uses a deterministic ignore fixture even when PATH starts with unusable Git", () => {
+  it("uses a deterministic ignore fixture even when PATH starts with unusable Git", async () => {
     const before = gitCalls.checkIgnore.length;
     const other = join(project, "other-bin");
     mkdirSync(other);
@@ -564,25 +611,25 @@ describe("discoverDirectoryInstructions", () => {
     try {
       initIgnoredBuild(project, "build/\nsrc/api/CLAUDE.md\n", "nested");
       writeFileSync(join(project, "build", "out", "AGENTS.md"), "generated nested rule");
-      expect(discoverDirectoryInstructions(project, join("build", "out", "x.js"), new Set())).toEqual([]);
-      const layers = discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
+      expect(await discoverDirectoryInstructions(project, join("build", "out", "x.js"), new Set())).toEqual([]);
+      const layers = await discoverDirectoryInstructions(project, join("src", "api", "handler.ts"), new Set());
       expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
       expect(new Set(gitCalls.checkIgnore.slice(before))).toEqual(new Set([join(project, "fixture-git")]));
     } finally {
       vi.unstubAllEnvs();
     }
   });
-  it("asks git once per path for the session's repeated touches", () => {
+  it("asks git once per path for the session's repeated touches", async () => {
     initIgnoredBuild(project, "build/\n", "recursive");
     const verdicts = new Map<string, boolean>();
     const before = gitCalls.checkIgnore.length;
     for (let touch = 0; touch < 3; touch++) {
-      expect(discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
+      expect(await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
     }
     expect(gitCalls.checkIgnore.length - before).toBe(1);
     // A new session starts with an empty memo and asks again.
     verdicts.clear();
-    discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
+    await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
     expect(gitCalls.checkIgnore.length - before).toBe(2);
   });
 
@@ -592,19 +639,19 @@ describe("discoverDirectoryInstructions", () => {
     writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
     const resolve = vi.fn().mockReturnValue(null);
     vi.resetModules();
-    vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: resolve }));
+    vi.doMock("../../shared/host-git-executable.js", () => ({ withHostGitLaunch: (_packaged: boolean, use: (git: unknown) => unknown) => use(resolve()) }));
     try {
       const before = gitCalls.checkIgnore.length;
       const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
       const opts = { gitIgnoreVerdicts: new Map<string, boolean>() };
-      const layers = discover(project, join("build", "x.js"), new Set(), opts);
+      const layers = await discover(project, join("build", "x.js"), new Set(), opts);
       expect(layers.map((layer) => layer.content)).toEqual(["generated rule"]);
       expect(gitCalls.checkIgnore).toHaveLength(before);
       const fixtureGit = join(project, "fixture-git");
       const options = { cwd: join(project, "installer"), env: { GIT_ALLOW_PROTOCOL: "" } };
       resolve.mockReturnValue({ path: fixtureGit, options });
       gitCalls.intercept = () => Buffer.alloc(0);
-      expect(discover(project, join("build", "x.js"), new Set(), opts)).toEqual([]);
+      expect(await discover(project, join("build", "x.js"), new Set(), opts)).toEqual([]);
       expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit]);
       expect(gitCalls.lastEnv).toBe(options.env);
       expect(gitCalls.lastCwd).toBe(options.cwd);
@@ -620,23 +667,23 @@ describe("discoverDirectoryInstructions", () => {
     const fixtureGit = join(project, "fixture-git");
     const resolve = () => ({ path: fixtureGit, options: { env: {} } });
     const unsupported = vi.fn(() => {
-      throw Object.assign(new Error("Git query failed"), { status });
+      throw Object.assign(new Error("Git query failed"), { code: status });
     });
     vi.resetModules();
-    vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: resolve }));
+    vi.doMock("../../shared/host-git-executable.js", () => ({ withHostGitLaunch: (_packaged: boolean, use: (git: unknown) => unknown) => use(resolve()) }));
     gitCalls.intercept = unsupported;
     try {
       const before = gitCalls.checkIgnore.length;
       const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
       const verdicts = new Map<string, boolean>();
       const opts = { gitIgnoreVerdicts: verdicts };
-      const layers = discover(project, join("src", "handler.ts"), new Set(), opts);
+      const layers = await discover(project, join("src", "handler.ts"), new Set(), opts);
       expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit]);
       expect(unsupported).toHaveBeenCalledWith(expect.arrayContaining(["--no-lazy-fetch", "check-ignore"]));
       expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
       expect.soft(verdicts.size).toBe(0);
-      gitCalls.intercept = () => { throw Object.assign(new Error("not ignored"), { status: 1 }); };
-      expect(discover(project, join("src", "handler.ts"), new Set(), opts)).toEqual(layers);
+      gitCalls.intercept = () => { throw Object.assign(new Error("not ignored"), { code: 1 }); };
+      expect(await discover(project, join("src", "handler.ts"), new Set(), opts)).toEqual(layers);
       expect([...verdicts.values()]).toEqual([false]);
       expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit, fixtureGit]);
     } finally {
@@ -646,20 +693,20 @@ describe("discoverDirectoryInstructions", () => {
     }
   });
 
-  it("defers workspace Git queries until sandbox cleanup releases the hold without caching the temporary answer", () => {
+  it("defers workspace Git queries until sandbox cleanup releases the hold without caching the temporary answer", async () => {
     initIgnoredBuild(project, "build/\n", "plain");
     const verdicts = new Map<string, boolean>();
     const before = gitCalls.checkIgnore.length;
     const release = holdSandboxGitWrites([join(project, "build")]);
     try {
-      const deferred = discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
+      const deferred = await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
       expect(deferred.map((layer) => layer.content)).toEqual(["generated rule"]);
       expect(gitCalls.checkIgnore).toHaveLength(before);
       expect(verdicts.size).toBe(0);
     } finally {
       release();
     }
-    expect(discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
+    expect(await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
     expect(gitCalls.checkIgnore.length - before).toBe(1);
     expect([...verdicts.values()]).toEqual([true]);
   });

@@ -1546,7 +1546,7 @@ export async function queryLoop(
       });
       const appendedToolResultIds = new Set<string>();
       const attachedDirectoryInstructions = liveDirectoryInstructions(self.history.getMessages());
-      const appendToolResult = (tr: ToolResult): void => {
+      const appendToolResult = async (tr: ToolResult): Promise<void> => {
         if (appendedToolResultIds.has(tr.tool_use_id)) return;
         const resultMeta = toolResultMeta(
           tr,
@@ -1554,7 +1554,7 @@ export async function queryLoop(
           permissionReviewByUseId.get(tr.tool_use_id),
         );
         const toolUse = toolUsesForExecutor.find((tu) => tu.id === tr.tool_use_id);
-        const directoryInstructions = directoryInstructionsForToolResult({
+        const directoryInstructions = await directoryInstructionsForToolResult({
           projectRoot: self.getSessionProjectContext().projectRoot,
           source: toolMetaByUseId.get(tr.tool_use_id)?.source,
           toolInput: toolUse?.input,
@@ -1578,9 +1578,11 @@ export async function queryLoop(
         });
         appendedToolResultIds.add(tr.tool_use_id);
       };
+      let pendingToolResult = Promise.resolve();
       const executeOptions = {
           onToolResult: async (result) => {
-            appendToolResult(result);
+            pendingToolResult = pendingToolResult.then(() => appendToolResult(result));
+            await pendingToolResult;
             await self.activeTurnJournal?.settled();
           },
           callbacks: {
@@ -1889,7 +1891,8 @@ export async function queryLoop(
       toolErrorsRun += toolResults.filter((tr) => tr.is_error === true).length;
 
       // Synthetic terminal results have no invocation callback; completed calls are already stored.
-      for (const result of toolResults) appendToolResult(result);
+      await pendingToolResult;
+      for (const result of toolResults) await appendToolResult(result);
       if (abortSignal?.aborted) {
         log.info(
           `queryLoop: EARLY-EXIT(tool-abort) — round=${roundIndex} toolResults=${toolResults.length}`,

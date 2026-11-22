@@ -1,14 +1,14 @@
 /** Load root-first project instructions below personal guidance, stopping repository discovery at home and first-touch discovery at nested repos or dependencies.
  * Each directory prefers nonempty AGENTS.md over CLAUDE.md; imports are depth-limited, unique, repository-contained, and sensitive-path checked.
  * Ignore import syntax inside code and clamp the shared byte budget root-first. */
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { isSensitivePath } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { buildHostGitArgs, isHostGitWorkspaceAvailable } from "../shared/host-git.js";
-import { resolveHostGit } from "../shared/host-git-executable.js";
+import { withHostGitLaunch } from "../shared/host-git-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 interface ProjectAgentsMdLayer {
@@ -227,51 +227,51 @@ export function discoverProjectAgentsMd(
 /** Session-scoped memo of git's ignore verdicts, keyed by repository root and path. The owner (the conversation loop) clears it on a session switch. */
 export type GitIgnoreVerdicts = Map<string, boolean>;
 
-/** Whether git reports `path` as ignored in the repository at `repoRoot`, asked once per `verdicts` lifetime. The query is synchronous because
- * its caller appends to a tool result in the same pass; the memo keeps repeated touches of an ignored directory from spawning git each time. */
-function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): boolean {
+// Keep only definitive ignore verdicts for the session.
+async function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): Promise<boolean> {
   // An unsettled sandbox write is temporary, so do not cache its conservative answer.
   if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   const key = `${repoRoot}\0${path}`;
   const known = verdicts?.get(key);
   if (known !== undefined) return known;
-  const verdict = askGitIgnores(repoRoot, path);
+  const verdict = await askGitIgnores(repoRoot, path);
   if (verdict !== undefined) verdicts?.set(key, verdict);
   return verdict ?? false;
 }
 
 /** Whether git reports `path` as ignored in the repository at `repoRoot`. A tracked file is never reported. Any failure to ask
  * reads as "not ignored". A missing executable is not a verdict, so the session can pick up a new Git installation. */
-function askGitIgnores(repoRoot: string, path: string): boolean | undefined {
-  if (!isHostGitWorkspaceAvailable(repoRoot)) return undefined;
-  if (!hasGitEntry(repoRoot)) return undefined;
-  const git = resolveHostGit({ packaged: isConfigured() ? getIsPackaged() : isPackagedElectronProcess() });
-  if (git === null) return undefined;
+async function askGitIgnores(repoRoot: string, path: string): Promise<boolean | undefined> {
+  if (!isHostGitWorkspaceAvailable(repoRoot) || !hasGitEntry(repoRoot)) return undefined;
+  const packaged = isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
+  // Older Git must refuse the option before it can read a missing object.
+  const args = buildHostGitArgs(["--no-lazy-fetch", "-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
+    configArgs: ["-c", "protocol.allow=never"],
+  });
   try {
-    // Older Git must refuse the option before it can read a missing object.
-    const args = buildHostGitArgs(["--no-lazy-fetch", "-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
-      configArgs: ["-c", "protocol.allow=never"],
+    return await withHostGitLaunch(packaged, async (git) => {
+      if (!git || !isHostGitWorkspaceAvailable(repoRoot)) return undefined;
+      return new Promise<boolean>((resolve, reject) => {
+        execFile(git.path, args, { ...git.options, windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs }, (error) => {
+          if (!error) resolve(true);
+          else if (error.code === 1) resolve(false);
+          else reject(error);
+        }).stdin?.end();
+      });
     });
-    execFileSync(git.path, args, {
-      ...git.options,
-      windowsHide: true,
-      stdio: "ignore",
-      timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs,
-    });
-    return true; // exit 0: ignored
-  } catch (error) {
-    return (error as { status?: number }).status === 1 ? false : undefined;
+  } catch {
+    return undefined;
   }
 }
 
 /** Instruction files for directories BELOW `projectRoot` on the way to `targetPath` (a file or directory the agent touched; relative paths resolve against the project root), root-first, skipping any whose `relativePath` is already in `attached`. Each layer is capped at the project
  * budget. A target outside the project root, or the root itself, yields nothing. The descent stops at the first directory that is `node_modules` or holds `.git` (a nested repository or submodule): instruction files from there down belong to another project. A file git ignores is skipped. */
-export function discoverDirectoryInstructions(
+export async function discoverDirectoryInstructions(
   projectRoot: string,
   targetPath: string,
   attached: { has(relativePath: string): boolean },
   opts: { homeDir?: string; gitIgnoreVerdicts?: GitIgnoreVerdicts } = {},
-): ProjectAgentsMdLayer[] {
+): Promise<ProjectAgentsMdLayer[]> {
   const canonicalProject = canonical(resolve(projectRoot));
   if (!canonicalProject) return [];
   const absolute = resolve(canonicalProject, targetPath);
@@ -291,7 +291,7 @@ export function discoverDirectoryInstructions(
     if (basename(dir) === "node_modules" || hasGitEntry(dir)) break;
     const layer = directoryLayer(top, dir, new Set(), new Set());
     if (!layer || attached.has(layer.relativePath)) continue;
-    if (gitIgnores(top, join(top, layer.relativePath), opts.gitIgnoreVerdicts)) continue;
+    if (await gitIgnores(top, join(top, layer.relativePath), opts.gitIgnoreVerdicts)) continue;
     const truncated = Buffer.byteLength(layer.content, "utf-8") > PROJECT_AGENTS_MD_MAX_TOTAL_BYTES;
     layers.push({
       relativePath: layer.relativePath,
