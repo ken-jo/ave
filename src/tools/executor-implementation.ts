@@ -626,8 +626,9 @@ export class ToolExecutor {
     rationaleResumeContext?: RationaleResumeExecutionContext,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
     const admission = admitToolInvocation(toolUse.name, opts.abortSignal);
+    let result: Awaited<ReturnType<typeof runToolInvocation>>;
     try {
-      const result = await runToolInvocation(
+      result = await runToolInvocation(
         {
           executeReplay: (replay, replayOpts) => this.executeOne(replay, randomUUID(), 0, replayOpts),
           toolRegistry: this.toolRegistry,
@@ -655,11 +656,12 @@ export class ToolExecutor {
         rationaleBatchContext,
         rationaleResumeContext,
       );
-      if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result);
-      return result;
     } finally {
+      // Its audit rows are written; the result callback only waits on the turn journal and must not hold the quit join.
       admission.settle();
     }
+    if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result);
+    return result;
   }
 
 

@@ -2303,6 +2303,35 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     // Stopping a turn must produce cancellation text rather than attributing a refusal to the user.
     expect(results[0].content).toContain("취소");
   });
+
+  it("releases the invocation admission before the result callback waits on the turn journal", async () => {
+    const { pendingToolInvocationCount } = await import("../invocation-ledger.js");
+    const before = pendingToolInvocationCount();
+    const registry = new ToolRegistry();
+    registry.register(makeGenericTool("tool_result_probe", vi.fn(async () => "done")));
+    const permMgr = fixtureManager();
+    permMgr.checkDetailed = () => ({ decision: "allow", reason: "result callback probe" });
+    const executor = new ToolExecutor(registry, undefined, permMgr);
+    let delivered!: () => void;
+    const resultDelivered = new Promise<void>((resolve) => { delivered = resolve; });
+    let releaseJournal!: () => void;
+    const journal = new Promise<void>((resolve) => { releaseJournal = resolve; });
+    const running = executor.executeAll(
+      [{ id: "tu-result-probe", name: "tool_result_probe", input: { value: "a" } }],
+      {
+        sessionId: "sess-result-probe",
+        permissionContext: userPermissionContext(),
+        onToolResult: async () => { delivered(); await journal; },
+      },
+    );
+    await resultDelivered;
+    try {
+      expect(pendingToolInvocationCount()).toBe(before);
+    } finally {
+      releaseJournal();
+    }
+    expect((await running)[0].is_error).toBeFalsy();
+  });
 });
 
 describe("ToolExecutor — C1 ask_user_question short-circuit", () => {
