@@ -133,7 +133,8 @@ export function openPluginChildInput(
     if ("frames" in message) {
       const listeners = observers.data.slice();
       for (let index = 0; index < message.frames.length; index += 1) {
-        receive?.(message.frames[index]!);
+        const frame = message.frames[index];
+        if (frame !== undefined) receive?.(frame);
       }
       acknowledgeBytes(queuedBytes, 0, message.observation.byteLength);
       if (receive) sendCredit(message.credit);
