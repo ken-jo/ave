@@ -297,7 +297,9 @@ describe("folder stage workspaces", () => {
     };
     for (const [path, text] of Object.entries(files)) { write(project, path, text); write(twin, path, text); }
     execFileSync("git", ["init", "-q", "--template="], { cwd: twin, env });
-    const unignored = execFileSync("git", ["-c", "core.excludesFile=", "ls-files", "-z", "--others", "--exclude-standard"], { cwd: twin, env, encoding: "utf8" }).split("\0").filter(Boolean).sort();
+    // Nothing is committed there, so every file git does not ignore is listed as untracked.
+    const status = execFileSync("git", ["-c", "core.excludesFile=", "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: twin, env, encoding: "utf8" });
+    const unignored = status.split("\0").filter(Boolean).map((entry) => { expect(entry.slice(0, 3)).toBe("?? "); return entry.slice(3); }).sort();
     // The fixture does exercise both: a negation that takes effect, one under an excluded folder that cannot, and rules that prune folders.
     expect(unignored).toEqual(expect.arrayContaining(["keep.log", "docs/important.log", "docs/draft-keep.md", "src/top.txt", "docs/x/guide.md"]));
     for (const path of ["a.log", "top.txt", "build/out.js", "src/build/out.js", "deep/a/cache/kept.txt", "deep/a/b/cache/x.bin", "docs/sub/readme.md", "docs/x/y/draft-2.md", "docs/guide.md"]) expect(unignored, path).not.toContain(path);
