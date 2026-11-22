@@ -5,7 +5,7 @@ import { connect, createServer, type Server } from 'node:net';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { protectAveHomeFixture, useVerifiedAveHomePrivacy } from '../../../__tests__/support/ave-home-privacy.js';
+import { protectAveHomeFixture, useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from '../../../__tests__/support/ave-home-privacy.js';
 import { configureHostResources } from '../../host-resources.js';
 import { initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, resetAsrtSandbox } from '../../../permissions/asrt-sandbox.js';
 import type { ApprovalDecision, ApprovalRequestInput } from '../../../permissions/approval-gate.js';
@@ -29,7 +29,7 @@ vi.mock('node:os', async importOriginal => {
   return { ...original, userInfo: vi.fn(original.userInfo) };
 });
 
-useVerifiedAveHomePrivacy();
+installVerifiedAveHomePrivacy();
 
 const WRAP_PLATFORM = process.platform === 'darwin' || process.platform === 'linux' || process.platform === 'win32';
 const PROBE_SOURCE = fileURLToPath(new URL('./fixtures/inference-probe-child.ts', import.meta.url));

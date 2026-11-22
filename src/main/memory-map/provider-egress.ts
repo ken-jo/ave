@@ -1,10 +1,12 @@
 import { validateHttpUrl } from "../../core/network-guard.js";
 import { isLoopbackHost } from "../host-allow-list.js";
-import { evaluateHostFetch, runHostFetchHops, type HostFetchDenyReason } from "../host-fetch-guard.js";
+import { evaluateHostFetch, runHostFetchHops } from "../host-fetch-guard.js";
 import { MemoryMapHostError } from "./errors.js";
 
+type ProviderEgressDenyReason = Parameters<NonNullable<Parameters<typeof runHostFetchHops>[0]['auditDeny']>>[0];
+
 type ProviderEgressAudit =
-  | { allowed: false; reason: HostFetchDenyReason | "redirect-cap" }
+  | { allowed: false; reason: ProviderEgressDenyReason }
   | { allowed: true; origin: string; method: string };
 export interface ProviderEgress {
   isRouteEligible: (baseUrl: string | undefined) => boolean;
@@ -17,7 +19,7 @@ export function createMemoryProviderEgress(
   audit: (entry: ProviderEgressAudit) => void,
 ): ProviderEgress {
   const caller = "memory-embeddings";
-  const eligibilityDenial = (rawUrl: string | undefined): HostFetchDenyReason | undefined => {
+  const eligibilityDenial = (rawUrl: string | undefined): ProviderEgressDenyReason | undefined => {
     let url: URL;
     try {
       url = validateHttpUrl(rawUrl ?? "");

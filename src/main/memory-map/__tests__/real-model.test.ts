@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,7 +7,9 @@ import { verifyModelFolder } from '../model-manager.js';
 import { cosine } from '../graph.js';
 describe('local embedding model qualification', () => {
   it.skipIf(!process.env.AVE_E5_MODEL_DIR)('embeds multilingual paraphrases closer than unrelated text', async () => {
-    const folder = await verifyModelFolder(process.env.AVE_E5_MODEL_DIR!);
+    const modelDir = process.env.AVE_E5_MODEL_DIR;
+    assert.ok(modelDir);
+    const folder = await verifyModelFolder(modelDir);
     const read = (name: string) => readFile(join(folder, name));
     const embedder = await createLocalEmbedder({ model: await read('model_qint8_avx512_vnni.onnx'), tokenizer: await read('tokenizer.json'), tokenizerConfig: await read('tokenizer_config.json') });
     try {

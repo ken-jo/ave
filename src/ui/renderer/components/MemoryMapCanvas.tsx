@@ -15,12 +15,14 @@ export function MemoryMapCanvas({ snapshot, visible, selected, matched, onSelect
   const [hover, setHover] = useState<{ title: string; x: number; y: number } | null>(null);
   const [labels, setLabels] = useState<MemoryGraphLabel[]>([]);
   useEffect(() => {
-    const graph = createMemoryGraph(container.current!, { onSelect: id => select.current(id), onHover: setHover, onLabels: setLabels, onError: () => setFailed(true) });
+    const element = container.current;
+    if (!element) return;
+    const graph = createMemoryGraph(element, { onSelect: id => select.current(id), onHover: setHover, onLabels: setLabels, onError: () => setFailed(true) });
     renderer.current = graph;
     return () => { renderer.current = null; graph.destroy(); };
   }, []);
   useEffect(() => { renderer.current?.update(snapshot, visible, selected, matched); }, [snapshot, visible, selected, matched]);
-  return <div className="absolute inset-0 overflow-hidden" role="group" aria-label={t('memoryMap.canvas')}>
+  return <section className="absolute inset-0 overflow-hidden" aria-label={t('memoryMap.canvas')}>
     <div ref={container} className="absolute inset-0" aria-hidden="true" />
     {failed ? <p role="alert" className="absolute inset-x-4 top-4 rounded-md border bg-background p-4 text-sm">{t('memoryMap.webglFailed')}</p> : <>
       {labels.map(label => <span key={label.id} className="pointer-events-none absolute max-w-40 truncate rounded bg-background/80 px-2 py-1 text-xs text-muted-foreground" style={{ left: label.x, top: label.y }}>{label.text}</span>)}
@@ -31,5 +33,5 @@ export function MemoryMapCanvas({ snapshot, visible, selected, matched, onSelect
         <Button size="sm" variant="ghost" onClick={() => renderer.current?.fit()}>{t('memoryMap.fit')}</Button>
       </div>
     </>}
-  </div>;
+  </section>;
 }

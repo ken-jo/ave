@@ -4,7 +4,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../../components/ui
 import { useTranslation } from '../../../i18n/react.js';
 import type { GraphSnapshot, MemoryFacets, MemoryMapError, MemoryMapFilters, MemoryMapProgress, MemoryMapSource } from '../../../shared/memory-map.js';
 import type { MemoryDetailResult } from '../../../shared/memory-detail.js';
-import { memoryProjectOptions, stripTopHeading } from '../hooks/use-memory-search.js';
+import { stripTopHeading } from '../hooks/use-memory-search.js';
 import { MemorySearchPanel, type MemorySearchPanelProps } from './MemorySearchPanel.js';
 import { MemoryDetailContent } from './MemoryDetailContent.js';
 import { MemoryMapCanvas } from './MemoryMapCanvas.js';
@@ -17,7 +17,10 @@ type MapState = 'loading' | 'unconfigured' | 'unavailable' | 'building' | 'faile
 export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSettings: () => void }) {
   const { api, project, onOpenSession, onOpenEmbeddingSettings } = props;
   const { t } = useTranslation();
-  const scope = useMemo(() => memoryProjectOptions(project), [project?.projectRoot, project?.projectName, project?.isDefault]);
+  const projectRoot = project?.projectRoot;
+  const projectName = project?.projectName;
+  const isDefault = project?.isDefault;
+  const scope = useMemo(() => projectRoot ? { projectRoot, projectName, includeUnscoped: isDefault === true } : undefined, [projectRoot, projectName, isDefault]);
   const [tab, setTab] = useState(props.initialQuery ? 'manage' : 'map');
   const [state, setState] = useState<MapState>('loading');
   const [snapshot, setSnapshot] = useState<GraphSnapshot | null>(null);
@@ -38,6 +41,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   const selectionReturn = useRef<HTMLElement | null>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (props.initialQuery) setTab('manage'); }, [props.initialQuery]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Memory saves invalidate the loaded graph through reload.
   useEffect(() => {
     if (previousScope.current !== scope) { hadSnapshot.current = false; previousScope.current = scope; }
     const current = ++generation.current;
@@ -96,6 +100,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   const linkCount = snapshot?.edges.filter(edge => visible.has(edge.a) && visible.has(edge.b)).length ?? 0;
   const selectedPoint = snapshot?.points.find(point => point.memoryId === selected);
   const selectedRevision = selectedPoint?.contentRevision;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new snapshot or filter set resets pagination and selection.
   useEffect(() => { setPage(0); setSelected(null); }, [filters, snapshot]);
   useEffect(() => {
     if (!selected || !selectedRevision) return;

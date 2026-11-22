@@ -50,8 +50,9 @@ export function createMemoryGraph(container: HTMLDivElement, callbacks: MemoryGr
   container.addEventListener('webglcontextlost', handleContextLoss, true);
   let graph: Graph | undefined;
   const publishLabels = () => {
-    if (!graph || !snapshot || disposed || failed || !ready) return;
-    if (graph.getZoomLevel() < fitZoom * 1.6) { callbacks.onLabels([]); return; }
+    const activeGraph = graph;
+    if (!activeGraph || !snapshot || disposed || failed || !ready) return;
+    if (activeGraph.getZoomLevel() < fitZoom * 1.6) { callbacks.onLabels([]); return; }
     const groups = new Map<string, { text: string; x: number; y: number; count: number }>();
     for (const point of snapshot.points) {
       if (!visible.has(point.memoryId) || !point.projectId || !point.projectName) continue;
@@ -59,7 +60,7 @@ export function createMemoryGraph(container: HTMLDivElement, callbacks: MemoryGr
       group.x += point.x; group.y += point.y; group.count++; groups.set(point.projectId, group);
     }
     callbacks.onLabels([...groups].map(([id, group]) => {
-      const [x, y] = graph!.spaceToScreenPosition([group.x / group.count, group.y / group.count]);
+      const [x, y] = activeGraph.spaceToScreenPosition([group.x / group.count, group.y / group.count]);
       return { id, text: group.text, x, y };
     }));
   };
@@ -71,9 +72,9 @@ export function createMemoryGraph(container: HTMLDivElement, callbacks: MemoryGr
       const indices = new Map(snapshot.points.map((point, i) => [point.memoryId, i]));
       const edges = snapshot.edges.filter(edge => visible.has(edge.a) && visible.has(edge.b));
       graph.setPointPositions(new Float32Array(snapshot.points.flatMap(point => [point.x, point.y])), true);
-      graph.setPointColors(new Float32Array(snapshot.points.flatMap(point => [...palette[point.sourceKind]!.slice(0, 3), visible.has(point.memoryId) ? 1 : 0.12])));
+      graph.setPointColors(new Float32Array(snapshot.points.flatMap(point => [...palette[point.sourceKind].slice(0, 3), visible.has(point.memoryId) ? 1 : 0.12])));
       graph.setPointSizes(new Float32Array(snapshot.points.map(point => point.memoryId === selected || matched.has(point.memoryId) ? 9 : 5)));
-      graph.setLinks(new Float32Array(edges.flatMap(edge => [indices.get(edge.a)!, indices.get(edge.b)!])));
+      graph.setLinks(new Float32Array(edges.flatMap(edge => [indices.get(edge.a) ?? NaN, indices.get(edge.b) ?? NaN])));
       const emphasized = (a: string, b: string) => [selected, hovered].some(id => id === a || id === b);
       graph.setLinkColors(new Float32Array(edges.flatMap(edge => [...lineColor.slice(0, 3), emphasized(edge.a, edge.b) ? 0.8 : 0.12])));
       graph.setLinkWidths(new Float32Array(edges.map(edge => emphasized(edge.a, edge.b) ? 1.5 : 0.5)));
@@ -91,9 +92,9 @@ export function createMemoryGraph(container: HTMLDivElement, callbacks: MemoryGr
       onPointClick: (index: number) => { const point = snapshot?.points[index]; if (point && visible.has(point.memoryId) && !failed && !disposed) callbacks.onSelect(point.memoryId); },
       onPointMouseOver: (index: number) => {
         const point = snapshot?.points[index];
-        if (!point || !visible.has(point.memoryId) || failed || disposed) return;
+        if (!graph || !point || !visible.has(point.memoryId) || failed || disposed) return;
         hovered = point.memoryId;
-        const [x, y] = graph!.spaceToScreenPosition([point.x, point.y]);
+        const [x, y] = graph.spaceToScreenPosition([point.x, point.y]);
         callbacks.onHover({ title: point.title, x, y }); paint();
       },
       onPointMouseOut: () => { if (!disposed && !failed) { hovered = null; callbacks.onHover(null); paint(); } },

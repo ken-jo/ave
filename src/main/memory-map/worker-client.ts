@@ -15,10 +15,10 @@ export const runMemoryWorker: MemoryWorkerRunner = async <T>(folder: string, tas
   const worker = new Worker(entry, { workerData: { task } });
   return new Promise<T>((resolve, reject) => {
     let settled = false;
-    const finish = (error?: Error, result?: T) => {
+    const finish = (...[error, result]: [error: Error] | [error: undefined, result: T]) => {
       if (settled) return; settled = true;
       signal.removeEventListener('abort', abort); void worker.terminate();
-      if (error) reject(error); else resolve(result!);
+      if (error === undefined) resolve(result); else reject(error);
     };
     const abort = () => finish(new Error('Memory worker cancelled'));
     signal.addEventListener('abort', abort, { once: true });

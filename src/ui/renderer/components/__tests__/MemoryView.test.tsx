@@ -1,4 +1,5 @@
 import '../../../../../test/renderer/setup.js';
+import assert from 'node:assert/strict';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
@@ -79,7 +80,7 @@ describe('memory map view', () => {
     map.settingsGet.mockResolvedValue({ ok: true, value: { source: 'provider', providerAvailable: true, providers: [], namespace: { ...SNAPSHOT.model.namespace, source: 'provider', providerId: 'configured' } } });
     render(<MemoryView {...props} />);
     await screen.findByText('아직 지도가 없습니다. 사용 가능한 메모리로 지도를 만드세요.');
-    fireEvent.click(screen.getAllByRole('button', { name: '지도 다시 만들기' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '지도 다시 만들기' })[0]);
     await waitFor(() => expect(map.build).toHaveBeenCalledOnce());
   });
   it('uses OR within facets, AND across them and counts only induced links', async () => {
@@ -100,7 +101,7 @@ describe('memory map view', () => {
   });
   it('opens the same source detail from a point and a card, closes with Escape and preserves the map', async () => {
     const { props, api } = setup(); render(<MemoryView {...props} />); await ready();
-    act(() => renderer.callbacks!.onSelect('a'));
+    act(() => { const callbacks = renderer.callbacks; assert.ok(callbacks); callbacks.onSelect('a'); });
     expect(await screen.findByText('Source quote')).toBeTruthy();
     expect(screen.getByText('Current body')).toBeTruthy();
     expect(api.memoryGetDetail).toHaveBeenCalledWith('a', undefined, 'r');
@@ -117,7 +118,7 @@ describe('memory map view', () => {
   });
   it('paginates the accessible card list', async () => {
     const { map, props } = setup();
-    map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, points: Array.from({ length: 25 }, (_, i) => ({ ...SNAPSHOT.points[0]!, memoryId: String(i), title: `Memory ${i}` })), edges: [] } });
+    map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, points: Array.from({ length: 25 }, (_, i) => ({ ...SNAPSHOT.points[0], memoryId: String(i), title: `Memory ${i}` })), edges: [] } });
     render(<MemoryView {...props} />);
     await screen.findByText('메모리 25 · 연결 0'); selectTab('메모리 카드');
     expect(screen.getAllByRole('listitem')).toHaveLength(24);
@@ -129,7 +130,7 @@ describe('memory map view', () => {
     const { props } = setup(); const view = render(<MemoryView {...props} />); await ready();
     fireEvent.click(screen.getByRole('button', { name: '확대' })); expect(renderer.zoom).toHaveBeenCalledWith(1.5);
     fireEvent.click(screen.getByRole('button', { name: '지도 맞추기' })); expect(renderer.fit).toHaveBeenCalled();
-    act(() => renderer.callbacks!.onError());
+    act(() => { const callbacks = renderer.callbacks; assert.ok(callbacks); callbacks.onError(); });
     expect(screen.getByRole('alert')).toHaveTextContent('메모리 카드');
     selectTab('메모리 카드'); expect(screen.getByText('Alpha memory')).toBeTruthy();
     view.unmount(); expect(renderer.destroy).toHaveBeenCalled();
@@ -142,7 +143,7 @@ describe('memory map view', () => {
     map.modelStatus.mockResolvedValue({ ok: true, value: { status: 'ready', receivedBytes: 1, totalBytes: 1, completedFiles: 4, totalFiles: 4 } });
     render(<MemoryView {...props} />);
     await screen.findByText('아직 지도가 없습니다. 사용 가능한 메모리로 지도를 만드세요.');
-    fireEvent.click(screen.getAllByRole('button', { name: '지도 다시 만들기' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: '지도 다시 만들기' })[0]);
     expect(await screen.findByRole('alert')).toHaveTextContent('메모리 지도를 만들 수 없습니다.');
     map.build.mockResolvedValue({ ok: true, value: SNAPSHOT });
     fireEvent.click(screen.getByRole('button', { name: '다시 시도' })); await ready();
@@ -152,7 +153,7 @@ describe('memory map view', () => {
     map.build.mockImplementation(() => new Promise(() => {}));
     const view = render(<MemoryView {...props} />); await ready();
     fireEvent.click(screen.getByRole('button', { name: '지도 다시 만들기' }));
-    act(() => map.onProgress.mock.calls[0]![0]({ jobId: 'job', phase: 'embedding', completed: 2, total: 3 }));
+    act(() => map.onProgress.mock.calls[0][0]({ jobId: 'job', phase: 'embedding', completed: 2, total: 3 }));
     expect(screen.getByText('임베딩 2 / 3')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '지도 생성 취소' }));
     await waitFor(() => expect(map.cancel).toHaveBeenCalledOnce()); view.unmount();
@@ -174,22 +175,22 @@ describe('memory map view', () => {
     fireEvent.change(question, { target: { value: 'What did I save?' } });
     fireEvent.click(screen.getByRole('button', { name: '질문' }));
     const citation = await screen.findByRole('button', { name: '소스 7: Alpha memory' });
-    expect(map.retrieve.mock.calls[0]![0]).toMatchObject({ question: 'What did I save?', scope: { projectRoot: 'C:/workspace/alpha', projectName: 'Alpha', includeUnscoped: false }, filters: { sources: ['user'] }, snapshotId: 'snapshot' });
-    expect(map.retrieve.mock.calls[0]![0].queryId).toBeTruthy();
-    expect(renderer.update.mock.lastCall![3]).toEqual(new Set(['a']));
+    expect(map.retrieve.mock.calls[0][0]).toMatchObject({ question: 'What did I save?', scope: { projectRoot: 'C:/workspace/alpha', projectName: 'Alpha', includeUnscoped: false }, filters: { sources: ['user'] }, snapshotId: 'snapshot' });
+    expect(map.retrieve.mock.calls[0][0].queryId).toBeTruthy();
+    expect(renderer.update.mock.lastCall?.[3]).toEqual(new Set(['a']));
     fireEvent.click(citation); expect(await screen.findByText('Source quote')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '소스 상세 닫기' }));
     fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }));
     expect(screen.queryByText('A grounded excerpt')).toBeNull();
-    expect(question).toHaveValue(''); expect(renderer.update.mock.lastCall![3]).toEqual(new Set());
+    expect(question).toHaveValue(''); expect(renderer.update.mock.lastCall?.[3]).toEqual(new Set());
   });
   it('marks a live snapshot stale when the host invalidates it and clears open sources', async () => {
     const { map, props, api } = setup();
     render(<MemoryView {...props} />); await ready();
-    act(() => renderer.callbacks!.onSelect('a')); await screen.findByText('Source quote');
+    act(() => { const callbacks = renderer.callbacks; assert.ok(callbacks); callbacks.onSelect('a'); }); await screen.findByText('Source quote');
     map.get.mockResolvedValue({ ok: true, value: null });
     map.modelStatus.mockResolvedValue({ ok: true, value: { status: 'ready', receivedBytes: 1, totalBytes: 1, completedFiles: 4, totalFiles: 4 } });
-    const save = vi.mocked(api.onMemorySaveResult).mock.calls[0]![0];
+    const save = vi.mocked(api.onMemorySaveResult).mock.calls[0][0];
     act(() => save({} as Parameters<typeof save>[0]));
     expect(await screen.findByText('메모리가 변경되었습니다. 지도를 다시 만드세요.')).toBeTruthy();
     expect(screen.queryByText('Source quote')).toBeNull();
@@ -211,9 +212,9 @@ describe('memory map view', () => {
     const view = render(<MemoryView {...props} />);
     map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, snapshotId: 'new-scope' } });
     view.rerender(<MemoryView {...props} project={{ projectRoot: 'C:/workspace/other', projectName: 'Other' }} />);
-    await waitFor(() => expect(renderer.update.mock.lastCall![0].snapshotId).toBe('new-scope'));
+    await waitFor(() => expect(renderer.update.mock.lastCall?.[0].snapshotId).toBe('new-scope'));
     await act(async () => finish({ ok: true, value: SNAPSHOT }));
-    expect(renderer.update.mock.lastCall![0].snapshotId).toBe('new-scope');
+    expect(renderer.update.mock.lastCall?.[0].snapshotId).toBe('new-scope');
   });
   it('observes the completion of a build that was running when this view mounted', async () => {
     const { map, props } = setup();
@@ -225,7 +226,7 @@ describe('memory map view', () => {
       expect(screen.getByText('메모리 지도 만드는 중…')).toBeTruthy();
       map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
       await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-      expect(screen.getByRole('group', { name: /메모리 지도 —/ })).toBeTruthy();
+      expect(screen.getByRole('region', { name: /메모리 지도 —/ })).toBeTruthy();
       const count = map.get.mock.calls.length;
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
       expect(map.get).toHaveBeenCalledTimes(count);

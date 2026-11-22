@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../types.js';
@@ -8,19 +9,23 @@ import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memor
 const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
   get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
-  status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), useExisting: vi.fn(async () => ({ status: 'ready' })),
+  status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), adoptExistingFolder: vi.fn(async () => ({ status: 'ready' })),
   dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(), localConfined: true,
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
 vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
-vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { status = state.status; download = state.download; cancel = state.modelCancel; useExisting = state.useExisting; } }));
+vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { status = state.status; download = state.download; cancel = state.modelCancel; adoptExistingFolder = state.adoptExistingFolder; } }));
 vi.mock('../../main/memory-map/local-runtime.js', async () => {
   const { MemoryMapHostError } = await import('../../main/memory-map/errors.js');
   return { assertLocalEmbeddingRuntime: () => { if (!state.localConfined) throw new MemoryMapHostError('local-runtime-unavailable'); } };
 });
 import { registerMemoryMapHandlers } from '../domains/memory-map.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
-const invoke = (key: keyof typeof CHANNELS.memoryMap, raw?: unknown, event = hostEvent) => state.handles.get(CHANNELS.memoryMap[key])!(event, ...(raw === undefined ? [] : [raw]));
+const invoke = (key: keyof typeof CHANNELS.memoryMap, raw?: unknown, event = hostEvent) => {
+  const handler = state.handles.get(CHANNELS.memoryMap[key]);
+  assert.ok(handler);
+  return handler(event, ...(raw === undefined ? [] : [raw]));
+};
 async function providerEndpointId() {
   const result = await invoke('settingsGet') as Awaited<ReturnType<MemoryMapApi['settingsGet']>>;
   const endpointId = result.ok && result.value.providers.find(entry => entry.id === 'openai')?.route?.endpointId;
@@ -60,7 +65,7 @@ describe('memory map host boundary', () => {
     expect(state.status).not.toHaveBeenCalled();
     expect(state.download).not.toHaveBeenCalled();
     expect(state.dialog).not.toHaveBeenCalled();
-    expect(state.useExisting).not.toHaveBeenCalled();
+    expect(state.adoptExistingFolder).not.toHaveBeenCalled();
     expect(state.build).not.toHaveBeenCalled();
     expect(set).not.toHaveBeenCalled();
 
@@ -195,8 +200,8 @@ describe('memory map host boundary', () => {
     expect(await invoke('settingsGet')).toMatchObject({ ok: true, value: { source: 'local', providerAvailable: false, namespace: { source: 'local', dimensions: 384 } } });
     expect(await invoke('settingsSet', { source: 'provider' })).toEqual({ ok: false, error: 'invalid-input' });
     expect(await invoke('modelUseExisting')).toEqual({ ok: true, value: null });
-    expect(state.useExisting).not.toHaveBeenCalled();
+    expect(state.adoptExistingFolder).not.toHaveBeenCalled();
     state.dialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/example/model'] });
-    expect(await invoke('modelUseExisting')).toMatchObject({ ok: true }); expect(state.useExisting).toHaveBeenCalledWith('/example/model');
+    expect(await invoke('modelUseExisting')).toMatchObject({ ok: true }); expect(state.adoptExistingFolder).toHaveBeenCalledWith('/example/model');
   });
 });

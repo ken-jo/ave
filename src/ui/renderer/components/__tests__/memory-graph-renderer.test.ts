@@ -1,11 +1,12 @@
 import '../../../../../test/renderer/setup.js';
+import assert from 'node:assert/strict';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GraphSnapshot } from '../../../../shared/memory-map.js';
 import { createMemoryGraph } from '../memory-graph-renderer.js';
 
 const mock = vi.hoisted(() => ({ config: {} as Record<string, (...args: unknown[]) => void>, graph: { ready: Promise.resolve(), setPointPositions: vi.fn(), setPointColors: vi.fn(), setPointSizes: vi.fn(), setLinks: vi.fn(), setLinkColors: vi.fn(), setLinkWidths: vi.fn(), setConfigPartial: vi.fn(), render: vi.fn(), fitView: vi.fn(), getZoomLevel: vi.fn(() => 1), spaceToScreenPosition: vi.fn((value: number[]) => value), zoom: vi.fn(), destroy: vi.fn() } }));
 vi.mock('@cosmos.gl/graph', () => ({ Graph: class {
-  constructor(container: HTMLDivElement, config: typeof mock.config) { mock.config = config; container.append(document.createElement('canvas')); return mock.graph; }
+  constructor(container: HTMLDivElement, config: typeof mock.config) { mock.config = config; container.append(document.createElement('canvas')); Object.assign(this, mock.graph); }
 } }));
 afterEach(() => { vi.restoreAllMocks(); });
 function setup() {
@@ -26,11 +27,11 @@ describe('memory graph adapter', () => {
     expect(mock.config).toMatchObject({ enableSimulation: false, enableSimulationDuringZoom: false, enableDrag: false, transitionDuration: 0, rescalePositions: false });
     expect(mock.graph.setPointPositions).toHaveBeenLastCalledWith(new Float32Array([12, 34, 56, 78]), true);
     expect(mock.graph.setLinks).toHaveBeenLastCalledWith(new Float32Array());
-    const colors = mock.graph.setPointColors.mock.lastCall![0] as Float32Array;
+    const colors = mock.graph.setPointColors.mock.lastCall?.[0] as Float32Array;
     expect(colors[3]).toBe(1); expect(colors[7]).toBeCloseTo(0.12);
-    mock.config.onPointClick!(1); mock.config.onPointMouseOver!(1);
+    mock.config.onPointClick(1); mock.config.onPointMouseOver(1);
     expect(callbacks.onSelect).not.toHaveBeenCalled(); expect(callbacks.onHover).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Dimmed' }));
-    mock.config.onPointClick!(0); expect(callbacks.onSelect).toHaveBeenCalledWith('a');
+    mock.config.onPointClick(0); expect(callbacks.onSelect).toHaveBeenCalledWith('a');
     renderer.destroy();
   });
   it('publishes a visible failure on context loss and destroys only once', async () => {
@@ -38,19 +39,21 @@ describe('memory graph adapter', () => {
     renderer.update(snapshot, new Set(['a', 'b']), null); await Promise.resolve();
     const before = mock.graph.destroy.mock.calls.length;
     const event = new Event('webglcontextlost', { cancelable: true });
-    container.querySelector('canvas')!.dispatchEvent(event);
+    const canvas = container.querySelector('canvas');
+    assert.ok(canvas);
+    canvas.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true); expect(callbacks.onError).toHaveBeenCalledOnce();
     renderer.destroy(); renderer.destroy();
     expect(mock.graph.destroy.mock.calls.length - before).toBe(1);
     expect(container.childElementCount).toBe(0);
-    mock.config.onPointClick!(0); expect(callbacks.onSelect).not.toHaveBeenCalled();
+    mock.config.onPointClick(0); expect(callbacks.onSelect).not.toHaveBeenCalled();
   });
   it('shows only real project labels at closer zoom, emphasizes edges and refreshes theme tokens', async () => {
     const { renderer, snapshot, callbacks } = setup();
     renderer.update(snapshot, new Set(['a', 'b']), 'a', new Set(['b'])); await Promise.resolve();
     expect(mock.graph.setLinkWidths).toHaveBeenLastCalledWith(new Float32Array([1.5]));
     expect(mock.graph.setPointSizes).toHaveBeenLastCalledWith(new Float32Array([9, 9]));
-    mock.graph.getZoomLevel.mockReturnValue(3); mock.config.onZoom!();
+    mock.graph.getZoomLevel.mockReturnValue(3); mock.config.onZoom();
     expect(callbacks.onLabels).toHaveBeenLastCalledWith([{ id: 'project', text: 'Project', x: 12, y: 34 }]);
     const before = mock.graph.setPointColors.mock.calls.length;
     document.documentElement.classList.add('dark'); await Promise.resolve();
@@ -58,7 +61,7 @@ describe('memory graph adapter', () => {
     renderer.destroy(); const after = mock.graph.setPointColors.mock.calls.length;
     document.documentElement.classList.remove('dark'); await Promise.resolve();
     expect(mock.graph.setPointColors).toHaveBeenCalledTimes(after);
-    mock.config.onPointClick!(0); expect(callbacks.onSelect).not.toHaveBeenCalled();
+    mock.config.onPointClick(0); expect(callbacks.onSelect).not.toHaveBeenCalled();
     mock.graph.getZoomLevel.mockReturnValue(1);
   });
   it('handles initialization rejection and removes observers and event handlers during teardown', async () => {
