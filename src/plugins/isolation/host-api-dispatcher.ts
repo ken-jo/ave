@@ -94,6 +94,7 @@ import {
 } from "./host-api-budgets.js";
 
 const log = createLogger("host-api-dispatcher");
+const MISSING_INVOCATION_TOKEN = "missing-invocation-token";
 
 export type InvocationContextRunner = <R>(fn: () => R) => R;
 
@@ -1377,7 +1378,6 @@ export class HostApiDispatcher {
   private pendingSubscriptionCount = 0;
   private readonly reportedUnknownFields = new Set<string>();
   private unknownFieldsSuppressed = false;
-  private readonly warnedTokenlessPaths = new Set<HostApiPath>();
 
   constructor(private readonly options: HostApiDispatcherOptions) {
     this.table = options.table ?? HOSTAPI_DISPATCH_TABLE;
@@ -1439,22 +1439,20 @@ export class HostApiDispatcher {
   }
 
   private runTokenless(path: HostApiPath, args: readonly unknown[], signal: AbortSignal, invoke: () => Promise<unknown>): Promise<unknown> {
-    // Fetch gates its verb inline; use checked args only to select diagnostics.
+    const gatedWrite = GATED_EFFECT_PATHS.has(path);
     const rawMethod = path === "hostFetch" ? (args[1] as { method?: unknown } | undefined)?.method : undefined;
     const isFetchWrite = path === "hostFetch"
       && methodEffect(typeof rawMethod === "string" && rawMethod.length > 0 ? rawMethod : "GET") === "write";
-    if (GATED_EFFECT_PATHS.has(path) || isFetchWrite) {
-      const toolCallsInFlight = this.options.invocations?.toolCallsInFlight() ?? 0;
-      if (toolCallsInFlight > 0 && !this.warnedTokenlessPaths.has(path)) {
-        this.warnedTokenlessPaths.add(path);
-        log.warn(
-          { pluginId: this.options.pluginId, path, toolCallsInFlight },
-          "a gated hostApi write arrived without an invocation token while a tool call was in flight; it runs outside any invocation",
-        );
-      }
+    const toolCallsInFlight = this.options.invocations?.toolCallsInFlight() ?? 0;
+    if (toolCallsInFlight > 1 || (toolCallsInFlight === 1 && (gatedWrite || isFetchWrite))) {
+      throw new HostApiBoundaryError(
+        "argument-marshalling-rejected",
+        `Host API '${path}' requires an invocation token while tool calls are active.`,
+        { reason: MISSING_INVOCATION_TOKEN },
+      );
     }
     return runOutsideInvocation(() => {
-      if (!GATED_EFFECT_PATHS.has(path) && path !== "hostFetch") return invoke();
+      if (!gatedWrite && path !== "hostFetch") return invoke();
       return runWithEffectGateContext({
         headless: false,
         toolName: path,
@@ -1516,7 +1514,6 @@ export class HostApiDispatcher {
       controller.abort(new DOMException("[host-api-dispatcher] the child is gone", "AbortError"));
     }
     this.inFlight.clear();
-    this.warnedTokenlessPaths.clear();
     this.budgets.end();
     const closed = this.subscriptions.end("peer-gone");
     this.receivers.clear();
@@ -1527,8 +1524,11 @@ export class HostApiDispatcher {
 
   private errorReply(id: JsonRpcRequestId, error: unknown, path?: HostApiPath): HostApiReply {
     const classified = classifyHostApiError(error);
+    const reason = error instanceof HostApiBoundaryError && error.detail?.reason === MISSING_INVOCATION_TOKEN
+      ? MISSING_INVOCATION_TOKEN
+      : undefined;
     this.budgets.deny(path ?? "<unknown>", classified.code,
-      error instanceof HostApiRateLimitError ? error.bucket : undefined);
+      error instanceof HostApiRateLimitError ? error.bucket : undefined, reason);
     return { jsonrpc: "2.0", id, error: toHostApiRpcError(classified) };
   }
 

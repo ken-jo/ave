@@ -27,6 +27,7 @@ export interface HostApiBudgetAudit {
   readonly code: HostApiWireErrorCode;
   readonly count: number;
   readonly bucket?: string;
+  readonly reason?: "missing-invocation-token";
   readonly summary: boolean;
 }
 
@@ -73,8 +74,8 @@ export class HostApiBudgets {
     return 0;
   }
 
-  deny(method: HostApiPath | "<unknown>", code: HostApiWireErrorCode, bucket?: string): void {
-    const key = `${method}\u0000${code}`;
+  deny(method: HostApiPath | "<unknown>", code: HostApiWireErrorCode, bucket?: string, reason?: HostApiBudgetAudit["reason"]): void {
+    const key = `${method}\u0000${code}\u0000${reason ?? ""}`;
     const existing = this.audits.get(key);
     if (existing) {
       existing.pending += 1;
@@ -86,6 +87,7 @@ export class HostApiBudgets {
       method,
       code,
       ...(bucket === undefined ? {} : { bucket }),
+      ...(reason === undefined ? {} : { reason }),
     };
     this.emit({ ...report, count: 1, summary: false });
     const state: AuditState = {

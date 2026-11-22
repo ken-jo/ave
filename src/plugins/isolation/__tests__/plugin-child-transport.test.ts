@@ -4,6 +4,7 @@ import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { PassThrough } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
+import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import {
   defineHostApiPath,
@@ -20,20 +21,6 @@ import {
   type ChildLink,
 } from "../plugin-child-transport.js";
 import { observe, settle } from "./stream-turns.js";
-
-/** Capture dispatcher warnings for dropped frames. */
-const dispatcherWarn = vi.hoisted(() => vi.fn());
-vi.mock("../../../lib/logger.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
-  return {
-    ...actual,
-    createLogger: (module: string) => {
-      const logger = actual.createLogger(module);
-      if (module !== "host-api-dispatcher") return logger;
-      return Object.assign(Object.create(logger) as typeof logger, { warn: dispatcherWarn });
-    },
-  };
-});
 
 type Frame = Record<string, unknown>;
 
@@ -326,6 +313,7 @@ interface InvocationRig {
   transport: PluginChildTransport;
   sent: Frame[];
   seen: Array<string | undefined>;
+  audit: ReturnType<typeof vi.fn>;
   /** Deliver frames in link-creation context, matching real pipes. */
   deliver: (frame: Frame) => void;
   fireGone: (reason: string) => void;
@@ -335,10 +323,13 @@ interface InvocationRig {
 /** Construct inside a marker to test spawn-context isolation. */
 function invocationRig(options: { pluginId?: string; teardown?: () => void; terminate?: () => void } = {}): InvocationRig {
   const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
+  const pluginId = options.pluginId ?? "transportprobe";
   const seen: InvocationRig["seen"] = [];
+  const audit = vi.fn();
   return marker.run("spawned-in", () => {
     const transport = new PluginChildTransport({
-      pluginId: options.pluginId ?? "transportprobe",
+      pluginId,
+      reportBudgetAudit: audit,
       isActive: () => true,
       reportUnknownField: () => undefined,
       link: options.terminate === undefined ? link : { ...link, terminate: options.terminate },
@@ -353,14 +344,21 @@ function invocationRig(options: { pluginId?: string; teardown?: () => void; term
           return { handleId: "events" };
         }),
         hostFetch: createServiceHostApiPaths(
-          { hostFetch: async () => new Response("ok") } as unknown as Parameters<typeof createServiceHostApiPaths>[0],
+          { hostFetch: async (rawUrl: string, init?: RequestInit) => {
+            const decision = await evaluateHostFetch({
+              pluginId, rawUrl, method: init?.method, allowedDomains: ["example.test"],
+              ensurePublicUrl: async (url) => new URL(url),
+            });
+            if (!decision.ok) throw new Error(decision.message);
+            return new Response("ok");
+          } } as unknown as Parameters<typeof createServiceHostApiPaths>[0],
           { read: [], write: [] },
         ).hostFetch,
       },
     });
     transport.start();
     const deliver = AsyncResource.bind((frame: Frame) => void childToHost.write(frameMessage(frame)));
-    return { transport, sent, seen, deliver, fireGone, fireFault };
+    return { transport, sent, seen, audit, deliver, fireGone, fireFault };
   });
 }
 
@@ -606,10 +604,8 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     }
   });
 
-  it("accepts older child metadata that does not use the host invocation key", async () => {
+  it("ignores older child metadata outside an active invocation", async () => {
     const rig = invocationRig();
-    const call = await callTools(rig, 1);
-    const pending = expect(call.replies[0]).rejects.toThrow();
     try {
       rig.deliver({
         jsonrpc: "2.0", id: "legacy", method: hostApiMethodOf("raiseAlert"),
@@ -620,69 +616,100 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       expect(rig.seen).toEqual([undefined]);
     } finally {
       rig.transport.close("case over");
-      await pending;
     }
   });
 
-  it("bounds tokenless-write diagnostics per path and excludes argument values", async () => {
-    dispatcherWarn.mockClear();
+  it.each([1, 2])("rejects and audits an unattributed write with %i live tool calls", async (count) => {
     const rig = invocationRig();
-    const call = await callTools(rig, 1);
-    const pending = expect(call.replies[0]).rejects.toThrow();
+    const { frames, replies } = await callTools(rig, count);
     try {
-      for (let index = 0; index < 100; index += 1) {
-        const reply = await raiseAlertFromChild(rig, `secret-argument-${String(index)}`);
-        expect(reply).toMatchObject({ result: { status: "raised" } });
+      for (const id of ["omitted", "omitted-again"]) {
+        const reply = await raiseAlertFromChild(rig, id);
+        expect(reply.error).toMatchObject({
+          message: expect.stringContaining("requires an invocation token"),
+          data: { code: "argument-marshalling-rejected" },
+        });
       }
-      expect(dispatcherWarn).toHaveBeenCalledTimes(1);
-      expect(dispatcherWarn.mock.calls[0]![0]).toEqual({ pluginId: "transportprobe", path: "raiseAlert", toolCallsInFlight: 1 });
-      expect(JSON.stringify(dispatcherWarn.mock.calls)).not.toContain("secret-argument");
+      expect(rig.seen).toEqual([]);
+      expect(rig.audit).toHaveBeenCalledExactlyOnceWith({
+        type: "plugin_hostapi_denied",
+        pluginId: "transportprobe",
+        method: "raiseAlert",
+        code: "argument-marshalling-rejected",
+        reason: "missing-invocation-token",
+        count: 1,
+        summary: false,
+      });
+      if (count === 2) {
+        rig.deliver({
+          jsonrpc: "2.0", id: "ambiguous-fetch", method: hostApiMethodOf("hostFetch"),
+          params: { input: "https://example.test" },
+        });
+        await settle();
+        expect(rig.sent.find((frame) => frame.id === "ambiguous-fetch")?.error)
+          .toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+        expect(rig.audit).toHaveBeenLastCalledWith(expect.objectContaining({
+          method: "hostFetch", reason: "missing-invocation-token",
+        }));
+      }
+      for (const [index, frame] of frames.entries()) {
+        const reply = await raiseAlertFromChild(rig, `attributed-${index}`, tokenOf(frame));
+        expect(reply).toMatchObject({ result: { status: "raised" } });
+        rig.deliver({ jsonrpc: "2.0", id: frame.id, result: { content: [] } });
+      }
+      await Promise.all(replies);
+      await expect(raiseAlertFromChild(rig, "after")).resolves.toMatchObject({ result: { status: "raised" } });
+      expect(rig.seen).toEqual([...frames.map((_, index) => `call-${index}`), undefined]);
     } finally {
       rig.transport.close("case over");
-      await pending;
+      await Promise.allSettled(replies);
     }
   });
 
-  it("records inline-gated fetch writes without logging their URL, headers or body", async () => {
-    dispatcherWarn.mockClear();
+  it("rejects and audits an unattributed fetch write with redacted diagnostics", async () => {
     const rig = invocationRig();
-    const call = await callTools(rig, 1);
-    const pending = expect(call.replies[0]).rejects.toThrow();
+    const { replies } = await callTools(rig, 1);
     try {
       for (const method of ["GET", "HEAD", "OPTIONS", "post", "PATCH"]) {
         rig.deliver({
           jsonrpc: "2.0", id: method, method: hostApiMethodOf("hostFetch"),
-          params: { input: "https://example.test/?token=url-secret", init: await encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch diagnostic") },
+          params: { input: "https://example.test/?token=url-secret", init: await encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch approval") },
         });
-        await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === method)).toBe(true));
-        expect(rig.sent.find((frame) => frame.id === method)).toMatchObject({ result: { status: 200 } });
-        expect(dispatcherWarn).toHaveBeenCalledTimes(method === "post" || method === "PATCH" ? 1 : 0);
+        await settle();
+        const reply = rig.sent.find((frame) => frame.id === method)!;
+        if (method === "post" || method === "PATCH") {
+          expect(reply.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+        } else {
+          expect(reply).toMatchObject({ result: { status: 200 } });
+        }
       }
-      expect(dispatcherWarn.mock.calls[0]![0]).toEqual({ pluginId: "transportprobe", path: "hostFetch", toolCallsInFlight: 1 });
-      expect(JSON.stringify(dispatcherWarn.mock.calls)).not.toMatch(/url-secret|header-secret|body-secret/);
+      expect(rig.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        method: "hostFetch", reason: "missing-invocation-token",
+      }));
+      expect(JSON.stringify(rig.audit.mock.calls)).not.toMatch(/url-secret|header-secret|body-secret/);
     } finally {
       rig.transport.close("case over");
-      await pending;
+      await Promise.allSettled(replies);
     }
   });
 
-  it("records a gated write that names no invocation while a tool call is in flight", async () => {
-    dispatcherWarn.mockClear();
+  it.each([0, 1, 2])("checks the destination of admitted fetches with %i active calls", async (count) => {
     const rig = invocationRig();
-    await raiseAlertFromChild(rig, "idle");
-    expect(dispatcherWarn).not.toHaveBeenCalled();
-    const { frames, replies } = await callTools(rig, 1);
-    await raiseAlertFromChild(rig, "during");
-    expect(dispatcherWarn).toHaveBeenCalledTimes(1);
-    expect(dispatcherWarn.mock.calls[0]![0]).toEqual({
-      pluginId: "transportprobe",
-      path: "raiseAlert",
-      toolCallsInFlight: 1,
-    });
-    rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
-    await replies[0];
-    await raiseAlertFromChild(rig, "after");
-    expect(dispatcherWarn).toHaveBeenCalledTimes(1);
-    rig.transport.close("case over");
+    const { frames, replies } = await callTools(rig, count);
+    try {
+      rig.deliver({
+        jsonrpc: "2.0", id: "fetch", method: hostApiMethodOf("hostFetch"),
+        params: {
+          input: "https://unlisted.test",
+          ...(count === 0 ? {} : { _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } }),
+        },
+      });
+      await settle();
+      expect(rig.sent.find((frame) => frame.id === "fetch")?.error)
+        .toMatchObject({ data: { code: "host-internal" } });
+    } finally {
+      rig.transport.close("case over");
+      await Promise.allSettled(replies);
+    }
   });
 });
