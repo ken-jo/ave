@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { TemplateGraph, TemplateStage, TemplateVersion, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { graphHashOf } from "../../template-graph.js";
@@ -7,6 +7,18 @@ import { graphHashOf } from "../../template-graph.js";
 export function writeUnder(root: string, path: string, text: string): void {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), text);
+}
+
+/** Sets one field of a JSON file in place, making what is missing on the way to it: an array before a number, an object otherwise. */
+export function setPath(file: string, path: readonly (string | number)[], value: unknown): void {
+  const root = JSON.parse(readFileSync(file, "utf8")) as Record<string | number, unknown>;
+  let at = root;
+  path.slice(0, -1).forEach((key, index) => {
+    at[key] ??= typeof path[index + 1] === "number" ? [] : {};
+    at = at[key] as Record<string | number, unknown>;
+  });
+  at[path.at(-1) as string | number] = value;
+  writeFileSync(file, JSON.stringify(root));
 }
 
 export function stageOf(id: string, over: Partial<TemplateStage> = {}): TemplateStage {

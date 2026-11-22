@@ -23,8 +23,11 @@ function projectSlug(canonicalRoot: string | undefined, itemId: number): string 
 }
 
 /** 12 characters of `[a-z0-9]`; the run id itself never enters a path or a branch name. */
-export function runSlug(runId: string): string {
-  return sha256(runId).slice(0, 12);
+const branchSlug = (runId: string): string => sha256(runId).slice(0, 12);
+
+/** The run folder's name, 12 characters of `[a-z0-9]`: one per run of one item, so a run id named under another item is another folder. */
+export function runSlug(itemId: number, runId: string): string {
+  return sha256(`${itemId}\n${runId}`).slice(0, 12);
 }
 
 /** The stage id, which the template graph bounds to `^[a-z0-9][a-z0-9-]{0,31}$`. */
@@ -34,9 +37,9 @@ export function stageDirName(stageId: string): string {
 }
 
 export function runBranch(runId: string): string {
-  return `ave/workflow/${runSlug(runId)}`;
+  return `ave/workflow/${branchSlug(runId)}`;
 }
 
 export function runRootOf(aveHome: string, canonicalProjectRoot: string | undefined, itemId: number, runId: string): string {
-  return join(aveHome, WORKTREES_DIR, projectSlug(canonicalProjectRoot, itemId), runSlug(runId));
+  return join(aveHome, WORKTREES_DIR, projectSlug(canonicalProjectRoot, itemId), runSlug(itemId, runId));
 }

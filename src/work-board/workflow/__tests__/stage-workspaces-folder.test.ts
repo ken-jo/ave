@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,9 +10,9 @@ import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { holdDir, nodeIdOf } from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
-import { OUT_DIR, RUN_FILE } from "../workspace-layout.js";
+import { OUT_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
 import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
-import { stageOf, writeUnder as write } from "./stage-fixtures.js";
+import { setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 let base: string;
 let project: string;
@@ -27,9 +27,9 @@ const tree = (root: string, prefix = ""): string[] => readdirSync(join(root, pre
   .flatMap(entry => entry.isDirectory() ? tree(root, `${prefix}${entry.name}/`) : [`${prefix}${entry.name}`]).sort();
 const fromProject = (...paths: string[]): StageInputDecl => ({ from: "project", paths });
 
-async function start(root: string | undefined, options: StageWorkspaceOptions = {}): Promise<Handle> {
+async function start(root: string | undefined, options: StageWorkspaceOptions = {}, itemId = 7): Promise<Handle> {
   runs += 1;
-  const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key" };
+  const run: RunRef = { itemId, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key" };
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env }), ...options });
   const open = await provider.open(run, root);
   if (!open.ok || open.workspace.kind !== "folder" || open.workspace.outputDir === undefined) throw new Error("expected a folder workspace");
@@ -60,6 +60,17 @@ function watchedGit(broken?: (args: readonly string[]) => "fails" | HostGitError
     return how === "fails" ? { ...result, code: 128 } : result;
   };
   return { made, matched, git: { run, drivers: real.drivers } };
+}
+
+/** Runs `work` with the home at `home`, a folder of the test's own. */
+async function withHome<T>(home: string, work: () => Promise<T>): Promise<T> {
+  const before = process.env.AVE_HOME;
+  process.env.AVE_HOME = home;
+  try {
+    return await work();
+  } finally {
+    if (before === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = before;
+  }
 }
 
 beforeEach(() => {
@@ -255,26 +266,81 @@ describe("folder stage workspaces", () => {
     }
   });
 
-  it("a home relocated beneath the project gets no matcher repository: the stage is refused and nothing is made in the project", async () => {
-    write(project, "debug.log", "log\n");
+  it("a home inside the project gets no workspace at all, and neither does a project inside the home's worktrees", async () => {
     write(project, ".gitignore", "*.log\n");
-    const home = process.env.AVE_HOME;
     mkdirSync(join(project, "profile"));
-    process.env.AVE_HOME = join(project, "profile");
-    try {
-      const watched = watchedGit();
-      const handle = await start(project, { git: watched.git });
-      expect(isInside(realpathSync.native(project), realpathSync.native(handle.runRoot))).toBe(true);
-      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/**")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
-      expect(watched.made).toEqual([]);
-      expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
-      // A stage with no project input needs no rules and is prepared as before.
-      expect(tree(await stageRoot(handle, "s2"))).toEqual([]);
-      await handle.provider.release(handle.run, "all");
-      opened.splice(opened.indexOf(handle), 1);
-    } finally {
-      if (home === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = home;
+    const before = tree(project);
+    const run: RunRef = { itemId: 7, runId: `run-overlap-${process.pid}-${Date.now()}`, runKey: "key" };
+    for (const home of [join(project, "profile"), project]) {
+      await withHome(home, async () => {
+        const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+        expect(await provider.open(run, project), home).toEqual({ ok: false, code: "workspace-unavailable" });
+        expect(await provider.prepare(run, stageOf("s1"), 1), home).toEqual({ ok: false, code: "workspace-unavailable" });
+      });
+      expect(readdirSync(join(project, "profile")), home).toEqual([]);
+      expect(tree(project), home).toEqual(before);
     }
+    // A folder under the home's worktrees is a run folder or the host's own, never a project.
+    const home = join(base, "home");
+    const inside = join(home, "worktrees", "project-0a1b2c3d", "0a1b2c3d4e5f", "s1");
+    write(inside, "notes.txt", "notes\n");
+    await withHome(home, async () => {
+      const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+      for (const root of [inside, join(home, "worktrees")]) expect(await provider.open(run, root), root).toEqual({ ok: false, code: "workspace-unavailable" });
+      // The home's other folders are no run folders: a project there is one like any other.
+      write(home, "projects/mine/notes.txt", "notes\n");
+      expect(await provider.open(run, join(home, "projects", "mine"))).toMatchObject({ ok: true });
+      await provider.release(run, "all");
+    });
+    expect(tree(join(home, "worktrees", "project-0a1b2c3d"))).toEqual(["0a1b2c3d4e5f/s1/notes.txt"]);
+  });
+
+  it("a worktrees, project or run folder that is a link gets nothing made through it", async () => {
+    const home = join(base, "home");
+    const outside = join(base, "outside");
+    const run: RunRef = { itemId: 7, runId: `run-linked-${process.pid}-${Date.now()}`, runKey: "key" };
+    const real = realpathSync.native(project);
+    const runRoot = runRootOf(home, process.platform === "win32" ? real.toLowerCase() : real, run.itemId, run.runId);
+    const levels: [string, string, string][] = [
+      ["worktrees", join(home, "worktrees"), "home-boundary-unverified"],
+      ["project", dirname(runRoot), "home-boundary-unverified"],
+      ["run", runRoot, "workspace-unavailable"],
+    ];
+    for (const [name, level, code] of levels) {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+      mkdirSync(dirname(level), { recursive: true });
+      mkdirSync(outside);
+      symlinkSync(outside, level, "junction");
+      await withHome(home, async () => {
+        const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+        expect(await provider.open(run, project), name).toEqual({ ok: false, code });
+        expect(await provider.prepare(run, stageOf("s1"), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
+      });
+      expect(readdirSync(outside), name).toEqual([]);
+      rmSync(level);
+    }
+  });
+
+  it("a call naming the run under another item finds no workspace", async () => {
+    const handle = await start(project);
+    const stage = await stageRoot(handle, "s1", { outputs: ["plan.md"] });
+    write(stage, "plan.md", "the plan\n");
+    const other: RunRef = { ...handle.run, itemId: 8 };
+    expect(await handle.provider.prepare(other, stageOf("s2"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
+    expect(await handle.provider.seal(other, "s1")).toEqual({ ok: false, code: "workspace-unavailable" });
+    await expect(handle.provider.integrate(other, "j1", ["s1"])).rejects.toThrow("the run has no workspace");
+    await handle.provider.release(other, "all");
+    expect(read(stage, "plan.md")).toBe("the plan\n");
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
+    // The same run id under the other item is a run of its own, in a folder of its own.
+    const opened = await handle.provider.open(other, project);
+    if (!opened.ok) throw new Error(opened.code);
+    expect(opened.workspace.runRoot).not.toBe(handle.runRoot);
+    await handle.provider.release(other, "all");
+    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => run => run.itemId === 8 }).discard();
+    expect(existsSync(opened.workspace.runRoot)).toBe(false);
+    expect(read(stage, "plan.md")).toBe("the plan\n");
   });
 
   it("the matcher takes each path whole: a name with a line break in it is one path", async () => {
@@ -604,13 +670,14 @@ describe("folder stage workspaces", () => {
     expect(read(handle.out, "result.md")).toBe("collected\n");
   });
 
-  it("a run record that is a link, has a second name or lacks a field authorizes no cleanup", async () => {
+  it("a run record that is a link, has a second name, lacks a field or is of an earlier version authorizes no cleanup", async () => {
     const handle = await start(project);
     await stageRoot(handle, "s1");
     write(handle.out, "result.md", "collected\n");
     const record = join(handle.runRoot, RUN_FILE);
     const written = readFileSync(record, "utf8");
     const elsewhere = join(base, "restored-record.json");
+    const changed = (fields: Record<string, unknown>): void => writeFileSync(record, JSON.stringify({ ...JSON.parse(written) as object, ...fields }));
     const records: [string, () => void][] = [
       ["a second name", () => { writeFileSync(elsewhere, written); linkSync(elsewhere, record); }],
       ["a link", () => {
@@ -618,9 +685,17 @@ describe("folder stage workspaces", () => {
         // Where the account may not make a file link, the second name above stands for it.
         try { symlinkSync(elsewhere, record, "file"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error; linkSync(elsewhere, record); }
       }],
-      ["no stages", () => writeFileSync(record, JSON.stringify({ v: 1, runId: handle.run.runId, itemId: handle.run.itemId }))],
-      ["no kind", () => writeFileSync(record, JSON.stringify({ ...JSON.parse(written) as object, kind: undefined }))],
-      ["a stage that is no stage", () => writeFileSync(record, JSON.stringify({ ...JSON.parse(written) as object, stages: { "../_out": { ready: true, attempt: 1 } } }))],
+      ["no stages", () => changed({ stages: undefined })],
+      ["no kind", () => changed({ kind: undefined })],
+      ["no self", () => changed({ self: undefined })],
+      ["a stage that is no stage", () => changed({ stages: { "../_out": { ready: true, attempt: 1, dir: "1:1" } } })],
+      ["a ready stage that names no folder", () => changed({ stages: { s1: { ready: true, attempt: 1 } } })],
+      ["a folder run that names a branch", () => changed({ branch: "main" })],
+      // The record an earlier build wrote for this very run: it names no directory, so it directs nothing.
+      ["an earlier version", () => writeFileSync(record, JSON.stringify({
+        v: 1, runId: handle.run.runId, itemId: handle.run.itemId, kind: "folder", projectRoot: realpathSync.native(project),
+        stages: { s1: { ready: true, attempt: 1 } }, joins: {}, out: {},
+      }))],
     ];
     for (const [name, plant] of records) {
       rmSync(record);
@@ -635,6 +710,78 @@ describe("folder stage workspaces", () => {
     }
     rmSync(record);
     writeFileSync(record, written);
+  });
+
+  it("a run folder restored from a copy is no record", async () => {
+    const handle = await start(project);
+    write(handle.out, "result.md", "collected\n");
+    await handle.provider.release(handle.run, "all");
+    const away = join(base, "run-away");
+    cpSync(handle.runRoot, away, { recursive: true });
+    rmSync(handle.runRoot, { recursive: true });
+    cpSync(away, handle.runRoot, { recursive: true });
+    const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
+    await restarted.discard();
+    await restarted.sweep([]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
+    expect(read(handle.out, "result.md")).toBe("collected\n");
+    expect(await restarted.prepare(handle.run, stageOf("s1"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
+    rmSync(handle.runRoot, { recursive: true });
+  });
+
+  describe.each(["discard", "sweep"] as const)("what a %s may remove of a folder run", (operation) => {
+    /** Item 7's run with a collected file, parked; item 8's run of the same project, collected too; as after a restart, with item 7
+     * gone from the board and item 8 still on it. */
+    async function scene(): Promise<{ target: Handle; stage: string; other: Handle; record: string; written: string; operate: () => Promise<void> }> {
+      const collected = async (itemId: number): Promise<{ handle: Handle; stage: string }> => {
+        const handle = await start(project, {}, itemId);
+        const stage = await stageRoot(handle, "s1", { outputs: ["plan.md"] });
+        write(stage, "plan.md", "the plan\n");
+        await handle.provider.seal(handle.run, "s1");
+        expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
+        return { handle, stage };
+      };
+      const { handle: target, stage } = await collected(7);
+      const { handle: other } = await collected(8);
+      const record = join(target.runRoot, RUN_FILE);
+      const operate = async (): Promise<void> => {
+        const provider = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => run => run.itemId !== 8 });
+        await (operation === "discard" ? provider.discard() : provider.sweep([]));
+      };
+      return { target, stage, other, record, written: readFileSync(record, "utf8"), operate };
+    }
+
+    // The project's identity is about the project, not the run folder, and a folder run has nothing in a repository to leave alone.
+    it.each<[string, (string | number)[], unknown]>([
+      ["every field as it was written", [], undefined],
+      ["a project.id that no longer matches", ["project", "id"], "1:1"],
+    ])("with %s, the run folder and its output go and nothing else", async (_name, path, value) => {
+      const at = await scene();
+      if (path.length > 0) setPath(at.record, path, value);
+      await at.operate();
+      expect(existsSync(at.target.runRoot)).toBe(false);
+      expect(read(at.other.out, "plan.md")).toBe("the plan\n");
+      expect(tree(project)).toEqual(["docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts"]);
+    });
+
+    it.each<[string, (string | number)[], unknown]>([
+      ["v", ["v"], 1],
+      ["itemId", ["itemId"], 99],
+      ["self", ["self"], "1:1"],
+      ["outDir", ["outDir"], "1:1"],
+      ["stages.s1.dir", ["stages", "s1", "dir"], "1:1"],
+    ])("a record whose %s no longer matches stops it: nothing of the run goes", async (_field, path, value) => {
+      const at = await scene();
+      setPath(at.record, path, value);
+      try {
+        await at.operate();
+        expect(read(at.stage, "plan.md")).toBe("the plan\n");
+        expect(read(at.target.out, "plan.md")).toBe("the plan\n");
+        expect(read(at.other.out, "plan.md")).toBe("the plan\n");
+      } finally {
+        writeFileSync(at.record, at.written);
+      }
+    });
   });
 
   it("a planted record tmp link does not write through", async () => {

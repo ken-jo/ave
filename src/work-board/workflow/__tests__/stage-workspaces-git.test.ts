@@ -1,61 +1,26 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHostGit, type HostGit } from "../host-git.js";
-import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
 import { stageOf, writeUnder as write } from "./stage-fixtures.js";
+import { type GitFixture, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
+let fx: GitFixture;
 let base: string;
 let repo: string;
 let env: NodeJS.ProcessEnv;
-let runs = 0;
-const opened: { provider: ReturnType<typeof createStageWorkspaceProvider>; run: RunRef }[] = [];
-
-/** Plain git, the way the user would run it: hooks and drivers active. */
-const userGit = (cwd: string, ...args: string[]): string => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-const commitAll = (message: string): string => { userGit(repo, "add", "-A"); userGit(repo, "commit", "-q", "-m", message); return userGit(repo, "rev-parse", "HEAD"); };
-
-function start(): { provider: ReturnType<typeof createStageWorkspaceProvider>; run: RunRef } {
-  runs += 1;
-  const run: RunRef = { itemId: 7, runId: `run-git-${process.pid}-${Date.now()}-${runs}`, runKey: "key" };
-  const handle = { provider: createStageWorkspaceProvider({ git: createHostGit({ env }) }), run };
-  opened.push(handle);
-  return handle;
-}
-
-async function stageRoot(handle: ReturnType<typeof start>, stageId: string, attempt = 1): Promise<string> {
-  const prepared = await handle.provider.prepare(handle.run, stageOf(stageId), attempt);
-  if (!prepared.ok) throw new Error(`prepare refused: ${prepared.code}`);
-  return prepared.workspace.root;
-}
-
-async function sealed(handle: ReturnType<typeof start>, stageId: string): Promise<string | undefined> {
-  const result = await handle.provider.seal(handle.run, stageId);
-  if (!result.ok) throw new Error(`seal refused: ${result.code}`);
-  return result.sealCommit;
-}
+const userGit = (cwd: string, ...args: string[]): string => fx.userGit(cwd, ...args);
+const commitAll = (message: string): string => fx.commitAll(message);
+const start = (): ReturnType<GitFixture["start"]> => fx.start();
 
 beforeEach(() => {
-  base = mkdtempSync(join(tmpdir(), "swg-"));
-  repo = join(base, "project");
-  mkdirSync(repo);
-  writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n[init]\n\tdefaultBranch = main\n");
-  env = { ...process.env, GIT_CONFIG_GLOBAL: join(base, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1" };
-  userGit(repo, "init", "-q");
-  userGit(repo, "config", "user.name", "Alice Example");
-  userGit(repo, "config", "user.email", "alice@example.com");
-  write(repo, "a.txt", "one\n");
-  write(repo, "b.txt", "one\n");
-  commitAll("first");
+  fx = gitFixture();
+  ({ base, repo, env } = fx);
 });
 
-afterEach(async () => {
-  for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
-});
+afterEach(() => fx.done());
 
 describe("git stage workspaces", () => {
   it("a stage folder swapped after the tracked-file listing loses no outside file", async () => {
@@ -75,9 +40,7 @@ describe("git stage workspaces", () => {
       symlinkSync(swap === "stage" ? outside : join(outside, "conf"), target, "junction");
       return result;
     };
-    runs += 1;
-    const handle = { provider: createStageWorkspaceProvider({ git: { run, drivers: real.drivers }, sensitive: path => basename(path) === ".env" }), run: { itemId: 7, runId: `run-git-${process.pid}-${Date.now()}-${runs}`, runKey: "key" } };
-    opened.push(handle);
+    const handle = fx.start({ git: { run, drivers: real.drivers }, sensitive: path => basename(path) === ".env" });
     expect(await handle.provider.open(handle.run, repo)).toMatchObject({ ok: true });
     for (swap of ["stage", "folder"] as const) {
       expect(await handle.provider.prepare(handle.run, stageOf(`s-${swap}`), 1), swap).toEqual({ ok: false, code: "git-unavailable" });
@@ -343,49 +306,26 @@ describe("git stage workspaces", () => {
     expect((await restarted.seal(kept.run, "s1")).ok).toBe(true);
   });
 
-  it("a record copied into another folder, or naming another repository or branch, directs no cleanup", async () => {
-    const other = join(base, "other");
-    mkdirSync(other);
-    userGit(other, "init", "-q");
-    userGit(other, "config", "user.name", "Bob Example");
-    userGit(other, "config", "user.email", "bob@example.com");
-    write(other, "o.txt", "one\n");
-    userGit(other, "add", "-A");
-    userGit(other, "commit", "-q", "-m", "first");
-    userGit(other, "branch", "keep");
-    userGit(repo, "branch", "keep");
+  it("a record copied into another folder directs no cleanup", async () => {
     const handle = start();
     const open = await handle.provider.open(handle.run, repo);
     if (!open.ok) throw new Error(open.code);
     const runRoot = open.workspace.runRoot;
     const stage = await stageRoot(handle, "s1");
-    const record = readFileSync(join(runRoot, RUN_FILE), "utf8");
-    const sweepWith = async (changed: Record<string, unknown>): Promise<void> => {
-      writeFileSync(join(runRoot, RUN_FILE), JSON.stringify({ ...JSON.parse(record) as Record<string, unknown>, ...changed }));
-      await createStageWorkspaceProvider({ git: createHostGit({ env }) }).sweep([]);
-    };
+    // The record as it is, copied beside a folder of the same name under another project's folder.
+    const copy = join(dirname(dirname(runRoot)), "elsewhere-0a1b2c3d", basename(runRoot));
+    write(copy, "s1/kept.txt", "kept\n");
+    writeFileSync(join(copy, RUN_FILE), readFileSync(join(runRoot, RUN_FILE), "utf8"));
     try {
-      // The run's folder, its record naming another repository and a branch of that one at its commit.
-      await sweepWith({ projectRoot: other, branch: "keep", baseCommit: userGit(other, "rev-parse", "HEAD") });
-      // Its own repository, and a branch that is not the run's.
-      await sweepWith({ branch: "keep" });
-      await sweepWith({ baseCommit: "HEAD" });
-      expect(userGit(other, "branch", "--list", "keep")).toContain("keep");
-      expect(userGit(repo, "branch", "--list", "keep")).toContain("keep");
-      expect(existsSync(join(stage, "a.txt"))).toBe(true);
-
-      // The record as it was, copied beside a folder of the same name under another project's folder.
-      const copy = join(dirname(dirname(runRoot)), "elsewhere-0a1b2c3d", basename(runRoot));
-      write(copy, "s1/kept.txt", "kept\n");
-      writeFileSync(join(copy, RUN_FILE), record);
-      writeFileSync(join(runRoot, RUN_FILE), record);
-      await createStageWorkspaceProvider({ git: createHostGit({ env }) }).sweep([handle.run.runId]);
+      const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
+      await restarted.sweep([handle.run.runId]);
+      await restarted.discard();
       expect(existsSync(join(copy, "s1", "kept.txt"))).toBe(true);
       expect(existsSync(join(copy, RUN_FILE))).toBe(true);
-      rmSync(dirname(copy), { recursive: true, force: true });
     } finally {
-      writeFileSync(join(runRoot, RUN_FILE), record);
+      rmSync(dirname(copy), { recursive: true, force: true });
     }
+    expect(existsSync(join(stage, "a.txt"))).toBe(false);
   });
 
   it("a run folder swapped for a link while its worktrees are released is not deleted through, by the host or by git", async () => {
