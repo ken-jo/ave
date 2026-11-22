@@ -7,19 +7,21 @@ import { MOCK_DEFAULT_SESSION_ID } from "./mock-ave-api.js";
 import { t } from "../../src/i18n/runtime.js";
 import type { BrowserWorkspaceApi, BrowserWorkspaceState } from "../../src/shared/browser-workspace.js";
 import { TEST_IDS, testIdSelector } from "../../src/shared/test-ids.js";
+import { DOCK_ENTER_WIDTH } from "../../src/shared/shell-geometry.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 
 describe("chat columns", () => {
   it("ends a narrow overlay above the composer and approval without lifting the transcript", async () => {
+    const narrowWidth = DOCK_ENTER_WIDTH - 1;
     const original = HTMLElement.prototype.getBoundingClientRect;
     const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-      if (this.dataset.testid === TEST_IDS.chatViewRoot) return new DOMRect(0, 41, 783, 722);
+      if (this.dataset.testid === TEST_IDS.chatViewRoot) return new DOMRect(0, 41, narrowWidth, 722);
       if (this.hasAttribute("data-composer-placement")) return new DOMRect(87, 644, 672, 73);
       if (this.hasAttribute("data-approval-request-id")) return new DOMRect(87, 500, 672, 250);
       return original.call(this);
     });
     try {
-      const view = await renderApp({ hasApiKey: true, shellWidth: 783, canvasWidth: 783 });
+      const view = await renderApp({ hasApiKey: true, shellWidth: narrowWidth, canvasWidth: narrowWidth });
       fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement);
       const panel = await waitFor(() => {
         const element = view.container.querySelector<HTMLElement>('[data-testid="chat-side-panel-motion"]') as HTMLElement;
@@ -52,13 +54,15 @@ describe("chat columns", () => {
       return hosts;
     });
     const tabs = hosts.map((host, index) => ({ tabId: host.dataset.tabId!, documentGeneration: 1, url: `https://${index === 0 ? "one" : "two"}.example/`, title: `Page ${index + 1}`, zoomFactor: 1 }));
-    let workspaceState: BrowserWorkspaceState = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs, storageStatus: "ready", capabilities: { fullscreen: false } };
+    let workspaceState: BrowserWorkspaceState = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs, pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
     const workspaceListeners = new Set<(state: BrowserWorkspaceState) => void>();
     browserTabs.getState.mockResolvedValue({ revision: 1, tabs: tabs.map((tab) => ({ ...tab, rendererTabId: tab.tabId,
       owner: { sessionId: MOCK_DEFAULT_SESSION_ID }, lease: null, generation: 1, kind: "embedded", openerTabId: null, mode: "human-paused" })) });
-    Object.assign(view.api, { browserWorkspace: {
+    Object.assign(view.api, { browserWorkspace: { setPageShortcuts: async () => ({ ok: true, value: null }), onPageShortcut: () => () => undefined,
       getState: vi.fn(async () => ({ ok: true, value: workspaceState })),
       onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { workspaceListeners.add(handler); return () => { workspaceListeners.delete(handler); }; }), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })),
+      onAttachBlocked: vi.fn(() => () => {}),
+      onOpenTab: vi.fn(() => () => {}),
     } as unknown as BrowserWorkspaceApi });
     fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))!);
     const column = view.container.querySelector<HTMLElement>('[data-testid="chat-thumbnail-column"]')!;

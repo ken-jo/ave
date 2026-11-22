@@ -3,6 +3,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExt
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
+import { disposeLiveTerminal } from "./preview/live-terminal-registry.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { ThemeProvider } from "./theme/index.js";
 import { OverlayContextProvider, type OverlayItem } from "./context/OverlayContext.js";
@@ -37,7 +38,7 @@ import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { PaneChatNavigationProvider, type PaneChatNavigation } from "./context/PaneChatNavigationContext.js";
 import { prunePaneChats } from "./hooks/use-side-chat.js";
 import { subscribeMainLayoutChange } from "./preview/main-layout-restore.js";
-import { SurfacePane } from "./components/MainSurfacePanels.js";
+import { SurfacePane, surfacePaneChatGroup } from "./components/MainSurfacePanels.js";
 import type { SideChatOpenRequest, SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, isToolMainSurface, useMainSurfaces, type ToolMainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
@@ -48,6 +49,7 @@ import { connectBrowserObservations } from "./preview/browser-observation-bridge
 import { AgentBrowserPipLayer } from "./preview/AgentBrowserPipLayer.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { FolderView } from "./components/folder-view/FolderView.js";
+import { handleFolderViewAtRequests, handleSettingsSectionRequests, handleTerminalAtRequests } from "./utils/app-shell-requests.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
@@ -660,7 +662,10 @@ export function App() {
     }
     surfaces.close(tabId);
     forgetActiveSurface(tabId);
-    if (surface.kind === "terminal") void api.terminal?.kill(tabId);
+    if (surface.kind === "terminal") {
+      void api.terminal?.kill(tabId);
+      disposeLiveTerminal(tabId);
+    }
   }, [api]);
 
   /** 옆에 분할로 열기 (case 20) for a terminal or page: a new pane beside the focused one, or its own pane if it has one. */
@@ -1021,6 +1026,10 @@ export function App() {
     },
     [navigateToLocation],
   );
+  // A view deep in the tree (a file action whose setting is missing) asks for a setting to be shown.
+  useEffect(() => handleSettingsSectionRequests((request) => {
+    navigateToSettingsPath({ tab: normalizeSettingsTab(request.tab), ...(request.section ? { section: request.section } : {}) });
+  }), [navigateToSettingsPath]);
   // Refresh the list after a Suggestions card arrives so its row receives the attention count.
   const refreshSessionsOnSuggestion = useCallback(() => { void refreshSessions(); }, [refreshSessions]);
   const {
@@ -1090,6 +1099,29 @@ export function App() {
     });
     chatGroups.setPaneContent(chatGroups.focusedId, { view, surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
+
+  // A file explorer outside the main area (the side panel's tree) asks for a terminal in a folder: it opens beside the
+  // focused pane when the canvas has room, otherwise in that pane, as the folder view's own "open terminal here" does.
+  useEffect(() => handleTerminalAtRequests(({ dir, projectRoot }) => {
+    const terminal = mainSurfaces.create("terminal", { cwd: dir, projectRoot });
+    const location: ViewLocation = { view: "terminal", surface: terminal.tabId };
+    const paneId = chatGroups.focusedId;
+    const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+      ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+    if (beside === null) chatGroups.setPaneContent(paneId, location);
+  }), [chatGroups, mainSurfaces]);
+
+  // A view that names a project file (the side panel's tree) asks to see it in a folder view: a new one, opened where the
+  // terminal request above opens, that walks to the path as a restored view walks back to where it was.
+  useEffect(() => handleFolderViewAtRequests(({ path, projectRoot }) => {
+    const folder = mainSurfaces.create("folder", { projectRoot });
+    mainSurfaces.setFolderLocation(folder.tabId, { path: projectRoot, selection: path });
+    const location: ViewLocation = { view: "folder", surface: folder.tabId };
+    const paneId = chatGroups.focusedId;
+    const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+      ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+    if (beside === null) chatGroups.setPaneContent(paneId, location);
+  }), [chatGroups, mainSurfaces]);
 
   // After a folder is added (case 08) or turns out to be a project already (case 09), the window switches to it once the
   // refreshed list holds it, and the notice offers the way back to where it was.
@@ -2268,8 +2300,16 @@ export function App() {
           onChatOpenChange={(open) => setPaneChatOpen(surface.tabId, open)}
           onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
-          // Main-terminal blocks attach to the last composer the user typed in.
-          onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
+          // Main-terminal blocks attach to the last composer the user typed in, else to this pane's own open chat.
+          onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId, ownChatGroup: surfacePaneChatGroup(paneId) })}
+          // A link the user modifier-clicks in the terminal opens as a new page beside it when the canvas has room, else in its place.
+          onOpenLink={(url) => {
+            const page = mainSurfaces.create("browser", { url, projectRoot: surface.projectRoot });
+            const location: ViewLocation = { view: "web", surface: page.tabId };
+            const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+              ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+            if (beside === null) chatGroups.setPaneContent(paneId, location);
+          }}
         />
       ));
     }
@@ -2338,7 +2378,7 @@ export function App() {
             {/* `relative` makes THIS full-height shell column the positioning
                 context for the floating-card Sidebar, which starts one band down
                 (`--shell-card-top`) on the tiles' top line. */}
-            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative grid h-screen min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[var(--shell-canvas-top)_minmax(0,1fr)] overflow-hidden">
+            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative grid min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[var(--shell-canvas-top)_minmax(0,1fr)] overflow-hidden" style={{ left: "calc(-1 * var(--native-window-inset))", top: "calc(-1 * var(--native-window-inset))", width: "calc(100vw + 2 * var(--native-window-inset))", height: "calc(100vh + 2 * var(--native-window-inset))" }}>
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
@@ -2502,11 +2542,11 @@ export function App() {
               <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
-                  className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
-                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-edge)" : ""
+                  className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background ${
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-content-lead)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
-                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
+                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `calc(${COLLAPSED_RAIL_RESERVE + sidebarWidth}px + var(--shell-card-half-gap))` }}
                 >
                   {/* Persistent banners reserve space and also register in the notification centre. */}
                   <div
@@ -2658,7 +2698,7 @@ export function App() {
                                     than nested flex containers, so a tile's rectangle is
                                     one number that the layout, a drag hit-test, and a
                                     measurement in a test all read the same way. */}
-                                <div className={`min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pr-(--chrome-gap) pt-0 ${sidebarHidden ? "pl-(--chrome-gap-tight)" : "pl-0"}`} data-testid="pane-row">
+                                <div className={`min-h-0 min-w-0 flex-1 pb-(--shell-pane-inset) pr-(--shell-pane-inset) pt-0 ${sidebarHidden ? "pl-(--shell-pane-inset)" : "pl-0"}`} data-testid="pane-row">
                                 {/* The positioning context is INSIDE the padding: an
                                     absolutely-positioned child resolves against the padding
                                     box, so anchoring the tiles to the row itself would eat
@@ -2670,8 +2710,8 @@ export function App() {
                                 return (
                                 <div
                                   key={group.id}
-                                  /** Use pixel half-gutters so adjacent tiles make an 8px gap and stay aligned with sidebar chrome at every font scale. */
-                                  className="absolute flex p-(--chrome-gap-tight)"
+                                  /** Adjacent half-gutters make the same gap as navigation cards, independent of font scale. */
+                                  className="absolute flex p-(--shell-card-half-gap)"
                                   /** Keep hidden tiles mounted to preserve running turns, stream subscriptions and stop controls. */
                                   style={{ ...areaStyle(group.box), ...(group.hidden ? { display: "none" } : {}) }}
                                   data-testid={`pane-cell:${group.id}`}
@@ -2769,7 +2809,7 @@ export function App() {
                                 </div>
                                 );
                                 })}
-                                {/* The boundaries sit in the 8px the cells' half-gutters
+                                {/* The boundaries sit in the shared gap the cells' half-gutters
                                     leave between tiles, so the bar's strip is exactly
                                     the gap and steals nothing from either transcript. */}
                                 {chatGroups.gutters.map((gutter) => (

@@ -599,3 +599,38 @@ it.each([false, true])("keeps a plugin-hosted MCP tool on the shared MCP permiss
     }
   } finally { await manager.disconnectAll(); }
 });
+
+it.each(["plugin", "agent-plugin"] as const)("clears a host-stored %s key through its owning lifecycle and reports presence only", async (kind) => {
+  const stored = new Map<string, string>();
+  const secrets = { getSecret: async (key: string) => stored.get(key) ?? null,
+    setSecret: async (key: string, value: string) => { stored.set(key, value); },
+    deleteSecret: async (key: string) => { stored.delete(key); } };
+  const manager = new McpManager(new McpGovernance(join(root, "policy-clear-key.json")), new ToolRegistry(), unusedNetworkFetch,
+    join(root, "servers-clear-key.json"), { append: vi.fn(async () => undefined), log: vi.fn() } as never, undefined, undefined, secrets);
+  const pluginId = kind === "plugin" ? "meeting-kit" : "agent-plugin/meeting-kit";
+  const projection = prepareBundledMcpProjection({ pluginId, pluginVersion: "1.0.0",
+    generationId: "a".repeat(64), activationId: "clear-key-run", localId: "notes", fingerprint: "b".repeat(64) },
+  { transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-Token" }, "d".repeat(64));
+  const trust = new PluginMcpTrustStore(join(root, "trust-clear-key.json"));
+  trust.approve(projection);
+  const owner = { pluginId, generationId: "clear-key-run" };
+  manager.registerBundledCredentialSource(kind, { installedPackages: async () => new Set(["meeting-kit"]),
+    list: () => [{ packageName: "meeting-kit", serverName: "notes", transport: "http", url: "https://example.test/mcp", auth: "api-key", apiKeyHeader: "X-Token" }],
+    reconnect: async () => { manager.publishBundledGeneration(await manager.prepareBundledGeneration(owner, [projection], trust)); } });
+  const ref = { kind, name: "meeting-kit" };
+  await manager.setBundledApiKey(ref, "notes", "throwaway-bundled-key");
+  await manager.setBundledApiKey(ref, "notes", "throwaway-bundled-replacement");
+  expect(constructedConfigs.at(-1)?.apiKey).toBe("throwaway-bundled-replacement");
+  expect(disconnect).toHaveBeenCalledOnce();
+  const before = await manager.getManagementState();
+  expect(Object.values(before.hasApiKey)).toEqual([true]);
+  expect(JSON.stringify(before)).not.toContain("throwaway-bundled-key");
+  await manager.clearBundledApiKey(ref, "notes");
+  expect(stored.has(bundledCredentialKey(ref, "notes"))).toBe(false);
+  expect(manager.listServers()).toEqual([]);
+  expect(disconnect).toHaveBeenCalledTimes(2);
+  expect(Object.values((await manager.getManagementState()).hasApiKey)).toEqual([false]);
+  const missing = await manager.prepareBundledGeneration(owner, [projection], trust);
+  expect(missing.degraded).toMatchObject([{ code: "credential_required" }]);
+  await manager.discardBundledGeneration(missing);
+});

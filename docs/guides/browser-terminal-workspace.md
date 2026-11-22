@@ -191,6 +191,22 @@ inherit unrelated grants. Downloads still ask for a location in the native Save
 dialog, keep prompt-rate limits, and never open a
 saved file automatically.
 
+Until the user answers the Save dialog, a download waits in a host-only staging
+folder in the Ave home (`browser-downloads/`). The host-mediated file tools and
+every confined lane cannot reach it on any OS: confined plugin workers,
+sandboxed agent shells and children, and MCP servers or A2A agents while they
+run confined. A process the user has already given their own file authority
+can read it: an MCP server or plugin worker started with plugin worker
+confinement off, or a host command the user approved outside the sandbox. Such
+a process can read the saved file as soon as Save completes, so staging gives
+it nothing it lacks, and staging is not isolated from it.
+
+Moving a download into the chosen folder, and removing staged and temporary
+files, act on the staging folder and the chosen folder while holding them
+open, never on a path: a folder renamed or replaced by a link after it was
+checked is not written through. On macOS and Windows a helper that ships with
+Ave does this; if it is missing, every download is refused with a notice.
+
 Only visible cards in a visible window request previews. Hiding or unmounting
 the panel stops new scheduling. Late results after hide, navigation, or close
 are discarded without entering a cache. The renderer alone caches completed
@@ -207,7 +223,11 @@ Visible terminals have no lane selector. Each workspace or side-work-panel termi
 shell. In the side work panel it is labeled **My terminal (host) · No agent
 access**; agent commands in a workspace pane use your per-session surface
 choice. It uses your real HOME,
-profile and validated initial directory. Moving or hiding the pane preserves its
+profile and validated initial directory. Its shell starts with the environment
+Ave itself was started with (for example `SSH_AUTH_SOCK` and `EDITOR`), without
+Ave's own variables (`AVE_*`, `ELECTRON_*`, the packaged `NODE_ENV`), and with
+`TERM_PROGRAM=Ave`. The agent's isolated shell and other agent child processes
+still receive only the short allowlist. Moving or hiding the pane preserves its
 shell; closing the terminal tab ends that host shell.
 
 zsh, bash and pwsh use authenticated hooks installed through a temporary
@@ -246,6 +266,67 @@ it. Side-work-panel host terminals have no agent read/write access.
 
 <a id="agent-commands-in-your-terminal"></a>
 
+### Working in the terminal
+
+A terminal you open from the launcher or the new-tab menu takes the keyboard
+at once. Its screen and scrollback stay exactly as they were when you switch
+tabs or move it between the side panel and a pane.
+
+Web addresses in the output, and hyperlinks a program prints (OSC 8), are
+links. Hovering one shows where it really goes. Hold Cmd (macOS) or Ctrl
+(Windows and Linux) and click to open it in an Ave browser tab: beside the
+terminal in the main area, or as a new tab in the side panel. Only `http` and
+`https` links open, and never one that carries a user name or password.
+
+The app's search key (Cmd+F on macOS, Ctrl+F elsewhere, or the key you bound
+to Search) pressed in a terminal opens a find bar over its output. It searches
+the screen and the scrollback as you type; Enter goes to the next match,
+Shift+Enter to the previous one, and Escape closes it.
+
+Settings → Appearance → Terminal holds, under the font, how your terminals
+behave: the scrollback length (1,000 to 100,000 lines), the cursor shape, copy
+on select, Option as the Meta key (macOS) and the shell new terminals start.
+The shell is an absolute path; empty means your login shell. A path that is not
+a file makes the terminal say so instead of starting a different shell. Open
+terminals take every change at once except the shell.
+
+Cmd+Up and Cmd+Down (Ctrl+Up and Ctrl+Down on Windows and Linux) scroll to the
+previous and the next command. While a command's output fills the top of the
+view, its command line stays pinned over the first row; click it to scroll
+back to where the command started. Both need shell integration (zsh or bash).
+
+Right-click in a terminal for its own menu: Copy, Paste, Select All and Clear,
+and, on a row that belongs to a command, Copy Command, Copy Output and Attach
+to chat for that command's block.
+
+Copy and paste use the platform's terminal keys. On macOS, Cmd+C and Cmd+V.
+On Windows, Ctrl+C copies when text is selected (otherwise it interrupts, as
+usual) and Ctrl+V pastes; Ctrl+Shift+C and Ctrl+Shift+V also work. On Linux,
+Ctrl+Shift+C copies and Ctrl+Shift+V or Shift+Insert pastes, and Ctrl+C and
+Ctrl+V stay with the shell.
+
+When the shell exits, the terminal says **Ended** with the exit code and
+offers **Restart shell** and **Close tab**. Pressing Enter also starts a new
+shell, in the directory the old one was in, with the earlier output kept.
+
+A host terminal tab that is open when you quit Ave comes back with the output
+it showed (up to the last megabyte), followed by a line saying the tab was
+restored and a new shell in the directory the old one was in. The programs that
+were running are not restarted. That output is yours alone: Ave keeps it in a
+private folder of its data directory that agents and sandboxed commands cannot
+read, readable only by your user account, and deletes it when you close the
+tab. Output kept for a tab that does not come back is deleted the next time
+Ave starts and reads its saved layout, whether or not you open a terminal
+then; when the saved layout cannot be read, nothing is deleted. Each app
+profile (`--user-data-dir` or `AVE_USER_DATA_DIR`) keeps and deletes only its
+own tabs' output, even when profiles share one Ave home. It is never added to a
+conversation, a session or memory. If the output cannot be saved, Ave says so
+once, when it happens, and if output it should delete at startup cannot be
+deleted, it says that once too. If Ave does not quit
+normally (a crash or a forced quit), the output of that run is lost, and the
+tab comes back as restored with what was last saved: when you last quit,
+cleared it, or its shell ended.
+
 ### Agent commands in your terminal
 
 The chat in a workspace terminal's own pane can ask to run a command in that
@@ -257,7 +338,9 @@ principal/taint or exfiltration floors. Every command still targets the exact
 terminal, turn, shell and physical directory; a changed binding or terminal
 state during a card prevents typing.
 While the agent types or runs the command, a strip above the terminal shows it
-with **Take over** and **Stop** (typing takes over too). Typing anything,
+with **Take over** and **Stop** (typing takes over too). In a narrow pane,
+where the chat floats over the terminal, the same strip is repeated at the top
+of the chat. Typing anything,
 pressing Take over or Stop, moving the terminal to the side panel, closing the
 pane's chat binding or the end of that chat turn ends the agent's control
 immediately; Stop also interrupts the agent's command once, even if it has not

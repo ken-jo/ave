@@ -13,9 +13,11 @@ const SRC = fileURLToPath(new URL("../..", import.meta.url));
  * namespaces each may use there. Any other key in these files must still be model-facing. */
 const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["boot/steps/home-privacy-notice.ts", ["homePrivacy."]], // private storage repair notification
+  ["boot/steps/terminal-scrollback-setup.ts", ["ptyTerminal.outputNotSaved", "ptyTerminal.closedOutputNotRemoved"]], // notifications about kept terminal output
   ["floating-dock-window.tsx", ["floatingDock."]], // the dock renderer's own error line (it sits outside ui/)
   ["ipc/domains/attach.ts", ["mainDialog."]], // file picker title
   ["ipc/domains/chat.ts", ["mainDialog."]], // delete / import / export dialogs
+  ["ipc/domains/diagnostics.ts", ["mainDialog.diagnosticsExportTitle"]], // diagnostics export save dialog title
   ["ipc/domains/git-marketplace.ts", ["mainDialog."]], // marketplace folder picker
   ["ipc/domains/plugins.ts", ["mainDialog."]], // local plugin install dialogs
   ["ipc/domains/ui.ts", ["chatPreviewRail.", "chatView.", "mainToolbar.", "sidebar.", "toolActivity.", "turnActionBar."]], // native context menus
@@ -23,6 +25,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["lib/chat-stream-state.ts", ["askUserQuestionCard."]], // transcript recap labels
   ["lib/llm-status-message.ts", ["useChatState."]], // status line
   ["main/auto-updater.ts", ["common.", "mainDialog."]], // update dialogs
+  ["main/browser/browser-page-context-menu.ts", ["browserContextMenu."]], // native page context menu
   ["main/browser/browser-workspace-desktop.ts", ["browserWorkspace.permissionPrompt."]], // native site-permission dialog
   ["main/configuration-boot-error.ts", ["homePrivacy."]],
   ["main/device-code-dialog.ts", ["deviceCode.", "common."]], // host-owned sign-in instructions and actions

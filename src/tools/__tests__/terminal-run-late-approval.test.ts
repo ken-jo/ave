@@ -90,7 +90,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
       },
       waitDisclosure: async (_ref, _window, _session, turnId) => ({
         requestingSessionId: SESSION_ID, turnId, command, cwd: root, blockId: 1,
-        state: "done", exitCode: 0, output: "ready", truncated: false,
+        state: "done", exitCode: 0, output: "ready", outputChars: 5, truncated: false,
       }),
     },
   }));
@@ -172,6 +172,43 @@ describe("host terminal late native approval", () => {
     });
   });
 
+  it("asks a late card that is no longer a surface card without the surface card's reason code", async () => {
+    const f = await fixture();
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-taint-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      // After the hold the handler's admission finds the surface card, and the late card is prepared from the next recheck, which finds it too.
+      // External content then reaches the turn before the card is asked, so the recheck that asks it finds a forced card instead.
+      const recheck = f.manager.recheckPermission.bind(f.manager);
+      const surfaceCards: string[] = [];
+      vi.spyOn(f.manager, "recheckPermission").mockImplementation((permission) => {
+        const result = recheck(permission);
+        if (result.decision === "ask" && result.pipelineRequest?.userOwnedSurface !== undefined && result.forceModal !== true) {
+          surfaceCards.push(result.reasonCode ?? "");
+          if (surfaceCards.length === 2) noteToolResultsReturnedToModel();
+        }
+        return result;
+      });
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      expect(surfaceCards).toEqual(["user-owned-surface-ask", "user-owned-surface-ask"]);
+      const asked = f.request.mock.calls[0]?.[0];
+      if (!asked) throw new Error("no late card was asked");
+      expect(asked).toMatchObject({ forceExplicit: true, hostTerminal: { afterExternalContent: true } });
+      expect(asked.userOwnedSurface).toBeUndefined();
+      expect(asked.reasonCode).toBeUndefined();
+      const card = f.cards[0];
+      expect(card).not.toHaveProperty("userOwnedSurface");
+      expect(card).not.toHaveProperty("reasonCode");
+      f.deny(card);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+    });
+  });
+
   it("keeps an allowed surface command outside a newly tripped reviewer breaker", async () => {
     const f = await fixture();
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "paused-allow-turn" }, async () => {
@@ -205,6 +242,8 @@ describe("host terminal late native approval", () => {
         userOwnedSurfaceReviewFallback: true,
       });
       expect(f.request.mock.calls[0]?.[0].forceExplicit).not.toBe(true);
+      // The ordinary card draws the fallback with the host's reason: it is not sent the surface card's code.
+      expect(f.request.mock.calls[0]?.[0].reasonCode).toBeUndefined();
       f.approve(f.cards[0], true);
       const [result] = await pending;
       expect(result.is_error, result.content).toBeFalsy();

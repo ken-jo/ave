@@ -35,6 +35,8 @@ import {
 import type { PermissionAuditEntry } from "../audit/audit-schema.js";
 import type { SecretStore } from "../audit/hmac-chain.js";
 import { EXECUTION_MODES, type ExecutionMode } from "../shared/permission-mode.js";
+import type { PermissionManager } from "./permission-manager.js";
+import { permissionModeReviewerOverride, setPermissionModeReviewerOverride } from "./permission-mode-apply.js";
 
 export type PermissionDirVerb = "allow" | "deny" | "list";
 
@@ -338,6 +340,7 @@ export async function dispatchPermissionReviewerCommandWithRewire(
   cmd: PermissionReviewerCommand,
   rewireReviewerAgent?: () => Promise<void>,
   pathOverride?: string,
+  permissionManager?: PermissionManager,
 ): Promise<PermissionReviewerResult> {
   if (cmd.verb === "show") {
     return dispatchPermissionReviewerCommand(cmd, pathOverride);
@@ -346,18 +349,24 @@ export async function dispatchPermissionReviewerCommandWithRewire(
     { verb: "show", value: "" },
     pathOverride,
   );
+  const previousOverride = permissionManager === undefined ? undefined : permissionModeReviewerOverride(permissionManager);
+  if (cmd.verb === "mode" && permissionManager !== undefined) setPermissionModeReviewerOverride(permissionManager, undefined);
   const result = await dispatchPermissionReviewerCommand(cmd, pathOverride);
-  if (!result.ok) return result;
+  if (!result.ok) {
+    if (cmd.verb === "mode" && permissionManager !== undefined) setPermissionModeReviewerOverride(permissionManager, previousOverride);
+    return result;
+  }
   try {
     await rewireReviewerAgent?.();
     return result;
   } catch (err) {
+    if (cmd.verb === "mode" && permissionManager !== undefined) setPermissionModeReviewerOverride(permissionManager, previousOverride);
     if (previous.ok && !(previous.verb === "show" && previous.fault)) {
       await setReviewerSettingsPersist({ ...previous.settings }, pathOverride);
       try {
         await rewireReviewerAgent?.();
-      } catch {
-        // The original rewire failure is the actionable error for callers.
+      } catch (rollbackError) {
+        return { ok: false, error: `reviewer-rewire-failed: ${(err as Error).message}; reviewer rollback failed: ${(rollbackError as Error).message}` };
       }
     }
     return {

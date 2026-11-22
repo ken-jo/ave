@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { vi } from "vitest";
 
-import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } from "../safe-env.js";
+import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv, buildUserTerminalEnv } from "../safe-env.js";
 
 const SAFE_KEYS = [
   "PATH",
@@ -362,6 +362,44 @@ describe("buildSandboxedChildEnv — ASRT env composition (PR #1356 allow-list)"
     expect(env.HTTP_PROXY).toBe("http://localhost:8080");
     for (const key of SECRET_KEYS) {
       expect(Object.prototype.hasOwnProperty.call(env, key)).toBe(false);
+    }
+  });
+});
+
+describe("the user's own terminal inherits the application environment", () => {
+  const source = {
+    PATH: "/usr/bin", HOME: "/home/testuser", SSH_AUTH_SOCK: "/run/agent.sock", EDITOR: "vim", ZDOTDIR: "/home/testuser/.zsh", EMPTY_VALUE: "",
+    AVE_HOME: "/data/ave", AVE_API_KEY: "ave-secret", ELECTRON_RUN_AS_NODE: "1", NODE_ENV: "production",
+    CLAUDE_CODE_TMPDIR: "/tmp/sandbox", CLAUDE_TMPDIR: "/tmp/sandbox", SNAP: "/snap/ave", GDK_PIXBUF_MODULE_FILE: "/snap/loaders", ABSENT: undefined,
+  };
+
+  it("keeps user variables the allowlist dropped and names the terminal program", () => {
+    const env = buildUserTerminalEnv({}, source, "darwin");
+    expect(env).toMatchObject({ PATH: "/usr/bin", HOME: "/home/testuser", SSH_AUTH_SOCK: "/run/agent.sock", EDITOR: "vim", ZDOTDIR: "/home/testuser/.zsh", EMPTY_VALUE: "", TERM_PROGRAM: "Ave" });
+    expect("ABSENT" in env).toBe(false);
+  });
+
+  it("removes Ave's own configuration, secrets and runtime variables", () => {
+    const env = buildUserTerminalEnv({}, source, "darwin");
+    for (const name of ["AVE_HOME", "AVE_API_KEY", "ELECTRON_RUN_AS_NODE", "NODE_ENV", "CLAUDE_CODE_TMPDIR", "CLAUDE_TMPDIR", "SNAP", "GDK_PIXBUF_MODULE_FILE"]) {
+      expect(env[name], name).toBeUndefined();
+    }
+  });
+
+  it("matches Windows variable names without regard to case, and only there", () => {
+    const mixed = { Path: "C:\\Windows", Ave_Home: "C:\\ave", node_env: "production", ProgramFiles: "C:\\Program Files" };
+    expect(buildUserTerminalEnv({}, mixed, "win32")).toEqual({ Path: "C:\\Windows", ProgramFiles: "C:\\Program Files", TERM_PROGRAM: "Ave" });
+    expect(buildUserTerminalEnv({}, mixed, "linux")).toMatchObject({ Ave_Home: "C:\\ave", node_env: "production" });
+  });
+
+  it("lets host-created extras win and leaves the agent allowlist unchanged", () => {
+    vi.stubEnv("SSH_AUTH_SOCK", "/run/agent.sock");
+    expect(buildUserTerminalEnv({ TERM: "xterm-256color" }, source, "darwin").TERM).toBe("xterm-256color");
+    expect(buildUserTerminalEnv().SSH_AUTH_SOCK).toBe("/run/agent.sock");
+    expect(buildUserTerminalEnv().AVE_API_KEY).toBeUndefined();
+    for (const env of [buildHostShellChildEnv(), buildSafeChildEnv(), buildSandboxedChildEnv({ ...process.env })]) {
+      expect(env.SSH_AUTH_SOCK).toBeUndefined();
+      expect(env.TERM_PROGRAM).toBeUndefined();
     }
   });
 });

@@ -8,6 +8,7 @@ import type { PluginConfigSchemaPropertySummary, PluginConfigSchemaSummary } fro
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
 import { resolvePluginLocalizedText } from "../../../shared/plugin-localized-text.js";
+import { useSettingsControls } from "../context/SettingsEditorContext.js";
 export type PluginConfigFormValues = Record<string, unknown>;
 
 export interface PluginConfigSchemaFormProps {
@@ -19,9 +20,13 @@ export interface PluginConfigSchemaFormProps {
   secretsPresent: Record<string, boolean>;
   onSave: (values: PluginConfigFormValues) => Promise<void> | void;
   onSetSecret: (key: string, value: string) => Promise<void> | void;
+  /** Remove only this field's saved override through its owning cleartext or secret writer. */
+  onResetField: (key: string) => Promise<void> | void;
+  loading?: boolean;
+  loadError?: string;
 }
 
-function deriveLabel(key: string, prop: PluginConfigSchemaPropertySummary, locale: string): string {
+export function pluginConfigFieldLabel(key: string, prop: PluginConfigSchemaPropertySummary, locale: string): string {
   return resolvePluginLocalizedText(prop, prop.locales, locale, ["title"]) ?? key;
 }
 
@@ -29,14 +34,17 @@ function deriveDescription(prop: PluginConfigSchemaPropertySummary, locale: stri
   return resolvePluginLocalizedText(prop, prop.locales, locale, ["description"]);
 }
 
-function coerceNumber(raw: string, prop: PluginConfigSchemaPropertySummary): number | undefined {
+function coerceNumber(raw: string): number | undefined {
   if (raw === "") return undefined;
-  const parsed = prop.type === "integer" ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+  const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function fieldError(prop: PluginConfigSchemaPropertySummary, value: unknown): string | null {
-  if (value === undefined || value === "") return null;
+function fieldError(prop: PluginConfigSchemaPropertySummary, value: unknown, required: boolean): string | null {
+  if (value === undefined || value === "") return required ? t("pluginConfigSchemaForm.errorRequired") : null;
+  if (prop.enum && !prop.enum.some((option) => option === value)) return t("pluginConfigSchemaForm.errorInvalidValue");
+  if (prop.type === "integer" && !Number.isInteger(value)) return t("pluginConfigSchemaForm.errorInteger");
+  if ((prop.type === "integer" || prop.type === "number") && (typeof value !== "number" || !Number.isFinite(value))) return t("pluginConfigSchemaForm.errorInvalidValue");
   if (prop.type === "string" && typeof value === "string") {
     if (prop.minLength !== undefined && value.length < prop.minLength) {
       return t("pluginConfigSchemaForm.errorMinLength", { minLength: prop.minLength });
@@ -79,7 +87,7 @@ function isSameConfigValue(a: unknown, b: unknown): boolean {
  * one key at a time so the value never sits in the cleartext settings
  * payload.
  */
-/** The per-field Save for cleartext inputs: disabled until dirty, busy while the host writes. */
+/** The per-field Save for valid cleartext drafts; busy while the host writes. */
 function SaveFieldButton({ fieldId, dirty, saving, onSave }: { fieldId: string; dirty: boolean; saving: boolean; onSave: () => void }) {
   const { t } = useTranslation();
   return (
@@ -102,6 +110,9 @@ export function PluginConfigSchemaForm({
   secretsPresent,
   onSave,
   onSetSecret,
+  onResetField,
+  loading,
+  loadError,
 }: PluginConfigSchemaFormProps) {
   const { t, locale } = useTranslation();
   const properties = schema.properties ?? {};
@@ -142,7 +153,18 @@ export function PluginConfigSchemaForm({
   /** Per-key saving indicator — drives the inline Save button's loading state on text / number / array / secret fields.
    * Toggle / enum auto-save uses the parent's `saving` prop. */
   const [fieldSaving, setFieldSaving] = useState<Record<string, boolean>>({});
-  const required = new Set(schema.required ?? []);
+  const required = useMemo(() => new Set(schema.required ?? []), [schema.required]);
+  const [saveErrors, setSaveErrors] = useState<Record<string, string>>({});
+  const requiredSetup = propertyKeys.some((key) => {
+    const prop = properties[key];
+    return prop.format !== "secret" && required.has(key) && (values[key] === undefined || values[key] === "");
+  });
+  const hasDraftErrors = propertyKeys.some((key) => {
+    const prop = properties[key];
+    return prop.format !== "secret" && fieldError(prop, draft[key], required.has(key)) !== null;
+  });
+  const hasMissingRequiredSecrets = propertyKeys.some((key) =>
+    properties[key].format === "secret" && required.has(key) && !secretsPresent[key]);
 
   // Build a single-key cleartext payload — uses `values` (the saved baseline)
   // for every key EXCEPT `nextKey`, which takes `nextValue`. This is critical:
@@ -165,6 +187,26 @@ export function PluginConfigSchemaForm({
     [properties, propertyKeys, values],
   );
 
+  const persistCleartext = useCallback(async (key: string, payload: PluginConfigFormValues): Promise<boolean> => {
+    setFieldSaving((prev) => ({ ...prev, [key]: true }));
+    setSaveErrors((prev) => ({ ...prev, [key]: "" }));
+    try {
+      await onSave(payload);
+      return true;
+    } catch {
+      setSaveErrors((prev) => ({ ...prev, [key]: t("pluginConfigTab.errorSave") }));
+      return false;
+    } finally {
+      setFieldSaving((prev) => ({ ...prev, [key]: false }));
+    }
+  }, [onSave, t]);
+
+  // Toggles and selects have no Save button, so a refused write must not leave the refused choice on screen. The latest stored
+  // values and a per-key revision let a failure restore the stored value without overwriting a newer choice.
+  const storedValuesRef = useRef(values);
+  storedValuesRef.current = values;
+  const immediateRevisionsRef = useRef<Record<string, number>>({});
+
   // Toggle/enum auto-save — fires onSave immediately for the changed key
   // only. The previous debounced full-draft save was retired because it
   // also caused cross-field bleed (same root cause as buildSingleKeyPayload).
@@ -174,9 +216,23 @@ export function PluginConfigSchemaForm({
     (key: string, value: unknown) => {
       dirtyKeysRef.current.add(key);
       setDraft((prev) => ({ ...prev, [key]: value }));
-      void onSave(buildSingleKeyPayload(key, value));
+      if (!requiredSetup && !hasMissingRequiredSecrets && !fieldError(properties[key], value, required.has(key))) {
+        const revision = (immediateRevisionsRef.current[key] ?? 0) + 1;
+        immediateRevisionsRef.current[key] = revision;
+        const owner = prevPluginIdRef.current;
+        void persistCleartext(key, buildSingleKeyPayload(key, value)).then((saved) => {
+          if (saved || immediateRevisionsRef.current[key] !== revision || prevPluginIdRef.current !== owner) return;
+          dirtyKeysRef.current.delete(key);
+          setDraft((prev) => {
+            const next = { ...prev };
+            if (storedValuesRef.current[key] === undefined) delete next[key];
+            else next[key] = storedValuesRef.current[key];
+            return next;
+          });
+        });
+      }
     },
-    [buildSingleKeyPayload, onSave],
+    [buildSingleKeyPayload, hasMissingRequiredSecrets, persistCleartext, properties, required, requiredSetup],
   );
 
   /** Text/number/array — set draft only; explicit per-field Save button persists. */
@@ -187,37 +243,31 @@ export function PluginConfigSchemaForm({
 
   /** Per-field cleartext save — text/number/array. Only this field's value
    *  is committed; other dirty drafts stay in local state (not persisted).
-   *  Errors are owned by the parent's onSave (which already surfaces a
-   *  toast); we only ensure the saving indicator clears on either path. */
+   *  The rejected draft stays visible with an inline error. */
   const saveField = useCallback(
     async (key: string) => {
-      setFieldSaving((p) => ({ ...p, [key]: true }));
-      try {
-        await onSave(buildSingleKeyPayload(key, draft[key]));
-      } catch {
-        // Parent shows a banner; nothing more to do here.
-      } finally {
-        setFieldSaving((p) => ({ ...p, [key]: false }));
-      }
+      if (requiredSetup || hasMissingRequiredSecrets || fieldError(properties[key], draft[key], required.has(key))) return;
+      await persistCleartext(key, buildSingleKeyPayload(key, draft[key]));
     },
-    [buildSingleKeyPayload, draft, onSave],
+    [buildSingleKeyPayload, draft, hasMissingRequiredSecrets, persistCleartext, properties, required, requiredSetup],
   );
 
   /** Per-field secret save — text/password input, routes to keychain. */
   const saveSecretField = useCallback(
-    async (key: string) => {
-      const value = secretDrafts[key] ?? "";
+    async (key: string, value = secretDrafts[key] ?? "") => {
+      if (value !== "" && fieldError(properties[key], value, required.has(key))) return;
       setFieldSaving((p) => ({ ...p, [key]: true }));
+      setSaveErrors((prev) => ({ ...prev, [key]: "" }));
       try {
         await onSetSecret(key, value);
         setSecretDrafts((p) => ({ ...p, [key]: "" }));
       } catch {
-        // Parent shows a banner; preserve the draft so the user can retry.
+        setSaveErrors((prev) => ({ ...prev, [key]: t("pluginConfigTab.errorSaveSecret") }));
       } finally {
         setFieldSaving((p) => ({ ...p, [key]: false }));
       }
     },
-    [secretDrafts, onSetSecret],
+    [secretDrafts, onSetSecret, properties, required, t],
   );
 
   /** Dirty check for cleartext fields — draft differs from saved `values`. */
@@ -230,6 +280,33 @@ export function PluginConfigSchemaForm({
     [draft, values],
   );
 
+  useSettingsControls(propertyKeys.map((key) => {
+    const prop = properties[key];
+    const secret = prop.type === "string" && prop.format === "secret";
+    const resetError = secret && required.has(key) ? t("pluginConfigSchemaForm.errorRequired")
+      : !secret ? fieldError(prop, prop.default, required.has(key))
+        ?? (hasMissingRequiredSecrets ? t("pluginConfigSchemaForm.errorRequired") : undefined) : undefined;
+    return {
+      id: `pluginConfig.${pluginId}.${key}`,
+      section: "plugin-config-installed",
+      label: `${pluginId}: ${pluginConfigFieldLabel(key, prop, locale)}`,
+      modified: secret ? Boolean(secretsPresent[key]) : !isSameConfigValue(values[key], prop.default),
+      loading,
+      loadError,
+      ...(resetError ? { disabledReason: resetError } : {}),
+      reset: async () => {
+        if (secret) {
+          await onResetField(key);
+          setSecretDrafts((previous) => ({ ...previous, [key]: "" }));
+        } else {
+          await onResetField(key);
+          dirtyKeysRef.current.delete(key);
+          setDraft((previous) => ({ ...previous, [key]: prop.default }));
+        }
+      },
+    };
+  }));
+
   return (
     <div data-testid={`plugin-config-form:${pluginId}`} className="flex flex-col gap-3">
       {propertyKeys.length === 0 && (
@@ -237,14 +314,17 @@ export function PluginConfigSchemaForm({
       )}
       {propertyKeys.map((key) => {
         const prop = properties[key];
-        const label = deriveLabel(key, prop, locale);
+        const label = pluginConfigFieldLabel(key, prop, locale);
         const description = deriveDescription(prop, locale);
         const isSecret = prop.type === "string" && prop.format === "secret";
         const fieldId = `pcfg:${pluginId}:${key}`;
+        const settingId = `pluginConfig.${pluginId}.${key}`;
         const value = draft[key];
-        const error = !isSecret ? fieldError(prop, value) : null;
+        const error = isSecret
+          ? fieldError(prop, secretDrafts[key], required.has(key) && !secretsPresent[key])
+          : fieldError(prop, value, required.has(key));
         return (
-          <div key={key} className="flex flex-col gap-1">
+          <div key={key} data-setting-row={settingId} className="flex flex-col gap-1">
             <Label htmlFor={fieldId} className="text-xs font-medium">
               {label}
               {required.has(key) && <span className="ml-1 text-destructive">*</span>}
@@ -258,6 +338,7 @@ export function PluginConfigSchemaForm({
                 <div className="flex items-center gap-2">
                   <Input
                     id={fieldId}
+                    data-setting-id={settingId}
                     type="password"
                     className="h-7 text-xs flex-1"
                     placeholder={secretsPresent[key] ? t("pluginConfigSchemaForm.secretSavedPlaceholder") : t("pluginConfigSchemaForm.secretInputPlaceholder")}
@@ -271,11 +352,18 @@ export function PluginConfigSchemaForm({
                     size="sm"
                     className="h-7 text-xs px-2 shrink-0"
                     onClick={() => void saveSecretField(key)}
-                    disabled={!(secretDrafts[key]?.length ?? 0) || Boolean(fieldSaving[key])}
+                    disabled={!(secretDrafts[key]?.length ?? 0) || Boolean(error) || Boolean(fieldSaving[key])}
                     data-testid={`${fieldId}:save`}
                   >
                     {fieldSaving[key] ? t("pluginConfigSchemaForm.saving") : t("pluginConfigSchemaForm.save")}
                   </Button>
+                  {secretsPresent[key] && !required.has(key) && (
+                    <Button size="sm" variant="outline" disabled={Boolean(fieldSaving[key])}
+                      data-testid={`${fieldId}:delete`}
+                      onClick={() => void saveSecretField(key, "")}>
+                      {t("pluginConfigSchemaForm.deleteSecret")}
+                    </Button>
+                  )}
                 </div>
                 <p className="text-tiny text-muted-foreground">
                   {t("pluginConfigSchemaForm.secretKeychainNote")}
@@ -284,6 +372,8 @@ export function PluginConfigSchemaForm({
             ) : prop.enum ? (
               <NativeSelect
                 id={fieldId}
+                data-setting-id={settingId}
+                disabled={hasMissingRequiredSecrets}
                 size="sm"
                 className="w-full"
                 value={(value ?? prop.default ?? "") as string | number}
@@ -291,7 +381,7 @@ export function PluginConfigSchemaForm({
                   const raw = e.target.value;
                   const next: unknown =
                     prop.type === "number" || prop.type === "integer"
-                      ? coerceNumber(raw, prop)
+                      ? coerceNumber(raw)
                       : prop.type === "boolean"
                         ? raw === "true"
                         : raw;
@@ -311,6 +401,8 @@ export function PluginConfigSchemaForm({
               <Label className="flex items-center gap-2 text-xs">
                 <Checkbox
                   id={fieldId}
+                  data-setting-id={settingId}
+                  disabled={hasMissingRequiredSecrets}
                   checked={Boolean(value ?? prop.default ?? false)}
                   onCheckedChange={(checked) => updateImmediate(key, checked === true)}
                 />
@@ -320,6 +412,7 @@ export function PluginConfigSchemaForm({
               <div className="flex items-center gap-2">
                 <Input
                   id={fieldId}
+                  data-setting-id={settingId}
                   className="h-7 text-xs flex-1"
                   placeholder={t("pluginConfigSchemaForm.arrayPlaceholder")}
                   value={
@@ -340,7 +433,7 @@ export function PluginConfigSchemaForm({
                 />
                 <SaveFieldButton
                   fieldId={fieldId}
-                  dirty={isCleartextDirty(key)}
+                  dirty={isCleartextDirty(key) && !error && !requiredSetup && !hasMissingRequiredSecrets}
                   saving={Boolean(fieldSaving[key])}
                   onSave={() => void saveField(key)}
                 />
@@ -349,6 +442,7 @@ export function PluginConfigSchemaForm({
               <div className="flex items-center gap-2">
                 <Input
                   id={fieldId}
+                  data-setting-id={settingId}
                   type="number"
                   className="h-7 text-xs flex-1"
                   value={
@@ -359,7 +453,7 @@ export function PluginConfigSchemaForm({
                         : ""
                   }
                   onChange={(e) => {
-                    const next = coerceNumber(e.target.value, prop);
+                    const next = coerceNumber(e.target.value);
                     updateDraft(key, next);
                   }}
                   onKeyDown={(e) => { if (e.key === "Enter" && isCleartextDirty(key)) void saveField(key); }}
@@ -369,7 +463,7 @@ export function PluginConfigSchemaForm({
                 />
                 <SaveFieldButton
                   fieldId={fieldId}
-                  dirty={isCleartextDirty(key)}
+                  dirty={isCleartextDirty(key) && !error && !requiredSetup && !hasMissingRequiredSecrets}
                   saving={Boolean(fieldSaving[key])}
                   onSave={() => void saveField(key)}
                 />
@@ -378,6 +472,7 @@ export function PluginConfigSchemaForm({
               <div className="flex items-center gap-2">
                 <Input
                   id={fieldId}
+                  data-setting-id={settingId}
                   className="h-7 text-xs flex-1"
                   value={typeof value === "string" ? value : (prop.default as string | undefined) ?? ""}
                   onChange={(e) => updateDraft(key, e.target.value)}
@@ -386,16 +481,31 @@ export function PluginConfigSchemaForm({
                 />
                 <SaveFieldButton
                   fieldId={fieldId}
-                  dirty={isCleartextDirty(key)}
+                  dirty={isCleartextDirty(key) && !error && !requiredSetup && !hasMissingRequiredSecrets}
                   saving={Boolean(fieldSaving[key])}
                   onSave={() => void saveField(key)}
                 />
               </div>
             )}
-            {error && <p className="text-dense text-destructive">{error}</p>}
+            {error && <p role="alert" className="text-dense text-destructive">{error}</p>}
+            {saveErrors[key] && <p role="alert" className="text-dense text-destructive">{saveErrors[key]}</p>}
           </div>
         );
       })}
+      {requiredSetup && (
+        <Button data-testid={`${pluginId}:save-required`} disabled={hasDraftErrors || hasMissingRequiredSecrets || Boolean(fieldSaving.required)}
+          onClick={() => {
+            if (hasDraftErrors || hasMissingRequiredSecrets) return;
+            const payload: PluginConfigFormValues = {};
+            for (const key of propertyKeys) {
+              if (properties[key].format !== "secret" && draft[key] !== undefined && draft[key] !== "") payload[key] = draft[key];
+            }
+            void persistCleartext("required", payload);
+          }}>
+          {t("pluginConfigSchemaForm.save")}
+        </Button>
+      )}
+      {saveErrors.required && <p role="alert" className="text-dense text-destructive">{saveErrors.required}</p>}
       {schema.customPanel && (
         <div
           className="rounded-md border border-dashed p-2 text-dense text-muted-foreground"
@@ -404,8 +514,7 @@ export function PluginConfigSchemaForm({
           {t("pluginConfigSchemaForm.customPanelNote", { exportName: schema.customPanel.exportName })}
         </div>
       )}
-      {/* No bottom batch button — text/number/array/secret fields each have
-          their own inline Save button; toggle/enum still auto-save. */}
+      {/* Once required setup is complete, text/number/array/secret fields save individually; toggle/enum save on change. */}
     </div>
   );
 }

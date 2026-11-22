@@ -827,3 +827,25 @@ describe("sensitive reads through searches, browser stores, /proc and git object
   });
 
 });
+
+
+describe("persistent tool-name ask rules", () => {
+  it("routes matching reads to approval immediately and after reload", async () => {
+    const manager = new PermissionManager(permissionsFile);
+    manager.setMode("strict");
+    expect(manager.checkDetailed("custom_tool", "builtin", "read").decision).toBe("allow");
+    await manager.addAlwaysAskedPersist("custom_*");
+    expect(manager.checkDetailed("custom_tool", "builtin", "read").decision).toBe("ask");
+    expect((await manager.listPersistedRules()).filter(rule => rule.pattern === "custom_*")).toEqual([{ pattern: "custom_*", action: "ask" }]);
+    const restarted = new PermissionManager(permissionsFile);
+    await restarted.loadRulesFromFile();
+    restarted.setMode("strict");
+    expect(restarted.checkDetailed("custom_tool", "builtin", "read").decision).toBe("ask");
+  });
+
+  it("refuses malformed tool patterns without persisting a rule", async () => {
+    const manager = new PermissionManager(permissionsFile);
+    await expect(manager.addAlwaysAskedPersist("bad name!")).rejects.toThrow("Invalid tool rule pattern");
+    expect(await manager.listPersistedRules()).toEqual([]);
+  });
+});

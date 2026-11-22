@@ -174,7 +174,7 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
     const transport = await openMxcRequestTransport(request(25_000), LAUNCHER);
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.mxcRequestTransportMs);
     // Advancing host timers does not wait for the native process close event.
-    await transport.release();
+    await expect(transport.release()).rejects.toThrow("delivery timed out");
     await expect(readPipe(transport.args[1]!)).rejects.toThrow();
   });
 

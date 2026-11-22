@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 /** Show the effective catalog and any environment or managed-policy override so the refresh switch does not imply control
  * it lacks. */
 import { useCallback, useEffect, useState } from "react";
@@ -19,6 +20,7 @@ interface CatalogInForce {
 }
 
 export function ModelCatalogRefreshSection() {
+  useAppSettingsControls(["llm-model-catalog"]);
   const { t } = useTranslation();
   const api = getApi();
   const envForcedPaths = useEnvForcedSettings(api);
@@ -71,6 +73,7 @@ export function ModelCatalogRefreshSection() {
   return (
     <SettingsSection
       data-settings-section="llm-model-catalog"
+      data-setting-id="llm.modelCatalogRefresh"
       title={t("llmTab.modelCatalogTitle")}
       description={t("llmTab.modelCatalogDesc")}
     >

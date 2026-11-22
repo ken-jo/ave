@@ -14,6 +14,8 @@ vi.mock("../../api-client.js", () => ({
     getSettings: async () => ({ system: {}, features: {} }),
     updateSettings: async () => ({}),
     envForcedSettings: async () => [],
+    // The gates follow stored changes from any window, so the client also offers the settings broadcast.
+    onSettingsUpdated: () => () => undefined,
     remoteA2a: { status: async () => ({ ok: false, error: "a2a-remote-disabled" }) },
   }),
 }));

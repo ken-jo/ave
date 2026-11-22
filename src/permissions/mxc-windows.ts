@@ -435,14 +435,6 @@ export function rankMxcFilesystem(
   const demoted = writeGrants.filter((path) => writeDenied(path));
   const readGrants = dedupe(policy.allowRead).filter((path) => exists(path) && !floored(path));
 
-  const readonlyOut: string[] = [...readGrants, ...demoted];
-  const denied: string[] = [];
-  for (const deny of dedupe(denyWrite)) {
-    if (!readwrite.some((grant) => strictlyUnder(deny, grant))) continue;
-    if (exists(deny)) readonlyOut.push(deny);
-    else denied.push(deny);
-  }
-  const allGrants = [...readwrite, ...readonlyOut];
   // A pierced floor row is the read exception itself; kept, it would deny the pierced grant as soon as a wider grant contains it. Only the
   // exact row goes: a floor row above a pierce stays, and the more specific read grant carves the pierce out of it.
   const pierced = new Set(pierces.map(foldPath));
@@ -450,6 +442,24 @@ export function rankMxcFilesystem(
   // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
   const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));
+  // Whether reads at `path` are denied: the most specific requested grant or emitted read deny at or above it is a deny (a deny wins a
+  // tie). A write-floor row there must not become a read-only grant: being more specific than that deny, the grant would re-open it.
+  const requestedGrants = [...readwrite, ...readGrants, ...demoted];
+  const depthAbove = (path: string, rules: readonly string[]): number =>
+    Math.max(-1, ...rules.filter((rule) => isWindowsPathAtOrUnder(path, rule)).map((rule) => foldPath(rule).length));
+  const readDenied = (path: string): boolean => {
+    const deny = depthAbove(path, literalDenies.filter((rule) => requestedGrants.some((grant) => strictlyUnder(rule, grant))));
+    return deny >= 0 && deny >= depthAbove(path, requestedGrants);
+  };
+
+  const readonlyOut: string[] = [...readGrants, ...demoted];
+  const denied: string[] = [];
+  for (const deny of dedupe(denyWrite)) {
+    if (!readwrite.some((grant) => strictlyUnder(deny, grant))) continue;
+    if (exists(deny) && !readDenied(deny)) readonlyOut.push(deny);
+    else denied.push(deny);
+  }
+  const allGrants = [...readwrite, ...readonlyOut];
   const rules: MxcRule[] = [
     ...readwrite.map((path) => ({ path, kind: "readwrite" as const })),
     ...readonlyOut.map((path) => ({ path, kind: "readonly" as const })),

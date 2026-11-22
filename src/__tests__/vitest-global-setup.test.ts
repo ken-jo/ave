@@ -4,13 +4,13 @@ vi.mock("node:fs", async original => (await import("../__tests__/support/simulat
 
 /** Use scratch HOME and verify run cleanup never removes live owners or escapes test-tmp. */
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, hostname, tmpdir } from "node:os";
 import { basename, dirname, join, parse } from "node:path";
 import type { TestProject } from "vitest/node";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const deadRun = vi.hoisted(() => ({ pid: undefined as number | undefined }));
 const failSweep = vi.hoisted(() => ({ next: false }));
 const refuseRunTmpRoot = vi.hoisted(() => ({ next: false }));
 vi.mock("./support/test-run-dirs.js", async (importOriginal) => {
@@ -23,7 +23,14 @@ vi.mock("./support/test-run-dirs.js", async (importOriginal) => {
     }),
     sweepStaleRunDirs: vi.fn(async (...args: Parameters<typeof actual.sweepStaleRunDirs>) => {
       if (failSweep.next) throw new Error("injected setup failure");
-      return actual.sweepStaleRunDirs(...args);
+      if (deadRun.pid === undefined || args[2]?.probe !== undefined) return actual.sweepStaleRunDirs(...args);
+      return actual.sweepStaleRunDirs(args[0], args[1], {
+        ...args[2],
+        probe: {
+          ...actual.systemProcessProbe,
+          exists: (pid) => pid === deadRun.pid ? false : actual.systemProcessProbe.exists(pid),
+        },
+      });
     }),
   };
 });
@@ -50,12 +57,14 @@ const RUN_ENV = [
   "AVE_TEST_TMP_ROOT", "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",
   "TMPDIR", "TEMP", "TMP",
   "ProgramData", "PROGRAMDATA", "ALLUSERSPROFILE",
+  "LOCALAPPDATA", "APPDATA",
 ] as const;
 const savedEnv = Object.fromEntries(RUN_ENV.map((name) => [name, process.env[name]]));
 const scratch = useTempDirs("vitest-setup-");
 const link = useScratchLinks();
 
 afterEach(() => {
+  deadRun.pid = undefined;
   failSweep.next = false;
   refuseRunTmpRoot.next = false;
   for (const name of RUN_ENV) {
@@ -103,15 +112,11 @@ function owner(pid: number, started: string, host: string = hostname()): RunOwne
   return { version: RUN_OWNER_VERSION, pid, started, host };
 }
 
-function exitedPid(): number {
-  const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
-  const child = spawnSync(node, ["-e", "process.stdout.write(String(process.pid))"], {
-    encoding: "utf8",
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-  });
-  expect(child.status, child.stderr).toBe(0);
-  const pid = Number(child.stdout);
-  expect(systemProcessProbe.exists(pid)).toBe(false);
+function deadRunPid(): number {
+  // A real exited child can have its PID reused before the sweep reads it.
+  // Keep dead-owner evidence deterministic while probing live owners normally.
+  const pid = process.pid === 4242 ? 4243 : 4242;
+  deadRun.pid = pid;
   return pid;
 }
 
@@ -127,6 +132,27 @@ const removeTree = async (path: string) => {
 };
 
 describe("vitest global setup", () => {
+  it.runIf(process.platform === "win32")("keeps inherited profile stores inside the owned run temp directory", async () => {
+    const inherited = scratch();
+    const local = join(inherited, "local");
+    const roaming = join(inherited, "roaming");
+    process.env.LOCALAPPDATA = local;
+    process.env.APPDATA = roaming;
+    process.env.AVE_TEST_TMP_ROOT = join(scratch(), "test-tmp");
+    const teardown = await setup(project());
+    try {
+      expect(process.env.LOCALAPPDATA).toBe(join(tmpdir(), "local-app-data"));
+      expect(process.env.APPDATA).toBe(join(tmpdir(), "app-data"));
+      expect(existsSync(join(tmpdir(), "local-app-data", "Temp"))).toBe(true);
+      expect(existsSync(join(tmpdir(), "app-data"))).toBe(true);
+      expect(existsSync(local)).toBe(false);
+      expect(existsSync(roaming)).toBe(false);
+    } finally { await teardown(); }
+  });
+  it.runIf(process.platform === "win32")("starts workers with profile stores confined to their run", () => {
+    expect(process.env.LOCALAPPDATA).toBe(join(tmpdir(), "local-app-data"));
+    expect(process.env.APPDATA).toBe(join(tmpdir(), "app-data"));
+  });
   it("uses an explicit isolated scratch root without changing the account home", async () => {
     const home = homedir();
     const root = join(scratch(), "test-tmp");
@@ -264,14 +290,15 @@ describe("vitest global setup", () => {
 
   it("removes what a killed run left long ago before making its own, and keeps a live run's", async () => {
     const testTmp = scratchTestTmp();
-    const killed = runDir(join(testTmp, "h-Kill01"), owner(exitedPid(), "ps:1"));
+    const killed = runDir(join(testTmp, "h-Kill01"), owner(deadRunPid(), "ps:1"));
     mkdirSync(join(killed, "f-Kill01"));
     utimesSync(killed, DAY_AGO(), DAY_AGO());
     const live = runDir(join(testTmp, "h-Live01"), owner(process.pid, ownStart()));
     const teardown = await setup(project());
-    expect(existsSync(killed)).toBe(false);
-    expect(existsSync(live)).toBe(true);
-    await teardown();
+    try {
+      expect(existsSync(killed)).toBe(false);
+      expect(existsSync(live)).toBe(true);
+    } finally { await teardown(); }
   });
 
   it("is not stopped by an owner record it cannot read, and keeps that directory", async () => {
@@ -305,7 +332,7 @@ describe("vitest global setup", () => {
   it("refuses a test-tmp that is a link, before making or removing anything", async () => {
     const testTmp = scratchTestTmp();
     const elsewhere = scratch();
-    const sentinel = runDir(join(elsewhere, "h-Else01"), owner(exitedPid(), "ps:1"));
+    const sentinel = runDir(join(elsewhere, "h-Else01"), owner(deadRunPid(), "ps:1"));
     mkdirSync(join(testTmp, ".."), { recursive: true });
     link(elsewhere, testTmp);
     await expect(setup(project())).rejects.toThrow(/refusing .* as the tests' scratch root: it is not a real directory/);

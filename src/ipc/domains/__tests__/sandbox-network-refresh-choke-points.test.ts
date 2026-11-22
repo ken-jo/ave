@@ -177,7 +177,7 @@ describe("ASRT choke-point 2 — marketplace provider preset mutations (settings
   });
 });
 
-describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
+describe("ave:chat:retry-effort (chat.ts) — a per-turn override, not a network-setting write", () => {
   beforeEach(async () => {
     handlers.clear();
     vi.resetModules();
@@ -230,20 +230,42 @@ describe("ASRT choke-point 3 — ave:chat:retry-effort (chat.ts)", () => {
     return { deps, refreshSandboxNetworkConfig };
   }
 
-  it("does NOT call refreshSandboxNetworkConfig when retry-effort leaves baseUrl unchanged", async () => {
-    const { deps, refreshSandboxNetworkConfig } = makeChatDeps("https://same.openai.azure.com");
-
+  // Retry-effort changes how hard the model thinks for one replayed turn. It hands the thinking fields to that turn as an
+  // override and writes no settings, so the network policy has nothing to refresh. A change to a provider address still
+  // has one path, a settings write, and choke points 1 and 2 above hold that path to the refresh.
+  async function retryEffort(opts: Record<string, unknown>) {
+    const made = makeChatDeps("https://same.openai.azure.com");
     const { registerChatHandlers } = await import("../chat.js");
     await installNativeChatWindow();
-    registerChatHandlers(deps as never);
+    registerChatHandlers(made.deps as never);
+    // The retry runs from a real app window with the click's consumed gesture, so it reaches the replayed turn.
+    const result = await invokeNativeChatHandler(handlers, "ave:chat:retry-effort", opts, "main", { inputOrigin: "user-keyboard", userActivation: true });
+    const overrides = made.deps.conversationLoop.runTurn.mock.calls.map((call: unknown[]) => (call.at(-1) as { thinkingOverride?: unknown } | undefined)?.thinkingOverride);
+    return { ...made, result, overrides };
+  }
 
-    // An unchanged provider address must not trigger sandbox network refresh. The retry runs from a real app window with the
-    // click's consumed gesture, so it reaches the settings patch this choke point guards.
-    await invokeNativeChatHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 10000 }, "main", {
-      inputOrigin: "user-keyboard", userActivation: true,
+  it("replays with a per-turn thinking override, writes no settings patch and leaves the network policy alone", async () => {
+    const { deps, refreshSandboxNetworkConfig, result, overrides } = await retryEffort({ enableThinking: true, thinkingBudgetTokens: 10000 });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(overrides).toEqual([{ enableThinking: true, thinkingBudgetTokens: 10000 }]);
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    expect(refreshSandboxNetworkConfig).not.toHaveBeenCalled();
+  });
+
+  it("cannot carry a network change: provider address fields in the request reach neither settings nor the turn", async () => {
+    const { deps, refreshSandboxNetworkConfig, result, overrides } = await retryEffort({
+      enableThinking: true,
+      thinkingBudgetTokens: 10000,
+      baseUrl: "https://elsewhere.example",
+      provider: "custom",
+      vendors: { openai: { baseUrl: "https://elsewhere.example" } },
     });
 
-    expect(deps.settingsService.patch).toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true });
+    expect(overrides).toEqual([{ enableThinking: true, thinkingBudgetTokens: 10000 }]);
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
     expect(refreshSandboxNetworkConfig).not.toHaveBeenCalled();
+    expect(deps.settingsService.get("llm")).toMatchObject({ vendors: { openai: { baseUrl: "https://same.openai.azure.com" } } });
   });
 });

@@ -1,9 +1,9 @@
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { AboutTab } from "../AboutTab.js";
 import type { AveApi } from "../../types.js";
-import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { DEFAULT_APP_INFO, MOCK_DEFAULT_SETTINGS, makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 
 const GENERAL_APP_INFO = {
   version: "0.2.3",
@@ -14,10 +14,13 @@ const GENERAL_APP_INFO = {
   platform: "darwin",
   arch: "arm64",
   userDataPath: "/Users/test/Library/Application Support/Ave",
+  startupSettings: DEFAULT_APP_INFO.startupSettings,
+  bootCrashReportEndpoint: DEFAULT_APP_INFO.bootCrashReportEndpoint,
 };
 
 function aboutTabApi(): AveApi {
   const { api } = makeMockAveApi({ appInfo: GENERAL_APP_INFO });
+  window.aveApi = api as never;
   return api as unknown as AveApi;
 }
 
@@ -45,4 +48,30 @@ describe("AboutTab (System Info)", () => {
       expect(v8.textContent).toContain("13.1.201.13");
     });
   });
+});
+
+
+it("saves the automatic update preference and checks manually while it is off", async () => {
+  const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, updates: { autoCheckEnabled: false } } });
+  window.aveApi = api as never;
+  const { findByTestId } = render(<AboutTab api={api as unknown as AveApi} />);
+  const toggle = await findByTestId("about-auto-check-updates");
+  await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+  fireEvent.click(await findByTestId("about-check-updates"));
+  await waitFor(() => expect(api.checkForAppUpdates).toHaveBeenCalledOnce());
+  fireEvent.click(toggle);
+  await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ updates: { autoCheckEnabled: true } }));
+});
+
+it("shows an update check failure and preserves an unsaved preference", async () => {
+  const { api } = makeMockAveApi({ settings: { ...MOCK_DEFAULT_SETTINGS, updates: { autoCheckEnabled: false } } });
+  api.checkForAppUpdates.mockResolvedValueOnce({ ok: false, reason: "update-check-failed" });
+  window.aveApi = api as never;
+  const { findByTestId, findByRole } = render(<AboutTab api={api as unknown as AveApi} />);
+  fireEvent.click(await findByTestId("about-check-updates"));
+  expect(await findByRole("alert")).toBeTruthy();
+  api.updateSettings.mockResolvedValueOnce({ ok: false, error: "settings-write-failed" });
+  fireEvent.click(await findByTestId("about-auto-check-updates"));
+  await waitFor(() => expect(api.updateSettings).toHaveBeenCalledOnce());
+  expect((await findByTestId("about-auto-check-updates")).getAttribute("aria-checked")).toBe("false");
 });

@@ -34,7 +34,7 @@ describe("PermissionModeBadge", () => {
     await waitFor(() => {
       const badge = screen.getByTestId("permission-mode-badge");
       expect(badge.getAttribute("data-mode")).toBe("auto");
-      expect(badge.textContent).toContain("auto");
+      expect(badge.textContent).toContain("자동 검토");
       expect(badge.textContent).not.toContain("LLM");
       expect(badge.getAttribute("aria-label")).toContain("리뷰어");
     });

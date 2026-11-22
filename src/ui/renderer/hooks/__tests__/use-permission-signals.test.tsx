@@ -83,7 +83,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
     });
   });
 
-  it("enables the reviewer before switching the mode that relies on it", async () => {
+  it("requests auto review through one host-owned mode change", async () => {
     // Configure review before enabling the mode that uses its fixed low/medium policy.
     const { permission, fire } = permissionApi();
     const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
@@ -94,19 +94,16 @@ describe("usePermissionSignals — reviewer suggestion", () => {
       result.current.reviewerSuggestion?.onEnable();
     });
 
-    expect(permission.reviewerDispatch).toHaveBeenNthCalledWith(1, "mode llm");
-    expect(permission.reviewerDispatch).toHaveBeenCalledTimes(1);
+    expect(permission.reviewerDispatch).not.toHaveBeenCalled();
     expect(permission.setMode).toHaveBeenCalledWith("auto");
-    expect(permission.reviewerDispatch.mock.invocationCallOrder[0]).toBeLessThan(
-      permission.setMode.mock.invocationCallOrder[0],
-    );
+    expect(permission.setMode).toHaveBeenCalledTimes(1);
     expect(result.current.reviewerSuggestion).toBeNull();
   });
 
   it("keeps the band up with the failure on it when enabling does not take", async () => {
     // A silent failure would leave the user believing the reviewer is on while every later ask still lands on them by hand.
-    const reviewerDispatch = vi.fn(async () => ({ ok: false, error: "reviewer key missing" }));
-    const { permission, fire } = permissionApi({ reviewerDispatch });
+    const setMode = vi.fn(async () => ({ ok: false, error: "reviewer key missing" }));
+    const { permission, fire } = permissionApi({ setMode });
     const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
     act(() => fire());
@@ -115,7 +112,8 @@ describe("usePermissionSignals — reviewer suggestion", () => {
       result.current.reviewerSuggestion?.onEnable();
     });
 
-    expect(permission.setMode).not.toHaveBeenCalled();
+    expect(permission.setMode).toHaveBeenCalledExactlyOnceWith("auto");
+    expect(permission.reviewerDispatch).not.toHaveBeenCalled();
     expect(result.current.reviewerSuggestion?.busy).toBe(false);
     expect(result.current.reviewerSuggestion?.error).toContain("reviewer key missing");
   });

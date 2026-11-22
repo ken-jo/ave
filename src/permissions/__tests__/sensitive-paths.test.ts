@@ -1,10 +1,14 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { realpathSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import {
   SENSITIVE_PATH_PATTERNS,
   SENSITIVE_PATH_ENTRIES,
+  isSensitiveContent,
   isSensitivePath,
+  allowKeyMaterialInspectionUnder,
+  isAdmissionDeniedPath,
   createSensitivePathMatcher,
   policyMatchPaths,
   canonicalizePathForMatch,
@@ -280,13 +284,206 @@ describe("isSensitivePath — Permission policy P2.5 OS sensitive paths", () => 
   });
 
   it.each(["read", "write"] as const)("exempts exact environment template names for %s only", (effect) => {
-    for (const name of [".env.example", ".env.sample", ".env.template", ".env.dist"]) {
+    for (const name of [".env.example", ".env.sample", ".env.template", ".env.dist", ".env.test"]) {
       expect(isSensitivePath(`/work/project/${name}`, effect)).toBeNull();
       expect(isSensitivePath(`/work/project/nested/${name}`, effect)).toBeNull();
       expect(isSensitivePath(`/work/.aws/${name}`, effect)).not.toBeNull();
     }
-    for (const name of [".env", ".env.local", ".env.production", ".env.example.local", ".env.dist.bak"]) {
+    for (const name of [".env", ".env.local", ".env.production", ".env.development", ".env.test.local", ".env.example.local", ".env.dist.bak"]) {
       expect(isSensitivePath(`/work/project/${name}`, effect)).not.toBeNull();
+    }
+  });
+
+  // One review of the user secret-file table.
+  // Written in two parts so no scanner takes this test file for key material.
+  const privateKeyText = (kind: string): string => `${["-----BEGIN", `${kind}PRIVATE`, "KEY-----"].join(" ")}\nFIXTURE\n`;
+  const CERTIFICATE_TEXT = "-----BEGIN CERTIFICATE-----\nFIXTURE\n-----END CERTIFICATE-----\n";
+  function keyFixtures(): string {
+    const dir = resources.makeTmpDir("ave-key-material-");
+    mkdirSync(join(dir, "certs"));
+    writeFileSync(join(dir, "id_dsa"), "FIXTURE\n");
+    writeFileSync(join(dir, "certs", "server.pem"), privateKeyText("RSA "));
+    writeFileSync(join(dir, "certs", "tls.key"), privateKeyText(""));
+    writeFileSync(join(dir, "certs", "ssh.key"), privateKeyText("OPENSSH "));
+    writeFileSync(join(dir, "certs", "bundle.pem"), CERTIFICATE_TEXT.repeat(8) + privateKeyText("EC "));
+    writeFileSync(join(dir, "certs", "chain.pem"), CERTIFICATE_TEXT);
+    writeFileSync(join(dir, "certs", "public.key"), "-----BEGIN PUBLIC KEY-----\nFIXTURE\n");
+    // A presentation document: a zip archive in one spelling, a package folder in the other.
+    writeFileSync(join(dir, "Quarterly review.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]));
+    mkdirSync(join(dir, "Roadmap.key"));
+    writeFileSync(join(dir, "Roadmap.key", "index.apxl"), "<presentation/>");
+    // The fixture folder stands for a project the person registered: files in it may be looked at.
+    restoreInspectionRoots.push(allowKeyMaterialInspectionUnder(() => [dir]));
+    return realpathSync(dir);
+  }
+  const restoreInspectionRoots: Array<() => void> = [];
+  afterEach(() => { for (const restore of restoreInspectionRoots.splice(0)) restore(); });
+
+  it("judges a key-extension file outside the registered projects on its name, not on what it holds", () => {
+    const project = keyFixtures();
+    const outside = realpathSync(resources.makeTmpDir("ave-key-outside-"));
+    writeFileSync(join(outside, "Quarterly review.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]));
+    writeFileSync(join(outside, "chain.pem"), CERTIFICATE_TEXT);
+    symlinkSync(join(outside, "Quarterly review.key"), join(project, "linked.key"));
+    // Harmless content does not matter where the host may not look: the name decides, whatever the file holds.
+    expect(isSensitivePath(join(outside, "Quarterly review.key"), "read")).toBe("**/*.key");
+    expect(isSensitivePath(join(outside, "chain.pem"), "read")).toBe("**/*.pem");
+    // A link shown inside a project is not a way to read its target outside.
+    expect(isSensitivePath(join(project, "linked.key"), "read")).toBe("**/*.key");
+    // The same content inside the project is looked at and found harmless.
+    expect(isSensitivePath(join(project, "Quarterly review.key"), "read")).toBeNull();
+  });
+
+  it("treats every key-extension name as a key until the registered projects are named", () => {
+    const project = keyFixtures();
+    for (const restore of restoreInspectionRoots.splice(0)) restore();
+    expect(isSensitivePath(join(project, "Quarterly review.key"), "read")).toBe("**/*.key");
+    expect(isSensitivePath(join(project, "certs", "chain.pem"), "read")).toBe("**/*.pem");
+  });
+
+  it("does not take the unread part of a long file for harmless", () => {
+    const dir = keyFixtures();
+    const window = 1024 * 1024;
+    const filler = "x".repeat(window);
+    // A key that starts after the window, and one whose header straddles its end.
+    writeFileSync(join(dir, "late.pem"), filler + privateKeyText(""));
+    writeFileSync(join(dir, "split.pem"), filler.slice(0, window - 8) + privateKeyText(""));
+    // A long file with no key in the part that was read still has a part nobody read.
+    writeFileSync(join(dir, "long.pem"), `${filler}tail`);
+    for (const name of ["late.pem", "split.pem", "long.pem"]) expect(isSensitivePath(join(dir, name), "read"), name).toBe("**/*.pem");
+    // Read whole and found harmless: exactly the window.
+    writeFileSync(join(dir, "whole.pem"), filler);
+    expect(isSensitivePath(join(dir, "whole.pem"), "read")).toBeNull();
+  });
+
+  /** A zip archive with one stored (uncompressed) entry of `body`: local header, data, directory and end record. */
+  function zipArchive(body: Buffer): Buffer {
+    const name = Buffer.from("index.apxl");
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(body.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(body.length, 20);
+    central.writeUInt32LE(body.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(1, 8);
+    end.writeUInt16LE(1, 10);
+    end.writeUInt32LE(central.length + name.length, 12);
+    end.writeUInt32LE(local.length + name.length + body.length, 16);
+    return Buffer.concat([local, name, body, central, name, end]);
+  }
+
+  it("judges an archive by the bytes it read, not by its structure", () => {
+    const dir = keyFixtures();
+    const window = 1024 * 1024;
+    // Read whole and found harmless: a presentation document saved as one archive within the window.
+    writeFileSync(join(dir, "Small deck.key"), zipArchive(Buffer.alloc(window / 2, "s")));
+    expect(isSensitivePath(join(dir, "Small deck.key"), "read")).toBeNull();
+    // A well-formed archive whose stored entry carries a key past the window: key readers find the header anywhere in
+    // the file, so a valid structure says nothing about the bytes nobody read.
+    const hidden = Buffer.concat([Buffer.alloc(window, "x"), Buffer.from(privateKeyText("")), Buffer.alloc(window, "x")]);
+    writeFileSync(join(dir, "hidden.key"), zipArchive(hidden));
+    expect(isSensitivePath(join(dir, "hidden.key"), "read")).toBe("**/*.key");
+    // Four archive bytes in front of padding and a private key prove nothing either.
+    writeFileSync(join(dir, "forged.key"), Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window, "x"), Buffer.from(privateKeyText(""))]));
+    expect(isSensitivePath(join(dir, "forged.key"), "read")).toBe("**/*.key");
+    // So a large archive is not shown to hold no key, however regular it looks.
+    writeFileSync(join(dir, "Big deck.key"), zipArchive(Buffer.alloc(window * 2, "s")));
+    expect(isSensitivePath(join(dir, "Big deck.key"), "read")).toBe("**/*.key");
+  });
+
+  it("judges bytes already read by those bytes, not by what the path holds now", () => {
+    const dir = keyFixtures();
+    const window = 1024 * 1024;
+    const path = join(dir, "image.key");
+    // The path holds a harmless file; the bytes in hand held a key, or ran past what is read.
+    writeFileSync(path, "harmless\n");
+    expect(isSensitiveContent(path, Buffer.from(privateKeyText("")))).toBe("**/*.key");
+    expect(isSensitiveContent(path, Buffer.concat([Buffer.alloc(window, "x"), Buffer.from("tail")]))).toBe("**/*.key");
+    // And the other way round: the path holds a key now, the bytes in hand are harmless.
+    writeFileSync(path, privateKeyText(""));
+    expect(isSensitiveContent(path, Buffer.from("harmless\n"))).toBeNull();
+    // Names are judged as for any read.
+    expect(isSensitiveContent(join(dir, ".env"), Buffer.from("A=1\n"))).toBe("**/.env");
+  });
+
+  it("judges a key-extension file for the person only by a key it was seen to hold", () => {
+    const dir = keyFixtures();
+    const window = 1024 * 1024;
+    // Not shown harmless and not shown to be a key: the agent is asked about it, the person keeps it.
+    writeFileSync(join(dir, "Big deck.key"), zipArchive(Buffer.alloc(window * 2, "s")));
+    expect(isSensitivePath(join(dir, "Big deck.key"), "read", "agent")).toBe("**/*.key");
+    expect(isSensitivePath(join(dir, "Big deck.key"), "read", "person")).toBeNull();
+    expect(isSensitivePath(join(dir, "Big deck.key"), "write", "person")).toBeNull();
+    // A longer file whose header lies in the part that was read is a confirmed key for both.
+    writeFileSync(join(dir, "big.pem"), Buffer.concat([Buffer.from(privateKeyText("")), Buffer.alloc(window * 2, "x")]));
+    expect(isSensitivePath(join(dir, "big.pem"), "read", "person")).toBe("**/*.pem");
+    expect(isSensitivePath(join(dir, "big.pem"), "read", "agent")).toBe("**/*.pem");
+    writeFileSync(join(dir, "small.key"), privateKeyText(""));
+    expect(isSensitivePath(join(dir, "small.key"), "read", "person")).toBe("**/*.key");
+    // Where the host may not look inside, the name decides for the person too.
+    for (const restore of restoreInspectionRoots.splice(0)) restore();
+    expect(isSensitivePath(join(dir, "Big deck.key"), "read", "person")).toBe("**/*.key");
+  });
+
+  it.skipIf(process.platform === "win32")("treats a key-extension name that is not a regular file as a key, without waiting on it", () => {
+    const dir = keyFixtures();
+    execFileSync("mkfifo", [join(dir, "pipe.key")]);
+    // A pipe is not a file whose content can be shown harmless; it is judged on its name, and the answer does not wait
+    // for a writer on the other end.
+    expect(isSensitivePath(join(dir, "pipe.key"), "read")).toBe("**/*.key");
+  });
+
+  it.each(["read", "write"] as const)("matches a key-extension file by what it holds for %s", (effect) => {
+    const dir = keyFixtures();
+    expect(isSensitivePath(join(dir, "id_dsa"), effect)).toBe("**/id_dsa");
+    expect(isSensitivePath(join(dir, "certs", "server.pem"), effect)).toBe("**/*.pem");
+    expect(isSensitivePath(join(dir, "certs", "tls.key"), effect)).toBe("**/*.key");
+    expect(isSensitivePath(join(dir, "certs", "ssh.key"), effect)).toBe("**/*.key");
+    // A private key after a certificate chain in one bundle is still a private key.
+    expect(isSensitivePath(join(dir, "certs", "bundle.pem"), effect)).toBe("**/*.pem");
+    // Not secret: a certificate alone, a public key, a presentation document in either form, and a name nothing exists at.
+    for (const name of ["certs/chain.pem", "certs/public.key", "Quarterly review.key", "Roadmap.key", "Roadmap.key/index.apxl", "certs/not-written-yet.key"]) {
+      expect(isSensitivePath(join(dir, name), effect), name).toBeNull();
+    }
+    for (const path of ["/work/project/pem/readme.md", "/work/project/keys.ts", "/work/project/server.pem.md", "/work/project/src/key", "/work/project/a.keys"]) {
+      expect(isSensitivePath(path, effect), path).toBeNull();
+    }
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("treats a key-extension file it cannot read as a key", () => {
+    const dir = keyFixtures();
+    chmodSync(join(dir, "Quarterly review.key"), 0o000);
+    try {
+      expect(isSensitivePath(join(dir, "Quarterly review.key"), "read")).toBe("**/*.key");
+    } finally {
+      chmodSync(join(dir, "Quarterly review.key"), 0o600);
+    }
+  });
+
+  it("does not treat a public key outside .ssh as a secret, and keeps the .ssh folder whole", () => {
+    for (const name of ["id_rsa.pub", "id_ed25519.pub", "id_ecdsa.pub", "id_dsa.pub"]) {
+      expect(isSensitivePath(`/work/project/deploy/${name}`, "read"), name).toBeNull();
+      expect(isSensitivePath(`/home/example/.ssh/${name}`, "read"), name).toBe("**/.ssh/**");
+    }
+    expect(SENSITIVE_PATH_PATTERNS.filter((pattern) => pattern.endsWith(".pub"))).toEqual([]);
+  });
+
+  it("keeps user secret files on the ask edge, never the admission deny", () => {
+    const dir = keyFixtures();
+    for (const path of ["/work/project/.env", "/work/project/.env.local", "/work/project/id_rsa", "/work/project/id_dsa",
+      "/work/project/id_ed25519", "/work/project/id_ecdsa", join(dir, "certs", "server.pem"), join(dir, "certs", "tls.key")]) {
+      expect(isSensitivePath(path, "read"), path).not.toBeNull();
+      expect(isAdmissionDeniedPath(path, "read"), path).toBeNull();
+      expect(isAdmissionDeniedPath(path, "write"), path).toBeNull();
     }
   });
 

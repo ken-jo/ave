@@ -3,15 +3,14 @@ import { EmptyState } from "../../../components/ui/empty-state.js";
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, ArrowRight, ExternalLink, FileDiff, Globe, MessageSquare, PanelRightClose, PanelRightOpen, RotateCw, X } from "lucide-react";
+import { FileDiff, MessageSquare, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
-import { Input } from "../../../components/ui/input.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
 import { BUILTIN_VIEW_ICONS, BUILTIN_LABEL_KEYS } from "../utils/view-location.js";
-import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
-import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation, type BrowserSurface, type GuestNavigation } from "../hooks/use-browser-navigation.js";
+import { BrowserAddressRow, WEB_PANEL_ADDRESS_ROW_TEST_IDS } from "./BrowserAddressRow.js";
+import { useBrowserSurface, useGuestNavigation, type GuestNavigation } from "../hooks/use-browser-navigation.js";
 import type { MainSurface } from "../preview/main-surfaces.js";
 import { HEADER_BUTTON_CLASS, PaneFrame, usePanePanelSlot } from "./PaneFrame.js";
 import { DockedPanelColumn, useDockedPanelMotion, WorkPanelCard } from "./DockedWorkPanel.js";
@@ -27,7 +26,7 @@ import { PtyTerminalView } from "./PtyTerminalView.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
-import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
+import { navigateBrowserTabAsUser, useBrowserControlState } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
 import { BrowserObservationLiveStrip } from "../preview/BrowserObservationLiveStrip.js";
 import { directoryName } from "./TerminalPaneHeader.js";
@@ -50,88 +49,27 @@ function WebPanelBody({
   api,
   surface,
   paneId,
-  guest,
-  navigation,
   onNavigate,
 }: {
   api: AveApi;
   surface: MainSurface;
   paneId: string;
-  guest: BrowserSurface | null;
-  navigation: GuestNavigation;
   onNavigate: (url: string) => void;
 }) {
   const { t } = useTranslation();
-  const shownUrl = navigation.url ?? surface.url ?? "";
   const navigateAsUser = (navigate: () => void) => void navigateBrowserTabAsUser(api, surface.tabId, navigate);
-  const [draft, setDraft] = useState(shownUrl);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    setDraft(shownUrl);
-    setError(null);
-  }, [shownUrl]);
-
-  const submit = () => {
-    const normalized = normalizeBrowserNavigationUrl(draft);
-    if (!normalized) {
-      setError(t("chatPreviewRail.browserInvalidUrl"));
-      return;
-    }
-    setError(null);
-    navigateAsUser(() => onNavigate(normalized));
-  };
-
-  const navButton = (label: string, icon: ReactNode, onClick: () => void, disabled: boolean, testId: string) => (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button type="button" size="icon" variant="ghost" className="h-7 w-7 shrink-0" aria-label={label} disabled={disabled} onClick={onClick} data-testid={testId}>
-          {icon}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">{label}</TooltipContent>
-    </Tooltip>
-  );
+  // A page only the user browses has no observation band. A page an agent opened or owns keeps the band's place from the start;
+  // a user's page an agent borrows gets it between actions, never while an action holds the tab.
+  const control = useBrowserControlState().tabs.find((tab) => tab.rendererTabId === surface.tabId);
+  const agentTab = surface.agentRequestId !== undefined || (control !== undefined && control.owner !== null);
+  const actionInFlight = control !== undefined && (control.lease !== null || control.mode === "agent-active");
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
-      <form
-        data-native-page-chrome="card"
-        className="flex shrink-0 items-center gap-1 border-b border-border/(--opacity-half) px-2 py-1"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        {navButton(t("mainPanels.back"), <ArrowLeft className="h-3.5 w-3.5" />, () => navigateAsUser(() => navigateBrowserSurface(guest, "back")), !navigation.canGoBack, "web-panel-back")}
-        {navButton(t("mainPanels.forward"), <ArrowRight className="h-3.5 w-3.5" />, () => navigateAsUser(() => navigateBrowserSurface(guest, "forward")), !navigation.canGoForward, "web-panel-forward")}
-        {navButton(t("mainPanels.reload"), <RotateCw className="h-3.5 w-3.5" />, () => navigateAsUser(() => navigateBrowserSurface(guest, "reload")), !guest || !shownUrl, "web-panel-reload")}
-        <Globe className="ml-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <Input
-          data-testid="web-panel-address"
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            if (error) setError(null);
-          }}
-          placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
-          className="h-7 min-w-0 flex-1 text-xs"
-        />
-        {navButton(
-          t("chatPreviewRail.openUrl"),
-          <ExternalLink className="h-3.5 w-3.5" />,
-          () => {
-            const safe = normalizeBrowserNavigationUrl(shownUrl);
-            if (safe) void api.openExternalUrl(safe);
-          },
-          !shownUrl,
-          "web-panel-open-external",
-        )}
-      </form>
+      <BrowserAddressRow api={api} tabId={surface.tabId} chrome="card" testIds={WEB_PANEL_ADDRESS_ROW_TEST_IDS}
+        fallbackUrl={surface.url ?? null} onNavigate={onNavigate} />
       <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
-      <BrowserObservationLiveStrip tabId={surface.tabId} />
-      {error ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid="web-panel-address-error">{error}</div>
-      ) : null}
+      <BrowserObservationLiveStrip tabId={surface.tabId} reserve={agentTab} actionInFlight={actionInFlight} />
       {surface.url ? (
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}
           {...(surface.agentRequestId === undefined ? {} : { bindRequestId: surface.agentRequestId })} />
@@ -157,14 +95,21 @@ type FrameProps = Omit<ComponentProps<typeof PaneFrame>, "title" | "icon" | "chi
 type SurfacePanelTab = "chat" | "changes";
 const PANEL_TAB_CLASS = "flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary";
 
+/** The composer group of the chat docked to a surface pane; a terminal block attached from that pane can go to it. */
+export function surfacePaneChatGroup(paneId: string): string {
+  return `pane:${paneId}`;
+}
+
 /**
  * A surface pane's work panel: the same docked column and raised card a conversation's work panel uses, pushing the
  * page or terminal aside when the tile has room and floating over it when it does not. It holds the side chat bound to
  * this pane's tab and, for a terminal, the terminal's 변경 파일 view.
  */
 function SurfaceWorkPanel({
-  api, surface, paneId, runtime, onSessionsChanged, open, onClose, tab, onTab, changesTab,
+  api, surface, paneId, runtime, onSessionsChanged, open, onClose, tab, onTab, changesTab, onControlSlot,
 }: {
+  /** Receives the element where a terminal repeats its control strip while this panel floats over it, and null when it does not. */
+  onControlSlot?: (slot: HTMLElement | null) => void;
   api: AveApi;
   surface: BoundSurface;
   paneId: string;
@@ -199,7 +144,7 @@ function SurfaceWorkPanel({
   );
   return createPortal(
     <DockedPanelColumn ref={columnRef} testId="pane-work-panel-motion" motion={motion} shouldOpen={open}
-      width={columns.panelWidth} mode={columns.panelLayout.mode} resizing={resizing}>
+      width={columns.panelWidth} mode={columns.panelLayout.mode} resizing={resizing} settledReserve>
       <WorkPanelCard testId="pane-work-panel" className="relative flex shrink-0" width={columns.panelWidth}
         minWidth={columns.panelLayout.min} maxWidth={columns.panelLayout.max} onWidthChange={onWidthChange} onWidthCommit={onWidthCommit}
         resizeElementRef={columnRef} splitterTestId="pane-work-panel-width-splitter">
@@ -219,6 +164,9 @@ function SurfaceWorkPanel({
               <TooltipContent side="bottom">{t("chatPreviewRail.close")}</TooltipContent>
             </Tooltip>
           </div>
+          {/* Floating, this panel covers the terminal's own control strip: the terminal repeats it here. Docked, both are on screen. */}
+          {onControlSlot && columns.panelLayout.mode === "overlay" && open
+            ? <div ref={onControlSlot} className="shrink-0" data-testid="pane-chat-terminal-control" /> : null}
           {/* The chat stays mounted under the changes view: its draft, transcript and pending cards survive the switch.
               Keyed by the tab: a pane that comes to hold another surface shows that surface's own conversation. */}
           <div className={shownTab === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
@@ -227,7 +175,8 @@ function SurfaceWorkPanel({
               api={api}
               boundSurface={surface}
               runtime={runtime}
-              chatGroupId={`pane:${paneId}`}
+              chatGroupId={surfacePaneChatGroup(paneId)}
+              composerVisible={open && shownTab === "chat"}
               onSessionsChanged={onSessionsChanged}
             />
           </div>
@@ -248,6 +197,7 @@ export function SurfacePane({
   frame,
   onNavigate,
   onAttachText,
+  onOpenLink,
   chatRuntime,
   chatOpen,
   onChatOpenChange,
@@ -268,6 +218,8 @@ export function SurfacePane({
   onNavigate: (tabId: string, url: string) => void;
   /** Hand a terminal block's text to a chat composer; false when it is full. */
   onAttachText?: (text: string) => AttachTextResult;
+  /** Open a web link the user modifier-clicked in this pane's terminal. */
+  onOpenLink?: (url: string) => void;
 }) {
   const { t } = useTranslation();
   const view = surface.kind === "terminal" ? "terminal" : "web";
@@ -282,6 +234,7 @@ export function SurfacePane({
   // current as the shell reports it.
   const [terminalHeader, setTerminalHeader] = useState<HTMLElement | null>(null);
   const [liveCwd, setLiveCwd] = useState<string | null>(null);
+  const [controlMirror, setControlMirror] = useState<HTMLElement | null>(null);
   const cwd = liveCwd ?? surface.cwd ?? null;
   const meta = surface.kind === "terminal" && cwd ? { text: directoryName(cwd), title: cwd } : null;
   // The header toggles the owning tab's panel state.
@@ -344,7 +297,10 @@ export function SurfacePane({
             initialCwd={surface.cwd ?? null}
             attended={frame.focused ?? false}
             headerSlot={terminalHeader}
+            controlMirrorSlot={controlMirror}
             onCwd={setLiveCwd}
+            {...(frame.onClose ? { onCloseTab: frame.onClose } : {})}
+            {...(onOpenLink ? { onOpenLink } : {})}
             {...(onAttachText ? { onAttachText } : {})}
           />
         ) : (
@@ -352,15 +308,14 @@ export function SurfacePane({
             api={api}
             surface={surface}
             paneId={paneId}
-            guest={guest}
-            navigation={navigation}
             onNavigate={(url) => onNavigate(surface.tabId, url)}
           />
         )}
       </div>
       <SurfaceWorkPanel api={api} surface={boundSurface} paneId={paneId} runtime={chatRuntime} onSessionsChanged={onSessionsChanged}
         open={chatOpen} onClose={() => onChatOpenChange(false)} tab={panelTab} onTab={setPanelTab}
-        changesTab={surface.kind === "terminal" ? review?.changed ?? 0 : null} />
+        changesTab={surface.kind === "terminal" ? review?.changed ?? 0 : null}
+        {...(surface.kind === "terminal" ? { onControlSlot: setControlMirror } : {})} />
     </PaneFrame>
   );
 }

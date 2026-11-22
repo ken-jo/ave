@@ -191,6 +191,7 @@ export function AuditPanel({
             {t("auditPanel.filterDecisionLabel")}
           </Label>
           <NativeSelect
+            data-settings-transient
             id="audit-filter-decision"
             value={decisionFilter}
             onChange={(e) => setDecisionFilter(e.target.value as DecisionFilter)}
@@ -210,6 +211,7 @@ export function AuditPanel({
             {t("auditPanel.filterToolLabel")}
           </Label>
           <input
+            data-settings-transient
             id="audit-filter-tool"
             type="text"
             value={toolFilter}

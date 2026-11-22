@@ -2,6 +2,8 @@ import type { JudgeSettings } from "../permissions/judge/judge-settings.js";
 import type { SystemSubagentModelRef } from "./system-subagent-model.js";
 
 export const MAX_PERMISSION_JUDGE_STAGES = 4;
+export const DEFAULT_PERMISSION_JUDGE_MODE = "shadow" as const;
+export const DEFAULT_PERMISSION_JUDGE_CATEGORIES = Object.freeze({ shell: true, write: true, network: false });
 
 export type PermissionJudgeSettings = JudgeSettings;
 

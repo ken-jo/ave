@@ -1,3 +1,4 @@
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 /** Reject malformed pricing rows before saving because normalization silently drops them. Overrides correct reported spend
  * and CSV export. */
 import { EmptyState } from "../../../components/ui/empty-state.js";
@@ -16,6 +17,7 @@ import {
   type PricingOverride,
 } from "../../../shared/pricing-overrides.js";
 import type { AppSettings } from "../types.js";
+import { useSettingsPersistence } from "../hooks/use-settings-persistence.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
 
 /** A row mid-edit. Rates are strings because "" and "1." are states a number input passes through on the way to a value,
@@ -70,8 +72,10 @@ function sameAsSaved(rows: readonly DraftRow[], saved: readonly PricingOverride[
 }
 
 export function PricingOverridesSection() {
+  useAppSettingsControls(["llm-pricing-overrides"]);
   const { t } = useTranslation();
   const api = getApi();
+  const persistence = useSettingsPersistence();
   const envForcedPaths = useEnvForcedSettings(api);
   const envForced = envForcedPaths.includes("llm.pricingOverrides");
 
@@ -106,19 +110,19 @@ export function PricingOverridesSection() {
     setRows((current) => [...current, { ...BLANK_ROW }]);
   }, []);
 
-  const save = useCallback(() => {
+  const save = useCallback(async () => {
     const next = toOverrides(rows);
-    setSaved(next);
-    setRows(toDraft(next));
-    void api.updateSettings({ llm: { pricingOverrides: next } });
-  }, [api, rows]);
+    const result = await persistence.persist(() => api.updateSettings({ llm: { pricingOverrides: next } }));
+    if (result !== null) applySnapshot(result);
+  }, [api, applySnapshot, rows, persistence.persist]);
 
   const incomplete = rows.some((row) => !isRowComplete(row));
-  const disabled = !loaded || envForced;
+  const disabled = !loaded || envForced || persistence.saving;
 
   return (
     <SettingsSection
       data-settings-section="llm-pricing-overrides"
+      data-setting-id="llm.pricingOverrides"
       title={t("llmTab.pricingOverridesTitle")}
       description={t("llmTab.pricingOverridesDesc")}
     >
@@ -220,6 +224,7 @@ export function PricingOverridesSection() {
         >
           {t("common.save")}
         </Button>
+        {persistence.error && <p role="alert" className="text-xs text-destructive">{persistence.error}</p>}
         {incomplete && (
           <Label className="text-dense text-warning" data-testid="llm-pricing-override-incomplete">
             {t("llmTab.pricingOverridesIncomplete")}

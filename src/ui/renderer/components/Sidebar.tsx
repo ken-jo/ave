@@ -1205,9 +1205,8 @@ export function Sidebar({
       role="navigation"
       aria-label={t("sidebar.ariaLabel")}
       className={[
-        // The rail and the list are two cards side by side, one gutter apart, on the same `--shell-card-inset*` lines the docked
-        // side panel uses.
-        "absolute left-(--shell-card-inset) bottom-(--shell-card-inset-bottom) flex min-h-0 gap-(--chrome-gap)",
+        // The rail and list share the window inset and the inter-card gap with the pane canvas.
+        "absolute left-(--shell-card-inset) bottom-(--shell-card-inset-bottom) flex min-h-0 gap-(--shell-card-gap)",
         // Pushed, the cards sit under the docked panels' band; an overlaying list is the floating surface of the moment and must
         // cover everything the tile draws.
         overlayOpen ? "z-50" : "z-30",

@@ -62,11 +62,19 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
   mode: "docked" | "overlay";
   overlayBottom?: number;
   resizing: boolean;
+  /**
+   * How the content beside a docked panel gets its width. Without it the content is pushed by the panel as it grows and shrinks, one width per
+   * frame. With it the content takes its final width at once and the panel grows into, or shrinks over, the room. A surface pane asks for
+   * it: what it shows is laid out by something outside the page (a terminal tells its shell every width it is given, a web page is a native
+   * view resized to its box), and must not be given widths nobody chose.
+   */
+  settledReserve?: boolean;
   id?: string;
   testId: string;
   children: ReactNode;
-}>(function DockedPanelColumn({ motion, shouldOpen, width, mode, overlayBottom = 0, resizing, id, testId, children }, ref) {
-  return (
+}>(function DockedPanelColumn({ motion, shouldOpen, width, mode, overlayBottom = 0, resizing, settledReserve = false, id, testId, children }, ref) {
+  const floating = mode === "overlay" || settledReserve;
+  const column = (
     <div
       ref={ref}
       {...(id ? { id } : {})}
@@ -75,7 +83,7 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
       aria-hidden={!motion.expanded}
       inert={!motion.expanded}
       style={{
-        order: 2,
+        ...(settledReserve ? {} : { order: 2 }),
         width: motion.expanded ? `${width}px` : "0px",
         maxWidth: shouldOpen ? width : 0,
         ...(mode === "overlay" ? { bottom: overlayBottom } : {}),
@@ -83,10 +91,9 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
         ...(motion.present ? {} : { display: "none" }),
       }}
       className={[
-        // Use the sidebar's pixel inset tokens for both floating-card edges and transcript reserve; font scaling must not change
-        // the host's pixel reserve.
-        "z-40 flex min-w-0 shrink-0 origin-right justify-end pt-(--shell-card-inset) pr-(--shell-card-inset) pb-(--shell-card-inset-bottom) pl-(--shell-card-inset) will-change-[width,opacity,transform]",
-        mode === "overlay" ? "absolute inset-y-0 right-0" : "relative self-stretch",
+        // This card is inside a pane; its surrounding air uses the inter-card gap rather than the window inset.
+        "z-40 flex min-w-0 shrink-0 origin-right justify-end p-(--shell-card-gap) will-change-[width,opacity,transform]",
+        floating ? "absolute inset-y-0 right-0" : "relative self-stretch",
         resizing
           ? "transition-none"
           : "transition-[width,opacity,transform] duration-[var(--motion-layout)] ease-[var(--motion-ease-out)] motion-reduce:transition-none",
@@ -102,6 +109,13 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
       }}
     >
       {children}
+    </div>
+  );
+  if (!settledReserve) return column;
+  // The room the docked panel takes, given and taken back in one step; the panel moves inside and over it.
+  return (
+    <div data-testid={`${testId}-reserve`} className="relative shrink-0 self-stretch" style={{ order: 2, width: mode === "docked" && shouldOpen ? width : 0 }}>
+      {column}
     </div>
   );
 });

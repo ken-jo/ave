@@ -1,3 +1,4 @@
+import { useAppSettingsControls, useSettingsDocumentRead, useSettingsEditor } from "../../context/SettingsEditorContext.js";
 import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
@@ -21,6 +22,7 @@ import {
   type SourcePreviewView,
   type SourceView,
 } from "../../../../shared/git-marketplace.js";
+import { useSettingsPersistence } from "../../hooks/use-settings-persistence.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../../components/PageShell.js";
 import { isIpcErrorResult, type AveApi } from "../../types.js";
@@ -126,6 +128,7 @@ function PackageCard({ entry, onOpen, onUninstallUnbound, onExport }: { entry: C
 
 export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, onOpenPluginSettings }: GitMarketplaceTabProps) {
   const { t, locale } = useTranslation();
+  useAppSettingsControls(["marketplace-maintenance"]);
   const market = api.gitMarketplace;
   const [view, setView] = useState<View>("browse");
   const [sources, setSources] = useState<SourceView[]>([]);
@@ -157,7 +160,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   const [flagsLoaded, setFlagsLoaded] = useState(false);
   const [flagsFailure, setFlagsFailure] = useState<string | null>(null);
   /** Why the last switch was not saved, as the raw text behind *Copy details*. */
-  const [flagSaveFailure, setFlagSaveFailure] = useState<string | null>(null);
+  const { error: flagSaveFailure, saving: flagSaving, persist: persistFlagChange } = useSettingsPersistence();
   const envForcedPaths = useEnvForcedSettings(api);
   const syncedOnce = useRef(false);
 
@@ -303,17 +306,23 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
     void loadCatalog();
   };
 
+  const readSettings = useSettingsDocumentRead(() => api.getSettings());
+  const editorSettings = useSettingsEditor()?.settings;
   useEffect(() => {
-    void api.getSettings().then(
+    let active = true;
+    void (editorSettings ? Promise.resolve(editorSettings) : readSettings()).then(
       (settings) => {
+        if (!active) return;
         setUpdateCheckEnabled(settings.marketplace?.updateCheckEnabled !== false);
         setOfflineCacheEnabled(settings.marketplace?.offlineCacheEnabled !== false);
         setFlagsLoaded(true);
+        setFlagsFailure(null);
       },
       // The switches stay disabled, since their state is unknown; the failure says why.
-      (error: unknown) => setFlagsFailure(errorMessage(error)),
+      (error: unknown) => { if (active) setFlagsFailure(errorMessage(error)); },
     );
-  }, [api]);
+    return () => { active = false; };
+  }, [readSettings, editorSettings]);
 
   /** Save an automatic-update switch (§18.9) through the settings channel. A source's or package's switch rewrites its whole
    * map, read fresh, so a switch set back to the default is removed rather than kept. */
@@ -351,9 +360,13 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   };
 
   const persistFlag = async (patch: { updateCheckEnabled?: boolean; offlineCacheEnabled?: boolean }) => {
-    setFlagSaveFailure(null);
-    const result = await api.updateSettings({ marketplace: patch });
-    if (isIpcErrorResult(result)) setFlagSaveFailure(result.message === undefined ? result.error : `${result.error}\n${result.message}`);
+    const previous = { updateCheckEnabled, offlineCacheEnabled };
+    await persistFlagChange(() => api.updateSettings({ marketplace: patch }), {
+      rollback: () => {
+        if (patch.updateCheckEnabled !== undefined) setUpdateCheckEnabled(previous.updateCheckEnabled);
+        if (patch.offlineCacheEnabled !== undefined) setOfflineCacheEnabled(previous.offlineCacheEnabled);
+      },
+    });
   };
 
   const entries = useMemo(() => (catalog?.entries ?? []).filter((entry) => kind === null || entry.key.kind === kind), [catalog, kind]);
@@ -540,6 +553,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         {view === "browse" && (
           <div className="mt-3 space-y-3">
             <Input
+              data-settings-transient="catalog-search-query"
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
@@ -669,11 +683,12 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
         {flagSaveFailure !== null && (
           <MarketplaceProblem tone="error" text={t("gitMarketplace.maintenance.saveFailed")} details={flagSaveFailure} className="mt-4" testId="git-marketplace:maintenance:save-error" />
         )}
-        <div className="mt-4 flex items-center justify-between gap-4">
+        <div data-setting-row="marketplace.updateCheckEnabled" className="mt-4 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>
           <Switch
+            data-setting-id="marketplace.updateCheckEnabled"
             checked={updateCheckEnabled}
-            disabled={!flagsLoaded}
+            disabled={!flagsLoaded || flagSaving}
             aria-label={t("gitMarketplace.maintenance.updateCheck")}
             data-testid="git-marketplace:update-check"
             onCheckedChange={(checked) => {
@@ -682,7 +697,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             }}
           />
         </div>
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:update-check:help">{t("gitMarketplace.maintenance.updateCheckHelp")}</p>
+        <p data-setting-row="marketplace.updateCheckEnabled" className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:update-check:help">{t("gitMarketplace.maintenance.updateCheckHelp")}</p>
         <EnvForcedNotice
           settingsPath="marketplace.updateCheckEnabled"
           forcedPaths={envForcedPaths}
@@ -690,11 +705,12 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           testId="git-marketplace:update-check:forced"
           className="mt-1"
         />
-        <div className="mt-3 flex items-center justify-between gap-4">
+        <div data-setting-row="marketplace.offlineCacheEnabled" className="mt-3 flex items-center justify-between gap-4">
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.offlineCache")}</span>
           <Switch
+            data-setting-id="marketplace.offlineCacheEnabled"
             checked={offlineCacheEnabled}
-            disabled={!flagsLoaded}
+            disabled={!flagsLoaded || flagSaving}
             aria-label={t("gitMarketplace.maintenance.offlineCache")}
             data-testid="git-marketplace:offline-cache"
             onCheckedChange={(checked) => {
@@ -703,7 +719,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             }}
           />
         </div>
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:offline-cache:help">{t("gitMarketplace.maintenance.offlineCacheHelp")}</p>
+        <p data-setting-row="marketplace.offlineCacheEnabled" className="mt-1 text-xs text-muted-foreground" data-testid="git-marketplace:offline-cache:help">{t("gitMarketplace.maintenance.offlineCacheHelp")}</p>
         <EnvForcedNotice
           settingsPath="marketplace.offlineCacheEnabled"
           forcedPaths={envForcedPaths}

@@ -23,6 +23,7 @@ describe("#1444 terminal channels are internal (fail-closed)", () => {
       spawn: "ave:terminal:spawn",
       input: "ave:terminal:input",
       resize: "ave:terminal:resize",
+      keep: "ave:terminal:keep",
       kill: "ave:terminal:kill",
       data: "ave:terminal:data",
       exit: "ave:terminal:exit",

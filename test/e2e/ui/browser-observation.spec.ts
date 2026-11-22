@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AgentObservationEvent } from "../../../src/shared/agent-observation.js";
 import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
+import { readWindowGeometry } from "./window-geometry.js";
 
 interface BrowserGuestGeometry {
   at: number;
@@ -144,8 +145,9 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: {
       reviewer: { interactive: { autoApprove: "off" } } } }));
     await setWindowSize(ctx.app, 1280, 860);
+    const nativeGeometry = await readWindowGeometry(ctx.app, page);
     await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
-      .toEqual({ width: 1280, height: 860 });
+      .toEqual({ width: nativeGeometry.ui.width, height: nativeGeometry.ui.height });
     await expect.poll(() => observationApp.evaluate(({ BaseWindow }) => {
       const window = BaseWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
       if (!window) throw new Error("Browser fixture window unavailable");
@@ -288,7 +290,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
       await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
       await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
     }, guestId);
-    await expect(page.getByTestId("chat-side-panel-url-viewer")).toContainText(userUrl);
+    await expect(page.locator('[data-testid="chat-side-panel-browser-address"]:visible')).toHaveValue(userUrl);
     await expect(page.getByTestId(TEST_IDS.approvalDock)).toHaveCount(0);
     await expect(page.getByTestId("agent-browser-control-resume")).toBeVisible();
     expectStableBrowserBounds(await page.evaluate(() =>

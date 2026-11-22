@@ -8,7 +8,7 @@ import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { canonicalRuleSpecifier } from "../rules/rule-specifier.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
-import { calibratePermissionDecisionBudget } from "../../__tests__/support/permission-decision-cost.js";
+import { countDecisionWork, decisionWorkSummary, expectLinearDecisionWork } from "../../__tests__/support/permission-decision-cost.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 // #223 executable-bound startup admission: win32 literal text cannot offer or replay exact rules.
@@ -35,22 +35,19 @@ function check(command: string, dialect: ShellRuleDialect, sandboxed = false, he
   });
 }
 
-// Bounded work, not latency: the budget is calibrated against a trivial decision in the same
-// dialect, lane and mode (see permission-decision-cost.ts), so slower hosts do not flake.
+// Bounded work, not latency: the decision's work is counted at module boundaries (see permission-decision-cost.ts), so the result is the
+// same on every host and under any load. Repeating a decision must repeat exactly the same work.
 function measured(command: string, dialect: ShellRuleDialect, sandboxed: boolean) {
-  const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) => {
-    check(`printf %s ./p${iteration.toString(36)}`, dialect, sandboxed);
-  });
-  const samples: number[] = [];
   const results = [];
+  const counted = [];
   for (let observation = 0; observation < 3; observation += 1) {
-    const start = performance.now();
-    const result = check(command, dialect, sandboxed);
-    samples.push(performance.now() - start);
+    const { result, work } = countDecisionWork(() => check(command, dialect, sandboxed));
     results.push(result);
+    counted.push(work);
   }
-  const median = [...samples].sort((a, b) => a - b)[1]!;
-  return { samples, median, results, referenceMs, budgetMs, ratio: median / referenceMs };
+  const work = counted[0]!;
+  for (const repeated of counted) expect(decisionWorkSummary(repeated)).toEqual(decisionWorkSummary(work));
+  return { results, work };
 }
 
 describe("visible literal decision regressions", () => {
@@ -58,14 +55,21 @@ describe("visible literal decision regressions", () => {
     manager.setMode("allow");
     const observations = [64, 128, 256].map((repetitions) => {
       const command = `printf %s './${"AppData/Local/a/User Data/b/".repeat(repetitions)}tail'`;
-      const timing = measured(command, "bash", true);
-      return { repetitions, chars: command.length, ...timing };
+      return { repetitions, command, ...measured(command, "bash", true) };
     });
-    process.stdout.write(`literal path timing ${JSON.stringify(observations)}\n`);
-    for (const { median, budgetMs, results } of observations) {
-      expect(median).toBeLessThan(budgetMs);
+    process.stdout.write(`literal path work ${JSON.stringify(observations.map(({ repetitions, command, work }) => ({ repetitions, chars: command.length, work: decisionWorkSummary(work) })))}\n`);
+    for (const { results } of observations) {
       for (const result of results) expect(result).toMatchObject({ decision: "allow" });
     }
+    // 64 repetitions stay under the literal-proof length (a read-only proof); from 112 on the decision takes the allow-mode lane, so the work at
+    // 256 is compared with 112 (a spread above two).
+    const full = observations.find(({ repetitions }) => repetitions === 256);
+    if (full === undefined) throw new Error("the 256-repetition observation is missing");
+    const half = { command: `printf %s './${"AppData/Local/a/User Data/b/".repeat(112)}tail'` };
+    const smaller = measured(half.command, "bash", true);
+    for (const result of [...smaller.results, ...full.results]) expect(result).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+    // The one quoted argument (and the two words before it) is the only operand.
+    expectLinearDecisionWork(smaller.work, full.work, full.command.length / half.command.length, 3);
   });
 
   it("keeps quoted numeric text distinct through persisted exact rule replay", async () => {
@@ -110,19 +114,25 @@ describe("visible literal decision regressions", () => {
     const sentence = "Document the configuration options and clarify the expected behavior for developers. ";
     const prefix = "Write-Output '";
     const suffix = "' | Select-Object -First 1 | Out-String";
-    const count = 1_800 - prefix.length - suffix.length;
-    const first = `${prefix}${sentence.repeat(Math.ceil(count / sentence.length)).slice(0, count)}'`;
-    const command = `${first} | Select-Object -First 1 | Out-String`;
+    // The same pipeline at a quarter of the length, with its own saved stage rules, for the growth comparison.
+    const pipeline = (length: number): { command: string; first: string } => {
+      const count = length - prefix.length - suffix.length;
+      const first = `${prefix}${sentence.repeat(Math.ceil(count / sentence.length)).slice(0, count)}'`;
+      return { command: `${first} | Select-Object -First 1 | Out-String`, first };
+    };
+    const { command, first } = pipeline(1_800);
+    const small = pipeline(450);
     expect(command.length).toBe(1_800);
-    for (const stage of [first, "Select-Object -First 1", "Out-String"]) {
+    for (const stage of [first, small.first, "Select-Object -First 1", "Out-String"]) {
       await manager.addRulePersist({ pattern: canonicalRuleSpecifier(`PowerShell(${stage})`), action: "allow" }, { kind: "user" });
     }
-    const timing = measured(command, "powershell", false);
+    const work = measured(command, "powershell", false);
+    const smaller = measured(small.command, "powershell", false);
     const headless = check(command, "powershell", false, true);
-    process.stdout.write(`literal pipeline timing ${JSON.stringify({ chars: command.length, ...timing, headless })}\n`);
-    for (const result of timing.results) expect(result).toMatchObject(UNPROVEN_STARTUP
+    process.stdout.write(`literal pipeline work ${JSON.stringify({ chars: command.length, smallChars: small.command.length, work: decisionWorkSummary(work.work), smallWork: decisionWorkSummary(smaller.work), headless })}\n`);
+    for (const result of [...work.results, ...smaller.results]) expect(result).toMatchObject(UNPROVEN_STARTUP
       ? { decision: "ask", reasonCode: "shell-approval" } : { decision: "allow" });
     expect(headless).toMatchObject(UNPROVEN_STARTUP ? { decision: "deny", reasonCode: "no-approver" } : { decision: "allow" });
-    expect(timing.median).toBeLessThan(timing.budgetMs);
+    expectLinearDecisionWork(smaller.work, work.work, command.length / small.command.length, 0);
   });
 });

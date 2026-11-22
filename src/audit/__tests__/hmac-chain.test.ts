@@ -1,4 +1,5 @@
 /** HMAC chains follow docs/architecture/permission-policy-design.md, Layer 7. */
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
@@ -195,7 +196,7 @@ describe("readStableRegularFileUtf8", () => {
       moduleUrl, fifoPath, String(requirePrivateOwnerFile),
     ], {
       cwd: process.cwd(),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      env: tsxChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
       encoding: "utf8",
       timeout: 20_000,
     });

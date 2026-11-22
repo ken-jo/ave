@@ -6,6 +6,7 @@ import { test as providerTest } from "../../screenshots/fixtures.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 import { sendRendererEvent } from "./renderer-events.js";
+import { readWindowGeometry } from "./window-geometry.js";
 
 async function captureWindow(app: ElectronApplication, page: Page, path: string, width: number) {
   const target = await app.browserWindow(page);
@@ -14,7 +15,9 @@ async function captureWindow(app: ElectronApplication, page: Page, path: string,
     const image = await win.webContents.capturePage();
     return { png: image.toPNG().toString("base64"), size: image.getSize() };
   }).finally(() => target.dispose());
-  expect(capture.size).toEqual({ width, height: 640 });
+  const geometry = await readWindowGeometry(app, page);
+  expect([geometry.content.width, geometry.content.height]).toEqual([width, 640]);
+  expect(capture.size).toEqual({ width: geometry.ui.width, height: geometry.ui.height });
   await writeFile(path, Buffer.from(capture.png, "base64"));
 }
 

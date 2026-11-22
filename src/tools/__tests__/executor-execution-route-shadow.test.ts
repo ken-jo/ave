@@ -571,15 +571,16 @@ describe("execution route shadow metadata", () => {
   });
 
   it.each([
-    ["Ave secret directory", "cat ~/.ave/secrets/provider.key"],
-    ["legacy secret file", "cat ./ave-secrets.json"],
-  ])("keeps %s behind the sensitive-path hard block in a disposable guest", async (_label, command) => {
+    ["Ave secret directory", "cat ~/.ave/secrets/provider.key", "**/.ave/secrets/**"],
+    ["legacy secret file", "cat ./ave-secrets.json", "**/ave-secrets.json"],
+  ])("keeps %s behind the sensitive-path hard block in a disposable guest", async (_label, command, pattern) => {
     __resetActiveSandboxCapabilityForTest();
     setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-sensitive-"));
+    const execute = vi.spyOn(BashTool.prototype, "execute").mockResolvedValue({ output: "unexpected shell execution", isError: false });
     try {
-      const { executor } = makeExecutor(dir, "allow");
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow");
       const [result] = await executor.executeAll(
         [{ id: "tu-route-sensitive", name: "bash", input: { command } }],
         {
@@ -590,8 +591,14 @@ describe("execution route shadow metadata", () => {
       );
 
       expect(result).toMatchObject({ is_error: true });
-      expect(result?.content).toContain("shell-path-policy/sensitive-path");
+      expect(result?.content).toContain(pattern);
+      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+        decision: "deny", executionRoute: expect.objectContaining({ route: "disposable-container" }),
+      }));
+      expect(operatorHarness.consumeCount).toBe(0);
+      expect(execute).not.toHaveBeenCalled();
     } finally {
+      execute.mockRestore();
       await cleanupTmpDir(dir);
     }
   });

@@ -1,5 +1,6 @@
 /** Only unpackaged staging may use loopback HTTP overrides; keep staging move records separate from production. */
 import { join } from "node:path";
+import { telemetryLevel } from "../../shared/telemetry-policy.js";
 import type { TelemetrySettings } from "../../data/settings-store.js";
 import { AVE_SERVICE_BASE_URL, ServiceClient, readPolicyServiceBase } from "../../marketplace/service/client.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
@@ -14,7 +15,8 @@ export function consentedTelemetryEndpoint(
 ): () => string | null | undefined {
   const allowed = () => {
     const current = settings();
-    return current.telemetryPromptAnswered === true && current.enabled === true;
+    const level = telemetryLevel(current);
+    return current.telemetryPromptAnswered === true && (level === "error" || level === "all");
   };
   if (allowed()) service.ensureResolved();
   return () => {

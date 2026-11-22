@@ -1,7 +1,7 @@
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi, type TestContext } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { decodeWindowsAclScript, withWindowsAclScript, windowsCommandLineLength } from "../../__tests__/support/windows-acl-launch.js";
@@ -301,6 +301,29 @@ it.runIf(process.platform === "win32")("replaces inherited foreign access when c
   })]);
 }, 45_000);
 
+it.runIf(process.platform === "win32").each([
+  ["S-1-5-32-544", true],
+  ["S-1-5-20", false],
+] as const)("checks volume-root ownership independently of the fixture owner: %s", async (owner, admitted) => {
+  const parent = createLocalAppDataFixtureRoot();
+  roots.push(parent);
+  const volume = parse(parent).root;
+  _setWindowsAclTransportForTest({
+    async request(request) {
+      const response = JSON.parse(await fakeRequest(request));
+      for (const entry of response.result.paths) {
+        if (entry.path.toLowerCase() === volume.toLowerCase()) entry.owner = owner;
+      }
+      return JSON.stringify(response);
+    },
+    discard: () => {},
+  });
+  const admission = assertCodexLocations([{ path: parent, kind: "directory", routeKind: "native" }],
+    { capSidPath: join(parent, "absent-cap-fixture") });
+  if (admitted) await expect(admission).resolves.toBeUndefined();
+  else await expect(admission).rejects.toThrow("Executable path has an untrusted owner");
+});
+
 it.runIf(process.platform === "win32")("admits a private runtime directory claimed from Administrators", async (context) => {
   const branch = (outcome: string) => console.info(`Administrators-claim admission: ${outcome}`);
   if (!readWindowsDirectoryDacls([tmpdir()])[0].elevated) {
@@ -310,7 +333,7 @@ it.runIf(process.platform === "win32")("admits a private runtime directory claim
   }
   const fixture = realHostFixture();
   await fixture.prime();
-  // Admission walks every ancestor, so the fixture lives under the real profile rather than a runner temp tree.
+  // Admission walks every ancestor, including the volume root above the isolated application-data tree.
   const parent = createLocalAppDataFixtureRoot();
   roots.push(parent); setFixtureOwner(parent);
   const trust = { capSidPath: join(parent, "absent-cap-fixture") };

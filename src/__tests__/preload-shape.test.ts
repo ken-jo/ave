@@ -1,3 +1,4 @@
+import { requiredValue } from "./support/required-value.js";
 import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 /**
  * Preload contextBridge shape lock.
@@ -16,7 +17,7 @@ import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
  * imports preload successfully).
  */
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { ALERTS } from "../shared/ipc-channels.js";
+import { WORK_BOARD, ALERTS } from "../shared/ipc-channels.js";
 import type { AveApi } from "../ui/renderer/types.js";
 
 const exposed = new Map<string, unknown>();
@@ -84,6 +85,28 @@ beforeAll(async () => {
 });
 
 describe("preload contextBridge world shape lock", () => {
+  it("bridges template requests, local confirmation intent and change unsubscribe", async () => {
+    const api = exposed.get("aveApi") as AveApi;
+    await api.listWorkflowTemplates(); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateList);
+    await api.getWorkflowTemplate("t"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateGet, "t");
+    const input = { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" };
+    mockUserActivation.isActive = true; await api.confirmWorkflowTemplate("t", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: true });
+    mockUserActivation.isActive = false; await api.confirmWorkflowTemplate("t", input);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: false });
+    const attachment = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
+    mockUserActivation.isActive = true; await api.attachWorkflowTemplateSchedule(attachment);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: true });
+    mockUserActivation.isActive = false; await api.attachWorkflowTemplateSchedule(attachment);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: false });
+    mockUserActivation.isActive = true; await api.detachWorkflowTemplateSchedule("attachment");
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: true });
+    mockUserActivation.isActive = false; await api.detachWorkflowTemplateSchedule("attachment");
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: false });
+    const handler = vi.fn(); const unsubscribe = api.onWorkflowTemplatesChanged(handler);
+    const listener = requiredValue(mockOn.mock.calls.at(-1))[1]; listener(); expect(handler).toHaveBeenCalledOnce();
+    unsubscribe(); expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.templatesChanged, listener);
+  });
   it("attaches fresh click intent to an internal relaunch request", async () => {
     const api = exposed.get("aveApi") as AveApi;
     mockUserActivation.isActive = true;
@@ -148,6 +171,13 @@ describe("preload contextBridge world shape lock", () => {
           "lightScheme": "string",
           "mode": "string",
           "schemaVersion": "number",
+          "terminal": [
+            "copyOnSelect",
+            "cursorStyle",
+            "optionAsMeta",
+            "scrollback",
+            "shell",
+          ],
           "terminalFont": [
             "family",
             "lineHeight",
@@ -164,11 +194,11 @@ describe("preload contextBridge world shape lock", () => {
             "selectSentence",
           ],
           "attach": [
-            "discardClipboardImage",
             "openExternal",
             "openFile",
             "readImage",
             "redeemDrop",
+            "release",
             "saveClipboardImage",
           ],
           "documentEngine": [
@@ -189,10 +219,12 @@ describe("preload contextBridge world shape lock", () => {
             "attachResourceTemplate",
             "authenticate",
             "callTool",
+            "clearApiKey",
             "disposeUiSession",
             "downloadFile",
             "getConfigPath",
             "getConfigs",
+            "getManagementState",
             "getPrompt",
             "kill",
             "listResourceTemplates",
@@ -204,6 +236,8 @@ describe("preload contextBridge world shape lock", () => {
             "removeConfig",
             "servers",
             "setApiKey",
+            "startServer",
+            "undoRemove",
           ],
           "permission": [
             "addRule",
@@ -240,6 +274,7 @@ describe("preload contextBridge world shape lock", () => {
             "sandboxWindowsInstall",
             "sandboxWindowsStatus",
             "setMode",
+            "updateSecuritySettings",
             "upstreamProxyGet",
             "upstreamProxySet",
           ],
@@ -280,11 +315,14 @@ describe("preload contextBridge world shape lock", () => {
             "dropPrepare",
             "listDir",
             "listRoots",
+            "openInEditor",
             "openPath",
             "pickRoot",
             "previewRemoveRoot",
+            "readForEdit",
             "removeRoot",
             "reveal",
+            "saveEdit",
             "searchFiles",
           ],
         },
@@ -304,6 +342,8 @@ describe("preload contextBridge world shape lock", () => {
             "setOsNotificationsEnabled",
           ],
           "applyClaudeDesktopMcpImport": "function",
+          "archiveWorkflowTemplate": "function",
+          "attachWorkflowTemplateSchedule": "function",
           "audit": [
             "getStats",
             "search",
@@ -324,15 +364,32 @@ describe("preload contextBridge world shape lock", () => {
             "stop",
           ],
           "browserWorkspace": [
+            "agentSiteGrant",
+            "answerPrompt",
+            "cancelDownload",
             "capture",
+            "clearData",
             "clearHistory",
+            "clearSiteData",
+            "deleteHistory",
             "find",
             "getState",
+            "load",
+            "onAttachBlocked",
             "onChanged",
+            "onFindResult",
+            "onOpenTab",
+            "onPageShortcut",
             "preview",
+            "retryLoad",
+            "revokeAgentSiteGrant",
             "setBookmark",
+            "setPageShortcuts",
             "setSitePermission",
+            "showDownload",
             "stopFind",
+            "stopLoad",
+            "userNavigation",
             "zoom",
           ],
           "callPluginMethod": "function",
@@ -343,6 +400,7 @@ describe("preload contextBridge world shape lock", () => {
           "chatCompact": "function",
           "chatContinueLastUser": "function",
           "chatControlShellTask": "function",
+          "chatDecideTurnReview": "function",
           "chatEditResend": "function",
           "chatEnterCheckpointView": "function",
           "chatExitCheckpointView": "function",
@@ -369,13 +427,16 @@ describe("preload contextBridge world shape lock", () => {
           "chatSessionResume": "function",
           "chatSessionUpdate": "function",
           "chatSessions": "function",
+          "checkForAppUpdates": "function",
           "clearSessionGoal": "function",
           "clearSessionTasks": "function",
           "completeWorkBoardItem": "function",
+          "confirmWorkflowTemplate": "function",
           "decideWorkPlan": "function",
           "deleteApiKey": "function",
           "deletePersonaPrompt": "function",
           "deleteWebApiKey": "function",
+          "detachWorkflowTemplateSchedule": "function",
           "dev": [
             "getPreflightStatus",
             "setPreflightOverride",
@@ -395,6 +456,7 @@ describe("preload contextBridge world shape lock", () => {
             "uninstall",
           ],
           "downloadAppUpdate": "function",
+          "draftWorkflowTemplate": "function",
           "e2ePluginBundleSnapshot": "function",
           "envForcedSettings": "function",
           "exportUsageCsv": "function",
@@ -407,10 +469,12 @@ describe("preload contextBridge world shape lock", () => {
           "getRuntimeCounts": "function",
           "getSessionGoal": "function",
           "getSettings": "function",
+          "getSettingsDefaults": "function",
           "getUsageDailySummary": "function",
           "getUsageRange": "function",
           "getWorkBoardItem": "function",
           "getWorkBoardRunTranscript": "function",
+          "getWorkflowTemplate": "function",
           "gitMarketplace": [
             "acceptRewrite",
             "acknowledgeSource",
@@ -480,6 +544,7 @@ describe("preload contextBridge world shape lock", () => {
           "listSkills": "function",
           "listWorkApprovals": "function",
           "listWorkBoard": "function",
+          "listWorkflowTemplates": "function",
           "logs": [
             "tail",
           ],
@@ -536,13 +601,16 @@ describe("preload contextBridge world shape lock", () => {
           "onWorkBoardRunFinished": "function",
           "onWorkBoardRunProgress": "function",
           "onWorkBoardRunStarted": "function",
+          "onWorkflowTemplatesChanged": "function",
           "onboarding": [
             "answer",
             "listPending",
           ],
           "openExternalUrl": "function",
+          "openSettingsFile": "function",
           "pauseRoutine": "function",
           "pauseSessionGoal": "function",
+          "pickSettingsDirectory": "function",
           "pluginStudio": [
             "availableParts",
             "confirmConnectorCopy",
@@ -653,6 +721,7 @@ describe("preload contextBridge world shape lock", () => {
             "control",
             "getBlock",
             "input",
+            "keep",
             "kill",
             "listBlocks",
             "listFileReviews",

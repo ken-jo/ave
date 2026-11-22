@@ -623,9 +623,9 @@ describe("crash-reporter", () => {
       userDataPath: userData,
       telemetry: { enabled: false, crashReportingEnabled: false },
       remoteReporting: true,
-      crashReporter: { start: (opts) => started.push(opts) },
+      allowlistEnv: "dumps.example.com",
+      crashReporter: { start: (opts) => started.push(opts), setUploadToServer: vi.fn() },
       setCrashDumpsPath: (p) => pathsSet.push(p),
-      sentryLoader: () => null
     });
     expect(handle.started).toBe(true);
     expect(started[0]?.uploadToServer).toBe(false);
@@ -634,7 +634,6 @@ describe("crash-reporter", () => {
     expect(handle.dumpDir.startsWith(userData)).toBe(true);
     // And Electron's crashDumps path is overridden BEFORE reporter.start().
     expect(pathsSet).toEqual([handle.dumpDir]);
-    expect(handle.sentryActive).toBe(false);
   });
 
   it("enables upload when user opts in", () => {
@@ -648,25 +647,31 @@ describe("crash-reporter", () => {
         crashReportEndpoint: "https://dumps.example.com/submit"
       },
       remoteReporting: true,
-      crashReporter: { start: (opts) => started.push(opts) },
-      sentryLoader: () => null
+      allowlistEnv: "dumps.example.com",
+      crashReporter: { start: (opts) => started.push(opts), setUploadToServer: vi.fn() },
     });
     expect(started[0]?.uploadToServer).toBe(true);
     expect(started[0]?.submitURL).toBe("https://dumps.example.com/submit");
   });
 
-  it("inits sentry only when DSN configured and loader returns module", () => {
-    const userData = createUserDataRoot();
-    const dsnSeen: string[] = [];
-    const handle = startCrashReporter({
-      userDataPath: userData,
-      telemetry: { enabled: false, sentryDsn: "https://k@sentry.example/1" },
-      remoteReporting: true,
-      crashReporter: { start: () => {} },
-      sentryLoader: () => ({ init: ({ dsn }) => dsnSeen.push(dsn) })
-    });
-    expect(handle.sentryActive).toBe(true);
-    expect(dsnSeen[0]).toContain("sentry.example");
+  it("withdraws crash upload consent immediately without restarting", () => {
+    const setUploadToServer = vi.fn();
+    const telemetry = { enabled: true, level: "all" as const, crashReportingEnabled: true, crashReportEndpoint: "https://dumps.example.com/submit" };
+    const handle = startCrashReporter({ userDataPath: createUserDataRoot(), telemetry, remoteReporting: true, allowlistEnv: "dumps.example.com", crashReporter: { start: vi.fn(), setUploadToServer } });
+    handle.updateSettings({ ...telemetry, level: "off", enabled: false, crashReportingEnabled: false });
+    expect(setUploadToServer).toHaveBeenCalledWith(false);
+  });
+
+  it("refuses unauthorized native crash destinations even when consent is enabled", () => {
+    const start = vi.fn();
+    startCrashReporter({ userDataPath: createUserDataRoot(), telemetry: { enabled: true, level: "all", crashReportingEnabled: true, crashReportEndpoint: "http://dumps.example.com/submit" }, remoteReporting: true, allowlistEnv: "dumps.example.com", crashReporter: { start, setUploadToServer: vi.fn() } });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ uploadToServer: false, submitURL: undefined }));
+  });
+
+  it("does not widen legacy crash consent after migration", () => {
+    const start = vi.fn();
+    startCrashReporter({ userDataPath: createUserDataRoot(), telemetry: { enabled: true, level: "all", crashReportingEnabled: false, crashReportEndpoint: "https://dumps.example.com/submit" }, remoteReporting: true, allowlistEnv: "dumps.example.com", crashReporter: { start, setUploadToServer: vi.fn() } });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ uploadToServer: false }));
   });
 
   it("keeps local dumps but sends nothing when the launch has no remote reporting", () => {
@@ -674,26 +679,21 @@ describe("crash-reporter", () => {
     const userData = createUserDataRoot();
     const started: Array<{ uploadToServer?: boolean; submitURL?: string }> = [];
     const pathsSet: string[] = [];
-    const dsnSeen: string[] = [];
     const handle = startCrashReporter({
       userDataPath: userData,
       telemetry: {
         enabled: true,
         crashReportingEnabled: true,
         crashReportEndpoint: "https://dumps.example.com/submit",
-        sentryDsn: "https://k@sentry.example/1",
       },
       remoteReporting: false,
-      crashReporter: { start: (opts) => started.push(opts) },
+      crashReporter: { start: (opts) => started.push(opts), setUploadToServer: vi.fn() },
       setCrashDumpsPath: (p) => pathsSet.push(p),
-      sentryLoader: () => ({ init: ({ dsn }) => dsnSeen.push(dsn) }),
     });
     expect(handle.started).toBe(true);
     expect(pathsSet).toEqual([handle.dumpDir]);
     expect(started[0]?.uploadToServer).toBe(false);
     expect(started[0]?.submitURL).toBeUndefined();
-    expect(handle.sentryActive).toBe(false);
-    expect(dsnSeen).toEqual([]);
   });
 });
 

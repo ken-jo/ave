@@ -9,7 +9,7 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { checkShellPermission, literalShellRulePattern as exact } from "../../__tests__/support/permission-lane.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
-import { calibratePermissionDecisionBudget } from "../../__tests__/support/permission-decision-cost.js";
+import { countDecisionWork, decisionWorkSummary, expectLinearDecisionWork } from "../../__tests__/support/permission-decision-cost.js";
 
 let cwd: string;
 let manager: PermissionManager;
@@ -203,19 +203,21 @@ describe("runtime execution boundaries", () => {
     const rule = buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule;
     expect(rule).toBeNull();
     manager.setRules(rule === null ? [{ pattern: "*", action: "allow" }] : [withCurrentShellRuleVersion({ pattern: rule, action: "allow" })]);
+    // The same argv with a quarter of the prefix words, for the growth comparison of the complete decision.
+    const small = `${"npx ".repeat(Math.floor(size / 4))}${leaf}`;
     for (const sandboxed of [false, true]) {
-      const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
-        check(`${"npx ".repeat(4)}${leaf} ${iteration.toString(36)}`, "powershell", sandboxed));
-      const samples: number[] = [];
+      const smaller = countDecisionWork(() => check(small, "powershell", sandboxed));
+      expect(smaller.result).toMatchObject({ decision: expected });
+      const counted = [];
       for (let observation = 0; observation < 3; observation += 1) {
-        const start = performance.now();
-        const result = check(command, "powershell", sandboxed);
-        samples.push(performance.now() - start);
+        const { result, work } = countDecisionWork(() => check(command, "powershell", sandboxed));
         expect(result).toMatchObject({ decision: expected });
+        counted.push(work);
       }
-      const median = [...samples].sort((left, right) => left - right)[1]!;
-      process.stdout.write(`permission argv timing ${JSON.stringify({ size, leaf, expected, lane: sandboxed ? "A" : "B", chars: command.length, samples, median, referenceMs, budgetMs, ratio: median / referenceMs })}\n`);
-      expect(median).toBeLessThan(budgetMs);
+      const work = counted[0]!;
+      process.stdout.write(`permission argv work ${JSON.stringify({ size, leaf, expected, lane: sandboxed ? "A" : "B", chars: command.length, smallChars: small.length, work: decisionWorkSummary(work), smallWork: decisionWorkSummary(smaller.work) })}\n`);
+      for (const repeated of counted) expect(decisionWorkSummary(repeated)).toEqual(decisionWorkSummary(work));
+      expectLinearDecisionWork(smaller.work, work, command.length / small.length, size);
     }
   });
 });

@@ -238,9 +238,9 @@ describe("UsageDashboard", () => {
   it("renders preset buttons", async () => {
     await renderDashboard();
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "7d" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "30d" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "90d" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 7 }) })).toBeTruthy();
+      expect(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 30 }) })).toBeTruthy();
+      expect(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 90 }) })).toBeTruthy();
       expect(screen.getByRole("button", { name: "전체" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "직접" })).toBeTruthy();
     });
@@ -250,7 +250,7 @@ describe("UsageDashboard", () => {
     const api = usageDashboardApi();
     await renderDashboard(api);
     await waitFor(() => expect(api.getUsageRange).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: "7d" }));
+    fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 7 }) }));
     await waitFor(() => expect(api.getUsageRange).toHaveBeenCalledTimes(2));
   });
 
@@ -322,5 +322,47 @@ describe("UsageDashboard", () => {
     await waitFor(() => {
       expect(screen.getAllByText("데이터 없음").length).toBeGreaterThan(0);
     });
+  });
+});
+
+describe("UsageDashboard request state", () => {
+  it("keeps the period picker after a failed reload, clears old data and can retry", async () => {
+    const api = usageDashboardApi();
+    await renderDashboard(api);
+    await screen.findByText("claude-sonnet-4-6");
+    api.getUsageRange.mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 7 }) }));
+    await screen.findByRole("alert");
+    expect(screen.queryByText("claude-sonnet-4-6")).toBeNull();
+    expect(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 30 }) })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.retry") }));
+    await screen.findByText("claude-sonnet-4-6");
+    expect(api.getUsageRange).toHaveBeenCalledTimes(3);
+  });
+
+  it("displays only the newest period when requests finish out of order", async () => {
+    let finishOld: (summary: DashboardSummary) => void = () => { throw new Error("not requested"); };
+    const api = usageDashboardApi();
+    api.getUsageRange.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
+    await renderDashboard(api);
+    expect(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 7 }) })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: t("usageDashboard.presetDays", { count: 7 }) }));
+    await screen.findByText("claude-sonnet-4-6");
+    const { act } = await import("@testing-library/react");
+    await act(async () => finishOld({ ...MOCK_SUMMARY, perModel: [{ ...MOCK_SUMMARY.perModel[0], model: "older-period" }] }));
+    expect(screen.queryByText("older-period")).toBeNull();
+    expect(screen.getByText("claude-sonnet-4-6")).toBeVisible();
+  });
+
+  it("shows an export error for both rejected and unsuccessful exports", async () => {
+    const api = usageDashboardApi();
+    api.exportUsageCsv.mockRejectedValueOnce(new Error("disk full"));
+    await renderDashboard(api);
+    fireEvent.click(await screen.findByRole("button", { name: /CSV 내보내기/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(t("usageDashboard.exportError"));
+    api.exportUsageCsv.mockResolvedValueOnce({ ok: false, filePath: "" });
+    fireEvent.click(screen.getByRole("button", { name: /CSV 내보내기/ }));
+    await waitFor(() => expect(api.exportUsageCsv).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("alert")).toHaveTextContent(t("usageDashboard.exportError"));
   });
 });

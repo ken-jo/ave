@@ -1,5 +1,6 @@
 // Diagnostics are internal and host-renderer-only; exported logs and bundle content pass through DLP.
 import { ipcMain, dialog } from "electron";
+import { t } from "../../i18n/runtime.js";
 import { readFile } from "node:fs/promises";
 import { readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -113,7 +114,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
 
         const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
         const dialogOptions = {
-          title: "진단 번들 저장",
+          title: t("mainDialog.diagnosticsExportTitle"),
           defaultPath: `ave-diagnostics-${stamp}.zip`,
           filters: [{ name: "ZIP", extensions: ["zip"] }],
         };

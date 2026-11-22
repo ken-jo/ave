@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { MockAgent, fetch as undiciFetch } from "undici";
 import { PluginTelemetryClient } from "../telemetry/client.js";
 import { scrubPii } from "../telemetry/client.js";
 import type { TelemetrySettings } from "../data/settings-store.js";
@@ -11,6 +12,7 @@ let telemetryTmpDir: string;
 
 function makeDeps(overrides: {
   enabled?: boolean;
+  level?: TelemetrySettings["level"];
   promptAnswered?: boolean;
   endpoint?: string | null | undefined;
   fetchImpl: typeof fetch;
@@ -18,6 +20,7 @@ function makeDeps(overrides: {
 }) {
   const settings: TelemetrySettings = {
     enabled: overrides.enabled ?? true,
+    level: overrides.level,
     telemetryPromptAnswered: overrides.promptAnswered ?? true
   };
   return {
@@ -41,6 +44,69 @@ describe("PluginTelemetryClient", () => {
   afterEach(async () => {
     vi.useRealTimers();
     await cleanupTmpDir(telemetryTmpDir);
+  });
+
+  it.each([307, 308])("never forwards a batch that the endpoint redirects (%i) to another host", async (status) => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    const outside: unknown[] = [];
+    agent.get("https://reports.example").intercept({ path: "/ingest", method: "POST" })
+      .reply(status, "", { headers: { location: "https://outside.example/collect" } });
+    agent.get("https://outside.example").intercept({ path: "/collect", method: "POST" })
+      .reply(200, (options) => { outside.push(options.body); return ""; }).persist();
+    try {
+      const fetchImpl = ((input: string, init: object) => undiciFetch(input, { ...init, dispatcher: agent })) as unknown as typeof fetch;
+      const client = new PluginTelemetryClient(makeDeps({ level: "all", endpoint: "https://reports.example/ingest", fetchImpl }));
+      client.track("plugin_install", { slug: "sample", version: "1" });
+      await client.flush();
+      expect(outside).toEqual([]);
+      expect(client.queueLength).toBe(1);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it("sends only extension errors at the error level", async () => {
+    const fetch = okFetch();
+    const client = new PluginTelemetryClient(makeDeps({ level: "error", fetchImpl: fetch }));
+    client.track("plugin_install", { slug: "sample", version: "1" });
+    client.track("plugin_error", { slug: "sample", version: "1", errorClass: "TypeError" });
+    await client.flush();
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(body.events.map((event: { name: string }) => event.name)).toEqual(["plugin_error"]);
+  });
+
+  it("drops held usage events when consent becomes error-only, then clears all events on off", async () => {
+    const fetch = okFetch();
+    const settings: TelemetrySettings = { level: "all", enabled: true, telemetryPromptAnswered: true };
+    const deps = makeDeps({ fetchImpl: fetch });
+    const client = new PluginTelemetryClient({ ...deps, settings: () => settings });
+    client.track("plugin_install", { slug: "sample", version: "1" });
+    client.track("plugin_error", { slug: "sample", version: "1" });
+    settings.level = "error";
+    client.settingsChanged();
+    expect(client.queueLength).toBe(1);
+    settings.level = "off";
+    client.settingsChanged();
+    expect(client.queueLength).toBe(0);
+    await client.flush();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("aborts an in-flight upload when consent is withdrawn", async () => {
+    let signal: AbortSignal | undefined;
+    let finish!: (response: Response) => void;
+    const fetch = vi.fn((_url: string, init: RequestInit) => { signal = init.signal as AbortSignal; return new Promise<Response>((resolve) => { finish = resolve; }); }) as unknown as typeof globalThis.fetch;
+    const settings: TelemetrySettings = { level: "all", enabled: true, telemetryPromptAnswered: true };
+    const client = new PluginTelemetryClient({ ...makeDeps({ fetchImpl: fetch }), settings: () => settings });
+    client.track("plugin_install", { slug: "sample", version: "1" });
+    const pending = client.flush();
+    settings.level = "off";
+    client.settingsChanged();
+    expect(signal?.aborted).toBe(true);
+    finish(new Response(null, { status: 200 }));
+    await pending;
+    expect(client.queueLength).toBe(0);
   });
 
   it("track() is a no-op when enabled=false", async () => {

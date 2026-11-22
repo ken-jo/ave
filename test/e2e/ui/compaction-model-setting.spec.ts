@@ -4,7 +4,7 @@ import type { AveApi } from '../../../src/ui/renderer/types.js';
 
 test.use({ seedLlmProvider: 'openai', seedLlmVendors: { openai: { model: 'gpt-5.4-mini' } } });
 
-test('compaction selects a connected route and retains unavailable selections', async ({ app, mainWindow, t }, testInfo) => {
+test('compaction applies a connected route immediately and retains unavailable selections', async ({ app, mainWindow, t }, testInfo) => {
   const settings = await openInlineSettings(app, mainWindow, 'llm');
   const picker = settings.getByTestId('compaction-model');
   await expect(picker).toBeEnabled();
@@ -17,7 +17,6 @@ test('compaction selects a connected route and retains unavailable selections', 
   });
   await picker.click();
   await settings.getByRole('option').filter({ has: settings.locator('[data-model-id]', { hasText: selected.model }) }).first().click();
-  await settings.getByTestId('compaction-model-save').click();
   await expect.poll(() => settings.evaluate(async () => {
     const api = (window as unknown as { aveApi: AveApi }).aveApi;
     return (await api.getSettings()).llm.compactionModelSelection;
@@ -32,7 +31,6 @@ test('compaction selects a connected route and retains unavailable selections', 
   await settings.screenshot({ path: testInfo.outputPath('compaction-model-unavailable.png') });
   await picker.click();
   await settings.getByRole('option', { name: t('compactionSettings.currentModel') }).click();
-  await settings.getByTestId('compaction-model-save').click();
   await expect.poll(() => settings.evaluate(async () => {
     const api = (window as unknown as { aveApi: AveApi }).aveApi;
     return (await api.getSettings()).llm.compactionModelSelection;

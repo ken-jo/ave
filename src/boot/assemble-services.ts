@@ -70,6 +70,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     refreshSandboxNetworkConfig: ctx.refreshSandboxNetworkConfig,
     routinesStore: ctx.routinesStore,
     routinesScheduler: ctx.routinesScheduler,
+    workflowTemplateStore: ctx.workflowTemplateStore,
     workBoardStore: ctx.workBoardStore,
     alertsService: ctx.alertsService,
     workBoardEngine: ctx.workBoardEngine,

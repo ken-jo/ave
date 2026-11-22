@@ -256,6 +256,16 @@
 @media (prefers-reduced-motion: reduce) {
   .ave-turn-control-glyph { animation: none; }
 }
+/* The browser address row's loading line: a short bar that travels the row while the page loads. */
+@keyframes ave-browser-loading {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+.browser-loading-line { animation: ave-browser-loading 1.1s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .browser-loading-line { animation: none; width: 100%; opacity: 0.6; }
+}
+
 @keyframes ave-slide-down {
   from { opacity: 0; transform: translateY(-8px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -736,6 +746,8 @@
    * chat group's split arithmetic. */
   :root {
     --chrome-band-height: 36px;
+    /* Main injects the native view inset in document pixels; other documents have no strip. */
+    --native-window-inset: 0px;
     --chrome-control-height: 28px;
     --chrome-icon-button: 24px;
     --chrome-gap: 8px;
@@ -751,17 +763,20 @@
    * as the chrome block above, since the sidebar card's top edge is what puts
    * the cluster strip on the traffic lights' line.
    *
-   * The window inset and the split tiles' gutter share `--chrome-gap`.
-   * Navigation leaves only `--chrome-gap-tight` before the first pane card.
-   * The inset aliases the gutter instead of restating its pixel count. The bottom
-   * inset is larger: a card resting exactly on the window's bottom edge reads
-   * as stuck to it rather than floating. `SHELL_GUTTER`
+   * The window inset uses `--chrome-gap`; every gap between cards uses
+   * `--chrome-gap-tight`, including the two half-gutters of adjacent panes.
+   * The inset aliases the gutter on every outside edge. Pane cells already
+   * contribute half a gutter, so their row supplies only the remaining inset.
+   * `SHELL_GUTTER`
    * (shared/shell-geometry.ts) is the same value for the arithmetic done in
-   * TypeScript, and doubled it is the side panel's card inset
+   * TypeScript. The side panel reserves two inter-card gaps
    * (shared/side-panel.ts). */
   :root {
     --shell-card-inset: var(--chrome-gap);
-    --shell-card-inset-bottom: 12px;
+    --shell-card-inset-bottom: var(--chrome-gap);
+    --shell-card-gap: var(--chrome-gap-tight);
+    --shell-card-half-gap: calc(var(--shell-card-gap) / 2);
+    --shell-pane-inset: calc(var(--shell-card-inset) - var(--shell-card-half-gap));
     /* The shared card top clears the window band by one tight gap.
      * The first row inside each card is a `--chrome-band-height` band, so
      * their header text shares a centre line as well. The band above stays
@@ -770,7 +785,7 @@
     --shell-card-top: calc(var(--chrome-band-height) + var(--chrome-gap-tight));
     /* The shell's first grid row fixes the content origin. Without persistent
      * banners, a pane cell's half-gutter lands on the shared card top. */
-    --shell-canvas-top: calc(var(--shell-card-top) - var(--chrome-gap-tight));
+    --shell-canvas-top: calc(var(--shell-card-top) - var(--shell-card-half-gap));
     /* One corner for every shell card — the rail, the sidebar list, the chat
      * group's tiles and the docked side panel. px for the same reason as the
      * insets: the cards sit side by side and a corner that followed the type
@@ -785,12 +800,11 @@
      * declared beside it: the reserve minus its own card inset and one gutter
      * of air before the list or the content, so it cannot grow into either at a
      * larger type scale. */
-    --shell-collapsed-rail-reserve: 68px;
-    --shell-collapsed-rail-width: calc(var(--shell-collapsed-rail-reserve) - var(--shell-card-inset) - var(--chrome-gap));
-    /* The rail card's trailing edge: its inset plus its width. With only the
-     * rail showing, the content pads to this edge and the pane cell's own
-     * `--chrome-gap-tight` is the whole gap, so nothing is subtracted back. */
+    --shell-collapsed-rail-reserve: 64px;
+    --shell-collapsed-rail-width: calc(var(--shell-collapsed-rail-reserve) - var(--shell-card-inset) - var(--shell-card-gap));
+    /* Content and its first cell each contribute half the inter-card gap. */
     --shell-collapsed-rail-edge: calc(var(--shell-card-inset) + var(--shell-collapsed-rail-width));
+    --shell-content-lead: calc(var(--shell-collapsed-rail-edge) + var(--shell-card-half-gap));
   }
   /* Content measures — how wide a column of prose gets to be, and how tall the
    * panels that hold a scrolling body are. rem, unlike the shell geometry

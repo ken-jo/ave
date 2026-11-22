@@ -51,6 +51,22 @@ describe("work-board migration", () => {
     expect(JSON.parse(readFileSync(legacyPath, "utf-8"))).toEqual(SAMPLE_BOARD);
   });
 
+  it("strips template authority and stage state from every migrated row and history", async () => {
+    const legacy = { ...SAMPLE_BOARD, items: [1, 2].map(id => ({ ...SAMPLE_BOARD.items[0], id,
+      templateId: "template", runTemplateVersion: 1, runTemplateGraphHash: "a".repeat(64),
+      runStartedBy: { kind: "schedule-attachment", pin: { templateId: "template" } }, pin: { templateId: "template" },
+      stageRuns: [{ gate: { status: "approved" } }], stageJoins: [{ status: "integrated" }], runWorkspace: { kind: "git" },
+      runHistory: [{ runId: "old", status: "completed", templateVersion: 1, templateGraphHash: "a".repeat(64), stageRuns: [] }],
+      planApproval: { status: "approved", templateGraphHash: "a".repeat(64) },
+    })) };
+    const source = JSON.stringify(legacy);
+    const legacyPath = writePluginBoard(home, "samplehub", source);
+    expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(true);
+    expect(JSON.parse(readFileSync(destPath, "utf8"))).toEqual({ ...SAMPLE_BOARD, items: [1, 2].map(id => ({
+      ...SAMPLE_BOARD.items[0], id, runHistory: [{ runId: "old", status: "completed" }], planApproval: { status: "approved" },
+    })) });
+    expect(readFileSync(legacyPath, "utf8")).toBe(source);
+  });
   it("is idempotent: a second run with the dest present skips and returns false", async () => {
     writePluginBoard(home, "samplehub", JSON.stringify(SAMPLE_BOARD));
     expect(await migrateLegacyPluginBoardToWorkBoard()).toBe(true);

@@ -42,6 +42,34 @@ but `0` or `1`, or output that is not one line fails the folder input with
 that cause: a broken install is reported, never guessed as a network folder.
 The Windows CI job runs the test.
 
+## Held directory operations
+
+The `--dir-rename`, `--dir-copy`, `--dir-remove` and `--dir-sweep` modes
+(`dir-ops.h`) put a browser download where the user chose and remove staged
+files. They take the same arguments, follow the same stdin/stdout protocol and
+exit with the same codes as the macOS helper (`native/macos-dir-ops/README.md`);
+the directory identity is the volume serial number and 64-bit file index that
+Node reports as `dev` and `ino`. These modes are the helper's only writes.
+
+Each held directory is opened component by component from the volume root,
+every component through the handle of the one above it (`NtCreateFile` with a
+root directory, `FILE_OPEN_REPARSE_POINT`), and a link, junction or mount point
+at any component is refused. The handles have traverse access and share read
+and write but not delete, so neither the held directory nor any folder above it
+can be renamed or removed until the mode ends; attribute-only handles would not
+block that. Every file is opened, created exclusively and removed relative to
+those handles, a rename names its target folder by handle
+(`NtSetInformationFile`, native `FileRenameInformation` class 10 with
+`RootDirectory` and a single relative name), and a removal uses native
+`FileDispositionInformation` class 13 on the file's own handle. A failure keeps
+the captured `NTSTATUS` with its translated error code, including through partial
+copy cleanup, and prints both in its one stderr diagnostic. A copy reports `progress <bytes copied>` after each chunk
+and flushes `part` every 16 MiB. `src/main/browser/browser-download-files.ts`
+runs the modes under the same stall bound and kill path as on macOS, removing a
+killed copy's `part` the same way, and `scripts/test-windows-path-kind.mjs`
+covers each mode, refusals, and renames of held folders failing while a copy
+waits at its commit.
+
 ## OS system directory
 
 `ave-path-kind.exe --system-directory` prints the result of
@@ -117,7 +145,19 @@ against concurrent replacement and writes. It reads files only and leaves
 content null for reparse/unopened/missing objects. No link is followed.
 Invalid options or an empty request return 2. Open/read failures return 4
 without partial output; output failures return 3. Missing objects are data.
+`--content` requests whose content exceeds 1,048,576 bytes exit with status 5 and write no partial output.
 Relative paths, device namespace paths and alternate streams are refused.
+
+`ave-path-kind.exe --dacl --parent --stdin` reads the parent DACL request
+from a binary stdin frame. A little-endian u32 payload size precedes a u32
+path count and one u32 byte length plus UTF-8 bytes per path. The helper
+requires EOF immediately after the frame and validates every length and
+UTF-8 operand before opening paths. It accepts up to 2,048 paths and a 1 MiB
+payload. NULs, unpaired surrogate encodings, extra operands and incomplete
+frames return 2. The 8 MiB JSON reply contains one ordered row per operand
+with its exact original spelling in `requestPath`. Exceeding the output
+budget returns 4 with no partial reply. The host checks the count and
+each echoed operand before using the facts.
 
 Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
 and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.

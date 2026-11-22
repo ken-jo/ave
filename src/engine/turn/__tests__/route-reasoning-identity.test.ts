@@ -1,3 +1,4 @@
+import type { RunTurnOptions } from "../types.js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { forbidAmbientFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
@@ -22,7 +23,7 @@ vi.mock("../../llm/provider-factory.js", async (importOriginal) => ({
   ),
 }));
 
-async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", enableThinking = true) {
+async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", enableThinking = true, thinkingOverride?: RunTurnOptions["thinkingOverride"]) {
   if (route === "child") expect(isModelAvailableForVendor("openai", "gpt-5.4-pro", [])).toBe(true);
   const llm = route === "child"
     ? fakeLlmSettings({ model: "gpt-5.4-mini" })
@@ -37,6 +38,7 @@ async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", e
   if (route === "child") llm.vendors.openai.thinkingBudgetTokens = 500;
   if (route === "sdk-capped") llm.vendors.claude.thinkingBudgetTokens = 48_000;
   llm.vendors[llm.provider].enableThinking = enableThinking;
+  const originalBlock = { ...llm.vendors[llm.provider] };
   const loop = new ConversationLoop({
     ...(route === "child" ? { modelOverride: "gpt-5.4-pro" } : {}),
     settingsService: {
@@ -53,12 +55,20 @@ async function requestOn(route: "child" | "preset" | "generic" | "sdk-capped", e
   await loop.whenProviderReady();
   loop.history.append({ role: "user", content: "reply" });
   const result = await queryLoop(loop, "system", loop.resolveToolScope("reply"), undefined, undefined, null, {
-    inputOrigin: "user-keyboard", toolTrustOrigin: "user-keyboard", maxRounds: 1,
+    inputOrigin: "user-keyboard", toolTrustOrigin: "user-keyboard", maxRounds: 1, thinkingOverride,
   });
   expect(state.bodies).toHaveLength(1);
   expect(result.modelSettings).toBeDefined();
-  return { body: state.bodies[0]!, record: result.modelSettings! };
+  return { body: state.bodies[0]!, record: result.modelSettings!, storedBlock: llm.vendors[llm.provider], originalBlock };
 }
+
+it("applies retry reasoning to the request without mutating the stored vendor block", async () => {
+  const { body, storedBlock, originalBlock } = await requestOn("preset", false, { enableThinking: true, thinkingBudgetTokens: 12_000 });
+  expect(body.chat_template_kwargs).toMatchObject({ enable_thinking: true });
+  expect(body.thinking_token_budget).toBe(12_000);
+  expect(storedBlock).toEqual(originalBlock);
+  expect(storedBlock.enableThinking).toBe(false);
+});
 
 beforeEach(() => { state.bodies.length = 0; forbidAmbientFetch(); });
 afterEach(() => vi.unstubAllGlobals());

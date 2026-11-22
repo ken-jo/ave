@@ -149,6 +149,23 @@ function requireRestorePrivilege(context: TestContext): void {
 
 describe("ensureAveHomePrivate", () => {
   const home = useTempPaths("ave-home-privacy-", ".ave");
+  it.runIf(process.platform === "win32")("keeps unconfigured host resources distinct from untrusted configuration", async () => {
+    vi.resetModules();
+    const resources = await import("../../main/host-resources.js");
+    const configuration = await import("../ave-home.js");
+    expect(resources.getConfiguredHostResources()).toBeUndefined();
+    let failure: unknown;
+    try { configuration.aveHomeConfigurationDirectory(resolve(tmpdir(), "unconfigured-home")); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({ message: "host-resources-unavailable" });
+    expect(failure).not.toBeInstanceOf(configuration.AveHomeConfigurationUntrustedError);
+    resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    const root = home();
+    mkdirSync(root);
+    writeFileSync(join(root, "config"), "not a directory");
+    expect(() => configuration.aveHomeConfigurationDirectory(root)).toThrowError(configuration.AveHomeConfigurationUntrustedError);
+  });
   it.runIf(process.platform === "win32")("reuses only a verified identity across path owners and case aliases", () => {
     const dir = home();
     setFixtureOwner(dirname(dir));

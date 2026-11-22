@@ -5,6 +5,7 @@
  * control enter that command's disclosure span, and a revoked span drops its undelivered parser tail. Bytes already written
  * to the operating system cannot be retracted; nothing here claims otherwise. */
 import type { HostTerminalAgentInput, HostTerminalControlMode, HostTerminalControlState } from "../../shared/terminal-session.js";
+import { PlainTextBuffer } from "./terminal-blocks.js";
 
 /** Characters a disclosure span keeps; the newest are kept when a command prints more. */
 const HOST_DISCLOSURE_MAX_CHARS = 96 * 1024;
@@ -26,7 +27,11 @@ export interface HostTerminalDisclosure {
    * was revoked first (the command may still run, now in the user's period, and nothing further is disclosed). */
   readonly state: "running" | "done" | "interrupted";
   readonly exitCode: number | null;
+  /** The span as plain text, with the same line rules as a command block: `\n` line ends, a carriage return rewrites its line, and the padding a shell
+   * draws on the cursor row before its next prompt (zsh's end-of-line mark) is not output. */
   readonly output: string;
+  /** Characters the command printed under the lease, before any were dropped. */
+  readonly outputChars: number;
   /** Older output was dropped to stay within {@link HOST_DISCLOSURE_MAX_CHARS}. */
   readonly truncated: boolean;
   readonly interruption?: HostLeaseRevocation | "command-mismatch";
@@ -40,8 +45,8 @@ interface MutableDisclosure {
   blockId: number;
   state: HostTerminalDisclosure["state"];
   exitCode: number | null;
-  output: string;
-  truncated: boolean;
+  /** Tail-only: the end of a long output is what the model needs, and the head budget is zero. */
+  output: PlainTextBuffer;
   interruption?: HostLeaseRevocation | "command-mismatch";
 }
 
@@ -122,18 +127,14 @@ export class HostTerminalControl {
     if (!record || record.disclosure) throw new Error("Host terminal disclosure requires the live lease before Enter.");
     const disclosure: MutableDisclosure = {
       requestingSessionId: record.requestingSessionId, turnId: record.turnId, command: record.command, cwd: record.cwd, blockId,
-      state: "running", exitCode: null, output: "", truncated: false,
+      state: "running", exitCode: null, output: new PlainTextBuffer(0, HOST_DISCLOSURE_MAX_CHARS),
     };
     record.disclosure = disclosure;
     this.retain(disclosure);
     record.detach = attach((text) => {
       // Attribution at receipt: output that arrives after a revocation belongs to the user's period.
       if (this.lease !== record || disclosure.state !== "running") return;
-      const output = disclosure.output + text;
-      if (output.length > HOST_DISCLOSURE_MAX_CHARS) {
-        disclosure.output = output.slice(output.length - HOST_DISCLOSURE_MAX_CHARS);
-        disclosure.truncated = true;
-      } else disclosure.output = output;
+      disclosure.output.append(text);
     });
     this.changed();
   }
@@ -250,7 +251,7 @@ export class HostTerminalControl {
 function snapshot(entry: MutableDisclosure): HostTerminalDisclosure {
   return {
     requestingSessionId: entry.requestingSessionId, turnId: entry.turnId, command: entry.command, cwd: entry.cwd, blockId: entry.blockId,
-    state: entry.state, exitCode: entry.exitCode, output: entry.output, truncated: entry.truncated,
+    state: entry.state, exitCode: entry.exitCode, output: entry.output.text(), outputChars: entry.output.chars(), truncated: entry.output.truncated(),
     ...(entry.interruption === undefined ? {} : { interruption: entry.interruption }),
   };
 }

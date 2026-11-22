@@ -259,7 +259,7 @@ describe("pre-push global-input tier", () => {
       run: (_command: string, args: string[]) => calls.push(["run", ...args]),
       runAppTypecheckGate: () => calls.push(["typecheck-gate"]),
       runPackageScripts: () => calls.push(["catalog"]),
-      ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {}, withoutGitContext: () => ({}),
+      ensureAppTestRuntimeAbi: () => {}, ensureWindowsJobLauncher: () => {}, ensureMacosDirOps: () => {}, withoutGitContext: () => ({}),
       runVitestWithReport: () => calls.push(["related"]),
     });
     holdSlot("/fixture", "bun", [], [], noRelated, null, true);

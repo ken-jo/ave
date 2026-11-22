@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,8 +48,7 @@ describe("GitRunner ssh preflight", () => {
   });
 
   afterAll(async () => {
-    await broker.close();
-    await rm(dir, { recursive: true, force: true });
+    await cleanupAfterClosing([() => broker.close()], [() => rm(dir, { recursive: true, force: true })]);
   });
 
   function runner(config: string, answers: (call: number) => readonly string[]) {

@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 /** Host git with a real askpass broker and isolated global config. */
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,8 +50,7 @@ export async function createTestGitRunner(
     git,
     dir,
     async cleanup() {
-      if (!options.runtime) await broker.close();
-      await cleanupTmpDir(dir);
+      await cleanupAfterClosing(options.runtime ? [] : [() => broker.close()], [() => cleanupTmpDir(dir)]);
     },
   };
 }

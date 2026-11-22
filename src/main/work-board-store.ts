@@ -24,10 +24,15 @@ import {
   type ProposalsFile,
 } from "../work-board/board-file.js";
 import { appendActivity } from "../work-board/activity-log.js";
-import { projectRootEquals } from "../shared/project-identity.js";
+import { projectRootEquals, projectRootKey } from "../shared/project-identity.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { workBoardMoveRefusal } from "../shared/work-board-lifecycle.js";
 import { ChangeSignal } from "../lib/change-signal.js";
+import { WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView } from "./workflow-run-store.js";
+import { stripBoardRunFields } from "../work-board/template-run-fields.js";
+import { readAveHomeInput } from "../shared/ave-home-trust.js";
+import { isTemplateId, requireTemplate } from "../work-board/template-graph.js";
+import type { TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 
 const log = createLogger("ave");
 
@@ -286,39 +291,51 @@ function emptyBoard(): BoardFile {
 
 // Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID.
 function readFileOrEmpty(filePath: string): Promise<BoardFile> {
-  return readJsonFileOrEmpty(filePath, emptyBoard, (parsed) => {
-    const file = parsed as BoardFile;
-    if (!Array.isArray(file.items)) {
-      return emptyBoard();
-    }
-    const valid = file.items.filter(isValidRecord).map((item) => {
-      if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
-      // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
-      log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
-      const repaired = { ...item };
-      delete repaired.planApproval;
-      return repaired;
-    });
-    // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
-    // on every load and converges; nothing marks it done.
-    const { items, changed } = normalizeBoardDueDates(valid);
-    if (changed > 0) {
-      log.info(
-        { event: "work-board-due-at-localized", changed, total: items.length },
-        "[work-board-store] re-anchored due dates stamped as midnight in another zone",
-      );
-    }
-    const maxId = items.reduce((m, it) => Math.max(m, it.id), 0);
-    const nextId =
-      typeof file.nextId === "number" && Number.isInteger(file.nextId) && file.nextId > maxId
-        ? file.nextId
-        : maxId + 1;
-    return {
-      version: BOARD_VERSION,
-      nextId,
-      items,
-    };
+  return readJsonFileOrEmpty(filePath, emptyBoard, hydrateBoard);
+}
+
+// The board as it is on disk, or undefined when the file is absent, pending review or does not parse; never quarantines. Read errors throw.
+async function readBoardOnDisk(filePath: string): Promise<BoardFile | undefined> {
+  const input = await readAveHomeInput(filePath);
+  if (input.status !== "trusted") return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(input.bytes.toString("utf-8")); } catch { return undefined; }
+  return hydrateBoard(parsed);
+}
+
+function hydrateBoard(parsed: unknown): BoardFile {
+  const file = parsed as BoardFile;
+  if (!Array.isArray(file.items)) {
+    return emptyBoard();
+  }
+  // Run state lives in the run file. A row carrying run fields was edited by hand: they are dropped here, so nothing reads or shows them.
+  const valid = file.items.filter(isValidRecord).map(stripBoardRunFields).map((item) => {
+    if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
+    // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
+    log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
+    const repaired = { ...item };
+    delete repaired.planApproval;
+    return repaired;
   });
+  // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
+  // on every load and converges; nothing marks it done.
+  const { items, changed } = normalizeBoardDueDates(valid);
+  if (changed > 0) {
+    log.info(
+      { event: "work-board-due-at-localized", changed, total: items.length },
+      "[work-board-store] re-anchored due dates stamped as midnight in another zone",
+    );
+  }
+  const maxId = items.reduce((m, it) => Math.max(m, it.id), 0);
+  const nextId =
+    typeof file.nextId === "number" && Number.isInteger(file.nextId) && file.nextId > maxId
+      ? file.nextId
+      : maxId + 1;
+  return {
+    version: BOARD_VERSION,
+    nextId,
+    items,
+  };
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
@@ -336,12 +353,32 @@ function mutationRevision(item: WorkItem): string {
   return sha256(JSON.stringify(item));
 }
 
+// A template row names its run by runId alone. The run file decides whether that run can be read and whether it belongs to this row;
+// while the file awaits review no template run can be vouched for. Ordinary rows and unstarted template rows have no run in that file and
+// are never marked.
+// What a settled run keeps once its row names a newer run: how it ended and each stage's status, times, result hash and output hash.
+function runSummary(run: WorkflowRunRecord): WorkflowRunRecord {
+  const { runId, itemId, pin, runStartedBy, startedAt, settled } = run;
+  const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash, outputHash }) =>
+    ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }), ...(outputHash === undefined ? {} : { outputHash }) }));
+  return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }) };
+}
+
+const namesTemplateRun = (item: WorkItem): boolean => item.templateId !== undefined && item.runId !== undefined;
+function templateRunError(item: WorkItem, runs: WorkflowRunView): WorkItemResolved["templateRunError"] {
+  if (!namesTemplateRun(item) || item.runId === undefined) return undefined;
+  const result = runs.get(item.runId);
+  if (result.status === "pending-review") return "template-runs-pending-review";
+  return result.status === "invalid" || (result.status === "found" && result.run.itemId !== item.id) ? "invalid-template-run" : undefined;
+}
+
 // A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader.
-function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
+function decorate(item: WorkItem, nowMs: number, runError?: WorkItemResolved["templateRunError"]): WorkItemResolved {
   const approval = item.planApproval;
   return {
     ...item,
     mutationRevision: mutationRevision(item),
+    ...(runError ? { templateRunError: runError } : {}),
     status_resolved: resolveWorkItemStatus(item, nowMs),
     ...(approval?.status === "pending" ? { planStale: approval.itemDigest !== itemDigestOf(item) } : {}),
   };
@@ -383,14 +420,18 @@ export class WorkBoardStore {
   // Activity-log storage rooted in the same directory as `board.json`.
   private readonly activity: WorkBoardStorage;
   private readonly now: () => number;
+  /** Template-run state, keyed by runId, in the covered run file beside `board.json`. */
+  readonly runs: WorkflowRunStore;
 
   /**
    * @param filePath absolute path to `board.json`. Defaults to the
    *   `~/.ave/work-board/board.json` namespace path; tests inject a temp path.
    * @param now injectable clock for deterministic overdue/timestamp tests.
+   * @param runs the run store; defaults to `workflow-runs.json` beside the board file.
    */
-  constructor(filePath: string = defaultPath(), now: () => number = () => Date.now()) {
+  constructor(filePath: string = defaultPath(), now: () => number = () => Date.now(), runs: WorkflowRunStore = new WorkflowRunStore(join(dirname(filePath), "workflow-runs.json"))) {
     this.filePath = filePath;
+    this.runs = runs;
     this.activity = createDirStorage(dirname(filePath));
     this.now = now;
   }
@@ -400,6 +441,53 @@ export class WorkBoardStore {
     await writeFileAtomic(this.filePath, board);
     this.cache = board;
     this.boardChanged.emit();
+  }
+
+  // Only the run record says a run is over (`settled`); a record without it stays whole, whatever its row shows. A settled run stays
+  // whole while its row names it as the current run, shrinks to its summary while it is only in the row's run history, and goes once
+  // the board no longer lists it. A row id this board never issued (an emptied or replaced board file) proves nothing, so that run stays.
+  private retention(board: BoardFile): WorkflowRunRetention {
+    const rows = new Map(board.items.map((item) => [item.id, item]));
+    const issued = board.nextId;
+    return (run) => {
+      if (run.settled === undefined) return run;
+      const row = rows.get(run.itemId);
+      if (!row) return run.itemId < issued ? null : run;
+      if (row.runId === run.runId) return run;
+      return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? runSummary(run) : null;
+    };
+  }
+
+  // A failed row write may still have replaced the board (a failed directory sync after the rename). The record goes only once the
+  // board on disk shows the row naming another run; while the row names it, or the board cannot be read, the record stays as it is.
+  private async settleUnstartedRun(id: number, runId: string): Promise<void> {
+    const onDisk = await readBoardOnDisk(this.filePath);
+    const row = onDisk?.items.find((item) => item.id === id);
+    if (!onDisk || !row) return;
+    if (row.runId === runId) {
+      this.cache = onDisk;
+      this.boardChanged.emit();
+      return;
+    }
+    const at = new Date(this.now()).toISOString();
+    const settledRun = await this.runs.update(runId, (run) => run.settled === undefined ? { ...run, settled: { status: "error", at } } : null);
+    if (settledRun.status === "stored") await this.pruneAfterWrite(this.retention(onDisk));
+  }
+
+  // Cleanup after a board write never fails that write: whatever it leaves behind goes with the next prune. The engine's
+  // pruneSettledRuns does not go through here, so its failures reach the engine.
+  private async pruneAfterWrite(retain: WorkflowRunRetention): Promise<void> {
+    try { await this.runs.prune(retain); }
+    catch (error) { log.warn("[work-board-store] run records were not pruned: %s", (error as Error).message); }
+  }
+
+  /** For the engine: remove every settled run no row lists and shrink the ones only a run history lists. Call it after settling a run
+   * whose row is gone or names a newer run. A run file that cannot be read rejects; one pending review or past the read limit is left as it is. */
+  async pruneSettledRuns(): Promise<void> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      await this.runs.prune(this.retention(await readFileOrEmpty(this.filePath)));
+    });
   }
 
   async load(): Promise<void> {
@@ -414,13 +502,15 @@ export class WorkBoardStore {
   // List items, newest-id first, with `status_resolved` computed + filter applied.
   async list(filter: WorkItemListFilter = {}): Promise<WorkItemListResult> {
     await this.ensureLoaded();
+    // Read on every call, never cached: the marks follow the run file as it is now.
+    const runs = await this.runs.view();
     if (filter.limit !== undefined && (!Number.isFinite(filter.limit) || filter.limit < 0)) {
       return { status: "invalid", reason: "limit must be a non-negative number" };
     }
     const projectRoot = normalizeOptionalString(filter.projectRoot, MAX_PROJECT_ROOT_LENGTH);
     const nowMs = this.now();
     let rows = this.cache.items
-      .map((item) => decorate(cloneItem(item), nowMs))
+      .map((item) => decorate(cloneItem(item), nowMs, templateRunError(item, runs)))
       .sort((a, b) => b.id - a.id);
     if (projectRoot) {
       rows = rows.filter((r) => projectRootEquals(r.projectRoot, projectRoot) || (filter.includeUnscoped === true && !r.projectRoot));
@@ -451,11 +541,36 @@ export class WorkBoardStore {
     await this.ensureLoaded();
     const item = this.cache.items.find((i) => i.id === id);
     if (!item) return { status: "not_found", itemId: id };
-    return { status: "found", itemId: id, item: decorate(cloneItem(item), this.now()) };
+    const runError = namesTemplateRun(item) ? templateRunError(item, await this.runs.view()) : undefined;
+    return { status: "found", itemId: id, item: decorate(cloneItem(item), this.now(), runError) };
+  }
+
+  /** The template run a row names, read from the run file only. A run stored for another row is refused. */
+  async getRun(id: number): Promise<WorkflowRunReadResult> {
+    await this.ensureLoaded();
+    const runId = this.cache.items.find((i) => i.id === id)?.runId;
+    if (runId === undefined) return { status: "not-found" };
+    const result = await this.runs.get(runId);
+    return result.status === "found" && result.run.itemId !== id ? { status: "invalid" } : result;
+  }
+
+  /** Change the template run a row names, under the board lock so the row cannot move to another run meanwhile. `mutate` never
+   * runs when the row names a different run or the stored run belongs to another row. */
+  async updateRun(id: number, runId: string, mutate: (run: WorkflowRunRecord) => WorkflowRunRecord | null): Promise<WorkflowRunWriteResult> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      if (board.items.find((i) => i.id === id)?.runId !== runId) return { status: "not-found" };
+      return this.runs.update(runId, (run) => {
+        requireTemplate(run.itemId === id, "invalid-template-run");
+        return mutate(run);
+      });
+    });
   }
 
   async create(input: WorkItemCreateInput): Promise<WorkItemCreateResult> {
     await this.ensureLoaded();
+    if (input.templateId !== undefined && !isTemplateId(input.templateId)) return { status: "invalid", reason: "invalid templateId" };
     const title = (input.title ?? "").trim();
     if (!title) {
       return { status: "invalid", reason: "title is required and must be non-empty" };
@@ -484,6 +599,7 @@ export class WorkBoardStore {
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
       const item: WorkItem = {
+        ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
         id: board.nextId,
         title,
         ...(input.detail !== undefined ? { detail: input.detail } : {}),
@@ -692,8 +808,9 @@ export class WorkBoardStore {
     });
   }
 
-  // Start a fresh capped history entry and reset latest fields without overwriting prior history or transcripts.
-  async beginRun(id: number, runId: string, startedAt: string): Promise<WorkItemUpdateResult> {
+  // Start a fresh capped history entry and reset latest fields without overwriting prior history or transcripts. A template run
+  // stores its pin, start authority and stage state in the run file first; the row then names that run by runId and nothing else.
+  async beginRun(id: number, runId: string, startedAt: string, pin?: TemplateRunStart): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await readFileOrEmpty(this.filePath);
@@ -703,9 +820,27 @@ export class WorkBoardStore {
         return { status: "not_found" as const, itemId: id };
       }
       const prior = board.items[idx];
+      if (prior.templateId !== undefined && !pin) {
+        this.cache = board;
+        return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
+      }
+      if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
+      if (pin?.source.kind === "local-create-and-run") requireTemplate(projectRootKey(pin.source.projectRoot) === projectRootKey(prior.projectRoot), "project-mismatch");
       if (prior.status === "completed") {
         this.cache = board;
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
+      }
+      // Judged against the board as it is on disk until the row write below lands.
+      const retain = this.retention(board);
+      if (pin) {
+        const stored = await this.runs.put(structuredClone({
+          runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },
+          runStartedBy: pin.source, startedAt, stageRuns: pin.stageRuns,
+        }), retain);
+        if (stored.status !== "stored") {
+          this.cache = board;
+          return { status: "invalid" as const, itemId: id, reason: stored.status === "pending-review" ? "template-runs-pending-review" : stored.status === "too-large" ? "template-runs-too-large" : "invalid-template-run" };
+        }
       }
       const history = [
         ...(prior.runHistory ?? []),
@@ -725,7 +860,13 @@ export class WorkBoardStore {
       delete updated.runSessionId;
       delete updated.planApproval;
       board.items[idx] = updated;
-      await this.commit(board);
+      try { await this.commit(board); }
+      catch (error) {
+        if (pin) await this.settleUnstartedRun(id, runId).catch((cleanup: Error) => log.warn("[work-board-store] a failed run start was not settled: %s", cleanup.message));
+        throw error;
+      }
+      // The run this row named until now is in its history only from this write on.
+      if (pin) await this.pruneAfterWrite(this.retention(board));
       await appendActivity(this.activity, {
         kind: "run-planned",
         itemId: id,
@@ -742,7 +883,8 @@ export class WorkBoardStore {
   }
 
   // At boot, active persisted phases belong to dead processes; mark them error and close history so items become runnable again.
-  // A crash is not a user stop, so it never becomes cancelled; terminal statuses (cancelled included) are left as they are.
+  // A crash is not a user stop, so it never becomes cancelled; terminal statuses (cancelled included) are left as they are. A row
+  // that names a template run is left to the engine, which adopts the run back from its record.
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -751,6 +893,7 @@ export class WorkBoardStore {
       let count = 0;
       for (let i = 0; i < board.items.length; i++) {
         const it = board.items[i];
+        if (namesTemplateRun(it)) continue;
         // A plan waiting for the user's decision belongs to no process: it stays, with its stored decision object, as long as that
         // object is whole and still matches the stored plan. Anything less cannot be decided safely and becomes error like the rest.
         if (it.runStatus === "awaiting_approval" && isDecidablePlan(it)) continue;
@@ -950,6 +1093,7 @@ export class WorkBoardStore {
       }
       board.items = board.items.filter((i) => i.id !== id);
       await this.commit(board);
+      if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(board));
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

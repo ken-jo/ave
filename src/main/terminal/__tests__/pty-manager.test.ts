@@ -1,17 +1,21 @@
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+vi.mock("node:fs", async original => {
+  const fs = (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original());
+  return { ...fs, rmSync: vi.fn(fs.rmSync) };
+});
 
 import { spawnTerminal as spawnLane, writeTerminal as writeLane, ensureConversationTerminal, conversationTerminalRef, releaseConversationTerminals, endConversationTerminalSession, typeAgentTerminalCommand, terminalTabOwnerWindow, terminalOwnedBy as rendererOwnsTerminal } from "../pty-manager.js";
 import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, verifyTerminalShell, getTerminalBlockTracker, killTerminal, conversationOwnedBy as terminalOwnedBy } from "../../../__tests__/support/terminal-agent-fixture.js";
 /** Check terminal confinement wiring with mocked runtime and PTY boundaries, including fail-closed spawn and cleanup.
  * These tests do not exercise native isolation or real PTY allocation. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { TERMINAL_INPUT_MAX_BYTES } from "../../../shared/terminal-session.js";
 import { terminalSandboxWindowNotice } from "../terminal-sandbox-policy.js";
 import { t } from "../../../i18n/index.js";
 import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissions/asrt-sandbox.js";
@@ -25,6 +29,7 @@ import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approva
 import { approvalSurfaceRegistry, updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
 import * as approvalSurfaces from "../../../permissions/approval-surface-registry.js";
 import { sentApprovalCards } from "../../../__tests__/test-helpers.js";
+import { removeLinksUnder } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { TerminalObservationAdapter } from "../../../observation/terminal-adapter.js";
 import type { TerminalObservedCommand, TerminalObservationEvent } from "../../../shared/agent-observation.js";
 
@@ -126,7 +131,7 @@ vi.mock("../../../permissions/sandbox-write-jail.js", () => ({
 }));
 
 vi.mock("../../../tools/safe-env.js", () => ({
-  buildHostShellChildEnv: (extra: Record<string, string> = {}) => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin", ...extra }),
+  buildUserTerminalEnv: (extra: Record<string, string> = {}) => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin", ...(process.env.ZDOTDIR === undefined ? {} : { ZDOTDIR: process.env.ZDOTDIR }), ...extra }),
   buildSandboxedChildEnv: (env: NodeJS.ProcessEnv, extra: Record<string, string> = {}) => ({
     ...env,
     PATH: "/usr/bin",
@@ -228,6 +233,7 @@ import {
   killAllTerminals,
   killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
+  setManualShellPreference,
   setTerminalEmitter,
   _setTerminalInspectionForTest,
   _conversationTerminalOwnerForTest,
@@ -307,12 +313,21 @@ beforeEach(() => {
   __resetTerminalsForTest();
   setTerminalEmitter(emit);
 });
-afterEach(() => {
-  setAgentTerminalObservationSink(undefined);
-  __resetTerminalsForTest();
-  rmSync(homeParent, { recursive: true, force: true });
-  if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
-});
+function tearDownTerminalFixture(reset = __resetTerminalsForTest): void {
+  try {
+    setAgentTerminalObservationSink(undefined);
+    reset();
+  } finally {
+    if (nativePlatform === "win32") Object.defineProperty(process, "platform", { value: nativePlatform, configurable: true });
+    const root = homeParent;
+    homeParent = "";
+    if (root) {
+      removeLinksUnder(root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+afterEach(() => tearDownTerminalFixture());
 
 describe("pty-manager fail-closed", () => {
   it("refuses to spawn when the gate is inactive", async () => {
@@ -845,11 +860,23 @@ describe("pty-manager cwd validation (write-jail anchor)", () => {
     expect(ptySpawnMock).not.toHaveBeenCalled();
   });
 
-  it("canonicalizes a user-approved project alias before matching its real subtree", async () => {
+  it("canonicalizes a user-approved project alias before matching its real subtree", async ({ onTestFinished }) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const root = homeParent;
     const project = join(homeParent, "approved-project");
     const cwd = join(project, "app");
     mkdirSync(cwd, { recursive: true });
     const alias = join(homeParent, "project-alias");
+    vi.mocked(rmSync).mockImplementation((path, options) => {
+      if (path === root && options?.recursive) {
+        expect(fs.lstatSync(alias, { throwIfNoEntry: false }), "Unlink the junction before tree removal").toBeUndefined();
+      }
+      fs.rmSync(path, options);
+    });
+    onTestFinished(() => {
+      vi.mocked(rmSync).mockReset();
+      expect(existsSync(root)).toBe(false);
+    });
     symlinkSync(project, alias, nativePlatform === "win32" ? "junction" : "dir");
     additionalProjectDirectories = [alias];
     expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd })).toMatchObject({ ok: true, session: { initialCwd: canonicalizePathForMatch(cwd) } });
@@ -859,6 +886,19 @@ describe("pty-manager cwd validation (write-jail anchor)", () => {
     additionalProjectDirectories = [homedir()];
     expect(await spawnTerminal({ tabId: "terminal:0000000a-1", cwd: homedir() })).toMatchObject({ ok: false, reason: "bad-request" });
     expect(ptySpawnMock).not.toHaveBeenCalled();
+  });
+
+  it("removes the fixture links and home even when terminal reset throws", () => {
+    const root = homeParent;
+    const target = join(root, "project");
+    const alias = join(root, "project-alias");
+    mkdirSync(target);
+    symlinkSync(target, alias, nativePlatform === "win32" ? "junction" : "dir");
+
+    const failure = new Error("Terminal reset failed");
+    expect(() => tearDownTerminalFixture(() => { throw failure; })).toThrow(failure);
+    expect(lstatSync(alias, { throwIfNoEntry: false })).toBeUndefined();
+    expect(existsSync(root)).toBe(false);
   });
 
   it("rejects a relative (non-absolute) cwd", async () => {
@@ -1068,6 +1108,16 @@ describe("pty-manager anti-DoS caps", () => {
     writeTerminal("terminal:0000000a-1", "ls\n");
     expect(lastPty?.written).toContain("ls\n");
   });
+
+  it("counts the input cap in UTF-8 bytes, the same cap a view holds typed-ahead input to", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const exact = `${"가".repeat(Math.floor(TERMINAL_INPUT_MAX_BYTES / 3))}${"a".repeat(TERMINAL_INPUT_MAX_BYTES % 3)}`;
+    expect(Buffer.byteLength(exact, "utf-8")).toBe(TERMINAL_INPUT_MAX_BYTES);
+    writeTerminal("terminal:0000000a-1", `${exact}b`);
+    expect(lastPty?.written.length ?? 0).toBe(0);
+    writeTerminal("terminal:0000000a-1", exact);
+    expect(lastPty?.written).toContain(exact);
+  });
 });
 
 describe("pty-manager command blocks", () => {
@@ -1236,8 +1286,11 @@ describe("pty-manager typing an approved agent command", () => {
     pty.emitData(prompt());
     writeTerminal(TAB, "echo human\r");
     pty.emitData(`${mark("C;cmdline_url=echo%20human")}private user output\n${mark("D;0")}`);
-    const manual = await spawnLane({ tabId: "terminal:0000000b-1", lane: "manual", purpose: "workspace", ownerWindowId: 3 });
-    expect(manual.ok).toBe(true);
+    setManualShellPreference(() => process.execPath);
+    vi.stubEnv("SHELL", undefined);
+    const manual = await spawnLane({ tabId: "terminal:0000000b-1", lane: "manual", purpose: "workspace", ownerWindowId: 3 })
+      .finally(() => vi.unstubAllEnvs());
+    expect(manual.ok, JSON.stringify(manual)).toBe(true);
     if (!manual.ok) throw new Error("Missing manual terminal");
     expect(writeLane(manual.session, "echo manual\r")).toEqual({ ok: true });
     lastPty!.emitData("private manual output\n");
@@ -1800,6 +1853,69 @@ describe("pty-manager typing an approved agent command", () => {
       await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
       expect(pty.written).toEqual(["\u0003", "\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for the fresh prompt instead of sending Ctrl-C into prompt hooks that outlast the resend interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pty, mark, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      // A loaded host: the shell takes the interrupt at once (its line is dropped and the prompt hooks report D), but the hooks take longer than the
+      // resend interval to draw the fresh prompt. A Ctrl-C that lands in them interrupts the hooks, not the line editor.
+      const respond = pty.respond;
+      let hookRunning = false;
+      pty.respond = (data) => {
+        if (data === "\u0003") {
+          if (hookRunning) return;
+          hookRunning = true;
+          queueMicrotask(() => pty.emitData(`^C\r\n${mark("D;130")}`));
+          setTimeout(() => {
+            hookRunning = false;
+            pty.emitData(prompt().slice(mark("D;0").length));
+          }, 1_200);
+          return;
+        }
+        respond?.(data);
+      };
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not resend Ctrl-C when the shell enters its prompt hooks during the operating-system check before the resend", async () => {
+    vi.useFakeTimers();
+    const { pty, mark, prompt } = await zshTerminal(3);
+    try {
+      pty.emitData(prompt());
+      // The shell takes the interrupt late: its D arrives while the process table is read for the resend, after the resend interval passed.
+      const respond = pty.respond;
+      let interrupts = 0;
+      let entered = false;
+      pty.respond = (data) => {
+        if (data === "\u0003") { interrupts++; return; }
+        respond?.(data);
+      };
+      readForegroundMock.mockImplementation(async () => {
+        if (interrupts > 0 && !entered) {
+          entered = true;
+          pty.emitData(`^C\r\n${mark("D;130")}`);
+          setTimeout(() => pty.emitData(prompt().slice(mark("D;0").length)), 300);
+        }
+        return foregroundReading;
+      });
+      const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(entered).toBe(true);
+      expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
+    } finally {
+      readForegroundMock.mockImplementation(async () => foregroundReading);
       vi.useRealTimers();
     }
   });
@@ -2474,6 +2590,72 @@ describe("host tabs and conversation-owned isolation", () => {
       if (!result.ok) throw new Error("expected host terminal");
       expect(await typeAgentTerminalCommand(result.session, 8, "echo no", "/workspace")).toMatchObject({ ok: false, reason: "no-terminal" });
       expect(writeLane(result.session, "echo user\r")).toEqual({ ok: true });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("starts the shell the user set for terminals, and fails to start rather than fall back when it is not a file", async () => {
+    gateActive = false;
+    vi.stubEnv("SHELL", "/bin/sh");
+    try {
+      let preferred = process.execPath;
+      setManualShellPreference(() => preferred);
+      const started = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, cwd: tmpdir() });
+      expect(started).toMatchObject({ ok: true, session: { lane: "manual" } });
+      expect(ptySpawnMock.mock.calls.at(-1)?.[0]).toBe(process.execPath);
+      killHostTerminal(tabId);
+      __resetTerminalsForTest();
+
+      // The setting is read at each start.
+      preferred = join(tmpdir(), "ave-no-such-shell");
+      setManualShellPreference(() => preferred);
+      const spawned = ptySpawnMock.mock.calls.length;
+      const refused = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, cwd: tmpdir() });
+      expect(refused).toMatchObject({ ok: false, reason: "spawn-failed" });
+      if (refused.ok) throw new Error("expected the missing shell to fail the start");
+      expect(refused.message).toContain(`the shell set for terminals is not a file: ${preferred}`);
+      // Nothing was started in its place: not the login shell, not anything.
+      expect(ptySpawnMock.mock.calls).toHaveLength(spawned);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("replays a host ring that lost its front from a whole line, and nothing to a view that kept its terminal", async () => {
+    gateActive = false;
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      const first = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, cwd: tmpdir() });
+      if (!first.ok) throw new Error("expected host terminal");
+      const replayOf = async (replay?: boolean): Promise<string> => {
+        emitted = [];
+        const reply = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, ...(replay === undefined ? {} : { replay }) });
+        expect(reply).toMatchObject({ ok: true, replayed: true });
+        // The output comes with the reply, as history, and not as output of the running shell.
+        expect(emitted.filter((entry) => "chunk" in (entry.payload as object))).toEqual([]);
+        return reply.ok && reply.scrollback !== undefined ? reply.scrollback : "";
+      };
+      // Nothing dropped yet: the replay is the output as written, first partial line included.
+      lastPty?.emitData("partial-");
+      lastPty?.emitData("line\r\nnext\r\n");
+      expect(await replayOf()).toBe("partial-line\r\nnext\r\n");
+      // Enough output to push the first chunks out of the ring; lines are numbered so a cut one is recognisable.
+      const line = (index: number): string => `row-${String(index).padStart(6, "0")}-${"x".repeat(100)}\r\n`;
+      let index = 0;
+      for (let chunk = 0; chunk < 400; chunk++) {
+        let text = "";
+        for (let rows = 0; rows < 37; rows++) text += line(index++);
+        // Chunk boundaries fall mid-line, as PTY reads do.
+        lastPty?.emitData(text.slice(0, -50));
+        lastPty?.emitData(text.slice(-50));
+      }
+      const replay = await replayOf();
+      expect(Buffer.byteLength(replay)).toBeLessThanOrEqual(1024 * 1024);
+      expect(Buffer.byteLength(replay)).toBeGreaterThan(512 * 1024);
+      const rows = replay.split("\r\n");
+      expect(rows.at(-1)).toBe("");
+      for (const row of rows.slice(0, -1)) expect(row).toMatch(/^row-\d{6}-x{100}$/);
+      expect(rows.at(-2)).toBe(line(index - 1).trimEnd());
+      // A view that kept its xterm re-attaches without a second copy of that output.
+      expect(await replayOf(false)).toBe("");
+      expect(ptySpawnMock).toHaveBeenCalledTimes(1);
     } finally { vi.unstubAllEnvs(); }
   });
 

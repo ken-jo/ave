@@ -9,6 +9,7 @@ import {
   type SeededElectronContext,
 } from "./seeded-electron.js";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { readWindowGeometry } from "./window-geometry.js";
 
 // Keep the no-key chip in the reserved strip without moving the empty-conversation composer.
 test.describe("chat no-API-key layout", () => {
@@ -96,9 +97,10 @@ test.describe("chat no-API-key layout", () => {
     const documentSize = await ctx.page.evaluate(() => [document.documentElement.clientWidth, document.documentElement.clientHeight]);
     const windowHandle = await ctx.app.browserWindow(ctx.page);
     const windowSize = await windowHandle.evaluate((window) => window.getContentSize());
-    expect(documentSize).toEqual(windowSize);
+    const native = await readWindowGeometry(ctx.app, ctx.page);
+    expect(documentSize).toEqual([native.ui.width, native.ui.height]);
     const measurements = testInfo.outputPath("no-key-short-tile.json");
-    writeFileSync(measurements, JSON.stringify({ documentSize, windowSize, metrics }, null, 2));
+    writeFileSync(measurements, JSON.stringify({ documentSize, windowSize, native, metrics }, null, 2));
     await testInfo.attach("no-key-short-tile.json", { path: measurements, contentType: "application/json" });
     await ctx.page.screenshot({ path: testInfo.outputPath("no-key-short-tile.png") });
   });

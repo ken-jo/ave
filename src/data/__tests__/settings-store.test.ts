@@ -7,7 +7,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 useConfigurationOwner();
 
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -2367,7 +2367,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
 
   it("defaults preferredFlow to 'in-app' on a fresh install", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   it("applies default 'in-app' when webView field is absent on disk (legacy settings.json)", () => {
@@ -2377,16 +2377,16 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   it("round-trips a system-browser preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
-    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser" });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("webView")).toEqual({ preferredFlow: "system-browser" });
+    expect(reloaded.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
   });
 
   // Critic F4 mitigation: schema-invalid value falls back to default for THIS field only; other settings sections must remain intact.
@@ -2406,7 +2406,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
     // Unrelated sections must be preserved (no full default reset).
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
@@ -2420,7 +2420,7 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   // The patch path is the trust boundary: `CHANNELS.settings.update` forwards the renderer payload to `patch()` without a schema check, so an out-of-enum
@@ -2433,37 +2433,37 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
     ["object", { preferredFlow: "in-app" }],
   ])("ignores an invalid preferredFlow patch (%s) and keeps the stored preference", async (_label, badValue) => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
 
     await service.patch({
-      webView: { preferredFlow: badValue as never },
+      webView: { ...service.get("webView"), preferredFlow: badValue as never },
     });
 
-    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser" });
+    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
     // The rejected value must not reach disk either; otherwise the next load would silently reset the user's choice to the default.
     const onDisk = JSON.parse(readFileSync(join(userDataPath, "ave-settings.json"), "utf-8")) as {
       webView: { preferredFlow: unknown };
     };
-    expect(onDisk.webView).toEqual({ preferredFlow: "system-browser" });
+    expect(onDisk.webView).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
     expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("webView")).toEqual({
-      preferredFlow: "system-browser",
+      preferredFlow: "system-browser", addressSearchEngine: "google",
     });
   });
 
   it("keeps a valid preferredFlow patch working after validation", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
-    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser" });
-    await service.patch({ webView: { preferredFlow: "in-app" } });
-    expect(service.get("webView")).toEqual({ preferredFlow: "in-app" });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "system-browser", addressSearchEngine: "google" });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "in-app" } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "google" });
   });
 
   // Consumer-side proof, driven by the REAL producer (SettingsService.patch), not a hand-built settings object: `routeExternalUrl` reads the live preferredFlow and treats anything that is not exactly "system-browser"
   // as "in-app". A hostile/malformed patch therefore used to silently move a "system-browser" user back into the in-app viewer for the rest of the session; the validated patch keeps the routing on the user's choice.
   it("keeps routeExternalUrl on system-browser after an invalid preferredFlow patch", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ webView: { preferredFlow: "system-browser" } });
-    await service.patch({ webView: { preferredFlow: "systembrowser" as never } });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "system-browser" } });
+    await service.patch({ webView: { ...service.get("webView"), preferredFlow: "systembrowser" as never } });
 
     const shellOpened: string[] = [];
     const inAppOpened: string[] = [];
@@ -2478,6 +2478,14 @@ describe("SettingsService webView (B1 — external URL viewer policy)", () => {
 
     expect(shellOpened).toEqual(["https://example.com/sso"]);
     expect(inAppOpened).toEqual([]);
+  });
+  it("keeps a chosen address search engine across restart and drops one it does not know", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ webView: { ...service.get("webView"), addressSearchEngine: "duckduckgo" } });
+    await service.patch({ webView: { ...service.get("webView"), addressSearchEngine: "not-an-engine" as never } });
+    expect(service.get("webView")).toEqual({ preferredFlow: "in-app", addressSearchEngine: "duckduckgo" });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("webView").addressSearchEngine).toBe("duckduckgo");
   });
 });
 
@@ -2840,6 +2848,26 @@ describe("SettingsService appearance", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await expect(service.patch({ appearance: { mode: "invalid", darkScheme: "one-light", lightScheme: "unknown", schemaVersion: 2, bundleId: "package-theme", terminalFont: { family: "bad;value", size: 0, lineHeight: 4 } } } as never)).rejects.toThrow("Invalid terminal font family");
     expect(service.get("appearance")).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it("saves terminal behaviour field by field and refuses an invalid field without saving any", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ appearance: { terminal: { scrollback: 20_000, cursorStyle: "bar" } } });
+    await service.patch({ appearance: { terminal: { shell: "/opt/homebrew/bin/fish", copyOnSelect: true } } });
+    const saved = { scrollback: 20_000, cursorStyle: "bar", optionAsMeta: false, copyOnSelect: true, shell: "/opt/homebrew/bin/fish" };
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").terminal).toEqual(saved);
+    for (const [patch, field] of [[{ scrollback: 50 }, "scrollback"], [{ cursorStyle: "beam" }, "cursorStyle"], [{ shell: "fish" }, "shell"], [{ optionAsMeta: 1 }, "optionAsMeta"]] as const) {
+      // A valid field sent with the invalid one is not saved either.
+      await expect(service.patch({ appearance: { mode: "light", terminal: { copyOnSelect: false, ...patch } } } as never)).rejects.toThrow(`Invalid terminal setting: ${field}`);
+    }
+    // Something that is not a set of fields at all is a broken request, refused whole: not an empty change that "saves".
+    for (const broken of [null, false, "bar", [], 7]) {
+      await expect(service.patch({ appearance: { mode: "light", terminal: broken } } as never)).rejects.toThrow("Invalid terminal settings: not a set of fields");
+    }
+    expect(service.get("appearance")).toMatchObject({ mode: DEFAULT_APPEARANCE.mode, terminal: saved });
+    // A font patch leaves the behaviour alone, and the other way round.
+    await service.patch({ appearance: { terminalFont: { size: 14 } } });
+    expect(service.get("appearance")).toMatchObject({ terminal: saved, terminalFont: { size: 14 } });
   });
 
   it("replaces a released package selection once while preserving language and font", async () => {
@@ -3316,9 +3344,25 @@ describe("SettingsService telemetry normalization", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it("notifies live report consumers after the telemetry write is durable", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const changed = vi.fn(() => expect(service.get("telemetry")).toMatchObject({ level: "off", crashReportingEnabled: false }));
+    service.onChanged("telemetry", changed);
+    await service.patch({ telemetry: { level: "off" } });
+    expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a legacy crash opt-out until the new level is explicitly confirmed", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ telemetry: { enabled: true, crashReportingEnabled: false } });
+    expect(service.get("telemetry")).toMatchObject({ level: "all", crashReportingEnabled: false });
+    await service.patch({ telemetry: { level: "all", telemetryPromptAnswered: true } });
+    expect(service.get("telemetry")).toMatchObject({ level: "all", crashReportingEnabled: true });
+  });
+
   it("defaults to everything off and no destination", () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("telemetry")).toEqual({ enabled: false, crashReportingEnabled: false });
+    expect(s.get("telemetry")).toEqual({ level: "off", enabled: false, crashReportingEnabled: false });
   });
 
   it("patches one field without disturbing the rest of the block", async () => {
@@ -3326,6 +3370,7 @@ describe("SettingsService telemetry normalization", () => {
     await s.patch({ telemetry: { endpoint: "https://metrics.corp.example/v1" } });
     await s.patch({ telemetry: { enabled: true } });
     expect(s.get("telemetry")).toEqual({
+      level: "all",
       enabled: true,
       crashReportingEnabled: false,
       endpoint: "https://metrics.corp.example/v1",
@@ -3342,12 +3387,13 @@ describe("SettingsService telemetry normalization", () => {
 
   it("drops a non-boolean switch and a non-string address, keeping the stored value", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ telemetry: { enabled: true, sentryDsn: "https://k@sentry.example/1" } });
-    await s.patch({ telemetry: { enabled: "yes" as never, sentryDsn: 42 as never } });
+    await s.patch({ telemetry: { enabled: true, crashReportEndpoint: "https://reports.example/crash" } });
+    await s.patch({ telemetry: { enabled: "yes" as never, crashReportEndpoint: 42 as never } });
     expect(s.get("telemetry")).toEqual({
+      level: "all",
       enabled: true,
       crashReportingEnabled: false,
-      sentryDsn: "https://k@sentry.example/1",
+      crashReportEndpoint: "https://reports.example/crash",
     });
   });
 
@@ -3359,16 +3405,17 @@ describe("SettingsService telemetry normalization", () => {
           enabled: "true",
           crashReportingEnabled: true,
           endpoint: { url: "https://nope.example" },
-          sentryDsn: "  https://k@sentry.example/1  ",
+          crashReportEndpoint: "  https://reports.example/crash  ",
         },
       }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(s.get("telemetry")).toEqual({
+      level: "crash",
       enabled: false,
       crashReportingEnabled: true,
-      sentryDsn: "https://k@sentry.example/1",
+      crashReportEndpoint: "https://reports.example/crash",
     });
   });
 });
@@ -3436,37 +3483,26 @@ describe("SettingsService chat normalization", () => {
     });
   });
 
-  it("floors a fractional sub-agent round budget and drops mistyped fields", async () => {
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({
-      chat: {
-        ...s.get("chat"),
-        subAgentMaxRounds: 12.7,
-        autoCompact: "yes" as never,
-        systemPrompt: 42 as never,
-      },
-    });
-    const chat = s.get("chat");
-    expect(chat.subAgentMaxRounds).toBe(12);
-    // Mistyped values are dropped, so the prior (default) value stands.
-    expect(chat.autoCompact).toBe(DEFAULT_SETTINGS.chat.autoCompact);
-    expect(chat.systemPrompt).toBe(DEFAULT_SETTINGS.chat.systemPrompt);
+  it("rejects fractional sub-agent rounds without changing other fields", async () => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const previous = store.get("chat");
+    await expect(store.patch({ chat: { subAgentMaxRounds: 12.7, autoCompact: false } })).rejects.toThrow("Invalid sub-agent round budget");
+    expect(store.get("chat")).toEqual(previous);
+    await store.patch({ chat: { subAgentMaxRounds: 12, autoCompact: "yes" as never, systemPrompt: 42 as never } });
+    expect(store.get("chat")).toMatchObject({ subAgentMaxRounds: 12, autoCompact: previous.autoCompact, systemPrompt: previous.systemPrompt });
   });
 
-  it("raises a non-positive round budget to the runnable minimum", async () => {
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: 0 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(1);
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: -5 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(1);
+  it.each([0, -5, 1001, 300_000])("refuses an out-of-range round budget %s without changing the stored value", async (value) => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const previous = store.get("chat").subAgentMaxRounds;
+    await expect(store.patch({ chat: { subAgentMaxRounds: value } })).rejects.toThrow("Invalid sub-agent round budget");
+    expect(store.get("chat").subAgentMaxRounds).toBe(previous);
   });
 
-  it("keeps a very large round budget — the budget has no upper clamp", async () => {
-    // Deliberate: an absolute ceiling above the configured budget can only surface as an agent that stops
-    // mid-task. The 32-bit timer bound this could once overflow is enforced where the timer is armed instead.
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: 300_000 } });
-    expect(s.get("chat").subAgentMaxRounds).toBe(300_000);
+  it("accepts the inclusive maximum round budget", async () => {
+    const store = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await store.patch({ chat: { subAgentMaxRounds: 1000 } });
+    expect(store.get("chat").subAgentMaxRounds).toBe(1000);
   });
 
   it("corrupt on-disk chat falls back to defaults", () => {
@@ -3483,7 +3519,7 @@ describe("SettingsService chat normalization", () => {
 
   it("rejects a non-finite round budget rather than persisting NaN", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ chat: { ...s.get("chat"), subAgentMaxRounds: Number.NaN } });
+    await expect(s.patch({ chat: { subAgentMaxRounds: Number.NaN } })).rejects.toThrow("Invalid sub-agent round budget");
     expect(s.get("chat").subAgentMaxRounds).toBe(
       DEFAULT_SETTINGS.chat.subAgentMaxRounds,
     );
@@ -4169,6 +4205,44 @@ describe("SettingsService system — main window layout", () => {
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("system").mainLayout).toBeUndefined();
+  });
+
+  it("records the layout as the file held it at load, whatever is written after", async () => {
+    const path = join(userDataPath, "ave-settings.json");
+    // A fresh install: no file, so nothing is known of a layout on disk.
+    const fresh = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(fresh.loadedMainLayout()).toEqual({ kind: "unknown", reason: "no-file" });
+    await fresh.patch({ system: { mainLayout: layout } } as never);
+    expect(fresh.loadedMainLayout()).toEqual({ kind: "unknown", reason: "no-file" });
+    // Read: the layout the file holds, and still that one after a later write.
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.loadedMainLayout()).toEqual({ kind: "read", layout });
+    await reloaded.patch({ system: { mainLayout: { ...layout, focusedId: "main" } } } as never);
+    expect(reloaded.get("system").mainLayout?.focusedId).toBe("main");
+    expect(reloaded.loadedMainLayout()).toEqual({ kind: "read", layout });
+    // Read: settings without a layout hold none, with or without a system block.
+    for (const settings of [{ system: { closeBehavior: "quit" } }, {}]) {
+      writeFileSync(path, currentSettingsJson(settings), "utf-8");
+      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).loadedMainLayout()).toEqual({ kind: "read", layout: undefined });
+    }
+  });
+
+  it.each([
+    ["cannot be parsed", "{ \"system\": {", "unreadable"],
+    ["does not hold settings", "[]", "unreadable"],
+    ["holds a layout this build refuses", currentSettingsJson({ system: { mainLayout: { ...layout, version: 99 } } }), "layout-refused"],
+    ["holds a system block this build refuses", currentSettingsJson({ system: "quit" }), "layout-refused"],
+  ] as const)("does not vouch for a layout when the file %s", (_case, file, reason) => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), file, "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").mainLayout).toBeUndefined();
+    expect(service.loadedMainLayout()).toEqual({ kind: "unknown", reason });
+  });
+
+  it("does not vouch for a layout when the settings path cannot be read as a file", () => {
+    mkdirSync(join(userDataPath, "ave-settings.json"));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.loadedMainLayout()).toEqual({ kind: "unknown", reason: "unreadable" });
   });
 });
 

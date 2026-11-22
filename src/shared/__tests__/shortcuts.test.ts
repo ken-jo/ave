@@ -9,6 +9,9 @@ import {
   nativeAcceleratorIdentity,
   conflictingShortcutIds,
   formatAccelerator,
+  formatGlobalAccelerator,
+  globalShortcutBindingRefusal,
+  globalShortcutOverlaps,
   fixedShortcutOwner,
   isShortcutId,
   loadShortcutBindings,
@@ -512,5 +515,51 @@ describe("token identity", () => {
         expect(reports).toEqual(dropped);
       }
     }
+  });
+});
+
+
+describe("system-wide shortcut safety", () => {
+  it.each(["darwin", "other"] as const)("rejects unmodified keys and reserves system chords on %s", (platform) => {
+    for (const key of ["J", "Space", "Backspace", "Tab", "Shift+Tab", "F1"]) {
+      expect(globalShortcutBindingRefusal(key, platform)).toEqual({ reason: "needs-modifier" });
+      expect(normalizeShortcuts({ toggleWindow: key }, NO_SHORTCUT_OVERRIDES, platform, () => {}).toggleWindow).toBeNull();
+    }
+    const reserved = platform === "darwin" ? "CommandOrControl+Space" : "Alt+Tab";
+    expect(globalShortcutBindingRefusal(reserved, platform)).toEqual({ reason: "os-reserved" });
+    expect(globalShortcutBindingRefusal("Alt+Shift+F1", platform)).toBeNull();
+    expect(globalShortcutOverlaps("CommandOrControl+K", NO_SHORTCUT_OVERRIDES, platform).map((row) => row.id)).toContain("app.commandPalette");
+    expect(globalShortcutOverlaps("Alt+Shift+F1", NO_SHORTCUT_OVERRIDES, platform)).toEqual([]);
+  });
+});
+
+
+describe("explicitly unbound shortcuts", () => {
+  it("persists and reloads unbinding independently of reset", () => {
+    const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.search": "" }, "other");
+    expect(bindings).toEqual({ "app.search": "" });
+    expect(loadShortcutBindings(bindings, "other").bindings).toEqual(bindings);
+    expect(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBeNull();
+    expect(applyShortcutBindingsPatch({ ...NO_SHORTCUT_OVERRIDES, bindings }, { "app.search": null }, "other")).toEqual({});
+    expect(() => applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "edit.copy": "" }, "other")).toThrow();
+  });
+
+  it("replaces a taken chord atomically by unbinding its prior owner", () => {
+    const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.commandPalette": "CommandOrControl+F", "app.search": "" }, "other");
+    expect(resolveShortcut("app.commandPalette", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBe("CommandOrControl+F");
+    expect(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBeNull();
+    expect(conflictingShortcutIds(resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings }, "other"), "other").size).toBe(0);
+  });
+});
+
+
+describe("global accelerator presentation", () => {
+  it("formats the stored global chord using platform key labels", () => {
+    expect(formatGlobalAccelerator("CommandOrControl+Shift+Space", "darwin")).toBe("⇧⌘Space");
+    expect(formatGlobalAccelerator("CommandOrControl+Shift+Space", "other")).toBe("Ctrl+Shift+Space");
+    expect(formatGlobalAccelerator("Command+Cmd+Meta+K", "darwin")).toBe("⌘K");
+    expect(formatGlobalAccelerator("AltGr+F2", "other")).toBe("AltGr+F2");
+    expect(formatGlobalAccelerator("Alt+!", "other")).toBe("Alt+Shift+1");
+    expect(() => formatGlobalAccelerator("Alt+NotAKey", "other")).toThrow();
   });
 });

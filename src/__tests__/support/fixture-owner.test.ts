@@ -72,12 +72,11 @@ it.runIf(process.platform === "win32")("accepts a registered %LOCALAPPDATA% root
 });
 
 it.runIf(process.platform === "win32")("rejects paths outside both sanctioned roots", () => {
-  const root = createLocalAppDataFixtureRoot();
-  roots.push(root);
+  const outside = resolve(tmpdir(), "..", "ave-fixture-unregistered-profile");
   // Checked before any ownership command runs, so none of these paths is touched.
   expect(() => setFixtureOwner(tmpdir())).toThrow(refusal);
-  expect(() => setFixtureOwner(process.env.LOCALAPPDATA!)).toThrow(refusal);
-  expect(() => setFixtureOwner(`${root}-sibling`)).toThrow(refusal);
-  expect(() => setFixtureOwner(join(process.env.LOCALAPPDATA!, "ave-fixture-unregistered"))).toThrow(refusal);
+  expect(() => setFixtureOwner(outside)).toThrow(refusal);
+  expect(() => setFixtureOwner(`${outside}-sibling`)).toThrow(refusal);
+  expect(() => setFixtureOwner(join(outside, "ave-fixture-unregistered"))).toThrow(refusal);
   expect(() => setFixtureOwner(join(process.env.SystemRoot!, "System32"))).toThrow(refusal);
 });

@@ -213,6 +213,31 @@ export interface FeatureNamespaceHandle {
   createFile(name: string): Promise<FileHandle>;
 }
 
+/**
+ * Replace `<namespace>/<name>` with `body`. The bytes are staged as `<name>.<32 hex>.tmp`, created through the namespace's own {@link
+ * FeatureNamespaceHandle.createFile} (exclusive, 0o600, under plain directories, no link followed), so a staging name nobody could have prepared;
+ * they are synced, moved over the name (which replaces whatever is there, a link included), and the directory entry is synced. A failure removes
+ * the staged file. Windows privacy comes from the owning directory's DACL.
+ */
+export async function replaceNamespaceFile(namespace: FeatureNamespaceHandle, name: string, body: string | Uint8Array): Promise<void> {
+  const staged = `${name}.${randomBytes(16).toString("hex")}.tmp`;
+  const handle = await namespace.createFile(staged);
+  const dir = namespace.dir;
+  try {
+    try {
+      await handle.writeFile(body);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await renameStagedFile(join(dir, staged), join(dir, name));
+  } catch (err) {
+    await fs.rm(join(dir, staged), { force: true }).catch(() => undefined);
+    throw err;
+  }
+  await syncDirectoryEntry(dirname(join(dir, name)));
+}
+
 async function createNamespaceFile(root: string, name: string): Promise<FileHandle> {
   if (!name || isAbsolute(name) || name.includes("\\") || name.includes("\0") || name.includes(":")
     || name.split("/").some((part) => !part || part === "." || part === "..")) {

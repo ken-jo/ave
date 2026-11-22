@@ -1,6 +1,7 @@
 import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
 import { describe, expect, it } from "vitest";
 import {
+  PlainTextBuffer,
   EMULATOR_REPLY_WINDOW_MS,
   TerminalBlockTracker,
   USER_INPUT_QUIET_MS,
@@ -51,6 +52,40 @@ function clock(start = 1_000) {
   let now = start;
   return { now: () => now, advance: (ms: number) => { now += ms; } };
 }
+
+describe("PlainTextBuffer — end-of-line padding", () => {
+  const text = (...chunks: string[]): string => {
+    const buffer = new PlainTextBuffer(1024, 1024);
+    for (const chunk of chunks) buffer.append(chunk);
+    return buffer.text();
+  };
+  const padding = `%${" ".repeat(79)}\r \r`;
+
+  it("keeps an unterminated last line and drops the mark and the padding", () => {
+    expect(text(`done${padding}`)).toBe("done\n");
+    expect(text("a\r\n", "50%", padding)).toBe("a\n50%\n");
+    expect(text(`root-out#${" ".repeat(70)}\r \r`)).toBe("root-out\n");
+    // Whatever the chunking.
+    expect(text("done%", " ".repeat(79), "\r", " ", "\r")).toBe("done\n");
+  });
+
+  it("adds nothing when the output already ended with a newline", () => {
+    expect(text(`done\r\n${padding}`)).toBe("done\n");
+    const buffer = new PlainTextBuffer(1024, 1024);
+    buffer.append(`done\r\n${padding}`);
+    expect(buffer.chars()).toBe(5);
+  });
+
+  it("still lets a carriage return rewrite a line, with a space or with anything else", () => {
+    expect(text("building 10%\rbuilding 100%\r\n")).toBe("building 100%\n");
+    // CR, space, then text: the space began a rewrite; it was not padding.
+    expect(text("progress   \r ok\n")).toBe(" ok\n");
+    // CR, space, CR after a line with no trailing spaces is a rewrite too.
+    expect(text("abc\r \rxyz\n")).toBe("xyz\n");
+    // A held space with nothing after it is a whitespace-only cursor row.
+    expect(text("abc  \r ")).toBe("");
+  });
+});
 
 describe("TerminalBlockTracker — OSC 133", () => {
   it("records command, cwd, exit code, timing and plain output per block", () => {

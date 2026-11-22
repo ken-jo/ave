@@ -1,8 +1,9 @@
+import { formatGlobalAccelerator } from "../../../../shared/shortcuts.js";
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { StartupTab } from "../StartupTab.js";
-import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
+import { DEFAULT_APP_INFO, makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../../shared/tool-timeout-policy.js";
 import * as shortcutHooks from "../../hooks/use-shortcuts.js";
 import { ko } from "../../../../i18n/messages/ko.js";
@@ -13,7 +14,7 @@ const STARTUP_SETTINGS = {
 };
 
 function installApi(settings: Record<string, unknown> = STARTUP_SETTINGS) {
-  const { api } = makeMockAveApi({ settings });
+  const { api } = makeMockAveApi({ settings: { ...settings, shortcuts: { ...MOCK_DEFAULT_SETTINGS.shortcuts, ...(settings.shortcuts as object) } } });
   (globalThis as unknown as { window: typeof window }).window.aveApi = api as never;
   return api;
 }
@@ -36,19 +37,19 @@ describe("StartupTab", () => {
         const api = installApi({ ...STARTUP_SETTINGS, shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
         const { findByTestId, getByRole, queryByRole } = render(<StartupTab />);
         const capture = await findByTestId("startup-accelerator-capture");
-        await waitFor(() => expect(capture.textContent).toBe("Alt+F1"));
+        await waitFor(() => expect(capture.textContent).toBe(formatGlobalAccelerator("Alt+F1", platform)));
         fireEvent.click(await findByTestId("startup-accelerator-record"));
         fireEvent.keyDown(capture, { key, code, shiftKey, metaKey: platform === "darwin", ctrlKey: platform === "other" });
         expect(getByRole("alert").textContent).toContain(ko[labelKey]);
         expect(api.updateSettings).not.toHaveBeenCalled();
         expect(capture.textContent).toBe(ko["startupTab.shortcutCapturing"]);
         fireEvent.keyDown(capture, { key: "Escape" });
-        expect(capture.textContent).toBe("Alt+F1");
+        expect(capture.textContent).toBe(formatGlobalAccelerator("Alt+F1", platform));
         fireEvent.click(await findByTestId("startup-accelerator-record"));
         fireEvent.keyDown(capture, { key, code, shiftKey, ctrlKey: platform === "other", metaKey: platform === "darwin" });
         fireEvent.keyDown(capture, { key, code, shiftKey, altKey: true });
         expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { toggleWindow: `Alt+${token}` } });
-        expect(capture.textContent).toBe(`Alt+${token}`);
+        expect(capture.textContent).toBe(formatGlobalAccelerator(`Alt+${token}`, platform));
         expect(queryByRole("alert")).toBeNull();
         fireEvent.click(await findByTestId("startup-accelerator-record"));
         const calls = api.updateSettings.mock.calls.length;
@@ -68,10 +69,86 @@ describe("StartupTab", () => {
     const { findByTestId } = render(<StartupTab />);
     const capture = await findByTestId("startup-accelerator-capture");
     await waitFor(() => {
-      expect(capture.textContent).toContain("CommandOrControl+Shift+Space");
+      expect(capture.textContent).toBe("Ctrl+Shift+Space");
     });
     const enabled = await findByTestId("startup-shortcut-enabled");
     expect(enabled.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it.each(["j", " ", "Backspace", "F1"])("refuses a bare %s and keeps recording", async (key) => {
+    const api = installApi();
+    const { findByTestId, getByRole } = render(<StartupTab />);
+    const capture = await findByTestId("startup-accelerator-capture");
+    fireEvent.click(await findByTestId("startup-accelerator-record"));
+    fireEvent.keyDown(capture, { key });
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    expect(getByRole("alert").textContent).toBe(ko["shortcutsTab.notice.needsModifier"]);
+    expect(capture.textContent).toBe(ko["startupTab.shortcutCapturing"]);
+  });
+
+  it.each([false, true])("lets Tab leave capture without preventing focus traversal (shift=%s)", async (shiftKey) => {
+    const api = installApi();
+    const { findByTestId } = render(<StartupTab />);
+    const capture = await findByTestId("startup-accelerator-capture");
+    fireEvent.click(await findByTestId("startup-accelerator-record"));
+    const event = new KeyboardEvent("keydown", { key: "Tab", shiftKey, bubbles: true, cancelable: true });
+    fireEvent(capture, event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    expect(capture.textContent).toBe(ko["startupTab.shortcutUnset"]);
+  });
+
+  it("does not reclaim focus after leaving a newly started recording", async () => {
+    const api = installApi();
+    const { findByTestId } = render(<StartupTab />);
+    const capture = await findByTestId("startup-accelerator-capture");
+    const record = await findByTestId("startup-accelerator-record");
+    const previousControl = await findByTestId("startup-shortcut-enabled");
+    await waitFor(() => expect(record).not.toBeDisabled());
+    const frames: FrameRequestCallback[] = [];
+    const frameSpy = vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      fireEvent.click(record);
+      expect(capture).toHaveFocus();
+      // A browser driver can focus the locator before sending the traversal key.
+      capture.focus();
+      const event = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+      fireEvent(capture, event);
+      expect(event.defaultPrevented).toBe(false);
+      previousControl.focus();
+      for (const callback of frames) callback(0);
+      expect(previousControl).toHaveFocus();
+      expect(capture.textContent).toBe(ko["startupTab.shortcutUnset"]);
+      expect(api.updateSettings).not.toHaveBeenCalled();
+    } finally {
+      frameSpy.mockRestore();
+    }
+  });
+
+  it("refuses an operating system reservation with a reason", async () => {
+    const platformSpy = vi.spyOn(shortcutHooks, "rendererShortcutPlatform").mockReturnValue("darwin");
+    try {
+      const api = installApi();
+      const { findByTestId, getByRole } = render(<StartupTab />);
+      fireEvent.click(await findByTestId("startup-accelerator-record"));
+      fireEvent.keyDown(await findByTestId("startup-accelerator-capture"), { key: " ", metaKey: true });
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      expect(getByRole("alert").textContent).toBe(ko["shortcutsTab.notice.osReserved"]);
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("warns when a global shortcut overlaps an in-app action", async () => {
+    const api = installApi();
+    const { findByTestId, getByRole } = render(<StartupTab />);
+    fireEvent.click(await findByTestId("startup-accelerator-record"));
+    fireEvent.keyDown(await findByTestId("startup-accelerator-capture"), { key: "k", ctrlKey: true });
+    expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { toggleWindow: "CommandOrControl+K" } });
+    expect(getByRole("alert").textContent).toContain(ko["shortcuts.label.commandPalette"]);
   });
 
   function persistedToggleCase(testId: string, patch: Record<string, unknown>) {
@@ -253,4 +330,29 @@ describe("StartupTab", () => {
       expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { toggleWindow: null } });
     });
   });
+});
+
+
+it("shows a restart action and chip against main's boot snapshot after remounting", async () => {
+  const api = installApi({
+    ...STARTUP_SETTINGS,
+    system: { ...STARTUP_SETTINGS.system, hardwareAcceleration: false, corpCaEnabled: true, corpCaCommonName: "Root", corpCaDebugLog: false },
+  });
+  api.getAppInfo.mockResolvedValue({ ...DEFAULT_APP_INFO, startupSettings: { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Root", corpCaDebugLog: false } });
+  const first = render(<StartupTab />);
+  expect(await first.findByTestId("settings-restart-required")).toBeTruthy();
+  expect((await first.findAllByTestId("setting-restart-chip")).length).toBe(1);
+  first.unmount();
+  const second = render(<StartupTab />);
+  expect(await second.findByTestId("settings-restart-required")).toBeTruthy();
+});
+
+it("refuses an empty certificate name with an inline reason", async () => {
+  installApi({ ...STARTUP_SETTINGS, system: { ...STARTUP_SETTINGS.system, corpCaEnabled: true, corpCaCommonName: "Root" } });
+  const { findByTestId, getByRole } = render(<StartupTab />);
+  const field = await findByTestId("startup-corp-ca-common-name");
+  await waitFor(() => expect((field as HTMLInputElement).value).toBe("Root"));
+  fireEvent.change(field, { target: { value: "   " } });
+  expect((await findByTestId("startup-corp-ca-common-name-save") as HTMLButtonElement).disabled).toBe(true);
+  expect(getByRole("alert").textContent).toBe(ko["startupTab.corpCaNameRequired"]);
 });

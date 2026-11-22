@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
+import { isSensitivePath } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { buildHostGitArgs, isHostGitWorkspaceAvailable } from "../shared/host-git.js";
 
@@ -66,7 +66,7 @@ function utf8HeadSlice(text: string, maxBytes: number): string {
 function readConfinedFile(canonicalRoot: string, path: string): { canonicalPath: string; text: string } | null {
   const canonicalPath = canonical(path);
   if (!canonicalPath || !isWithin(canonicalRoot, canonicalPath)) return null;
-  if (isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(canonicalPath)), "read")) return null;
+  if (isSensitivePath(canonicalPath, "read")) return null;
   let fd: number | null = null;
   try {
     fd = openSync(canonicalPath, "r");

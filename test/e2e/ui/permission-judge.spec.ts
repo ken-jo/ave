@@ -18,6 +18,11 @@ test('judge stages preserve mode and order when settings reopen', async ({ app, 
   await section.getByRole('button', { name: t('permissionJudge.save') }).click();
   await expect(section.getByText(t('permissionJudge.saved'), { exact: true })).toBeVisible();
   await expect(section.getByRole('alert')).toHaveCount(0);
+  await section.getByLabel(t('permissionJudge.network'), { exact: true }).check();
+  await expect.poll(async () => settingsPage.evaluate(async () => {
+    const result = await window.ave.permission.judgeGet();
+    return result.ok ? result.settings.categories.network : null;
+  })).toBe(true);
   await closeInlineSettings(app, settingsPage);
 
   settingsPage = await openInlineSettings(app, mainWindow, 'permissions');
@@ -33,7 +38,10 @@ test('judge stages preserve mode and order when settings reopen', async ({ app, 
   await expect(reopened.locator('#permission-judge-stage-1-url')).toHaveValue('https://judge.example.test/review');
   await reopened.screenshot({ path: testInfo.outputPath('judge-settings.png') });
   await reopened.locator('#permission-judge-mode').selectOption('off');
-  await reopened.getByRole('button', { name: t('permissionJudge.save') }).click();
-  await expect(reopened.getByText(t('permissionJudge.saved'), { exact: true })).toBeVisible();
+  await expect.poll(async () => settingsPage.evaluate(async () => {
+    const result = await window.ave.permission.judgeGet();
+    return result.ok ? result.settings.chain.length : null;
+  })).toBe(0);
+  await expect(reopened.getByRole('button', { name: t('permissionJudge.save') })).toBeDisabled();
   await closeInlineSettings(app, settingsPage);
 });

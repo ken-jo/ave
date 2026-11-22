@@ -161,6 +161,16 @@ describe("host OAuth auth window", () => {
     let base = "";
     let authorization: URL | undefined;
     let proofVerified = false;
+    const observed = {
+      windowCount: 0, preventedRedirects: -1, externalCallsBeforeRefusal: -1,
+      refusalWindowDestroyed: false,
+      rejectedCallbacks: [] as Array<{ status: number; windowDestroyed: boolean; proofVerified: boolean }>,
+    };
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>(resolve => { releaseCleanup = resolve; });
+    const clearStorageData = vi.mocked(session.fromPartition(PARTITION).clearStorageData);
+    const cleanupCallsBeforeLogin = clearStorageData.mock.calls.length;
+    if (refusal) clearStorageData.mockImplementationOnce(() => cleanupGate);
     const server = createServer(async (request, response) => {
       const pathname = new URL(request.url ?? "/", base).pathname;
       const json = (body: unknown) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(body)); };
@@ -188,28 +198,25 @@ describe("host OAuth auth window", () => {
       openAuthorizationUrl: async (url, options) => {
         authorization = new URL(url);
         const shown = openOAuthInAuthWindow(parent(), url, options);
-        expect(constructed).toHaveLength(1);
+        observed.windowCount = constructed.length;
         const guest = new FakeWebContents();
         constructed[0].webContents.emit("did-attach-webview", {}, guest);
         const preventDefault = vi.fn();
         guest.emit("will-redirect", { url: "https://accounts.google.com/o/oauth2/v2/auth", preventDefault });
-        expect(preventDefault).not.toHaveBeenCalled();
-        expect(shell.openExternal).not.toHaveBeenCalled();
+        observed.preventedRedirects = preventDefault.mock.calls.length;
+        observed.externalCallsBeforeRefusal = vi.mocked(shell.openExternal).mock.calls.length;
         if (refusal) {
           guest.emit("will-redirect", { url: "https://accounts.google.com/signin/oauth/error?authError=ZGlzYWxsb3dlZF91c2VyYWdlbnQ", preventDefault });
-          await flush(1);
-          expect(shell.openExternal).toHaveBeenCalledExactlyOnceWith(url);
-          expect(constructed[0].isDestroyed()).toBe(true);
+          // Handoff has no public completion signal; observe the final browser call.
+          await vi.waitUntil(() => vi.mocked(shell.openExternal).mock.calls.length > 0);
+          observed.refusalWindowDestroyed = constructed[0].isDestroyed();
         }
         const callback = new URL(authorization.searchParams.get("redirect_uri")!);
-        expect(callback.hostname).toBe("127.0.0.1");
-        expect(Number(callback.port)).toBeGreaterThan(0);
         if (!refusal) {
           for (const path of ["/unrelated?x=1", "/?code=forged&state=wrong"]) {
-            expect((await fetch(new URL(path, callback), { redirect: "manual" })).status).toBe(404);
-            await flush(1);
-            expect(constructed[0].isDestroyed()).toBe(false);
-            expect(proofVerified).toBe(false);
+            const response = await fetch(new URL(path, callback), { redirect: "manual" });
+            observed.rejectedCallbacks.push({ status: response.status,
+              windowDestroyed: constructed[0].isDestroyed(), proofVerified });
           }
         }
         callback.search = new URLSearchParams({ code: "fixture-code", state: authorization.searchParams.get("state")! }).toString();
@@ -218,11 +225,33 @@ describe("host OAuth auth window", () => {
       },
     });
     try {
-      await login.authenticate();
+      const authenticated = login.authenticate();
+      // Hold a real cleanup hop until the test observes it, independent of timer turns.
+      const cleanupReleased = refusal ? vi.waitUntil(() => clearStorageData.mock.calls.length > cleanupCallsBeforeLogin)
+        .finally(() => releaseCleanup()) : Promise.resolve();
+      await Promise.all([authenticated, cleanupReleased]);
+      expect(observed.windowCount).toBe(1);
+      expect(observed.preventedRedirects).toBe(0);
+      expect(observed.externalCallsBeforeRefusal).toBe(0);
+      if (!authorization) throw new Error("Authorization URL was not opened");
+      const callback = new URL(authorization.searchParams.get("redirect_uri") ?? "");
+      expect(callback.hostname).toBe("127.0.0.1");
+      expect(Number(callback.port)).toBeGreaterThan(0);
+      if (refusal) {
+        expect(shell.openExternal).toHaveBeenCalledExactlyOnceWith(authorization.href);
+        expect(observed.refusalWindowDestroyed).toBe(true);
+      } else {
+        expect(observed.rejectedCallbacks).toEqual([
+          { status: 404, windowDestroyed: false, proofVerified: false },
+          { status: 404, windowDestroyed: false, proofVerified: false },
+        ]);
+        expect(shell.openExternal).not.toHaveBeenCalled();
+      }
       expect(login.getStatus()).toBe("authenticated");
       expect(proofVerified).toBe(true);
       expect(constructed[0].isDestroyed()).toBe(true);
     } finally {
+      releaseCleanup();
       login.dispose();
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));

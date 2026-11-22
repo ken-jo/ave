@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -246,11 +247,10 @@ describe("GitRunner against a smart-HTTP server", () => {
     t = await createRunner();
   });
   afterAll(async () => {
-    await t.cleanup();
-    await server.close();
-    await otherServer.close();
-    await removeFixtureRepo(repo);
-    await cleanupTmpDir(root);
+    await cleanupAfterClosing([() => t.cleanup(), () => server.close(), () => otherServer.close()], [
+      () => removeFixtureRepo(repo),
+      () => cleanupTmpDir(root),
+    ]);
   });
   afterEach(async () => {
     server.seen.length = 0;
@@ -414,9 +414,10 @@ describe("GitRunner authentication through the askpass broker", () => {
     server = await startGitHttpServer({ root, token: "s3cret-token" });
   });
   afterAll(async () => {
-    await server.close();
-    await removeFixtureRepo(repo);
-    await cleanupTmpDir(root);
+    await cleanupAfterClosing([() => server.close()], [
+      () => removeFixtureRepo(repo),
+      () => cleanupTmpDir(root),
+    ]);
   });
 
   it("answers with the stored token for the ticket's host", async () => {

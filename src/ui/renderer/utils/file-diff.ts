@@ -1,5 +1,6 @@
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { isRecord } from "../../../shared/is-record.js";
+import { buildFileDiffView, DEFAULT_FILE_DIFF_LIMITS, type FileDiffView } from "../../../shared/line-diff.js";
 
 type FileDiffTool = "edit_file" | "multi_edit" | "write_file";
 
@@ -14,6 +15,43 @@ export interface FileEditDiffData {
   hunks: FileEditHunk[];
   isNewFile?: boolean;
   truncated?: boolean;
+  /** Size of the written file, from the tool result. */
+  bytes?: number;
+  /** True when the host stored a whole-file line diff for this call. */
+  hasSidecar?: boolean;
+  /** Whole-file diff with real line numbers; absent when only the tool input is known. */
+  view?: FileDiffView;
+}
+
+/** A tool card shows at most this many rows; the full change stays in the turn review. */
+const CARD_DIFF_LIMITS = { ...DEFAULT_FILE_DIFF_LIMITS, maxRows: 400, maxCharacters: 65_536 };
+
+/**
+ * The line diff a card shows. Without a whole-file comparison each replacement is diffed on its own text,
+ * so unchanged lines inside a replaced block are context and the counts are the lines that really changed.
+ */
+export function editDiffView(data: FileEditDiffData): FileDiffView {
+  if (data.view) return data.view;
+  const view: FileDiffView = { hunks: [], added: 0, removed: 0, truncated: false };
+  let rows = 0;
+  let characters = 0;
+  for (const hunk of data.hunks) {
+    const part = buildFileDiffView(hunk.oldText, hunk.newText, {
+      ...CARD_DIFF_LIMITS,
+      maxRows: CARD_DIFF_LIMITS.maxRows - rows,
+      maxCharacters: CARD_DIFF_LIMITS.maxCharacters - characters,
+    });
+    view.added += part.added;
+    view.removed += part.removed;
+    view.truncated ||= part.truncated;
+    if (part.lineEndingsOnly) view.lineEndingsOnly = true;
+    for (const partHunk of part.hunks) {
+      rows += partHunk.rows.length;
+      for (const row of partHunk.rows) characters += row.text.length;
+      view.hunks.push(partHunk);
+    }
+  }
+  return view;
 }
 
 type ToolItem = Extract<ChatEntry, { kind: "tool_group" }>["tools"][number];
@@ -34,75 +72,72 @@ export function extractFileEditDiff(tool: ToolItem): FileEditDiffData | null {
 
 function extractEditFile(tool: ToolItem): FileEditDiffData | null {
   if (!isRecord(tool.input)) return null;
-  const path = readResultField(tool.result, "path") ?? asString(tool.input.path);
-  const oldText = asString(tool.input.oldText);
-  const newText = asString(tool.input.newText);
-  if (path == null || oldText == null || newText == null) return null;
-  return { path, tool: "edit_file", hunks: [{ oldText, newText }] };
+  const result = parseResult(tool.result);
+  const data = fileEditDiffFromInput("edit_file", tool.input, asString(result?.path));
+  return data && { ...data, hasSidecar: result?.hasSidecar === true };
 }
 
 function extractMultiEdit(tool: ToolItem): FileEditDiffData | null {
   if (!isRecord(tool.input)) return null;
-  const path = readResultField(tool.result, "path") ?? asString(tool.input.path);
-  const reps = tool.input.replacements;
-  if (path == null || !Array.isArray(reps)) return null;
-  const hunks: FileEditHunk[] = [];
-  for (const r of reps) {
-    if (!isRecord(r)) continue;
-    const o = asString(r.oldText);
-    const n = asString(r.newText);
-    if (o != null && n != null) hunks.push({ oldText: o, newText: n });
-  }
-  if (hunks.length === 0) return null;
-  return { path, tool: "multi_edit", hunks };
+  const result = parseResult(tool.result);
+  const data = fileEditDiffFromInput("multi_edit", tool.input, asString(result?.path));
+  return data && { ...data, hasSidecar: result?.hasSidecar === true };
 }
 
-function extractWriteFile(tool: ToolItem): FileEditDiffData | null {
-  // Recognize ave.write_file before/after results; shapes without the sentinel fall back to raw payload rendering.
-  if (typeof tool.result !== "string") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(tool.result);
-  } catch {
-    return null;
+/**
+ * The replacements an edit tool was asked to make, read from its input alone.
+ * A result card and the approval card both start here, so a person approves the same change they later see applied.
+ */
+export function fileEditDiffFromInput(
+  tool: "edit_file" | "multi_edit",
+  input: Record<string, unknown>,
+  resolvedPath: string | null = null,
+): FileEditDiffData | null {
+  const path = resolvedPath ?? asString(input.path);
+  if (path == null) return null;
+  const replacements = tool === "edit_file" ? [input] : Array.isArray(input.replacements) ? input.replacements : [];
+  const hunks: FileEditHunk[] = [];
+  for (const replacement of replacements) {
+    if (!isRecord(replacement)) continue;
+    const oldText = asString(replacement.oldText);
+    const newText = asString(replacement.newText);
+    if (oldText != null && newText != null) hunks.push({ oldText, newText });
   }
-  if (!isRecord(parsed)) return null;
-  if (parsed.kind !== "ave.write_file") return null;
-  const path = asString(parsed.path);
-  const after = asString(parsed.after);
-  if (path == null || after == null) return null;
-  const isNewFile = parsed.isNewFile === true;
-  const before = asString(parsed.before) ?? "";
-  const truncated = parsed.truncated === true;
+  return hunks.length === 0 ? null : { path, tool, hunks };
+}
+
+/**
+ * write_file reports `{ path, bytes, isNewFile?, hasSidecar? }`. The content is not in the result:
+ * the card loads the host's line diff, and a created file can be shown from the tool input alone.
+ */
+function extractWriteFile(tool: ToolItem): FileEditDiffData | null {
+  const result = parseResult(tool.result);
+  const path = asString(result?.path);
+  if (result == null || path == null || typeof result.bytes !== "number") return null;
+  const isNewFile = result.isNewFile === true;
+  const content = isRecord(tool.input) ? asString(tool.input.content) : null;
   return {
     path,
     tool: "write_file",
     isNewFile,
-    truncated,
-    hunks: [{ oldText: isNewFile ? "" : before, newText: after }],
+    bytes: result.bytes,
+    hasSidecar: result.hasSidecar === true,
+    // Without the earlier content an overwrite has no honest diff; only a created file is all additions.
+    hunks: isNewFile && content != null ? [{ oldText: "", newText: content }] : [],
   };
 }
 
-function readResultField(result: string | undefined, field: string): string | null {
+function parseResult(result: string | undefined): Record<string, unknown> | null {
   if (typeof result !== "string") return null;
   try {
-    const parsed = JSON.parse(result);
-    if (isRecord(parsed) && typeof parsed[field] === "string") {
-      return parsed[field] as string;
-    }
+    const parsed: unknown = JSON.parse(result);
+    return isRecord(parsed) ? parsed : null;
   } catch {
-    /* result not JSON — caller falls back to input */
+    // A non-JSON result (an error string, a compaction stub) carries no diff fields.
+    return null;
   }
-  return null;
 }
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
-}
-
-export function countDiffLines(text: string): number {
-  if (text.length === 0) return 0;
-  let count = 1;
-  for (let offset = text.indexOf("\n"); offset !== -1; offset = text.indexOf("\n", offset + 1)) count++;
-  return count;
 }

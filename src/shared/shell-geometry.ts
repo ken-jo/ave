@@ -6,6 +6,9 @@ export const MAIN_WINDOW_HEIGHT = 768;
 export const MAIN_WINDOW_MIN_WIDTH = 360;
 export const MAIN_WINDOW_MIN_HEIGHT = 600;
 
+/** Native space around the main app document that preserves edge resize cursors on macOS. */
+export const MAIN_WINDOW_RESIZE_INSET = 4;
+
 /** The window band every Ave window draws at its top; px, mirrored by `--chrome-band-height`. */
 export const CHROME_BAND_HEIGHT = 36;
 
@@ -26,10 +29,10 @@ export const SHELL_GUTTER = 8;
 export const PANE_MIN_WIDTH = 448;
 export const MIN_DOCKED_TRANSCRIPT_WIDTH = 320;
 export const NARROW_DEAD_BAND_PX = 60;
-export const DOCK_ENTER_WIDTH = 784;
+export const DOCK_ENTER_WIDTH = 776;
 /**
  * The side panel's own hysteresis, narrower than `NARROW_DEAD_BAND_PX`. Since the rail took 60px of the window (Sidebar E),
- * a 1100px window with a 200px list leaves an 812px tile: wide enough to dock (784), but under a 60px band's exit (844), so a
+ * a 1100px window with a 200px list leaves an 812px tile: wide enough to dock, but under a 60px band's exit, so a
  * window widened to 1100 would keep the panel floating. 24px still stops a resize jitter from flapping it.
  */
 const DOCK_DEAD_BAND_PX = 24;
@@ -72,17 +75,17 @@ export const BAND_LEAD_PAD_DARWIN = TRAFFIC_LIGHT_RIGHT_EDGE + CHROME_GAP_TIGHT;
 /** Linux mirrors macOS: measured from the window edge, past the renderer's leading buttons and the same gap. */
 export const BAND_LEAD_PAD_LINUX = WINDOW_CONTROLS_RUN + CHROME_GAP_TIGHT;
 
-/** Where a pane header's content (its glyph, then the title) starts, measured from the navigation card's trailing edge: the pane cell's half-gutter
- * (`p-(--chrome-gap-tight)`) plus the pane header's inline padding (`px-(--chrome-gap)` in PaneFrame). The band path starts here too. */
+/** Where a pane header's content (its glyph, then the title) starts, measured from the navigation card's trailing edge: the inter-card gutter
+ * (`--shell-card-gap`) plus the pane header's inline padding (`px-(--chrome-gap)` in PaneFrame). The band path starts here too. */
 export const CONTENT_TITLE_INSET = CHROME_GAP_TIGHT + SHELL_GUTTER;
 
 /** What the content reserves on its leading edge for the rail: the card inset, the 52px rail card and one gutter. Keep the CSS
  * mirror aligned; the literal is consumed by the source-reading gate. */
-export const COLLAPSED_RAIL_RESERVE = 68;
+export const COLLAPSED_RAIL_RESERVE = 64;
 
 /** The rail card's trailing edge (card inset + rail width), mirrored by `--shell-collapsed-rail-edge`. Rail-only content pads to
- * it, so the pane cell's tight gap is the only air between rail and pane. */
-export const COLLAPSED_RAIL_EDGE = COLLAPSED_RAIL_RESERVE - SHELL_GUTTER;
+ * it plus a half-gap, and the cell supplies the other half. */
+export const COLLAPSED_RAIL_EDGE = COLLAPSED_RAIL_RESERVE - CHROME_GAP_TIGHT;
 
 /** The band's lead while only the rail shows: the content title's line past the rail's trailing edge. CustomTitleBar never pads
  * less than the platform's own floor, so on macOS (`BAND_LEAD_PAD_DARWIN`) and Linux (`BAND_LEAD_PAD_LINUX`) the window buttons win. */

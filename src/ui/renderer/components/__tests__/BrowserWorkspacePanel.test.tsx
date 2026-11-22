@@ -3,21 +3,23 @@ import "../../../../../test/renderer/setup.js";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserWorkspacePanel } from "../BrowserWorkspacePanel.js";
-import type { BrowserPreview, BrowserWorkspaceApi, BrowserWorkspaceResult, BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
+import type { BrowserFindResult, BrowserPreview, BrowserWorkspaceApi, BrowserWorkspaceResult, BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 
 vi.mock("../../../../i18n/react.js", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-const STATE: BrowserWorkspaceState = { revision: 1, bookmarks: [{ url: "https://saved.example/", title: "Saved site", at: 1 }], history: [], sitePermissions: [], downloads: [], tabs: [{ tabId: "browser:one", documentGeneration: 4, url: "https://site.example/", title: "Current site", zoomFactor: 1 }], storageStatus: "ready", capabilities: { fullscreen: false } };
+const STATE: BrowserWorkspaceState = { revision: 1, bookmarks: [{ url: "https://saved.example/", title: "Saved site", at: 1 }], history: [], sitePermissions: [], downloads: [], tabs: [{ tabId: "browser:one", documentGeneration: 4, url: "https://site.example/", title: "Current site", zoomFactor: 1 }], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
 function setup() {
   let stateChanged!: (state: BrowserWorkspaceState) => void;
   let controlChanged!: (state: BrowserTabControlState) => void;
   const unsubscribe = vi.fn();
-  const api = { getState: vi.fn(async () => ({ ok: true, value: STATE })), onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { stateChanged = handler; return unsubscribe; }), setBookmark: vi.fn(async () => ({ ok: true, value: STATE })), clearHistory: vi.fn(async () => ({ ok: true, value: STATE })), setSitePermission: vi.fn(async () => ({ ok: true, value: STATE })), find: vi.fn(async () => ({ ok: true, value: { requestId: 1 } })), stopFind: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: { factor: 1.5 } })), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })) } as unknown as BrowserWorkspaceApi;
+  let found: (result: BrowserFindResult) => void = () => undefined;
+  const unsubscribeFind = vi.fn();
+  const api = { onFindResult: vi.fn((handler: (result: BrowserFindResult) => void) => { found = handler; return unsubscribeFind; }), getState: vi.fn(async () => ({ ok: true, value: STATE })), onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { stateChanged = handler; return unsubscribe; }), setBookmark: vi.fn(async () => ({ ok: true, value: STATE })), clearHistory: vi.fn(async () => ({ ok: true, value: STATE })), setSitePermission: vi.fn(async () => ({ ok: true, value: STATE })), find: vi.fn(async () => ({ ok: true, value: { requestId: 1 } })), stopFind: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: { factor: 1.5 } })), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })), clearData: vi.fn(async () => ({ ok: true, value: STATE })), clearSiteData: vi.fn(async () => ({ ok: true, value: null })), showDownload: vi.fn(async () => ({ ok: true, value: null })), deleteHistory: vi.fn(async () => ({ ok: true, value: STATE })), cancelDownload: vi.fn(async () => ({ ok: true, value: null })) } as unknown as BrowserWorkspaceApi;
   const control = { revision: 1, tabs: [] } as BrowserTabControlState;
   const browserTabs = { getState: vi.fn(async () => control), onControl: vi.fn((handler: (state: BrowserTabControlState) => void) => { controlChanged = handler; return unsubscribe; }) };
   const onOpenUrl = vi.fn();
   const props = { api, browserTabs, activeTabId: "browser:one", visible: true, onOpenUrl };
-  return { props, api, browserTabs, unsubscribe, onOpenUrl, stateChanged: (state: BrowserWorkspaceState) => stateChanged(state), controlChanged: (state: BrowserTabControlState) => controlChanged(state) };
+  return { found: (result: BrowserFindResult) => found(result), unsubscribeFind, props, api, browserTabs, unsubscribe, onOpenUrl, stateChanged: (state: BrowserWorkspaceState) => stateChanged(state), controlChanged: (state: BrowserTabControlState) => controlChanged(state) };
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 function intersection() {
@@ -44,11 +46,15 @@ describe("browser workspace panel", () => {
     expect(api.find).toHaveBeenNthCalledWith(2, { tabId: "browser:one", documentGeneration: 4, text: "needle", forward: false, findNext: false });
     fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.next" }));
     expect(api.find).toHaveBeenNthCalledWith(3, { tabId: "browser:one", documentGeneration: 4, text: "needle", forward: true, findNext: false });
-    fireEvent.change(screen.getByLabelText("browserWorkspace.zoom"), { target: { value: "1.5" } });
-    expect(api.zoom).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, factor: 1.5 });
+    // Zoom lives in the address row and a site's permissions in its site information, not here.
+    expect(screen.queryByLabelText("browserWorkspace.zoom")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.library" }));
-    expect(screen.getByLabelText("browserWorkspace.permission.fullscreen")).toHaveProperty("disabled", true);
-    expect(screen.getByText("browserWorkspace.fullscreenUnavailable")).toBeTruthy();
+    expect(screen.queryByLabelText("browserWorkspace.permission.camera")).toBeNull();
+    // The library shows one section at a time, open tabs first.
+    expect(screen.getByTestId("browser-library").getAttribute("data-section")).toBe("tabs");
+    expect(screen.queryByRole("button", { name: "Saved site" })).toBeNull();
+    fireEvent.click(screen.getByTestId("browser-library-bookmarks"));
+    expect(screen.getByTestId("browser-library-bookmarks").getAttribute("aria-pressed")).toBe("true");
     expect(onOpenUrl).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Saved site" }));
     expect(onOpenUrl).toHaveBeenCalledWith("https://saved.example/");
@@ -56,16 +62,17 @@ describe("browser workspace panel", () => {
   });
   it("subscribes before initial fetch, ignores old snapshots, and removes listeners on unmount", async () => {
     intersection();
-    const { props, api, stateChanged, unsubscribe } = setup();
+    const { props, api, stateChanged, unsubscribe, unsubscribeFind } = setup();
     const { unmount } = render(<BrowserWorkspacePanel {...props} />);
     expect(vi.mocked(api.onChanged).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.getState).mock.invocationCallOrder[0]!);
     await act(async () => { await Promise.resolve(); });
     fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.library" }));
+    fireEvent.click(screen.getByTestId("browser-library-bookmarks"));
     act(() => stateChanged({ ...STATE, revision: 4, bookmarks: [{ url: "https://new.example/", title: "New site", at: 1 }] }));
     act(() => stateChanged({ ...STATE, revision: 2 }));
     expect(screen.getByRole("button", { name: "New site" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Saved site" })).toBeNull();
-    unmount(); expect(unsubscribe).toHaveBeenCalledTimes(2);
+    unmount(); expect(unsubscribe).toHaveBeenCalledTimes(2); expect(unsubscribeFind).toHaveBeenCalledTimes(1);
   });
   it("captures only intersecting connected cards while shown and stops after hide", async () => {
     const intersect = intersection();
@@ -190,16 +197,83 @@ describe("browser workspace panel", () => {
   });
 });
 
-it("shows an actual option for a site factor outside the preset list", async () => {
- const { props, stateChanged } = setup();
- render(<BrowserWorkspacePanel {...props} />);
- await act(async () => { await Promise.resolve(); });
- const tab = STATE.tabs[0];
- if (!tab) throw new Error("Missing browser tab");
- act(() => stateChanged({ ...STATE, revision: 2, tabs: [{ ...tab, zoomFactor: 1.728 }] }));
- const select = screen.getByLabelText("browserWorkspace.zoom") as HTMLSelectElement;
- expect(select.value).toBe("1.728");
- expect(select.selectedOptions[0]?.textContent).toBe("173%");
- fireEvent.change(select, { target: { value: "1.25" } });
- expect(props.api.zoom).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, factor: 1.25 });
+it("clears the chosen browsing data", async () => {
+  intersection();
+  const { props, api } = setup();
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByText("browserWorkspace.library"));
+  fireEvent.click(screen.getByTestId("browser-library-data"));
+  // History is preselected; signing out of every site is something the user must choose.
+  expect(screen.getByTestId("browser-clear-data-history")).toHaveProperty("checked", true);
+  expect(screen.getByTestId("browser-clear-data-siteData")).toHaveProperty("checked", false);
+  fireEvent.click(screen.getByTestId("browser-clear-data-siteData"));
+  fireEvent.click(screen.getByTestId("browser-clear-data-history"));
+  await act(async () => { fireEvent.click(screen.getByTestId("browser-clear-data-submit")); });
+  expect(api.clearData).toHaveBeenCalledWith({ history: false, siteData: true, cache: false });
+  expect(screen.getByTestId("browser-data-cleared")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("browser-clear-data-siteData"));
+  expect(screen.getByTestId("browser-clear-data-submit")).toHaveProperty("disabled", true);
+});
+
+it("shows how many matches a find has and which is selected, only for the find that is current", async () => {
+  const { props, api, found } = setup();
+  vi.mocked(api.find).mockResolvedValueOnce({ ok: true, value: { requestId: 7 } }).mockResolvedValueOnce({ ok: true, value: { requestId: 8 } });
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.change(screen.getByTestId("browser-find-input"), { target: { value: "needle" } });
+  expect(screen.queryByTestId("browser-find-count")).toBeNull();
+  // The count can arrive before the request that started it returns: it is shown once both are known.
+  act(() => found({ tabId: "browser:one", requestId: 7, matches: 5, activeMatch: 2 }));
+  expect(screen.queryByTestId("browser-find-count")).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.find" })); });
+  expect(screen.getByTestId("browser-find-count").textContent).toBe("browserWorkspace.findCount");
+  expect(screen.getByTestId("browser-find-count").getAttribute("data-matches")).toBe("5");
+  // The next find's count replaces it; an older find's or another tab's count is not shown as this one's.
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.next" })); });
+  expect(screen.queryByTestId("browser-find-count")).toBeNull();
+  act(() => found({ tabId: "browser:two", requestId: 8, matches: 3, activeMatch: 1 }));
+  expect(screen.queryByTestId("browser-find-count")).toBeNull();
+  act(() => found({ tabId: "browser:one", requestId: 8, matches: 0, activeMatch: 0 }));
+  expect(screen.getByTestId("browser-find-count").textContent).toBe("browserWorkspace.findNone");
+  fireEvent.change(screen.getByTestId("browser-find-input"), { target: { value: "other" } });
+  expect(screen.queryByTestId("browser-find-count")).toBeNull();
+});
+
+it("lists the agent's visits apart from the user's, with a time, a search and a remove button per visit", async () => {
+  intersection();
+  const { props, api, stateChanged } = setup();
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByText("browserWorkspace.library"));
+  fireEvent.click(screen.getByTestId("browser-library-history"));
+  expect(screen.queryByTestId("browser-history-agent")).toBeNull();
+  act(() => stateChanged({ ...STATE, revision: 2, history: [
+    { url: "https://docs.example/guide", title: "Guide", at: Date.UTC(2026, 10, 16, 9), by: "user" },
+    { url: "https://shop.example/cart", title: "Cart", at: Date.UTC(2026, 10, 16, 10), by: "user" },
+    { url: "https://docs.example/guide", title: "Guide", at: Date.UTC(2026, 10, 16, 11), by: "agent" },
+  ] }));
+  const user = screen.getByTestId("browser-history-user");
+  expect(user.querySelectorAll('[data-testid="browser-history-row"]')).toHaveLength(2);
+  expect(screen.getByTestId("browser-history-agent").querySelectorAll('[data-testid="browser-history-row"]')).toHaveLength(1);
+  expect(user.querySelector("time")?.getAttribute("datetime")).toBe("2026-11-16T09:00:00.000Z");
+  fireEvent.change(screen.getByTestId("browser-history-search"), { target: { value: "SHOP" } });
+  expect(user.querySelectorAll('[data-testid="browser-history-row"]')).toHaveLength(1);
+  expect(screen.getByTestId("browser-history-agent").textContent).toContain("browserWorkspace.historyNoMatch");
+  await act(async () => { fireEvent.click(user.querySelector('[data-testid="browser-history-delete"]') as HTMLElement); });
+  expect(api.deleteHistory).toHaveBeenCalledWith({ url: "https://shop.example/cart", by: "user" });
+});
+it("history shows the earliest and the latest time the saved state can hold", async () => {
+  intersection();
+  const { props, stateChanged } = setup();
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByText("browserWorkspace.library"));
+  fireEvent.click(screen.getByTestId("browser-library-history"));
+  act(() => stateChanged({ ...STATE, revision: 2, history: [
+    { url: "https://late.example/", title: "Late", at: 8.64e15, by: "user" },
+    { url: "https://early.example/", title: "Early", at: 0, by: "user" },
+  ] }));
+  expect([...screen.getByTestId("browser-history-user").querySelectorAll("time")].map((time) => time.getAttribute("datetime")))
+    .toEqual(["+275760-09-13T00:00:00.000Z", "1970-01-01T00:00:00.000Z"]);
 });

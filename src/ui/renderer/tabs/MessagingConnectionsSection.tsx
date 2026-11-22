@@ -10,6 +10,7 @@ import type {
 import type { TelegramConnectionSnapshot } from "../../../shared/telegram-connection.js";
 import { ConnectionRow, type ConnectionRowState } from "../components/ConnectionRow.js";
 import { TelegramConnectionContent } from "./TelegramConnectionContent.js";
+import { useSettingsDocumentRead, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import type { AveApi } from "../types.js";
 
 /**
@@ -233,12 +234,14 @@ export function MessagingConnectionsSection({
     readonly MarketplaceInstalledMessagingConnection[]
   >([]);
 
+  const readSettings = useSettingsDocumentRead(() => api.getSettings());
+  const editorSettings = useSettingsEditor()?.settings;
   useEffect(() => {
     let alive = true;
     void (async () => {
       let settings: Awaited<ReturnType<AveApi["getSettings"]>>;
       try {
-        settings = await api.getSettings();
+        settings = editorSettings ?? await readSettings();
       } catch {
         // A failed read lists no marketplace rows rather than escaping as an unhandled rejection. The built-in Telegram row does
         // not depend on this read and still reports its own connection state.
@@ -248,7 +251,7 @@ export function MessagingConnectionsSection({
       setConnections(settings.marketplace?.installedMessagingConnections ?? []);
     })();
     return () => { alive = false; };
-  }, [api]);
+  }, [readSettings, editorSettings]);
 
   const telegramCatalog = useMemo(
     () => connections.find((connection) => connection.connectionId === "telegram"),

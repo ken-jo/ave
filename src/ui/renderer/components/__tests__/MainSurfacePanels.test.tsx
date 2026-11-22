@@ -10,7 +10,7 @@ import { SurfacePane, webPanelTitle } from "../MainSurfacePanels.js";
 import { directoryName } from "../TerminalPaneHeader.js";
 import { chatColumnsLayout } from "../../preview/chat-columns-layout.js";
 import { DOCK_ENTER_WIDTH } from "../../../../shared/shell-geometry.js";
-import { SIDE_PANEL_MIN_RESERVE } from "../../../../shared/side-panel.js";
+import { SIDE_PANEL_DEFAULT_WIDTH, SIDE_PANEL_MIN_RESERVE } from "../../../../shared/side-panel.js";
 import type { SideChatRuntime } from "../SideChatView.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../../shared/processing-display-level.js";
 
@@ -25,6 +25,7 @@ import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.j
 import { getWebSurfaces, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
+import { resetLiveTerminalsForTest } from "../../preview/live-terminal-registry.js";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
@@ -36,27 +37,15 @@ const render = (ui: ReactElement) => renderUnwrapped(ui, {
   wrapper: ({ children }) => <ThemeProvider initialAppearance={DEFAULT_APPEARANCE}>{children}</ThemeProvider>,
 });
 
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class {
-    options = {};
-    cols = 80;
-    rows = 24;
-    parser = { registerOscHandler: () => ({ dispose() {} }) };
-    loadAddon() {}
-    open() {}
-    onData() { return { dispose() {} }; }
-    write() {}
-    focus() {}
-    dispose() {}
-  },
-}));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../../../../test/renderer/fake-xterm.js")).FakeXterm }));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions() { return undefined; } } }));
 
 function terminalApi() {
   return {
     spawn: vi.fn(async (ref) => ({ ok: true, tabId: ref.tabId, replayed: false, session: terminalSessionFixture(ref.tabId, ref.lane), blockMarkerToken: "view-token" })),
-    input: vi.fn(async () => undefined),
+    input: vi.fn(async () => ({ ok: true as const })),
     resize: vi.fn(async () => undefined),
+    keep: vi.fn(async () => undefined),
     onData: vi.fn(() => () => {}),
     onExit: vi.fn(() => () => {}),
     onControl: vi.fn(() => () => {}),
@@ -242,6 +231,91 @@ describe("SurfacePane", () => {
     expect(await modeAt(DOCK_ENTER_WIDTH - 1)).toBe("overlay");
   });
 
+  it("gives the terminal its final width in one step: the docked panel's room is reserved whole and the panel moves inside it", async () => {
+    const reserveAt = async (width: number, chatOpen: boolean) => {
+      vi.stubGlobal("ResizeObserver", class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(element: Element) {
+          this.callback([{ target: element, contentRect: { width }, contentBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+      const { api } = makeMockAveApi();
+      const pane = (open: boolean) => (
+        <TooltipProvider>
+          <SurfacePane chatOpen={open} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal: terminalApi() } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        </TooltipProvider>
+      );
+      // Opened first, so the panel is mounted; then in the state asked for.
+      const view = render(pane(true));
+      const column = await screen.findByTestId("pane-work-panel-motion");
+      view.rerender(pane(chatOpen));
+      const reserve = screen.getByTestId("pane-work-panel-motion-reserve");
+      const found = {
+        reserved: reserve.style.width,
+        // The animated width is the panel's own; it is out of the row, so it pushes nothing while it changes.
+        panelInRow: !column.className.split(" ").includes("absolute"),
+        panelInsideReserve: reserve.contains(column),
+        order: reserve.style.order,
+      };
+      view.unmount();
+      vi.unstubAllGlobals();
+      return found;
+    };
+    const docked = chatColumnsLayout(DOCK_ENTER_WIDTH, false, true, SIDE_PANEL_DEFAULT_WIDTH, false).panelWidth;
+    expect(await reserveAt(DOCK_ENTER_WIDTH, true)).toEqual({ reserved: `${docked}px`, panelInRow: false, panelInsideReserve: true, order: "2" });
+    // Closing gives the room back at once, while the panel is still shrinking over the terminal.
+    expect(await reserveAt(DOCK_ENTER_WIDTH, false)).toEqual({ reserved: "0px", panelInRow: false, panelInsideReserve: true, order: "2" });
+    // A panel that floats takes no room.
+    expect(await reserveAt(DOCK_ENTER_WIDTH - 1, true)).toEqual({ reserved: "0px", panelInRow: false, panelInsideReserve: true, order: "2" });
+  });
+
+  it("repeats the agent's control strip at the top of a work panel that floats over the terminal, and not beside a docked one", async () => {
+    const stripAt = async (width: number) => {
+      vi.stubGlobal("ResizeObserver", class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(element: Element) {
+          this.callback([{ target: element, contentRect: { width }, contentBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+      const { api } = makeMockAveApi();
+      const terminal = terminalApi();
+      const running = { mode: "agent" as const, generation: 1, agentInput: "supported" as const, command: "npm test", typed: true };
+      terminal.control.mockImplementation((async (_session: unknown, action: string) => ({
+        ok: true as const, control: action === "get" ? running : { mode: "taken-over" as const, generation: 2, agentInput: "supported" as const },
+      })) as never);
+      const view = render(
+        <TooltipProvider>
+          <SurfacePane chatOpen onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        </TooltipProvider>,
+      );
+      // The terminal's own strip is always there; what differs is whether the panel that may cover it repeats it.
+      await screen.findByTestId("terminal-agent-control");
+      const chat = await screen.findByTestId("pane-chat");
+      const mirrored = within(chat).queryByTestId("pane-chat-terminal-agent-control");
+      const result = { mirrored: mirrored !== null, text: mirrored?.textContent ?? "", first: chat.firstElementChild?.nextElementSibling?.getAttribute("data-testid") ?? null, afterTakeOver: null as boolean | null };
+      if (mirrored) {
+        expect(within(mirrored).getByTestId("pane-chat-terminal-stop-agent")).toBeEnabled();
+        await act(async () => { fireEvent.click(within(mirrored).getByTestId("pane-chat-terminal-take-over")); });
+        expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:908" }), "take-over");
+        // The strip follows the terminal's control state: taken over, it offers the way to hand back.
+        await waitFor(() => expect(within(chat).getByTestId("pane-chat-terminal-hand-back")).toBeTruthy());
+        result.afterTakeOver = within(chat).queryByTestId("pane-chat-terminal-agent-control") === null;
+      }
+      view.unmount();
+      resetLiveTerminalsForTest();
+      vi.unstubAllGlobals();
+      return result;
+    };
+    const overlay = await stripAt(DOCK_ENTER_WIDTH - 1);
+    expect(overlay).toMatchObject({ mirrored: true, first: "pane-chat-terminal-control", afterTakeOver: true });
+    expect(overlay.text).toContain("npm test");
+    expect((await stripAt(DOCK_ENTER_WIDTH)).mirrored).toBe(false);
+  });
+
   it("opens the terminal's work panel on 변경 파일 from the badge: a docked panel beside the terminal, as a chat pane has", async () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     const previousAve = window.ave;
@@ -293,9 +367,11 @@ describe("SurfacePane", () => {
     );
     expect(screen.getByTestId("web-panel-empty")).toBeTruthy();
     expect(screen.queryByTestId("web-surface-slot")).toBeNull();
+    // A pane only the user browses has no empty observation band above its page.
+    expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
     const address = screen.getByTestId("web-panel-address");
     fireEvent.change(address, { target: { value: "javascript:alert(1)" } });
-    fireEvent.submit(address.closest("form")!);
+    await act(async () => { fireEvent.submit(address.closest("form")!); });
     expect(onNavigate).not.toHaveBeenCalled();
     expect(screen.getByTestId("web-panel-address-error")).toBeTruthy();
     fireEvent.change(address, { target: { value: "example.com/docs" } });
@@ -333,13 +409,22 @@ describe("SurfacePane", () => {
       const address = screen.getByTestId("web-panel-address");
       // The badge is only a mirror: navigation always asks main to revoke control.
       expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
+      expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
       fireEvent.change(address, { target: { value: "https://b.example/" } });
       await act(async () => { fireEvent.submit(address.closest("form")!); });
       expect(onNavigate).toHaveBeenLastCalledWith(page.tabId, "https://b.example/");
       expect(stop).toHaveBeenCalledWith(page.tabId);
 
-      act(() => emitControl(browserControlFixture([page.tabId])));
+      // An action borrowing the user's page is badged, and does not add the band while it holds the tab.
+      const borrowed = browserControlFixture([page.tabId]);
+      act(() => emitControl({ ...borrowed, tabs: borrowed.tabs.map((tab) => ({ ...tab, owner: null, lease: tab.lease && { ...tab.lease, lifetime: "borrowed" as const } })) }));
       expect(screen.getByTestId("web-panel")).toContainElement(screen.getByTestId("agent-browser-control-badge"));
+      expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
+      // A page an agent owns holds the band's place above the page from the start, so the page does not move during an action.
+      act(() => emitControl(browserControlFixture([page.tabId], "agent-active", 2)));
+      const band = screen.getByTestId("browser-observation-slot");
+      expect(band.className).toContain("h-7");
+      expect(band.compareDocumentPosition(screen.getByTestId("web-surface-slot")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       fireEvent.click(screen.getByTestId("agent-browser-control-stop"));
       expect(stop).toHaveBeenLastCalledWith(page.tabId);
 

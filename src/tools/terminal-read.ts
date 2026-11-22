@@ -194,12 +194,14 @@ export function createTerminalReadTool(deps: TerminalReadToolDeps): Tool {
 }
 
 /** What a host command's own span tells the model: its output only while the lease held, the exit code only when the authenticated exit
- * marker arrived under it, and why it stopped otherwise. Never the terminal's scrollback or another period. */
+ * marker arrived under it, and why it stopped otherwise. Never the terminal's scrollback or another period. The block has the fields an isolated
+ * shell's block has (`status`, `exitCode`, `outputChars`, `truncated`, `output`), so one reading of a result fits both; `status` is `interrupted`
+ * when the user took the terminal back before the command finished. */
 export function hostSpanResult(span: HostTerminalDisclosure, tabId: string, terminalSessionId: string): Record<string, unknown> {
   const block = {
-    id: span.blockId, command: span.command, cwd: span.cwd, output: span.output,
-    ...(span.truncated ? { truncated: true } : {}),
-    ...(span.state === "done" ? { exitCode: span.exitCode } : {}),
+    id: span.blockId, command: span.command, cwd: span.cwd,
+    exitCode: span.state === "done" ? span.exitCode : null,
+    status: span.state, outputChars: span.outputChars, truncated: span.truncated, output: span.output,
   };
   if (span.state === "done") return { finished: true, block };
   if (span.state === "interrupted") {

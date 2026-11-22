@@ -64,7 +64,7 @@ export class SkillServerTransport implements McpTransport {
 }
 
 export async function connectedSkillClient(server: SkillServerTransport, id = "docs-server", allowedCapabilities: McpCapability[] = ["tools", "resources"]) {
-  const governance = new McpGovernance("/nonexistent/skill-policy.json", { runtimeApprovals: new Map(), policy: {
+  const governance = new McpGovernance("/nonexistent/skill-policy.json", { runtimeApprovals: new Map(), policyStatus: "active", policy: {
     version: "1.0", defaultPolicy: "deny", servers: [{
       id, name: id, transport: "stdio", status: "approved", allowedCommands: ["node"], requiredAuth: "none", tlsRequired: false,
       allowedCapabilities, maxTools: 16, toolNamePrefix: id, connectionTimeoutMs: 5000, maxConcurrentRequests: 8,

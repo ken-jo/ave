@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  attachmentRejectionMessage,
   formatIpcError,
   invokeErrorCode,
   invokeErrorDetail,
@@ -140,5 +141,55 @@ describe("formatIpcError (SOT — #830)", () => {
     expect(formatIpcError("reviewer-rewire-failed", undefined)).toContain(
       "권한 검토 모델",
     );
+  });
+});
+
+describe("attachmentRejectionMessage", () => {
+  it("names the file and gives main's reason, in English and in Korean", () => {
+    const previousLocale = getLocale();
+    try {
+      setLocale("en");
+      expect(attachmentRejectionMessage([{ name: "setup.exe", reason: "denied-extension" }]))
+        .toBe("Could not attach \"setup.exe\". This file type is blocked.");
+      expect(attachmentRejectionMessage([{ name: "big.png", reason: "image-too-large" }]))
+        .toBe("Could not attach \"big.png\". The image is larger than 25 MB.");
+      setLocale("ko");
+      expect(attachmentRejectionMessage([{ name: "setup.exe", reason: "denied-extension" }]))
+        .toBe("\"setup.exe\" 파일을 첨부하지 못했습니다. 차단된 파일 형식입니다.");
+      expect(attachmentRejectionMessage([{ name: "notes.txt", reason: "too-many" }]))
+        .toBe("\"notes.txt\" 파일을 첨부하지 못했습니다. 메시지 하나에 5개까지만 첨부할 수 있습니다.");
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("names the first three files of a larger batch and counts the rest", () => {
+    const previousLocale = getLocale();
+    try {
+      setLocale("en");
+      expect(attachmentRejectionMessage([
+        { name: "a.exe", reason: "denied-extension" },
+        { name: "docs", reason: "not-a-file" },
+        { name: ".env", reason: "sensitive-path" },
+        { name: "gone.txt", reason: "not-found" },
+        { name: "late.txt", reason: "drop-expired" },
+      ])).toBe(
+        "5 files were not attached. \"a.exe\": This file type is blocked. \"docs\": Folders cannot be attached. "
+        + "\".env\": It is in a protected location. And 2 more.",
+      );
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("strips characters that would hide or reorder a file name", () => {
+    const previousLocale = getLocale();
+    try {
+      setLocale("en");
+      expect(attachmentRejectionMessage([{ name: "evil\u202Egnp.exe", reason: "denied-extension" }]))
+        .toBe("Could not attach \"evilgnp.exe\". This file type is blocked.");
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 });

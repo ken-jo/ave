@@ -12,12 +12,21 @@ export function isLaunchableFile(
   try { return stat(path, { throwIfNoEntry: false })?.isFile() === true; } catch { return false; }
 }
 
-// Native interactive argv, independent of the command tool's POSIX resolver.
+// Native interactive argv, independent of the command tool's POSIX resolver. `preferred` is the shell the user set for their terminals; it must be
+// what any interpreter here must be (an absolute path to a file, a native executable on Windows), and a setting that is not is an error the terminal
+// shows, never a reason to start a different shell than the one asked for.
 export function resolveManualShell(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
   isFile: (path: string) => boolean = isLaunchableFile,
+  preferred = "",
 ): ManualShellLaunch {
+  if (preferred !== "") {
+    const absolute = platform === "win32" ? win32.isAbsolute(preferred) && win32.extname(preferred).toLowerCase() === ".exe" : isAbsolute(preferred);
+    if (!absolute) throw new Error(`the shell set for terminals must be an absolute path${platform === "win32" ? " to an .exe" : ""}: ${preferred}`);
+    if (!isFile(preferred)) throw new Error(`the shell set for terminals is not a file: ${preferred}`);
+    return { command: preferred, args: platform === "win32" ? [] : ["-l", "-i"] };
+  }
   if (platform === "win32") {
     const isAbsoluteEntry = (path: string): boolean => /^[A-Za-z]:[\\/]/.test(path);
     // Prefer the exact PATH key, otherwise the first case-insensitive match.

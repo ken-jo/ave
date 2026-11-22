@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createFileTools } from "../file-tools.js";
@@ -7,6 +8,17 @@ import type { ToolExecutionContext } from "../types.js";
 
 const parser = vi.hoisted(() => ({ parse: vi.fn(), release: vi.fn(), acquire: vi.fn() }));
 vi.mock("../preview-document-process.js", () => ({ acquireParseSlot: parser.acquire }));
+// Every open passes through; a test may wrap the next one to change the filesystem around it.
+const opens = vi.hoisted(() => ({ wrapNext: undefined as ((open: () => Promise<FileHandle>) => Promise<FileHandle>) | undefined }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const open = ((...args: Parameters<typeof actual.open>) => {
+    const wrap = opens.wrapNext;
+    opens.wrapNext = undefined;
+    return wrap ? wrap(() => actual.open(...args)) : actual.open(...args);
+  }) as typeof actual.open;
+  return { ...actual, default: { ...actual, open }, open };
+});
 
 let directory: string;
 let context: ToolExecutionContext;
@@ -30,7 +42,10 @@ beforeEach(() => {
     signal: controller.signal, parse: parser.parse, release: parser.release,
   }));
 });
-afterEach(() => rmSync(directory, { recursive: true, force: true }));
+afterEach(() => {
+  opens.wrapNext = undefined;
+  rmSync(directory, { recursive: true, force: true });
+});
 
 describe("agent document tools", () => {
   it("registers exactly the reader and opener without aliases", () => {
@@ -84,6 +99,39 @@ describe("agent document tools", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.output).error).toBe("sensitive-path");
     expect(parser.acquire).not.toHaveBeenCalled();
+  });
+  it("hands the parser no bytes from a credential store a folder led to while the document was read", async () => {
+    const folder = join(directory, "sheets");
+    const store = join(directory, ".ave", "secrets");
+    mkdirSync(folder);
+    mkdirSync(store, { recursive: true });
+    writeFileSync(join(folder, "book.csv"), "a,b\nc,d\n");
+    writeFileSync(join(store, "book.csv"), "token,PROTECTED\n");
+    // The folder leads into the store from just before the open until the first read, and is back before anything
+    // looks at the path again.
+    opens.wrapNext = async (open) => {
+      renameSync(folder, `${folder}.orig`);
+      symlinkSync(store, folder, "junction");
+      const handle = await open();
+      const read = handle.read.bind(handle);
+      vi.spyOn(handle, "read").mockImplementationOnce((async (...args: Parameters<FileHandle["read"]>) => {
+        unlinkSync(folder);
+        renameSync(`${folder}.orig`, folder);
+        return read(...args);
+      }) as FileHandle["read"]);
+      return handle;
+    };
+    const result = await tool("read_document").execute({ path: "sheets/book.csv",
+      selection: { kind: "sheet", rowCount: 2, columnCount: 2 } }, context);
+    expect(opens.wrapNext).toBeUndefined();
+    expect(result.isError, result.output).toBe(true);
+    expect(JSON.parse(result.output).error).toBe("read-failed");
+    expect(parser.parse).not.toHaveBeenCalled();
+    // Nothing swapped: the same document is read.
+    const again = await tool("read_document").execute({ path: "sheets/book.csv",
+      selection: { kind: "sheet", rowCount: 2, columnCount: 2 } }, context);
+    expect(again.isError, again.output).toBe(false);
+    expect(parser.parse.mock.calls[0]?.[0]).toEqual(Buffer.from("a,b\nc,d\n"));
   });
   it("uses the canonical target's format instead of a symlink alias extension", async () => {
     symlinkSync(join(directory, "book.csv"), join(directory, "alias.pdf"));

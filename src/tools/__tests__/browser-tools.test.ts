@@ -86,9 +86,9 @@ function fakeActions() {
       return { data: "iVBORw0KGgo=", mimeType: "image/png", bytes: 8, width: 800, height: 2400, originalWidth: 800, originalHeight: 2400, scale: 1, truncated: false };
     },
     // Waits until released or cancelled, like a real wait for text.
-    waitFor: (target) => new Promise((resolve, reject) => {
+    waitFor: (target, options) => new Promise((resolve, reject) => {
       targets.push(target);
-      calls.push({ action: "waitFor", tab: target.tab.handle, args: [] });
+      calls.push({ action: "waitFor", tab: target.tab.handle, args: options.download === true ? [options] : [] });
       pending = { resolve: () => resolve({ found: true, waitedMs: 1 }) };
       target.signal.addEventListener("abort", () => {
         const error = new Error(`nothing more was done: ${(target.signal.reason as Error).message}`);
@@ -904,12 +904,19 @@ describe("browser tools", () => {
   it("uses a native normal fallback card when current Auto review cannot confirm the action", async () => {
     const logical = vi.fn(async () => ({ consistent: false, reason: "The requested action is outside the current step." }));
     const { run, cards, page, userTab } = harness({ surfaceChoice: "auto", logicalReview: logical });
-    const tab = userTab("https://a.example/");
-    expect((await run(BROWSER_TOOL.snapshot, { tabId: tab.handle })).isError).toBe(false);
-    expect(logical).toHaveBeenCalledTimes(1);
-    expect(cards).toHaveLength(2);
-    expect(cards[1]).toMatchObject({ userOwnedSurface: "browser", userOwnedSurfaceReviewFallback: true, allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false });
-    expect(page.calls).toHaveLength(1);
+    const asked = vi.spyOn(ApprovalGate.prototype, "requestAndWait");
+    try {
+      const tab = userTab("https://a.example/");
+      expect((await run(BROWSER_TOOL.snapshot, { tabId: tab.handle })).isError).toBe(false);
+      expect(logical).toHaveBeenCalledTimes(1);
+      expect(cards).toHaveLength(2);
+      expect(cards[1]).toMatchObject({ userOwnedSurface: "browser", userOwnedSurfaceReviewFallback: true, allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false });
+      // The surface card shows its own sentence for the code that asked; the fallback the ordinary card draws is asked without it.
+      expect(asked.mock.calls.map(([request]) => request.reasonCode)).toEqual(["user-owned-surface-ask", undefined]);
+      expect(page.calls).toHaveLength(1);
+    } finally {
+      asked.mockRestore();
+    }
   });
 
   it.each([BROWSER_TOOL.wait, BROWSER_TOOL.tabs])("covers user-owned observation and tab selection for %s", async name => {
@@ -1266,6 +1273,21 @@ describe("browser tools", () => {
     const pending = run(BROWSER_TOOL.wait, { tabId: tab.handle, text: "Done" });
     await vi.waitFor(() => expect(page.calls).toHaveLength(1));
     expect(page.targets[0]?.approval).toMatchObject({ tabId: tab.handle, documentId: expect.any(Number), controlGeneration: expect.any(Number) });
+    page.release();
+    expect((await pending).isError).toBe(false);
+  });
+
+  it("waits for a download the page starts later only with a limit, and asks the page driver for exactly that", async () => {
+    const { run, page, userTab } = harness();
+    const tab = userTab("https://a.example/");
+    for (const input of [{ download: true }, { download: true, text: "Done", timeMs: 5 }, { download: "yes", timeMs: 5 }]) {
+      const refused = await run(BROWSER_TOOL.wait, { tabId: tab.handle, ...input });
+      expect(refused.isError).toBe(true);
+    }
+    expect(page.calls).toEqual([]);
+    const pending = run(BROWSER_TOOL.wait, { tabId: tab.handle, download: true, timeMs: 5_000 });
+    await vi.waitFor(() => expect(page.calls).toHaveLength(1));
+    expect(page.calls[0]?.args).toEqual([{ timeMs: 5_000, download: true }]);
     page.release();
     expect((await pending).isError).toBe(false);
   });

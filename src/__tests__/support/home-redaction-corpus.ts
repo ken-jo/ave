@@ -1,0 +1,103 @@
+type HomePlatform = "linux" | "darwin" | "win32";
+type Redactor = "text" | "path";
+type LiteralHomeInput = readonly [mode: Redactor, input: string, kind?: "concatenation"];
+
+interface LiteralHomeCorpus {
+  platform: HomePlatform;
+  home: string;
+  inputs: readonly LiteralHomeInput[];
+}
+
+export const WINDOWS_LITERAL_HOMES = [
+  String.raw`D:\fixtures\habitat`, String.raw`\\srv\share\habitat`,
+  String.raw`C:\Users\bob`, String.raw`E:\temp\ted`,
+] as const;
+
+const DESCENDANT_NAMES = ["new", "tab", "bin", "file", "u0032", "ubeef", "u00e9x", "x41", "2024", ".git", "é", "fixtures"];
+const PATH_CONTEXTS = [
+  (path: string) => path, (path: string) => `Open ${path} now`,
+  (path: string) => `Open:"${path}"`, (path: string) => `[Open:"${path}"]`,
+];
+
+function escapeFreeInputs(home: string, platform: HomePlatform): LiteralHomeCorpus["inputs"] {
+  const windows = platform === "win32";
+  const separator = windows ? "\\" : "/";
+  const path = `${home}${separator}File.txt`;
+  const forward = path.replaceAll("\\", "/");
+  const plain = [home, path, forward, path.toUpperCase(), `${home}2/file`, `${home}_old/file`, `${home}.old/file`];
+  const inputs: LiteralHomeInput[] = plain.flatMap(value => [["text", value], ["path", value]]);
+  for (const text of [
+    `see ${path} and ${path} now`, `"${home}"`, `cd "${path}" && ls`, `'${path}'`,
+    `(${path})`, `[${path}]`, `file://${forward}`, `${home}, ${home}. ${home}: ${home};`,
+    "/home/bar/x /Users/bar/y C:/Users/bar/z",
+    JSON.stringify({ p: path, other: 1 }), JSON.stringify(JSON.stringify({ p: path })),
+  ]) inputs.push(["text", text]);
+  const slashHome = home.replaceAll("\\", "/");
+  inputs.push(
+    ["text", `${home}${home}`, "concatenation"],
+    ["text", `${home}${slashHome}`, "concatenation"],
+    ["text", `${slashHome}${home}`, "concatenation"],
+    ["text", `${home}2${home}`],
+  );
+  if (windows) {
+    const repeated = home.replaceAll("\\", "/").replace(/\/(?=[^/]+$)/u, "//");
+    inputs.push(["path", `${repeated}/report.txt`]);
+    inputs.push(
+      ["text", `open ${home}${home}\\x now`, "concatenation"],
+      ["text", `${home}${home}.old/file`],
+      ["text", `${home}F:/outside/file`],
+    );
+  } else {
+    inputs.push(
+      ["path", `FILE://${home}/file`],
+      ["path", `file://${home}?view=1`],
+      ["path", `file://${home}#page`],
+      ["text", `C:\\work\\${home}/file`],
+      ["text", `\\\\wsl$\\Ubuntu\\${home}/file`],
+    );
+  }
+  return inputs;
+}
+
+function quotedHomeInputs(home: string): LiteralHomeCorpus["inputs"] {
+  const prefixes = ["C:\\temp\\", "C:\\tools\\", "C:\\new\\", "D:\\build\\", "C:\\root\\", "C:\\files\\", "C:\\work\\",
+    "\\\\wsl$\\Ubuntu\\", "\\\\wsl.localhost\\Ubuntu\\", "\\"];
+  return prefixes.flatMap(prefix => {
+    const path = `${prefix}${home}/file`;
+    return [`cd "${path}" && ls`, `"${path}"`, `open "${path}"`, `Error: ENOENT, open "${path}"`, `cd ${path}`]
+      .map(input => ["text", input] as const);
+  });
+}
+
+export function literalHomeCorpus(): LiteralHomeCorpus[] {
+  const posixHomes = ["/srv/fixtures/habitat", "/home/bob", "/Users/Bob", "/home/Demo Smith", "/home/y'brien", "/Users/Bobé"];
+  return [
+    ...(["linux", "darwin"] as const).flatMap(platform => posixHomes.map(home => ({ platform, home, inputs: escapeFreeInputs(home, platform) }))),
+    ...[...WINDOWS_LITERAL_HOMES, String.raw`D:\fixtures\bob`, String.raw`C:\Users\Demo Smith`, String.raw`C:\Users\Bobé`]
+      .map(home => ({ platform: "win32" as const, home, inputs: escapeFreeInputs(home, "win32") })),
+    { platform: "linux", home: "/home/Devé Gil", inputs: [
+      ["text", String.raw`C:\work\/home/Devé Gil/file`],
+      ["text", String.raw`\\wsl$\Ubuntu\/home/Devé Gil/file`],
+    ] },
+    ...([
+      ["linux", "/srv/fixtures/habitat"], ["linux", "/home/Devé Gil"],
+      ["linux", "/home/bob"], ["darwin", "/Users/Bob"],
+    ] as const).map(([platform, home]) => ({ platform, home, inputs: quotedHomeInputs(home) })),
+  ];
+}
+
+export function windowsDescendantInputs(home: string): string[] {
+  const inputs: string[] = [];
+  for (const name of DESCENDANT_NAMES) {
+    for (const [index, context] of PATH_CONTEXTS.entries()) {
+      const path = context(`${home}\\${name}\\file`);
+      if (index) inputs.push(path);
+      let input = JSON.stringify({ p: path, other: 1 });
+      for (let depth = 1; depth <= 3; depth++) {
+        inputs.push(input);
+        input = JSON.stringify(input);
+      }
+    }
+  }
+  return inputs;
+}

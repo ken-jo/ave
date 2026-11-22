@@ -1,4 +1,5 @@
 import { mainWindowForContents } from "../../main/app-state.js";
+import { mainWindowFromNativeWindow, mainWindowUiOrigin } from "../../main/main-window-host.js";
 import { BrowserWindow, Menu, ipcMain, type BaseWindow, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
 import {
   NATIVE_CONTEXT_MENU_COMMANDS,
@@ -22,7 +23,6 @@ const MAX_NATIVE_COMMANDS = 16;
 
 const NATIVE_KINDS = new Set<NativeContextMenuKind>([
   "action-item",
-  "workspace-entry",
   "project",
   "conversation",
   "message",
@@ -37,10 +37,6 @@ const NATIVE_LAYOUT: Record<
   "action-item": [
     ["action.open-system"],
     ["action.copy-url", "action.copy-path"],
-  ],
-  "workspace-entry": [
-    ["workspace.open", "workspace.reveal"],
-    ["workspace.copy-path", "workspace.copy-relative-path"],
   ],
   // Order menu groups by undo cost, keeping destructive removal last and separate.
   project: [
@@ -77,13 +73,6 @@ const NATIVE_LABEL: Record<NativeContextMenuCommand, () => string> = {
   "action.open-system": () => t("toolActivity.openInSystemApp"),
   "action.copy-url": () => t("toolActivity.copyUrl"),
   "action.copy-path": () => t("toolActivity.copyPath"),
-  "workspace.open": () => t("chatPreviewRail.ctxOpen"),
-  "workspace.reveal": () =>
-    t(process.platform === "darwin"
-      ? "chatPreviewRail.revealInFinder"
-      : "chatPreviewRail.revealInExplorer"),
-  "workspace.copy-path": () => t("chatPreviewRail.copyPath"),
-  "workspace.copy-relative-path": () => t("chatPreviewRail.copyRelativePath"),
   "project.new-chat": () => t("sidebar.projectMenuNewChat"),
   "project.pin": () => t("sidebar.pinProject"),
   "project.unpin": () => t("sidebar.unpinProject"),
@@ -128,7 +117,7 @@ function cleanRequestId(value: unknown): string | null {
 
 function cleanCoordinate(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return Math.max(0, Math.min(100_000, Math.round(value)));
+  return Math.max(0, Math.min(100_000, value));
 }
 
 // Validate accelerators before native menu creation; require a modifier so rows cannot claim bare app keys.
@@ -184,6 +173,15 @@ function hostWindowForUiEvent(event: IpcMainInvokeEvent): BaseWindow | null {
   const topLevelUrl = event.sender.getURL();
   if (topLevelUrl && rawUrl && topLevelUrl !== rawUrl) return null;
   return window;
+}
+
+function menuPosition(event: IpcMainInvokeEvent, window: BaseWindow, x: number, y: number): { x: number; y: number } {
+  if (process.platform !== "darwin") return { x: Math.round(x), y: Math.round(y) };
+  const mainWindow = mainWindowFromNativeWindow(window);
+  if (!mainWindow) return { x: Math.round(x), y: Math.round(y) };
+  const zoom = event.sender.getZoomFactor();
+  const origin = mainWindowUiOrigin(mainWindow);
+  return { x: Math.round(x * zoom) + origin.x, y: Math.round(y * zoom) + origin.y };
 }
 
 function sendNativeAction(event: IpcMainInvokeEvent, action: NativeContextMenuAction): void {
@@ -317,8 +315,7 @@ export function registerUiHandlers(deps: IpcDeps): void {
 
     buildNativeContextMenu(event, normalized).popup({
       window,
-      x: normalized.x,
-      y: normalized.y,
+      ...menuPosition(event, window, normalized.x, normalized.y),
     });
     return { ok: true };
   });
@@ -337,8 +334,7 @@ export function registerUiHandlers(deps: IpcDeps): void {
     liveDynamicMenus.add(built.menu);
     built.menu.popup({
       window,
-      x: built.x,
-      y: built.y,
+      ...menuPosition(event, window, built.x, built.y),
       callback: () => liveDynamicMenus.delete(built.menu),
     });
     return { ok: true };

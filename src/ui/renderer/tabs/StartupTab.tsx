@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { Switch } from "../../../components/ui/switch.js";
@@ -10,14 +10,19 @@ import {
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
+import { RestartRequiredChip, RestartRequiredRow } from "../components/RestartRequiredRow.js";
+import type { BootSystemSettings } from "../../../shared/restart-settings.js";
 import { SettingsTextField } from "../components/SettingsTextField.js";
 import { getApi } from "../api-client.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../../shared/corp-ca-common-name.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
-import { acceleratorFromEvent, fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator } from "../../../shared/shortcuts.js";
+import { acceleratorFromEvent, formatGlobalAccelerator, globalShortcutBindingRefusal, globalShortcutOverlaps, normalizeAccelerator, shortcutDefinition, type ShortcutSettings } from "../../../shared/shortcuts.js";
 import { rendererShortcutPlatform, setShortcutCaptureActive } from "../hooks/use-shortcuts.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
+import { useSettingsPersistence } from "../hooks/use-settings-persistence.js";
+import { useNotifySaved } from "../context/SavedToastContext.js";
+import { useAppSettingsControls } from "../context/SettingsEditorContext.js";
 
 /** Offer bounded shutdown deadlines from policy; free-form overrides remain deployment-owned and the default must stay
  * selectable. */
@@ -40,8 +45,19 @@ const SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS: readonly number[] = Object.freeze([
 export function StartupTab() {
   const { t } = useTranslation();
   const api = getApi();
+  const notifySaved = useNotifySaved();
+  const { error: saveError, persist } = useSettingsPersistence(notifySaved);
+  const latestSettings = useRef<AppSettings | null>(null);
+  useAppSettingsControls(["startup-shortcut", "startup-launch", "startup-rendering", "startup-corp-ca", "startup-system-behavior"]);
 
   const [loaded, setLoaded] = useState(false);
+  const [bootSettings, setBootSettings] = useState<BootSystemSettings | null>(null);
+  const [bootReadError, setBootReadError] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void api.getAppInfo().then((info) => { if (alive) setBootSettings(info.startupSettings); }, () => { if (alive) setBootReadError(true); });
+    return () => { alive = false; };
+  }, [api]);
   const [enabled, setEnabled] = useState(false);
   const [toggleWindow, setToggleWindow] = useState<string | null>(null);
   const [launchAtStartup, setLaunchAtStartup] = useState(false);
@@ -73,6 +89,7 @@ export function StartupTab() {
   // flipping a switch in this same section cannot wipe a name the user is
   // halfway through typing.
   const [corpCaCommonName, setCorpCaCommonName] = useState(DEFAULT_CORP_CA_COMMON_NAME);
+  const [shortcutSettings, setShortcutSettings] = useState<ShortcutSettings>({ toggleWindow: null, enabled: false, bindings: {} });
   const [capturing, setCapturing] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   // App shortcuts stay quiet while a key is being recorded, or recording ⌘⇧T would also reopen a closed surface.
@@ -81,8 +98,14 @@ export function StartupTab() {
     return () => setShortcutCaptureActive(false);
   }, [capturing]);
   const captureInputRef = useRef<HTMLDivElement | null>(null);
+  // Commit recorder focus before a later traversal key can leave it.
+  useLayoutEffect(() => {
+    if (capturing) captureInputRef.current?.focus();
+  }, [capturing]);
 
   const applySnapshot = useCallback((s: AppSettings) => {
+    latestSettings.current = s;
+    setShortcutSettings(s.shortcuts);
     setEnabled(s.shortcuts?.enabled ?? false);
     setToggleWindow(s.shortcuts?.toggleWindow ?? null);
     setLaunchAtStartup(s.system?.launchAtStartup ?? false);
@@ -100,11 +123,17 @@ export function StartupTab() {
 
   useSettingsSnapshot(api, applySnapshot);
 
+  const restoreSnapshot = useCallback(() => {
+    const snapshot = latestSettings.current;
+    if (snapshot === null) throw new Error("Settings snapshot is unavailable.");
+    applySnapshot(snapshot);
+  }, [applySnapshot]);
+
   const persistShortcuts = useCallback(
     (next: { toggleWindow?: string | null; enabled?: boolean }) => {
-      void api.updateSettings({ shortcuts: next });
+      void persist(() => api.updateSettings({ shortcuts: next }), { rollback: restoreSnapshot });
     },
-    [api],
+    [api, persist, restoreSnapshot],
   );
 
   const persistSystem = useCallback(
@@ -118,9 +147,9 @@ export function StartupTab() {
       corpCaDebugLog?: boolean;
       shutdownCleanupTimeoutMs?: number;
     }) => {
-      void api.updateSettings({ system: next });
+      void persist(() => api.updateSettings({ system: next }), { rollback: restoreSnapshot });
     },
-    [api],
+    [api, persist, restoreSnapshot],
   );
 
   const handleEnabledChange = useCallback(
@@ -180,10 +209,9 @@ export function StartupTab() {
     [persistSystem],
   );
 
-  // An emptied field means "use the default" rather than "search for nothing"; the host applies the same rule, so the field
-  // shows what will be saved.
+  // Empty names have no certificate subject to match and cannot be saved.
   const normalizeCorpCaCommonName = useCallback(
-    (raw: string) => raw.trim() || DEFAULT_CORP_CA_COMMON_NAME,
+    (raw: string) => raw.trim(),
     [],
   );
 
@@ -200,11 +228,11 @@ export function StartupTab() {
       const value = Number(event.target.value);
       // The option values come from the frozen list above, so a value outside it means the DOM was tampered with rather than a
       // choice being made.
-      if (!SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS.includes(value)) return;
+      if (value === shutdownCleanupTimeoutMs || !SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS.includes(value)) return;
       setShutdownCleanupTimeoutMs(value);
       persistSystem({ shutdownCleanupTimeoutMs: value });
     },
-    [persistSystem],
+    [persistSystem, shutdownCleanupTimeoutMs],
   );
 
   const handleCloseBehaviorChange = useCallback(
@@ -219,6 +247,12 @@ export function StartupTab() {
   const handleKeyCapture = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (!capturing) return;
+      // Tab leaves the recorder using the browser's normal focus traversal.
+      if (e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        setCaptureError(null);
+        setCapturing(false);
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       // Escape cancels capture without changing the binding.
@@ -230,18 +264,26 @@ export function StartupTab() {
       const recorded = acceleratorFromEvent(e, rendererShortcutPlatform());
       if (recorded.kind !== "accelerator") return; // modifier-only or unbindable press — keep waiting for a key.
       const normalized = normalizeAccelerator(recorded.accelerator);
-      if (normalized === null || nativeAcceleratorIdentity(normalized, rendererShortcutPlatform()) === null) return;
-      const owner = fixedShortcutOwner(normalized, rendererShortcutPlatform());
-      if (owner !== null) {
-        setCaptureError(t("startupTab.shortcutReserved", { label: t(owner.labelKey) }));
+      if (normalized === null) return;
+      const platform = rendererShortcutPlatform();
+      const refusal = globalShortcutBindingRefusal(normalized, platform);
+      if (refusal !== null) {
+        setCaptureError(refusal.reason === "fixed-key"
+          ? t("startupTab.shortcutReserved", { label: t(shortcutDefinition(refusal.ownerId).labelKey) })
+          : refusal.reason === "needs-modifier" ? t("shortcutsTab.notice.needsModifier")
+            : refusal.reason === "os-reserved" ? t("shortcutsTab.notice.osReserved")
+              : t("shortcutsTab.notice.unsupported"));
         return;
       }
-      setCaptureError(null);
+      const overlaps = globalShortcutOverlaps(normalized, shortcutSettings, platform);
+      setCaptureError(overlaps.length > 0
+        ? t("startupTab.shortcutOverlap", { labels: overlaps.map((row) => t(row.definition.labelKey)).join(", ") })
+        : null);
       setToggleWindow(normalized);
       setCapturing(false);
       persistShortcuts({ toggleWindow: normalized });
     },
-    [capturing, persistShortcuts, t],
+    [capturing, persistShortcuts, shortcutSettings, t],
   );
 
   const handleClearAccelerator = useCallback(() => {
@@ -254,8 +296,6 @@ export function StartupTab() {
   const startCapture = useCallback(() => {
     setCaptureError(null);
     setCapturing(true);
-    // Focus the capture box so keydown lands here.
-    requestAnimationFrame(() => captureInputRef.current?.focus());
   }, []);
 
   return (
@@ -265,13 +305,19 @@ export function StartupTab() {
         description={t("startupTab.description")}
       />
 
+      {saveError !== null ? <p role="alert" className="text-sm text-destructive" data-testid="startup-save-error">{saveError}</p> : null}
+      {bootReadError ? <p role="alert" className="text-sm text-destructive">{t("settingsRestart.readFailed")}</p> : null}
+      <RestartRequiredRow pending={loaded && bootSettings !== null && (
+        bootSettings.hardwareAcceleration !== hardwareAcceleration || bootSettings.corpCaEnabled !== corpCaEnabled
+        || bootSettings.corpCaCommonName !== corpCaCommonName || bootSettings.corpCaDebugLog !== corpCaDebugLog
+      )} />
       {/* Global shortcut — show/hide window toggle */}
       <SettingsSection
         data-settings-section="startup-shortcut"
         title={t("startupTab.shortcutSectionTitle")}
         description={t("startupTab.shortcutSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="shortcuts.enabled">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.shortcutEnabledLabel")}
@@ -283,10 +329,11 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.shortcutEnabledLabel")}
             data-testid="startup-shortcut-enabled"
+            data-setting-id="shortcuts.enabled"
           />
         </div>
 
-        <div className="mt-4 min-w-0 space-y-2">
+        <div className="mt-4 min-w-0 space-y-2" data-setting-id="shortcuts.toggleWindow">
           <div className="text-sm font-medium">
             {t("startupTab.shortcutAcceleratorLabel")}
           </div>
@@ -299,6 +346,7 @@ export function StartupTab() {
               onKeyDown={handleKeyCapture}
               onBlur={() => setCapturing(false)}
               data-testid="startup-accelerator-capture"
+              data-settings-transient="true"
               className={[
                 "flex h-9 w-full min-w-0 items-center rounded-md border px-3 text-sm sm:w-auto sm:min-w-[220px]",
                 capturing
@@ -308,7 +356,7 @@ export function StartupTab() {
             >
               {capturing
                 ? t("startupTab.shortcutCapturing")
-                : (toggleWindow ?? t("startupTab.shortcutUnset"))}
+                : (toggleWindow === null ? t("startupTab.shortcutUnset") : formatGlobalAccelerator(toggleWindow, rendererShortcutPlatform()))}
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button
@@ -318,6 +366,7 @@ export function StartupTab() {
                 onClick={startCapture}
                 disabled={!loaded}
                 data-testid="startup-accelerator-record"
+                data-settings-transient="true"
               >
                 {t("startupTab.shortcutRecord")}
               </Button>
@@ -348,7 +397,7 @@ export function StartupTab() {
         title={t("startupTab.launchSectionTitle")}
         description={t("startupTab.launchSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="system.launchAtStartup">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.launchAtStartupLabel")}
@@ -360,10 +409,11 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.launchAtStartupLabel")}
             data-testid="startup-launch-at-startup"
+            data-setting-id="system.launchAtStartup"
           />
         </div>
 
-        <div className="mt-4 flex items-center justify-between gap-4">
+        <div className="mt-4 flex items-center justify-between gap-4" data-setting-row="system.launchMinimized">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.launchMinimizedLabel")}
@@ -375,6 +425,7 @@ export function StartupTab() {
             disabled={!loaded || !launchAtStartup}
             aria-label={t("startupTab.launchMinimizedLabel")}
             data-testid="startup-launch-minimized"
+            data-setting-id="system.launchMinimized"
           />
         </div>
       </SettingsSection>
@@ -387,10 +438,11 @@ export function StartupTab() {
         title={t("startupTab.renderingSectionTitle")}
         description={t("startupTab.renderingSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="system.hardwareAcceleration">
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.hardwareAccelerationLabel")}
+              <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.hardwareAcceleration !== hardwareAcceleration} />
             </span>
           </div>
           <Switch
@@ -399,11 +451,13 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.hardwareAccelerationLabel")}
             data-testid="startup-hardware-acceleration"
+            data-setting-id="system.hardwareAcceleration"
           />
         </div>
         <p
           className="mt-2 text-xs text-muted-foreground"
           data-testid="startup-hardware-acceleration-help"
+          data-setting-row="system.hardwareAcceleration"
         >
           {t("startupTab.hardwareAccelerationHelp")}
         </p>
@@ -425,9 +479,10 @@ export function StartupTab() {
         title={t("startupTab.corpCaSectionTitle")}
         description={t("startupTab.corpCaSectionDesc")}
       >
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center justify-between gap-4" data-setting-row="system.corpCaEnabled">
           <span className="min-w-0 text-sm font-medium">
             {t("startupTab.corpCaEnabledLabel")}
+            <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaEnabled !== corpCaEnabled} />
           </span>
           <Switch
             checked={corpCaEnabled}
@@ -435,9 +490,10 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.corpCaEnabledLabel")}
             data-testid="startup-corp-ca-enabled"
+            data-setting-id="system.corpCaEnabled"
           />
         </div>
-        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-help">
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-help" data-setting-row="system.corpCaEnabled">
           {t("startupTab.corpCaEnabledHelp")}
         </p>
         <EnvForcedNotice
@@ -448,27 +504,32 @@ export function StartupTab() {
           className="mt-2"
         />
 
-        <SettingsTextField
-          id="startup-corp-ca-common-name"
-          label={t("startupTab.corpCaCommonNameLabel")}
-          help={t("startupTab.corpCaCommonNameHelp")}
-          value={corpCaCommonName}
-          onCommit={commitCorpCaCommonName}
-          normalize={normalizeCorpCaCommonName}
-          disabled={!loaded || !corpCaEnabled}
-          className="mt-4"
-        >
-          <EnvForcedNotice
-            settingsPath="system.corpCaCommonName"
-            forcedPaths={envForcedPaths}
-            messageKey="startupTab.corpCaCommonNameEnvForced"
-            testId="startup-corp-ca-common-name-forced"
-          />
-        </SettingsTextField>
+        <div data-setting-id="system.corpCaCommonName">
+          <SettingsTextField
+            id="startup-corp-ca-common-name"
+            label={t("startupTab.corpCaCommonNameLabel")}
+            help={t("startupTab.corpCaCommonNameHelp")}
+            value={corpCaCommonName}
+            onCommit={commitCorpCaCommonName}
+            normalize={normalizeCorpCaCommonName}
+            validate={(raw) => raw.trim().length === 0 ? t("startupTab.corpCaNameRequired") : null}
+            disabled={!loaded || !corpCaEnabled}
+            className="mt-4"
+          >
+            <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaCommonName !== corpCaCommonName} />
+            <EnvForcedNotice
+              settingsPath="system.corpCaCommonName"
+              forcedPaths={envForcedPaths}
+              messageKey="startupTab.corpCaCommonNameEnvForced"
+              testId="startup-corp-ca-common-name-forced"
+            />
+          </SettingsTextField>
+        </div>
 
-        <div className="mt-4 flex items-center justify-between gap-4">
+        <div className="mt-4 flex items-center justify-between gap-4" data-setting-row="system.corpCaDebugLog">
           <span className="min-w-0 text-sm font-medium">
             {t("startupTab.corpCaDebugLabel")}
+            <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaDebugLog !== corpCaDebugLog} />
           </span>
           <Switch
             checked={corpCaDebugLog}
@@ -476,9 +537,10 @@ export function StartupTab() {
             disabled={!loaded}
             aria-label={t("startupTab.corpCaDebugLabel")}
             data-testid="startup-corp-ca-debug"
+            data-setting-id="system.corpCaDebugLog"
           />
         </div>
-        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-debug-help">
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="startup-corp-ca-debug-help" data-setting-row="system.corpCaDebugLog">
           {t("startupTab.corpCaDebugHelp")}
         </p>
         <EnvForcedNotice
@@ -497,6 +559,7 @@ export function StartupTab() {
         description={t("generalTab.systemBehaviorDescription")}
       >
         <RadioGroup
+          data-setting-id="system.closeBehavior"
           value={closeBehavior}
           onValueChange={handleCloseBehaviorChange}
           className="gap-3"
@@ -527,7 +590,7 @@ export function StartupTab() {
           </div>
         </RadioGroup>
 
-        <div className="mt-4 border-t pt-4">
+        <div className="mt-4 border-t pt-4" data-setting-row="system.shutdownCleanupTimeoutMs">
           <Label htmlFor="shutdown-cleanup-timeout" className="font-medium">
             {t("startupTab.shutdownTimeoutLabel")}
           </Label>
@@ -538,14 +601,15 @@ export function StartupTab() {
             onChange={handleShutdownTimeoutChange}
             disabled={!loaded || envForcedPaths.includes("system.shutdownCleanupTimeoutMs")}
             data-testid="startup-shutdown-timeout"
+            data-setting-id="system.shutdownCleanupTimeoutMs"
           >
-            {SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS.map((ms) => (
+            {[...new Set([...SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS, shutdownCleanupTimeoutMs])].sort((a, b) => a - b).map((ms) => (
               <NativeSelectOption key={ms} value={String(ms)}>
                 {t(
                   ms === TOOL_TIMEOUT_POLICY.shutdownCleanupMs
                     ? "startupTab.shutdownTimeoutSecondsDefault"
                     : "startupTab.shutdownTimeoutSeconds",
-                  { seconds: String(Math.round(ms / 1000)) },
+                  { seconds: String(ms / 1000) },
                 )}
               </NativeSelectOption>
             ))}

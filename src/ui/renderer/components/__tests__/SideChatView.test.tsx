@@ -851,3 +851,28 @@ describe("SideChatView — the session its agents belong to (#2345)", () => {
     expect(onSessionIdChange).toHaveBeenCalledTimes(calls);
   });
 });
+
+describe("SideChatView — attachment refusals are shown, not logged", () => {
+  it("names a dropped file main refused, with the reason, in the side chat's own notice", async () => {
+    const prepareFileDrop = vi.fn(async () => ({
+      ok: false,
+      error: "nothing-attachable",
+      rejected: [{ name: "setup.exe", reason: "denied-extension" }],
+    }));
+    vi.stubGlobal("aveDrop", { prepareFileDrop, resolveDroppedPaths: () => [] });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { api } = makeApi();
+    const view = renderView(api);
+    const file = new File(["MZ"], "setup.exe");
+    fireEvent.drop(view.getByTestId(TEST_IDS.composer), { dataTransfer: { types: ["Files"], files: [file] } });
+    await waitFor(() => {
+      // The message element repeats its text while it scrolls, so the visible toast is matched by content.
+      expect(view.getByTestId("status-toast").textContent).toContain(
+        t("attachmentRejected.one", { name: "setup.exe", reason: t("attachmentRejected.reason.deniedExtension") }),
+      );
+    });
+    expect(prepareFileDrop).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});

@@ -63,17 +63,17 @@ async function withAdmittedFixture(
   try { await body(app, mainWindow); } finally { await quitElectron(app); }
 }
 
-test("alert choices control declared delivery and stay inside plugin Settings", async ({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome, t }, testInfo) => {
+test("alert choices control declared delivery and stay inside Notifications settings", async ({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome, t }, testInfo) => {
   test.setTimeout(120_000);
   await withAdmittedFixture({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome }, async (app, mainWindow) => {
     const rows = () => mainWindow.evaluate(() => (window as unknown as { aveApi: AveApi }).aveApi.alerts!.listKinds());
     await expect.poll(async () => (await rows()).some((row) => row.kindKey === "alert-fixture:reply")).toBe(true);
     expect((await rows()).find((row) => row.kindKey === "alert-fixture:reply")!.choice).toMatchObject({ enabled: false, seenByUser: false });
-    await openInlineSettings(app, mainWindow, "plugin-config");
+    await openInlineSettings(app, mainWindow, "notifications");
     const section = mainWindow.getByTestId("plugin-alerts:alert-fixture");
     await section.scrollIntoViewIfNeeded();
     await expect(section).toBeVisible();
-    expect(await section.evaluate((element) => element.closest('[data-settings-section]')?.getAttribute('data-settings-section'))).toBe("plugin-config-installed");
+    expect(await section.evaluate((element) => element.closest('[data-settings-section]')?.getAttribute("data-settings-section"))).toBe("notifications-delivery");
     const enabled = section.getByRole("switch", { name: t("alerts.enabledLabel", { label: "Messages needing your reply and review" }) });
     await expect(enabled).not.toBeChecked();
     await expect(enabled).toBeEnabled();
@@ -109,7 +109,7 @@ test("alert choices control declared delivery and stay inside plugin Settings", 
     if (await cancel.isVisible()) await cancel.click();
     await expect(cancel).not.toBeVisible();
     expect(await raise("fixture-one")).toMatchObject({ status: "closed" });
-    await openInlineSettings(app, mainWindow, "plugin-config");
+    await openInlineSettings(app, mainWindow, "notifications");
     await section.scrollIntoViewIfNeeded(); await enabled.click(); await expect(enabled).not.toBeChecked();
     await closeInlineSettings(app, mainWindow);
     expect(await raise("fixture-disabled")).toMatchObject({ status: "disabled_by_user" });
@@ -119,7 +119,7 @@ test("alert choices control declared delivery and stay inside plugin Settings", 
 
 test("OS switches persist independently and dismissal closes the alert identity", async ({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome, t }) => {
   await withAdmittedFixture({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome }, async (app, mainWindow) => {
-    await openInlineSettings(app, mainWindow, "plugin-config");
+    await openInlineSettings(app, mainWindow, "notifications");
     const section = mainWindow.getByTestId("plugin-alerts:alert-fixture");
     await section.scrollIntoViewIfNeeded();
     const enabled = section.getByRole("switch", { name: t("alerts.enabledLabel", { label: "Messages needing your reply and review" }) });

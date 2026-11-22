@@ -81,12 +81,8 @@ function buildPreviewRows(sideBrowserUrl = "https://example.com/docs"): JsonObje
       role: "tool_result",
       toolUseId: "preview-write",
       toolName: "write_file",
-      content: JSON.stringify({
-        kind: "ave.write_file",
-        path: WRITE_PATH,
-        before: "export const value = 1;\n",
-        after: "export const value = 2;\n",
-      }),
+      // The exact shape the write tool returns; the diff itself is a host record, not part of the result.
+      content: JSON.stringify({ path: WRITE_PATH, bytes: 24 }),
       createdAt: now + 300,
     },
     {
@@ -362,14 +358,8 @@ test.describe("chat preview rail", () => {
       const actionBarBox = await ctx.page.getByTestId("input-action-bar").boundingBox();
       const railBox = await panel.boundingBox();
       const finalSplitterBox = await ctx.page.getByTestId("chat-side-panel-width-splitter").boundingBox();
-      // Include card insets when measuring transcript displacement and alignment with the sidebar.
-      const { inset, insetBottom } = await ctx.page.evaluate(() => {
-        const style = getComputedStyle(document.documentElement);
-        return {
-          inset: Number.parseFloat(style.getPropertyValue("--shell-card-inset")),
-          insetBottom: Number.parseFloat(style.getPropertyValue("--shell-card-inset-bottom")),
-        };
-      });
+      // Work-card padding and separation share the inter-card gap.
+      const cardGap = await ctx.page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-gap")));
       expect(chatBox).not.toBeNull();
       expect(paneBox).not.toBeNull();
       expect(finalHeaderBox).not.toBeNull();
@@ -377,18 +367,17 @@ test.describe("chat preview rail", () => {
       expect(actionBarBox).not.toBeNull();
       expect(railBox).not.toBeNull();
       expect(finalSplitterBox).not.toBeNull();
-      expect(inset).toBeGreaterThan(0);
-      expect(insetBottom).toBeGreaterThan(0);
+      expect(cardGap).toBeGreaterThan(0);
       expect(railBox!.width).toBeGreaterThanOrEqual(300);
-      expect(Math.abs(railBox!.x - (mainColumnBox!.x + mainColumnBox!.width) - inset)).toBeLessThanOrEqual(1);
+      expect(Math.abs(railBox!.x - (mainColumnBox!.x + mainColumnBox!.width) - cardGap)).toBeLessThanOrEqual(1);
       expect(railBox!.x).toBeGreaterThanOrEqual(chatBox!.x + chatBox!.width - 2);
       expect(railBox!.x).toBeGreaterThan(actionBarBox!.x + actionBarBox!.width - 8);
       expect(finalSplitterBox!.width).toBeGreaterThanOrEqual(7);
       expect(finalSplitterBox!.width).toBeLessThanOrEqual(9);
       expect(Math.abs(finalSplitterBox!.x - railBox!.x)).toBeLessThanOrEqual(1);
-      expect(Math.abs((paneBox!.x + paneBox!.width) - (railBox!.x + railBox!.width) - inset)).toBeLessThanOrEqual(2);
-      expect(Math.abs(railBox!.y - finalHeaderBox!.y - inset)).toBeLessThanOrEqual(1);
-      expect(Math.abs((paneBox!.y + paneBox!.height) - (railBox!.y + railBox!.height) - insetBottom)).toBeLessThanOrEqual(2);
+      expect(Math.abs((paneBox!.x + paneBox!.width) - (railBox!.x + railBox!.width) - cardGap)).toBeLessThanOrEqual(2);
+      expect(Math.abs(railBox!.y - finalHeaderBox!.y - cardGap)).toBeLessThanOrEqual(1);
+      expect(Math.abs((paneBox!.y + paneBox!.height) - (railBox!.y + railBox!.height) - cardGap)).toBeLessThanOrEqual(2);
       expect(Math.abs(chatBox!.width - mainColumnBox!.width)).toBeLessThanOrEqual(2);
       expect(Math.abs(actionBarBox!.width - mainColumnBox!.width)).toBeLessThanOrEqual(48);
       await expect(panel).not.toHaveCSS("position", "absolute");

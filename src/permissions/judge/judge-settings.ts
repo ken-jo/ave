@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
 import { isLLMVendor, llmVendorModelOptions, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { JudgeCategory } from "./judge-contract.js";
-import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
+import { DEFAULT_PERMISSION_JUDGE_CATEGORIES, DEFAULT_PERMISSION_JUDGE_MODE, MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
 import { JUDGE_BLOCK_THRESHOLDS } from "./judge-breaker.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { isSystemSubagentModelRef, type SystemSubagentModelRef, type SystemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
@@ -68,8 +68,8 @@ export interface JudgeSettings {
 export const DEFAULT_JUDGE_SETTINGS: Readonly<JudgeSettings> = Object.freeze({
   model: null,
   chain: Object.freeze([]) as unknown as JudgeStageSettings[],
-  mode: "shadow",
-  categories: Object.freeze({ shell: true, write: true, network: false }),
+  mode: DEFAULT_PERMISSION_JUDGE_MODE,
+  categories: DEFAULT_PERMISSION_JUDGE_CATEGORIES,
   timeoutMs: TOOL_TIMEOUT_POLICY.reviewerHttpTimeoutMs,
   chainDeadlineMs: 60_000,
   breaker: JUDGE_BLOCK_THRESHOLDS,

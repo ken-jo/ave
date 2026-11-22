@@ -12,6 +12,7 @@ import { registerAppHandlers } from "../app.js";
 import type { IpcDeps } from "../../types.js";
 import { setAppRelaunchRequested } from "../../../main/app-relaunch-state.js";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { folderService, type FolderServiceHarness } from "../../../marketplace/__tests__/fixtures/folder-service.js";
@@ -23,11 +24,15 @@ import { ContentStore } from "../../../marketplace/content/store.js";
 import { EMPTY_MARKETPLACE_POLICY } from "../../../marketplace/sources/policy.js";
 import { SettingsService, settingsFilePath, type AppSettings } from "../../../data/settings-store.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
-import { deferred } from "../../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
 import { hasMarketplaceInstallInFlight } from "../../../marketplace/app/install-lifecycle.js";
 import { mutateMarketplaceProviderPresets } from "../settings.js";
 
-vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
+vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() }, app: { getPath: () => "/tmp/app-profile" } }));
+vi.mock("node:fs/promises", async (original) => {
+  const fs = await original<typeof import("node:fs/promises")>();
+  return { ...fs, rm: vi.fn(fs.rm) };
+});
 
 const handlers = new Map<string, Parameters<typeof ipcMain.handle>[1]>();
 const auditLogger = { log: vi.fn() };
@@ -37,6 +42,8 @@ let mainEvent: IpcMainInvokeEvent;
 let marketplace: FolderServiceHarness | undefined;
 let settingsRoot: string | undefined;
 let presetDeps: IpcDeps;
+let bootTelemetry: { crashReportEndpoint?: string } = { crashReportEndpoint: "https://reports.example/boot" };
+let bootSystem = { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false };
 
 beforeEach(() => {
   clearAppUpdateInstallRequested();
@@ -46,7 +53,9 @@ beforeEach(() => {
   mainEvent = hostFrameEvent();
   Object.assign(mainEvent.sender, { mainFrame: mainEvent.senderFrame });
   vi.spyOn(ipcMain, "handle").mockImplementation((channel, handler) => { handlers.set(channel, handler); });
-  registerAppHandlers({ auditLogger, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
+  bootSystem = { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false };
+  bootTelemetry = { crashReportEndpoint: "https://reports.example/boot" };
+  registerAppHandlers({ settingsService: { get: (key: string) => key === "telemetry" ? bootTelemetry : bootSystem }, auditLogger, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
 });
 afterEach(async () => {
   clearAppUpdateInstallRequested();
@@ -58,9 +67,13 @@ afterEach(async () => {
     settingsRoot = undefined;
   }
   if (marketplace) {
-    marketplace.service.close();
-    await cleanupTmpDir(marketplace.root);
+    const { service, root } = marketplace;
     marketplace = undefined;
+    try {
+      await service.close();
+    } finally {
+      await cleanupTmpDir(root);
+    }
   }
 });
 
@@ -161,6 +174,43 @@ function revokeSkill(root: string) {
 }
 
 describe("app relaunch boundary", () => {
+  it("drains folder-plan removal before the parent is removed", async () => {
+    const { harness } = await skillInstall();
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const removed = deferred<void>();
+    const { rm: removeDirectory } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const remove = vi.mocked(rm).mockImplementation(async (path, options) => {
+      if (typeof path !== "string" || !path.startsWith(join(harness.workRoot, "folder-plan-"))) return removeDirectory(path, options);
+      started.resolve();
+      await release.promise;
+      try {
+        await removeDirectory(path, options);
+      } finally {
+        removed.resolve();
+      }
+    });
+    let removingParent = false;
+    const closing = Promise.resolve(harness.service.close()).then(async () => {
+      removingParent = true;
+      await cleanupTmpDir(harness.root);
+    });
+    try {
+      await started.promise;
+      await afterQueuedCallbacks();
+      expect(removingParent).toBe(false);
+    } finally {
+      release.resolve();
+      await removed.promise;
+      try {
+        await closing;
+      } finally {
+        remove.mockReset();
+      }
+    }
+    expect(existsSync(harness.root)).toBe(false);
+  });
+
   it("refuses preset install mutation after accepted relaunch without changing stored settings", async () => {
     const { settingsService, stored, refreshProvider } = await providerPresetSettings();
     const before = stored();
@@ -501,4 +551,27 @@ describe("app relaunch boundary", () => {
     relaunchApp.mockImplementation(() => { throw new Error("private runtime detail"); });
     expect(invoke()).toEqual({ ok: false, error: "relaunch-failed" });
   });
+});
+
+
+it("reports immutable startup inputs after settings change and a renderer remount", async () => {
+  bootSystem.hardwareAcceleration = false;
+  bootSystem.corpCaCommonName = "Changed Root";
+  const handler = handlers.get(CHANNELS.app.info);
+  expect(handler).toBeDefined();
+  const info = await handler?.(mainEvent);
+  expect(info.startupSettings).toEqual({ hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false });
+  const again = await handler?.(mainEvent);
+  expect(again.startupSettings).toEqual(info.startupSettings);
+});
+
+it("retains the native crash destination from this launch after later settings writes", async () => {
+  bootTelemetry.crashReportEndpoint = "https://reports.example/changed";
+  const handler = handlers.get(CHANNELS.app.info);
+  expect(handler).toBeDefined();
+  if (handler === undefined) throw new Error("Expected the app information handler");
+  const first = await handler(mainEvent);
+  expect(first.bootCrashReportEndpoint).toBe("https://reports.example/boot");
+  const remount = await handler(mainEvent);
+  expect(remount.bootCrashReportEndpoint).toBe(first.bootCrashReportEndpoint);
 });

@@ -365,22 +365,12 @@
     {
       "type": "types",
       "file": "src/data/settings-store.ts",
-      "name": "PrivacySettings"
-    },
-    {
-      "type": "types",
-      "file": "src/data/settings-store.ts",
       "name": "RoutineSettings"
     },
     {
       "type": "types",
       "file": "src/data/settings-store.ts",
       "name": "UpdateSettings"
-    },
-    {
-      "type": "types",
-      "file": "src/data/settings-store.ts",
-      "name": "WebSearchSettings"
     },
     {
       "type": "types",

@@ -1,3 +1,4 @@
+import { ok as assertPresent } from "node:assert/strict";
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
@@ -9,7 +10,9 @@ import { DEFAULT_APPEARANCE, type AppearanceSettings } from "../../../shared/app
 import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
 import type { InstalledContentView } from "../../../shared/installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
-import { getLocale, setLocale } from "../../../i18n/runtime.js";
+import { rendererShortcutPlatform } from "../hooks/use-shortcuts.js";
+import { defaultAccelerator, formatAccelerator } from "../../../shared/shortcuts.js";
+import { t, getLocale, setLocale } from "../../../i18n/runtime.js";
 
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 
@@ -50,7 +53,8 @@ describe("Appearance settings", () => {
     const { container, getByTestId } = renderAppearance();
     fireEvent.click(getByTestId("appearance-mode-dark"));
     expect(container.querySelectorAll("[data-scheme-id]")).toHaveLength(6);
-    const card = container.querySelector('[data-scheme-id="nord"]')!;
+    const card = container.querySelector('[data-scheme-id="nord"]');
+    assertPresent(card);
     fireEvent.click(card);
     await waitFor(() => expect(card).toHaveAttribute("aria-checked", "true"));
     expect(document.documentElement).toHaveAttribute("data-scheme", "nord");
@@ -96,6 +100,11 @@ describe("Appearance settings", () => {
 });
 
 it("moves one tab stop through mode, scheme and font radio groups with the keyboard", async () => {
+  const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
+  const settings = await api.getSettings();
+  let releaseSettings!: () => void;
+  const settingsReady = new Promise<void>((resolve) => { releaseSettings = resolve; });
+  api.getSettings.mockImplementation(async () => { await settingsReady; return settings; });
   const { getByRole, getByTestId, container } = renderAppearance();
   const mode = getByRole("radiogroup", { name: "화면 모드" });
   expect(within(mode).getAllByRole("radio").filter((radio) => radio.tabIndex === 0)).toHaveLength(1);
@@ -111,17 +120,23 @@ it("moves one tab stop through mode, scheme and font radio groups with the keybo
   const last = container.querySelector('[data-scheme-id="solarized-dark"]');
   expect(last).toHaveFocus();
   expect(last).toHaveAttribute("aria-checked", "true");
-  fireEvent.keyDown(last!, { key: "ArrowRight" });
+  assertPresent(last);
+  fireEvent.keyDown(last, { key: "ArrowRight" });
   expect(scheme).toHaveFocus();
   const families = getByTestId("font-family-presets");
   await waitFor(() => expect(within(families).getAllByRole("radio").some((radio) => radio.getAttribute("aria-checked") === "true")).toBe(true));
-  const first = within(families).getAllByRole("radio")[0]!;
+  expect(getByTestId("appearance-font-controls")).toBeDisabled();
+  releaseSettings();
+  await waitFor(() => expect(getByTestId("appearance-font-controls")).not.toBeDisabled());
+  const [first] = within(families).getAllByRole("radio");
+  assertPresent(first);
   first.focus();
   fireEvent.keyDown(first, { key: "ArrowDown" });
   expect(within(families).getAllByRole("radio")[1]).toHaveFocus();
   expect(within(families).getAllByRole("radio").filter((radio) => radio.tabIndex === 0)).toHaveLength(1);
   const sizes = getByTestId("font-size-scale");
-  const activeSize = within(sizes).getAllByRole("radio").find((radio) => radio.tabIndex === 0)!;
+  const activeSize = within(sizes).getAllByRole("radio").find((radio) => radio.tabIndex === 0);
+  assertPresent(activeSize);
   activeSize.focus();
   fireEvent.keyDown(activeSize, { key: "Home" });
   expect(within(sizes).getAllByRole("radio")[0]).toHaveFocus();
@@ -216,6 +231,7 @@ it("renders size segments at one body size with nominal pixels and a default", (
 
 it("renders each interface preset in its saved stack with the host default", async () => {
  const view = renderAppearance();
+ await waitFor(() => expect(view.getByTestId("appearance-font-controls")).not.toBeDisabled());
  const presets = within(view.getByTestId("font-family-presets")).getAllByRole("radio");
  expect(presets[0]?.style.fontFamily).toBe(HOST_FONT_STACK);
  const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
@@ -227,18 +243,29 @@ it("renders each interface preset in its saved stack with the host default", asy
 
 it("offers the zoom row with percent, limits and reset", async () => {
  const view = renderAppearance();
- const zoom = within(view.getByRole("group", { name: "확대/축소" }));
+ const zoom = within(view.getByRole("group", { name: t("appearanceTab.zoom") }));
+ const platform = rendererShortcutPlatform();
+ const shortcutLabel = (id: "menu.zoomIn" | "menu.zoomOut" | "menu.resetZoom", labelKey: string) => {
+   const accelerator = defaultAccelerator(id, platform);
+   assertPresent(accelerator);
+   return t("appearanceTab.shortcutLabel", { label: t(labelKey), shortcut: formatAccelerator(accelerator, platform) });
+ };
+ const resetName = shortcutLabel("menu.resetZoom", "be_main.menuResetZoom");
+ const zoomInName = shortcutLabel("menu.zoomIn", "be_main.menuZoomIn");
+ const zoomOutName = shortcutLabel("menu.zoomOut", "be_main.menuZoomOut");
  expect(zoom.getByText("100%")).toBeInTheDocument();
- expect(zoom.getByRole("button", { name: /Num0/ })).toBeDisabled();
+ expect(zoom.getByRole("button", { name: resetName })).toBeDisabled();
  const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
- for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+=/ }));
- expect(zoom.getByRole("button", { name: /Ctrl\+=/ })).toBeDisabled();
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: zoomInName }));
+ expect(zoom.getByRole("button", { name: zoomInName })).toBeDisabled();
  expect(zoom.getByText("430%")).toBeInTheDocument();
  expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { zoomLevel: 8 } });
- fireEvent.click(zoom.getByRole("button", { name: /Num0/ }));
+ fireEvent.click(zoom.getByRole("button", { name: resetName }));
  expect(zoom.getByText("100%")).toBeInTheDocument();
- for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+-/ }));
- expect(zoom.getByRole("button", { name: /Ctrl\+-/ })).toBeDisabled();
+ expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { zoomLevel: 0 } });
+ expect(zoom.getByRole("button", { name: resetName })).toBeDisabled();
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: zoomOutName }));
+ expect(zoom.getByRole("button", { name: zoomOutName })).toBeDisabled();
  expect(zoom.getByText("23%")).toBeInTheDocument();
 });
 
@@ -257,4 +284,12 @@ it.each(["en", "ko"] as const)("puts the default marker on its own line in %s", 
  } finally {
   act(() => setLocale(previous));
  }
+});
+
+it('moves language selection with the arrow keys', async () => {
+  const view = renderAppearance();
+  const radios = within(view.getByRole('radiogroup', { name: /Language|언어/ })).getAllByRole('radio');
+  radios[0].focus();
+  fireEvent.keyDown(radios[0], { key: 'ArrowRight' });
+  await waitFor(() => expect(radios[1]).toHaveFocus());
 });

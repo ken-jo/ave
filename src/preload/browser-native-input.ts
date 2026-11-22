@@ -10,15 +10,15 @@ export function installBrowserNativeInput(document: Document = globalThis.docume
   let hover: PageIdentity | null = null;
   let nextSequence = 0;
   const matches = (a: PageIdentity, b: PageIdentity) => a.tabId === b.tabId && a.webContentsId === b.webContentsId && a.epoch === b.epoch;
-  const identityAt = (x: number, y: number): PageIdentity | null => {
+  const pageAt = (x: number, y: number): { identity: PageIdentity; element: HTMLElement } | null => {
     const hole = document.elementFromPoint(x, y)?.closest(`[${BROWSER_NATIVE_HOLE_ATTRIBUTE}]`);
     const value = hole?.getAttribute(BROWSER_NATIVE_HOLE_ATTRIBUTE);
-    if (!value) return null;
+    if (!value || typeof (hole as HTMLElement).focus !== "function") return null;
     try {
       const identity: unknown = JSON.parse(value);
       if (!identity || typeof identity !== "object") return null;
       const parsed = parseBrowserNativeInput({ ...identity, sequence: 1, type: "mouseMove", x, y, button: "left", clickCount: 0, modifiers: [] });
-      return parsed ? { tabId: parsed.tabId, webContentsId: parsed.webContentsId, epoch: parsed.epoch } : null;
+      return parsed ? { identity: { tabId: parsed.tabId, webContentsId: parsed.webContentsId, epoch: parsed.epoch }, element: hole as HTMLElement } : null;
     } catch { return null; }
   };
   const modifiersFor = (event: MouseEvent): BrowserNativeInputModifier[] => {
@@ -36,7 +36,8 @@ export function installBrowserNativeInput(document: Document = globalThis.docume
     if (!event.isTrusted) return;
     if (event.type === "mousemove" && event.buttons === 0) gesture = null;
     if (event.type === "mousedown") gesture = null;
-    const hit = identityAt(event.clientX, event.clientY);
+    const page = pageAt(event.clientX, event.clientY);
+    const hit = page?.identity ?? null;
     if (!gesture && hover && (!hit || !matches(hover, hit))) {
       ipcRenderer.send(CHANNELS.browser.nativeInput, { ...hover, sequence: ++nextSequence, type: "mouseLeave", x: event.clientX,
         y: event.clientY, button: "left", clickCount: 0, modifiers: [] } satisfies BrowserNativeInput);
@@ -57,7 +58,12 @@ export function installBrowserNativeInput(document: Document = globalThis.docume
       ...(type === "mouseWheel" ? { deltaX: -wheel.deltaX * unit, deltaY: -wheel.deltaY * unit } : {}),
     });
     if (!input) return;
-    if (type === "mouseDown") gesture = { ...identity, sequence: input.sequence };
+    if (type === "mouseDown") {
+      gesture = { ...identity, sequence: input.sequence };
+      // Pointer defaults are suppressed below; move DOM focus to the page's proxy before handing off input.
+      // This also ends focus in an app popover whose outside-pointer listener has not yet been installed.
+      page?.element.focus({ preventScroll: true });
+    }
     if (type === "mouseUp" && event.buttons === 0) gesture = null;
     event.preventDefault();
     // Outside-click dismissal still observes the host gesture; only wheel must bypass host scrolling.
@@ -65,7 +71,7 @@ export function installBrowserNativeInput(document: Document = globalThis.docume
     ipcRenderer.send(CHANNELS.browser.nativeInput, input);
   };
   const contextMenu = (event: MouseEvent): void => {
-    if (!event.isTrusted || !identityAt(event.clientX, event.clientY)) return;
+    if (!event.isTrusted || !pageAt(event.clientX, event.clientY)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
   };

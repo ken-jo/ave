@@ -3,7 +3,7 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
+import { approvalReasonFields, approvalRequestTarget, isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
@@ -12,7 +12,7 @@ import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
-import type { ApprovalDecision, ApprovalRequestInput } from "../permissions/approval-gate.js";
+import type { ApprovalDecision, ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult } from "../permissions/permission-manager.js";
 import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
@@ -224,6 +224,7 @@ export interface ExecutionStageContext {
   parentEffectLedger: EffectLedger | undefined;
   effectLedger: EffectLedger;
   targetFilePath: string | undefined;
+  linkedTargets: readonly LinkedApprovalTarget[];
   preResult: Awaited<ReturnType<HookRunner["runPreHooks"]>>;
   scriptPre: Awaited<ReturnType<typeof runScriptHook>>;
   resolvedPluginOperation: ResolvedPluginOperation | undefined;
@@ -285,6 +286,7 @@ export async function executeAuthorizedToolInvocation(
     parentEffectLedger,
     effectLedger,
     targetFilePath,
+    linkedTargets,
     preResult,
     resolvedPluginOperation,
     pluginOperationPrincipal,
@@ -764,7 +766,7 @@ export async function executeAuthorizedToolInvocation(
         }
         const decision = await gate.requestAndWait({
           id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network",
-          browserSite: origin, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
+          browserSite: origin, toolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
           sessionId, abortSignal: siteSignal, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
           forceExplicit: true, durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
         });
@@ -1042,7 +1044,8 @@ export async function executeAuthorizedToolInvocation(
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
-      ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
+      ...(approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) ? { target: approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) } : {}),
+      ...approvalReasonFields(permissionResult, { fileTarget: targetFilePath !== undefined && invocationCategory !== "shell" }),
       sensitivePathPattern, evaluationContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       ...(invocationPermissionContext.approvalMemory ? { approvalMemory: invocationPermissionContext.approvalMemory } : {}),
@@ -1074,8 +1077,9 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = services.permissionManager.recheckPermission(permissionResult);
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
+    // The surface facts, the code of the decision that asked included, are the recheck's own: a card that is no longer a surface card carries none.
     const liveRequest: ApprovalRequestInput = { ...request,
-      userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined,
+      userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined, reasonCode: undefined,
       ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,

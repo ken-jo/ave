@@ -11,10 +11,10 @@ beforeEach(() => { setLocale("en"); });
 
 function file(overrides: Partial<TurnReviewFile> = {}): TurnReviewFile {
   return {
-    path: "src/source.ts", bytes: 30, lineCount: 4, referenceable: true,
+    path: "src/source.ts", bytes: 30, lineCount: 4, referenceable: true, decidable: true,
     added: 2, removed: 1, operation: "modify", countsKnown: true,
     hunks: [{ id: "hunk-1", oldText: "old third\n", newText: "new third\nnew fourth\n",
-      oldStartLine: 3, newStartLine: 3, startLine: 3, endLine: 4 }],
+      oldStartLine: 3, newStartLine: 3, startLine: 3, endLine: 4, kept: false }],
     ...overrides,
   };
 }
@@ -70,7 +70,7 @@ describe("TurnChangeDetail", () => {
   it("keeps stale or deleted ranges read-only without a red warning and permits an ordinary file mention", () => {
     const onReference = vi.fn();
     const onFileReference = vi.fn();
-    render(<TurnChangeDetail file={file({ referenceable: false, operation: "delete" })}
+    render(<TurnChangeDetail file={file({ referenceable: false, decidable: true, operation: "delete" })}
       turnId="turn-1" onReference={onReference} onFileReference={onFileReference} />);
     const hunk = screen.getByRole("button", { name: /hunk.*1.*src\/source.ts|src\/source.ts.*hunk.*1/ });
     expect(hunk.hasAttribute("disabled")).toBe(true);

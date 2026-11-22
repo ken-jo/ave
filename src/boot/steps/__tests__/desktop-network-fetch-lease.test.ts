@@ -1,3 +1,4 @@
+import { tsxChildEnv } from "../../../__tests__/support/tsx-child-env.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -87,7 +88,7 @@ it.each([
 async function rotateFromChild(root: string): Promise<void> {
   const child = spawn(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath,
     ["--import=tsx", childFixture, "settings-rotate", root, secretKey],
-    { cwd: repoRoot, env: process.env, stdio: ["ignore", "ignore", "pipe"], timeout: 15_000 });
+    { cwd: repoRoot, env: tsxChildEnv(), stdio: ["ignore", "ignore", "pipe"], timeout: 15_000 });
   let stderr = "";
   child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
   await new Promise<void>((resolveExit, reject) => {

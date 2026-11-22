@@ -26,6 +26,8 @@ vi.mock("../mcp-client.js", () => ({
 vi.mock("../mcp-governance.js", () => ({
   McpGovernance: class {
     validateServer = mockValidateServer;
+    getApproval = () => ({ status: "approved" });
+    unregisterRuntimeApproval = vi.fn();
   },
 }));
 vi.mock("../../tools/registry.js", () => ({
@@ -53,6 +55,7 @@ async function makeManager(onServerDisconnected: (id: string) => void) {
     { log: vi.fn() } as never,
     undefined,
     onServerDisconnected,
+    { getSecret: async () => null, setSecret: async () => undefined, deleteSecret: async () => undefined },
   );
 }
 
@@ -108,7 +111,7 @@ describe("teardown paths EMIT onServerDisconnected (exactly once each)", () => {
 describe("reconnect/replace paths EMIT ZERO (MINOR-1 regression)", () => {
   it("setApiKey does NOT emit (disconnect immediately followed by reconnect)", async () => {
     const servers: McpServerConfig[] = [
-      { id: "key-srv", transport: "http", url: "https://example.com/mcp", auth: "api-key", apiKeyEnv: "MY_KEY" },
+      { id: "key-srv", transport: "http", url: "https://example.com/mcp", auth: "api-key", apiKey: "throwaway-prior-key", apiKeyEnv: "MY_KEY" },
     ];
     await writeFile(testConfigPath, JSON.stringify({ servers }), "utf-8");
     const sink = vi.fn();

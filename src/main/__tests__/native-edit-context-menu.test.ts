@@ -24,16 +24,22 @@ const {
   popupMock,
   menuTemplates,
   mainWindowForContentsMock,
+  uiOriginMock,
   windows,
   independentGuestMock,
   guestWindowIdMock,
   allowsNativeContextMenuMock,
+  popupGuestMock,
+  pageMenuMock,
 } = vi.hoisted(() => ({
+  popupGuestMock: vi.fn(),
+  pageMenuMock: vi.fn(),
   buildFromTemplateMock: vi.fn(),
   fromWebContentsMock: vi.fn(),
   popupMock: vi.fn(),
   menuTemplates: [] as unknown[],
   mainWindowForContentsMock: vi.fn(),
+  uiOriginMock: vi.fn(),
   windows: [] as unknown[],
   independentGuestMock: vi.fn(),
   guestWindowIdMock: vi.fn(),
@@ -50,10 +56,13 @@ vi.mock("electron", () => ({
 }));
 
 vi.mock("../app-state.js", () => ({ getMainWindows: () => windows, mainWindowForContents: mainWindowForContentsMock }));
+vi.mock("../main-window-host.js", () => ({ mainWindowUiOrigin: uiOriginMock }));
 vi.mock("../browser/browser-tab-registry.js", () => ({ browserTabRegistry: {
   isIndependentGuest: independentGuestMock, guestWindowId: guestWindowIdMock,
-  allowsNativeContextMenu: allowsNativeContextMenuMock,
+  allowsNativeContextMenu: allowsNativeContextMenuMock, isPopupGuest: popupGuestMock,
 } }));
+const PAGE_MENU = [{ id: "back" }, { id: "reload" }];
+vi.mock("../browser/browser-workspace-desktop.js", () => ({ browserPageMenuItems: pageMenuMock }));
 
 import { installNativeEditContextMenu } from "../native-edit-context-menu.js";
 
@@ -98,9 +107,12 @@ describe("installNativeEditContextMenu", () => {
     });
     fromWebContentsMock.mockReturnValue(null);
     mainWindowForContentsMock.mockReturnValue(null);
+    uiOriginMock.mockReturnValue({ x: 0, y: 0 });
     independentGuestMock.mockReturnValue(false);
     guestWindowIdMock.mockReturnValue(7);
     allowsNativeContextMenuMock.mockReturnValue(true);
+    popupGuestMock.mockReturnValue(false);
+    pageMenuMock.mockReturnValue(PAGE_MENU);
     windows.length = 0;
   });
 
@@ -171,13 +183,15 @@ describe("installNativeEditContextMenu", () => {
     expect(popupMock).not.toHaveBeenCalled();
   });
 
-  it("keeps main UI menu coordinates unchanged", () => {
+  it("adds the main UI origin to native event coordinates without scaling", () => {
     const owner = { id: 7 };
     mainWindowForContentsMock.mockReturnValue(owner);
-    const { handler } = install();
+    uiOriginMock.mockReturnValue({ x: 4, y: 4 });
+    const { contents, handler } = install();
     handler({ preventDefault: vi.fn() }, params({ isEditable: true, x: 41, y: 59 }));
-    expect(popupMock).toHaveBeenCalledExactlyOnceWith({ window: owner, x: 41, y: 59 });
+    expect(popupMock).toHaveBeenCalledExactlyOnceWith({ window: owner, x: 45, y: 63 });
     expect(fromWebContentsMock).not.toHaveBeenCalled();
+    expect(contents.getZoomFactor).not.toHaveBeenCalled();
   });
 
   it("adds attached native container and page origins without applying UI zoom", () => {
@@ -192,6 +206,28 @@ describe("installNativeEditContextMenu", () => {
     handler({ preventDefault: vi.fn() }, params({ isEditable: true, x: 30, y: 40 }));
     expect(popupMock).toHaveBeenCalledExactlyOnceWith({ window: owner, x: 410, y: 130 });
     expect(contents.getZoomFactor).not.toHaveBeenCalled();
+  });
+
+  it("shows the browser's page menu in the agent's own view once the user took it over, also on a plain part of the page", () => {
+    const { contents, handler } = install();
+    independentGuestMock.mockReturnValue(true);
+    const owner = { id: 7, isFocused: () => true, isVisible: () => true, isMinimized: () => false,
+      contentView: { children: [{ webContents: contents, children: [], getBounds: () => ({ x: 400, y: 100 }) }] } };
+    windows.push(owner);
+    const plain = params({ x: 3, y: 4 });
+    handler({ preventDefault: vi.fn() }, plain);
+    expect(pageMenuMock).toHaveBeenCalledExactlyOnceWith(contents, 7, plain, true);
+    expect(menuTemplates[0]).toBe(PAGE_MENU);
+    expect(popupMock).toHaveBeenCalledExactlyOnceWith({ window: owner, x: 403, y: 104 });
+  });
+
+  it("leaves a browser popup's menu to the popup", () => {
+    const { handler } = install();
+    popupGuestMock.mockReturnValue(true);
+    const preventDefault = vi.fn();
+    handler({ preventDefault }, params({ isEditable: true }));
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(buildFromTemplateMock).not.toHaveBeenCalled();
   });
 
   it("does not open a native page menu without authoritative human takeover", () => {

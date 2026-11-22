@@ -209,7 +209,9 @@ public static class NativeShortPath {
 }
 '@
 [NativeShortPath]::Read($env:AVE_TEST_TARGET)`, longPath);
-    expect(shortPath.toLowerCase()).not.toBe(longPath.toLowerCase());
+    if (shortPath.toLowerCase() === longPath.toLowerCase()) {
+      throw new Error("The fixture volume returned no distinct 8.3 short name; the test root (AVE_TEST_TMP_ROOT / LOCALAPPDATA) must be on a volume with 8.3 names.");
+    }
     const root = mode === "long-root" ? longPath : shortPath;
     const parent = mode === "short" ? shortPath : mode === "short-root" ? longPath : shortPath;
     const boundaries = ["secrets", "config"].map(leaf => join(parent, leaf));

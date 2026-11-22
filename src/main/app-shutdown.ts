@@ -57,12 +57,21 @@ export interface BootPluginShutdown {
 }
 let bootPluginShutdown: BootPluginShutdown | undefined;
 let bootMcpDisconnect: (() => Promise<void>) | undefined;
+let closeMarketplace: (() => Promise<void>) | undefined;
 export function registerBootPluginShutdown(shutdown: BootPluginShutdown): void {
   bootPluginShutdown = shutdown;
 }
 // Registered once the bootstrap has an MCP manager to disconnect.
 export function registerBootMcpDisconnect(disconnect: () => Promise<void>): void {
   bootMcpDisconnect = disconnect;
+}
+export function registerMarketplaceShutdown(close: () => Promise<void>): void {
+  let closing: Promise<void> | undefined;
+  const stop = () => closing ??= Promise.resolve().then(close).catch((error: unknown) => {
+    log.warn("marketplace shutdown failed: %s", errorMessage(error));
+  });
+  closeMarketplace = stop;
+  registerShutdownHook("git-marketplace", () => { void stop(); });
 }
 export function configureAppShutdownHost(host: BootHost): void {
   shutdownHost = host;
@@ -209,6 +218,7 @@ async function cleanupIncompleteBoot(host: BootHost | undefined, signal: AbortSi
     () => bootPluginShutdown?.closeAdmission(),
     () => bootMcpDisconnect?.(),
     () => bootPluginShutdown?.stopRuntime(signal),
+    () => closeMarketplace?.(),
     () => stopHostDocumentEngineSessions(),
     () => stopSubscriptionRuntimes(),
     () => disposeBrowserUploads(),
@@ -287,6 +297,8 @@ export async function runAppShutdownCleanup(options: {
           "shutdown: interrupted running turns",
         );
       }
+      if (signal.aborted) return;
+      if (closeMarketplace) await closeMarketplace();
       if (signal.aborted) return;
       // Running turns have settled before document unload can close their native page and terminal owners.
       await shutdownHost?.desktop?.closeDocuments(signal);

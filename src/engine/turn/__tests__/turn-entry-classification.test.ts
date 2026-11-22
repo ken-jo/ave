@@ -287,7 +287,7 @@ const CLASSIFIED: Record<string, Classified> = {
     classification: "computed: the effect-scope proxy's Reflect.get over a plugin HostApi namespace; no turn entry",
   },
   "preload/gesture-intent.ts": {
-    sites: { userKeyboardLiteral: 3 },
+    sites: { userKeyboardLiteral: 2 },
     classification: "preload gesture tokens: minted only during an active gesture, consumed once",
   },
   "preload/internal-api-surface.ts": {
@@ -298,9 +298,17 @@ const CLASSIFIED: Record<string, Classified> = {
     sites: { userKeyboardLiteral: 5 },
     classification: "chat.send/guide/edit-resend/continue/retry/branch bridges: report userActivation from the consumed token only",
   },
+  "preload/user-activation.ts": {
+    sites: { userKeyboardLiteral: 1 },
+    classification: "activation report for a user action: userActivation is the renderer's live gesture state only; main must verify its native input separately",
+  },
   "routines/routine-engine.ts": {
     sites: { runTurn: 1 },
     classification: "scheduled routines: plugin-emitted",
+  },
+  "shared/appearance-settings.ts": {
+    sites: { computedCall: 1 },
+    classification: "computed: the terminal behavior settings' per-field validator table, called for each saved field; no turn entry",
   },
   "shared/chat-origin.ts": {
     sites: { mintUserKeyboardIntent: 1 },

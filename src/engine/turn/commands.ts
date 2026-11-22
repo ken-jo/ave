@@ -357,6 +357,8 @@ export async function handlePermissionCommand(
       const result = await dispatchPermissionReviewerCommandWithRewire(
         outcome.cmd,
         self.deps.rewireReviewerAgent,
+        undefined,
+        self.deps.permissionManager,
       );
       if (!result.ok) return t("be_conversationLoop.permissionReviewerError", { error: result.error });
       const { mode, fallbackOnError } = result.settings;
@@ -398,6 +400,7 @@ export async function handlePermissionCommand(
         permissionManager: pm,
         approvalGate: self.deps.approvalGate,
         auditLogger: self.deps.auditLogger,
+        rewireReviewerAgent: self.deps.rewireReviewerAgent,
         approvalBypass: {
           source: "builtin-slash",
           trustOrigin: "user-keyboard",

@@ -23,6 +23,7 @@ vi.mock("../../../../components/ui/scroll-area.js", () => ({
 }));
 
 import { PermissionsTab } from "../PermissionsTab.js";
+import { SettingsEditorProvider } from "../../context/SettingsEditorContext.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 import type { HookTrustRow, PermissionReviewerDispatchResult, ScopedPermissionRuleError } from "../../types.js";
@@ -32,6 +33,7 @@ import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
 import { LONG_TOAST_TTL_MS } from "../../constants.js";
 import { buildInternalApiSurface } from "../../../../preload/internal-api-surface.js";
 import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
+import { requiredFixture } from "../../../../__tests__/support/required-fixture.js";
 import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
 import { assertSandboxWindowsExtensionPlan, type SandboxWindowsExtensionPlan, type SandboxWindowsExtensionReason } from "../../../../shared/sandbox-capability-info.js";
@@ -149,6 +151,7 @@ function installApi(
     settings: { features: { osToolSandbox: false } },
     envForcedSettings,
   });
+  Object.assign(ave.permission, { updateSecuritySettings: api.updateSettings });
   api.relaunchApp = ave.relaunchApp;
   return ave;
 }
@@ -357,7 +360,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByTestId(execModeTestId("default"))).toHaveTextContent("복구 가능한 프로젝트 파일 변경");
     expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("기본");
     expect(screen.getByTestId(execModeTestId("strict"))).toHaveTextContent("일반 읽기와 읽기 전용으로 입증된 샌드박스 명령을 허용");
-    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("auto");
+    expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent(t("constants.execModeAutoLabel"));
     expect(screen.getByTestId(execModeTestId("auto"))).toHaveTextContent("나머지는 리뷰어가 검증");
     expect(screen.getByTestId(execModeTestId("allow"))).toHaveTextContent("허용");
   });
@@ -398,12 +401,10 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
-    expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
-      api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
-    );
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+    expect(api.permission.setMode).toHaveBeenCalledTimes(1);
     const autoButton = screen.getByTestId(execModeTestId("auto"));
     expect(autoButton.className).toContain("border-primary");
   });
@@ -426,11 +427,9 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("allow")));
     });
 
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode disabled");
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode disabled");
     expect(api.permission.setMode).toHaveBeenCalledWith("allow");
-    expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
-      api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
-    );
+    expect(api.permission.setMode).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId(execModeTestId("allow")).className).toContain("border-primary");
   });
 
@@ -504,8 +503,8 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
-    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show", "mode llm"]);
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
     expect(screen.queryByTestId("reviewer-active-llm-source")).toBeNull();
     expect(screen.queryByTestId("reviewer-provider-select")).toBeNull();
     expect(screen.queryByTestId("reviewer-fallback-select")).toBeNull();
@@ -603,20 +602,14 @@ describe("PermissionsTab hook quarantine notice", () => {
       option.focus();
       fireEvent.keyDown(option, { key: "Enter" });
     };
-    const save = async () => {
-      await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") }));
-      });
-    };
-
     await pick(/claude-reviewer/);
-    await save();
+    await waitFor(() => expect(judgeSet).toHaveBeenCalledTimes(1));
     expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({
       model: { vendor: "claude", model: "claude-reviewer" },
     }));
 
     await pick(new RegExp(t("permissionJudge.followChatModel")));
-    await save();
+    await waitFor(() => expect(judgeSet).toHaveBeenCalledTimes(2));
     expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({ model: null }));
   });
 
@@ -663,28 +656,16 @@ describe("PermissionsTab hook quarantine notice", () => {
     }
   });
 
-  it("surfaces the reviewer rewire failure when entering the auto-verification mode", async () => {
+  it("keeps the active mode unchanged when main cannot configure the reviewer", async () => {
     const api = installApi([[]]);
-    api.permission.reviewerDispatch.mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny");
-      }
-      if (rawArgs === "mode llm") {
-        return { ok: false as const, error: "reviewer-rewire-failed: missing provider" };
-      }
-      throw new Error(`unexpected reviewerDispatch: ${rawArgs}`);
-    });
-
+    api.permission.setMode.mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: "missing provider" } as never);
     await renderPermissionsTab();
-    await act(async () => {
-      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
-    });
-
-    // The exec mode switch succeeds, but the auto-wired `mode llm` reviewer dispatch fails → surface the rewire-failure banner.
-    expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
-    expect(screen.getByText(/이전 설정으로 복원했습니다/)).toBeTruthy();
-    // The rewire detail is a raw exception message from main: logged, not shown.
+    await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
+    expect(api.permission.setMode).toHaveBeenCalledExactlyOnceWith("auto");
+    expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
+    expect(screen.getByTestId(execModeTestId("default")).className).toContain("border-primary");
+    expect(screen.getByTestId(execModeTestId("auto")).className).not.toContain("border-primary");
+    expect(screen.getByText(/reviewer-mode-change-failed/)).toBeTruthy();
     expect(document.body.textContent).not.toContain("missing provider");
   });
 
@@ -1300,6 +1281,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
     // osToolSandbox=true so the component loads into the Windows consent state
     const api = installMockAveApi({ settings: { features: { osToolSandbox: overrides.togglesOff !== true } } });
+    Object.assign(ave.permission, { updateSecuritySettings: api.updateSettings });
     return { ave, updateSettings: api.updateSettings! };
   }
 
@@ -2588,22 +2570,17 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     warn.mockRestore();
   });
 
-  it("a reviewer dispatch slash-parse failure shows the localized reviewer error, not the parser text", async () => {
+  it("a host reviewer failure shows localized mode context without parser text", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
-    mock(api.permission.reviewerDispatch).mockImplementation(async (rawArgs: string) => {
-      if (rawArgs === "show") {
-        return reviewerResult("show", "disabled", "deny");
-      }
-      return { ok: false, error: "unknown subcommand 'llm' — expected show|mode|model" };
-    });
+    const detail = "unknown subcommand 'llm' — expected show|mode|model";
+    mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: detail });
     await renderPermissionsTab();
-    await act(async () => {
-      fireEvent.click(screen.getByTestId(execModeTestId("auto")));
-    });
-    expect(screen.getByText(t("permissionsTab.errorReviewerFallbackContext"))).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
+    expect(screen.getByText(`${t("permissionsTab.errorModeChangeFailed")} (reviewer-mode-change-failed)`)).toBeTruthy();
     expect(document.body.textContent).not.toContain("unknown subcommand");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("reviewer dispatch failed"), expect.stringContaining("unknown subcommand"), "");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("mode change failed"), "reviewer-mode-change-failed", detail);
+    expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
     warn.mockRestore();
   });
 
@@ -2874,6 +2851,8 @@ describe("PermissionsTab unified permission rules", () => {
     await waitFor(() => expect(screen.getByTestId("permissions-rule-pattern-input")).toBeVisible());
     fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: rule.pattern } });
     fireEvent.click(screen.getByTestId("permissions-rule-add"));
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("permissions-rule-confirm"));
     await waitFor(() => expect(screen.getByTestId("permissions-rules-table")).toHaveTextContent(rule.pattern));
     fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.revokeNamedRule", { pattern: rule.pattern }) }));
     await waitFor(() => expect(screen.queryByTestId("permissions-rules-table")).toBeNull());
@@ -2928,7 +2907,7 @@ describe("owner-away approval auto-skip", () => {
   it("shows unlimited by default and saves the chosen number of minutes", async () => {
     installApi([[]]);
     settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 0 } });
-    settingsApi().updateSettings.mockResolvedValue({ ok: true });
+    settingsApi().updateSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 7 } });
     await renderPermissionsTab();
     const input = screen.getByTestId("owner-away-auto-skip");
     expect(input).toHaveValue(0);
@@ -2952,6 +2931,54 @@ describe("owner-away approval auto-skip", () => {
     fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
     await waitFor(() => expect(settingsApi().updateSettings).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+  });
+
+  it.each(["-1", "1.5", "10081", ""])("refuses invalid minutes %s with a range message", async (draft) => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    expect(input.getAttribute("max")).toBe("10080");
+    fireEvent.change(input, { target: { value: draft } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(4));
+    expect(screen.getByTestId("owner-away-error")).toHaveTextContent(t("permissionsTab.ownerAwayInvalid", { max: 10080 }));
+    expect(settingsApi().updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("accepts a seven-day wait and reflects the host response", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 0 } });
+    settingsApi().updateSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 10080 } });
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("owner-away-auto-skip"), { target: { value: "10080" } });
+    fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(10080));
+    expect(settingsApi().updateSettings).toHaveBeenCalledExactlyOnceWith({ permissions: { ownerAwayAutoSkipMinutes: 10080 } });
+    expect(screen.queryByTestId("owner-away-error")).toBeNull();
+  });
+
+  it("normalizes an unchanged spelling without saving or reporting success", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    await renderPermissionsTab();
+    const input = screen.getByTestId("owner-away-auto-skip");
+    fireEvent.change(input, { target: { value: "0004" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect((screen.getByTestId("owner-away-auto-skip") as HTMLInputElement).value).toBe("4"));
+    expect(settingsApi().updateSettings).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("owner-away-error")).toBeNull();
+  });
+
+  it("renders the normalized number from the save response", async () => {
+    installApi([[]]);
+    settingsApi().getSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 4 } });
+    settingsApi().updateSettings.mockResolvedValue({ permissions: { ownerAwayAutoSkipMinutes: 8 } });
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("owner-away-auto-skip"), { target: { value: "7" } });
+    fireEvent.blur(screen.getByTestId("owner-away-auto-skip"));
+    await waitFor(() => expect(screen.getByTestId("owner-away-auto-skip")).toHaveValue(8));
+    expect(settingsApi().updateSettings).toHaveBeenCalledExactlyOnceWith({ permissions: { ownerAwayAutoSkipMinutes: 7 } });
   });
 });
 
@@ -3038,9 +3065,7 @@ describe("reviewer mode recovery", () => {
     });
     option.focus();
     fireEvent.keyDown(option, { key: "Enter" });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") })); });
-
-    expect(judgeSet).toHaveBeenCalledExactlyOnceWith({ model: { vendor: "claude", model: "available-reviewer" } });
+    await waitFor(() => expect(judgeSet).toHaveBeenCalledExactlyOnceWith({ model: { vendor: "claude", model: "available-reviewer" } }));
     expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
     expect(screen.getByTestId("reviewer-mode-fault")).toBeVisible();
     expect(screen.getByLabelText(t("permissionJudge.mode"))).toBeDisabled();
@@ -3068,5 +3093,166 @@ describe("reviewer mode recovery", () => {
     expect(document.body.textContent).not.toContain("private reviewer transport failure");
     expect(document.querySelector('[data-testid^="permissions-load-error"]')).toBeNull();
     expect(api.permission.setMode).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("PermissionsTab rule editor safeguards", () => {
+  it.each(["*", "mcp_*", "custom_?"])("requires confirmation before adding wildcard allow %s", async (pattern) => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: pattern } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain(t(pattern === "*" ? "permissionsTab.ruleAllowAllWarning" : "permissionsTab.ruleWildcardWarning"));
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-confirm")); });
+    expect(api.permission.addRule).toHaveBeenCalledWith(pattern, "allow");
+    expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
+  });
+
+  it("invalidates wildcard confirmation when the draft changes", async () => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    const input = screen.getByTestId("permissions-rule-pattern-input");
+    fireEvent.change(input, { target: { value: "mcp_*" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    fireEvent.change(input, { target: { value: "*" } });
+    expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-warning").textContent).toContain(t("permissionsTab.ruleAllowAllWarning"));
+  });
+
+  it("shows invalid patterns beside the input and preserves the draft", async () => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    const input = screen.getByTestId("permissions-rule-pattern-input");
+    fireEvent.change(input, { target: { value: "bad name!" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.rulePatternInvalid"));
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect((input as HTMLInputElement).value).toBe("bad name!");
+  });
+
+  it("marks broad persisted rules and explains duplicates before saving", async () => {
+    const api = installApi([[]]);
+    api.permission.listScopedRules.mockResolvedValue({ rules: [{ pattern: "mcp_*", action: "allow", scope: "user" }], errors: [] } as never);
+    await renderPermissionsTab();
+    expect(screen.getByTestId("permissions-rule-broad").textContent).toBe(t("permissionsTab.ruleBroad"));
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: "mcp_*" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).not.toHaveBeenCalled();
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.ruleDuplicate"));
+  });
+
+  it("offers Ask and saves it without an allow warning", async () => {
+    const api = installApi([[]]);
+    await renderPermissionsTab();
+    fireEvent.change(screen.getByTestId("permissions-rule-pattern-input"), { target: { value: "mcp_*" } });
+    fireEvent.click(screen.getByTestId("permissions-rule-action"));
+    fireEvent.click(screen.getByRole("option", { name: t("permissionsTab.actionAsk") }));
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(api.permission.addRule).toHaveBeenCalledWith("mcp_*", "ask");
+    expect(screen.queryByTestId("permissions-rule-warning")).toBeNull();
+  });
+
+  it("keeps a rejected command rule visible with an inline reason", async () => {
+    const api = installApi([[]]);
+    api.permission.addRule.mockResolvedValueOnce({ ok: false, error: "invalid-rule" } as never);
+    await renderPermissionsTab();
+    const input = screen.getByTestId("permissions-rule-pattern-input");
+    fireEvent.change(input, { target: { value: "Bash(" } });
+    await act(async () => { fireEvent.click(screen.getByTestId("permissions-rule-add")); });
+    expect(screen.getByTestId("permissions-rule-input-error").textContent).toBe(t("permissionsTab.rulePatternInvalid"));
+    expect((input as HTMLInputElement).value).toBe("Bash(");
+  });
+});
+
+
+describe("permission settings modified/reset adapters", () => {
+  async function renderEditor() {
+    const api = window.aveApi;
+    const rendered = render(<SettingsEditorProvider api={api} modifiedOnly><PermissionsTab /></SettingsEditorProvider>);
+    await screen.findByTestId("permissions-rule-pattern-input");
+    return rendered;
+  }
+
+  it("resets the execution mode to the canonical default through its permission channel", async () => {
+    const ave = installApi([[]]);
+    ave.permission.getMode.mockResolvedValue({ mode: "allow" });
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id="permissions.executionMode"]');
+      expect(found).toBeTruthy(); return requiredFixture(found);
+    });
+    expect(row.dataset.settingModified).toBe("true");
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(ave.permission.setMode).toHaveBeenCalledExactlyOnceWith("strict"));
+    await waitFor(() => expect(container.querySelector('[data-setting-registered="true"][data-setting-id="permissions.executionMode"]')).toBeNull());
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+    expect(screen.getByTestId(execModeTestId("strict")).className).toContain("border-primary");
+  });
+
+  it("removes only the selected user rule when its modified row is reset", async () => {
+    const ave = installApi([[]]);
+    const rule = { pattern: "custom_tool", action: "allow" as const, scope: "user" as const };
+    let remaining = [rule];
+    ave.permission.listScopedRules.mockImplementation(async () => ({ rules: remaining, errors: [] }) as never);
+    ave.permission.removeScopedRule.mockImplementation(async () => { remaining = []; return { ok: true }; });
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id^="permissions.rules."]');
+      expect(found).toHaveTextContent(rule.pattern); return requiredFixture(found);
+    });
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(ave.permission.removeScopedRule).toHaveBeenCalledExactlyOnceWith(rule));
+    await waitFor(() => expect(container.querySelector('[data-setting-registered="true"][data-setting-id^="permissions.rules."]')).toBeNull());
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps a refused rule reset marked modified and reports the failed action", async () => {
+    const ave = installApi([[]]);
+    ave.permission.listScopedRules.mockResolvedValue({ rules: [{ pattern: "custom_tool", action: "allow", scope: "user" }], errors: [] } as never);
+    ave.permission.removeScopedRule.mockResolvedValue({ ok: false, error: "remove-failed" } as never);
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id^="permissions.rules."]');
+      expect(found).toBeTruthy(); return requiredFixture(found);
+    });
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(row.closest('[data-settings-actions]')).toHaveTextContent(t("settingsEditor.actionFailed")));
+    expect(row.dataset.settingModified).toBe("true");
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("shows an administrator policy as modified with a disabled reset and its reason", async () => {
+    const ave = installApi([[]]);
+    ave.policy.get.mockResolvedValue(policyGetPayload({ requireExplicitApproval: false, managed: false, source: "admin" }));
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id="policy.requireExplicitApproval"]');
+      expect(found).toBeTruthy(); return requiredFixture(found);
+    });
+    expect(row.querySelector('button')).toBeDisabled();
+    expect(row).toHaveTextContent(t("permissionsTab.adminManagedTitle"));
+    expect(ave.policy.set).not.toHaveBeenCalled();
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("resets a user directory addition through the owning directory command", async () => {
+    const ave = installApi([[]]);
+    ave.permission.dirDispatch.mockImplementation(async (...[command]: unknown[]) => command === "list"
+      ? { ok: true, verb: "list", defaults: ["/workspace/default"], userAdditions: ["/workspace/extra"], effective: ["/workspace/default", "/workspace/extra"] } as never
+      : { ok: true, verb: "deny", persisted: [] } as never);
+    const { container } = await renderEditor();
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-setting-registered="true"][data-setting-id^="permissions.directories."]');
+      expect(found).toHaveTextContent("/workspace/extra"); return requiredFixture(found);
+    });
+    fireEvent.click(requiredFixture(row.querySelector('button')));
+    await waitFor(() => expect(ave.permission.dirDispatch).toHaveBeenCalledWith("deny /workspace/extra"));
+    await waitFor(() => expect(container.querySelector('[data-setting-registered="true"][data-setting-id^="permissions.directories."]')).toBeNull());
+    expect(window.aveApi.updateSettings).not.toHaveBeenCalled();
   });
 });

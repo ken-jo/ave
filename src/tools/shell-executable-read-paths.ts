@@ -2,7 +2,7 @@ import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { basename, delimiter, isAbsolute, sep } from "node:path";
 
-import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators, isSensitivePath } from "../permissions/sensitive-paths.js";
+import { caseFoldForMatch, isSensitivePath } from "../permissions/sensitive-paths.js";
 import { staticShellWord } from "../shared/shell-analysis.js";
 import { stripCommandPath } from "../shared/shell-effective-command.js";
 import { inspectShellExecution, type ShellCommandEvent, type ShellExecutionFacts } from "../shared/shell-execution.js";
@@ -34,8 +34,8 @@ function readableExecutable(path: ExecutablePath): boolean {
   // Transport pattern bytes cannot express exact grants, even when shell-quoted.
   if (/[?*\[\]]/.test(path.lexical) || /[?*\[\]]/.test(path.real)) return false;
   // Canonicalizing the lexical name first could hide a sensitive symlink name.
-  return !isSensitivePath(caseFoldForMatch(foldCanonicalPathSeparators(path.lexical)))
-    && !isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(path.real)));
+  return !isSensitivePath(path.lexical)
+    && !isSensitivePath(path.real);
 }
 
 function executablePath(candidate: string): ExecutablePath | undefined {

@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.ts";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { SettingsEditorProvider, _unregisteredSettingsControlsForTest } from "../../context/SettingsEditorContext.js";
+import { SettingsSection } from "../PageShell.js";
+import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { UpstreamProxySettings } from "../permissions/UpstreamProxySettings.js";
 import type { UpstreamProxyPatch, UpstreamProxyView } from "../../../../shared/upstream-proxy.js";
 
@@ -98,5 +101,79 @@ describe("UpstreamProxySettings", () => {
     expect((await screen.findByTestId("upstream-proxy-effective-refusal")).textContent)
       .toBe("Connections would be refused: the proxy in ALL_PROXY is a SOCKS proxy");
     expect(screen.getByTestId("upstream-proxy-effective-source").textContent).toBe("From the environment variable ALL_PROXY.");
+  });
+});
+
+
+it("rejects a success response without the saved proxy view and never displays Saved", async () => {
+  const previousLocale = getLocale(); setLocale("en");
+  try {
+    const writer = vi.fn(async () => ({ ok: true }));
+    render(<UpstreamProxySettings reader={async () => view({ settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: false } })} writer={writer} />);
+    await screen.findByTestId("upstream-proxy-manual");
+    fireEvent.change(screen.getByTestId("upstream-proxy-url"), { target: { value: "http://other.test:3128" } });
+    fireEvent.click(screen.getByTestId("upstream-proxy-save"));
+    expect(await screen.findByTestId("upstream-proxy-error")).toBeVisible();
+    expect(screen.queryByTestId("upstream-proxy-notice")).toBeNull();
+    expect(writer).toHaveBeenCalledExactlyOnceWith({ mode: "manual", manualUrl: "http://other.test:3128", bypass: "" });
+  } finally { setLocale(previousLocale); }
+});
+
+
+describe("proxy settings reset adapters", () => {
+  function mountEditor(initial: UpstreamProxyView, modifiedOnly = true) {
+    const { api } = makeMockAveApi();
+    let stored = initial;
+    const reader = async () => stored;
+    const writer = vi.fn(async (patch: UpstreamProxyPatch) => {
+      const { clearCredentials, ...settingsPatch } = patch;
+      stored = { ...stored, settings: { ...stored.settings, ...settingsPatch }, hasCredentials: clearCredentials ? false : stored.hasCredentials };
+      return { ok: true, view: stored };
+    });
+    const rendered = render(<SettingsEditorProvider api={api as never} modifiedOnly={modifiedOnly}><SettingsSection data-settings-section="permissions-os-sandbox" title="Sandbox"><UpstreamProxySettings reader={reader} writer={writer} /></SettingsSection></SettingsEditorProvider>);
+    return { ...rendered, api, writer };
+  }
+
+  async function resetRow(container: HTMLElement, id: string) {
+    return waitFor(() => {
+      const found = container.querySelector<HTMLElement>(`[data-setting-registered="true"][data-setting-id="${id}"]`);
+      expect(found).not.toBeNull();
+      if (found === null) throw new Error(`Setting reset row is missing: ${id}`);
+      return found;
+    });
+  }
+
+  it("resets proxy mode and credential presence through their permission writer", async () => {
+    const previousLocale = getLocale(); setLocale("en");
+    try {
+      const { container, writer, api } = mountEditor(view({ settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: false }, hasCredentials: true }));
+      const mode = await resetRow(container, "upstreamProxy.mode");
+      fireEvent.click(within(mode).getByRole("button", { name: t("settingsEditor.resetLabel", { label: t("upstreamProxySettings.modeAriaLabel") }) }));
+      await waitFor(() => expect(writer).toHaveBeenCalledExactlyOnceWith({ mode: "system" }));
+      const credentials = await resetRow(container, "upstreamProxy.manualCredentials");
+      fireEvent.click(within(credentials).getByRole("button", { name: t("settingsEditor.resetLabel", { label: t("upstreamProxySettings.credentialsStored") }) }));
+      await waitFor(() => expect(writer).toHaveBeenLastCalledWith({ clearCredentials: true }));
+      await waitFor(() => expect(container.querySelector('[data-setting-registered="true"][data-setting-id="upstreamProxy.manualCredentials"]')).toBeNull());
+      expect(api.updateSettings).not.toHaveBeenCalled();
+    } finally { setLocale(previousLocale); }
+  });
+
+  it("preserves a URL draft while resetting bypass and explains a required URL reset", async () => {
+    const previousLocale = getLocale(); setLocale("en");
+    try {
+      const { container, writer, api } = mountEditor(view({ settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: ".internal.test", resolvesNames: false } }), false);
+      await screen.findByTestId("upstream-proxy-url");
+      fireEvent.change(screen.getByTestId("upstream-proxy-url"), { target: { value: "http://synthetic:throwaway@other.test:3128" } });
+      const url = await resetRow(container, "upstreamProxy.manualUrl");
+      expect(url.querySelector('button')).toBeDisabled();
+      expect(url).toHaveTextContent(t("upstreamProxySettings.switchModeBeforeReset"));
+      const bypass = await resetRow(container, "upstreamProxy.bypass");
+      fireEvent.click(within(bypass).getByRole("button", { name: t("settingsEditor.resetLabel", { label: t("upstreamProxySettings.bypassLabel") }) }));
+      await waitFor(() => expect(writer).toHaveBeenCalledExactlyOnceWith({ bypass: "" }));
+      expect(screen.getByTestId("upstream-proxy-url")).toHaveValue("http://synthetic:throwaway@other.test:3128");
+      expect(screen.getByTestId("upstream-proxy-bypass")).toHaveValue("");
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      expect(_unregisteredSettingsControlsForTest(container)).toEqual([]);
+    } finally { setLocale(previousLocale); }
   });
 });

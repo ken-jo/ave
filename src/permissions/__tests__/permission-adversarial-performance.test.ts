@@ -5,10 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
-import { calibratePermissionDecisionBudget } from "../../__tests__/support/permission-decision-cost.js";
+import { countDecisionWork, decisionWorkSummary as json, expectLinearDecisionWork, expectRefusedAtAnalysisCap } from "../../__tests__/support/permission-decision-cost.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
-
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 let cwd: string;
@@ -25,6 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   __resetSessionStoreForTest();
   vi.unstubAllEnvs();
   rmSync(cwd, { recursive: true, force: true });
@@ -40,30 +40,32 @@ function distinctRelativePaths(length: number, radix: number, nested = false): s
   return command.slice(0, length);
 }
 
-const TIMING_CASES = [
+const WORK_CASES = [
   ...(["bash", "powershell"] as const).flatMap((dialect) =>
     [false, true].flatMap((runsSandboxed) => [10, 36].map((radix) => ({ dialect, runsSandboxed, radix, nested: false, length: runsSandboxed ? 7_999 : 1_999 }))),
   ),
   ...[false, true].map((runsSandboxed) => ({ dialect: "bash" as const, runsSandboxed, radix: 36, nested: true, length: runsSandboxed ? 7_999 : 1_999 })),
 ];
 
-describe("adversarial complete manager timing", () => {
+describe("adversarial complete manager work", () => {
   it("visits nested PowerShell script blocks without repeated subtree analysis", () => {
     const depth = 14;
     const command = "& { ".repeat(depth) + "Write-Output ready" + " }".repeat(depth);
-    const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
-      checkShellPermission(manager, cwd, SESSION_ID, `& { Write-Output ready${iteration} }`, "powershell", true));
-    const samples: number[] = [];
     const results = [];
+    const counted = [];
     for (let observation = 0; observation < 3; observation += 1) {
-      const start = performance.now();
-      results.push(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", true));
-      samples.push(performance.now() - start);
+      const { result, work } = countDecisionWork(() => checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", true));
+      results.push(result);
+      counted.push(work);
     }
-    const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`permission nested timing ${JSON.stringify({ depth, chars: command.length, samples, median, referenceMs, budgetMs, ratio: median / referenceMs, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
+    const work = counted[0]!;
+    process.stdout.write(`permission nested work ${JSON.stringify({ depth, chars: command.length, work: json(work), results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
     for (const result of results) expect(result).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
-    expect(median).toBeLessThan(budgetMs);
+    // Repeating the decision repeats exactly the same work: nothing accumulates across decisions.
+    for (const repeated of counted) expect(json(repeated)).toEqual(json(work));
+    // The command is parsed once, and each of its script blocks is analyzed once rather than once per enclosing block.
+    expect(work.get("parsePowerShellCommand")).toEqual({ calls: 1, chars: command.length });
+    for (const name of ["inspectPosixShellPermissionPaths", "parseShellSyntax"]) expect(work.get(name)?.calls, name).toBeLessThanOrEqual(depth + 1);
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", true);
@@ -71,30 +73,36 @@ describe("adversarial complete manager timing", () => {
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });
 
-  it.each(TIMING_CASES)("$dialect sandboxed=$runsSandboxed radix=$radix nested=$nested", ({ dialect, runsSandboxed, radix, nested, length }) => {
+  it.each(WORK_CASES)("$dialect sandboxed=$runsSandboxed radix=$radix nested=$nested", ({ dialect, runsSandboxed, radix, nested, length }) => {
     const command = distinctRelativePaths(length, radix, nested);
     expect(command.length).toBe(length);
     const distinctPathRecords = command.match(/\.\/p[0-9a-z]+/gu)?.length ?? 0;
     if (runsSandboxed) expect(distinctPathRecords).toBeGreaterThan(MAX_SHELL_ANALYSIS_TOKENS);
     else expect(distinctPathRecords).toBeLessThan(MAX_SHELL_ANALYSIS_TOKENS);
-    const { referenceMs, budgetMs } = calibratePermissionDecisionBudget((iteration) =>
-      checkShellPermission(manager, cwd, SESSION_ID, `printf %s ./p${iteration.toString(36)}`, dialect, runsSandboxed));
-    const samples: number[] = [];
+    // The same shape at a quarter of the length, in the same lane, for the growth comparison of a fully analyzed decision.
+    const smallCommand = distinctRelativePaths(Math.floor(length / 4), radix, nested);
+    const small = runsSandboxed ? undefined : countDecisionWork(() => checkShellPermission(manager, cwd, SESSION_ID, smallCommand, dialect, runsSandboxed));
     const results = [];
+    const counted = [];
     for (let observation = 0; observation < 3; observation += 1) {
-      const start = performance.now();
-      const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-      samples.push(performance.now() - start);
+      const { result, work } = countDecisionWork(() => checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed));
       results.push(result);
+      counted.push(work);
     }
-    const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`permission adversarial timing ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, referenceMs, budgetMs, ratio: median / referenceMs, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
+    const work = counted[0]!;
+    process.stdout.write(`permission adversarial work ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, smallChars: small ? smallCommand.length : undefined, work: json(work), smallWork: small ? json(small.work) : undefined, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
     // These generated long inputs contain more than the complete evidence token budget.
     const expected = runsSandboxed
       ? { decision: "deny", reasonCode: "shell-analysis-limit" }
       : { decision: "ask", reasonCode: "shell-approval" };
     for (const result of results) expect(result).toMatchObject(expected);
-    expect(median).toBeLessThan(budgetMs);
+    for (const repeated of counted) expect(json(repeated)).toEqual(json(work));
+    if (small) {
+      expect(small.result).toMatchObject(expected);
+      expectLinearDecisionWork(small.work, work, command.length / smallCommand.length);
+    } else {
+      expectRefusedAtAnalysisCap(work, command);
+    }
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);

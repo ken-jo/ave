@@ -28,16 +28,17 @@
  *   - Ave-internal sensitive paths: secrets/, audit*, recently-denied,
  *     hooks/ (relocated to ~/.config/ave/hooks). Saved sessions allow reads only.
  */
-import { existsSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, type BigIntStats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, sep, resolve as pathResolve, relative as pathRelative, posix } from "node:path";
+import { sameFileIdentity } from "../lib/file-identity.js";
 import { globMatch } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
 import type { PathEffect } from "./allowed-directories.js";
 import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { compileSensitivePathGlob } from "./sensitive-path-glob.js";
-import { isWindowsNetworkOrDevicePath } from "../shared/shell-native-path.js";
+import { isWindowsNetworkOrDevicePath, modelShellPath } from "../shared/shell-native-path.js";
 import { verifyLocalFilesystemChain } from "../shared/shell-filesystem-path.js";
 
 // Bounded walk-up depth used by canonicalizePathForMatch when the input path does not yet exist on disk. We try `realpathSync.native` on progressively higher ancestors until we find one that exists, then compose `<resolvedAncestor>/<remainder>`. Capped to defend against adversarial inputs (deep paths, symlink cycles).
@@ -263,6 +264,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
     why: "reviewer cache, denial history, permission state",
   },
   { anchor: "ave-home", segments: ["audit"], kind: "dir", why: "audit log directory (self-tampering)" },
+  { anchor: "ave-home", segments: ["diff-cache"], kind: "dir", why: "stored write diffs: changed and surrounding lines of files, any session's, kept for the person's diff cards only" },
   {
     anchor: "ave-home",
     segments: ["audit.log"],
@@ -272,7 +274,9 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   },
   { anchor: "ave-home", segments: ["sessions"], kind: "dir", access: "read-only", why: "saved conversation integrity" },
   { anchor: "ave-home", segments: ["host-runtime"], kind: "dir", why: "process ownership lock (replacement creates a second writer)" },
+  { anchor: "ave-home", segments: ["browser-downloads"], kind: "dir", why: "browser downloads staged until the user picks where to save them (host-only; a page's file, not the agent's)" },
   { anchor: "ave-home", segments: ["routine"], kind: "dir", why: "routine session history" },
+  { anchor: "ave-home", segments: ["terminal-state"], kind: "dir", why: "host terminal output kept for restoring a tab: the user's own screen, never an agent's to read" },
   {
     anchor: "ave-home",
     segments: ["plugins", "auth-partitions.json"],
@@ -343,6 +347,21 @@ export function sensitiveEntryOnSandboxFloor(entry: SensitiveEntry, platform: No
   return platform !== "darwin" || entry.platform === undefined;
 }
 
+// User-authored secret files, matched wherever they sit: reading one asks (the tree's secret-file read edge), it is never admission-denied.
+// Every `.env.*` variant counts unless its exact name is a known non-secret one (see ENV_TEMPLATE_NAMES).
+// Private keys are matched by their conventional names and by the `.pem` / `.key` extensions; public halves (`id_*.pub`) are not secrets.
+const USER_SECRET_FILE_PATTERNS: readonly string[] = Object.freeze([
+  "**/.env",
+  "**/.env.*",
+  // Catches a private key even when dropped outside `.ssh/` (e.g. /tmp staging, ~/Downloads); `~/.ssh` itself is a table row.
+  "**/id_rsa",
+  "**/id_dsa",
+  "**/id_ed25519",
+  "**/id_ecdsa",
+  "**/*.pem",
+  "**/*.key",
+]);
+
 // Patterns use minimatch-compatible glob syntax: double-star — matches any path (including path separators) single-star — matches any single path segment Ordering: credential store patterns first, then OS expansion, then Ave-specific.
 export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   // ── Projected from SENSITIVE_PATH_ENTRIES ───────────
@@ -380,15 +399,7 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "/proc/*/task/*/environ",
   "/proc/*/task/*/mem",
   "/proc/*/task/*/fd/**",
-  "**/.env",
-  "**/.env.*",
-  // Generic SSH key globs — catches id_rsa / id_ed25519 / id_ecdsa even if dropped outside `.ssh/` (e.g. /tmp staging, ~/Downloads).
-  "**/id_rsa",
-  "**/id_rsa.pub",
-  "**/id_ed25519",
-  "**/id_ed25519.pub",
-  "**/id_ecdsa",
-  "**/id_ecdsa.pub",
+  ...USER_SECRET_FILE_PATTERNS,
   "**/ave-secrets.json", // shallow sibling form (not under the Ave home root)
   // 1Password group containers under any team-id prefix (the floor pins the
   // published ids as table rows).
@@ -401,11 +412,14 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/.config/Ave/**",
 ]);
 
-// Credential stores and the process ownership lock retain an unconditional admission deny.
+// Credential stores, the process ownership lock, kept host terminal output and the stored write diffs retain an
+// unconditional admission deny. The diffs hold lines of whatever files were changed, a secret file's among them, from
+// every session; only the host reads them, for the person's diff cards, so no tool is ever let in, whatever the mode.
 // User-authored secret files and configuration are classified separately.
 function isAdmissionEntry(entry: SensitiveEntry): boolean {
   const [first, second, third] = entry.segments;
-  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime"].includes(first!)
+  // `terminal-state` is the user's own terminal screen kept for restoring a tab: no rule, remembered grant, reviewer or mode opens it to a tool.
+  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime", "terminal-state", "diff-cache", "browser-downloads"].includes(first!)
     || (first === "plugins" && second === "auth-partitions.json");
   if (entry.anchor === "root") return second === "shadow";
   if (["Library", "AppData", ".mozilla", ".thunderbird", "snap", ".var", ".password-store"].includes(first!)) return true;
@@ -418,7 +432,7 @@ const ADMISSION_PATH_ENTRIES = SENSITIVE_PATH_ENTRIES.filter(isAdmissionEntry);
 const ADMISSION_PATH_PATTERNS = new Set([
   ...sensitiveEntryGlobs(ADMISSION_PATH_ENTRIES),
   ...SENSITIVE_PATH_PATTERNS.filter((pattern) => !sensitiveEntryGlobs().includes(pattern)
-    && !["**/.env", "**/.env.*", "**/id_rsa", "**/id_rsa.pub", "**/id_ed25519", "**/id_ed25519.pub", "**/id_ecdsa", "**/id_ecdsa.pub"].includes(pattern)),
+    && !USER_SECRET_FILE_PATTERNS.includes(pattern)),
 ]);
 
 /** Match host credential admission patterns against an already normalized absolute spelling. */
@@ -426,26 +440,30 @@ export function isAdmissionDeniedPath(absPath: string, effect: PathEffect = "wri
   return absPath ? createAdmissionDeniedPathMatcher(effect, undefined, canonicalize)(absPath) : null;
 }
 
-function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
+export function createAdmissionDeniedPathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
   return createPathSensitivityMatcher(effect, spend, canonicalize, true);
 }
 
 // Public helpers
 
+type PathResolutionFacts = Parameters<typeof verifyLocalFilesystemChain>[3];
+
 // Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
 // `facts` shares a decision-scoped cache across the Step 1 chain walk only, so the common Ave-home prefix is walked once per decision; it never feeds Step 2, so the returned canonical is byte-identical to the uncached call.
-export function canonicalizePathForMatch(rawPath: string, spend?: () => void, facts?: {
-  knownPath: (path: string) => { canonical: string; missing: boolean } | undefined;
-  onLocalPath: (path: string, canonical: string, missing: boolean) => void;
-}): string {
-  if (isWindowsNetworkOrDevicePath(rawPath)) return foldCanonicalPathSeparators(rawPath);
+export function canonicalizePathForMatch(rawPath: string, spend?: () => void, facts?: PathResolutionFacts): string {
+  return foldCanonicalPathSeparators(resolvePathForPolicy(rawPath, spend, facts));
+}
+
+/** Resolve a policy operand while retaining the stored spelling needed for content inspection. */
+export function resolvePathForPolicy(rawPath: string, spend?: () => void, facts?: PathResolutionFacts): string {
+  if (isWindowsNetworkOrDevicePath(rawPath)) return rawPath;
   let canonical = pathResolve(rawPath);
   try { verifyLocalFilesystemChain(canonical, process.platform, MAX_WALK_UP, facts); }
   catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ENETWORKSHAREPATH") throw error;
     // Matching stays lexical for opaque network identities, as for direct operands.
     // Physical shell resolution separately propagates the authority error.
-    return foldCanonicalPathSeparators(canonical);
+    return canonical;
   }
 
   // Step 2 — realpath walk-up. Try the path itself first; if missing, walk up to the nearest existing ancestor and compose the unresolved tail.
@@ -477,7 +495,7 @@ export function canonicalizePathForMatch(rawPath: string, spend?: () => void, fa
     }
   }
 
-  return foldCanonicalPathSeparators(canonical);
+  return canonical;
 }
 
 // One decision observes each ancestor once. A missing directory cannot contain an
@@ -565,7 +583,7 @@ export const PROTECTED_ROOT_ENTRIES = [
   ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json",
 ] as const;
 
-export function protectedControlEntryFor(path: string): string | undefined {
+export function protectedControlEntryFor(path: string, canonicalize: (path: string) => string = canonicalizePathForMatch, options: { inspectHostFiles?: boolean } = {}): string | undefined {
   const normalized = normalizePath(path).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
   const segments = normalized.split("/").filter(Boolean);
   const entry = PROTECTED_ROOT_ENTRIES.find((entry) => {
@@ -573,11 +591,17 @@ export function protectedControlEntryFor(path: string): string | undefined {
     return segments.some((_, index) => parts.every((part, offset) => segments[index + offset] === part));
   });
   if (entry) return entry;
-  const homes = [pathResolve(aveHome()), canonicalizePathForMatch(aveHome()), pathResolve(homedir(), ".config", "ave")]
+  if (options.inspectHostFiles === false) {
+    if (segments.includes(".ave")) return "application-home";
+    if ([...runtimeSettingsScopes.values()].some(targets => [...targets].some(target =>
+      normalizePath(target).normalize("NFC").toLowerCase() === normalized))) return "runtime-settings-file";
+    return undefined;
+  }
+  const homes = [pathResolve(aveHome()), canonicalize(aveHome()), pathResolve(homedir(), ".config", "ave")]
     .map((home) => normalizePath(home).normalize("NFC").toLowerCase().replace(/\/+$/u, ""));
   // The exception keys on the platform's case rule and never applies to an uncollapsed `..` spelling.
   const folded = caseFoldForMatch(normalizePath(path).normalize("NFC")).replace(/\/+$/u, "");
-  const workspace = segments.includes("..") ? undefined : [pathResolve(aveHome()), canonicalizePathForMatch(aveHome())]
+  const workspace = segments.includes("..") ? undefined : [pathResolve(aveHome()), canonicalize(aveHome())]
     .map((home) => caseFoldForMatch(normalizePath(home).normalize("NFC")).replace(/\/+$/u, "") + "/workspace")
     .find((base) => folded === base || folded.startsWith(base + "/"));
   if (!workspace && homes.some((base) => normalized === base || normalized.startsWith(base + "/"))) return "application-home";
@@ -607,32 +631,80 @@ export interface PermissionPathEvidence {
   deleteIntent?: true;
 }
 
-/** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
-export function createPermissionPathEvidence(projectRoot: string, canonicalize?: (path: string) => string): (path: { lexical: string; canonical: string; effect: PathEffect }) => PermissionPathEvidence {
+/**
+ * Whether a physical target lies in the project. A root reached through a link (macOS `/tmp/x` for `/private/tmp/x`) names
+ * the same folder as its real path, so the target is inside when it lies under either spelling. A resolved path never begins
+ * with a link's spelling, so the given spelling can only contain a target that was not resolved. The real root is resolved
+ * once, and only when the given spelling does not already contain the target.
+ */
+export function createProjectMembership(projectRoot: string, canonicalize: (path: string) => string = canonicalizePathForMatch): (canonical: string) => boolean {
   const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
+  const within = (value: string, base: string) => value === base || value.startsWith(`${base}/`);
+  const root = normalize(projectRoot);
+  // A current-drive or drive-relative root has no independent filesystem identity.
+  // Resolving it against the host's drive must not turn it into a project alias.
+  const hasNativeRoot = process.platform !== "win32" || modelShellPath(projectRoot, { dialect: "native" }).nativePath !== undefined;
+  let realRoot: string | undefined;
+  return (canonical) => {
+    if (!hasNativeRoot) return false;
+    const target = normalize(canonical);
+    if (within(target, root)) return true;
+    realRoot ??= normalize(canonicalize(projectRoot));
+    return within(target, realRoot);
+  };
+}
+
+/** Snapshot matcher roots once for a decision, while retaining every lexical/canonical target. */
+export function createPermissionPathEvidence(
+  projectRoot: string,
+  canonicalize?: (path: string) => string,
+  options: { inspectHostFiles?: boolean; resolveNativePath?: (path: string) => string } = {},
+): (path: { lexical: string; canonical: string; runtimePath?: string; effect: PathEffect }) => PermissionPathEvidence {
+  const normalize = (value: string) => caseFoldForMatch(normalizePath(value)).replace(/\/+$/u, "");
+  const inspectHostFiles = options.inspectHostFiles !== false;
+  const matchingCanonicalize = inspectHostFiles ? canonicalize ?? canonicalizePathForMatch : foldCanonicalPathSeparators;
+  const requiresInspection = createKeyMaterialPathMatcher();
   const root = normalize(projectRoot);
   const within = (value: string) => value === root || value.startsWith(root + "/");
+  const inProject = inspectHostFiles ? createProjectMembership(projectRoot, matchingCanonicalize) : (target: string) => within(normalize(target));
   const matchers = new Map<PathEffect, { secret: (path: string) => string | null; admission: (path: string) => string | null }>();
   const observations = new Map<string, Pick<PermissionPathEvidence, "secret" | "admissionDenial" | "protectedControl" | "projectEscape">>();
   return path => {
     const lexical = normalize(path.lexical);
     const canonical = normalize(path.canonical);
-    const key = JSON.stringify([path.effect, lexical, canonical]);
-    const previous = observations.get(key);
-    if (previous) return { ...path, ...previous };
+    const native = inspectHostFiles && (requiresInspection(path.lexical) || requiresInspection(path.canonical))
+      ? (options.resolveNativePath ?? resolvePathForPolicy)(path.lexical) : undefined;
+    const sealedNative = native === undefined ? undefined : path.runtimePath;
+    if (native !== undefined && (normalize(foldCanonicalPathSeparators(native)) !== normalize(foldCanonicalPathSeparators(path.canonical))
+      || sealedNative !== undefined && native !== sealedNative)) {
+      throw new Error("Permission path identity changed");
+    }
+    const key = JSON.stringify([path.effect, path.lexical, path.canonical, native]);
+    const previous = native === undefined ? observations.get(key) : undefined;
+    if (previous) return { lexical: path.lexical, canonical: path.canonical, effect: path.effect, ...previous };
     let matcher = matchers.get(path.effect);
     if (!matcher) {
-      matcher = { secret: createSensitivePathMatcher(path.effect, undefined, canonicalize), admission: createAdmissionDeniedPathMatcher(path.effect, undefined, canonicalize) };
+      matcher = {
+        secret: createSensitivePathMatcher(path.effect, undefined, matchingCanonicalize, { inspectKeyMaterial: inspectHostFiles }),
+        admission: createPathSensitivityMatcher(path.effect, undefined, matchingCanonicalize, true, "agent", undefined, 0, undefined, { inspectKeyMaterial: inspectHostFiles }),
+      };
       matchers.set(path.effect, matcher);
     }
+    // A content lookup binds the lexical name and resolved target to the same verified native operand. Ordinary name
+    // evidence still consumes the frozen matching keys without another filesystem resolution.
+    const secretMatcher = native === undefined ? matcher.secret
+      : createPathSensitivityMatcher(path.effect, undefined, matchingCanonicalize, false, "agent", undefined, 0, sealedNative ?? native);
+    const secretLexical = native === undefined ? lexical : path.lexical;
+    const secretCanonical = canonical;
     const observation = {
-      secret: matcher.secret(lexical) ?? (canonical === lexical ? null : matcher.secret(canonical)),
+      secret: secretMatcher(secretLexical) ?? (secretCanonical === secretLexical ? null : secretMatcher(secretCanonical)),
       admissionDenial: matcher.admission(lexical) ?? (canonical === lexical ? null : matcher.admission(canonical)),
-      protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical) ?? protectedControlEntryFor(canonical) : undefined,
-      projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !within(canonical),
+      protectedControl: path.effect === "write" ? protectedControlEntryFor(lexical, matchingCanonicalize, { inspectHostFiles }) ?? protectedControlEntryFor(canonical, matchingCanonicalize, { inspectHostFiles }) : undefined,
+      projectEscape: (within(lexical) || lexical.split("/").includes("..")) && !inProject(canonical),
     };
-    observations.set(key, observation);
-    return { ...path, ...observation };
+    // Content and inode can change at an unchanged native name; only name-based evidence is reusable.
+    if (native === undefined) observations.set(key, observation);
+    return { lexical: path.lexical, canonical: path.canonical, effect: path.effect, ...observation };
   };
 }
 
@@ -641,12 +713,13 @@ export function createPermissionPathEvidence(projectRoot: string, canonicalize?:
 export function criticalDeleteTargetFor(
   path: { lexical: string; canonical: string },
   projectRoots: readonly string[],
+  options: { inspectHostFiles?: boolean } = {},
 ): string | undefined {
   const normalize = (value: string) => {
     const normalized = caseFoldForMatch(posix.normalize(normalizePath(value))).replace(/\/+$/u, "");
     return normalized || "/";
   };
-  const roots = [homedir(), canonicalizePathForMatch(homedir()), ...projectRoots].map(normalize);
+  const roots = [...(options.inspectHostFiles === false ? [] : [homedir(), canonicalizePathForMatch(homedir())]), ...projectRoots].map(normalize);
   for (const value of [path.lexical, path.canonical]) {
     const target = normalize(value);
     if (target === "/" || /^[a-z]:$/i.test(target) || /^\/\/[^/]+\/[^/]+$/u.test(normalizePath(value).replace(/\/+$/u, ""))) return value;
@@ -656,8 +729,11 @@ export function criticalDeleteTargetFor(
 }
 
 // Returns the path-policy tuple `[path, path + "/"]` used by the underlying glob match pass. Exposed for tests and for callers that want to run custom pattern lists against the same normalization. Example: policyMatchPaths("/home/example/.aws") → ["/home/example/.aws", "/home/example/.aws/"]
+// Names are matched in NFC, as canonical paths are spelled, whatever normalization the caller's spelling used; the tuple is
+// for matching only, and a path is resolved in the caller's own spelling.
 export function policyMatchPaths(filePath: string): readonly string[] {
-  const normalized = normalizePath(filePath);
+  const slashed = normalizePath(filePath);
+  const normalized = NON_ASCII.test(slashed) ? slashed.normalize("NFC") : slashed;
   if (normalized.endsWith("/")) {
     return Object.freeze([normalized.slice(0, -1), normalized]);
   }
@@ -751,9 +827,28 @@ export function createSensitiveLocationMatcher(canonicalize: (path: string) => s
   };
 }
 
+/**
+ * Who a key-extension file (`*.pem`, `*.key`) is judged for, where the host may look inside it.
+ *   "agent"  a file whose content was not seen to hold no key counts as one: a read the agent asks for is fail-closed.
+ *   "person" only a file seen to hold a private-key header counts: what the person sees in the folder view, drops on a
+ *            chat or opens in another program themselves is hidden or refused only for a confirmed key, so a large
+ *            presentation document stays theirs to use. Where the host may not look, the name decides for both.
+ */
+export type KeyMaterialAudience = "agent" | "person";
+
 /** Match ordinary secret evidence, including host stores, against a normalized absolute spelling. */
-export function isSensitivePath(absPath: string, effect: PathEffect = "write"): string | null {
-  return absPath ? createSensitivePathMatcher(effect)(absPath) : null;
+export function isSensitivePath(absPath: string, effect: PathEffect = "write", audience: KeyMaterialAudience = "agent"): string | null {
+  return absPath ? createPathSensitivityMatcher(effect, undefined, canonicalizePathForMatch, false, audience)(absPath) : null;
+}
+
+/**
+ * The agent's read of exactly `bytes`, from the start of the file at `absPath` and about to be handed
+ * on: the name rules as for `isSensitivePath(absPath, "read")`, and for a key-extension name the content rules applied to
+ * these bytes instead of to whatever the path holds now. `size` is the file's full size (by default these bytes are the
+ * whole file); a partial read cannot clear a key-extension name.
+ */
+export function isSensitiveContent(absPath: string, bytes: Buffer, size = bytes.length): string | null {
+  return absPath ? createPathSensitivityMatcher("read", undefined, canonicalizePathForMatch, false, "agent", bytes, size)(absPath) : null;
 }
 
 // Snapshot policy roots and compiled globs once for one permission decision.
@@ -771,11 +866,136 @@ interface SensitivePatternIndex {
   folded: Map<string, number[]>;
 }
 const sensitivePatternIndexes = new Map<string, SensitivePatternIndex>();
-const ENV_TEMPLATE_NAMES: ReadonlySet<string> = new Set([".env.example", ".env.sample", ".env.template", ".env.dist"]);
+// `.env.*` names that hold no secrets by convention: templates, and `.env.test`, which is committed test defaults (its secret-bearing sibling `.env.test.local` still asks).
+const ENV_TEMPLATE_NAMES: ReadonlySet<string> = new Set([".env.example", ".env.sample", ".env.template", ".env.dist", ".env.test"]);
 
 function isEnvironmentTemplatePath(path: string, insensitive: boolean): boolean {
   const name = basename(normalizePath(path).replace(/\/+$/u, ""));
   return ENV_TEMPLATE_NAMES.has(insensitive ? name.toLowerCase() : name);
+}
+
+// Extensions that private keys share with files that are not secret: a certificate, a public key, a presentation document.
+// A name alone cannot tell them apart, so these two rows ask what the file holds, where the host may look.
+const KEY_MATERIAL_PATTERNS: ReadonlySet<string> = new Set(["**/*.pem", "**/*.key"]);
+
+/** Recognize names whose sensitivity can depend on inspected file content, without filesystem lookup. */
+export function createKeyMaterialPathMatcher(): (path: string) => boolean {
+  const patterns = [...KEY_MATERIAL_PATTERNS].map(pattern => compileSensitivePathGlob(pattern, process.platform === "darwin" || process.platform === "win32"));
+  return path => policyMatchPaths(path).some(candidate => patterns.some(test => test(candidate)));
+}
+// How much of a file is read to look for a key. A file larger than this is not shown to hold none.
+// It covers the certificate bundles systems ship, so those are read whole and seen to hold no key.
+export const KEY_MATERIAL_SCAN_BYTES = 1024 * 1024;
+// Nothing about a file's format clears bytes that were not read: key readers find a private-key header anywhere in a
+// file, and an archive's stored entries hold plain text. A presentation document saved as one archive is read like any
+// other file, so a large one is not shown to hold no key.
+const PRIVATE_KEY_HEADER = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/u;
+
+const keyMaterialInspectionGrants = new Set<(canonicalPath: string) => boolean>();
+
+/**
+ * Say which key-extension files may be opened to see what they hold. Classifying a path must not read a file the person
+ * never brought into Ave, so a `.pem` or `.key` file is looked at only where some registered grant says yes for its
+ * canonical, case-folded path: inside a registered project, or a file the person picked or dropped. Everywhere else, and
+ * while nothing is registered, such a name is treated as a key on its name alone. Returns the call that withdraws the grant.
+ */
+export function allowKeyMaterialInspection(grant: (canonicalPath: string) => boolean): () => void {
+  keyMaterialInspectionGrants.add(grant);
+  return () => { keyMaterialInspectionGrants.delete(grant); };
+}
+
+/** `allowKeyMaterialInspection` for whole folders: the files below the folders `roots` names when it is asked. */
+export function allowKeyMaterialInspectionUnder(roots: () => readonly string[]): () => void {
+  return allowKeyMaterialInspection((canonicalPath) => roots().some((root) => {
+    const base = caseFoldForMatch(canonicalizePathForMatch(root)).replace(/\/+$/u, "");
+    return canonicalPath.startsWith(`${base}/`);
+  }));
+}
+
+/**
+ * The content rule, for `bytes` read from the start of a file of `size` bytes: a private-key header in the first
+ * `KEY_MATERIAL_SCAN_BYTES` is a key; otherwise only a file read whole within that window holds none. Nothing found, but
+ * only what was read is known: a longer file has a part nobody looked at, whatever its first bytes say it is.
+ */
+function keyMaterialEvidenceOf(bytes: Buffer, size: number): "none" | "key" | "unknown" {
+  const scanned = Math.min(bytes.length, KEY_MATERIAL_SCAN_BYTES);
+  if (PRIVATE_KEY_HEADER.test(bytes.toString("latin1", 0, scanned))) return "key";
+  return size <= KEY_MATERIAL_SCAN_BYTES && bytes.length === size ? "none" : "unknown";
+}
+
+/**
+ * Whether bytes read through a handle open as `opened` (its bigint fstat) came from the file at `judged`, the path whose
+ * name and location rules the caller judges for them. Asked after the read and before the bytes are used: `judged` is
+ * resolved again and must still resolve to itself, spelled as the rules match it, and the entry there must be that very
+ * regular file. A folder or last name that led elsewhere while the file was opened, and was put back, leaves a different
+ * file at the path; one that still leads elsewhere resolves to another path. This is also the guard where an open cannot
+ * refuse a link in the last name (Windows has no such flag). These are two lookups, since Node cannot name an open
+ * handle's path on macOS or Windows: a path switched to another file and back between them is not seen.
+ */
+export function judgedPathNamesOpenedFile(judged: string, opened: BigIntStats): boolean {
+  const spelled = (path: string): string => caseFoldForMatch(foldCanonicalPathSeparators(path));
+  let real: string;
+  try { real = realpathSync(judged); } catch { return false; }
+  if (spelled(real) !== spelled(judged)) return false;
+  let named: BigIntStats | undefined;
+  try { named = lstatSync(real, { bigint: true, throwIfNoEntry: false }); } catch { return false; }
+  return named?.isFile() === true && opened.isFile() && sameFileIdentity(named, opened);
+}
+
+/**
+ * What the file at the canonical path `path` shows about key material, read at most once and at most
+ * `KEY_MATERIAL_SCAN_BYTES`:
+ *   "none"    nothing exists there yet, it is a folder (a presentation package), or the whole file was read and holds no
+ *             private-key header;
+ *   "key"     a PEM or OpenSSH private-key header was found;
+ *   "unknown" anything else: a link or special file, a file that cannot be opened, one the path no longer names once it
+ *             was read, or one with bytes beyond the window that were not read. Unknown is never taken for harmless.
+ * The file is opened without following a link in its last name where the platform can refuse one, read through that one
+ * handle, and its bytes count only if the path still names that file after the read (`judgedPathNamesOpenedFile`).
+ */
+function keyMaterialEvidence(path: string): "none" | "key" | "unknown" {
+  let descriptor: number | undefined;
+  try {
+    const named = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+    if (named === undefined) return "none";
+    if (named.isDirectory()) return "none";
+    if (!named.isFile()) return "unknown";
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile()) return "unknown";
+    const wanted = Number(opened.size > BigInt(KEY_MATERIAL_SCAN_BYTES) ? BigInt(KEY_MATERIAL_SCAN_BYTES) : opened.size);
+    const bytes = Buffer.alloc(wanted);
+    let filled = 0;
+    while (filled < wanted) {
+      const read = readSync(descriptor, bytes, filled, wanted - filled, filled);
+      if (read === 0) break;
+      filled += read;
+    }
+    if (!judgedPathNamesOpenedFile(path, opened)) return "unknown";
+    // A short read is judged on the bytes it gave, as a file with a part nobody looked at.
+    return keyMaterialEvidenceOf(bytes.subarray(0, filled),
+      filled !== wanted || opened.size > BigInt(KEY_MATERIAL_SCAN_BYTES) ? Number.POSITIVE_INFINITY : Number(opened.size));
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOTDIR" ? "none" : "unknown";
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+const NON_ASCII = /\P{ASCII}/u;
+
+/**
+ * Whether `path` may be looked up on the filesystem: not a network or device path, and reached only through local folders
+ * (`verifyLocalFilesystemChain`), the checks `canonicalizePathForMatch` makes before it touches a path.
+ */
+function onLocalFilesystem(path: string): boolean {
+  if (isWindowsNetworkOrDevicePath(path)) return false;
+  try {
+    verifyLocalFilesystemChain(pathResolve(path));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sensitivePatternIndex(insensitivePlatform: boolean, admissionOnly: boolean): SensitivePatternIndex {
@@ -804,11 +1024,31 @@ function sensitivePatternIndex(insensitivePlatform: boolean, admissionOnly: bool
   return index;
 }
 
-export function createSensitivePathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch): (absPath: string) => string | null {
-  return createPathSensitivityMatcher(effect, spend, canonicalize, false);
+interface SensitivePathMatcherOptions {
+  inspectKeyMaterial?: boolean;
+  includeKeyMaterial?: boolean;
+  resolveNativePath?: (path: string) => string;
 }
 
-function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | undefined, canonicalize: (path: string) => string, admissionOnly: boolean): (absPath: string) => string | null {
+export function createSensitivePathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch, options: SensitivePathMatcherOptions = {}): (absPath: string) => string | null {
+  return createPathSensitivityMatcher(effect, spend, canonicalize, false, "agent", undefined, 0, undefined, options);
+}
+
+function createPathSensitivityMatcher(
+  effect: PathEffect,
+  spend: (() => void) | undefined,
+  canonicalize: (path: string) => string,
+  admissionOnly: boolean,
+  audience: KeyMaterialAudience = "agent",
+  // Content already read from the file being judged; its key evidence is taken from these bytes and the full size.
+  content?: Buffer,
+  contentSize = content?.length ?? 0,
+  // A verified evidence target binds content lookup while the lexical name still contributes its own patterns.
+  nativeInspectionPath?: string,
+  options: SensitivePathMatcherOptions = {},
+): (absPath: string) => string | null {
+  const nameOnly = options.inspectKeyMaterial === false || options.includeKeyMaterial === false;
+  const matchingCanonicalize = nameOnly ? foldCanonicalPathSeparators : canonicalize;
   const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
   const index = sensitivePatternIndex(platformCaseInsensitive, admissionOnly);
   const { patterns } = index;
@@ -848,6 +1088,26 @@ function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | 
     }
     return child.eligible;
   };
+  // Resolve the caller's operand before folding its identity for grants. Only the native resolution names the file to
+  // inspect: normalization and case matching must not select a different stored entry. Network and device paths remain
+  // opaque, and content is inspected only where a grant covers its resolved identity.
+  let boundEvidence: "none" | "key" | "unknown" | undefined;
+  const mayHoldPrivateKey = (spelled: string): boolean => {
+    if (isWindowsNetworkOrDevicePath(spelled)) return true;
+    const local = onLocalFilesystem(nativeInspectionPath ?? spelled);
+    const native = local ? nativeInspectionPath ?? (options.resolveNativePath ?? resolvePathForPolicy)(spelled) : undefined;
+    const folded = caseFoldForMatch(foldCanonicalPathSeparators(canonicalize(native ?? spelled)));
+    const inspectable = [...keyMaterialInspectionGrants].some((grant) => grant(folded));
+    if (inspectable && content === undefined && native !== undefined && nativeInspectionPath !== undefined && boundEvidence === undefined) {
+      boundEvidence = keyMaterialEvidence(native);
+    }
+    const evidence = !inspectable ? "unknown"
+      : content !== undefined ? keyMaterialEvidenceOf(content, contentSize)
+      : native === undefined ? "unknown"
+      : nativeInspectionPath === undefined ? keyMaterialEvidence(native) : boundEvidence ?? "unknown";
+    const result = !inspectable || evidence === "key" || (audience === "agent" && evidence === "unknown");
+    return result;
+  };
   type ApplicationPath = { entry: SensitiveEntry; base: string };
   interface ApplicationNode { children: Map<string, ApplicationNode>; directories: ApplicationPath[] }
   let roots: { session?: string; keys: readonly string[] } | undefined;
@@ -873,9 +1133,11 @@ function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | 
   return (absPath) => {
     if (!absPath) return null;
     const candidates = policyMatchPaths(absPath);
+    // The caller's own spelling, in which the path is resolved; `candidates` are for matching names.
+    const spelled = absPath;
     const normalizedPath = candidates[0]!;
     const eligible = candidatesFor(normalizedPath);
-    if (effect === "write") {
+    if (!nameOnly && effect === "write") {
       for (const path of hostScriptWriteDenyPaths()) {
         const bases = [canonicalize(path), pathResolve(path)].map((value) => caseFoldForMatch(value).replace(/\/+$/u, ""));
         if (candidates.some((candidate) => bases.some((base) => {
@@ -891,16 +1153,19 @@ function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | 
       return "runtime-settings-file";
     }
     roots ??= {
-      session: effect === "read" ? getConfiguredSessionReadRoot() : undefined,
-      keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
+      session: !nameOnly && effect === "read" ? getConfiguredSessionReadRoot() : undefined,
+      keys: (nameOnly
+        ? runtimeSecretKeyPaths?.configured === process.env.AVE_SECRET_KEY_FILE ? runtimeSecretKeyPaths?.paths ?? []
+          : process.env.AVE_SECRET_KEY_FILE === undefined ? [] : [pathResolve(process.env.AVE_SECRET_KEY_FILE)]
+        : getRuntimeSensitiveKeyPaths()).map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),
     };
     const sessionRoot = roots.session === undefined ? undefined : caseFoldForMatch(roots.session);
     const foldedPath = caseFoldForMatch(normalizedPath);
     const canReadSession = sessionRoot !== undefined
       && (foldedPath === sessionRoot || foldedPath.startsWith(`${sessionRoot}/`))
-      && !policyMatchPaths(pathRelative(sessionRoot, normalizedPath)).some((candidate) =>
+      && !policyMatchPaths(posix.relative(sessionRoot, foldedPath)).some((candidate) =>
         candidatesFor(candidate).some((ordinal) => patterns[ordinal]!.readOnly && patterns[ordinal]!.test(candidate)));
-    if (roots.keys.some((path) => candidates.includes(path))) return "runtime-secret-key";
+    if (roots.keys.includes(foldedPath)) return "runtime-secret-key";
     for (const candidate of candidates) {
       const lower = candidate.toLowerCase();
       for (const ordinal of eligible) {
@@ -908,14 +1173,21 @@ function createPathSensitivityMatcher(effect: PathEffect, spend: (() => void) | 
         if (pattern === "**/.env.*" && isEnvironmentTemplatePath(candidate, insensitive)) continue;
         if (!(insensitive ? lower.includes(literal) : candidate.includes(literal))) continue;
         spend?.();
-        if (!(canReadSession && readOnly) && test(candidate)) return pattern;
+        if (!(canReadSession && readOnly) && test(candidate)) {
+          if (KEY_MATERIAL_PATTERNS.has(pattern)) {
+            if (options.includeKeyMaterial === false) continue;
+            if (options.inspectKeyMaterial !== false && !mayHoldPrivateKey(spelled)) continue;
+          }
+          return pattern;
+        }
       }
     }
+    if (nameOnly) return null;
     // A relocated application root need not contain a literal namespace segment.
     if (applicationPaths === undefined) {
-      const home = canonicalize(aveHome());
+      const home = matchingCanonicalize(aveHome());
       applicationPaths = (admissionOnly ? ADMISSION_PATH_ENTRIES : SENSITIVE_PATH_ENTRIES).filter((entry) => entry.anchor === "ave-home").map((entry) => ({
-        entry, base: caseFoldForMatch(canonicalize(pathResolve(home, ...entry.segments))),
+        entry, base: caseFoldForMatch(matchingCanonicalize(pathResolve(home, ...entry.segments))),
       }));
       applicationExact = new Map();
       applicationRotations = new Map();

@@ -1,4 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useTempPaths as configureTempPaths } from "../../../__tests__/test-helpers.js";
+import { useConfigurationOwner as configureTestOwner } from "../../../__tests__/support/configuration-owner.js";
+import { migrateAveHomeConfiguration } from "../../../shared/ave-home-configuration.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
+
+configureTestOwner();
+const freshHome = configureTempPaths("permission-settings-home-", ".ave");
+beforeEach(() => vi.stubEnv("AVE_HOME", freshHome()));
+afterEach(() => vi.unstubAllEnvs());
+beforeEach(() => {
+  const privacy = ensureAveHomePrivate(aveHome());
+  expect(privacy.enforcement).not.toBe("none");
+  migrateAveHomeConfiguration(aveHome(), privacy);
+});
 
 import {
   handleSetPermissionMode,

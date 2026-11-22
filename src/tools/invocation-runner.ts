@@ -64,13 +64,13 @@ import {
   remoteControllerOriginOf,
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import type { ApprovalDecision } from "../permissions/approval-gate.js";
+import { approvalReasonFields, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
 import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
 } from "../permissions/evaluation-context.js";
-import { canonicalizePathForMatch, caseFoldForMatch, foldCanonicalPathSeparators } from "../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, createProjectMembership, foldCanonicalPathSeparators, resolvePathForPolicy } from "../permissions/sensitive-paths.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
   sanitizeAllowedDirectories,
@@ -1404,6 +1404,7 @@ async function runToolInvocationAttempt(
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       approvalMemory,
       disposableSubstrate,
+      guestCwd: isBrokerGuestRoutePlan(executionRoutePlan) ? executionRoutePlan.cwd : undefined,
       ...(permissionStoreError === undefined ? {} : { permissionStoreError }),
     };
     const approvalPurpose = buildApprovalPurposeSuggestion(finalInput, invocationPermissionContext);
@@ -1438,7 +1439,8 @@ async function runToolInvocationAttempt(
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
     let directoryAuthorization: AuthorizationStageContext["directoryAuthorization"];
     const requestOutOfAllowedDirectoryAccess = async (
-      outOfAllowedTarget: { filePath: string; canonicalPath: string },
+      // `realPath`: the resolved location in its on-disk spelling; `canonicalPath` is the case-folded matching form.
+      outOfAllowedTarget: { filePath: string; canonicalPath: string; realPath: string },
       dirLayerResult: PermissionCheckResult,
       requestSensitivePathPattern: string | null,
       reviewerPathFields: readonly string[],
@@ -1494,7 +1496,7 @@ async function runToolInvocationAttempt(
         if (headless) directoryPermission = (await dispatchReviewerForHeadless(...reviewerArgs)).permissionResult;
         else directoryPermission = await dispatchReviewerForInteractiveAuto(...reviewerArgs) ?? directoryPermission;
       }
-      if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.canonicalPath, scope: "turn", permissionResult: directoryPermission,
+      if (directoryPermission.decision === "allow") return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn", permissionResult: directoryPermission,
         ...(rationaleResumeContext === undefined ? {} : { pendingRationale: true as const, humanApproved: false }) };
       if (directoryPermission.decision === "deny") {
         const msg = directoryPermission.reason;
@@ -1515,7 +1517,7 @@ async function runToolInvocationAttempt(
       const remoteControllerOrigin = remoteControllerOriginOf(
         invocationPermissionContext.remoteControllerAuthority,
       );
-      const validation = validateDirectoryAddition(outOfAllowedTarget.canonicalPath);
+      const validation = validateDirectoryAddition(outOfAllowedTarget.realPath);
       if (!validation.ok) {
         // A path the host will never add to the allowed set — the filesystem
         // root, or a Layer-0 sensitive pattern. The VERDICT matches an ordinary
@@ -1547,13 +1549,13 @@ async function runToolInvocationAttempt(
       // re-type the suggested path before persisting (phishing defense).
       let isDirectoryTarget = false;
       try {
-        isDirectoryTarget = statSync(outOfAllowedTarget.canonicalPath).isDirectory();
+        isDirectoryTarget = statSync(outOfAllowedTarget.realPath).isDirectory();
       } catch {
         // Path does not exist yet (e.g. write target before first write);
         // fall back to file-style behavior (suggest the parent dir).
       }
       const suggestedParent = pickClosestParent(
-        outOfAllowedTarget.canonicalPath,
+        outOfAllowedTarget.realPath,
         directoryScope,
         isDirectoryTarget,
       );
@@ -1570,7 +1572,7 @@ async function runToolInvocationAttempt(
       });
       if (eligibleDirectoryChoice) {
         // These exact targets are provisional validator inputs only. Execution still requires the sealed receipt.
-        return { allowed: true, approvedDirectory: outOfAllowedTarget.canonicalPath, scope: "turn",
+        return { allowed: true, approvedDirectory: outOfAllowedTarget.realPath, scope: "turn",
           permissionResult: directoryPermission, humanApproved: false, pendingRationale: true,
           requestHumanApproval: async ({ requestId, abortSignal: approvalAbortSignal }) => {
             const beforeDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
@@ -1629,7 +1631,8 @@ async function runToolInvocationAttempt(
           source: source as ToolSource,
           ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
           createdAt: Date.now(),
-          target: { filePath: outOfAllowedTarget.filePath },
+          target: approvalTargetFor(outOfAllowedTarget.filePath, outOfAllowedTarget.realPath),
+          ...approvalReasonFields(dirLayerResult, { fileTarget: invocationCategory !== "shell", folderCard: true }),
           ownerUnattended: invocationPermissionContext.ownerUnattended,
           ...(dirLayerResult.forceModal === true ? { forceExplicit: true as const } : {}),
           sensitivePathPattern: requestSensitivePathPattern,
@@ -2023,7 +2026,8 @@ async function runToolInvocationAttempt(
         }
 
         if (shellPathViolation.kind === "sandbox-boundary" && shellPathViolation.path) {
-          const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(shellPathViolation.path));
+          const realPath = resolvePathForPolicy(shellPathViolation.path);
+          const canonicalPath = caseFoldForMatch(foldCanonicalPathSeparators(realPath));
           const dirLayerResult: PermissionCheckResult = {
             decision: "ask",
             reason: `out-of-allowed-dir: ${shellPathViolation.path} (not in additionalDirectories)`,
@@ -2035,7 +2039,7 @@ async function runToolInvocationAttempt(
             ],
           };
           const resolution = await requestOutOfAllowedDirectoryAccess(
-            { filePath: shellPathViolation.path, canonicalPath },
+            { filePath: shellPathViolation.path, canonicalPath, realPath },
             dirLayerResult,
             null,
             [],
@@ -2152,9 +2156,8 @@ async function runToolInvocationAttempt(
     const targetFilePaths = brokeredFileRouteSelected
       ? []
       : extractTargetFilePaths(tool, finalInput, executionCwd);
-    // Frozen-canonical contract: canonicalize once here and reuse the same
-    // string for Layer 0 (sensitive-path) + Layer 1
-    // (allowed-directories) checks below. No layer re-resolves the path.
+    // Resolve once. Execution and approval retain native spelling; sensitive-path
+    // and allowed-directory matching share a key derived from that same snapshot.
     const unsealedRuleSubject = scopedRuleSubjectFor(tool, finalInput, executionCwd);
     for (const filePath of targetFilePaths) {
       let runtimePath: string;
@@ -2164,9 +2167,9 @@ async function runToolInvocationAttempt(
         if (unsealedRuleSubject?.kind === "edit") {
           const resolved = resolveShellFilesystemPath(filePath, executionCwd);
           if (process.platform !== "win32" && resolved.includes("\\")) throw new Error("Ambiguous write path");
-          runtimePath = foldCanonicalPathSeparators(resolved);
+          runtimePath = resolved;
         } else {
-          runtimePath = canonicalizePathForMatch(filePath);
+          runtimePath = resolvePathForPolicy(filePath);
         }
       } catch {
         const reason = "Cannot resolve write target";
@@ -2177,14 +2180,14 @@ async function runToolInvocationAttempt(
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime, blocked, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
         return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs });
       }
-      canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(runtimePath), runtimePath });
+      canonicalTargets.push({ filePath, canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(runtimePath)), runtimePath });
     }
     const declaredPaths = (tool.pathFields ?? []).flatMap((field) => selectDeclaredPathValues(finalInput, field)).filter((path): path is string => typeof path === "string");
     invocationPermissionContext.paths = canonicalTargets.flatMap((target) => {
       const operands = declaredPaths.filter((path) => resolveToolPathForPermission(path, executionCwd) === target.filePath);
       return (operands.length > 0 ? operands : [target.filePath]).map((path) => {
         const expanded = expandLeadingTilde(path);
-        return { lexical: isAbsolute(expanded) ? expanded : executionCwd + "/" + expanded, canonical: target.canonicalPath,
+        return { lexical: isAbsolute(expanded) ? expanded : executionCwd + "/" + expanded, canonical: target.canonicalPath, runtimePath: target.runtimePath,
           effect: canonicalFileTool !== undefined ? canonicalFilePathEffect(tool, finalInput, target.filePath, executionCwd) : requiredTier(invocationCategory) };
       });
     });
@@ -2219,6 +2222,12 @@ async function runToolInvocationAttempt(
           blockReadsOutsideWorkingDirectories,
         }).sensitiveHit;
     const targetFilePath = canonicalTargets[0]?.filePath;
+    // Targets a link sends somewhere other than their spelling; a card shows both.
+    const inProject = createProjectMembership(executionCwd);
+    const linkedTargets = canonicalTargets.flatMap((target) => {
+      const { canonicalPath } = approvalTargetFor(target.filePath, target.runtimePath);
+      return canonicalPath === undefined ? [] : [{ filePath: target.filePath, canonicalPath, outsideProject: !inProject(target.canonicalPath) }];
+    });
     const sensitivePathPattern = sensitiveTarget?.pattern ?? null;
 
     // Turn-scope admission. `pluginTurnScopeTarget` answers "which plugin does
@@ -2325,7 +2334,9 @@ async function runToolInvocationAttempt(
           effect: pathEffect,
           blockReadsOutsideWorkingDirectories,
         });
-        const outOfAllowedTarget = pathScope.outOfAllowed;
+        const outOfAllowed = pathScope.outOfAllowed;
+        const outOfAllowedTarget = outOfAllowed === null ? null : { ...outOfAllowed,
+          realPath: canonicalTargets.find((target) => target.filePath === outOfAllowed.filePath)?.runtimePath ?? outOfAllowed.canonicalPath };
         if (!outOfAllowedTarget) {
           // A read the directory list would have refused leaves no prompt and
           // no grant behind it, so the audit row is the only record that the
@@ -2368,7 +2379,7 @@ async function runToolInvocationAttempt(
         applyApprovedDirectory(resolution.approvedDirectory);
         if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
-        for (const target of canonicalTargets) applyApprovedDirectory(target.canonicalPath);
+        for (const target of canonicalTargets) applyApprovedDirectory(target.runtimePath);
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;
         break;
         // allow-once / allow-session / allow-always — fall through to Step 3
@@ -2437,6 +2448,7 @@ async function runToolInvocationAttempt(
       rationaleResumeContext,
       rationaleBatchContext,
       targetFilePath,
+      linkedTargets,
       canonicalTargets,
       approvalCacheKey,
       executionCwd,
@@ -2583,6 +2595,7 @@ async function runToolInvocationAttempt(
       parentEffectLedger,
       effectLedger,
       targetFilePath,
+      linkedTargets,
       preResult,
       scriptPre,
       resolvedPluginOperation,

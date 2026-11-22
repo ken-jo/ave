@@ -1,9 +1,10 @@
+import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve, win32 } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
@@ -123,25 +124,19 @@ describe("Windows helper integrity", () => {
   describe.skipIf(process.platform !== "win32")("stale private image cleanup", () => {
     function stage(layout: "single-level" | "two-level" = "two-level"): string {
       const { source } = fixture();
-      const imageDirectory = dirname(prepareSrtWinExecutable(source));
-      const original = basename(imageDirectory) === "bin" ? dirname(imageDirectory) : imageDirectory;
-      // Model another host's abandoned copy, outside this host's cache.
+      const original = dirname(dirname(prepareSrtWinExecutable(source)));
+      // Stage the earlier layouts outside this host's cache.
       const directory = `${original}-abandoned`;
       renameSync(original, directory);
       directories.push(directory);
-      const staged = basename(imageDirectory) === "bin" ? join(directory, "bin") : directory;
-      const target = layout === "two-level" ? join(directory, "bin") : directory;
-      if (staged !== target) {
-        if (layout === "two-level") {
-          const script = `$ErrorActionPreference='Stop'; $acl=[System.IO.Directory]::GetAccessControl('${directory.replace(/'/g, "''")}'); [System.IO.Directory]::CreateDirectory('${target.replace(/'/g, "''")}',$acl) | Out-Null`;
-          execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
-            "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
-          ], { env: process.env, windowsHide: true, stdio: "pipe" });
-        }
-        for (const name of ["srt-win.exe", "owner.json"]) renameSync(join(staged, name), join(target, name));
-        if (staged !== directory) rmdirSync(staged);
+      const bin = join(directory, "bin");
+      if (layout === "two-level") {
+        renameSync(join(directory, "owner.json"), join(bin, "owner.json"));
+        return bin;
       }
-      return target;
+      renameSync(join(bin, "srt-win.exe"), join(directory, "srt-win.exe"));
+      rmdirSync(bin);
+      return directory;
     }
 
     function isolateTemp(): void {
@@ -172,7 +167,7 @@ describe("Windows helper integrity", () => {
       const { source } = fixture();
       const cached = dirname(prepareSrtWinExecutable(source));
       directories.push(cached);
-      abandon(cached);
+      abandon(dirname(cached));
       expect(JSON.parse(readFileSync(join(current, "owner.json"), "utf8"))).toMatchObject({ pid: process.pid, started: expect.any(String) });
       writeFileSync(join(current, "owner.json"), JSON.stringify({ pid: process.pid, started: "1" }));
       sweepStaleSrtWinDirectories();
@@ -440,7 +435,9 @@ describe("Windows helper integrity", () => {
   });
 
   // The two PowerShell steps as `prepareSrtWinExecutable` sends them, captured on any host: the stale-copy sweep, then the private-directory step.
+  let capturedScripts: string[] | undefined;
   async function captureScripts(): Promise<string[]> {
+    if (capturedScripts) return capturedScripts;
     const scripts: string[] = [];
     vi.resetModules();
     vi.doMock("node:os", async (importOriginal) => ({ ...await importOriginal<typeof import("node:os")>(), type: () => "Windows_NT" }));
@@ -469,8 +466,225 @@ describe("Windows helper integrity", () => {
       vi.resetModules();
     }
     expect(scripts).toHaveLength(2);
-    return scripts;
+    capturedScripts = scripts;
+    return capturedScripts;
   }
+
+  function runFixturePowerShell(script: string, env: NodeJS.ProcessEnv = {}): string | undefined {
+    const executable = process.platform === "win32" ? win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : process.env.AVE_TEST_PWSH ?? "pwsh";
+    const result = spawnSync(executable, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+      env: { ...process.env, ...env }, encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+    });
+    if (executable === "pwsh" && (result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return undefined;
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    return result.stdout;
+  }
+
+  // Linux StartTime adds a wall-clock boot estimate sampled independently in each runtime. Use the kernel's boot-relative field 22 on both sides.
+  const linuxOwnerStart = "$stat = [System.IO.File]::ReadAllText('/proc/' + $process.Id + '/stat'); $stat.Substring($stat.LastIndexOf(')') + 2).Split(' ')[19]";
+
+  async function sweepFixture(root: string, protectedAcl = true): Promise<boolean> {
+    const [sweep] = await captureScripts();
+    if (!sweep) throw new Error("The helper sweep was not captured");
+    const fixtureSweep = process.platform === "linux" ? sweep.replace(/\$readOwnerStart = \{[^}]+\}/, `$readOwnerStart = { param($process); ${linuxOwnerStart} }`) : sweep;
+    // Use the actual decisions and filesystem. On POSIX, simulate Windows ACLs and the Windows PowerShell JSON integer type.
+    const script = process.platform === "win32" ? sweep : [
+      "function Get-FixtureAcl {",
+      "  $acl = [pscustomobject]@{ AreAccessRulesProtected = $env:AVE_TEST_ACL -eq 'protected'; Access = @() }",
+      "  Add-Member -InputObject $acl -MemberType ScriptMethod -Name GetOwner -Value { param($type) 'fixture-user' }",
+      "  return $acl",
+      "}",
+      fixtureSweep.replace("[System.Security.Principal.WindowsIdentity]::GetCurrent().User", "'fixture-user'")
+        .replace(/\[System\.IO\.Directory\]::GetAccessControl\(\$(?:directory|imageDirectory)\)/g, "Get-FixtureAcl")
+        .replaceAll("\\Modules\\Microsoft.PowerShell.Utility\\", "/Modules/Microsoft.PowerShell.Utility/")
+        .replace("::ReadAllText($marker) | ConvertFrom-Json;", "::ReadAllText($marker) | ConvertFrom-Json; if ($owner.pid -is [long] -and $owner.pid -le [int]::MaxValue -and $owner.pid -ge [int]::MinValue) { $owner.pid = [int]$owner.pid };"),
+    ].join("\n");
+    // The sweep represents a different process from the fixture's owner.
+    return runFixturePowerShell(script, {
+      TEMP: root, TMP: root, TMPDIR: root, AVE_SRT_TEMP_ROOT: root, AVE_SRT_OWNER_PID: "0",
+      AVE_SRT_OWN_DIRECTORIES: "[]", AVE_TEST_ACL: protectedAcl ? "protected" : "inherited",
+    }) !== undefined;
+  }
+
+  function createSweepDirectory(directory: string): void {
+    if (process.platform !== "win32") {
+      mkdirSync(directory);
+      return;
+    }
+    runFixturePowerShell([
+      "$ErrorActionPreference = 'Stop'",
+      "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+      "$acl = New-Object System.Security.AccessControl.DirectorySecurity",
+      "$acl.SetOwner($sid)",
+      "$acl.SetAccessRuleProtection($true, $false)",
+      "$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'None', 'None', 'Allow')))",
+      "$null = [System.IO.Directory]::CreateDirectory($env:AVE_TEST_COPY, $acl)",
+    ].join("; "), { AVE_TEST_COPY: directory });
+  }
+
+  it.for(["no marker", "empty bin without a marker", "live marker"])("keeps a paused allocation with %s", async (shape, context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
+    const marker = join(copy, "owner.json");
+    const bin = join(copy, "bin");
+    if (process.platform === "win32") {
+      const [, allocation] = await captureScripts();
+      if (!allocation) throw new Error("The helper allocation script was not captured");
+      const checkpoint = shape === "no marker" ? "& $verifyDirectory $outer" :
+        shape === "live marker" ? "$createdMarker = $true" : "& $verifyDirectory $bin";
+      expect(allocation).toContain(checkpoint);
+      runFixturePowerShell(allocation.replace(checkpoint, `${checkpoint}; return`), {
+        AVE_SRT_PRIVATE_DIRECTORY: copy, AVE_SRT_OWNER_PID: String(process.pid),
+      });
+      if (shape === "empty bin without a marker") rmSync(marker);
+    } else {
+      mkdirSync(copy);
+      if (shape === "empty bin without a marker") mkdirSync(bin);
+      if (shape === "live marker") {
+        const readStarted = process.platform === "linux" ? linuxOwnerStart : "$process.StartTime.ToUniversalTime().Ticks";
+        const started = runFixturePowerShell([
+          "$process = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
+          `[Console]::WriteLine((& { ${readStarted} }))`,
+        ].join("; "), {
+          AVE_SRT_OWNER_PID: String(process.pid),
+        });
+        if (started === undefined) return context.skip("PowerShell unavailable");
+        writeFileSync(marker, JSON.stringify({ pid: process.pid, started: started.trim() }));
+      }
+    }
+    expect(existsSync(marker)).toBe(shape === "live marker");
+    expect(existsSync(bin)).toBe(shape === "empty bin without a marker");
+    if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+    expect(existsSync(copy)).toBe(true);
+    if (shape === "live marker") {
+      const owner = JSON.parse(readFileSync(marker, "utf8")) as { pid: number; started: string };
+      // A different creation stamp must establish PID reuse even when the stamps are only one tick apart.
+      writeFileSync(marker, JSON.stringify({ ...owner, started: (BigInt(owner.started) + 1n).toString() }));
+      await sweepFixture(root);
+      expect(existsSync(copy)).toBe(false);
+    }
+  });
+
+  it("keeps a partial copy with an unprotected DACL", async (context) => {
+    const root = join(dirname(fixture().source), "sweep");
+    // The fixture parent has no inheritable rules, so enabling inheritance adds no ACEs.
+    createSweepDirectory(root);
+    const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
+    createSweepDirectory(copy);
+    const marker = join(copy, "owner.json");
+    writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+    const setProtection = (protectedAcl: boolean): string | undefined => runFixturePowerShell([
+      "$ErrorActionPreference = 'Stop'",
+      "$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+      "$protected = $env:AVE_TEST_PROTECTED -eq 'true'",
+      "$path = $env:AVE_TEST_COPY",
+      "$acl = [System.IO.Directory]::GetAccessControl($path)",
+      "$acl.SetAccessRuleProtection($protected, $true)",
+      "[System.IO.Directory]::SetAccessControl($path, $acl)",
+      "$actual = [System.IO.Directory]::GetAccessControl($path)",
+      "if ($actual.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or $actual.AreAccessRulesProtected -ne $protected) { throw 'Unexpected fixture owner or protection' }",
+      "$rules = @($actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+      "if ($rules.Count -ne 1 -or $rules[0].IdentityReference -ne $sid -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl' -or $rules[0].InheritanceFlags -ne 'None' -or $rules[0].PropagationFlags -ne 'None' -or $rules[0].IsInherited) { throw 'Unexpected fixture access rules' }",
+      "[Console]::WriteLine($actual.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]'Owner,Group'))",
+    ].join("; "), { AVE_TEST_COPY: copy, AVE_TEST_PROTECTED: String(protectedAcl) });
+    const windows = process.platform === "win32";
+    const ownerAndGroup = windows ? setProtection(false) : undefined;
+    if (!await sweepFixture(root, false)) return context.skip("PowerShell unavailable");
+    expect(existsSync(marker)).toBe(true);
+    if (windows) {
+      expect(ownerAndGroup?.trim()).toBeTruthy();
+      expect(setProtection(true)).toBe(ownerAndGroup);
+    }
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  it.for(["a", "a".repeat(33)])("requires a generated name for a partial copy with suffix %s", async (suffix, context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${suffix}`);
+    createSweepDirectory(copy);
+    const marker = join(copy, "owner.json");
+    writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+    if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+    expect(existsSync(marker)).toBe(true);
+    writeFileSync(join(copy, "srt-win.exe"), "image");
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  it.for([["a".repeat(31), "flat"], ["a".repeat(33), "nested"]] as const)(
+    "requires a generated name for the marker-first layout with suffix %s and keeps %s compatibility",
+    async ([suffix, legacyLayout], context) => {
+      const root = dirname(fixture().source);
+      const copy = join(root, `ave-srt-win-${suffix}`);
+      const bin = join(copy, "bin");
+      createSweepDirectory(copy);
+      createSweepDirectory(bin);
+      const marker = join(copy, "owner.json");
+      const image = join(bin, "srt-win.exe");
+      writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+      writeFileSync(image, "image");
+
+      if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+      expect(existsSync(marker)).toBe(true);
+      expect(existsSync(image)).toBe(true);
+
+      if (legacyLayout === "flat") {
+        renameSync(image, join(copy, "srt-win.exe"));
+        rmdirSync(bin);
+      } else {
+        renameSync(marker, join(bin, "owner.json"));
+      }
+      await sweepFixture(root);
+      expect(existsSync(copy)).toBe(false);
+    },
+  );
+
+  it("keeps a partial copy whose marker has another hard link", async (context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
+    createSweepDirectory(copy);
+    const outside = join(root, "outside.json");
+    const contents = JSON.stringify({ pid: 2147483647, started: "1" });
+    const marker = join(copy, "owner.json");
+    writeFileSync(outside, contents);
+    linkSync(outside, marker);
+    expect(lstatSync(marker).nlink).toBe(2);
+    if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+    expect(readFileSync(marker, "utf8")).toBe(contents);
+    expect(lstatSync(outside).nlink).toBe(2);
+
+    // The same partial copy becomes eligible when its marker has just one link.
+    rmSync(outside);
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
+  });
+
+  it.for(["owner.json", "srt-win.exe"])("keeps a complete marker-first copy with a hard-linked %s", async (entry, context) => {
+    const root = dirname(fixture().source);
+    const copy = join(root, `ave-srt-win-${"a".repeat(32)}`);
+    const bin = join(copy, "bin");
+    createSweepDirectory(copy);
+    createSweepDirectory(bin);
+    const marker = join(copy, "owner.json");
+    const image = join(bin, "srt-win.exe");
+    writeFileSync(marker, JSON.stringify({ pid: 2147483647, started: "1" }));
+    writeFileSync(image, "image");
+    const linked = entry === "owner.json" ? marker : image;
+    const outside = join(root, "outside");
+    linkSync(linked, outside);
+    expect(lstatSync(linked).nlink).toBe(2);
+
+    if (!await sweepFixture(root)) return context.skip("PowerShell unavailable");
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(image)).toBe(true);
+    expect(lstatSync(outside).nlink).toBe(2);
+
+    rmSync(outside);
+    await sweepFixture(root);
+    expect(existsSync(copy)).toBe(false);
+  });
 
   it("names every module its PowerShell steps use", async () => {
     const scripts = await captureScripts();
@@ -490,18 +704,44 @@ describe("Windows helper integrity", () => {
     }
   });
 
+  it("parses the exact copy scripts", async (context) => {
+    for (const script of await captureScripts()) {
+      const result = runFixturePowerShell([
+        "$tokens = $null; $errors = $null",
+        "$null = [System.Management.Automation.Language.Parser]::ParseInput($env:AVE_TEST_SCRIPT, [ref]$tokens, [ref]$errors)",
+        "if ($errors.Count) { [Console]::Error.WriteLine(($errors -join [Environment]::NewLine)); exit 1 }",
+      ].join("; "), { AVE_TEST_SCRIPT: script });
+      if (result === undefined) return context.skip("PowerShell unavailable");
+    }
+  });
+
+  it("reads the same creation stamp when writing and checking the marker", async () => {
+    const [sweep, allocation] = await captureScripts();
+    const reader = allocation?.match(/\$readOwnerStart = \{[^}]+\}/)?.[0];
+    expect(reader).toBeDefined();
+    expect(sweep).toContain(reader);
+    expect(allocation).toContain("$started = & $readOwnerStart $owner");
+    expect(sweep).toContain("[string]::Equals($owner.started, (& $readOwnerStart $p), [StringComparison]::Ordinal)");
+  });
+
   it("creates the private copy with its final descriptor and never changes an existing object's", async () => {
     const [, script] = await captureScripts();
+    if (!script) throw new Error("The helper allocation script was not captured");
     // No step sets an owner or a DACL on a path: only new descriptors get an owner.
     expect(script).not.toMatch(/SetAccessControl\(/);
     expect(script.match(/\$\w+\.SetOwner\(/g)).toEqual(["$security.SetOwner(", "$fileSecurity.SetOwner("]);
     // Anything already at the path refuses creation, before the create call.
-    const refusal = script!.indexOf("throw 'Private directory already exists'");
+    const refusal = script.indexOf("throw 'Private directory already exists'");
     expect(refusal).toBeGreaterThan(-1);
-    expect(refusal).toBeLessThan(script!.indexOf("[System.IO.Directory]::CreateDirectory($outer, $security)"));
+    expect(refusal).toBeLessThan(script.indexOf("[System.IO.Directory]::CreateDirectory($outer, $security)"));
     expect(script).toContain("[System.IO.FileMode]::CreateNew");
     expect(script).toContain("$fileSecurity)");
     expect(script).toContain("$stream.GetAccessControl().GetOwner(");
+    const markerWrite = script.indexOf("& $writeNewFile $markerPath");
+    const binCreate = script.indexOf("::CreateDirectory($bin, $security)");
+    expect(markerWrite).toBeGreaterThan(refusal);
+    expect(markerWrite).toBeLessThan(binCreate);
+    expect(binCreate).toBeLessThan(script.indexOf("& $writeNewFile $imagePath"));
   });
 
   // Run the captured step against a path that already holds something: it must refuse, and leave that object's owner and DACL exactly as they were.
@@ -593,18 +833,34 @@ describe("Windows helper integrity", () => {
   describe("exit order with the sandbox runtime's release", () => {
     const exitOrderChild = resolve(dirname(fileURLToPath(import.meta.url)), "fixtures/srt-win-exit-order-child.ts");
     const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-    function runChild(mode: "runtime-pending" | "runtime-reset" | "no-runtime"): { executable: string; presentAtRuntimeRelease?: boolean; stderr: string } {
+    function runChild(mode: "runtime-pending" | "runtime-reset" | "no-runtime", lockedEntry?: string): {
+      executable: string; presentAtRuntimeRelease?: boolean; lockAttempts?: number; stderr: string;
+    } {
       const { source } = fixture();
-      const resultPath = join(dirname(source), "result.json");
-      const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode], {
-        cwd: repoRoot, env: { ...process.env, AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }, encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+      const temp = dirname(source);
+      const resultPath = join(temp, "result.json");
+      const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode, ...(lockedEntry ? [lockedEntry] : [])], {
+        cwd: repoRoot, env: tsxChildEnv({ TEMP: temp, TMP: temp, TMPDIR: temp, AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }),
+        encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
       });
       expect(child.error).toBeUndefined();
       expect(child.status, child.stderr).toBe(0);
-      const result = JSON.parse(readFileSync(resultPath, "utf8")) as { executable: string; presentAtRuntimeRelease?: boolean };
-      directories.push(dirname(dirname(result.executable)));
+      const result = JSON.parse(readFileSync(resultPath, "utf8")) as { executable: string; presentAtRuntimeRelease?: boolean; lockAttempts?: number };
       return { ...result, stderr: child.stderr };
     }
+
+    it.for(["image", "bin", "marker", "outer"])("sweeps exit remnants with a dead owner's marker after EPERM on %s", async (entry, context) => {
+      const { executable, lockAttempts } = runChild("no-runtime", entry);
+      const bin = dirname(executable);
+      const copy = dirname(bin);
+      expect(lockAttempts).toBe(1);
+      expect(existsSync(copy)).toBe(true);
+      expect(existsSync(executable)).toBe(entry === "image");
+      expect(existsSync(bin)).toBe(entry === "image" || entry === "bin");
+      expect(existsSync(join(copy, "owner.json"))).toBe(entry !== "outer");
+      if (!await sweepFixture(dirname(copy))) return context.skip("PowerShell unavailable");
+      expect(existsSync(copy)).toBe(entry === "outer");
+    });
 
     it("keeps the private copy for a runtime release still pending at exit, which runs after this module's handler", () => {
       const { executable, presentAtRuntimeRelease, stderr } = runChild("runtime-pending");
@@ -617,12 +873,12 @@ describe("Windows helper integrity", () => {
 
     it("removes the private copy at exit once the quit sequence has reset the runtime", () => {
       const { executable, stderr } = runChild("runtime-reset");
-      expect(existsSync(executable)).toBe(false);
+      expect(existsSync(dirname(dirname(executable)))).toBe(false);
       expect(stderr).not.toContain("srt-win: sandbox session");
     });
 
     it("removes the private copy at exit when no runtime was initialized", () => {
-      expect(existsSync(runChild("no-runtime").executable)).toBe(false);
+      expect(existsSync(dirname(dirname(runChild("no-runtime").executable)))).toBe(false);
     });
   });
 });

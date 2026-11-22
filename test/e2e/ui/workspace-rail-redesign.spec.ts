@@ -128,8 +128,8 @@ test.describe("workspace rail redesign", () => {
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
     // The panel portal belongs beside its pane transcript, not inside it.
     await expect(page.getByTestId("pane").getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
-    // Wait for the shell to settle before measuring: the rail toggle starts a padding transition on the main column, and the
-    // reserve's own width transition chases the tile it measures, so mid-transition the reserve can trail the shrinking root.
+    // Wait for the panel to settle before measuring: the reserve's own width transition chases the tile it measures, so mid-transition
+    // the reserve can trail the shrinking root.
     await expect.poll(() => motion.evaluate((element) =>
       document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running")
       && Math.round(element.getBoundingClientRect().width) === Math.round(Number.parseFloat((element as HTMLElement).style.width)))).toBe(true);
@@ -138,11 +138,11 @@ test.describe("workspace rail redesign", () => {
     const root = await page.getByTestId(TEST_IDS.chatViewRoot).boundingBox();
     const reserve = await motion.boundingBox();
     const panel = await page.getByTestId(TEST_IDS.chatSidePanel).boundingBox();
-    const inset = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-inset")));
-    expect(inset).toBeGreaterThan(0);
-    // Include card insets in the reserve; narrow tiles leave only that inset space outside the card.
+    const cardGap = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-gap")));
+    expect(cardGap).toBeGreaterThan(0);
+    // Work-card padding uses the inter-card gap on both sides of its reserve.
     expect(reserve?.width ?? Infinity).toBeLessThanOrEqual((root?.width ?? 0) + 1);
-    expect(Math.abs((panel?.width ?? 0) - Math.min(SIDE_PANEL_MIN_WIDTH, (reserve?.width ?? 0) - 2 * inset))).toBeLessThanOrEqual(1);
+    expect(Math.abs((panel?.width ?? 0) - Math.min(SIDE_PANEL_MIN_WIDTH, (reserve?.width ?? 0) - 2 * cardGap))).toBeLessThanOrEqual(1);
     expect(composer?.width ?? 0).toBeGreaterThan((root?.width ?? 0) - (panel?.width ?? 0));
     await test.info().attach("narrow-panel-360.png", { body: await page.screenshot({ path: test.info().outputPath("narrow-panel-360.png") }), contentType: "image/png" });
 

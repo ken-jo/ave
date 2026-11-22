@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,8 +10,10 @@ import { assertSkillScriptInventory, SKILL_SCRIPT_ENTRIES } from "../../scripts/
 const require = createRequire(import.meta.url);
 const PACKAGE = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { build: { beforePack: string } };
 const beforePack = require(fileURLToPath(new URL(`../../${PACKAGE.build.beforePack}`, import.meta.url))) as (context: {
-  electronPlatformName: string; packager: { projectDir: string };
+  electronPlatformName: string; arch?: number; packager: { projectDir: string };
 }) => Promise<void>;
+// electron-builder's Arch numbering for this host's architecture.
+const HOST_ARCH = { x64: 1, arm64: 3 }[process.arch as "x64" | "arm64"];
 const temporary: string[] = [];
 
 afterEach(() => {
@@ -89,11 +91,22 @@ describe("packaged skill script inventory", () => {
     expect(() => assertSkillScriptInventory(directory)).toThrow(/regular files/);
   });
 
-  it.each(["darwin", "linux"])("checks existing output before packaging the %s payload without a rebuild", async (platform) => {
+  it.each(["darwin", "linux"])("checks existing skill script output before packaging the %s payload, without rebuilding it", async (platform) => {
     vi.stubEnv("AVE_MXC_VERIFICATION_BUILD", "0");
     const { root, directory } = fixture();
-    const context = { electronPlatformName: platform, packager: { projectDir: root } };
-    await expect(beforePack(context)).resolves.toBeUndefined();
+    const context = { electronPlatformName: platform, arch: HOST_ARCH, packager: { projectDir: root } };
+    if (platform === "darwin") {
+      // The macOS package also builds its download file helper, from the fixture's copy of its sources.
+      mkdirSync(join(root, "native", "macos-dir-ops"), { recursive: true });
+      copyFileSync(join("native", "macos-dir-ops", "dir-ops.c"), join(root, "native", "macos-dir-ops", "dir-ops.c"));
+      writeFileSync(join(root, "package.json"), JSON.stringify({ build: { mac: { minimumSystemVersion: "13.0" } } }));
+    }
+    if (platform === "darwin" && process.platform !== "darwin") {
+      await expect(beforePack(context)).rejects.toThrow(/requires a native macOS build/);
+    } else {
+      await expect(beforePack(context)).resolves.toBeUndefined();
+    }
+    if (platform === "darwin") expect(existsSync(join(root, "resources", "macos-dir-ops", process.arch, "ave-dir-ops"))).toBe(process.platform === "darwin");
     writeFileSync(join(directory, "xlsx-publication-012345abcdef.cjs"), "leftover fixture");
     await expect(beforePack(context)).rejects.toThrow(/xlsx-publication-012345abcdef\.cjs/);
   });

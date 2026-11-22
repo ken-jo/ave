@@ -1,6 +1,9 @@
 import { normalizeMemoryEmbeddingConfig, type MemoryEmbeddingConfig } from '../shared/memory-embedding-config.js';
+import { isSubAgentMaxRounds } from "../shared/subagent-policy.js";
+import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
+import { isEditorCommandSetting } from "../shared/editor-command.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
@@ -45,7 +48,7 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import { resolveRouteModelRetirement } from "../shared/context-budget.js";
-import { isAppearanceMode, isDarkSchemeId, isGlassTint, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, type AppearanceSettings } from "../shared/appearance-settings.js";
+import { isAppearanceMode, isDarkSchemeId, isGlassTint, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, mergeTerminalBehavior, type AppearanceSettings } from "../shared/appearance-settings.js";
 export type { AppearanceSettings } from "../shared/appearance-settings.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -80,8 +83,7 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import {
   normalizeAccelerator,
-  fixedShortcutOwner,
-  nativeAcceleratorIdentity,
+  globalShortcutBindingRefusal,
   applyShortcutBindingsPatch,
   normalizeShortcuts,
   shortcutPlatformOf,
@@ -93,6 +95,7 @@ import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { isOwnerAwayAutoSkipMinutes, DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
+import { isAddressSearchEngine, type AddressSearchEngine } from "../shared/browser-address.js";
 import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode, type AccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import {
   marketplaceProviderPresetSecretInvalidationIds,
@@ -117,6 +120,8 @@ import {
   normalizeWorkBoard,
   isWebViewPreferredFlow,
   normalizeWebView,
+  normalizeWebSearch,
+  normalizePrivacy,
   preserveInstalledProviderPresetMetadata,
   sanitizeStoredPluginConfigs,
   normalizeAlertSettings,
@@ -573,6 +578,8 @@ export type WebViewPreferredFlow = "in-app" | "system-browser";
 
 export interface WebViewSettings {
   preferredFlow: WebViewPreferredFlow;
+  /** Where browser address-row text that is not an address is sent (`../shared/browser-address.js`). */
+  addressSearchEngine: AddressSearchEngine;
 }
 
 export type SystemCloseBehavior = "hide-to-tray" | "quit";
@@ -609,7 +616,7 @@ export interface SystemSettings {
    * Raising it buys a slow plugin or a large unsaved workspace more time to finish writing; lowering it makes quitting feel immediate at the cost of abandoning work still in flight. `AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS` overrides it; see `resolveShutdownCleanupTimeoutMs`. */
   shutdownCleanupTimeoutMs?: number;
   /** Persisted width (px) of the docked ChatSidePanel workspace rail, set by the left-edge drag handle; the card plus its insets
-   * (`SIDE_PANEL_MIN_RESERVE` is the floor). Durable shell-layout preference; bounded by the tile's range at drag time in the renderer. Default 464. */
+   * (`SIDE_PANEL_MIN_RESERVE` is the floor). Durable shell-layout preference; bounded by the tile's range at drag time in the renderer. Default SIDE_PANEL_DEFAULT_WIDTH. */
   sidePanelWidth?: number;
   /** Persisted width (px) of the primary (left) navigation sidebar card, set by the inner-edge drag handle. Durable shell-layout preference;
    * clamped to [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH] at drag time in the renderer. Default 232 (matches the historical expanded rail padding reserve). */
@@ -659,11 +666,12 @@ export interface UpdateSettings {
   skippedVersion?: string;
 }
 
-/** Anonymous opt-in telemetry defaults off. Sending requires both a recorded consent choice and enabled=true. */
+/** Reporting defaults off; the normalized level controls crash, error and usage consent. */
 export interface TelemetrySettings {
+  /** Always present in normalized settings; optional at the legacy migration boundary. */
+  level?: TelemetryLevel;
   enabled: boolean;
   endpoint?: string;
-  sentryDsn?: string;
   crashReportEndpoint?: string;
   crashReportingEnabled?: boolean;
   /** True once the user records a telemetry choice in settings. */
@@ -688,7 +696,7 @@ export interface PrivacySettings {
 export type RoutineSettings = Record<string, unknown>;
 
 export interface WebSearchSettings {
-  provider: "duckduckgo" | "tavily" | "serper" | "google";
+  provider: "duckduckgo" | "tavily" | "serper";
 }
 
 /** The git marketplace's settings (design §16.2). Sources, pins and tokens live in
@@ -772,6 +780,26 @@ function withProviderPresetsFrom(
   };
 }
 
+/**
+ * The window layout as this run's settings load found it in the settings file, before anything was written. `read`: the file was read and holds
+ * settings, and this is their layout, or none when they hold no layout. `unknown`: what the file holds is not known, so the run started on
+ * defaults: no settings file (a fresh install), a file that could not be read or parsed or does not hold settings, or a stored layout (or the
+ * system block that holds it) this build refused. Deleting what the saved layout does not name is safe on a `read` layout only.
+ */
+export type LoadedMainLayout =
+  | { readonly kind: "read"; readonly layout: MainLayoutSnapshot | undefined }
+  | { readonly kind: "unknown"; readonly reason: "no-file" | "unreadable" | "layout-refused" };
+
+/** What a read settings file holds of the layout: the stored system block and layout against what normalization kept of them. */
+function mainLayoutAsStored(holdsSettings: boolean, storedSystem: unknown, normalized: MainLayoutSnapshot | undefined): LoadedMainLayout {
+  if (!holdsSettings) return { kind: "unknown", reason: "unreadable" };
+  if (storedSystem === undefined) return { kind: "read", layout: undefined };
+  if (storedSystem === null || typeof storedSystem !== "object" || Array.isArray(storedSystem)) return { kind: "unknown", reason: "layout-refused" };
+  const storedLayout = (storedSystem as { mainLayout?: unknown }).mainLayout;
+  if (storedLayout === undefined) return { kind: "read", layout: undefined };
+  return normalized === undefined ? { kind: "unknown", reason: "layout-refused" } : { kind: "read", layout: normalized };
+}
+
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
   private providerConfigRevision = 0;
@@ -837,6 +865,8 @@ export class SettingsService {
   private settings: AppSettings;
   /** The settings last written to disk (or loaded): what memory returns to when a save fails. */
   private saved: AppSettings;
+  /** What the load found of the window layout on disk; later writes do not change it. */
+  private readonly mainLayoutAsLoaded: LoadedMainLayout;
   /** Writes whose change is in memory but not yet on disk (see `commit`). */
   private unsaved: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private saving = false;
@@ -875,9 +905,10 @@ export class SettingsService {
         this.secretStatesChanged(changed);
       },
     });
-    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion, options.systemLocale);
+    const { settings: loaded, writeBack: needsWriteBack, mainLayout } = this.loadSettings(options.appVersion, options.systemLocale);
     this.settings = loaded;
     this.saved = structuredClone(loaded);
+    this.mainLayoutAsLoaded = structuredClone(mainLayout);
     // Migration write-back (appearance schema, one-time markers): persist so the next load is clean.
     if (needsWriteBack) {
       void this.commit().catch(() => { /* best-effort — next load re-migrates */ });
@@ -901,8 +932,17 @@ export class SettingsService {
     }
   }
 
+  getSettingsFilePath(): string {
+    return this.settingsPath;
+  }
+
   getAll(): AppSettings {
     return structuredClone(this.settings);
+  }
+
+  /** The window layout as the settings file held it when this run loaded it ({@link LoadedMainLayout}), whatever has been written since. */
+  loadedMainLayout(): LoadedMainLayout {
+    return structuredClone(this.mainLayoutAsLoaded);
   }
 
   get<K extends keyof AppSettings>(key: K): AppSettings[K] {
@@ -938,9 +978,14 @@ export class SettingsService {
     partial: Partial<Omit<
       AppSettings,
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
-      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance" | "memoryEmbedding"
+      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance" | "documents" | "memoryEmbedding"
     >> & {
-      appearance?: Partial<Omit<AppearanceSettings, "terminalFont">> & { terminalFont?: Partial<AppearanceSettings["terminalFont"]> };
+      // Each document setting is saved on its own.
+      documents?: Partial<DocumentSettings>;
+      appearance?: Partial<Omit<AppearanceSettings, "terminalFont" | "terminal">> & {
+        terminalFont?: Partial<AppearanceSettings["terminalFont"]>;
+        terminal?: Partial<AppearanceSettings["terminal"]>;
+      };
       marketplace?: Partial<MarketplaceSettings>;
       llm?: LLMSettingsPatch;
       chat?: Partial<ChatSettings>;
@@ -956,9 +1001,15 @@ export class SettingsService {
   }
 
   private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
+    if (partial.chat?.subAgentMaxRounds !== undefined && !isSubAgentMaxRounds(partial.chat.subAgentMaxRounds)) throw new Error("Invalid sub-agent round budget");
+    if (partial.telemetry?.level !== undefined && !isTelemetryLevel(partial.telemetry.level)) throw new Error("Invalid telemetry level");
     const terminalFontPatch = partial.appearance?.terminalFont;
     if (terminalFontPatch && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
       throw new Error("Invalid terminal font family");
+    }
+    // Refused before anything is written: the settings page would otherwise show the value it sent as saved.
+    if (partial.appearance?.terminal !== undefined) {
+      mergeTerminalBehavior({ ...this.settings.appearance.terminal }, partial.appearance.terminal, (field) => { throw new Error(field === null ? "Invalid terminal settings: not a set of fields" : `Invalid terminal setting: ${field}`); });
     }
     const chatPatch = partial.chat;
     if (
@@ -1018,7 +1069,7 @@ export class SettingsService {
     }
     if (partial.chat) this.settings.chat = normalizeChat({ ...this.settings.chat, ...partial.chat });
     if (partial.a2aRemote) this.settings.a2aRemote = normalizeA2ARemote({ ...this.settings.a2aRemote, ...partial.a2aRemote });
-    if (partial.webSearch) this.settings.webSearch = { ...this.settings.webSearch, ...partial.webSearch };
+    if (partial.webSearch) this.settings.webSearch = normalizeWebSearch(partial.webSearch, this.settings.webSearch, PATCHED_FIELD);
     if (partial.marketplace) {
       this.settings.marketplace = nextMarketplace;
       const normalizedLlm = mergeLlmPatch(
@@ -1051,7 +1102,7 @@ export class SettingsService {
       this.settings.permissions = { ...this.settings.permissions, ownerAwayAutoSkipMinutes: partial.permissions.ownerAwayAutoSkipMinutes };
     }
     if (partial.privacy) {
-      this.settings.privacy = { ...this.settings.privacy, ...partial.privacy };
+      this.settings.privacy = normalizePrivacy(partial.privacy, this.settings.privacy, PATCHED_FIELD);
     }
     if (partial.plugins) {
       this.settings.plugins = { ...this.settings.plugins, ...partial.plugins };
@@ -1077,6 +1128,12 @@ export class SettingsService {
       );
       for (const key of TELEMETRY_TEXT_KEYS) {
         acceptTelemetryText(nextTelemetry, key, partial.telemetry[key], PATCHED_FIELD);
+      }
+      if (partial.telemetry.level !== undefined) {
+        nextTelemetry.level = partial.telemetry.level;
+        Object.assign(nextTelemetry, telemetryLevelFlags(partial.telemetry.level));
+      } else if (partial.telemetry.enabled !== undefined || partial.telemetry.crashReportingEnabled !== undefined) {
+        nextTelemetry.level = telemetryLevel({ enabled: nextTelemetry.enabled, crashReportingEnabled: nextTelemetry.crashReportingEnabled });
       }
       this.settings.telemetry = nextTelemetry;
     }
@@ -1117,11 +1174,17 @@ export class SettingsService {
         acceptField(mergedFont, "lineHeight", font.lineHeight, isTerminalLineHeight, "appearance.terminalFont", PATCHED_FIELD);
         nextAppearance.terminalFont = mergedFont;
       }
+      if (patch.terminal !== undefined) {
+        const merged = { ...this.settings.appearance.terminal };
+        mergeTerminalBehavior(merged, patch.terminal, (field) => { throw new Error(field === null ? "Invalid terminal settings: not a set of fields" : `Invalid terminal setting: ${field}`); });
+        nextAppearance.terminal = merged;
+      }
       this.settings.appearance = nextAppearance;
     }
     if (partial.documents && typeof partial.documents === "object" && !Array.isArray(partial.documents)) {
       const nextDocuments = { ...this.settings.documents };
       acceptField(nextDocuments, "openMode", partial.documents.openMode, isDocumentOpenMode, "documents", PATCHED_FIELD);
+      acceptField(nextDocuments, "editorCommand", partial.documents.editorCommand, isEditorCommandSetting, "documents", PATCHED_FIELD);
       this.settings.documents = nextDocuments;
     }
     if (partial.workBoard && typeof partial.workBoard === "object" && !Array.isArray(partial.workBoard)) {
@@ -1135,6 +1198,7 @@ export class SettingsService {
       const nextWebView: WebViewSettings = { ...this.settings.webView };
       const rawFlow = partial.webView.preferredFlow;
       acceptField(nextWebView, "preferredFlow", rawFlow, isWebViewPreferredFlow, "webView", PATCHED_FIELD);
+      acceptField(nextWebView, "addressSearchEngine", partial.webView.addressSearchEngine, isAddressSearchEngine, "webView", PATCHED_FIELD);
       this.settings.webView = nextWebView;
     }
     if (partial.system) {
@@ -1246,7 +1310,7 @@ export class SettingsService {
         nextShortcuts.toggleWindow = null;
       } else if (rawToggle !== undefined) {
         const accel = normalizeAccelerator(rawToggle);
-        if (accel !== null && nativeAcceleratorIdentity(accel, shortcutPlatformOf(process.platform)) !== null && fixedShortcutOwner(accel, shortcutPlatformOf(process.platform)) === null) {
+        if (accel !== null && globalShortcutBindingRefusal(accel, shortcutPlatformOf(process.platform)) === null) {
           nextShortcuts.toggleWindow = accel;
         } else {
           log.warn(
@@ -1275,7 +1339,7 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    for (const key of ["permissions", "appearance", "shortcuts"] as const) {
+    for (const key of ["permissions", "appearance", "shortcuts", "telemetry"] as const) {
       if (!partial[key]) continue;
       for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
@@ -1609,18 +1673,22 @@ export class SettingsService {
   // Historical note: hasApiKey() only checked the single `llm.apiKey` key, while the IPC handler uses vendor-specific `llm.apiKey.<vendor>`
   // secrets. Presence checks name the exact vendor key through `hasStoredSecret(...)` so they cannot return false for configured credentials.
 
-  private loadSettings(appVersion: string | undefined, systemLocale: string | undefined): { settings: AppSettings; writeBack: boolean } {
+  private loadSettings(
+    appVersion: string | undefined,
+    systemLocale: string | undefined,
+  ): { settings: AppSettings; writeBack: boolean; mainLayout: LoadedMainLayout } {
     if (!existsSync(this.settingsPath)) {
       const defaults = structuredClone(DEFAULT_SETTINGS);
       const locale = normalizeLocale(systemLocale);
       defaults.appearance.language = isDefaultVisibleLocale(locale) ? locale : DEFAULT_LOCALE;
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
-      return { settings: defaults, writeBack: false };
+      return { settings: defaults, writeBack: false, mainLayout: { kind: "unknown", reason: "no-file" } };
     }
     try {
       const raw = readFileSync(this.settingsPath, "utf-8");
       const rawParsed = JSON.parse(raw) as unknown;
-      const stored = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed)
+      const holdsSettings = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed);
+      const stored = holdsSettings
         ? rawParsed as Record<string, any>
         : {};
       const appliedMigrations = Array.isArray(stored.appliedMigrations)
@@ -1730,12 +1798,16 @@ export class SettingsService {
       );
       if (appliedMigrations.length !== migrationsBeforeMarketDefaults) migrationWriteBack = true;
 
+      if ((parsed.webSearch?.provider as unknown) === "google") {
+        parsed = { ...parsed, webSearch: { provider: "duckduckgo" } };
+        migrationWriteBack = true;
+      }
       const result: AppSettings = {
         memoryEmbedding: normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding),
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),
-        webSearch: { ...DEFAULT_SETTINGS.webSearch, ...parsed.webSearch },
+        webSearch: normalizeWebSearch(parsed.webSearch),
         marketplace,
         routine: normalizedRoutine,
         homeDocs: normalizeHomeDocs(parsed.homeDocs),
@@ -1743,7 +1815,7 @@ export class SettingsService {
           ownerAwayAutoSkipMinutes: isOwnerAwayAutoSkipMinutes(parsed.permissions?.ownerAwayAutoSkipMinutes)
             ? parsed.permissions.ownerAwayAutoSkipMinutes : DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES,
         },
-        privacy: { ...DEFAULT_SETTINGS.privacy, ...parsed.privacy },
+        privacy: normalizePrivacy(parsed.privacy),
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
         audit: { ...DEFAULT_SETTINGS.audit, ...parsed.audit },
@@ -1764,12 +1836,16 @@ export class SettingsService {
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
-      return { settings: result, writeBack: needsAppearanceWriteBack || migrationWriteBack };
+      return {
+        settings: result,
+        writeBack: needsAppearanceWriteBack || migrationWriteBack,
+        mainLayout: mainLayoutAsStored(holdsSettings, parsed.system, result.system.mainLayout),
+      };
     } catch (error) {
       if (error instanceof LlmProviderSettingsError) throw error;
       const defaults = structuredClone(DEFAULT_SETTINGS);
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
-      return { settings: defaults, writeBack: false };
+      return { settings: defaults, writeBack: false, mainLayout: { kind: "unknown", reason: "unreadable" } };
     }
   }
 

@@ -161,7 +161,7 @@ for (const [width, height] of [[1243, 800], [1243, 600], [360, 800], [360, 600]]
       await closePanel(); await expect(cards).toHaveCount(1);
       await cards.getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ }).click();
       await expect(toggle).toHaveAttribute("aria-pressed", "true");
-      await expect(page.getByTestId("chat-side-panel-url-viewer")).toContainText(`${baseUrl}/page-1`);
+      await expect(page.locator('[data-testid="chat-side-panel-browser-address"]:visible')).toHaveValue(`${baseUrl}/page-1`);
       await expect(cards).toHaveCount(0);
       await expect.poll(() => inspectBrowserTarget(nativeApp, host.windowId, `${baseUrl}/page-1`))
         .toMatchObject({ id: guestId, type: "window", embedded: false, connected: true, attached: true });

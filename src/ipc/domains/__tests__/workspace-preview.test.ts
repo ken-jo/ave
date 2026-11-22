@@ -67,7 +67,7 @@ import { registerPreviewHandlers } from "../preview.js";
 import { registerWorkspaceHandlers } from "../workspace.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { getWorkspaceRootLifecycle } from "../../../permissions/workspace-root-lifecycle.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "../../../permissions/sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, resolvePathForPolicy } from "../../../permissions/sensitive-paths.js";
 import { ReadFileTool } from "../../../tools/file-tools.js";
 import * as previewInput from "../../../tools/preview-document-input.js";
 
@@ -204,6 +204,25 @@ describe("preview:read-file handler", () => {
     expect(await handlers.get(CHANNELS.preview.readFile)!(event, join(root, "docs", "architecture.md")))
       .toMatchObject({ ok: false, error: "unauthorized" });
   });
+  it("shows the person a large presentation document and keeps a confirmed key protected", async () => {
+    const window = 1024 * 1024;
+    const deck = join(root, "Big deck.key");
+    const key = join(root, "big.key");
+    // Longer than what is read: an archive nobody could show harmless, and a key whose header is in the part that was read.
+    writeFileSync(deck, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window * 2)]));
+    writeFileSync(key, Buffer.concat([Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n"), Buffer.alloc(window * 2, "x")]));
+    try {
+      // The deck is shown as any other file of its size, without the protected notice.
+      expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, deck)).toMatchObject({ ok: false, error: "too-large" });
+      expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, key)).toMatchObject({ ok: false, error: "sensitive-path" });
+      // An agent read of the deck still asks.
+      expect(isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(deck)), "read")).toBe("**/*.key");
+    } finally {
+      rmSync(deck, { force: true });
+      rmSync(key, { force: true });
+    }
+  });
+
   it("previews signature-verified images through the normal allowed-root read", async () => {
     const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64");
     const path = join(root, "source-image.dat");
@@ -215,8 +234,8 @@ describe("preview:read-file handler", () => {
   it("rechecks image scope after asynchronous reading before disclosing bytes", async () => {
     const path = join(root, "revoked-image.png");
     writeFileSync(path, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64"));
-    const read = previewInput.readPreviewDocumentInput;
-    const spy = vi.spyOn(previewInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+    const read = previewInput.readJudgedDocumentInput;
+    const spy = vi.spyOn(previewInput, "readJudgedDocumentInput").mockImplementationOnce(async (...args) => {
       const bytes = await read(...args);
       additionalDirectories.value = [];
       return bytes;
@@ -858,7 +877,7 @@ describe("workspace handlers", () => {
       };
       expect(res.ok).toBe(true);
       expect(additionalDirectories.value).toEqual([childRoot]);
-      expect(res.roots?.some((entry) => entry.path === canonicalChild)).toBe(true);
+      expect(res.roots?.some((entry) => entry.path === resolvePathForPolicy(childRoot))).toBe(true);
       expect(prunePathGrants).toHaveBeenCalledWith(canonicalParent, pruneOptions);
       expect(pruneRoutineScopes).toHaveBeenCalledWith(canonicalParent, pruneOptions);
       expect(revokeWorkspaceRoot).toHaveBeenCalledWith(canonicalParent, liveOptions);

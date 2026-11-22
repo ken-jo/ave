@@ -113,7 +113,7 @@ function makeDeps(): never {
     sideChatConversationLoop: undefined,
     approvalGate: undefined,
     settingsService: {
-      get: vi.fn(() => undefined),
+      get: vi.fn((key: string) => key === "system" ? { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Example Root CA", corpCaDebugLog: false } : key === "telemetry" ? {} : undefined),
       getAll: vi.fn(() => ({})),
       set: vi.fn(),
       patch: vi.fn(async () => undefined),
@@ -176,6 +176,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.chat.mainActiveState, []],
   ["chat", CHANNELS.chat.sessionHistory, ["s"]],
   ["chat", CHANNELS.chat.getTurnReview, ["s", "main"]],
+  ["chat", CHANNELS.chat.decideTurnReview, ["s", { action: "undo", scope: "turn" }, "main"]],
   ["chat", CHANNELS.chat.listShellTasks, ["main", "11111111-1111-4111-8111-111111111111"]],
   ["chat", CHANNELS.chat.controlShellTask, ["main", "11111111-1111-4111-8111-111111111111", "background"]],
   ["chat", CHANNELS.memory.detailGet, ["11111111-1111-4111-8111-111111111111", {}]],
@@ -251,6 +252,10 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["workspace", CHANNELS.workspace.searchFiles, ["src"]],
   // Opening a project file in the default app is a user action of the host window, never a plugin frame's.
   ["workspace", CHANNELS.workspace.openPath, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
+  // So is opening it in the user's editor command.
+  ["workspace", CHANNELS.workspace.openInEditor, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
+  ["workspace", CHANNELS.workspace.readForEdit, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
+  ["workspace", CHANNELS.workspace.saveEdit, [{ projectRoot: "/", path: "/x.txt", baseHash: "0".repeat(64), text: "", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
   ["attach", CHANNELS.attach.openFile, [{}]],
   ["attach", CHANNELS.attach.readImage, ["/x"]],
   ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
@@ -386,7 +391,9 @@ describe("host-renderer-only IPC channels", () => {
 
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (domain, channel, args) => {
     // Preview and the default-app open admit only a registered app window's main frame.
-    const event = domain === "preview" || channel === CHANNELS.workspace.openPath ? registeredHostEvent() : hostFrameEvent();
+    const event = domain === "preview" || channel === CHANNELS.workspace.openPath || channel === CHANNELS.workspace.openInEditor
+      || channel === CHANNELS.workspace.readForEdit || channel === CHANNELS.workspace.saveEdit
+      ? registeredHostEvent() : hostFrameEvent();
     if (channel === CHANNELS.preview.documentOpenAck) Object.assign(event.sender, { mainFrame: event.senderFrame });
     await invoke(channel, event, args);
     expect(guardRowsFor(channel)).toEqual([]);

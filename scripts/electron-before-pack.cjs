@@ -10,6 +10,15 @@ module.exports = async function beforePack(context) {
   assertMxcVerificationPayload(join(context.packager.projectDir, "dist", "src", "main"));
   const { assertSkillScriptInventory } = await import("./lib/skill-script-inventory.mjs");
   assertSkillScriptInventory(join(context.packager.projectDir, "dist", "skill-scripts"));
+  if (context.electronPlatformName === "darwin") {
+    // The helper that publishes staged browser downloads through held directories (native/macos-dir-ops), built for the packaged arch.
+    if (process.platform !== "darwin") throw new Error("The macOS download file helper requires a native macOS build");
+    const arch = { 1: "x64", 3: "arm64" }[context.arch];
+    if (!arch) throw new Error(`Unsupported macOS download file helper architecture: ${context.arch}`);
+    const { buildMacosDirOps } = await import(pathToFileURL(join(__dirname, "build-macos-dir-ops.mjs")).href);
+    buildMacosDirOps({ root: context.packager.projectDir, arch });
+    return;
+  }
   if (context.electronPlatformName !== "win32") return;
   const { assertMxcSupervisorFuse } = await import("./lib/mxc-sdk-packaging.mjs");
   assertMxcSupervisorFuse(context.packager.config);

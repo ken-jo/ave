@@ -1,3 +1,5 @@
+import { hasUserKeyboardIntent } from "../../shared/chat-origin.js";
+import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "../../main/e2e-window-presentation.js";
 import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
@@ -9,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { PluginDeploymentDeniedError } from "../../plugins/deployment-guard.js";
-import { stripSecretFields } from "../../plugins/config-schema.js";
+import { applyConfigDefaults, compileConfigSchemaValidator, listSecretKeys, stripSecretFields } from "../../plugins/config-schema.js";
 import { shouldBlockPluginSecretRead, validateApiKeyLikeSecretValue } from "../../plugins/secret-shape.js";
 import { emitPluginConfigChange, SECRET_REDACTED_SENTINEL } from "../../plugins/config-change-bus.js";
 import { latestBootstrapStatus } from "../../boot/bootstrap-status.js";
@@ -510,8 +512,28 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         if (!manifest) {
           throw new Error(`Plugin not found: ${pluginId}`);
         }
-        const schema = manifest?.configSchema;
+        const schema = manifest.configSchema;
+        if (!config || typeof config !== "object" || Array.isArray(config)) {
+          throw new Error("Plugin configuration must be an object.");
+        }
         const stripped = stripSecretFields(schema, asPlainRecord(config));
+        if (schema) {
+          const secretKeys = listSecretKeys(schema);
+          for (const key of schema.required ?? []) {
+            if (secretKeys.has(key) && !await settingsService.hasStoredSecret(`plugin.${pluginId}.${key}`)) {
+              return pluginConfigError("plugin-config-secret-required", "Required secret must be stored before saving configuration.");
+            }
+          }
+          const validator = compileConfigSchemaValidator({
+            ...schema,
+            properties: Object.fromEntries(Object.entries(schema.properties).filter(([key]) => !secretKeys.has(key))),
+            required: schema.required?.filter((key) => !secretKeys.has(key)),
+          });
+          if (!validator) throw new Error("Plugin configuration schema is invalid.");
+          if (!validator(stripSecretFields(schema, applyConfigDefaults(schema, stripped)))) {
+            throw new Error("Plugin configuration does not match its schema.");
+          }
+        }
         const previous = settingsService.getPluginConfig(pluginId) ?? {};
         const savedConfig = await settingsService.setPluginConfig(pluginId, stripped);
         pluginRuntime.setConfigOverride(pluginId, savedConfig);
@@ -524,6 +546,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         }
         return { manifest, savedConfig };
       });
+      if ("ok" in persisted) return persisted;
       // Host config writes may restart safely; see plugins/config-restart-policy.ts.
       if (pluginRuntime.getPluginManifest(pluginId) !== persisted.manifest) {
         throw new Error(`Plugin instance changed before config reload: ${pluginId}`);
@@ -565,7 +588,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (!/^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(safePluginId)) {
         return pluginConfigError("plugin-config-secret-invalid-plugin-id", `Invalid pluginId: ${pluginId}`);
       }
-      const secretValue = String(value ?? "");
+      if (typeof value !== "string") {
+        return pluginConfigError("plugin-config-secret-invalid-value", "Secret value must be a string.");
+      }
+      const secretValue = value;
       const validationError = validateSecretConfigValue(safePluginId, key, secretValue);
       if (validationError) return validationError;
       const persisted = await withPluginInstallLock(safePluginId, async () => {
@@ -577,7 +603,18 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
             `Plugin '${safePluginId}' configSchema does not declare a secret field '${key}'.`,
           );
         }
-        await settingsService.setSecret(`plugin.${safePluginId}.${key}`, secretValue);
+        if (secretValue === "") {
+          if (manifest?.configSchema?.required?.includes(key)) {
+            return pluginConfigError("plugin-config-secret-required", "Required secret cannot be deleted.");
+          }
+          await settingsService.deleteSecret(`plugin.${safePluginId}.${key}`);
+        } else {
+          const validator = compileConfigSchemaValidator({ properties: { [key]: prop }, required: [key] });
+          if (!validator?.({ [key]: secretValue })) {
+            throw new Error("Secret value does not match its schema.");
+          }
+          await settingsService.setSecret(`plugin.${safePluginId}.${key}`, secretValue);
+        }
         const current = settingsService.getPluginConfig(safePluginId) ?? {};
         // An update can mark an existing plaintext key secret, leaving a cleartext copy to remove.
         let mutatedCleartextConfig = false;
@@ -645,7 +682,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  ipcMain.handle(CHANNELS.plugins.perfStats, () => pluginRuntime.getPerfStats());
+  ipcMain.handle(CHANNELS.plugins.perfStats, (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.perfStats, e); return UNAUTHORIZED_FRAME; }
+    return pluginRuntime.getPerfStats();
+  });
 
   ipcMain.handle(CHANNELS.plugins.call, (
     e,
@@ -768,6 +808,47 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.mcp.configPath, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configPath, e); return UNAUTHORIZED_FRAME; }
     return deps.mcpManager.getConfigPath();
+  });
+  ipcMain.handle(CHANNELS.mcp.managementState, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.mcp.managementState, event); return UNAUTHORIZED_FRAME; }
+    return deps.mcpManager.getManagementState();
+  });
+  ipcMain.handle(CHANNELS.mcp.startServer, async (event, serverId: unknown, approvedFingerprint?: unknown, intent?: unknown) => {
+    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.mcp.startServer, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!hasUserKeyboardIntent(intent)
+      || !securitySettingsGestures.consume(event.sender, { channel: CHANNELS.mcp.startServer, payload: { serverId, approvedFingerprint } })) {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "mcp", type: "approval", input: JSON.stringify({ action: "mcp_server_start_refused", reason: "user-keyboard-required" }) });
+      throw new Error("user-keyboard-required: A native user gesture is required");
+    }
+    if (!isUsableMcpServerId(serverId) || approvedFingerprint !== undefined && (typeof approvedFingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(approvedFingerprint))) {
+      throw new Error("invalid-mcp-start: Invalid server start request");
+    }
+    return deps.mcpManager.startServer(serverId, approvedFingerprint as string | undefined);
+  });
+  ipcMain.handle(CHANNELS.mcp.undoRemove, async (event, serverId: unknown, intent?: unknown) => {
+    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.mcp.undoRemove, event);
+      throw new Error("unauthorized-frame: Server restore requires the host main frame");
+    }
+    if (!hasUserKeyboardIntent(intent)
+      || !securitySettingsGestures.consume(event.sender, { channel: CHANNELS.mcp.undoRemove, payload: { serverId } })) throw new Error("user-keyboard-required: A native user gesture is required");
+    if (!isUsableMcpServerId(serverId)) throw new Error("invalid-mcp-undo: Invalid server restore request");
+    return deps.mcpManager.undoRemove(serverId);
+  });
+  ipcMain.handle(CHANNELS.mcp.clearApiKey, async (event, serverId: unknown, intent?: unknown) => {
+    if (!validateHostRendererSender(event) || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.mcp.clearApiKey, event);
+      throw new Error("unauthorized-frame: Credential changes require the host main frame");
+    }
+    if (!hasUserKeyboardIntent(intent)
+      || !securitySettingsGestures.consume(event.sender, { channel: CHANNELS.mcp.clearApiKey, payload: { serverId } })) throw new Error("user-keyboard-required: A native user gesture is required");
+    if (!isUsableMcpServerId(serverId) && !isBundledMcpConfigId(serverId)) throw new Error("invalid-mcp-key-clear: Invalid server credential request");
+    const bundled = deps.mcpManager.bundledCredentialRefForConfigId(serverId);
+    if (bundled) await deps.mcpManager.clearBundledApiKey(bundled.packageRef, bundled.server);
+    else await deps.mcpManager.clearApiKey(serverId);
   });
   ipcMain.handle(CHANNELS.mcp.configAdd, async (e, config: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.mcp.configAdd, e); return UNAUTHORIZED_FRAME; }

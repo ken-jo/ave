@@ -23,7 +23,7 @@ import {
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
 import { matchesReviewerApprovalBasis, type ReviewerApprovalBasis, type ReviewerDispatchOutcome } from "./permission-manager.js";
 import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rule-evidence.js";
-import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -52,6 +52,8 @@ import {
 } from "./host-shell-execution-plan.js";
 import type { FloorSessionGrant } from "./permission-manager.js";
 import { errorMessage } from "../shared/error-message.js";
+import { resolve as pathResolve } from "node:path";
+import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
 
@@ -105,6 +107,60 @@ interface EgressHostApproval {
   readonly projectCwd?: string;
 }
 
+// The operand as the tool call spelled it, plus where it really lands when a link makes the two differ.
+export interface ApprovalRequestTarget {
+  filePath?: string;
+  // Real location in its on-disk spelling (never case-folded). Present only when it differs from `filePath`.
+  canonicalPath?: string;
+}
+
+// The tree stages whose card reason the renderer words itself; any other stage keeps the host's reason text.
+const APPROVAL_REASON_CODES = ["protected-path", "project-escape", "secret-read", "file-write"] as const;
+
+// The card's reason fields for a permission result, sent only for a card about a file target: the same codes are raised for
+// shell commands and for write tools that name no file, and those cards keep the host's own reason text. A folder card states
+// its ordinary reason in its headline, so it carries a floor code only. The protected entry is named only on its own floor's
+// card; a matched secret pattern is named on any file card for that read, a reviewed one included.
+export function approvalReasonFields(
+  result: { readonly reasonCode?: string; readonly pipelineRequest?: Pick<PermissionDecisionRequest, "pathFacts"> },
+  card: { readonly fileTarget: boolean; readonly folderCard?: true },
+): Pick<ApprovalRequest, "reasonCode" | "reasonDetail"> {
+  if (!card.fileTarget) return {};
+  const reasonCode = APPROVAL_REASON_CODES.find((code) => code === result.reasonCode
+    && (card.folderCard === undefined || code === "protected-path" || code === "project-escape"));
+  const facts = result.pipelineRequest?.pathFacts;
+  const protectedEntry = reasonCode === "protected-path" ? facts?.protectedEntry : undefined;
+  const secretPattern = facts?.secretPattern;
+  return {
+    ...(reasonCode === undefined ? {} : { reasonCode }),
+    ...(protectedEntry === undefined && secretPattern === undefined ? {} : { reasonDetail: {
+      ...(protectedEntry === undefined ? {} : { protectedEntry }),
+      ...(secretPattern === undefined ? {} : { secretPattern }),
+    } }),
+  };
+}
+
+// A target whose resolved location differs from its spelling carries both; the comparison uses the matcher's own normalization.
+export function approvalTargetFor(filePath: string, realPath: string): ApprovalRequestTarget & { filePath: string } {
+  const identity = (value: string) => caseFoldForMatch(foldCanonicalPathSeparators(value).normalize("NFC")).replace(/\/+$/u, "");
+  return identity(pathResolve(filePath)) === identity(realPath) ? { filePath } : { filePath, canonicalPath: realPath };
+}
+
+// A target a link sends elsewhere, and whether that place is outside the project.
+export interface LinkedApprovalTarget { readonly filePath: string; readonly canonicalPath: string; readonly outsideProject: boolean }
+
+// On a project-escape card the target is the linked operand that leaves the project; otherwise the first target, with its real location when linked.
+export function approvalRequestTarget(
+  targetFilePath: string | undefined,
+  linkedTargets: readonly LinkedApprovalTarget[],
+  reasonCode: string | undefined,
+): ApprovalRequestTarget | undefined {
+  const linked = (reasonCode === "project-escape" ? linkedTargets.find((target) => target.outsideProject) : undefined)
+    ?? linkedTargets.find((target) => target.filePath === targetFilePath);
+  if (linked) return { filePath: linked.filePath, canonicalPath: linked.canonicalPath };
+  return targetFilePath ? { filePath: targetFilePath } : undefined;
+}
+
 export interface PendingApprovalSummary {
   toolName: string;
   target: string;
@@ -112,9 +168,13 @@ export interface PendingApprovalSummary {
 
 export interface ApprovalRequest {
   browserSite?: string;
+  // Display-only: the tool call a site request asks about, so the panel can mark that call's page. Never an approval capability.
+  toolUseId?: string;
   // Display-only title derived from host-tracked child provenance.
   requestingAgentTitle?: string;
   id: string;
+  // Display-only: the code of the pipeline decision that asked, so the card can word its reason in the user's language instead of the host's English `reason`. A user-owned-surface card gets its surface decision's code; a card about a file target gets one of `APPROVAL_REASON_CODES`, the tree stage that raised it. Never an approval capability, and never read back from a decision.
+  reasonCode?: string;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
   // Display-only projection of the host terminal's current-turn provenance; never an approval capability.
@@ -177,9 +237,9 @@ export interface ApprovalRequest {
   // Actual shell cwd derived from the bound host action; caller values are ignored.
   executionCwd?: string;
   // Sensitive target paths hard-block before the dock and cannot be overridden.
-  target?: {
-    filePath?: string;
-  };
+  target?: ApprovalRequestTarget;
+  // Display-only: the protected entry (a list name such as `.git`, or `application-home` / `runtime-settings-file`) and the secret pattern the path evidence matched.
+  reasonDetail?: { protectedEntry?: string; secretPattern?: string };
   // Sensitive-pattern metadata is diagnostic only; requestAndWait owns the authoritative hard block before any dock.
   sensitivePathPattern?: string | null;
   // Cache key for approval record/lookup symmetry. Propagated from executor's approvalCacheKeyFor result so the renderer can record and look up entries using the same key that dispatchReviewer uses. Without this field the renderer receives undefined and the record key mismatches the lookup key → approval cache hit rate 0% for tools like routine_schedule / bash / fs_write.
@@ -979,6 +1039,7 @@ export class ApprovalGate {
       homeFolderRefused: _requestedHomeFolderRefused,
       userOwnedSurface: requestedUserOwnedSurface,
       userOwnedSurfaceReviewFallback: requestedSurfaceReviewFallback,
+      reasonCode: requestedReasonCode,
       executionPlan: requestedExecutionPlan,
       executionCwd: _requestedExecutionCwd,
       sandboxCapability: requestedSandboxCapability,
@@ -1203,6 +1264,13 @@ export class ApprovalGate {
       ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
       ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
+      // Only the card a code belongs to is sent it. A surface card shows its own sentence for the decision that asked; a card that stopped being one here
+      // (forced, a child's, not a tool card), or a review fallback the ordinary card draws, shows the host's reason and gets no surface code. Any other
+      // card gets only a file reason, which the ordinary card words itself.
+      ...(requestedReasonCode !== undefined && (userOwnedSurface !== undefined
+        ? requestedSurfaceReviewFallback !== true
+        : APPROVAL_REASON_CODES.some((code) => code === requestedReasonCode))
+        ? { reasonCode: requestedReasonCode } : {}),
       ...(executionPlanAudit === undefined
         ? {}
         : { executionPlan: executionPlanAudit }),

@@ -59,6 +59,14 @@ function makeMarker(): Pick<WorkBoardStorage, "readJson" | "writeJson"> & {
 }
 
 describe("seedSampleWorkBoard", () => {
+  it("defers an unlisted board without creating samples or a terminal marker", async () => {
+    const store = makeStore();
+    store.list = async () => ({ status: "invalid", reason: "unreadable" });
+    const marker = makeMarker();
+    expect(await seedSampleWorkBoard({ store, marker, alreadyMigrated: false, now: () => NOW })).toEqual({ seeded: false, reason: "invalid" });
+    expect(store.items).toEqual([]);
+    expect(marker.files).toEqual({});
+  });
   it("seeds a fresh board once, with a completed sample carrying plan + output", async () => {
     const store = makeStore();
     const marker = makeMarker();

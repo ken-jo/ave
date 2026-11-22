@@ -1,10 +1,10 @@
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
-import { afterEach, beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
 import path from "node:path";
 import os from "node:os";
-beforeAll(() => configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false }));
-import { mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
@@ -46,7 +46,14 @@ vi.mock("../../../shared/chat-history.js", () => ({
   serializeHistoryMessage: vi.fn((m: unknown, i: number) => ({ ...m as object, index: i })),
 }));
 // Authorize an explicit project so metadata tests exercise the real workspace authority.
-const EXPLICIT_TEST_PROJECT_ROOT = path.resolve(os.tmpdir(), "ave-explicit-project-fixture");
+let explicitTestProjectRoot: string | undefined;
+beforeAll(() => configureHostResources({ resourcePath: path.resolve("resources"), isPackaged: false }));
+afterAll(() => {
+  if (explicitTestProjectRoot !== undefined) {
+    expect(existsSync(explicitTestProjectRoot), "Explicit project fixture must be removed").toBe(false);
+  }
+});
+
 vi.mock("../../../permissions/permission-settings-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/permission-settings-store.js")>();
   return {
@@ -57,7 +64,10 @@ vi.mock("../../../permissions/permission-settings-store.js", async (importOrigin
         ...real,
         permissions: {
           ...real.permissions,
-          additionalDirectories: [...(real.permissions.additionalDirectories ?? []), EXPLICIT_TEST_PROJECT_ROOT],
+          additionalDirectories: [
+            ...(real.permissions.additionalDirectories ?? []),
+            ...(explicitTestProjectRoot === undefined ? [] : [explicitTestProjectRoot]),
+          ],
         },
       };
     }),
@@ -649,6 +659,13 @@ describe("ave:chat:get-sub-agent-transcript", () => {
 });
 
 describe("ave:chat active main state", () => {
+  beforeAll(() => {
+    explicitTestProjectRoot = mkdtempSync(path.join(os.tmpdir(), "ave-explicit-project-fixture-"));
+  });
+  afterAll(async () => {
+    if (explicitTestProjectRoot !== undefined) await cleanupTmpDir(explicitTestProjectRoot);
+  });
+
   it("marks fresh state when a new main chat starts", async () => {
     const loop = makeConversationLoop("d1c00b95-b0af-4bd6-8179-4210161fffc3", []);
     const deps = await setupHandlers(loop);
@@ -671,8 +688,15 @@ describe("ave:chat active main state", () => {
 
   it("persists the resolved project identity when the user explicitly selects a real project", async () => {
     // Explicit project selection persists metadata at creation for immediate project grouping.
-    mkdirSync(EXPLICIT_TEST_PROJECT_ROOT, { recursive: true });
-    const explicitProjectRoot = realpathSync(EXPLICIT_TEST_PROJECT_ROOT);
+    if (explicitTestProjectRoot === undefined) throw new Error("Explicit project fixture was not created");
+    const nativeRealpath = vi.spyOn(realpathSync, "native");
+    let explicitProjectRoot: string;
+    try {
+      explicitProjectRoot = realpathSync.native(explicitTestProjectRoot);
+      expect(nativeRealpath).toHaveBeenCalledExactlyOnceWith(explicitTestProjectRoot);
+    } finally {
+      nativeRealpath.mockRestore();
+    }
     const loop = makeConversationLoop("d1c00b95-b0af-4bd6-8179-4210161fffc3", []);
     const deps = await setupHandlers(loop);
 
@@ -688,6 +712,7 @@ describe("ave:chat active main state", () => {
     expect((savedMeta.projectRoot as string).toLowerCase().replace(/\\/g, "/")).toBe(
       explicitProjectRoot.toLowerCase().replace(/\\/g, "/"),
     );
+    expect(path.basename(explicitProjectRoot)).toMatch(/^ave-explicit-project-fixture-[A-Za-z0-9]{6}$/u);
   });
 
   it("marks explicit main session resume but ignores routine session resume", async () => {
@@ -1796,7 +1821,7 @@ B${i}
     [64_000, undefined, 32_000],
     [32_001, undefined, 32_000],
     [32_000, "32000", 8_000],
-  ])("bounds retry thinking with output %i and input %s, then restores settings", async (outputTokenLimit, thinkingBudgetTokens, expected) => {
+  ])("bounds request-scoped retry thinking with output %i and input %s without changing settings", async (outputTokenLimit, thinkingBudgetTokens, expected) => {
     const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", [
       { role: "user", content: "retry text" }, { role: "assistant", content: "old answer" },
     ]);
@@ -1806,15 +1831,55 @@ B${i}
     llm.vendors.openai.thinkingBudgetTokens = Math.min(14_000, Math.floor(outputTokenLimit / 2));
     const originalGet = deps.settingsService.get.getMockImplementation();
     deps.settingsService.get.mockImplementation((key?: string) => key === "llm" ? llm : originalGet(key));
+    deps.settingsService.patch.mockImplementation(async (patch: { llm: { vendors: { openai: object } } }) => {
+      Object.assign(llm.vendors.openai, patch.llm.vendors.openai);
+    });
     await invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens }, "main", KEYBOARD_GESTURE);
-    expect(deps.settingsService.patch).toHaveBeenCalledTimes(2);
-    expect(deps.settingsService.patch).toHaveBeenNthCalledWith(1, {
-      llm: { vendors: { openai: { ...llm.vendors.openai, enableThinking: true, thinkingBudgetTokens: expected } } },
-    });
-    expect(deps.settingsService.patch).toHaveBeenNthCalledWith(2, {
-      llm: { vendors: { openai: llm.vendors.openai } },
-    });
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    expect(loop.runTurn.mock.calls[0]?.[3]).toMatchObject({ thinkingOverride: { enableThinking: true, thinkingBudgetTokens: expected } });
     expect(loop.runTurn).toHaveBeenCalledOnce();
+  });
+
+
+  it("preserves model, endpoint and thinking edits made while an effort retry runs", async () => {
+    const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", [
+      { role: "user", content: "retry text" }, { role: "assistant", content: "old answer" },
+    ]);
+    const deps = await setupHandlers(loop);
+    const llm = fakeLlmSettings({ outputTokenLimit: 32_000 });
+    const originalGet = deps.settingsService.get.getMockImplementation();
+    deps.settingsService.get.mockImplementation((key?: string) => key === "llm" ? llm : originalGet(key));
+    deps.settingsService.patch.mockImplementation(async (patch: { llm: { vendors: { openai: object } } }) => { Object.assign(llm.vendors.openai, patch.llm.vendors.openai); });
+    loop.runTurn.mockImplementation(async () => {
+      llm.vendors.openai.model = "new-model";
+      llm.vendors.openai.baseUrl = "https://new.example/v1";
+      llm.vendors.openai.thinkingBudgetTokens = 2_000;
+      return { text: "ok", toolCalls: [], stopReason: "end_turn" };
+    });
+    await invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 16_000 }, "main", KEYBOARD_GESTURE);
+    expect(llm.vendors.openai).toMatchObject({ model: "new-model", baseUrl: "https://new.example/v1", thinkingBudgetTokens: 2_000 });
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+  });
+
+  it("preserves an intentional save equal to the retry reasoning controls", async () => {
+    const loop = makeConversationLoop("f54c7bda-1854-4991-8708-8d60d079368a", [
+      { role: "user", content: "retry text" }, { role: "assistant", content: "old answer" },
+    ]);
+    const deps = await setupHandlers(loop);
+    const llm = fakeLlmSettings({ outputTokenLimit: 32_000 });
+    llm.vendors.openai.enableThinking = false;
+    llm.vendors.openai.thinkingBudgetTokens = 2_000;
+    const originalGet = deps.settingsService.get.getMockImplementation();
+    deps.settingsService.get.mockImplementation((key?: string) => key === "llm" ? llm : originalGet(key));
+    deps.settingsService.patch.mockImplementation(async (patch: { llm: { vendors: { openai: object } } }) => { Object.assign(llm.vendors.openai, patch.llm.vendors.openai); });
+    loop.runTurn.mockImplementation(async () => {
+      await deps.settingsService.patch({ llm: { vendors: { openai: { enableThinking: true, thinkingBudgetTokens: 16_000 } } } });
+      return { text: "ok", toolCalls: [], stopReason: "end_turn" };
+    });
+    await invokeRegisteredHandler(handlers, "ave:chat:retry-effort", { enableThinking: true, thinkingBudgetTokens: 16_000 }, "main", KEYBOARD_GESTURE);
+    expect(llm.vendors.openai).toMatchObject({ enableThinking: true, thinkingBudgetTokens: 16_000 });
+    expect(deps.settingsService.patch).toHaveBeenCalledOnce();
+    expect(loop.runTurn.mock.calls[0]?.[3]).toMatchObject({ thinkingOverride: { enableThinking: true, thinkingBudgetTokens: 16_000 } });
   });
 
   it("resolves stored persona prompt id when retrying with effort settings", async () => {

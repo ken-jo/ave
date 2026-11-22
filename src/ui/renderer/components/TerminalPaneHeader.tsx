@@ -13,9 +13,12 @@ export function directoryName(path: string): string {
   return trimmed.slice(trimmed.lastIndexOf("/") + 1) || "/";
 }
 
-/** What the agent may do in this terminal: a word for the chip, and the full statement for its tooltip. */
+/** What the agent may do in this terminal: the chip's name and its detail, and the full statement for its tooltip. */
 export interface TerminalPaneAccess {
+  /** Always shown ("Host"). */
   chip: string;
+  /** Shown after the name while the header has room; the first thing a narrow header gives up, before the pane's title. */
+  detail: string;
   about: readonly string[];
 }
 
@@ -32,8 +35,11 @@ export function TerminalPaneHeader({ blocks, cwdNote, inline, access }: {
     <Tooltip>
       <TooltipTrigger asChild>
         <span tabIndex={0} aria-label={about} title={about} data-testid="terminal-pane-host-chip"
-          className="shrink-0 whitespace-nowrap rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 text-dense font-medium text-primary outline-none focus-visible:ring-1 focus-visible:ring-ring">
-          {access.chip}
+          className="flex h-[calc(1lh+0.25rem)] min-w-0 shrink flex-wrap content-start overflow-hidden whitespace-nowrap rounded bg-primary/(--opacity-subtle) px-1.5 py-0.5 text-dense font-medium text-primary outline-none focus-visible:ring-1 focus-visible:ring-ring">
+          <span className="shrink-0">{access.chip}</span>
+          {/* All or nothing: when the chip is too narrow for the detail it wraps to a second line, which the chip's one-line height hides. The chip then reads
+              as its name alone and the tooltip carries the rest; a detail cut mid-word would read as a different label. */}
+          <span className="shrink-0 whitespace-pre" data-testid="terminal-pane-host-chip-detail">{` · ${access.detail}`}</span>
         </span>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-72 whitespace-pre-line">{about}</TooltipContent>
@@ -41,9 +47,11 @@ export function TerminalPaneHeader({ blocks, cwdNote, inline, access }: {
   );
   if (!inline) {
     return (
-      <span className="flex min-w-0 shrink-0 items-center gap-(--chrome-gap-tight)" data-testid="terminal-pane-header">
+      // Shrinks a million times as readily as the pane title beside it: the title's share of any squeeze is below a layout unit, so the chip's detail
+      // is gone before the title loses anything (at a thousand to one the title lost a fraction of a pixel and drew an ellipsis).
+      <span className="flex min-w-0 shrink-[1000000] items-center gap-(--chrome-gap-tight)" data-testid="terminal-pane-header">
         {chip}
-        {blocks}
+        <span className="flex shrink-0 items-center gap-(--chrome-gap-tight)">{blocks}</span>
       </span>
     );
   }

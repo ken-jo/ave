@@ -1,5 +1,5 @@
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
-import { mkdtempSync } from "node:fs";
+import { lstatSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -49,6 +49,11 @@ const broker = vi.hoisted(() => ({
   acquire: vi.fn(),
   execute: vi.fn(),
 }));
+
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+});
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -117,7 +122,10 @@ describe("executor broker shell route", () => {
     { cwd: "/git", expectedCwd: "/git" },
     { cwd: "nested", expectedCwd: "/app/nested" },
     { cwd: undefined, expectedCwd: "/app" },
-  ])("authorizes and audits guest cwd $cwd without host preparation, path inspection, or spawn", async ({ cwd, expectedCwd }) => {
+  ].flatMap(location => ["", ".pem", ".key"].flatMap(extension => ["/logs/result", "result"].map(operand => ({ ...location, extension, operand })))))("authorizes and audits guest cwd $cwd and $operand$extension output without host preparation, path inspection, or spawn", async ({ cwd, expectedCwd, extension, operand }) => {
+    const command = `printf broker-only > ${operand}${extension}`;
+    const realpaths = vi.spyOn(realpathSync, "native");
+    vi.mocked(lstatSync).mockClear();
     const registry = new ToolRegistry();
     registry.register(new BashTool());
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
@@ -157,7 +165,7 @@ describe("executor broker shell route", () => {
         id: "tu-broker-guest-shell",
         name: "bash",
         input: {
-          command: "printf broker-only > /logs/result",
+          command,
           ...(cwd === undefined ? {} : { cwd }),
           timeoutSeconds: 30,
         },
@@ -182,7 +190,7 @@ describe("executor broker shell route", () => {
       broker.capability,
       "shell.run",
       {
-        command: "printf broker-only > /logs/result",
+        command,
         cwd: expectedCwd,
         timeoutMs: 30_000,
       },
@@ -194,7 +202,11 @@ describe("executor broker shell route", () => {
     expect(hostToolPathInspection).not.toHaveBeenCalled();
     expect(hostToolCwdValidation).not.toHaveBeenCalled();
     expect(localSpawn).not.toHaveBeenCalled();
+    const probes = [...realpaths.mock.calls, ...vi.mocked(lstatSync).mock.calls]
+      .map(([path]) => String(path).replaceAll("\\", "/"));
+    expect(probes.filter(path => /^(?:[A-Za-z]:)?\/logs(?:\/|$)/u.test(path))).toEqual([]);
     expect(permissionCheck.mock.calls[0]?.[4]?.ruleSubject?.kind).toBe("shell");
+    expect(permissionCheck.mock.calls[0]?.[4]?.guestCwd).toBe(expectedCwd);
     expect(permissionCheck.mock.calls[0]?.[4]?.fileWritePolicy).toBeUndefined();
     expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
       toolUseId: "tu-broker-guest-shell",
@@ -415,12 +427,22 @@ describe("broker guest-aware protected-write floor", () => {
     return manager.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd: root },
       shellExecution: { runsSandboxed: substrate !== undefined },
-      ...(substrate === undefined ? {} : { disposableSubstrate: substrate }),
+      ...(substrate === undefined ? {} : { disposableSubstrate: substrate, guestCwd: "/app" }),
     });
   };
 
   it("resolves a confirmed guest write target with guest semantics instead of flooring it", () => {
     expect(check("printf x > /logs/result", guest())).toMatchObject({ decision: "allow" });
+  });
+
+  it("refuses a confirmed guest route without its issued working directory", () => {
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command: "printf x > result.pem", cwd: root },
+      shellExecution: { runsSandboxed: true },
+      disposableSubstrate: guest(),
+    })).toMatchObject({ decision: "deny", reasonCode: "invalid-rule-target" });
   });
 
   it("keeps the critical-delete floor for a guest root delete", () => {

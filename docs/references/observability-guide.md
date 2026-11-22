@@ -129,6 +129,37 @@ Tests: `src/audit/__tests__/dlp-stats.test.ts`,
 The executor's Step 7b masking of display and audit surfaces is a separate
 path; see [Tool Governance, section 11](../architecture/tool-governance.md#11-data-loss-prevention).
 
+## Remote reporting
+
+Local audit collection is independent of the remote reporting consent in
+Settings → Audit. `telemetry.level` is Off, Crash, Error or All; new profiles
+start at Off. Crash allows native crash dumps, Error adds extension load-failure
+reports, and All adds app usage and extension installation/removal events.
+
+App events use `telemetry.endpoint` and contain event names, numeric metrics,
+app version and a hashed session ID. Extension reports use the marketplace
+service document's same-origin telemetry destination and contain the extension
+ID, version, a persistent random device ID and, for failures, a bounded host
+error category. Their payload excludes diagnostic messages, conversation content
+and API keys. Clearing the app endpoint does not disable that separate extension
+destination; choose Off to stop all remote reporting.
+
+Native dumps use `telemetry.crashReportEndpoint` and can include unmasked
+process memory. Both editable destinations require HTTPS and an operator-allowed
+host from `AVE_TELEMETRY_ALLOWLIST`; credentials and fragments are refused.
+Packaged builds exclude localhost from the enforced and displayed allowlist.
+Off cancels active event uploads and disables native uploads immediately.
+Changing a native destination takes effect on the next launch. Local dumps
+remain available regardless of the level.
+
+Migration retains an existing crash opt-out. The panel explains that exception
+and requires an explicit level confirmation before enabling crash uploads.
+Consent policy: `src/shared/telemetry-policy.ts`. Regression coverage:
+`src/shared/__tests__/telemetry-policy.test.ts`,
+`src/main/__tests__/release-prep.test.ts`,
+`src/__tests__/telemetry-client.test.ts` and
+`test/e2e/ui/telemetry-settings-surface.spec.ts`.
+
 ## Operator checks
 
 - Empty states: the cost view shows zero (not `NaN`) for a range with no

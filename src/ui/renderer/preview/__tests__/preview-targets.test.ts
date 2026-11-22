@@ -113,12 +113,7 @@ describe("collectChatPreviewModel", () => {
           status: "done",
           category: "write",
           input: { path: "C:\\workspace\\out.json" },
-          result: JSON.stringify({
-            kind: "ave.write_file",
-            path: "C:\\workspace\\out.json",
-            before: "{}",
-            after: "{\"ok\":true}",
-          }),
+          result: JSON.stringify({ path: "C:\\workspace\\out.json", bytes: 11, hasSidecar: true }),
         },
         {
           toolUseId: "web-1",
@@ -186,12 +181,7 @@ describe("collectChatPreviewModel", () => {
           status: "done",
           category: "write",
           input: { path },
-          result: JSON.stringify({
-            kind: "ave.write_file",
-            path,
-            before: "# Before\n",
-            after: "# After\n",
-          }),
+          result: JSON.stringify({ path, bytes: 8, hasSidecar: true }),
         },
       ]),
     ];
@@ -220,7 +210,7 @@ describe("collectChatPreviewModel", () => {
           // A bare filename with NO directory separator — the shape the model produces when writing into the working directory by
           // name.
           input: { path: "2026-07-03.md", content: "# Notes" },
-          result: JSON.stringify({ kind: "ave.write_file", path: "2026-07-03.md" }),
+          result: JSON.stringify({ path: "2026-07-03.md", bytes: 7, isNewFile: true }),
         },
       ], "g-write"),
     ];
@@ -235,13 +225,13 @@ describe("collectChatPreviewModel", () => {
         path: "2026-07-03.md",
         label: "2026-07-03.md",
         operation: "write",
-        previewTargetId: "file:write-bare-1:2026-07-03.md",
+        previewTargetId: "diff:write-bare-1:2026-07-03.md",
       }),
     );
     // The linked preview target exists so the click resolves to a real preview.
     expect(
       model.targets.some(
-        (tgt) => tgt.id === "file:write-bare-1:2026-07-03.md" && "path" in tgt && tgt.path === "2026-07-03.md",
+        (tgt) => tgt.id === "diff:write-bare-1:2026-07-03.md" && "path" in tgt && tgt.path === "2026-07-03.md",
       ),
     ).toBe(true);
   });
@@ -258,7 +248,7 @@ describe("collectChatPreviewModel", () => {
           // The `content` body mentions filename-like tokens; only the `path` key vouches for a real file, so the body must NOT leak
           // entries.
           input: { path: "report.md", content: "see index.ts and config.json" },
-          result: JSON.stringify({ kind: "ave.write_file", path: "report.md" }),
+          result: JSON.stringify({ path: "report.md", bytes: 28, isNewFile: true }),
         },
       ], "g-content"),
     ];

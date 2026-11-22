@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach, vi } from "vitest";
 import { cleanup, configure } from "@testing-library/react";
 import { _clearTerminalFileReviewForTest } from "../../src/ui/renderer/preview/terminal-file-review.js";
+import { resetLiveTerminalsForTest } from "../../src/ui/renderer/preview/live-terminal-registry.js";
 import { clearComposerDrafts } from "../../src/ui/renderer/state/composer-draft-store.js";
 
 // A notice strip's screen-reader region repeats the visible notice's text (NoticeLiveRegion). Text queries look for what is
@@ -44,6 +45,8 @@ const intersectionStates = new Map<Element, boolean>();
 
 afterEach(() => {
   cleanup();
+  // A terminal tab's xterm outlives its view; a test ends the window it belonged to.
+  resetLiveTerminalsForTest();
   _clearTerminalFileReviewForTest();
   // Clear parked drafts so unmounting one test cannot seed the next composer.
   clearComposerDrafts();

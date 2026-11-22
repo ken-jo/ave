@@ -114,6 +114,163 @@ SOFTWARE.
 
 ---
 
+## microsoft/vscode (Code - OSS)
+
+- **What is included:** source code ported (not a dependency) from Visual
+  Studio Code (Code - OSS) and adapted to Ave's architecture. Each file below
+  carries a header naming the VS Code path and commit it was adapted from.
+- **Ave files that contain ported code:**
+  - `src/tools/safe-env.ts` (`buildUserTerminalEnv`, from
+    `src/vs/base/common/processes.ts`)
+  - `src/ui/renderer/components/terminal-resize-debouncer.ts`
+    (`TerminalResizeDebouncer`, from
+    `src/vs/workbench/contrib/terminal/browser/terminalResizeDebouncer.ts`)
+- **License:** MIT
+- **Copyright:** Copyright (c) 2015 - present Microsoft Corporation
+- **Repository:** https://github.com/microsoft/vscode
+- **Full license text:** reproduced below.
+
+```text
+MIT License
+
+Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## xterm.js fit addon (`@xterm/addon-fit`)
+
+- **What is included:** the host-measuring part of the addon's
+  `proposeDimensions`, ported (in addition to the bundled package) and
+  changed to divide by the width of one cell.
+- **Ave files that contain ported code:**
+  - `src/ui/renderer/components/terminal-fit.ts` (`terminalColumnsFor`, from
+    `addons/addon-fit/src/FitAddon.ts`, package version 0.11.0)
+- **License:** MIT
+- **Repository:** https://github.com/xtermjs/xterm.js
+- **Full license text:** reproduced below.
+
+```text
+Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+## xterm.js serialize addon (`@xterm/addon-serialize`)
+
+- **What is included:** the string serializer of `@xterm/addon-serialize`
+  0.14.0 (`addons/addon-serialize/src/SerializeAddon.ts`), ported into the
+  renderer: a host terminal tab serializes what its terminal shows, to be
+  restored after a restart. Changed to write each cell's hyperlink and to
+  end after the last row with content. The package itself is not bundled.
+- **Ave files that contain ported code:**
+  - `src/ui/renderer/components/terminal-serialize.ts`
+- **Ave files that use the ported code:** `src/ui/renderer/components/live-terminal.ts`
+- **License:** MIT (the package's `package.json` `license` field)
+- **Repository:** https://github.com/xtermjs/xterm.js
+- **Full license text:** reproduced below.
+
+```text
+Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+---
+
+## microsoft/vscode (Code - OSS)
+
+- **What is included:** source code ported (not a dependency) from the MIT
+  licensed Code - OSS repository and adapted to Ave. Each file below carries a
+  header naming the upstream paths and commit it was taken from. No Microsoft
+  proprietary extension, Marketplace content, trademark or logo is included.
+- **License:** MIT
+- **Copyright:** Copyright (c) 2015 - present Microsoft Corporation
+- **Repository:** https://github.com/microsoft/vscode
+- **Ave files that contain ported code:**
+  - `src/shared/lcs-diff.ts` (from `src/vs/base/common/diff/diff.ts`,
+    `src/vs/base/common/diff/diffChange.ts`, `src/vs/base/common/hash.ts`,
+    `src/vs/base/common/uint.ts`)
+  - `src/ui/renderer/utils/list-keyboard-navigation.ts` (from
+    `src/vs/base/browser/ui/list/listWidget.ts`)
+- **Full license text:** reproduced below.
+
+```text
+MIT License
+
+Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## SheetJS Community Edition (`xlsx`)
 
 - **Version:** 0.20.3 (pinned, exact; installed from the official tarball
@@ -229,3 +386,37 @@ THE SOFTWARE.
 - **node-pty:** 1.1.0 (MIT), shared with the existing terminal runtime; its winpty payload includes the MIT license in `winpty-LICENSE.txt`.
 
 License texts and the native API header notices embedded by the FFI and terminal addons are included under `resources/licenses/mxc/`. Installed-byte hashes for the selected runtime artifacts are recorded in `src/permissions/mxc-launcher-pins.json`. Native packaged loading and dynamic DLL dependencies require verification on each target architecture.
+
+---
+
+## microsoft/vscode (Code - OSS)
+
+- **Source:** `src/vs/base/common/filters.ts` and `src/vs/base/common/objects.ts` at commit `6659689e6b03ec062f5b7bcea9850b4c59045807`
+- **License:** MIT
+- **Ave files containing adapted code:**
+  - `src/ui/renderer/settings-text-match.ts`
+  - `src/ui/renderer/settings-modified.ts`
+
+```text
+MIT License
+
+Copyright (c) 2015 - present Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

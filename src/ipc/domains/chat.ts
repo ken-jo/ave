@@ -1,7 +1,7 @@
 import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
-import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
-import type { TurnReviewResult } from "../../shared/turn-change-review.js";
+import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { parseTurnReviewDecision, type TurnReviewError, type TurnReviewResult } from "../../shared/turn-change-review.js";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
 import {
@@ -52,12 +52,12 @@ import {
 } from "../../main/conversation-command-port.js";
 import { createLogger } from "../../lib/logger.js";
 import { readDiffSidecar, isSafeId } from "../../tools/write-diff-cache.js";
+import type { WriteDiffRecord } from "../../shared/line-diff.js";
 import { isToolResultStubContent } from "../../shared/tool-result-stub.js";
 import {
   getLlmVendorSettings,
   getLlmThinkingBudgetLimit,
   normalizeLlmThinkingBudgetTokens,
-  llmRouteBaseUrlSignature,
 } from "../../shared/llm-vendor-defaults.js";
 import {
   deferTurnCompletion,
@@ -90,7 +90,7 @@ import { isSuggestionsSession } from "../../shared/suggestions-session.js";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "../../main/conversation-command-port.js";
 import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
-import type { ConversationLoop } from "../../engine/conversation-loop.js";
+import type { ConversationLoop, RunTurnOptions } from "../../engine/conversation-loop.js";
 import { hasOnlyKeys } from "../../shared/is-record.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { activeModelCatalog } from "../../shared/model-catalog/active.js";
@@ -529,6 +529,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       resumesInterruptedTurn: true | undefined,
       // The replay's click, verified by main; a replay is the user's own turn only with it, and a staged envelope keeps its own origin.
       userKeyboardIntent: VerifiedUserKeyboardIntent,
+      thinkingOverride?: RunTurnOptions["thinkingOverride"],
     ) => {
       // Replay and edit/resend need the same input DLP boundary as ordinary sends.
       const replayStagedInputOrigin = parseStagedEnvelope(input)?.kind.inputOrigin;
@@ -546,6 +547,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
             ? { attachments: sanitized.attachments }
             : {}),
           ...(rolePrompt ? { rolePrompt } : {}),
+          ...(thinkingOverride ? { thinkingOverride } : {}),
           ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
           ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
         },
@@ -565,7 +567,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     };
 
     const continueFromLastUserTurnWithinLease = async (
-      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent },
+      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent; thinkingOverride?: RunTurnOptions["thinkingOverride"] },
       transport: StreamTurnTransport,
     ) => {
       const messages = [...(loop.getHistory().getMessages() as GenericMessage[])];
@@ -613,6 +615,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           t("be_conversationLoop.resumeInterruptedTurnDisplay"),
           true,
           opts.userKeyboardIntent,
+          opts.thinkingOverride,
         );
         return { ok: true, result };
       }
@@ -628,6 +631,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           typeof priorDisplayText === "string" ? priorDisplayText : undefined,
           undefined,
           opts.userKeyboardIntent,
+          opts.thinkingOverride,
         );
         return { ok: true, result };
       } catch (err) {
@@ -639,7 +643,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       }
     };
     const continueFromLastUserTurn = async (
-      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent },
+      opts: { requireTerminalUser: boolean; restoreOnFailure: boolean; userKeyboardIntent: VerifiedUserKeyboardIntent; thinkingOverride?: RunTurnOptions["thinkingOverride"] },
       expectedSessionId?: string,
     ) => {
       const turn = tryStreamTurn(async (transport) => {
@@ -1326,10 +1330,15 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
-  ipcMain.handle(CHANNELS.chat.getTurnReview, async (e, expectedSessionId: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+  /**
+   * The checks a turn-review request must pass, and keep passing while it runs: the same window group, an idle
+   * conversation, the same session, working directory and extra directories, and the same latest turn.
+   */
+  const turnReviewScope = (e: Electron.IpcMainInvokeEvent, expectedSessionId: unknown, chatGroupId: unknown, channel: string):
+    | { ok: false; error: TurnReviewError }
+    | { ok: true; sessionId: string; turnId: string; context: () => { cwd: string; extraAllowedDirectories: string[] }; settled: () => boolean } => {
     if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return { ok: false, error: "invalid-input" };
-    const group = groupOf(e, chatGroupId, CHANNELS.chat.getTurnReview);
+    const group = groupOf(e, chatGroupId, channel);
     const loop = group.loop;
     if (group.surfaceRuntime.activity.isBusy()) return { ok: false, error: STREAMING_ACTIVE };
     if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
@@ -1351,15 +1360,40 @@ export function registerChatHandlers(deps: IpcDeps): void {
         && currentExtraAllowedDirectories.every((directory, index) => directory === extraAllowedDirectories[index])
         && latestReviewTurnId(loop) === turnId;
     };
-    const review = await getTurnChangeReview(expectedSessionId, turnId, () => {
-      if (!isCurrent()) {
-        contextChanged = true;
-        throw new Error("turn-review-context-changed");
-      }
-      return { cwd, extraAllowedDirectories };
-    }, { currentDetails: true });
-    if (contextChanged || !isCurrent()) return { ok: false, error: "turn-review-stale" };
+    return {
+      ok: true,
+      sessionId: expectedSessionId,
+      turnId,
+      context: () => {
+        if (!isCurrent()) {
+          contextChanged = true;
+          throw new Error("turn-review-context-changed");
+        }
+        return { cwd, extraAllowedDirectories };
+      },
+      settled: () => !contextChanged && isCurrent(),
+    };
+  };
+
+  ipcMain.handle(CHANNELS.chat.getTurnReview, async (e, expectedSessionId: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+    const scope = turnReviewScope(e, expectedSessionId, chatGroupId, CHANNELS.chat.getTurnReview);
+    if (!scope.ok) return scope;
+    const review = await getTurnChangeReview(scope.sessionId, scope.turnId, scope.context, { currentDetails: true });
+    if (!scope.settled()) return { ok: false, error: "turn-review-stale" };
     return review;
+  });
+
+  // Keep or undo is the person's own action on their files: the host window sends it, and no card is shown.
+  ipcMain.handle(CHANNELS.chat.decideTurnReview, async (e, expectedSessionId: unknown, decision: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.decideTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+    const parsed = parseTurnReviewDecision(decision);
+    if (!parsed) return { ok: false, error: "invalid-input" };
+    const scope = turnReviewScope(e, expectedSessionId, chatGroupId, CHANNELS.chat.decideTurnReview);
+    if (!scope.ok) return scope;
+    // The decision was made on one turn's review; if a later turn has become the latest since, nothing is written.
+    if (parsed.turnId !== scope.turnId) return { ok: false, error: "turn-review-stale" };
+    return decideTurnChange(scope.sessionId, parsed.turnId, scope.context, parsed);
   });
 
   // Restore code before history mutation; code-only restore leaves history intact and rewind persists its own truncation.
@@ -1487,51 +1521,23 @@ export function registerChatHandlers(deps: IpcDeps): void {
     // Retrying replays the user's request: their turn only with the click's consumed gesture intent.
     const userKeyboardIntent = mintUserKeyboardIntent(intent);
     if (userKeyboardIntent === undefined) return USER_KEYBOARD_REQUIRED;
+    if (opts?.enableThinking !== undefined && typeof opts.enableThinking !== "boolean") return { ok: false, error: "invalid-args" };
     const group = groupOf(e, chatGroupId, CHANNELS.chat.retryEffort);
     const turn = group.turns.tryStreamTurn(async (transport) => {
       const prevLlm = settingsService.get("llm");
       const provider = prevLlm.provider;
       const prevBlock = getLlmVendorSettings(prevLlm.vendors, provider);
-      // Read settings before and after the patch through the same resolver.
-      const currentVendorBaseUrlSig = () => llmRouteBaseUrlSignature(
-        settingsService.get("llm"),
-        settingsService.get("marketplace").installedProviderPresets,
+      const retryThinking = {
+        enableThinking: opts?.enableThinking ?? true,
+        thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(
+          opts?.thinkingBudgetTokens ?? getLlmThinkingBudgetLimit(prevBlock.outputTokenLimit),
+          prevBlock.outputTokenLimit,
+        ),
+      };
+      return group.turns.continueFromLastUserTurnWithinLease(
+        { requireTerminalUser: false, restoreOnFailure: false, userKeyboardIntent, thinkingOverride: retryThinking },
+        transport,
       );
-      const prevVendorBaseUrlSig = currentVendorBaseUrlSig();
-      await settingsService.patch({
-        llm: {
-          vendors: {
-            [provider]: {
-              ...prevBlock,
-              enableThinking: opts?.enableThinking ?? true,
-              thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(
-                opts?.thinkingBudgetTokens ?? getLlmThinkingBudgetLimit(prevBlock.outputTokenLimit),
-                prevBlock.outputTokenLimit,
-              ),
-            },
-          },
-        },
-      });
-      // Only address changes require sandbox network refresh; spreading the prior block preserves its address.
-      if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
-        void deps.refreshSandboxNetworkConfig?.();
-      }
-      await group.loop.refreshProvider();
-      try {
-        return await group.turns.continueFromLastUserTurnWithinLease(
-          { requireTerminalUser: false, restoreOnFailure: false, userKeyboardIntent },
-          transport,
-        );
-      } finally {
-        await settingsService.patch({
-          llm: { vendors: { [provider]: prevBlock } },
-        });
-        // Restoring the same address must not refresh sandbox network configuration.
-        if (currentVendorBaseUrlSig() !== prevVendorBaseUrlSig) {
-          void deps.refreshSandboxNetworkConfig?.();
-        }
-        await group.loop.refreshProvider();
-      }
     });
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });
@@ -2098,7 +2104,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   // Load oversized write diffs from the sidecar instead of truncated tool content.
   ipcMain.handle(
     CHANNELS.chat.getWriteDiff,
-    async (e, payload: unknown): Promise<{ before: string; after: string } | null> => {
+    async (e, payload: unknown): Promise<WriteDiffRecord | null> => {
       if (!validateHostRendererSender(e)) {
         auditUnauthorized(auditLogger, CHANNELS.chat.getWriteDiff, e);
         return null;

@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute, win32 } from "node:path";
+import { toUSVString } from "node:util";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
-import { runWindowsNative } from "./windows-native-host.js";
+import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
+import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 /** Match native ledger output to requests; this spelling key is never object identity. */
@@ -69,6 +71,11 @@ export interface WindowsDaclFacts extends WindowsPathFacts {
 const SID_PATTERN = /^S-1-[0-9-]+$/;
 const HEX_64_PATTERN = /^0x[0-9a-f]{16}$/;
 const HEX_128_PATTERN = /^0x[0-9a-f]{32}$/;
+// These bounds match the helper's --dacl --parent --stdin input and output buffers.
+const MAX_DACL_FRAME_BYTES = 1024 * 1024;
+const MAX_DACL_FRAME_PATHS = 2048;
+const MAX_DACL_PATH_UNITS = 32767;
+const MAX_PATH_FACTS_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 function isUint(value: unknown, maximum = 0xffffffff): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= maximum;
@@ -108,23 +115,71 @@ function isDescriptor(value: unknown): value is WindowsDacl {
       && (ace.account === undefined || typeof ace.account === "string"));
 }
 
-function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
-  if (paths.length === 0) return [];
-  if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
-  const output = runWindowsNative(() => execFileSync(resolveWindowsPathKindHelper(), [mode, ...flags, ...paths], {
-    encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 8 * 1024 * 1024,
-  }));
-  return decodeWindowsPathFacts(output, paths.length, mode, flags);
+const CONTENT_TOO_LARGE_EXIT_CODE = 5;
+function encodeParentDaclFrame(paths: readonly string[]): Buffer {
+  if (paths.length > MAX_DACL_FRAME_PATHS) throw new Error("Windows DACL request exceeds the size limit");
+  const entries: { path: string; length: number }[] = [];
+  let size = 4; // Operand count, followed by length-prefixed UTF-8 operands.
+  for (const path of paths) {
+    const remaining = MAX_DACL_FRAME_BYTES - size - 4;
+    if (path.length > remaining || path.length > MAX_DACL_PATH_UNITS) throw new Error("Windows DACL request exceeds the size limit");
+    if (!isAbsolute(path)) throw new Error("Windows path facts require absolute paths");
+    if (path.includes("\0") || toUSVString(path) !== path) throw new Error("Windows DACL request has an invalid path");
+    const length = Buffer.byteLength(path);
+    if (length > remaining) throw new Error("Windows DACL request exceeds the size limit");
+    entries.push({ path, length });
+    size += length + 4;
+  }
+  const input = Buffer.alloc(size + 4);
+  input.writeUInt32LE(size, 0);
+  input.writeUInt32LE(paths.length, 4);
+  let offset = 8;
+  for (const { path, length } of entries) {
+    input.writeUInt32LE(length, offset);
+    input.write(path, offset + 4, length, "utf8");
+    offset += length + 4;
+  }
+  return input;
 }
 
-export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
+function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
+  if (paths.length === 0) return [];
+  const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
+  if (!framed && paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
+  const input = framed ? encodeParentDaclFrame(paths) : undefined;
+  let output: Buffer;
+  try {
+    output = runWindowsNative(() => {
+      const helper = resolveWindowsPathKindHelper();
+      const args = [mode, ...flags, ...(framed ? ["--stdin"] : paths)];
+      if (windowsCommandLineLength(helper, args) > WINDOWS_COMMAND_LINE_LIMIT) {
+        throw new Error("Windows path facts command line exceeds the process limit");
+      }
+      return execFileSync(helper, args, {
+        windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+        maxBuffer: MAX_PATH_FACTS_OUTPUT_BYTES, input,
+      });
+    });
+  } catch (error) {
+    if (flags.includes("--content") && typeof error === "object" && error !== null && "status" in error && error.status === CONTENT_TOO_LARGE_EXIT_CODE) {
+      const oversized: NodeJS.ErrnoException = new Error("Windows file content exceeds the native read limit", { cause: error });
+      oversized.code = "EFBIG";
+      throw oversized;
+    }
+    throw error;
+  }
+  return decodeWindowsPathFacts(decodeWindowsNativeReply(output), paths.length, mode, flags, framed ? paths : undefined);
+}
+
+export function decodeWindowsPathFacts(output: string, expectedRows: number, mode: "--pin" | "--dacl", flags: readonly string[] = [], expectedPaths?: readonly string[]): WindowsPathFacts[] {
   const response: unknown = JSON.parse(output);
   if (!Array.isArray(response) || response.length !== expectedRows) throw new Error("Invalid Windows path facts response");
   // The wire descriptor is flat; the typed view distinguishes an absent DACL
   // snapshot from a present descriptor whose ACL is unrestricted.
-  const rows = response.map((row: unknown) => {
+  const rows = response.map((row: unknown, index) => {
     if (mode !== "--dacl" || row === null || typeof row !== "object") return row;
-    const { identity, owner, group, protected: protectedDacl, nullDacl, aces, ...facts } = row as Record<string, unknown>;
+    const { requestPath, identity, owner, group, protected: protectedDacl, nullDacl, aces, ...facts } = row as Record<string, unknown>;
+    if (expectedPaths !== undefined && requestPath !== expectedPaths[index]) throw new Error("Windows DACL request path mismatch");
     return { ...facts, dacl: identity === null ? null : { identity, owner, ...(group === undefined ? {} : { group }), protected: protectedDacl, nullDacl, aces } };
   });
   for (const row of rows as WindowsDaclFacts[]) {

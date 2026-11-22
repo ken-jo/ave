@@ -1,6 +1,6 @@
 // Sensitive-path denies always override allowed roots; temp grants join the separate per-turn base set. Callers canonicalize and case-fold once; prefix checks must not resolve paths again (docs/architecture/permission-policy-design.md).
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { resolve as pathResolve, sep as pathSep } from "node:path";
+import { dirname, resolve as pathResolve, sep as pathSep } from "node:path";
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
@@ -194,25 +194,28 @@ export function isPathAllowedForEffect(
   return isPathAllowed(canonicalPath, scope);
 }
 
-// Suggest only the requested directory or a file's immediate parent, never a broader prefix. Return null for covered, sensitive or root scopes; failed stat defaults to file-style suggestion. Inputs are already canonical/case-folded.
+// Suggest only the resolved native directory or a file's immediate parent. Matching
+// uses derived identities; the returned suggestion retains the frozen path spelling.
 export function pickClosestParent(
-  canonicalPath: string,
+  nativePath: string,
   currentAllowed: readonly string[],
   isDirectory: boolean = false,
 ): string | null {
-  if (!canonicalPath) return null;
+  if (!nativePath) return null;
+  const canonicalPath = caseFoldForMatch(foldCanonicalPathSeparators(nativePath));
   if (isDirectory) {
     if (isFilesystemRootPath(canonicalPath)) return null;
     if (isAdmissionDeniedPath(canonicalPath)) return null;
     if (isPathAllowed(canonicalPath, { directories: currentAllowed })) return null;
-    return canonicalPath;
+    return nativePath;
   }
-  const parent = caseFoldForMatch(canonicalizePathForMatch(pathResolve(canonicalPath, "..")));
+  const nativeParent = dirname(nativePath);
+  const parent = caseFoldForMatch(foldCanonicalPathSeparators(nativeParent));
   if (parent === canonicalPath) return null; // already at root
   if (isAdmissionDeniedPath(parent)) return null;
   if (isPathAllowed(canonicalPath, { directories: currentAllowed })) return null;
   if (isPathAllowed(parent, { directories: currentAllowed })) return null;
-  return parent;
+  return nativeParent;
 }
 
 // Pre-flight check before persisting a directory to `additionalDirectories`. Surfaces three classes of problem: 1. Hard reject: empty / sensitive / filesystem root → `ok: false`. 2. Soft warn: directory contains adjacent `.env` / `.git` / `.ssh` / `credentials` / `node_modules/.cache` → `ok: true` + warnings. Renderer is expected to render warnings as a red banner with an explicit "I understand" checkbox before enabling the persist button. this only inspects the directory PATH itself. It does NOT do a filesystem walk to count files — tree-size preview (Layer 1 M3 point 4) is a separate pass at the renderer layer.

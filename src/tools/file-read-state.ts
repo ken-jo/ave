@@ -2,8 +2,9 @@
 // Records are bounded and memory-only, so eviction or restart safely requires another read.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { realpath, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { handleChunks } from "./file-read-core.js";
 
 export interface FileReadRecord {
   readonly mtimeMs: number;
@@ -78,13 +79,15 @@ export function sha256Hex(bytes: Buffer | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-// Count CR, LF, and CRLF consistently with the line-window reader while hashing in one pass.
-export async function hashAndCountLines(path: string): Promise<{ sha256: string; lineCount: number; size: number }> {
+// Count CR, LF, and CRLF consistently with the line-window reader while hashing in one pass. An open handle is read from
+// its start and left open for the caller.
+export async function hashAndCountLines(source: string | FileHandle): Promise<{ sha256: string; lineCount: number; size: number }> {
   const hash = createHash("sha256");
   let separators = 0;
   let size = 0;
   let previous = -1;
-  for await (const chunk of createReadStream(path)) {
+  const input: AsyncIterable<Buffer> = typeof source === "string" ? createReadStream(source) : handleChunks(source);
+  for await (const chunk of input) {
     const bytes = chunk as Buffer;
     hash.update(bytes);
     size += bytes.length;

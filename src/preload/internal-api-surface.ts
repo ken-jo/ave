@@ -1,4 +1,5 @@
 import { memoryMapApiSurface } from './memory-map-api-surface.js';
+import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
@@ -539,6 +540,7 @@ export function buildInternalApiSurface() {
       import("../shared/update-state.js").UpdateState
     >,
   /** Start the actual download. Only valid when the current state is "available"; rejected (ok:false) otherwise. */
+  checkForAppUpdates: () => ipcRenderer.invoke(CHANNELS.update.checkNow) as Promise<import("../shared/restart-settings.js").AppUpdateCheckResult>,
   downloadAppUpdate: () =>
     ipcRenderer.invoke(CHANNELS.update.downloadNow) as Promise<{ ok: boolean; reason?: string }>,
   /** Quit and apply the downloaded update. Main validates the sender and owns the native confirmation dialog before
@@ -633,7 +635,7 @@ export function buildInternalApiSurface() {
       platform: NodeJS.Platform;
       arch: string;
       userDataPath: string;
-    }>,
+    } & import("../shared/restart-settings.js").BootSettingsSnapshot>,
 
   // Assembled in its own module for size; spliced in here unchanged.
   mcp: mcpApiSurface,
@@ -679,6 +681,8 @@ export function buildInternalApiSurface() {
     egressGrantRevoke: async (grant: RevocableEgressGrant) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
     /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
     upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
+    updateSecuritySettings: async (patch: import("../shared/security-settings.js").SecuritySettingsPatch) =>
+      ipcRenderer.invoke(PERMISSIONS.updateSecuritySettings, { patch, intent: ipcUserKeyboardIntent() }),
     /** MUTATING: change the upstream proxy setting (user-gesture intent attached). */
     upstreamProxySet: async (patch: {
       mode?: "off" | "system" | "manual";
@@ -958,6 +962,18 @@ export function buildInternalApiSurface() {
 
   // Personal board CRUD + lifecycle. Each method maps 1:1 to a WORK_BOARD.* channel; the main-process store returns discriminated `status` envelopes (or `{ ok:false, error }` for
   // unauthorized-frame / no-store), forwarded verbatim; no fallback / re-shaping. Shared payload + result types come from the renderer-safe `shared/work-board-types.js` (no Node built-ins).
+  listWorkflowTemplates: async () => ipcRenderer.invoke(WORK_BOARD.templateList) as Promise<WorkflowTemplateIpcResult<WorkflowTemplate[]>>,
+  getWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateGet, id) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
+  draftWorkflowTemplate: async (id: string | null, input: WorkflowTemplateDraftInput) => ipcRenderer.invoke(WORK_BOARD.templateDraft, id, input) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
+  confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => ipcRenderer.invoke(WORK_BOARD.templateConfirm, id, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
+  detachWorkflowTemplateSchedule: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateDetachSchedule, id, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<boolean>>,
+  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentInput) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
+  archiveWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateArchive, id) as Promise<WorkflowTemplateIpcResult<null>>,
+  onWorkflowTemplatesChanged: (handler: () => void) => {
+    const listener = () => handler();
+    ipcRenderer.on(WORK_BOARD.templatesChanged, listener);
+    return () => ipcRenderer.removeListener(WORK_BOARD.templatesChanged, listener);
+  },
   listWorkBoard: async (filter?: import("../shared/work-board-types.js").WorkItemListFilter) =>
     ipcRenderer.invoke(WORK_BOARD.list, filter) as Promise<
       | import("../shared/work-board-types.js").WorkItemListResult

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_WORKSPACE_LIMITS, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, parseBrowserAgentSiteGrant, parseBrowserFindResult, parseBrowserPageShortcut } from "../browser-workspace.js";
 
 const TARGET = { tabId: "browser:one", documentGeneration: 4 };
-const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], storageStatus: "ready", capabilities: { fullscreen: false } };
+const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
 
 describe("browser workspace wire validation", () => {
   it("validates capture mode, viewport clips and strict host target fields", () => {
@@ -62,6 +62,14 @@ describe("browser workspace wire validation", () => {
     expect(parseBrowserWorkspaceState({ ...STATE, sitePermissions: [{ ...rule, permission: "unknown" }] })).toBeNull();
     expect(parseBrowserWorkspaceState({ ...STATE, history: Array.from({ length: BROWSER_WORKSPACE_LIMITS.history + 1 }, (_, i) => ({ url: `https://site.example/${i}`, title: "", at: i })) })).toBeNull();
     expect(parseBrowserWorkspaceState({ ...STATE, revision: -1 })).toBeNull();
+    // A time a date cannot hold would break every view that shows it as a date.
+    for (const at of [1e20, 8.64e15 + 1, 1.5, -1, Number.NaN]) {
+      expect(parseBrowserWorkspaceState({ ...STATE, history: [{ url: "https://site.example/", title: "", at, by: "user" }] })).toBeNull();
+      expect(parseBrowserWorkspaceState({ ...STATE, bookmarks: [{ url: "https://site.example/", title: "", at }] })).toBeNull();
+    }
+    const latest = { ...STATE, history: [{ url: "https://site.example/", title: "", at: 8.64e15, by: "user" }] };
+    expect(parseBrowserWorkspaceState(latest)).toEqual(latest);
+    expect(new Date(8.64e15).toISOString()).toBe("+275760-09-13T00:00:00.000Z");
     expect(parseBrowserWorkspaceState({ ...STATE, storageStatus: ["ready"] })).toBeNull();
     expect(parseBrowserWorkspaceState({ ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state: ["completed"] }] })).toBeNull();
     expect(parseBrowserWorkspaceRequest("setBookmark", { url: `https://site.example/${"가".repeat(1000)}`, title: "", bookmarked: true })).toBeNull();
@@ -72,5 +80,116 @@ describe("browser workspace wire validation", () => {
     expect(parseBrowserWorkspacePreview({ ...preview, width: 321 })).toBeNull();
     expect(parseBrowserWorkspacePreview({ ...preview, dataUrl: "data:text/html;base64,YQ==" })).toBeNull();
     expect(parseBrowserWorkspacePreview({ ...preview, agentTabId: "tab-1" })).toBeNull();
+  });
+  it("accepts a page status only for a listed tab, with a bounded host-classified failure", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const failure = { reason: "dns", code: -105, detail: "ERR_NAME_NOT_RESOLVED", url: "https://missing.invalid/" };
+    const state = { ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: true, loadError: failure, prompts: [] }] };
+    expect(parseBrowserWorkspaceState(state)).toEqual(state);
+    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [] }] })).not.toBeNull();
+    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "" }, prompts: [] }] })).not.toBeNull();
+    for (const pages of [
+      undefined, [{ tabId: "browser:other", loading: false, loadError: null, prompts: [] }], [{ tabId: TARGET.tabId, loading: false, prompts: [] }],
+      [{ tabId: TARGET.tabId, loadError: null, prompts: [] }], [{ tabId: TARGET.tabId, loading: "yes", loadError: null, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, reason: "page says so" }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "javascript:alert(1)" }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, detail: "x".repeat(101) }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, html: "<b>" }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [] }, { tabId: TARGET.tabId, loading: false, loadError: null, prompts: [] }],
+    ]) expect(parseBrowserWorkspaceState({ ...state, pages })).toBeNull();
+  });
+  it("accepts only bounded, well-formed page prompts and answers of the matching kind", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "permission", origin: "https://site.example", permissions: ["camera", "microphone"] };
+    const withPrompts = (prompts: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts }] });
+    expect(parseBrowserWorkspaceState(withPrompts([prompt]))).not.toBeNull();
+    for (const prompts of [
+      [{ ...prompt, origin: "https://site.example/path" }], [{ ...prompt, permissions: [] }], [{ ...prompt, permissions: ["usb"] }],
+      [{ ...prompt, kind: "page-defined" }], [{ ...prompt, html: "<b>" }], [prompt, prompt],
+      Array.from({ length: 9 }, (_item, index) => ({ ...prompt, id: `prompt-${index}` })),
+    ]) expect(parseBrowserWorkspaceState(withPrompts(prompts))).toBeNull();
+    const answer = { tabId: "browser:one", promptId: "prompt-1", answer: { kind: "permission", choice: "always-block" } };
+    expect(parseBrowserWorkspaceRequest("answerPrompt", answer)).toEqual(answer);
+    for (const bad of [{ ...answer, answer: { kind: "permission", choice: "allow-forever" } }, { ...answer, answer: { kind: "other" } }, { ...answer, promptId: "" }, { ...answer, windowId: 2 }]) {
+      expect(parseBrowserWorkspaceRequest("answerPrompt", bad)).toBeNull();
+    }
+  });
+  it("accepts an external-link prompt only with a bare scheme and a bounded plain-text target", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "external", origin: "https://site.example", scheme: "mailto", target: "someone@example.com", openable: true };
+    const withPrompt = (value: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [value] }] });
+    expect(parseBrowserWorkspaceState(withPrompt(prompt))).not.toBeNull();
+    for (const bad of [{ ...prompt, scheme: "Mailto" }, { ...prompt, scheme: "mailto:" }, { ...prompt, target: "x".repeat(201) }, { ...prompt, target: "a\nb" }, { ...prompt, openable: "yes" }, { ...prompt, url: "mailto:x" }]) {
+      expect(parseBrowserWorkspaceState(withPrompt(bad))).toBeNull();
+    }
+    const answer = { tabId: "browser:one", promptId: "prompt-1", answer: { kind: "external", open: true } };
+    expect(parseBrowserWorkspaceRequest("answerPrompt", answer)).toEqual(answer);
+    expect(parseBrowserWorkspaceRequest("answerPrompt", { ...answer, answer: { kind: "external", open: "yes" } })).toBeNull();
+  });
+  it("accepts a sign-in prompt with a bounded plain realm, and an answer that is null or two bounded strings", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "signIn", origin: "https://site.example", realm: "Staff area" };
+    const withPrompt = (value: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [value] }] });
+    expect(parseBrowserWorkspaceState(withPrompt(prompt))).not.toBeNull();
+    for (const bad of [{ ...prompt, realm: "x".repeat(101) }, { ...prompt, realm: "a\tb" }, { ...prompt, origin: "site.example" }, { ...prompt, username: "ken" }]) expect(parseBrowserWorkspaceState(withPrompt(bad))).toBeNull();
+    const answer = (credentials: unknown) => ({ tabId: "browser:one", promptId: "prompt-1", answer: { kind: "signIn", credentials } });
+    for (const good of [null, { username: "", password: "" }, { username: "ken", password: "p".repeat(256) }]) expect(parseBrowserWorkspaceRequest("answerPrompt", answer(good))).toEqual(answer(good));
+    for (const bad of [undefined, "ken:secret", { username: "ken" }, { username: "ken", password: "p".repeat(257) }, { username: 1, password: "p" }, { username: "ken", password: "p", save: true }]) {
+      expect(parseBrowserWorkspaceRequest("answerPrompt", answer(bad))).toBeNull();
+    }
+  });
+  it("accepts a page dialog prompt only with a known type and bounded host-cleaned text", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "dialog", origin: "https://site.example", dialog: "confirm", message: "Sure?\nPlease", canBlock: true };
+    const withPrompt = (value: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [value] }] });
+    expect(parseBrowserWorkspaceState(withPrompt(prompt))).not.toBeNull();
+    for (const bad of [{ ...prompt, dialog: "beforeunload" }, { ...prompt, dialog: "prompt" }, { ...prompt, message: "a\rb" }, { ...prompt, message: "x".repeat(2_001) }, { ...prompt, message: 1 }, { ...prompt, canBlock: "no" }, { ...prompt, html: "<b>" }]) {
+      expect(parseBrowserWorkspaceState(withPrompt(bad))).toBeNull();
+    }
+    expect(browserDialogText(`a\r\nb\u0000\tc${"x".repeat(3_000)}`)).toBe(`a\nbc${"x".repeat(1_996)}`);
+    const answer = (value: object) => ({ tabId: "browser:one", promptId: "prompt-1", answer: { kind: "dialog", accept: true, block: false, ...value } });
+    expect(parseBrowserWorkspaceRequest("answerPrompt", answer({}))).toEqual(answer({}));
+    for (const bad of [{ value: "typed" }, { accept: "yes" }, { block: 1 }]) expect(parseBrowserWorkspaceRequest("answerPrompt", answer(bad))).toBeNull();
+  });
+  it("accepts a request to open a link tab only for a web address and a named opener", () => {
+    const request = { openerTabId: "browser:one", url: "https://other.example/page", active: true };
+    expect(parseBrowserOpenTab(request)).toEqual(request);
+    for (const bad of [{ ...request, url: "javascript:alert(1)" }, { ...request, url: "https://user:pw@other.example/" }, { ...request, openerTabId: "" }, { ...request, active: 1 }, { ...request, features: "popup" }]) {
+      expect(parseBrowserOpenTab(bad)).toBeNull();
+    }
+  });
+  it("accepts a clear-data request only with three booleans of which one is set, and a site request only with an origin", () => {
+    expect(parseBrowserWorkspaceRequest("clearData", { history: true, siteData: false, cache: false })).toEqual({ history: true, siteData: false, cache: false });
+    for (const bad of [{ history: false, siteData: false, cache: false }, { history: true, siteData: false }, { history: 1, siteData: false, cache: false }, { history: true, siteData: true, cache: true, passwords: true }]) {
+      expect(parseBrowserWorkspaceRequest("clearData", bad)).toBeNull();
+    }
+    expect(parseBrowserWorkspaceRequest("clearSiteData", { ...TARGET, origin: "https://site.example" })).toEqual({ ...TARGET, origin: "https://site.example" });
+    for (const bad of [{ ...TARGET, origin: "https://site.example/path" }, { ...TARGET }, { ...TARGET, origin: "https://site.example", windowId: 2 }]) expect(parseBrowserWorkspaceRequest("clearSiteData", bad)).toBeNull();
+  });
+  it("requires every history entry to say who visited, and lets the user and the agent each hold one entry per address", () => {
+    const entry = { url: "https://site.example/", title: "Site", at: 1 };
+    expect(parseBrowserWorkspaceState({ ...STATE, history: [{ ...entry, by: "user" }, { ...entry, by: "agent" }] })).not.toBeNull();
+    for (const history of [[entry], [{ ...entry, by: "page" }], [{ ...entry, by: "user" }, { ...entry, by: "user" }]]) expect(parseBrowserWorkspaceState({ ...STATE, history })).toBeNull();
+    expect(parseBrowserWorkspaceState({ ...STATE, bookmarks: [{ ...entry, by: "user" }] })).toBeNull();
+    expect(parseBrowserWorkspaceRequest("deleteHistory", { url: "https://site.example/", by: "agent" })).toEqual({ url: "https://site.example/", by: "agent" });
+    for (const bad of [{ url: "https://site.example/" }, { url: "https://site.example/", by: "page" }, { url: "site.example", by: "user" }]) expect(parseBrowserWorkspaceRequest("deleteHistory", bad)).toBeNull();
+  });
+  it("accepts only the three agent site grant values", () => {
+    for (const grant of ["this-site", "any-site", null]) expect(parseBrowserAgentSiteGrant({ grant })).toEqual({ grant });
+    for (const bad of [{}, { grant: "always" }, { grant: null, origin: "https://site.example" }, null]) expect(parseBrowserAgentSiteGrant(bad)).toBeNull();
+    expect(parseBrowserWorkspaceRequest("revokeAgentSiteGrant", { ...TARGET, origin: "https://site.example/path" })).toBeNull();
+  });
+  it("accepts a find result only with whole, consistent counts", () => {
+    const result = { tabId: "browser:one", requestId: 4, matches: 3, activeMatch: 1 };
+    expect(parseBrowserFindResult(result)).toEqual(result);
+    expect(parseBrowserFindResult({ ...result, matches: 0, activeMatch: 0 })).not.toBeNull();
+    for (const bad of [{ ...result, activeMatch: 4 }, { ...result, matches: -1 }, { ...result, matches: 1.5 }, { ...result, tabId: "" }, { ...result, text: "x" }, null]) expect(parseBrowserFindResult(bad)).toBeNull();
+  });
+  it("accepts browser keys only in the registry's canonical spelling, and a page shortcut only for a known action", () => {
+    const keys = { focusAddress: "CommandOrControl+L", find: "CommandOrControl+F", reload: null, back: "Alt+Left", forward: null };
+    expect(parseBrowserWorkspaceRequest("setPageShortcuts", keys)).toEqual(keys);
+    for (const bad of [{ ...keys, find: "cmd+f" }, { ...keys, reload: 5 }, { focusAddress: null }, { ...keys, extra: null }]) expect(parseBrowserWorkspaceRequest("setPageShortcuts", bad)).toBeNull();
+    expect(parseBrowserPageShortcut({ tabId: "browser:one", action: "find" })).toEqual({ tabId: "browser:one", action: "find" });
+    for (const bad of [{ tabId: "browser:one", action: "close" }, { tabId: "", action: "find" }, { tabId: "browser:one" }]) expect(parseBrowserPageShortcut(bad)).toBeNull();
   });
 });

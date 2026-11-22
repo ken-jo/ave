@@ -51,6 +51,14 @@ export const ROUTINES = {
 } as const;
 
 export const WORK_BOARD = {
+  templateList: "ave:work-board:template-list",
+  templateGet: "ave:work-board:template-get",
+  templateDraft: "ave:work-board:template-draft",
+  templateConfirm: "ave:work-board:template-confirm",
+  templateAttachSchedule: "ave:work-board:template-attach-schedule",
+  templateDetachSchedule: "ave:work-board:template-detach-schedule",
+  templateArchive: "ave:work-board:template-archive",
+  templatesChanged: "ave:work-board:templates-changed",
   list: "ave:work-board:list",
   get: "ave:work-board:get",
   add: "ave:work-board:add",
@@ -147,6 +155,7 @@ export const PERMISSIONS = {
   upstreamProxyGet: "ave:permissions:upstream-proxy-get",
   // MUTATING (sender-frame-guarded + user-gesture intent): change it. The only writer of `upstreamProxy`; `settings:update` refuses the key.
   upstreamProxySet: "ave:permissions:upstream-proxy-set",
+  updateSecuritySettings: "ave:permissions:update-security-settings",
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege escalation entry point;
   // triggers ASRT installWindowsSandbox's single self-elevating UAC prompt. Never auto-triggered.
   sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
@@ -172,6 +181,9 @@ export const PERMISSIONS = {
 } as const;
 
 export const SETTINGS = {
+  defaults: "ave:settings:defaults",
+  openFile: "ave:settings:open-file",
+  pickDirectory: "ave:settings:pick-directory",
   updated: "ave:settings:updated",
 } as const;
 

@@ -1,7 +1,8 @@
 // External callers must clear both the public-channel allowlist and the gesture gate.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
@@ -23,6 +24,7 @@ import {
 const temporaryDirectories = createTmpDirTracker();
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   const root = temporaryDirectories.track(mkdtempSync(join(tmpdir(), "local-api-home-")));
   vi.stubEnv("AVE_HOME", root);
 });

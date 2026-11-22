@@ -8,6 +8,7 @@ import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import SRT_WIN_BUILD_RECEIPTS from "./generated/srt-win-build-receipts.js";
+import { _registerSrtWinCopyForTest } from "./srt-win-copy-owner.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
 
 export class SrtWinIntegrityError extends Error {
@@ -33,9 +34,11 @@ const POWERSHELL_PROLOGUE = [
   "$ErrorActionPreference = 'Stop'",
   "$PSModuleAutoLoadingPreference = 'None'",
   "Import-Module ($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')",
+  // Both Windows commands use the kernel creation time as invariant decimal UTC ticks, compatible with existing markers.
+  "$readOwnerStart = { param($process); $process.StartTime.ToUniversalTime().Ticks.ToString([System.Globalization.CultureInfo]::InvariantCulture) }",
 ];
 
-// Create random unpublished directories/files with final user ownership and protected DACLs; elevated defaults may assign administrator ownership. Refuse existing paths/links, verify descriptors and file owners on the same creation handle, write bytes afterward and remove created objects on failure. Never modify existing ACLs (docs/architecture/architecture.md).
+// Create directories and files with final user ownership and protected DACLs. Refuse existing paths, verify descriptors, and remove created objects on failure. Never modify existing ACLs (docs/architecture/architecture.md).
 const PRIVATE_DIRECTORY_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$outer = $env:AVE_SRT_PRIVATE_DIRECTORY",
@@ -51,12 +54,7 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$security.SetAccessRuleProtection($true, $false)",
   "$security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))",
   "foreach ($id in $readers) { $security.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))) }",
-  "$null = [System.IO.Directory]::CreateDirectory($outer, $security)",
-  // From here on the directory is this step's own: a failure removes what it made.
-  "try {",
-  "$createdBin = $false",
-  "foreach ($directory in @($outer, $bin)) {",
-  "if ($directory -eq $bin) { $present = $true; try { $null = [System.IO.File]::GetAttributes($bin) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { $present = $false }; if ($present) { throw 'Private directory already exists' }; $null = [System.IO.Directory]::CreateDirectory($bin, $security); $createdBin = $true }",
+  "$verifyDirectory = { param($directory)",
   "$attributes = [System.IO.File]::GetAttributes($directory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { throw 'Private directory is not a plain directory' }",
   "$check = [System.IO.Directory]::GetAccessControl($directory)",
@@ -72,17 +70,34 @@ const PRIVATE_DIRECTORY_SCRIPT = [
   "$fileSecurity.SetAccessRuleProtection($true, $false)",
   "$fileSecurity.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'None', 'None', 'Allow')))",
   "foreach ($id in $readers) { $fileSecurity.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object System.Security.Principal.SecurityIdentifier($id)), 'ReadAndExecute', 'None', 'None', 'Allow'))) }",
+  "$writeNewFile = { param($path, [byte[]]$bytes)",
+  "$stream = New-Object System.IO.FileStream($path, [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity)",
+  "try { try { if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' }; $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() } } catch { [System.IO.File]::Delete($path); throw }",
+  "}",
+  "$markerPath = [System.IO.Path]::Combine($outer, 'owner.json')",
+  "$imagePath = [System.IO.Path]::Combine($bin, 'srt-win.exe')",
+  "$null = [System.IO.Directory]::CreateDirectory($outer, $security)",
+  // Publish the process marker before creating any payload. A markerless directory is never stale.
+  "$createdMarker = $false; $createdBin = $false",
+  "try {",
+  "& $verifyDirectory $outer",
   "$owner = [System.Diagnostics.Process]::GetProcessById([int]$env:AVE_SRT_OWNER_PID)",
-  "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $owner.StartTime.ToUniversalTime().Ticks.ToString() } | ConvertTo-Json -Compress",
-  "$contents = @{ 'srt-win.exe' = [byte[]]@(); 'owner.json' = (New-Object System.Text.UTF8Encoding($false)).GetBytes($marker) }",
-  "foreach ($name in @('srt-win.exe', 'owner.json')) { $stream = New-Object System.IO.FileStream([System.IO.Path]::Combine($bin, $name), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]'Write, ReadPermissions', [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $fileSecurity); try { $bytes = $contents[$name]; $stream.Write($bytes, 0, $bytes.Length); if ($stream.GetAccessControl().GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Private file owner mismatch' } } finally { $stream.Dispose() } }",
-  "} catch { if ($createdBin) { foreach ($name in @('srt-win.exe', 'owner.json')) { $file = [System.IO.Path]::Combine($bin, $name); if ([System.IO.File]::Exists($file)) { [System.IO.File]::Delete($file) } }; [System.IO.Directory]::Delete($bin, $false) }; [System.IO.Directory]::Delete($outer, $false); throw }",
+  "try { $started = & $readOwnerStart $owner } finally { $owner.Dispose() }",
+  "$marker = @{ pid = [int]$env:AVE_SRT_OWNER_PID; started = $started } | ConvertTo-Json -Compress",
+  "& $writeNewFile $markerPath ((New-Object System.Text.UTF8Encoding($false)).GetBytes($marker))",
+  "$createdMarker = $true",
+  "$present = $true; try { $null = [System.IO.File]::GetAttributes($bin) } catch [System.IO.FileNotFoundException], [System.IO.DirectoryNotFoundException] { $present = $false }",
+  "if ($present) { throw 'Private directory already exists' }",
+  "$null = [System.IO.Directory]::CreateDirectory($bin, $security); $createdBin = $true",
+  "& $verifyDirectory $bin",
+  "& $writeNewFile $imagePath ([byte[]]@())",
+  "} catch { if ($createdBin) { [System.IO.Directory]::Delete($bin, $false) }; if ($createdMarker) { [System.IO.File]::Delete($markerPath) }; [System.IO.Directory]::Delete($outer, $false); throw }",
 ].join("; ");
 const PRIVATE_DIRECTORY_COMMAND = Buffer.from(PRIVATE_DIRECTORY_SCRIPT, "utf16le").toString("base64");
 
 const TEMP_ROOT_ACL_DIAGNOSTIC = "srt-win-temp-root-acl-owner-action-required";
 
-// A marker is useful only inside verified private directories. Support both layouts, deleting only their two known plain files without recursion.
+// A marker is useful only inside verified private directories. Delete only the known plain files without recursion.
 const SWEEP_SCRIPT = [
   ...POWERSHELL_PROLOGUE,
   "$root = [System.IO.Path]::GetFullPath($env:AVE_SRT_TEMP_ROOT).TrimEnd('\\')",
@@ -102,29 +117,47 @@ const SWEEP_SCRIPT = [
   "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or !$acl.AreAccessRulesProtected) { continue }",
   "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
   "$entries = @([System.IO.Directory]::GetFileSystemEntries($directory))",
+  "$marker = [System.IO.Path]::Combine($directory, 'owner.json')",
+  "$bin = [System.IO.Path]::Combine($directory, 'bin')",
   "$imageDirectory = $directory",
-  "if ($entries.Count -eq 1 -and [System.IO.Path]::GetFileName($entries[0]) -eq 'bin') {",
-  "$imageDirectory = $entries[0]; $attributes = [System.IO.File]::GetAttributes($imageDirectory)",
+  "$markerFirst = $false",
+  "if ($bin -in $entries) {",
+  "$markerFirst = $marker -in $entries",
+  "if ($entries.Count -ne (1 + [int]$markerFirst)) { continue }",
+  "$imageDirectory = $entries | Where-Object { $_ -eq $bin }; $attributes = [System.IO.File]::GetAttributes($imageDirectory)",
   "if (($attributes -band $reparse) -ne 0 -or ($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) { continue }",
   "$acl = [System.IO.Directory]::GetAccessControl($imageDirectory)",
   "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid -or !$acl.AreAccessRulesProtected) { continue }",
   "if (@($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]) -ne $sid -and ($_.FileSystemRights -band $modify) -ne 0 }).Count -ne 0) { continue }",
   "$entries = @([System.IO.Directory]::GetFileSystemEntries($imageDirectory))",
+  "if ($markerFirst) { $entries += $marker } else { $marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json') }",
   "}",
-  "if ($entries.Count -ne 2) { continue }",
-  "$plain = $true; foreach ($entry in $entries) { $a = [System.IO.File]::GetAttributes($entry); if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0 -or [System.IO.Path]::GetFileName($entry) -notin @('owner.json', 'srt-win.exe')) { $plain = $false } }",
-  "if (!$plain) { continue }",
-  "$marker = [System.IO.Path]::Combine($imageDirectory, 'owner.json')",
-  "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
-  "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
-  "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); $live = $p.StartTime.ToUniversalTime().Ticks.ToString() -eq $owner.started; $p.Dispose() } catch [System.ArgumentException] { $live = $false }",
-  "if ($live) { continue }",
   "$image = [System.IO.Path]::Combine($imageDirectory, 'srt-win.exe')",
+  "$hasImage = $image -in $entries",
+  "if ($marker -notin $entries -or $entries.Count -ne (1 + [int]$hasImage)) { continue }",
+  // Only complete copies in the earlier layouts support names outside the generated namespace.
+  "$legacyComplete = $hasImage -and !$markerFirst",
+  "if (!$legacyComplete -and [System.IO.Path]::GetFileName($directory) -notmatch '\\Aave-srt-win-[0-9a-f]{32}\\z') { continue }",
+  "$plain = $true; foreach ($entry in $entries) {",
+  "$a = [System.IO.File]::GetAttributes($entry)",
+  "if (($a -band ($reparse -bor [System.IO.FileAttributes]::Directory)) -ne 0) { $plain = $false; break }",
+  // LinkType uses the file's link count, which GetAttributes does not expose.
+  "if (!$legacyComplete) { $linkType = ([System.IO.FileInfo]::new($entry)).PSObject.Properties['LinkType']; if ($null -eq $linkType -or $null -ne $linkType.Value) { $plain = $false; break } }",
+  "}",
+  "if (!$plain) { continue }",
+  "$owner = [System.IO.File]::ReadAllText($marker) | ConvertFrom-Json",
+  // Conservatively keep copies marked with this process's PID, even if PID reuse leaves a stale copy behind.
+  "if ($owner.pid -isnot [int] -or $owner.pid -le 0 -or $owner.pid -eq [int]$env:AVE_SRT_OWNER_PID -or $owner.started -isnot [string] -or $owner.started -notmatch '^[0-9]+$') { continue }",
+  // Compare the full creation stamp exactly so a reused PID does not look live.
+  "$live = $true; try { $p = [System.Diagnostics.Process]::GetProcessById($owner.pid); try { $live = [string]::Equals($owner.started, (& $readOwnerStart $p), [StringComparison]::Ordinal) } finally { $p.Dispose() } } catch [System.ArgumentException] { $live = $false }",
+  "if ($live) { continue }",
   // A running image or an incompatible open handle prevents this write open. Hold the handle through deletion; sharing permits only deletion, not spawn.
-  "$handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete)",
-  "try { [System.IO.File]::Delete($image) } finally { $handle.Dispose() }",
-  "[System.IO.File]::Delete($marker)",
+  "if ($hasImage) { $handle = [System.IO.File]::Open($image, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Delete); try { [System.IO.File]::Delete($image) } finally { $handle.Dispose() } }",
+  // A legacy marker inside bin must be removed before its directory. For new copies, keep the marker until bin is gone.
+  "$nestedMarker = $imageDirectory -ne $directory -and [System.IO.Path]::GetDirectoryName($marker) -eq $imageDirectory",
+  "if ($nestedMarker) { [System.IO.File]::Delete($marker) }",
   "if ($imageDirectory -ne $directory) { [System.IO.Directory]::Delete($imageDirectory, $false) }",
+  "if (!$nestedMarker) { [System.IO.File]::Delete($marker) }",
   "[System.IO.Directory]::Delete($directory, $false)",
   "} catch { continue } }",
 ].join("; ");
@@ -143,7 +176,7 @@ function runDirectoryCommand(command: string, env: Record<string, string>): void
   }
 }
 
-// Keep uncertain entries, including unmarked copies left by older releases.
+// Older names still require the complete shape and a valid owner marker.
 export function sweepStaleSrtWinDirectories(): void {
   if (type() !== "Windows_NT") return;
   try {
@@ -161,7 +194,17 @@ export function getSrtWinArchitecture(arch: string = process.arch): "arm64" | "x
 
 let swept = false;
 
-const copies = new Map<string, { readonly directory: string; readonly executable: string; readonly arch: string }>();
+const copies = new Map<string, { readonly executable: string; readonly arch: string }>();
+const copyDisposers = new Set<() => void>();
+
+function ownPrivateCopy(directory: string): () => void {
+  const dispose = (): void => {
+    if (copyDisposers.delete(dispose)) removePrivateCopy(directory);
+  };
+  copyDisposers.add(dispose);
+  _registerSrtWinCopyForTest(directory, dispose);
+  return dispose;
+}
 
 function readHelper(path: string): Buffer {
   try {
@@ -192,7 +235,7 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
   const directory = join(tmpdir(), `ave-srt-win-${randomBytes(16).toString("hex")}`);
   const bin = join(directory, "bin");
   // A refused creation leaves nothing of ours: the step removes what it made, and whatever was already at the path is not ours to delete.
-  let created = false;
+  let dispose: (() => void) | undefined;
   try {
     const executable = join(bin, "srt-win.exe");
     // POSIX modes do not enforce a Windows boundary. On Windows both directories and the empty image are created with their protected DACL and the current user as owner before any executable byte exists; this needs no elevation, and the bytes go into the file that step made.
@@ -203,16 +246,14 @@ export function prepareSrtWinExecutable(source: string, arch = getSrtWinArchitec
       try { mkdirSync(bin, { mode: 0o700 }); }
       catch (error) { rmdirSync(directory); throw error; }
     }
-    created = true;
+    dispose = ownPrivateCopy(directory);
     // Write the bytes that were hashed, rather than re-opening the source to copy.
     writeFileSync(executable, bytes, windows ? { flag: "r+" } : { flag: "wx", mode: 0o700 });
     assertSrtWinDigest(readHelper(executable), arch);
-    copies.set(key, { directory, executable, arch });
+    copies.set(key, { executable, arch });
     return executable;
   } catch (error) {
-    if (created) {
-      try { removePrivateCopy(directory); } catch { /* A leftover copy is the stale-copy sweep's. */ }
-    }
+    try { dispose?.(); } catch { /* A leftover copy is the stale-copy sweep's. */ }
     if (error instanceof SrtWinIntegrityError) throw error;
     throw new SrtWinIntegrityError("srt-win-integrity-mismatch", { cause: error });
   }
@@ -245,9 +286,11 @@ function removePrivateCopy(directory: string): void {
   if (child?.isSymbolicLink()) {
     if (process.platform === "win32") rmdirSync(bin); else unlinkSync(bin);
   } else if (child?.isDirectory()) {
-    for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(bin, name), { force: true });
+    rmSync(join(bin, "srt-win.exe"), { force: true });
     rmdirSync(bin);
   }
+  rmSync(join(directory, "owner.json"), { force: true });
+  // If this rmdir fails, only an empty outer directory remains. The sweep leaves it alone without an owner marker.
   rmdirSync(directory);
 }
 
@@ -269,13 +312,13 @@ export function isSrtWinRuntimeReleasePending(): boolean {
 }
 
 process.once("exit", () => {
-  if (copies.size === 0) return;
+  if (copyDisposers.size === 0) return;
   if (runtimeReleasePending) {
     // The runtime's exit handler runs next and still finds the copy; the next boot's stale-copy sweep removes it, and its ACL recovery covers a crash.
     writeExitDiagnostic("srt-win: sandbox session was not released before exit; the private helper copy is kept for the runtime's exit handler, the next boot's sweep and ACL recovery");
     return;
   }
-  for (const { directory } of copies.values()) {
-    try { removePrivateCopy(directory); } catch { /* An active helper may still hold the image. */ }
+  for (const dispose of copyDisposers) {
+    try { dispose(); } catch { /* An active helper may still hold the image. */ }
   }
 });

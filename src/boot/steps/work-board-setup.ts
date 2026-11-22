@@ -1,3 +1,4 @@
+import { WorkflowTemplateStore } from "../../main/workflow-template-store.js";
 /** Migrate before loading the store; main starts the scanner after IPC and plugins are ready. */
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { migrateLegacyPluginBoardToWorkBoard } from "./work-board-migration.js";
@@ -36,6 +37,7 @@ export async function setupWorkBoard(ctx: BootContext): Promise<void> {
     log.warn("boot: work-board sample seed failed (non-fatal): %s", (err as Error).message),
   );
 
+  ctx.workflowTemplateStore = new WorkflowTemplateStore();
   ctx.workBoardStore = workBoardStore;
   ctx.workBoardStorage = workBoardStorage;
   // Defer initial scanning until IPC is wired; shutdown owns the timer.

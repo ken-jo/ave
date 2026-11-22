@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { windowsRegressionStepFiles } from "../../.github/scripts/check-windows-workflow.mjs";
 import { githubExpression, readRepoFile } from "./test-helpers.js";
 import {
   TRUSTED_EVENTS,
@@ -1682,7 +1683,12 @@ describe("installer smoke and packaging discipline", () => {
     expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
     expect(step.shell).toBe("powershell");
     expect(step["working-directory"]).toBe("ave");
-    expect(step.run).toBe("bun run check:mxc-pins\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\nbun run check:mxc-packaging\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n");
+    const contained = "node .github/scripts/run-in-job.mjs bun run";
+    expect(step.run).toBe(`${contained} check:mxc-pins\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n${contained} check:mxc-packaging\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n`);
+    // The containment launcher is built before the checks that run inside it.
+    const launcher = job.steps.findIndex((entry) => typeof entry.run === "string" && entry.run.startsWith("powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1\n"));
+    expect(launcher).toBeGreaterThanOrEqual(0);
+    expect(launcher).toBeLessThan(job.steps.indexOf(step));
     const cache = job.steps.find((entry) => entry.name === "Cache Windows packaging runtime archives")!;
     expect(cache.with).toMatchObject({ path: ".cache/electron", key: "windows-mxc-electron-${{ hashFiles('ave/bun.lock') }}" });
     expect(job.env.ELECTRON_CACHE).toBe("${{ github.workspace }}/.cache/electron");
@@ -2462,13 +2468,19 @@ describe("installer smoke and packaging discipline", () => {
 });
 
 it("builds the native path classifier before the Windows permission boundaries", () => {
-  const job = workflowJobs(readRepoFile(".github/workflows/ci.yml")).get("windows-permission-tests");
-  if (job === undefined) throw new Error("Windows permission path job is missing");
-  const classifier = job.indexOf("-Helper path-kind");
-  const regressions = job.indexOf("name: Run Windows permission regressions");
+  const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
+    jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+  };
+  const steps = workflow.jobs["windows-permission-tests"]?.steps;
+  if (steps === undefined) throw new Error("Windows permission path job is missing");
+  const classifier = steps.findIndex(step => step.run?.includes("-Helper path-kind"));
+  const stepName = "Run Windows permission regressions";
+  const regressions = steps.findIndex(step => step.name === stepName);
   expect(classifier).toBeGreaterThan(-1);
   expect(regressions).toBeGreaterThan(classifier);
-  const selection = job.slice(regressions);
+  const run = steps[regressions]?.run;
+  if (run === undefined) throw new Error(`${stepName} has no run command`);
+  const selection = windowsRegressionStepFiles(run, readRepoFile, stepName);
   for (const suite of [
     "src/tools/__tests__/powershell-exfiltration-gate.test.ts",
     "src/permissions/__tests__/powershell-unc-write-boundary.test.ts",

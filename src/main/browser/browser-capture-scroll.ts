@@ -1,15 +1,26 @@
 import type { BrowserCaptureScroll } from "../../shared/browser-capture.js";
 import { BrowserActionError, type CdpSession } from "./browser-action-guard.js";
 
-const CAPTURE_SCROLL = "function(x,y){window.scrollTo({left:x,top:y,behavior:'instant'});return {x:scrollX,y:scrollY};}";
+const CAPTURE_SCROLL = `function(x, y) {
+  return new Promise(resolve => {
+    const beforeX = scrollX, beforeY = scrollY;
+    const done = () => {
+      window.removeEventListener('scrollend', done);
+      resolve({ x: scrollX, y: scrollY });
+    };
+    window.addEventListener('scrollend', done, { once: true });
+    window.scrollTo({ left: x, top: y, behavior: 'instant' });
+    if (scrollX === beforeX && scrollY === beforeY) done();
+  });
+}`;
 
 export function captureContextGone(error: unknown): boolean {
   return error instanceof Error && /Cannot find context|Execution context was destroyed/iu.test(error.message);
 }
 
-/** The fixed isolated-world function accepts only coordinates; image readback owns rendering. */
+/** Await scroll completion before readback; coordinates alone can precede scroll event delivery. */
 export function captureScrollParameters(position: BrowserCaptureScroll): Record<string, unknown> {
-  return { executionContextId: position.executionContextId, functionDeclaration: CAPTURE_SCROLL, returnByValue: true, awaitPromise: false,
+  return { executionContextId: position.executionContextId, functionDeclaration: CAPTURE_SCROLL, returnByValue: true, awaitPromise: true,
     arguments: [{ value: position.x }, { value: position.y }] };
 }
 

@@ -1,5 +1,6 @@
 /** Share page headers, sections and help popovers so settings chrome has one implementation. */
-import { type ReactNode } from "react";
+import { isValidElement, type ReactNode } from "react";
+import { SettingsControlActions } from "../context/SettingsEditorContext.js";
 import { cn } from "../../../lib/utils.js";
 import {
   Popover,
@@ -26,7 +27,7 @@ export function SettingsHelpPopover({
           type="button"
           aria-label={ariaLabel}
           data-testid={testId}
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-border text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="inline-flex size-(--chrome-icon-button) shrink-0 items-center justify-center rounded-full border border-border text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
         >
           ?
         </button>
@@ -133,7 +134,7 @@ export function SettingsPageHeader({ title, description }: SettingsPageHeaderPro
       <div className="flex min-w-0 items-center gap-2">
         <h2
           tabIndex={-1}
-          className="min-w-0 truncate rounded-sm text-xl font-semibold leading-9 tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="min-w-0 break-words rounded-sm text-xl font-semibold leading-9 tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid={TEST_IDS.settingsPageTitle}
         >
           {title}
@@ -148,12 +149,21 @@ export function SettingsPageHeader({ title, description }: SettingsPageHeaderPro
   );
 }
 
+function settingsDescriptionText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(settingsDescriptionText).join(" ");
+  if (isValidElement<{ children?: ReactNode }>(node)) return settingsDescriptionText(node.props.children);
+  return "";
+}
+
 /** Outcome line a settings section shows under its controls after an action. */
 export type SettingsSectionFeedback =
   | { readonly tone: "error" | "success"; readonly text: string }
   | null;
 
 export interface SettingsSectionProps {
+  "data-setting-id"?: string;
+  searchKeywords?: string;
   title?: ReactNode;
   description?: ReactNode;
   badge?: ReactNode;
@@ -172,6 +182,8 @@ export interface SettingsSectionProps {
 }
 
 export function SettingsSection({
+  "data-setting-id": settingId,
+  searchKeywords,
   title,
   description,
   badge,
@@ -185,6 +197,9 @@ export function SettingsSection({
     <section
       id={id}
       data-settings-section={settingsSection}
+      data-setting-id={settingId}
+      data-settings-description={settingsDescriptionText(description)}
+      data-settings-keywords={searchKeywords}
       tabIndex={settingsSection === undefined ? undefined : -1}
       className={cn(
         "min-w-0 border-t border-border/(--opacity-medium) py-5 first:border-t-0 first:pt-0 last:pb-0",
@@ -216,6 +231,7 @@ export function SettingsSection({
         </header>
       ) : null}
       <div className="space-y-3">{children}</div>
+      {settingsSection && <SettingsControlActions section={settingsSection} />}
     </section>
   );
 }

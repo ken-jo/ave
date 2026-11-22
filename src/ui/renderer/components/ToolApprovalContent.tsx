@@ -25,7 +25,7 @@ import { useApprovalSurfaceNotice, type ApprovalDecisionExtras } from "../hooks/
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
 import { BrowserSiteApprovalCard } from "./permissions/BrowserSiteApprovalCard.js";
-import { UserOwnedSurfaceApprovalCard } from "./permissions/UserOwnedSurfaceApprovalCard.js";
+import { UserOwnedSurfaceApprovalCard, type HostTerminalCommandFacts } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
 import { canonicalStringify as canonicalStringifyForRenderer } from "../../../shared/canonical-json.js";
@@ -54,8 +54,10 @@ import {
   type ElicitationEnumValue,
   type ElicitationFieldKind as ElicitationSchemaFieldKind,
 } from "../../../shared/mcp-elicitation-schema.js";
+import { hasHiddenCharacters, revealHiddenCharacters } from "../../../shared/display-safe-text.js";
 import { isRecord } from "../../../shared/is-record.js";
 import { approvalActionSummary } from "../../../shared/approval-action-summary.js";
+import { ApprovalEditDiff } from "./permissions/ApprovalEditDiff.js";
 import { approvalAction } from "./permissions/approval-action.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
@@ -110,6 +112,30 @@ function isBoilerplateApprovalReason(value: string): boolean {
     || /^approval required(?:\s*\([^)]*\))?[.!]?$/i.test(normalized)
     || /^상태 변경 도구\s*\([^)]*\)$/.test(normalized)
     || /\(\s*(?:category|trust)\s*:[^)]+\)\s*$/i.test(normalized);
+}
+
+/** The host's reason for asking, worded from its code. A protected entry is a list name (`.git`) or one of two host namespaces. */
+function approvalAskReason(
+  request: Pick<ApprovalRequest, "reasonCode" | "reasonDetail" | "target">,
+  translate: typeof t,
+): string | null {
+  switch (request.reasonCode) {
+    // The floor covers a link that leads out and an operand that walks out with parent segments; only the first has a second location.
+    case "project-escape": return translate(request.target?.canonicalPath ? "toolApprovalDialog.reasonProjectEscape" : "toolApprovalDialog.reasonProjectEscapeOperand");
+    case "secret-read": return translate("toolApprovalDialog.reasonSecretRead");
+    case "file-write": return translate("toolApprovalDialog.reasonFileWrite");
+    case "protected-path": {
+      const entry = request.reasonDetail?.protectedEntry;
+      if (entry === undefined) return translate("toolApprovalDialog.reasonProtectedPathGeneric");
+      return translate("toolApprovalDialog.reasonProtectedPath", {
+        entry: entry === "application-home" ? translate("toolApprovalDialog.protectedEntryApplicationHome")
+          : entry === "runtime-settings-file" ? translate("toolApprovalDialog.protectedEntryRuntimeSettings")
+            : revealHiddenCharacters(entry, { lineBreaks: true }),
+      });
+    }
+    // No code, or one that belongs to another card (a user-owned surface's decision): the host's reason text stands.
+    default: return null;
+  }
 }
 
 function enumOptionLabel(value: ElicitationEnumValue): string {
@@ -308,9 +334,12 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
 function rememberScopeText(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "toolName" | "source" | "approvalMemory">,
-  path: string,
+  workingDirectory: string,
 ): string {
   const memory = request.approvalMemory;
+  // The sentence states what a remembered answer will cover, so every path in it is spelled as it is written.
+  const shown = (value: string) => revealHiddenCharacters(value, { lineBreaks: true });
+  const path = shown(workingDirectory);
   if (memory?.kind !== "key") return t("toolApprovalDialog.exactPersistentScope", { path });
   const toolName = request.toolName;
   const pathToolName = memory.scope.kind === "path" && request.source === "builtin"
@@ -324,15 +353,15 @@ function rememberScopeText(
     case "origin":
       return t("toolApprovalDialog.rememberScopeOrigin", { toolName, origin: memory.scope.origin, path });
     case "path":
-      return t("toolApprovalDialog.rememberScopePath", { toolName: pathToolName, target: memory.scope.path, path });
+      return t("toolApprovalDialog.rememberScopePath", { toolName: pathToolName, target: shown(memory.scope.path), path });
     case "paths":
-      return t("toolApprovalDialog.rememberScopePath", { toolName, target: memory.scope.paths.map((target) => JSON.stringify(target)).join(", "), path });
+      return t("toolApprovalDialog.rememberScopePath", { toolName, target: memory.scope.paths.map((target) => shown(JSON.stringify(target))).join(", "), path });
     case "transfer":
       return t(
         memory.scope.overwrite
           ? "toolApprovalDialog.rememberScopeTransferOverwrite"
           : "toolApprovalDialog.rememberScopeTransfer",
-        { toolName, source: memory.scope.sourcePath, destination: memory.scope.destinationPath, path },
+        { toolName, source: shown(memory.scope.sourcePath), destination: shown(memory.scope.destinationPath), path },
       );
     case "command":
       return t("toolApprovalDialog.rememberScopeCommand", { path });
@@ -344,8 +373,9 @@ function rememberScopeText(
   }
 }
 
-/** The exact command a `terminal_run` card types (as the card's input row shows it), the terminal it types into and the directory its shell is in; the last two
- * sealed by the host before the card was shown. Named the way the terminal's tab is labelled when it is the window's active terminal (the usual target), else by its id. */
+/** The exact command a `terminal_run` card runs (as the card's input row shows it), where it runs and the directory its shell is in, sealed by the host before the card was
+ * shown. A host terminal is named the way its tab is labelled when it is the window's active terminal (the usual target), else by its id. The conversation's isolated shell has
+ * no tab the user can open, so it is named as what it is and never by its internal id. */
 function terminalTargetText(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "approvalMemory" | "args">,
@@ -354,11 +384,41 @@ function terminalTargetText(
   if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return null;
   const command = parseArgs(request.args)?.command;
   if (typeof command !== "string") return null;
+  if (memory.scope.lane !== "manual") return t("toolApprovalDialog.terminalTarget", { command, cwd: memory.scope.cwd });
   const active = getActiveSurface();
   const terminal = active?.kind === "terminal" && active.tabId === memory.scope.tabId ? active.label : memory.scope.tabId;
-  return memory.scope.lane === "manual"
-    ? t("toolApprovalDialog.hostTerminalTarget", { command, terminal, shell: memory.scope.shell, cwd: memory.scope.physicalCwd })
-    : t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
+  return t("toolApprovalDialog.hostTerminalTarget", { command, terminal, shell: memory.scope.shell, cwd: memory.scope.physicalCwd });
+}
+
+/** The lookalike note for a command: each confusable character with its code point, at most twelve. */
+function terminalLookalikeNote(t: (key: string, params?: Record<string, string>) => string, command: string): string | null {
+  const lookalikes = terminalCommandLookalikes(command);
+  if (lookalikes.length === 0) return null;
+  const list = lookalikes
+    .slice(0, 12)
+    .map((ch) => `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
+    .join(", ");
+  return t("toolApprovalDialog.terminalLookalike", { list: lookalikes.length > 12 ? `${list}, …` : list });
+}
+
+/** What the host-terminal card shows above its choices: the exact command (permission-policy-design.md, "The card shows the exact command"), where the host sealed it to run, and
+ * the lookalike naming. The command comes from the request's arguments, so it is shown even when no target was sealed. */
+function hostTerminalCommandFacts(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args">,
+): HostTerminalCommandFacts | null {
+  const command = parseArgs(request.args)?.command;
+  if (typeof command !== "string") return null;
+  const memory = request.approvalMemory;
+  const scope = memory?.kind === "key" && memory.scope.kind === "terminal-command" && memory.scope.lane === "manual" ? memory.scope : null;
+  const active = getActiveSurface();
+  return {
+    text: command,
+    where: scope ? t("toolApprovalDialog.hostTerminalWhere", {
+      terminal: active?.kind === "terminal" && active.tabId === scope.tabId ? active.label : scope.tabId, shell: scope.shell, cwd: scope.physicalCwd,
+    }) : null,
+    lookalikeNote: terminalLookalikeNote(t, command),
+  };
 }
 
 /** Facts about a `terminal_run` command a reader could miss in its text: each character that could pass for another, by code point (a look-alike reads as the letter it imitates; words in one
@@ -375,14 +435,8 @@ function terminalCommandNotes(
   if (memory.scope.lane === "manual") notes.push(t("toolApprovalDialog.hostTerminalWarning"));
   const command = parseArgs(request.args)?.command;
   if (typeof command === "string") {
-    const lookalikes = terminalCommandLookalikes(command);
-    if (lookalikes.length > 0) {
-      const list = lookalikes
-        .slice(0, 12)
-        .map((ch) => `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
-        .join(", ");
-      notes.push(t("toolApprovalDialog.terminalLookalike", { list: lookalikes.length > 12 ? `${list}, …` : list }));
-    }
+    const lookalikeNote = terminalLookalikeNote(t, command);
+    if (lookalikeNote !== null) notes.push(lookalikeNote);
   }
   const context = request.evaluationContext;
   if (context) {
@@ -889,7 +943,8 @@ export function ToolApprovalContent({
   if (request.userOwnedSurface !== undefined && request.userOwnedSurfaceReviewFallback !== true) {
     return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
       targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}
-      notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []} />;
+      notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []}
+      command={request.userOwnedSurface === "host-terminal" ? hostTerminalCommandFacts(tHook, request) : null} />;
   }
   if (request.kind === "egress-host") {
     return (
@@ -911,7 +966,15 @@ export function ToolApprovalContent({
   const requiresHostConsent = request.executionPlan?.mode === "plain"
     && request.executionPlan.requiresExplicitUserApproval;
   const argsTruncated = !requiresHostConsent && argsStr.length > 500 && !expanded;
-  const argsDisplay = argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr;
+  // JSON escapes C0 controls only; bidi overrides and other invisibles would still reorder the shown input.
+  const argsDisplay = revealHiddenCharacters(argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr, { lineBreaks: false });
+  const shownCandidatePath = revealHiddenCharacters(outOfDirCandidatePath, { lineBreaks: true });
+  const shownSuggestedParent = outOfDirSuggestedParent === null ? null : revealHiddenCharacters(outOfDirSuggestedParent, { lineBreaks: true });
+  const requestArgs = isRecord(request.args) ? request.args : {};
+  const shownRealTarget = request.target?.canonicalPath ? revealHiddenCharacters(request.target.canonicalPath, { lineBreaks: true }) : null;
+  const pathHasHiddenCharacters = [
+    request.target?.filePath, request.target?.canonicalPath, outOfDirCandidatePath, outOfDirSuggestedParent, selectedFolderScope?.path, requestArgs.path, requestArgs.filePath,
+  ].some(path => typeof path === "string" && hasHiddenCharacters(path));
   const action = approvalAction(request, tHook);
   const source = request.source ?? "unknown";
   const sourceBadge = request.source ? SOURCE_BADGE[request.source] ?? request.source : tHook("toolApprovalDialog.unknown");
@@ -928,7 +991,11 @@ export function ToolApprovalContent({
   const sandboxSummary = approvalSandboxSummary(request);
   const categoryImpact = approvalActionSummary(request, tHook);
   const specificReviewerReason = request.reviewerVerdict?.reason.trim() ?? "";
-  const specificHostReason = request.reason.trim();
+  // A coded reason is worded below in the user's language; its host text is an English literal kept for audit rows and tool results.
+  const specificHostReason = request.reasonCode ? "" : request.reason.trim();
+  const askReason = approvalAskReason(request, tHook);
+  const shownSecretPattern = request.reasonDetail?.secretPattern
+    ? revealHiddenCharacters(request.reasonDetail.secretPattern, { lineBreaks: true }) : null;
   // The path-grant reason is host-derived and localized here; the raw request.reason for this kind is an internal English marker.
   const reviewedImpact = isOutOfDir
     ? category === "read"
@@ -939,11 +1006,12 @@ export function ToolApprovalContent({
       : !isBoilerplateApprovalReason(specificHostReason)
         ? specificHostReason
         : categoryImpact;
-  const highRiskReason = (userProvidedPurpose || reviewedImpact || categoryImpact).slice(0, 220);
-  const impactSummary = (showsHighRiskReason
+  // Reviewer and model text can quote a path; an invisible character in it must not reorder the sentence.
+  const highRiskReason = revealHiddenCharacters((userProvidedPurpose || reviewedImpact || categoryImpact).slice(0, 220), { lineBreaks: false });
+  const impactSummary = revealHiddenCharacters((showsHighRiskReason
     ? highRiskReason
     : (request.approvalPurpose?.text.trim() || reviewedImpact || categoryImpact)
-  ).slice(0, 220);
+  ).slice(0, 220), { lineBreaks: false });
 
   return (
     <div
@@ -1028,13 +1096,41 @@ export function ToolApprovalContent({
                       className="mt-0.5 break-all font-mono text-dense"
                       data-testid="approval-decision-target"
                     >
+                      {/* Each line states a consequence of a choice the person has not made yet, never a verdict. */}
                       {decisionIndex === 0
-                        ? tHook("dockedApprovalCard.denySummary")
+                        ? tHook("dockedApprovalCard.ifDenied")
                         : decisionIndex === 1 && selectedFolderScope
-                          ? tHook("dockedApprovalCard.targetParent", {
-                              path: selectedFolderScope.path ?? "",
+                          ? tHook("dockedApprovalCard.ifFolderAllowed", {
+                              path: revealHiddenCharacters(selectedFolderScope.path ?? "", { lineBreaks: true }),
                             })
-                          : outOfDirCandidatePath}
+                          : tHook("dockedApprovalCard.ifAllowedOnce", { path: shownCandidatePath })}
+                    </p>
+                  ) : null}
+                  {/* The host's own reason for asking stays on the card whatever the purpose or reviewer text says. */}
+                  {askReason ? (
+                    <p className="mt-1 break-words text-xs leading-relaxed" data-testid="approval-ask-reason" data-reason-code={request.reasonCode}>
+                      {askReason}
+                    </p>
+                  ) : null}
+                  {shownSecretPattern ? (
+                    <p className="mt-0.5 break-all text-tiny" data-testid="approval-secret-pattern">
+                      {tHook("toolApprovalDialog.secretPattern")}{" "}
+                      <code className="font-mono">{shownSecretPattern}</code>
+                    </p>
+                  ) : null}
+                  {shownRealTarget ? (
+                    <p className="mt-0.5 break-all text-tiny" data-testid="approval-real-target">
+                      {tHook("toolApprovalDialog.realTarget")}{" "}
+                      <code className="font-mono">{shownRealTarget}</code>
+                    </p>
+                  ) : null}
+                  {pathHasHiddenCharacters ? (
+                    <p
+                      className="mt-1 break-words text-tiny font-semibold text-destructive"
+                      data-testid="approval-hidden-characters-warning"
+                      role="alert"
+                    >
+                      {tHook("toolApprovalDialog.hiddenCharactersWarning")}
                     </p>
                   ) : null}
                   {sandboxSummary ? (
@@ -1071,6 +1167,9 @@ export function ToolApprovalContent({
                   ) : null}
                 </div>
 
+            {/* An edit is approved by reading it, so the change sits on the card, not inside the collapsed input. */}
+            <ApprovalEditDiff request={request} />
+
             <details
               className="group min-w-0 overflow-hidden rounded-lg border border-border-strong bg-muted/(--opacity-light)"
               data-testid={TEST_IDS.approvalReviewDetails}
@@ -1106,16 +1205,19 @@ export function ToolApprovalContent({
                       {reviewTitleForCategory(category)}
                     </h4>
                     <ReviewRow label={tHook("toolApprovalDialog.allowOnce")}>
-                      <code className="break-all font-mono">{outOfDirCandidatePath}</code>
+                      <code className="break-all font-mono" data-testid="approval-path-grant-candidate">{shownCandidatePath}</code>
                     </ReviewRow>
-                    {outOfDirSuggestedParent ? (
+                    {/* A folder grant the host does not offer for this request gets no row and no hint. */}
+                    {outOfDirSuggestedParent && (outOfDirScopes?.session || outOfDirScopes?.always) ? (
                       <>
                         <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
-                          <code className="break-all font-mono">{outOfDirSuggestedParent}</code>
+                          <code className="break-all font-mono" data-testid="approval-path-grant-parent">{shownSuggestedParent}</code>
                         </ReviewRow>
-                        <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="approval-folder-project-hint">
-                          {tHook("toolApprovalDialog.folderAddsProject")}
-                        </p>
+                        {outOfDirScopes.always ? (
+                          <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="approval-folder-project-hint">
+                            {tHook("toolApprovalDialog.folderAddsProject")}
+                          </p>
+                        ) : null}
                       </>
                     ) : null}
                     {decisionIndex === 1 && (outOfDir?.adjacencyWarnings.length ?? 0) > 0 ? (
@@ -1508,6 +1610,13 @@ function approvalSandboxSummary(request: ApprovalRequest): ReviewBasisRow | null
   };
 }
 
+/** A host-resolved file path is one line; other summaries may be multi-line but never carry invisible characters. */
+function targetRowText(filePath: string | undefined, summary: string): string {
+  return filePath === undefined
+    ? revealHiddenCharacters(summary, { lineBreaks: false })
+    : revealHiddenCharacters(filePath, { lineBreaks: true });
+}
+
 function approvalReviewRows(
   request: ApprovalRequest,
   category: ToolCategory,
@@ -1519,7 +1628,7 @@ function approvalReviewRows(
   const parsed = parseArgs(request.args);
   const reviewer = request.userOwnedSurfaceReviewFallback === true ? request.reviewerVerdict?.reason ?? request.reason : request.reviewerVerdict
     ? `${riskLevelKoLabel(request.reviewerVerdict.level)} · ${request.reviewerVerdict.reason}`
-    : request.reason;
+    : approvalAskReason(request, t) ?? request.reason;
   // Source, trust origin, category, conversation and sandbox now live in the compact always-visible summary. Details contain only additional evidence.
   const rows: ReviewBasisRow[] = [];
   if (isNonUserTrustOrigin(request.trustOrigin)) {
@@ -1545,12 +1654,12 @@ function approvalReviewRows(
 
   if (category === "read") {
     rows.push(
-      { label: t("toolApprovalDialog.rowTarget"), value: request.target?.filePath ?? pickSummary(parsed, ["path", "paths", "target", "targets", "file", "directory", "resource", "query", "url", "uri"], inputSummary), monospace: true, testId: "tool-approval-input" },
+      { label: t("toolApprovalDialog.rowTarget"), value: targetRowText(request.target?.filePath, pickSummary(parsed, ["path", "paths", "target", "targets", "file", "directory", "resource", "query", "url", "uri"], inputSummary)), monospace: true, testId: "tool-approval-input" },
       { label: t("toolApprovalDialog.rowSensitivity"), value: sensitivityLabel(parsed) },
     );
   } else if (category === "write") {
     rows.push(
-      { label: t("toolApprovalDialog.rowTarget"), value: request.target?.filePath ?? pickSummary(parsed, ["path", "paths", "target", "targets", "file", "configKey", "taskId", "routineId", "id"], inputSummary), monospace: true, testId: "tool-approval-input" },
+      { label: t("toolApprovalDialog.rowTarget"), value: targetRowText(request.target?.filePath, pickSummary(parsed, ["path", "paths", "target", "targets", "file", "configKey", "taskId", "routineId", "id"], inputSummary)), monospace: true, testId: "tool-approval-input" },
       ...kept(
         optRow(t("toolApprovalDialog.rowChange"), ["operation", "action", "mode", "patch", "content", "body", "text"], { monospace: true }),
         parsed?.connectToThisChat === true
@@ -1588,7 +1697,8 @@ function approvalReviewRows(
   rows.push(
     { label: t("toolApprovalDialog.rowVerdict"), value: reviewer },
   );
-  return rows;
+  // Every row is model, reviewer or tool-input text: none may carry a character the reader cannot see.
+  return rows.map(row => ({ ...row, value: revealHiddenCharacters(row.value, { lineBreaks: false }) }));
 }
 
 /** Compact `source:tool` identity for the Tool/Source tile; `builtin:bash`, `mcp:<tool>`, or `<pluginId>:<tool>` for a plugin (agent-action) call. One short token

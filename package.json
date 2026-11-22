@@ -46,13 +46,13 @@
     "build:preload": "node --import ./scripts/lib/document-consumer-guard.mjs ./node_modules/webpack/bin/webpack.js --config webpack.config.cjs --config-name preload",
     "build:floating-dock-preload": "webpack --config webpack.config.cjs --config-name floatingDockPreload",
     "build:icons": "node scripts/generate-ave-icons.cjs",
-    "build": "bun run check:import-cycles && node scripts/clean-dist.mjs && bun run build:icons && node scripts/check-generated-assets.mjs && bun run check:plugin-host-protocol-schema && bun run build:main && bun run check:i18n-catalog && bun run build:webpack && bun run build:styles && node scripts/copy-build-assets.mjs && node scripts/check-no-tls-bypass.mjs && node scripts/check-color-tokens.mjs && node scripts/check-type-tokens.mjs && node scripts/check-shell-geometry-tokens.mjs && node scripts/check-no-inline-channels.mjs && node scripts/check-sandboxed-preloads.mjs && bun run check:source-text-safe",
+    "build": "bun run check:import-cycles && node scripts/clean-dist.mjs && bun run build:icons && node scripts/check-generated-assets.mjs && bun run check:plugin-host-protocol-schema && bun run build:main && bun run check:i18n-catalog && bun run build:webpack && bun run build:styles && node scripts/build-macos-dir-ops.mjs --if-stale && node scripts/copy-build-assets.mjs && node scripts/check-no-tls-bypass.mjs && node scripts/check-color-tokens.mjs && node scripts/check-type-tokens.mjs && node scripts/check-shell-geometry-tokens.mjs && node scripts/check-no-inline-channels.mjs && node scripts/check-sandboxed-preloads.mjs && bun run check:source-text-safe",
     "typecheck": "tsc --noEmit",
     "start": "bun run build && node scripts/run-electron.mjs dist/src/main/main.js",
     "dev": "node scripts/run-electron-dev.mjs",
     "plugins:list": "tsx scripts/plugins-cli.ts list",
     "cli": "tsx scripts/ave-cli.ts",
-    "test:prepare": "bun run build:icons && node scripts/prepare-windows-job.mjs",
+    "test:prepare": "bun run build:icons && node scripts/prepare-windows-job.mjs && node scripts/build-macos-dir-ops.mjs --if-stale --test-builds",
     "test:vitest": "node scripts/run-vitest-under-electron.mjs",
     "test": "bun run test:prepare && bun run test:vitest -- run",
     "test:a2a": "bun run check:a2a-p4-5-contract && bun run test:prepare && bun run test:vitest -- run a2a subagent parent-child-directive agent-send",
@@ -196,7 +196,10 @@
     "@types/react-dom": "^19.3.0",
     "@vitest/coverage-v8": "^5.1.0",
     "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "6.0.0",
     "app-builder-lib": "26.18.0",
     "baseline-browser-mapping": "^2.11.35",
     "caniuse-lite": "^1.0.30001820",
@@ -445,7 +448,13 @@
       ],
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "extraResources": [
+        {
+          "from": "resources/macos-dir-ops/${arch}/ave-dir-ops",
+          "to": "macos-dir-ops/${arch}/ave-dir-ops"
+        }
+      ]
     },
     "dmg": {
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}",

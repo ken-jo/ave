@@ -1,3 +1,5 @@
+import { WorkflowTemplateError } from "../../work-board/template-graph.js";
+import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
 // Work-board mutations use the store's lifecycle; execution and reports require their separately wired services.
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
@@ -97,7 +99,21 @@ function parseDecidePlanInput(raw: unknown): WorkPlanDecideInput | null {
 }
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
+  registerWorkflowTemplateHandlers(deps);
   const { workBoardStore, workBoardEngine, workBoardReport, auditLogger } = deps;
+  const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
+      try { return await listener(event, ...args); }
+      catch (error) {
+        if (!(error instanceof WorkflowTemplateError) || error.code !== "invalid-template-run") throw error;
+        if (channel === WORK_BOARD.decidePlan) return { ok: false, reason: error.code };
+        if (channel === WORK_BOARD.list || channel === WORK_BOARD.get || channel === WORK_BOARD.steerRun || channel === WORK_BOARD.cancelRun) {
+          return { ok: false, error: error.code };
+        }
+        return { status: channel === WORK_BOARD.run ? "error" : "invalid", itemId: args[0], reason: error.code };
+      }
+    });
+  };
 
   const isBoardOwnerFrame = (event: IpcMainInvokeEvent): boolean => {
     const sender = event.sender;
@@ -125,7 +141,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return isAuthorizedStoredWorkItem(result.item) ? result : { status: "not_found", itemId: id };
   };
 
-  ipcMain.handle(WORK_BOARD.list, async (e, filter?: WorkItemListFilter) => {
+  handle(WORK_BOARD.list, async (e, filter?: WorkItemListFilter) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.list, e);
       return UNAUTHORIZED_FRAME;
@@ -134,7 +150,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return workBoardStore.list(normalizeProjectListFilter(filter));
   });
 
-  ipcMain.handle(WORK_BOARD.get, async (e, id: number) => {
+  handle(WORK_BOARD.get, async (e, id: number) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.get, e);
       return UNAUTHORIZED_FRAME;
@@ -143,7 +159,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return loadAuthorizedItem(id);
   });
 
-  ipcMain.handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput) => {
+  handle(WORK_BOARD.add, async (e, input: WorkItemCreateInput) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.add, e);
       return UNAUTHORIZED_FRAME;
@@ -156,7 +172,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.update, async (e, id: number, patch: WorkItemUpdateInput) => {
+  handle(WORK_BOARD.update, async (e, id: number, patch: WorkItemUpdateInput) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.update, e);
       return UNAUTHORIZED_FRAME;
@@ -169,7 +185,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.transition, async (e, id: number, to: WorkItemStatusStored, expectedRevision?: string) => {
+  handle(WORK_BOARD.transition, async (e, id: number, to: WorkItemStatusStored, expectedRevision?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.transition, e);
       return UNAUTHORIZED_FRAME;
@@ -185,7 +201,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.complete, async (e, id: number, expectedRevision?: string) => {
+  handle(WORK_BOARD.complete, async (e, id: number, expectedRevision?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.complete, e);
       return UNAUTHORIZED_FRAME;
@@ -201,7 +217,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.reopen, async (e, id: number, expectedRevision?: string) => {
+  handle(WORK_BOARD.reopen, async (e, id: number, expectedRevision?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.reopen, e);
       return UNAUTHORIZED_FRAME;
@@ -217,7 +233,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.remove, async (e, id: number) => {
+  handle(WORK_BOARD.remove, async (e, id: number) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.remove, e);
       return UNAUTHORIZED_FRAME;
@@ -231,7 +247,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   });
 
   // Run returns a terminal result while progress events update the renderer.
-  ipcMain.handle(WORK_BOARD.run, async (e, id: number, opts?: { agentName?: string }) => {
+  handle(WORK_BOARD.run, async (e, id: number, opts?: { agentName?: string }) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.run, e);
       return UNAUTHORIZED_FRAME;
@@ -245,6 +261,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
 
+    if (existing.item.templateRunError) return { status: "error", reason: "invalid-template-run" } satisfies WorkItemRunResult;
     broadcastToAppWindows(deps, WORK_BOARD.runStarted, {
       itemId: id,
       at: new Date().toISOString(),
@@ -275,7 +292,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   // Steer a running execution (permission-decision-tree.md S→T). Only a sender-validated board-window main frame carrying a consumed local
   // keyboard gesture may steer; anything else is refused, never downgraded to another principal (contrast chat guide). The engine picks the
   // child from its own record and the text enters as host-fenced non-principal guidance, so the child's permissions do not widen.
-  ipcMain.handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, intent?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+  handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, intent?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
@@ -313,7 +330,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   // otherwise. The renderer names the run and the hash of the plan it showed, never the plan text; the engine checks both against the
   // stored item inside the board lock, stores the decision, and only then continues the run. A continuing run broadcasts its own
   // started/finished pair (`resumed`), so the board keeps the planning turns it already has.
-  ipcMain.handle(
+  handle(
     WORK_BOARD.decidePlan,
     async (e, id: unknown, input: unknown, intent?: unknown): Promise<WorkPlanDecideIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
       if (!validateHostRendererSender(e)) {
@@ -329,7 +346,9 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false, reason: "invalid-input" };
       const parsed = parseDecidePlanInput(input);
       if (parsed === null) return { ok: false, reason: "invalid-input" };
-      if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not_found" };
+      const existing = await loadAuthorizedItem(id);
+      if (existing.status !== "found") return { ok: false, reason: "not_found" };
+      if (existing.item.templateRunError) return { ok: false, reason: "invalid-template-run" };
       // Bound the note before redaction does any work on it; the engine checks the redacted note again.
       if (parsed.note !== undefined && parsed.note.length > MAX_PLAN_NOTE_LENGTH) return { ok: false, reason: "note_too_long" };
       let redactedCount = 0;
@@ -370,7 +389,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   );
 
   // Stop a running execution through the ordinary sub-agent interrupt; the run settles as `cancelled`. Same gate as steer.
-  ipcMain.handle(WORK_BOARD.cancelRun, async (e, id: number, intent?: unknown): Promise<WorkBoardCancelIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+  handle(WORK_BOARD.cancelRun, async (e, id: number, intent?: unknown): Promise<WorkBoardCancelIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.cancelRun, e);
       return UNAUTHORIZED_FRAME;
@@ -388,7 +407,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   });
 
   // Preserve the reporter's ok/empty result and map provider failure to the public error envelope.
-  ipcMain.handle(
+  handle(
     WORK_BOARD.generateReport,
     async (
       e,
@@ -409,7 +428,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     },
   );
 
-  ipcMain.handle(WORK_BOARD.runTranscript, async (e, itemId: number, runId: string) => {
+  handle(WORK_BOARD.runTranscript, async (e, itemId: number, runId: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.runTranscript, e);
       return UNAUTHORIZED_FRAME;
@@ -424,7 +443,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   });
 
   // Resolve the active project when accepting; unscoped proposals do not choose project identity.
-  ipcMain.handle(WORK_BOARD.acceptProposal, async (e, proposalId: string, projectRoot?: string) => {
+  handle(WORK_BOARD.acceptProposal, async (e, proposalId: string, projectRoot?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.acceptProposal, e);
       return UNAUTHORIZED_FRAME;
@@ -447,7 +466,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.dismissProposal, async (e, proposalId: string) => {
+  handle(WORK_BOARD.dismissProposal, async (e, proposalId: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.dismissProposal, e);
       return UNAUTHORIZED_FRAME;
@@ -457,7 +476,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   });
 
   // Briefing surveys through a read-only child and creates proposals rather than executing work.
-  ipcMain.handle(
+  handle(
     WORK_BOARD.runBriefing,
     async (e, kind: WorkBoardBriefingKind, projectRoot?: string) => {
       if (!validateHostRendererSender(e)) {

@@ -1,12 +1,13 @@
 /** Hook trust policy: docs/architecture/permission-policy-design.md, Layer 6. */
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import {
   existsSync,
   mkdtempSync,
   readdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { wireHookSystem } from "../hook-system-wiring.js";
 import type { HookDiff } from "../../../hooks/hook-discovery.js";
 import { writeExecutableHook } from "../../../hooks/__tests__/test-helpers.js";
@@ -14,6 +15,9 @@ import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 let tmpDir: string;
 let hooksDir: string;
+
+// Windows reads the admin policy through a native helper; an uncomposed host reads it as unreadable and closes user hooks.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "permission-hooks-"));
@@ -39,6 +43,20 @@ describe("wireHookSystem permission hook policy", () => {
     expect(decision.decision).toBe("deny");
     expect(decision.reason).toContain("hook command policy is not wired");
     expect(decision.results[0].rawStdout).toBe("");
+  });
+
+  it("keeps trusted user hooks out when the admin policy closes them", async () => {
+    writeExecutableHook(hooksDir, "pre-allowed.sh", "#!/bin/sh\nexit 0");
+    const result = await wireHookSystem({
+      policy: { allowManagedHooksOnly: true, allowedHttpHookUrls: [], httpHookAllowedEnvVars: [], managedHooks: [] },
+      hooksDir,
+      lockfilePath: join(hooksDir, ".lockfile.json"),
+      disabledDir: join(hooksDir, ".disabled"),
+      promptDispatcher: { prompt: async (diffs: HookDiff[]) =>
+        diffs.map((diff) => ({ fileName: diff.hook.fileName, trust: true })) },
+    });
+    expect(result.trust.trustedHooks.map((h) => h.fileName)).toEqual(["pre-allowed.sh"]);
+    expect(result.manager.size()).toBe(0);
   });
 
   it("returns a manager + trust result on empty directory", async () => {

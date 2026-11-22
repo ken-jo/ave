@@ -24,6 +24,7 @@ const owners = new Map<string, number | null>();
 const internalIds = new Set<string>();
 const writeTerminal = vi.fn(() => ({ ok: true }));
 const killTerminal = vi.fn();
+const keepTerminalOutput = vi.fn(() => ({ ok: true }));
 const reviewSnapshot = vi.fn(async () => ({ cwd: "/work", latestBlockId: null, files: [{ path: "/work/script.sh", sessionIds: ["s"], lastUsed: null }], warnings: [] }));
 vi.mock("../../main/terminal/changed-file-evidence.js", () => ({
   terminalFileEvidence: { snapshot: reviewSnapshot },
@@ -39,11 +40,25 @@ vi.mock("../../main/terminal/terminal-blocks.js", async (importOriginal) => {
       ? terminalSessionFixture("terminal:0000000a-1", "manual") : actual.getWindowTerminalBlockSession(...args),
   };
 });
+const { spawnRequests, shellPreference, appearance, scrollback } = vi.hoisted(() => ({
+  spawnRequests: [] as Array<Record<string, unknown>>,
+  shellPreference: { read: null as (() => string) | null },
+  appearance: { terminal: { shell: "" } },
+  // Boot installs the store (boot/steps/terminal-scrollback-setup.ts); the domain only forgets a tab the user closes.
+  scrollback: { install: vi.fn(), forgotten: [] as string[] },
+}));
 vi.mock("../../main/terminal/pty-manager.js", () => ({
   setTerminalEmitter: (fn: TerminalEmit) => { emitter = fn; },
-  spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" })),
+  setManualShellPreference: (read: () => string) => { shellPreference.read = read; },
+  setTerminalScrollbackStore: scrollback.install,
+  forgetTerminalScrollback: (tabId: string) => { scrollback.forgotten.push(tabId); },
+  spawnTerminal: vi.fn(async ({ tabId, lane, ...rest }: { tabId: string; lane: "manual" | "agent"; replay?: boolean }) => {
+    spawnRequests.push({ tabId, lane, ...rest });
+    return { ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" };
+  }),
   writeTerminal,
   resizeTerminal: vi.fn(() => ({ ok: true })),
+  keepTerminalOutput,
   killTerminal,
   terminalOwnedBy: (tabId: string, ownerWindowId: number | null) => !internalIds.has(tabId) && (!owners.has(tabId) || owners.get(tabId) === ownerWindowId),
 }));
@@ -67,6 +82,8 @@ function from(win: ReturnType<typeof appWindow>): IpcMainInvokeEvent {
   return { senderFrame: win.webContents.mainFrame, sender: win.webContents } as unknown as IpcMainInvokeEvent;
 }
 
+const settingsService = { get: vi.fn((key: string) => (key === "appearance" ? appearance : undefined)) };
+
 beforeEach(() => {
   __resetTerminalBlocksForTest();
   handlers.clear();
@@ -75,17 +92,40 @@ beforeEach(() => {
   fanOut.mockClear();
   writeTerminal.mockClear();
   killTerminal.mockClear();
+  keepTerminalOutput.mockClear();
   reviewSnapshot.mockClear();
+  settingsService.get.mockClear();
+  scrollback.install.mockClear();
   currentTracker = undefined;
   fromWebContents.mockImplementation((sender: { windowId: number }) => (sender.windowId === 1 ? windowOne : windowTwo));
   registerTerminalHandlers({
     auditLogger: { log: vi.fn() },
     getMainWindow: () => windowOne,
     getAppWindows: () => [windowOne, windowTwo],
+    settingsService,
   } as never);
 });
 
 describe("terminal IPC between two windows", () => {
+  it("keeps what the owner's view shows of its tab, and refuses another window's or a malformed one", async () => {
+    owners.set("terminal:0000000a-1", 1);
+    const keep = handlers.get(CHANNELS.terminal.keep);
+    if (!keep) throw new Error("the terminal domain registered no keep handler");
+    expect(await keep(from(windowTwo), { tabId: "terminal:0000000a-1", shown: "shown\r\n" })).toEqual({ ok: false, error: "not-owner" });
+    for (const payload of [
+      { tabId: "terminal:0000000a-1", shown: 3 },
+      { tabId: "terminal:0000000a-1" },
+      { tabId: "", shown: "shown\r\n" },
+      null,
+    ]) expect(await keep(from(windowOne), payload)).toEqual({ ok: false, error: "invalid-params" });
+    expect(keepTerminalOutput).not.toHaveBeenCalled();
+    expect(await keep(from(windowOne), { tabId: "terminal:0000000a-1", shown: "shown\r\n" })).toEqual({ ok: true });
+    expect(keepTerminalOutput).toHaveBeenCalledWith("terminal:0000000a-1", 1, "shown\r\n");
+    // A view that could not serialize its terminal says so.
+    expect(await keep(from(windowOne), { tabId: "terminal:0000000a-1", shown: null })).toEqual({ ok: true });
+    expect(keepTerminalOutput).toHaveBeenLastCalledWith("terminal:0000000a-1", 1, null);
+  });
+
   it("registers the exact native terminal owner before spawn and refuses ownership theft", async () => {
     const tabId = "terminal:0000000a-1";
     const spawn = handlers.get(CHANNELS.terminal.spawn)!;
@@ -129,7 +169,53 @@ describe("terminal IPC between two windows", () => {
 });
 
 
+describe("terminal shell setting", () => {
+  it("gives the PTY manager the saved shell, read again at every start", () => {
+    if (!shellPreference.read) throw new Error("the terminal domain registered no shell preference");
+    expect(shellPreference.read()).toBe("");
+    appearance.terminal.shell = "/opt/homebrew/bin/fish";
+    expect(shellPreference.read()).toBe("/opt/homebrew/bin/fish");
+    appearance.terminal.shell = "";
+  });
+});
+
+describe("kept terminal output", () => {
+  it("reads no settings and installs no store at registration, asks for a restore only when the view does, and forgets a tab the user closes", async () => {
+    // Registering reads nothing and touches no disk: the shell preference is read at each start, and boot owns the store.
+    expect(settingsService.get).not.toHaveBeenCalled();
+    expect(scrollback.install).not.toHaveBeenCalled();
+    const spawn = handlers.get(CHANNELS.terminal.spawn);
+    const kill = handlers.get(CHANNELS.terminal.kill);
+    if (!spawn || !kill) throw new Error("the terminal domain registered no spawn or kill handler");
+    const tabId = "terminal:0000000a-1";
+    spawnRequests.length = 0;
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace", restore: true })).toMatchObject({ ok: true });
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace" })).toMatchObject({ ok: true });
+    expect(spawnRequests.map((request) => request.restore)).toEqual([true, undefined]);
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace", restore: "yes" })).toMatchObject({ ok: false, reason: "bad-request" });
+    scrollback.forgotten.length = 0;
+    // Another window's tab is not this one's to close, and its output stays.
+    owners.set(tabId, 1);
+    expect(await kill(from(windowTwo), { tabId })).toEqual({ ok: false, error: "not-owner" });
+    expect(scrollback.forgotten).toEqual([]);
+    expect(await kill(from(windowOne), { tabId })).toEqual({ ok: true });
+    expect(scrollback.forgotten).toEqual([tabId]);
+  });
+});
+
 describe("terminal IPC lane validation", () => {
+  it("forwards a no-replay re-attach and refuses a replay flag that is not a boolean", async () => {
+    const spawn = handlers.get(CHANNELS.terminal.spawn);
+    if (!spawn) throw new Error("the terminal domain registered no spawn handler");
+    const tabId = "terminal:0000000a-7";
+    spawnRequests.length = 0;
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace", replay: false })).toMatchObject({ ok: true });
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace" })).toMatchObject({ ok: true });
+    expect(spawnRequests.map((request) => request.replay)).toEqual([false, undefined]);
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace", replay: "no" })).toMatchObject({ ok: false, reason: "bad-request" });
+    expect(spawnRequests).toHaveLength(2);
+  });
+
   it("requires explicit lane on spawn and incarnation on mutations and block reads", async () => {
     expect(await handlers.get(CHANNELS.terminal.spawn)!(from(windowOne), { tabId: "terminal:0000000a-1" })).toMatchObject({ ok: false, reason: "bad-request" });
     for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block, CHANNELS.terminal.fileReviews]) {

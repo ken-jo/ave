@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import {
   openFeatureNamespace,
   readJsonFile,
+  replaceNamespaceFile,
   writeJsonAtomic,
   writeFileAtomicAtPath,
 } from "../feature-namespace.js";
@@ -128,6 +129,34 @@ describe("feature-namespace", () => {
     symlinkSync(join(outside, "keep"), join(ns.dir, "payload", "leaf"));
     await expect(ns.createFile("payload/leaf")).rejects.toMatchObject({ code: "EEXIST" });
     expect(readFileSync(join(outside, "keep"), "utf8")).toBe("unchanged");
+  });
+
+  it("replaces a namespace file through a private staging file it creates itself, and leaves no staging file behind", async () => {
+    const ns = openFeatureNamespace("replaced");
+    await ns.childDir(".");
+    const created: string[] = [];
+    const counting = { ...ns, get dir() { return ns.dir; }, createFile: (name: string) => { created.push(name); return ns.createFile(name); } };
+    await replaceNamespaceFile(counting, "kept.bin", "first");
+    await replaceNamespaceFile(counting, "kept.bin", Buffer.from("second"));
+    expect(readFileSync(join(ns.dir, "kept.bin"), "utf8")).toBe("second");
+    if (POSIX) expect(statSync(join(ns.dir, "kept.bin")).mode & 0o777).toBe(0o600);
+    expect(readdirSync(ns.dir)).toEqual(["kept.bin"]);
+    // Staged beside the name, under a name nobody could have prepared, through the namespace's own exclusive creation.
+    expect(created).toHaveLength(2);
+    for (const name of created) expect(name).toMatch(/^kept\.bin\.[0-9a-f]{32}\.tmp$/u);
+    expect(new Set(created).size).toBe(2);
+    await expect(replaceNamespaceFile(ns, "../outside", "x")).rejects.toThrow("Invalid namespace file name");
+    expect(existsSync(join(tempDir, "outside"))).toBe(false);
+  });
+
+  it("removes its staging file when the move fails, and leaves what is at the name", async () => {
+    const ns = openFeatureNamespace("replaced");
+    await ns.childDir("occupied");
+    writeFileSync(join(ns.dir, "occupied", "inside"), "theirs");
+    // A file cannot be moved over a directory that holds something.
+    await expect(replaceNamespaceFile(ns, "occupied", "mine")).rejects.toBeDefined();
+    expect(readdirSync(ns.dir)).toEqual(["occupied"]);
+    expect(readFileSync(join(ns.dir, "occupied", "inside"), "utf8")).toBe("theirs");
   });
 
   it("writeJson → readJson round-trips", async () => {

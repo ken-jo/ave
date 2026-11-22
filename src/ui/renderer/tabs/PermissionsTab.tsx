@@ -8,7 +8,7 @@ import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { SandboxRestartDialog } from "../components/SandboxRestartDialog.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
-import { Checkbox } from "../../../components/ui/checkbox.js";
+import { Switch } from "../../../components/ui/switch.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
@@ -25,6 +25,7 @@ import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
 import { useInlineNotice } from "../hooks/use-status-bar.js";
 import {
   isExecutionMode,
+  DEFAULT_EXECUTION_MODE,
   normalizeExecutionMode,
   type ExecutionModeDisplay,
 } from "../../../shared/permission-mode.js";
@@ -46,7 +47,7 @@ import type {
 } from "../../../shared/sandbox-capability-info.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { RecentlyDeniedPanel } from "../components/permissions/RecentlyDeniedPanel.js";
-import { isOwnerAwayAutoSkipMinutes } from "../../../shared/owner-away-permission.js";
+import { isOwnerAwayAutoSkipMinutes, OWNER_AWAY_AUTO_SKIP_MAX_MINUTES } from "../../../shared/owner-away-permission.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
 import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
 import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
@@ -54,7 +55,6 @@ import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js"
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
 import { HookTrustReview } from "../components/permissions/HookTrustReview.js";
-import { HiddenNoticesReset } from "../components/HiddenNoticesReset.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { WorkBoardApprovalSettingsContent } from "./WorkBoardApprovalSettingsContent.js";
@@ -65,6 +65,9 @@ import { canonicalStringify } from "../../../shared/canonical-json.js";
 import type { ExactDenyDraft } from "../exact-permission-decision.js";
 import { TEST_IDS, execModeTestId, testIdSelector } from "../../../shared/test-ids.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { DEFAULT_REQUIRE_EXPLICIT_APPROVAL } from "../../../shared/policy-editability.js";
+import { useAppSettingsControls, useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
+import { isRuleSpecifier } from "../../../permissions/rules/rule-specifier.js";
 
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
@@ -444,9 +447,12 @@ function preserveSettingsScrollPosition(): () => void {
  * its items inherit it, rather than each item pinning `text-sm` and the menu reading a size larger than the field it belongs to. */
 const DENSE_SELECT_POPUP = "text-dense";
 
-/** Selecting auto enables the reviewer; every other mode disables automatic review. */
-export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMode {
-  return m === "auto" ? "llm" : "disabled";
+function permissionRuleSettingId(rule: ScopedPermissionRule): string {
+  return `permissions.rules.${encodeURIComponent(canonicalStringify({ scope: rule.scope, projectCwd: rule.projectCwd, pattern: rule.pattern, action: rule.action, source: rule.source }))}`;
+}
+
+function permissionDirectorySettingId(directory: string): string {
+  return `permissions.directories.${encodeURIComponent(directory)}`;
 }
 
 /** The independent reads behind the panel's sections. */
@@ -465,6 +471,10 @@ export function PermissionsTab({
   onDiscardExactDeny?: () => void;
 } = {}) {
   const { t } = useTranslation();
+  useAppSettingsControls(["permissions-os-sandbox", "permissions-approval-dialog", "permissions-work-board-approvals", "permissions-network"]);
+  const editor = useSettingsEditor();
+  const editorReloadEpoch = editor?.reloadEpoch;
+  const editorEnabled = editor !== null;
 
   // Each panel read settles on its own: a failing or slow read marks only the sections that use it, never the whole tab.
   const [panelLoad, setPanelLoad] = useState<Record<PanelLoad, PanelLoadState>>(INITIAL_PANEL_LOAD);
@@ -482,6 +492,7 @@ export function PermissionsTab({
   const [ownerAwayAutoSkipMinutes, setOwnerAwayAutoSkipMinutes] = useState(0);
   const [ownerAwayBusy, setOwnerAwayBusy] = useState(false);
   const [ownerAwayRevision, setOwnerAwayRevision] = useState(0);
+  const [ownerAwayError, setOwnerAwayError] = useState<string | null>(null);
 
   // ── Explicit Approval Policy ──────────────────────
   const [requireExplicit, setRequireExplicit] = useState(true);
@@ -494,7 +505,9 @@ export function PermissionsTab({
   // ── Rule Editor ───────────────────────────────────
   const [rules, setRules] = useState<ScopedPermissionRule[]>([]);
   const [newPattern, setNewPattern] = useState("");
-  const [newAction, setNewAction] = useState<"allow" | "deny">("allow");
+  const [newAction, setNewAction] = useState<"allow" | "deny" | "ask">("allow");
+  const [ruleWarningPending, setRuleWarningPending] = useState(false);
+  const [ruleInputError, setRuleInputError] = useState<string | null>(null);
   const [ruleLoadErrors, setRuleLoadErrors] = useState<ScopedPermissionRuleError[]>([]);
   const [approvalLoadError, setApprovalLoadError] = useState(false);
   const [rulesBusy, setRulesBusy] = useState(false);
@@ -670,7 +683,17 @@ export function PermissionsTab({
       </p>
     ) : null;
 
+  const fetchedEditorEpochRef = useRef(editorReloadEpoch);
   useEffect(() => { void fetchAll(); }, [fetchAll]);
+  useEffect(() => {
+    if (fetchedEditorEpochRef.current === editorReloadEpoch) return;
+    fetchedEditorEpochRef.current = editorReloadEpoch;
+    void fetchAll();
+  }, [fetchAll, editorReloadEpoch]);
+  useEffect(() => {
+    if (!editorEnabled) return;
+    return getApi().onSettingsUpdated(() => { void fetchAll(); });
+  }, [editorEnabled, fetchAll]);
 
   useEffect(() => {
     // On win32 with either setting ON (or a reported home-privacy / helper failure), surface the consent/setup state so
@@ -820,76 +843,63 @@ export function PermissionsTab({
     }
   };
 
-  const handleModeChange = async (m: ExecutionMode) => {
-    const targetReviewerMode = reviewerModeForExecMode(m);
-    if (
-      (m === mode && reviewer.mode === targetReviewerMode) ||
-      modeBusy || reviewerRecoveryBusy
-    ) {
-      return;
-    }
+  const handleModeChange = async (m: ExecutionMode): Promise<boolean> => {
+    if (modeBusy || reviewerRecoveryBusy) return false;
+    if (m === mode && !reviewerModeInvalid && reviewer.mode === (m === "auto" ? "llm" : "disabled")) return true;
     setModeBusy(true);
     try {
-      let modeChanged = m === mode;
-      // Set when the home folder refusal kept a change to this session; the notice is shown once both steps are done.
-      let sessionOnly = false;
-      if (m !== mode) {
-        const res = await window.ave.permission.setMode(m);
-        if (res.ok) {
-          setMode(normalizeExecutionMode(res.mode));
-          modeChanged = true;
-          if (res.notice !== undefined) sessionOnly = true;
-        } else {
-          showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
-          return;
-        }
+      const res = await window.ave.permission.setMode(m);
+      if (!res.ok) {
+        showBanner("error", ipcFailureText("mode change", res, t("permissionsTab.errorModeChangeFailed")));
+        return false;
       }
-      if (reviewer.mode !== targetReviewerMode) {
-        if (!modeChanged) return;
-        const reviewerRes = await window.ave.permission.reviewerDispatch(`mode ${targetReviewerMode}`);
-        if (reviewerRes.ok) {
-          setReviewer(reviewerRes.settings);
-          setReviewerModeInvalid(reviewerRes.fault?.kind === "reviewer-mode-invalid");
-          if (reviewerRes.notice !== undefined) sessionOnly = true;
-        } else {
-          const previousSettingsRestored = !reviewerModeInvalid;
-          if (reviewerModeInvalid) await fetchAll();
-          showBanner("error", formatReviewerDispatchError(reviewerRes.error, previousSettingsRestored));
-          return;
-        }
-      }
-      if (sessionOnly) showBanner("warn", t("permissionsTab.homeFolderRefusedSessionOnly"));
+      if (!isExecutionMode(res.mode)) throw new Error("Permission mode response is invalid");
+      const appliedMode = normalizeExecutionMode(res.mode);
+      setMode(appliedMode);
+      setReviewer((current) => ({ ...current, mode: appliedMode === "auto" ? "llm" : "disabled" }));
+      setReviewerModeInvalid(false);
+      if (res.notice !== undefined) showBanner("warn", t("permissionsTab.homeFolderRefusedSessionOnly"));
+      return true;
     } catch (e) {
       showBanner("error", t("permissionsTab.errorModeChangeError", { message: thrownErrorText("mode change", e) }));
+      return false;
     } finally {
       setModeBusy(false);
     }
   };
 
-  const handleReviewerModeRecovery = async (reviewerMode: PermissionReviewerMode) => {
-    if (reviewerRecoveryBusy || modeBusy) return;
+  const handleReviewerModeRecovery = async (reviewerMode: PermissionReviewerMode): Promise<boolean> => {
+    if (reviewerRecoveryBusy || modeBusy) return false;
     setReviewerRecoveryBusy(true);
     try {
       const result = await window.ave.permission.reviewerDispatch(`mode ${reviewerMode}`);
       if (!result.ok) {
         await fetchAll();
         showBanner("error", formatReviewerDispatchError(result.error, false));
-        return;
+        return false;
       }
       setReviewer(result.settings);
       setReviewerModeInvalid(result.fault?.kind === "reviewer-mode-invalid");
       showBanner("warn", t("permissionsTab.reviewerModeRecovered"));
+      return true;
     } catch (error) {
       await fetchAll();
       showBanner("error", t("permissionsTab.errorReviewerChangeError", { message: thrownErrorText("reviewer mode recovery", error) }));
+      return false;
     } finally {
       setReviewerRecoveryBusy(false);
     }
   };
 
   const handleOwnerAwayAutoSkip = async (value: number) => {
-    if (ownerAwayBusy || value === ownerAwayAutoSkipMinutes) return;
+    if (ownerAwayBusy) return;
+    setOwnerAwayError(null);
     if (!isOwnerAwayAutoSkipMinutes(value)) {
+      setOwnerAwayError(t("permissionsTab.ownerAwayInvalid", { max: OWNER_AWAY_AUTO_SKIP_MAX_MINUTES }));
+      setOwnerAwayRevision((revision) => revision + 1);
+      return;
+    }
+    if (value === ownerAwayAutoSkipMinutes) {
       setOwnerAwayRevision((revision) => revision + 1);
       return;
     }
@@ -897,31 +907,39 @@ export function PermissionsTab({
     try {
       const result = await getApi().updateSettings({ permissions: { ownerAwayAutoSkipMinutes: value } });
       if (isIpcErrorResult(result)) {
-        showBanner("error", ipcFailureText("owner-away auto-skip", result, t("permissionsTab.ownerAwaySaveFailed")));
+        setOwnerAwayError(ipcFailureText("owner-away auto-skip", result, t("permissionsTab.ownerAwaySaveFailed")));
       } else {
-        setOwnerAwayAutoSkipMinutes(value);
+        const applied = result.permissions?.ownerAwayAutoSkipMinutes;
+        if (!isOwnerAwayAutoSkipMinutes(applied)) throw new Error("Invalid owner-away setting returned by host");
+        setOwnerAwayAutoSkipMinutes(applied);
       }
-    } catch {
-      showBanner("error", t("permissionsTab.ownerAwaySaveFailed"));
+    } catch (error) {
+      console.warn("[ave] permissions: owner-away auto-skip failed:", errorMessage(error));
+      setOwnerAwayError(t("permissionsTab.ownerAwaySaveFailed"));
     } finally {
       setOwnerAwayRevision((revision) => revision + 1);
       setOwnerAwayBusy(false);
     }
   };
 
-  const handleExplicitToggle = async () => {
-    if (policyManaged) return;
+  const handleExplicitToggle = async (next = !requireExplicit): Promise<boolean> => {
+    if (policyManaged || policyBusy) return false;
     setPolicyBusy(true);
     try {
-      const next = !requireExplicit;
       const res = await window.ave.policy.set({ requireExplicitApproval: next });
       if (res.ok) {
         setRequireExplicit(next);
+        return true;
       } else if (res.error === "managed") {
         showBanner("warn", t("permissionsTab.errorPolicyManaged"));
       } else {
         showBanner("error", ipcFailureText("policy change", res, t("permissionsTab.errorPolicyChangeFailed")));
       }
+      return false;
+    } catch (error) {
+      showBanner("error", t("permissionsTab.errorPolicyChangeFailed"));
+      console.warn("[ave] permissions: policy change failed:", errorMessage(error));
+      return false;
     } finally {
       setPolicyBusy(false);
     }
@@ -941,7 +959,7 @@ export function PermissionsTab({
     // Clear any stale install outcome whenever a toggle moves.
     setWindowsInstallOutcome(null);
     try {
-      const res = await getApi().updateSettings({
+      const res = await window.ave.permission.updateSecuritySettings({
         features: isShell ? { osToolSandbox: next } : { pluginWorkerConfinement: next },
       });
       if (isIpcErrorResult(res)) {
@@ -973,7 +991,7 @@ export function PermissionsTab({
     const next = !windowsShellLocalNetworkAccess;
     setWindowsShellLocalNetworkBusy(true);
     try {
-      const res = await getApi().updateSettings({ features: { windowsShellLocalNetworkAccess: next } });
+      const res = await window.ave.permission.updateSecuritySettings({ features: { windowsShellLocalNetworkAccess: next } });
       if (isIpcErrorResult(res)) {
         showBanner("error", t("permissionsTab.windowsShellLocalNetworkToggleFailed"));
         return;
@@ -1046,42 +1064,74 @@ export function PermissionsTab({
     setRuleLoadErrors(r.errors);
   };
 
-  const handleAddRule = async () => {
+  const handleAddRule = async (confirmed = false) => {
     const pattern = newPattern.trim();
-    if (!pattern) return;
+    if (!pattern || rulesBusy) return;
+    setRuleInputError(null);
+    if (!isRuleSpecifier(pattern) && (pattern.length > 128 || /\s/.test(pattern))) {
+      setRuleInputError(t("permissionsTab.rulePatternInvalid"));
+      return;
+    }
+    if (rules.some((rule) => rule.scope === "user" && rule.pattern === pattern && rule.action === newAction && !rule.source)) {
+      setRuleInputError(t("permissionsTab.ruleDuplicate"));
+      return;
+    }
+    if (newAction === "allow" && /[*?]/.test(pattern) && !confirmed) {
+      setRuleWarningPending(true);
+      return;
+    }
     setRulesBusy(true);
     try {
       const res = await window.ave.permission.addRule(pattern, newAction);
       if (res.ok) {
         setNewPattern("");
+        setRuleWarningPending(false);
         await refreshRules();
       } else {
-        showBanner("error", ipcFailureText("rule add", res, (code) => t("permissionsTab.errorRuleAddFailed", { error: code ?? "-" })));
+        const message = res.error === "invalid-pattern" || res.error === "invalid-rule" || res.error === "parse-error"
+          ? t("permissionsTab.rulePatternInvalid")
+          : res.error === "duplicate-rule" ? t("permissionsTab.ruleDuplicate")
+            : ipcFailureText("rule add", res, (code) => t("permissionsTab.errorRuleAddFailed", { error: code ?? "-" }));
+        setRuleInputError(message);
       }
     } catch (e) {
-      showBanner("error", t("permissionsTab.errorRuleAddError", { message: thrownErrorText("rule add", e) }));
+      const message = t("permissionsTab.errorRuleAddError", { message: thrownErrorText("rule add", e) });
+      setRuleInputError(message);
     } finally {
       setRulesBusy(false);
     }
   };
 
-  const handleRemoveRule = async (rule: ScopedPermissionRule) => {
+  const handleRemoveRule = async (rule: ScopedPermissionRule): Promise<boolean> => {
     setRulesBusy(true);
     try {
       const res = await window.ave.permission.removeScopedRule(rule);
       if (res.ok) {
         await refreshRules();
+        return true;
       } else {
         showBanner("error", ipcFailureText("rule remove", res, (code) => t("permissionsTab.errorRuleRemoveFailed", { error: code ?? "-" })));
       }
+      return false;
     } catch (e) {
       showBanner("error", t("permissionsTab.errorRuleRemoveError", { message: thrownErrorText("rule remove", e) }));
+      return false;
     } finally {
       setRulesBusy(false);
     }
   };
 
   const refreshDirectories = readDirectories;
+
+  const handlePickDirectory = async () => {
+    setDirsBusy(true);
+    try {
+      const result = await getApi().pickSettingsDirectory();
+      if (!result.ok) throw new Error("Directory picker failed");
+      if (result.path !== null) { setNewDirectory(result.path); setPendingDirectoryWarning(null); }
+    } catch { showBanner("error", t("settingsEditor.pickFolderFailed")); }
+    finally { setDirsBusy(false); }
+  };
 
   const handleAddDirectory = async (acknowledgeWarnings = false) => {
     const dir = newDirectory.trim();
@@ -1124,23 +1174,46 @@ export function PermissionsTab({
     }
   };
 
-  const handleRemoveDirectory = async (dir: string) => {
+  const handleRemoveDirectory = async (dir: string): Promise<boolean> => {
     const restoreScroll = preserveSettingsScrollPosition();
     setDirsBusy(true);
     try {
       const res = await window.ave.permission.dirDispatch(`deny ${formatPermissionDirArg(dir)}`);
       if (res.ok && res.verb === "deny") {
         setDirectories(res.persisted);
+        return true;
       } else if (!res.ok) {
         showBanner("error", ipcFailureText("directory remove", res, t("permissionsTab.errorDirectoryRemoveFailed")));
       }
+      return false;
     } catch (e) {
       showBanner("error", t("permissionsTab.errorDirectoryRemoveError", { message: thrownErrorText("directory remove", e) }));
+      return false;
     } finally {
       setDirsBusy(false);
       restoreScroll();
     }
   };
+
+  useSettingsControls([
+    { id: "permissions.executionMode", section: "permissions-policy", label: t("permissionsTab.policyTitle"), modified: panelLoad.mode === "ready" && mode !== DEFAULT_EXECUTION_MODE,
+      disabledReason: panelLoad.mode !== "ready" ? t(panelLoad.mode === "failed" ? "permissionsTab.errorLoadFailed" : "permissionJudge.loading") : modeBusy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await handleModeChange(DEFAULT_EXECUTION_MODE)) throw new Error("Permission mode reset failed"); } },
+    { id: "permissions.reviewer.mode", section: "permissions-policy", label: t("permissionsTab.reviewerModeFaultTitle"),
+      modified: reviewerModeInvalid || (mode !== "unknown" && reviewer.mode !== (mode === "auto" ? "llm" : "disabled")),
+      disabledReason: mode === "unknown" ? t("permissionsTab.chooseModeBeforeReviewerReset") : reviewerRecoveryBusy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await handleReviewerModeRecovery(mode === "auto" ? "llm" : "disabled")) throw new Error("Reviewer reset failed"); } },
+    { id: "policy.requireExplicitApproval", section: "permissions-approval-dialog", label: t("permissionsTab.approvalDialogTitle"),
+      modified: requireExplicit !== DEFAULT_REQUIRE_EXPLICIT_APPROVAL,
+      disabledReason: panelLoad.policy !== "ready" ? t(panelLoad.policy === "failed" ? "permissionsTab.errorLoadFailed" : "permissionJudge.loading") : policyManaged ? t("permissionsTab.adminManagedTitle") : policyBusy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await handleExplicitToggle(DEFAULT_REQUIRE_EXPLICIT_APPROVAL)) throw new Error("Approval policy reset failed"); } },
+    ...rules.map((rule) => ({ id: permissionRuleSettingId(rule), section: "permissions-rules", label: rule.pattern, modified: true,
+      disabledReason: rulesBusy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await handleRemoveRule(rule)) throw new Error("Permission rule reset failed"); } })),
+    ...directories.map((dir) => ({ id: permissionDirectorySettingId(dir), section: "permissions-directories", label: dir, modified: true,
+      disabledReason: dirsBusy ? t("permissionJudge.saving") : undefined,
+      reset: async () => { if (!await handleRemoveDirectory(dir)) throw new Error("Permission directory reset failed"); } })),
+  ]);
 
   const sandboxPotentialReason = sandboxCapability?.potentialReason ?? sandboxCapability?.reason ?? "";
   const sandboxRuntimeReason = sandboxCapability?.runtime?.reason ?? "";
@@ -1170,14 +1243,15 @@ export function PermissionsTab({
         >
           <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
           <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
-          {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
+          {sandboxRestartPending && <div className="space-y-2"><p className="text-sm text-muted-foreground">{t("settingsRestart.pending")}</p><Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button></div>}
           {/* The two rows read the stored settings that the panel load returns; until it has, they would state a setting nobody read. */}
           {panelStaleNotice("os-sandbox-settings", ["settings"])}
           {settingsNotice ?? (
             <>
-          <div className="flex items-start gap-3">
-            <Checkbox
+          <div className="flex items-start gap-3" data-setting-row="features.osToolSandbox">
+            <Switch
               checked={sandboxEnabled}
+              data-setting-id="features.osToolSandbox"
               data-testid="os-sandbox-toggle"
               aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
               disabled={sandboxBusy || !(sandboxCapability?.available ?? false)}
@@ -1202,9 +1276,10 @@ export function PermissionsTab({
             className="mt-2"
           />
           {sandboxCapability?.platform === "win32" ? (
-            <div className="mt-3 flex items-start gap-3" data-testid="windows-shell-local-network-setting">
-              <Checkbox
+            <div className="mt-3 flex items-start gap-3" data-testid="windows-shell-local-network-setting" data-setting-row="features.windowsShellLocalNetworkAccess">
+              <Switch
                 checked={windowsShellLocalNetworkAccess}
+                data-setting-id="features.windowsShellLocalNetworkAccess"
                 data-testid="windows-shell-local-network-toggle"
                 aria-label={t("permissionsTab.windowsShellLocalNetworkLabel")}
                 disabled={windowsShellLocalNetworkBusy}
@@ -1223,9 +1298,10 @@ export function PermissionsTab({
               </div>
             </div>
           ) : null}
-          <div className="mt-3 flex items-start gap-3">
-            <Checkbox
+          <div className="mt-3 flex items-start gap-3" data-setting-row="features.pluginWorkerConfinement">
+            <Switch
               checked={workerConfinementEffective}
+              data-setting-id="features.pluginWorkerConfinement"
               data-testid="worker-confinement-toggle"
               aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
               disabled={workerConfinementForced || workerConfinementBusy || !(sandboxCapability?.available ?? false)}
@@ -1625,6 +1701,7 @@ export function PermissionsTab({
           <div
             className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-3 text-sm"
             data-testid="reviewer-mode-fault"
+            data-setting-id="permissions.reviewer.mode"
             id="reviewer-mode-fault"
             role="alert"
           >
@@ -1657,6 +1734,7 @@ export function PermissionsTab({
           {panelLoadNotice("policy", ["mode", "reviewer"]) ?? (
           <>
           <RadioGroup
+            data-setting-id="permissions.executionMode"
             value={mode}
             disabled={modeBusy || reviewerRecoveryBusy}
             aria-label={t("permissionsTab.policyAriaLabel")}
@@ -1724,35 +1802,41 @@ export function PermissionsTab({
           {panelStaleNotice("approval-dialog", ["policy", "settings"])}
           {panelLoadNotice("approval-dialog", ["policy", "settings"]) ?? (
           <>
-          <div className="flex items-center gap-3">
-            <Checkbox
+          <div className="flex items-center gap-3" data-setting-row="policy.requireExplicitApproval">
+            <Switch
               checked={requireExplicit}
+              data-setting-id="policy.requireExplicitApproval"
               aria-label={t("permissionsTab.approvalDialogCheckboxAriaLabel")}
               disabled={policyManaged || policyBusy}
-              className="size-5"
+              className="shrink-0"
               onCheckedChange={() => void handleExplicitToggle()}
             />
             <span className="text-sm">{requireExplicit ? t("permissionsTab.policyEnabled") : t("permissionsTab.policyDisabled")}</span>
             {policyManaged && <span className="text-base" title={t("permissionsTab.adminManagedTitle")}>🔒</span>}
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-1.5" data-setting-row="permissions.ownerAwayAutoSkipMinutes">
             <Label htmlFor="owner-away-auto-skip">{t("permissionsTab.ownerAwayAutoSkipLabel")}</Label>
-            <p className="text-xs text-muted-foreground">{t("permissionsTab.ownerAwayAutoSkipHint")}</p>
+            <p id="owner-away-hint" className="text-xs text-muted-foreground">{t("permissionsTab.ownerAwayAutoSkipHint", { max: OWNER_AWAY_AUTO_SKIP_MAX_MINUTES })}</p>
             <Input
               key={ownerAwayRevision}
+              data-setting-id="permissions.ownerAwayAutoSkipMinutes"
               id="owner-away-auto-skip"
               data-testid="owner-away-auto-skip"
               type="number"
               min={0}
+              max={OWNER_AWAY_AUTO_SKIP_MAX_MINUTES}
               step={1}
               defaultValue={ownerAwayAutoSkipMinutes}
               disabled={ownerAwayBusy}
               aria-label={t("permissionsTab.ownerAwayAutoSkipLabel")}
+              aria-invalid={ownerAwayError !== null}
+              aria-describedby={ownerAwayError ? "owner-away-hint owner-away-error" : "owner-away-hint"}
               className="w-32"
+              onChange={() => setOwnerAwayError(null)}
               onBlur={(event) => void handleOwnerAwayAutoSkip(event.currentTarget.value === "" ? Number.NaN : Number(event.currentTarget.value))}
             />
+            {ownerAwayError ? <p role="alert" id="owner-away-error" data-testid="owner-away-error" className="text-xs text-destructive">{ownerAwayError}</p> : null}
           </div>
-          <HiddenNoticesReset />
           {policyManaged && (
             <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning">
               {policyAdminReason
@@ -1815,9 +1899,12 @@ export function PermissionsTab({
                 </tr></thead>
                 <tbody>
                   {rules.map((rule, index) => (
-                    <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped">
+                    <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped" data-setting-id={permissionRuleSettingId(rule)}>
                       <td className="max-w-[220px] break-all px-3 py-2 font-mono">
                         {rule.pattern}
+                        {rule.action === "allow" && /[*?]/.test(rule.pattern) ? (
+                          <Badge variant="outline" className="ml-2 font-sans" data-testid="permissions-rule-broad">{t("permissionsTab.ruleBroad")}</Badge>
+                        ) : null}
                         {rule.invalidReason !== undefined ? (
                           <p data-testid="permissions-rule-invalid" className="break-normal whitespace-normal font-sans text-tiny text-destructive">
                             {rule.invalidReason === "retired-host-terminal" ? t("permissionsTab.ruleRetiredHostTerminal") : t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
@@ -1869,26 +1956,44 @@ export function PermissionsTab({
               className="h-8 flex-1 text-xs"
               placeholder={t("permissionsTab.patternInputPlaceholder")}
               data-testid="permissions-rule-pattern-input"
+              data-settings-transient
               value={newPattern}
-              onChange={(e) => setNewPattern(e.target.value)}
+              onChange={(e) => { setNewPattern(e.target.value); setRuleWarningPending(false); setRuleInputError(null); }}
+              aria-label={t("permissionsTab.rulesColPattern")}
+              aria-invalid={ruleInputError !== null}
+              aria-describedby={ruleInputError ? "permission-rule-input-error" : undefined}
               onKeyDown={(e) => { if (e.key === "Enter" && newPattern.trim()) void handleAddRule(); }}
             />
             <Select
               value={newAction}
-              onValueChange={(value) => setNewAction(value as "allow" | "deny")}
+              onValueChange={(value) => {
+                if (value !== "allow" && value !== "deny" && value !== "ask") return;
+                setNewAction(value); setRuleWarningPending(false); setRuleInputError(null);
+              }}
             >
-              <SelectTrigger className="h-8 w-24 text-xs">
+              <SelectTrigger className="h-8 w-24 text-xs" aria-label={t("permissionsTab.rulesColAction")} data-testid="permissions-rule-action" data-settings-transient>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className={DENSE_SELECT_POPUP}>
                 <SelectItem value="allow">{t("permissionsTab.actionAllow")}</SelectItem>
                 <SelectItem value="deny">{t("permissionsTab.actionDeny")}</SelectItem>
+                <SelectItem value="ask">{t("permissionsTab.actionAsk")}</SelectItem>
               </SelectContent>
             </Select>
-            <Button size="sm" className="h-8" data-testid="permissions-rule-add" onClick={() => void handleAddRule()} disabled={rulesBusy || !newPattern.trim()}>
+            <Button size="sm" className="h-8" data-testid="permissions-rule-add" onClick={() => void handleAddRule()} disabled={rulesBusy || ruleWarningPending || !newPattern.trim()}>
               {t("permissionsTab.addButton")}
             </Button>
           </div>
+          {ruleInputError ? <p role="alert" id="permission-rule-input-error" data-testid="permissions-rule-input-error" className="text-xs text-destructive">{ruleInputError}</p> : null}
+          {ruleWarningPending ? (
+            <div role="alert" data-testid="permissions-rule-warning" className="space-y-2 rounded-md border border-warning p-3 text-sm">
+              <p>{t(newPattern.trim() === "*" ? "permissionsTab.ruleAllowAllWarning" : "permissionsTab.ruleWildcardWarning")}</p>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" data-testid="permissions-rule-confirm" disabled={rulesBusy} onClick={() => void handleAddRule(true)}>{t("permissionsTab.ruleWarningConfirm")}</Button>
+                <Button size="sm" variant="outline" disabled={rulesBusy} onClick={() => setRuleWarningPending(false)}>{t("permissionsTab.ruleWarningCancel")}</Button>
+              </div>
+            </div>
+          ) : null}
           </>
           )}
         </SettingsSection>
@@ -1926,7 +2031,7 @@ export function PermissionsTab({
                 </thead>
                 <tbody>
                   {directories.map((dir) => (
-                    <tr key={dir} className="border-b last:border-0 hover:bg-muted/(--opacity-light)">
+                    <tr key={dir} data-setting-id={permissionDirectorySettingId(dir)} className="border-b last:border-0 hover:bg-muted/(--opacity-light)">
                       <td className="min-w-0 px-3 py-1.5 font-mono text-dense">
                         <span className="block whitespace-normal break-all" title={dir}>{dir}</span>
                       </td>
@@ -1952,6 +2057,7 @@ export function PermissionsTab({
             <Input
               className="h-8 flex-1 text-xs"
               placeholder={t("permissionsTab.directoryInputPlaceholder")}
+              data-settings-transient
               value={newDirectory}
               onChange={(e) => {
                 setNewDirectory(e.target.value);
@@ -1959,6 +2065,7 @@ export function PermissionsTab({
               }}
               onKeyDown={(e) => { if (e.key === "Enter" && newDirectory.trim()) void handleAddDirectory(); }}
             />
+            <Button type="button" size="sm" variant="outline" className="h-8" disabled={dirsBusy} onClick={() => void handlePickDirectory()} data-testid="permissions-directory-picker">{t("settingsEditor.pickFolder")}</Button>
             <Button size="sm" className="h-8" onClick={() => void handleAddDirectory()} disabled={dirsBusy || !newDirectory.trim()}>
               {t("permissionsTab.addButton")}
             </Button>

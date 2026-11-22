@@ -7,6 +7,7 @@ import { render, fireEvent, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { DEFAULT_APP_INFO, makeMockAveApi, makeMockAveNamespace } from "./mock-ave-api.js";
 import { activeSettingsTab, clickSettingsTab, settingsTabTrigger } from "./helpers.js";
+import { t } from "../../src/i18n/runtime.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -14,8 +15,9 @@ afterEach(() => {
 
 type Embedder = "content" | "inline";
 
-async function renderWithConsumer(embedder: Embedder) {
+async function renderWithConsumer(embedder: Embedder, prepare?: (api: ReturnType<typeof makeMockAveApi>["api"]) => void) {
   const { api } = makeMockAveApi();
+  prepare?.(api);
   vi.stubGlobal("ave", makeMockAveNamespace().ns);
   vi.stubGlobal("aveApi", api);
   (window as unknown as { aveApi: typeof api }).aveApi = api;
@@ -113,14 +115,27 @@ describe.each<Embedder>(["content", "inline"])("settings tab read-back (%s)", (e
 });
 
 
-it("exposes search results as list buttons and announces their count", async () => {
-  const { container, getByRole } = await renderWithConsumer("content");
-  fireEvent.change(getByRole("searchbox"), { target: { value: "터미널" } });
-  const results = getByRole("list", { name: "설정 검색" }).querySelectorAll("li > button");
-  expect(results.length).toBeGreaterThan(0);
-  expect(container.querySelector('[role="listitem"]')).toBeNull();
-  const announcement = container.querySelector('[role="status"][aria-live="polite"][aria-atomic="true"]:not([data-notice-live])');
-  expect(announcement?.textContent).toBe(`설정 ${results.length}개 검색됨`);
-  fireEvent.change(getByRole("searchbox"), { target: { value: "unmatchable search phrase" } });
-  expect(announcement?.textContent).toBe("설정 0개 검색됨");
+it("filters settings in place and announces how many sections match", async () => {
+  // Search keeps every tab's sections mounted, so the surfaces other tabs read must answer too.
+  const { container, getByRole } = await renderWithConsumer("content", (api) => Object.assign(api, {
+    telegramConnection: { snapshot: vi.fn(async () => ({ ok: false, error: "connection-unavailable" })), onChanged: vi.fn(() => () => undefined) },
+    tailnetObserver: { snapshot: vi.fn(async () => ({ ok: false, error: "observer-unavailable" })) },
+    tailnetSharing: { snapshot: vi.fn(async () => ({ ok: false, error: "tailnet-sharing-unavailable" })) },
+    getUsageRange: vi.fn(async () => { throw new Error("Usage fixture unavailable"); }),
+  }));
+  fireEvent.change(getByRole("searchbox", { name: t("settingsContent.search") }), { target: { value: "터미널" } });
+  const announcement = await waitFor(() => {
+    const status = container.querySelector<HTMLElement>('[role="status"][aria-live="polite"]:not([data-notice-live])');
+    expect(status).toBeTruthy();
+    return status as HTMLElement;
+  });
+  await waitFor(() => {
+    const visible = [...container.querySelectorAll<HTMLElement>("[data-settings-section]")].filter((section) => !section.hidden);
+    expect(visible.length).toBeGreaterThan(0);
+    expect(visible.map((section) => section.dataset.settingsSection)).toContain("appearance-terminal");
+    expect(announcement.textContent).toBe(t("settingsEditor.filteredCount", { count: visible.length }));
+  });
+  fireEvent.change(getByRole("searchbox", { name: t("settingsContent.search") }), { target: { value: "unmatchable search phrase" } });
+  await waitFor(() => expect(announcement.textContent).toBe(t("settingsContent.searchEmpty")));
+  expect([...container.querySelectorAll<HTMLElement>("[data-settings-section]")].every((section) => section.hidden)).toBe(true);
 });

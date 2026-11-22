@@ -78,7 +78,7 @@ describe("plugin Studio IPC", () => {
     const event = hostFrameEvent();
     Object.assign(event.sender, { mainFrame: event.senderFrame });
     const relaunchApp = vi.fn();
-    registerAppHandlers({ auditLogger: { log: vi.fn() }, relaunchApp,
+    registerAppHandlers({ settingsService: { get: () => ({ hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false }) }, auditLogger: { log: vi.fn() }, relaunchApp,
       getMainWindow: () => ({ webContents: event.sender, isDestroyed: () => false }) } as never);
     return { relaunchApp, request: () => invoke(CHANNELS.app.relaunch, event, { intent: { inputOrigin: "user-keyboard", userActivation: true } }) };
   }

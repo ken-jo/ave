@@ -1,3 +1,4 @@
+import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -95,11 +96,11 @@ describe("SourceSyncer", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    for (const seed of seedRepos) await removeFixtureRepo(seed);
-    await removeFixtureRepo(emptyRepo);
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      ...[...seedRepos, emptyRepo].map((repo) => () => removeFixtureRepo(repo)),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(() => {
@@ -1092,11 +1093,12 @@ describe("SourceSyncer and source auth", () => {
   });
 
   afterAll(async () => {
-    await server.close();
-    await git.cleanup();
-    await removeFixtureRepo(repo);
-    await removeFixtureRepo(privateRepo);
-    await cleanupTmpDir(serverRoot);
+    await cleanupAfterClosing([() => server.close()], [
+      () => git.cleanup(),
+      () => removeFixtureRepo(repo),
+      () => removeFixtureRepo(privateRepo),
+      () => cleanupTmpDir(serverRoot),
+    ]);
   });
 
   beforeEach(() => {

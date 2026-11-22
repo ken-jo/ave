@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   validateSender,
@@ -109,6 +110,16 @@ describe("auditUnauthorized", () => {
     );
     expect(parsed.frameUrl).toBe("file://<home>/Documents/ave-project/ave/dist/src/untrusted-frame.html");
     expect(parsed.frameUrl).not.toContain(home);
+  });
+
+  it("redacts an alternate percent spelling of the frame home and decodes the suffix", () => {
+    const mockLogger = { log: vi.fn() };
+    const url = pathToFileURL(os.homedir()).href;
+    const encoded = url.replace(/(?<=\/)[a-z](?!:)/iu, letter => `%${letter.charCodeAt(0).toString(16)}`);
+    expect(encoded).not.toBe(url);
+    const frame = foreignFrameEvent(`${encoded}/Mixed%20File`);
+    auditUnauthorized(mockLogger as never, "ave:test:channel", frame);
+    expect(JSON.parse(mockLogger.log.mock.calls[0][0].input as string).frameUrl).toBe("file://<home>/Mixed File");
   });
 });
 

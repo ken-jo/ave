@@ -4,7 +4,7 @@ useConfigurationOwner();
 
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureAveHomePrivate } from "../../shared/ave-home.js";
@@ -68,6 +68,20 @@ afterEach(async () => {
 });
 
 describe("project root authorization", () => {
+  it.runIf(process.platform === "win32").each(["default", "listing", "alias-selection", "canonical-selection"] as const)("canonicalizes a default workspace junction before %s admission", (admission) => {
+    const alias = join(root, "workspace-alias");
+    symlinkSync(workspace, alias, "junction");
+    try {
+      process.chdir(alias);
+      const project = admission === "default" ? defaultWorkspaceProject()
+        : admission === "listing" ? listAuthorizedWorkspaceProjects()[0]
+        : resolveAuthorizedWorkspaceProject(admission === "alias-selection" ? alias : workspace).project;
+      expect(project).toMatchObject({ projectRoot: workspace, isDefault: true });
+    } finally {
+      process.chdir(workspace);
+      unlinkSync(alias);
+    }
+  });
   it("resolves missing project selection to the app-managed default workspace", () => {
     expect(defaultWorkspaceProject()).toMatchObject({
       projectRoot: workspace,
@@ -140,6 +154,23 @@ describe("project root authorization", () => {
 });
 
 describe("project root authorization under the exclusive workload-broker route", () => {
+  it("resolves brokered projects even when the host cwd cannot be canonicalized", () => {
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw new Error("Host cwd is unavailable");
+    });
+    try {
+      broker.active = true;
+      const project = { projectRoot: broker.cwd, projectName: "app" };
+      expect(defaultWorkspaceProject()).toEqual(project);
+      expect(listAuthorizedWorkspaceProjects()).toEqual([project]);
+      expect(realpath).not.toHaveBeenCalled();
+
+      broker.active = false;
+      expect(() => defaultWorkspaceProject()).toThrow("Host cwd is unavailable");
+      expect(() => listAuthorizedWorkspaceProjects()).toThrow("Host cwd is unavailable");
+    } finally { realpath.mockRestore(); }
+  });
+
   it("authorizes exactly the bound guest cwd and nothing on the controller host", async () => {
     const allowed = join(root, "allowed-project");
     mkdirSync(allowed);

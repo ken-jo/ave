@@ -107,6 +107,7 @@ vi.mock("../../e2e-window-presentation.js", () => ({
 
 vi.mock("../../main-window-host.js", () => ({
   attachMainWindowPage: (window: { contentView: NativeView }, view: NativeView) => window.contentView.addChildView(view),
+  mainWindowUiOrigin: (window: { uiOrigin: { x: number; y: number } }) => window.uiOrigin,
 }));
 
 import { View as NativeContainer } from "electron";
@@ -118,6 +119,7 @@ class Window extends EventEmitter {
   minimized = false;
   focused = true;
   zoom = 1;
+  uiOrigin = { x: 0, y: 0 };
   readonly contentView = new NativeContainer();
   readonly contents = Object.assign(new EventEmitter(), { isDestroyed: () => this.destroyed, getZoomFactor: () => this.zoom, focus: vi.fn() });
   constructor(readonly id: number) { super(); }
@@ -226,6 +228,7 @@ describe("native browser trusted user pointer routing", () => {
 
   it("translates host coordinates through UI zoom and records takeover before native input", async () => {
     owner.zoom = 1.5;
+    owner.uiOrigin = { x: 4, y: 4 };
     const state = await create();
     await present(state);
     native.trace = [];
@@ -744,14 +747,41 @@ describe("native browser pane presentation", () => {
 
   it("converts the visible clip and full page viewport using the host zoom", async () => {
     owner.zoom = 1.5;
+    owner.uiOrigin = { x: 4, y: 4 };
     const state = await create();
     await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch, sequence: 1,
       bounds: { x: -10, y: 20, width: 800, height: 600 }, clipBounds: { x: 30, y: 50, width: 400, height: 300 }, borderRadius: 8 });
     const container = requiredValue(ownerChildren()[0], "native presentation container");
-    expect(container.getBounds()).toEqual({ x: 45, y: 75, width: 600, height: 450 });
+    expect(container.getBounds()).toEqual({ x: 49, y: 79, width: 600, height: 450 });
     expect(container.borderRadius).toBe(12);
     expect(pageView().getBounds()).toEqual({ x: -60, y: -45, width: 1200, height: 900 });
   });
+
+  it.each(["resize", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen"])(
+    "reapplies the stored placement with the current UI origin on %s", async event => {
+      owner.zoom = 1.5;
+      owner.uiOrigin = { x: 4, y: 4 };
+      const state = await create();
+      await present(state);
+      const container = requiredValue(ownerChildren()[0], "native presentation container");
+      expect(container.getBounds()).toEqual({ x: 79, y: 124, width: 1200, height: 900 });
+      vi.mocked(deps.bind).mockClear();
+      owner.emit(event);
+      expect(deps.bind).not.toHaveBeenCalled();
+      owner.uiOrigin = { x: 0, y: 0 };
+      owner.emit(event);
+      expect(container.getBounds()).toEqual({ x: 75, y: 120, width: 1200, height: 900 });
+      expect(deps.bind).toHaveBeenCalledExactlyOnceWith(1, { tabId: state.tabId,
+        webContentsId: state.webContentsId, parked: false });
+      expect(nativePage().loadURL).toHaveBeenCalledTimes(1);
+      expect(host.input(2, pointer(state))).toBe(false);
+      expect(host.input(1, pointer(state, { epoch: state.epoch + 1 }))).toBe(false);
+      expect(host.input(1, pointer(state))).toBe(true);
+      expect(nativePage().sendInputEvent).toHaveBeenCalledExactlyOnceWith({
+        type: "mouseDown", x: 75, y: 60, button: "left", clickCount: 1, modifiers: [],
+      });
+    },
+  );
 
   it("rejects old or duplicate placement sequences", async () => {
     const state = await create();
@@ -807,6 +837,29 @@ describe("native browser pane presentation", () => {
     owner.emit("restore");
     expect(ownerChildren()).toHaveLength(1);
     expect(nativePage().loadURL).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["hide", "minimize"])("ignores a late %s notification for an already visible owner", async event => {
+    const state = await create();
+    await present(state);
+    if (event === "hide") owner.visible = false;
+    else owner.minimized = true;
+    owner.emit(event);
+    expectParkedPage();
+    owner.visible = true;
+    owner.minimized = false;
+    owner.emit(event === "hide" ? "show" : "restore");
+    const container = requiredValue(ownerChildren()[0], "native presentation container");
+    const bounds = container.getBounds();
+    vi.mocked(deps.bind).mockClear();
+    vi.mocked(deps.changed).mockClear();
+
+    owner.emit(event);
+
+    expect(container.getBounds()).toEqual(bounds);
+    expect(deps.bind).not.toHaveBeenCalled();
+    expect(deps.changed).not.toHaveBeenCalled();
+    expect(host.input(owner.id, pointer(state))).toBe(true);
   });
 
   it("retains native presentation and epoch through subframe loading and same-document UI navigation", async () => {

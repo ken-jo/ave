@@ -23,7 +23,8 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
     "tabs/SubscriptionProvidersController.tsx",
   ],
   appearance: ["tabs/AppearanceTab.tsx"],
-  chat: ["tabs/ChatTab.tsx", "tabs/PrivacyTab.tsx", "tabs/DocumentSettingsContent.tsx", "tabs/AccessibilitySignalsSettings.tsx", "components/MemoryEmbeddingsSection.tsx"],
+  chat: ["tabs/ChatTab.tsx", "tabs/PrivacyTab.tsx", "components/MemoryEmbeddingsSection.tsx"],
+  notifications: ["tabs/NotificationsTab.tsx", "tabs/AccessibilitySignalsSettings.tsx"],
   web: ["tabs/WebTab.tsx"],
   startup: ["tabs/StartupTab.tsx"],
   shortcuts: ["tabs/ShortcutsTab.tsx"],
@@ -47,7 +48,7 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
     "components/PluginAuthSection.tsx",
   ],
   marketplace: ["tabs/git-marketplace/GitMarketplaceTab.tsx"],
-  about: ["tabs/AboutTab.tsx"],
+  about: ["tabs/AboutTab.tsx", "tabs/DocumentSettingsContent.tsx"],
 };
 
 const ANCHOR = /data-settings-section="([a-z0-9-]+)"/g;

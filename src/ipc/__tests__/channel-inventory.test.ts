@@ -1,3 +1,4 @@
+import { WORK_BOARD } from "../../shared/ipc-channels.js";
 /**
  * #1409 IPC wire lock — Commit C0 safety snapshot.
  *
@@ -150,6 +151,7 @@ const SERVICE_KEYS: (string | symbol)[] = [
   "routinesStore",
   "routinesScheduler",
   "sessionTasksStore",
+  "workflowTemplateStore",
   "workBoardStore",
   "workBoardEngine",
   "workBoardReport",
@@ -178,7 +180,16 @@ import { makeDeepProxy } from "../../__tests__/support/deep-proxy.js";
 beforeAll(() => {
   channels.length = 0;
   setIsPackaged(false);
-  const services = makeDeepProxy(SERVICE_KEYS) as unknown as AppServices;
+  const stand = makeDeepProxy(SERVICE_KEYS) as unknown as AppServices;
+  // Every service is a stand-in that answers anything with itself, except the one piece of saved data a domain reads while it registers:
+  // this run has no saved window layout, which is what a first launch has.
+  const answering = <T extends object>(target: T, answers: (prop: string | symbol) => unknown): T =>
+    new Proxy(target, { get: (inner, prop, receiver) => answers(prop) ?? Reflect.get(inner, prop, receiver) });
+  const system = new Proxy(stand as object, { get: (inner, prop, receiver) => prop === "mainLayout" ? undefined : Reflect.get(inner, prop, receiver) });
+  const settingsService = answering(stand.settingsService, (prop) => prop === "get"
+    ? (key: string) => key === "system" ? system : (stand.settingsService.get as (key: string) => unknown)(key)
+    : undefined);
+  const services = answering(stand, (prop) => prop === "settingsService" ? settingsService : undefined);
   registerIpcHandlers(services, () => null);
 });
 
@@ -259,6 +270,18 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
     expect(channels).toContain(CHANNELS.bootstrap.statusGet);
   });
 
+  it("keeps template confirmation private and gesture-bound with an outbound changed signal", () => {
+    for (const channel of ["templateList", "templateGet", "templateDraft", "templateConfirm", "templateArchive", "templateAttachSchedule", "templateDetachSchedule"] as const) {
+      expect(channels.filter(c => c === WORK_BOARD[channel])).toEqual([WORK_BOARD[channel]]);
+      expect(isPublicChannel(WORK_BOARD[channel])).toBe(false);
+    }
+    expect(CHANNEL_GESTURE[WORK_BOARD.templateConfirm]).toBe("required");
+    expect(CHANNEL_GESTURE[WORK_BOARD.templateAttachSchedule]).toBe("required");
+    expect(CHANNEL_GESTURE[WORK_BOARD.templateDetachSchedule]).toBe("required");
+    expect(channels).not.toContain(WORK_BOARD.templatesChanged);
+    expect(isPublicChannel(WORK_BOARD.templatesChanged)).toBe(false);
+  });
+
   it("locks the sorted unique channel list", () => {
     const sorted = [...new Set(channels)].sort();
     expect(sorted).toMatchInlineSnapshot(`
@@ -282,25 +305,38 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:approval:respond",
         "ave:ask-user-question:pending",
         "ave:ask-user-question:respond",
-        "ave:attach:discardClipboardImage",
         "ave:attach:openExternal",
         "ave:attach:openFile",
         "ave:attach:readImage",
         "ave:attach:redeemDrop",
         "ave:attach:registerDrop",
+        "ave:attach:release",
         "ave:attach:saveClipboardImage",
         "ave:audit:search",
         "ave:audit:stats",
         "ave:bootstrap:retry",
         "ave:bootstrap:status:get",
+        "ave:browser-workspace:agent-site-grant",
+        "ave:browser-workspace:answer-prompt",
+        "ave:browser-workspace:cancel-download",
         "ave:browser-workspace:capture",
+        "ave:browser-workspace:clear-data",
         "ave:browser-workspace:clear-history",
+        "ave:browser-workspace:clear-site-data",
+        "ave:browser-workspace:delete-history",
         "ave:browser-workspace:find",
         "ave:browser-workspace:get-state",
+        "ave:browser-workspace:load",
         "ave:browser-workspace:preview",
+        "ave:browser-workspace:retry-load",
+        "ave:browser-workspace:revoke-agent-site-grant",
         "ave:browser-workspace:set-bookmark",
+        "ave:browser-workspace:set-page-shortcuts",
         "ave:browser-workspace:set-site-permission",
+        "ave:browser-workspace:show-download",
         "ave:browser-workspace:stop-find",
+        "ave:browser-workspace:stop-load",
+        "ave:browser-workspace:user-navigation",
         "ave:browser-workspace:zoom",
         "ave:browser:bind-tab",
         "ave:browser:complete-focus",
@@ -317,6 +353,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:chat:compact",
         "ave:chat:continue-last-user",
         "ave:chat:control-shell-task",
+        "ave:chat:decide-turn-review",
         "ave:chat:edit-resend",
         "ave:chat:enter-checkpoint-view",
         "ave:chat:exit-checkpoint-view",
@@ -397,6 +434,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:mcp:attach-resource-template",
         "ave:mcp:authenticate",
         "ave:mcp:call-tool",
+        "ave:mcp:clear-api-key",
         "ave:mcp:config:add",
         "ave:mcp:config:get",
         "ave:mcp:config:path",
@@ -409,11 +447,14 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:mcp:kill",
         "ave:mcp:list-resource-templates",
         "ave:mcp:list-resources",
+        "ave:mcp:management-state",
         "ave:mcp:servers",
+        "ave:mcp:start-server",
         "ave:mcp:ui-download-file",
         "ave:mcp:ui-message",
         "ave:mcp:ui-model-context",
         "ave:mcp:ui-resource",
+        "ave:mcp:undo-remove",
         "ave:memory:agents-md:get",
         "ave:memory:agents-md:update",
         "ave:memory:detail-get",
@@ -462,6 +503,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permissions:sandbox-capability",
         "ave:permissions:sandbox-windows-install",
         "ave:permissions:sandbox-windows-status",
+        "ave:permissions:update-security-settings",
         "ave:permissions:upstream-proxy-get",
         "ave:permissions:upstream-proxy-set",
         "ave:permissions:user-approval-list",
@@ -526,6 +568,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:session-goal:resume",
         "ave:session-tasks:clear",
         "ave:session-tasks:list",
+        "ave:settings:defaults",
         "ave:settings:delete-api-key",
         "ave:settings:delete-web-api-key",
         "ave:settings:env-forced",
@@ -533,6 +576,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:settings:has-api-key",
         "ave:settings:has-web-api-key",
         "ave:settings:list-llm-models",
+        "ave:settings:open-file",
+        "ave:settings:pick-directory",
         "ave:settings:set-api-key",
         "ave:settings:set-web-api-key",
         "ave:settings:subscription:acknowledge-notice",
@@ -590,6 +635,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:terminal:control",
         "ave:terminal:file-reviews",
         "ave:terminal:input",
+        "ave:terminal:keep",
         "ave:terminal:kill",
         "ave:terminal:preview",
         "ave:terminal:resize",
@@ -622,16 +668,26 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:work-board:run-briefing",
         "ave:work-board:run-transcript",
         "ave:work-board:steer-run",
+        "ave:work-board:template-archive",
+        "ave:work-board:template-attach-schedule",
+        "ave:work-board:template-confirm",
+        "ave:work-board:template-detach-schedule",
+        "ave:work-board:template-draft",
+        "ave:work-board:template-get",
+        "ave:work-board:template-list",
         "ave:work-board:transition",
         "ave:work-board:update",
         "ave:workspace:drop-prepare",
         "ave:workspace:list-dir",
         "ave:workspace:list-roots",
+        "ave:workspace:open-in-editor",
         "ave:workspace:open-path",
         "ave:workspace:pick-root",
         "ave:workspace:preview-remove-root",
+        "ave:workspace:read-for-edit",
         "ave:workspace:remove-root",
         "ave:workspace:reveal",
+        "ave:workspace:save-edit",
         "ave:workspace:search-files",
         "window:close",
         "window:minimize",

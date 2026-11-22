@@ -572,6 +572,57 @@ describe("file native tools", () => {
     }
   });
 
+  it.each([".ave", "custom-profile"])("refuses every file tool the host terminal output kept in %s, by its own path, through a link, and as a search root", async (profileName) => {
+    const profile = join(workDir, profileName);
+    const store = join(profile, "terminal-state");
+    const target = join(store, "0123456789abcdef0123456789abcdef.scrollback");
+    const kept = "export TOKEN=inert-terminal-sentinel\r\n";
+    mkdirSync(store, { recursive: true });
+    writeFileSync(target, kept, "utf8");
+    vi.stubEnv("AVE_HOME", profile);
+    try {
+      // The tool's own execution, which is what runs once a mode, a saved rule, a remembered grant or an approval has let the call through:
+      // none of those opens this file. The working directory holds it, so no directory fence is what refuses.
+      const read = await new ReadFileTool().execute({ path: target }, ctx());
+      expect(read.isError).toBe(true);
+      expect(read.output).toContain("Sensitive path:");
+      expect(read.output).not.toContain("inert-terminal-sentinel");
+      for (const write of [
+        await new WriteFileTool().execute({ path: target, content: "replaced" }, ctx()),
+        await new EditFileTool().execute({ path: target, oldText: "TOKEN", newText: "X" }, ctx()),
+      ]) {
+        expect(write.isError).toBe(true);
+        expect(write.output).toContain("Sensitive path:");
+      }
+      expect(readFileSync(target, "utf8")).toBe(kept);
+      // A search that names the store, or the file, as where to look.
+      for (const path of [store, target]) {
+        const searched = await new GrepFilesTool().execute({ path, pattern: "inert-terminal-sentinel", limit: 50 }, ctx());
+        expect(searched.output).not.toContain("inert-terminal-sentinel");
+        expect(searched.isError, searched.output).toBe(true);
+      }
+      // A search of everything above it.
+      const scanned = await new GrepFilesTool().execute({ path: ".", pattern: "inert-terminal-sentinel", limit: 50 }, ctx());
+      expect(scanned.isError, scanned.output).toBe(false);
+      expect(scanned.output).toContain("No matches found.");
+      const listed = await new ListFilesTool().execute({ path: store, depth: 2, limit: 20 }, ctx());
+      expect(listed.output).not.toContain(".scrollback");
+      if (canCreateSymlinks()) {
+        const alias = join(workDir, "notes.txt");
+        symlinkSync(target, alias);
+        const aliased = await new ReadFileTool().execute({ path: alias }, ctx());
+        expect(aliased.isError).toBe(true);
+        expect(aliased.output).not.toContain("inert-terminal-sentinel");
+        const linkedStore = join(workDir, "linked-store");
+        symlinkSync(store, linkedStore);
+        const throughLink = await new GrepFilesTool().execute({ path: linkedStore, pattern: "inert-terminal-sentinel", limit: 50 }, ctx());
+        expect(throughLink.output).not.toContain("inert-terminal-sentinel");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("write-capable file tools scope approval cache keys to canonical paths", () => {
     expect(new WriteFileTool().approvalCacheKey({ path: "src/a.ts" }, { cwd: workDir })).toBe(
       `path:${join(workDir, "src", "a.ts")}`,
@@ -697,14 +748,16 @@ describe("file native tools", () => {
 
     expect(result.isError).toBe(false);
     const parsed = parse(result.output);
-    // Diff bodies contain metadata only; full pre/post images live in sidecars.
+    // The result carries metadata only; the diff a card shows lives in the sidecar, which needs a tool-use id.
     expect(parsed.path).toMatch(/snap\.txt$/);
     expect(typeof parsed.bytes).toBe("number");
-    expect(parsed.truncated).toBeUndefined();
+    expect(parsed.isNewFile).toBeUndefined();
     expect(parsed.hasSidecar).toBeUndefined();
+    expect(parsed.before).toBeUndefined();
+    expect(parsed.after).toBeUndefined();
   });
 
-  it("write_file new file emits path and bytes without truncated flag", async () => {
+  it("write_file new file emits path, bytes and the created marker", async () => {
     const result = await new WriteFileTool().execute(
       { path: "generated/fresh.txt", content: "hello\n" },
       ctx(),
@@ -714,10 +767,10 @@ describe("file native tools", () => {
     const parsed = parse(result.output);
     expect(parsed.path).toMatch(/fresh\.txt$/);
     expect(parsed.bytes).toBe(Buffer.byteLength("hello\n", "utf8"));
-    expect(parsed.truncated).toBeUndefined();
+    expect(parsed.isNewFile).toBe(true);
   });
 
-  it("write_file large content sets truncated=true in output", async () => {
+  it("write_file large content keeps the content out of the result", async () => {
     const big = "x".repeat(10_000);
     const result = await new WriteFileTool().execute(
       { path: "generated/big.txt", content: big },
@@ -726,7 +779,6 @@ describe("file native tools", () => {
 
     expect(result.isError).toBe(false);
     const parsed = parse(result.output);
-    expect(parsed.truncated).toBe(true);
     expect(parsed.bytes).toBe(Buffer.byteLength(big, "utf8"));
     expect(parsed.after).toBeUndefined();
   });
@@ -1109,6 +1161,11 @@ describe("apply_patch tool", () => {
 describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
   let testHome: string;
 
+  // Import after AVE_HOME is set so the cache resolves the isolated home.
+  async function readDiffSidecar(session: string, toolUseId: string) {
+    return (await import("../write-diff-cache.js")).readDiffSidecar(session, toolUseId);
+  }
+
   // Record binary or windowed pre-images that read_file cannot show in full.
   async function markRead(path: string, session: string): Promise<void> {
     const bytes = readFileSync(path);
@@ -1163,9 +1220,9 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
 
     expect(result.isError).toBe(false);
     const body = parse(result.output);
-    expect(body.truncated).toBe(true);
-    // Binary pre-images must suppress sidecar writes even above the preview limit.
-    expect(body.hasSidecar).toBe(false);
+    // A binary pre-image has no honest line diff, so no sidecar is stored for the card.
+    expect(body.hasSidecar).toBeUndefined();
+    expect(await readDiffSidecar("s2", "tu2")).toBeNull();
     expect(readFileSync(binPath, "utf8")).toBe(largeAfter);
   });
 
@@ -1181,5 +1238,49 @@ describe("WriteFileTool pre-image guard (MAJOR 1)", () => {
 
     expect(result.isError).toBe(false);
     expect(readFileSync(txtPath, "utf8")).toBe("after content");
+    // A small overwrite is stored too; before the fix only writes above 4 KB had anything to render.
+    expect(parse(result.output).hasSidecar).toBe(true);
+    expect(await readDiffSidecar("s3", "tu3")).toMatchObject({
+      isNewFile: false,
+      view: { added: 1, removed: 1, hunks: [{ rows: [{ kind: "removed", text: "before content" }, { kind: "added", text: "after content" }] }] },
+    });
+  });
+
+  it("stores a created file as additions", async () => {
+    const result = await new WriteFileTool().execute(
+      { path: join(workDir, "created.txt"), content: "one\ntwo\n" },
+      { cwd: workDir, extraAllowedDirectories: [], metadata: { sessionId: "s4", toolUseId: "tu4" } },
+    );
+    expect(parse(result.output)).toMatchObject({ isNewFile: true, hasSidecar: true });
+    expect(await readDiffSidecar("s4", "tu4")).toMatchObject({ isNewFile: true, view: { added: 2, removed: 0 } });
+  });
+
+  it("stores the whole-file diff of edit_file with the real line numbers", async () => {
+    const path = join(workDir, "lines.txt");
+    writeFileSync(path, Array.from({ length: 30 }, (_, index) => `line ${index + 1}\n`).join(""), "utf8");
+    await markRead(path, "s5");
+    const result = await new EditFileTool().execute(
+      { path, oldText: "line 20", newText: "line twenty", replaceAll: false },
+      { cwd: workDir, extraAllowedDirectories: [], metadata: { sessionId: "s5", toolUseId: "tu5" } },
+    );
+    expect(parse(result.output)).toMatchObject({ replacements: 1, hasSidecar: true });
+    expect(await readDiffSidecar("s5", "tu5")).toMatchObject({
+      isNewFile: false,
+      view: { added: 1, removed: 1, hunks: [{ oldStart: 17, newStart: 17, oldCount: 7, newCount: 7 }] },
+    });
+  });
+
+  it("stores one diff for all replacements of multi_edit", async () => {
+    const path = join(workDir, "multi.txt");
+    writeFileSync(path, Array.from({ length: 30 }, (_, index) => `line ${index + 1}\n`).join(""), "utf8");
+    await markRead(path, "s6");
+    const result = await new MultiEditTool().execute(
+      { path, replacements: [{ oldText: "line 2\n", newText: "two\n", replaceAll: false }, { oldText: "line 25\n", newText: "", replaceAll: false }] },
+      { cwd: workDir, extraAllowedDirectories: [], metadata: { sessionId: "s6", toolUseId: "tu6" } },
+    );
+    expect(parse(result.output)).toMatchObject({ replacements: 2, hasSidecar: true });
+    const record = await readDiffSidecar("s6", "tu6");
+    expect(record?.view).toMatchObject({ added: 1, removed: 2 });
+    expect(record?.view.hunks.map(hunk => hunk.oldStart)).toEqual([1, 22]);
   });
 });

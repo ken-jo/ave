@@ -220,7 +220,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await expect.poll(() => modelCalls, { timeout: 30_000 }).toBe(2);
     const result = toolResults.join("\n");
     // The span itself carries the agent's output (not just the command text echoed back).
-    expect(result).toContain('\\"output\\":\\"agent-period-marker\\\\r\\\\n\\"');
+    expect(result).toContain('\\"output\\":\\"agent-period-marker\\\\n\\"');
     expect(result).toContain('\\"interrupted\\":\\"take-over\\"');
     expect(result).not.toContain("agent-after-sleep");
     expect(result).not.toContain(userSentinel);

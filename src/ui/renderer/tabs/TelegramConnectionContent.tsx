@@ -1,3 +1,4 @@
+import { useSettingsControls, useSettingsEditor } from "../context/SettingsEditorContext.js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
@@ -83,6 +84,7 @@ function sharedConversationIsOpen(snapshot: TelegramConnectionSnapshot): boolean
 export function TelegramConnectionContent({ api, onCompleted }: TelegramConnectionContentProps) {
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<TelegramConnectionSnapshot | null>(null);
+  const editor = useSettingsEditor();
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<SettingsSectionFeedback>(null);
   const [busy, setBusy] = useState(false);
@@ -93,6 +95,16 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
   const [issuedCode, setIssuedCode] = useState<TelegramCreatedPairingCode | null>(null);
   const { copied, copy: copyToClipboard, reset: resetCopied } = useCopyFlash();
 
+  useSettingsControls([
+    { id: "telegram.connection", section: "remote-telegram", label: t("telegramConnection.botTokenLabel"), modified: snapshot !== null && snapshot.state !== "disconnected" && snapshot.state !== "unsupported", loading, loadError: !loading && snapshot === null ? t("telegramConnection.operationFailed") : undefined, reset: async () => {
+      const result = await api.telegramConnection.disconnect();
+      if (!result.ok) throw new Error("Connection reset failed");
+      const current = await api.telegramConnection.snapshot();
+      if (!current.ok) throw new Error("Connection snapshot unavailable");
+      setSnapshot(current.snapshot);
+    } },
+    { id: "telegram.ownerIdentity", section: "remote-telegram", label: t("telegramConnection.ownerUserIdLabel"), modified: snapshot?.ownerUserId != null, disabledReason: t("settingsEditor.ownerIdentityResetUnavailable") },
+  ]);
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -111,12 +123,13 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
     }
   }, [api, t]);
 
+  const loadRequest = useMemo(() => ({ api, refresh, reloadEpoch: editor?.reloadEpoch }), [api, refresh, editor?.reloadEpoch]);
   useEffect(() => {
-    void refresh();
-    return api.telegramConnection.onChanged(() => {
-      void refresh();
+    void loadRequest.refresh();
+    return loadRequest.api.telegramConnection.onChanged(() => {
+      void loadRequest.refresh();
     });
-  }, [api, refresh]);
+  }, [loadRequest]);
 
   const run = useCallback(async (
     operation: () => Promise<TelegramConnectionMutationResult>,
@@ -168,7 +181,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
     } finally {
       setBusy(false);
     }
-  }, [api, refresh, t]);
+  }, [api, refresh, resetCopied, t]);
 
   const copyCode = useCallback(() => {
     if (issuedCode) copyToClipboard(issuedCode.code);
@@ -244,12 +257,12 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
             </p>
 
             {!readOnly ? (
-              <div className="space-y-2 rounded-md border border-border p-3" data-testid="telegram-connection-owner-form">
+              <div data-setting-row="telegram.ownerIdentity" className="space-y-2 rounded-md border border-border p-3" data-testid="telegram-connection-owner-form">
                 <p className="text-xs text-muted-foreground">{t("telegramConnection.ownerOnlyBody")}</p>
                 {snapshot.ownerUserId === null ? <p role="status" className="text-xs text-destructive" data-testid="telegram-connection-owner-required">{t("telegramConnection.ownerRequiredBody")}</p> : null}
                 <label className="grid gap-1 text-xs font-medium">
                   <span>{t("telegramConnection.ownerUserIdLabel")}</span>
-                  <Input value={ownerUserId} inputMode="numeric" autoComplete="off" spellCheck={false}
+                  <Input data-setting-id="telegram.ownerIdentity" value={ownerUserId} inputMode="numeric" autoComplete="off" spellCheck={false}
                     disabled={busy} onChange={(event) => setOwnerUserId(event.target.value)} data-testid="telegram-connection-owner-user-id" />
                 </label>
                 <p className="text-dense text-muted-foreground">{t("telegramConnection.ownerUserIdHelp")}</p>
@@ -307,6 +320,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
                 <label className="mt-2 grid gap-1 text-xs font-medium">
                   <span>{t("telegramConnection.botTokenLabel")}</span>
                   <Input
+                    data-settings-transient="new-connection-credential-draft"
                     type="password"
                     autoComplete="off"
                     spellCheck={false}
@@ -387,6 +401,7 @@ export function TelegramConnectionContent({ api, onCompleted }: TelegramConnecti
                 <label className="grid gap-1 text-xs font-medium">
                   <span>{t("telegramConnection.approvalDurationLabel")}</span>
                   <NativeSelect
+                    data-settings-transient="approval-duration-draft"
                     size="sm"
                     value={duration}
                     disabled={busy}

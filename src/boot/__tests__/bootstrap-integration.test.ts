@@ -7,14 +7,18 @@ import * as tracing from "../../engine/telemetry/tracing.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Use a hoisted recorder so mock factories can record construction order.
-const h = vi.hoisted(() => {
+const h = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = mkdtempSync(join(tmpdir(), "ave-boot-"));
   const order: string[] = [];
   const captured: Record<string, unknown> = { shutdownHooks: [] as string[] };
   const rec = (label: string) => {
     order.push(label);
   };
   const disposer = () => () => {};
-  return { order, captured, rec, disposer };
+  return { order, captured, rec, disposer, root };
 });
 
 // Use a real event emitter so listener-ceiling assertions observe actual runtime warnings.
@@ -28,7 +32,7 @@ vi.mock("electron", async () => {
   h.captured["appEvents"] = appEvents;
   return {
     app: {
-      getPath: vi.fn(() => "/tmp/ave-boot-test"),
+      getPath: vi.fn(() => h.root),
       isPackaged: false,
       on: vi.fn((event: string, listener: (...a: unknown[]) => void) =>
         appEvents.on(event, listener),
@@ -208,9 +212,9 @@ vi.mock("../steps/plugin-runtime.js", () => ({
         pluginCallLlmRef: { fn: undefined },
       },
       pluginPaths: {
-        registryPath: "/tmp/ave-boot-test/plugins/registry.json",
-        pluginsRoot: "/tmp/ave-boot-test/plugins",
-        cacheRoot: "/tmp/ave-boot-test/plugins/.cache",
+        registryPath: `${h.root}/plugins/registry.json`,
+        pluginsRoot: `${h.root}/plugins`,
+        cacheRoot: `${h.root}/plugins/.cache`,
       },
       loopbackManager: {
         prepareGeneration: vi.fn(),
@@ -286,6 +290,14 @@ vi.mock("../steps/alerts-setup.js", () => ({
     h.rec("alertsSetup");
     ctx.alertsService = { start: vi.fn(), stop: vi.fn() };
     return () => {};
+  }),
+}));
+
+vi.mock("../steps/terminal-scrollback-setup.js", () => ({
+  setupTerminalScrollback: vi.fn((ctx: { settingsService: unknown; notificationService: unknown }) => {
+    h.rec("terminalScrollback");
+    // What the step reads its layout from and tells the user through, as it stands when the step runs.
+    h.captured.terminalScrollbackInputs = { settingsService: ctx.settingsService, notificationService: ctx.notificationService };
   }),
 }));
 
@@ -419,7 +431,7 @@ vi.mock("../../main/persona-prompt-store.js", () => ({ PersonaPromptStore: class
 }));
 vi.mock("../../main/storage/feature-namespace.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../main/storage/feature-namespace.js")>(),
-  openFeatureNamespace: vi.fn(() => ({ dir: "/tmp/ave-boot-test/work-board",
+  openFeatureNamespace: vi.fn(() => ({ dir: `${h.root}/work-board`,
   })),
 }));
 vi.mock("../../main/seed-ave-home-docs.js", () => ({
@@ -505,9 +517,9 @@ vi.mock("../../plugins/plugin-storage-layout.js", async (importOriginal) => ({
 }));
 vi.mock("../../plugins/plugin-paths.js", () => ({
   resolvePluginPaths: vi.fn(() => ({
-    pluginsRoot: "/tmp/ave-boot-test/plugins",
-    registryPath: "/tmp/ave-boot-test/registry.json",
-    cacheRoot: "/tmp/ave-boot-test/cache",
+    pluginsRoot: `${h.root}/plugins`,
+    registryPath: `${h.root}/registry.json`,
+    cacheRoot: `${h.root}/cache`,
   })),
 }));
 
@@ -535,10 +547,9 @@ vi.mock("../../permissions/sandbox-capability.js", () => ({
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
   // Boot sweeps private roots; use an owned temporary home, never the real application home.
-  const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");
-  const roots = join(tmpdir(), "ave-bootstrap-integration-sandbox");
+  const roots = join(h.root, "sandbox");
   return {
     subscribeAsrtViolations: vi.fn(async () => () => {}),
     appOwnedSandboxTempRoot: vi.fn(() => join(roots, "tmp")),
@@ -549,7 +560,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
       return root;
     },
     initializeAsrtSandbox: vi.fn(async () => {}),
-    useAppOwnedSandboxTempRoot: vi.fn(() => "/tmp/ave-test-sandbox-tmp"),
+    useAppOwnedSandboxTempRoot: vi.fn(() => `${h.root}/sandbox-tmp`),
     checkAsrtDependencies: vi.fn(async () => ({ errors: [], warnings: [] })),
     isAsrtLinuxRuntimeProbeError: vi.fn(() => false),
     isAsrtMacRuntimeProbeError: vi.fn(() => false),
@@ -585,7 +596,7 @@ vi.mock("../../audit/audit-logger.js", () => ({
     flush = vi.fn(async () => {});
     close = vi.fn(async () => {});
     rotateAndPrune = vi.fn(async () => {});
-    getAuditDir = vi.fn(() => "C:\\tmp\\ave-boot-test\\audit");
+    getAuditDir = vi.fn(() => `${h.root}/audit`);
     getPermissionAuditSecret = vi.fn(() => "s".repeat(64));
     getPermissionAuditSealStore = vi.fn(() => ({
       read: vi.fn(() => null),
@@ -605,16 +616,27 @@ vi.mock("../../ipc/domains/permissions.js", () => ({
   broadcastPermissionConfigChanged: vi.fn(),
 }));
 
+import { existsSync } from "node:fs";
 import { bootstrap, type AppServices } from "../../boot.js";
+import { aveScratchDir, removeAveScratchDirIfEmpty } from "../../shared/ave-scratch.js";
 import { wireAnnouncementCheck } from "../steps/post-boot.js";
 import { wireModelCatalogRefresh } from "../steps/model-catalog-refresh.js";
 
 // Both boots need a scratch AVE_HOME because marketplace setup removes retired caches.
 const savedAveHome = process.env["AVE_HOME"];
-process.env["AVE_HOME"] = "/tmp/ave-boot-test/ave-home";
-afterAll(() => {
-  if (savedAveHome === undefined) delete process.env["AVE_HOME"];
-  else process.env["AVE_HOME"] = savedAveHome;
+process.env["AVE_HOME"] = `${h.root}/ave-home`;
+afterAll(async () => {
+  try {
+    // Each full boot creates the scratch directory for this home; boot removes it on process exit, which a test worker never emits.
+    const scratch = aveScratchDir();
+    if (existsSync(scratch)) expect(removeAveScratchDirIfEmpty(scratch)).toEqual({ status: "removed" });
+    expect(existsSync(scratch), `${scratch} was left behind`).toBe(false);
+  } finally {
+    if (savedAveHome === undefined) delete process.env["AVE_HOME"];
+    else process.env["AVE_HOME"] = savedAveHome;
+    const { rm } = await import("node:fs/promises");
+    await rm(h.root, { recursive: true, force: true });
+  }
 });
 
 /** Observe process warnings before boot and keep the real implementation so leak checks cannot silence their evidence. */
@@ -648,7 +670,7 @@ function bootWithWindow(
   window: Parameters<typeof bootstrap>[1],
   mode: Parameters<typeof bootstrap>[3],
 ) {
-  return bootstrap("/tmp/ave-boot-test/project", window, () => window, mode, createBootHostFixture());
+  return bootstrap(`${h.root}/project`, window, () => window, mode, createBootHostFixture());
 }
 
 describe("bootstrap desktop identity registration", () => {
@@ -659,7 +681,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(promise);
     const order = h.order.length;
     const window = fakeWindow();
-    const boot = bootstrap("/tmp/ave-boot-test/project", window, () => window, "interactive", createBootHostFixture(), controller.signal);
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture(), controller.signal);
     const stopped = expect(boot).rejects.toMatchObject({ name: "AbortError" });
     try {
       controller.abort();
@@ -679,7 +701,7 @@ describe("bootstrap desktop identity registration", () => {
     const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(held);
     const initializeNotificationPresenter = vi.fn(() => supported);
     const window = fakeWindow();
-    const boot = bootstrap("/tmp/ave-boot-test/project", window, () => window, "interactive", createBootHostFixture({
+    const boot = bootstrap(`${h.root}/project`, window, () => window, "interactive", createBootHostFixture({
       desktop: createDesktopHostFixture({ initializeNotificationPresenter }),
     }));
     try {
@@ -718,7 +740,7 @@ describe("bootstrap() integration lock", () => {
     const getIds = h.captured["routineInstalledPluginIds"] as () => Promise<readonly string[]>;
     expect(await getIds()).toEqual(["updating-plugin", "disabled-plugin"]);
     const { readPluginRegistry } = await import("../../plugins/registry.js");
-    expect(readPluginRegistry).toHaveBeenLastCalledWith("/tmp/ave-boot-test/plugins/registry.json");
+    expect(readPluginRegistry).toHaveBeenLastCalledWith(`${h.root}/plugins/registry.json`);
     vi.mocked(readPluginRegistry).mockResolvedValueOnce({ version: 1, plugins: [] });
     expect(await getIds()).toEqual([]);
   });
@@ -856,6 +878,7 @@ describe("bootstrap() integration lock", () => {
         "workBoardEngine",
         "workBoardReport",
         "workBoardStore",
+        "workflowTemplateStore",
       ]
     `);
   });
@@ -888,6 +911,14 @@ describe("bootstrap() integration lock", () => {
     assertBefore("sandboxGateDecided", "startPlugins");
     // Spawns are refused from the start of boot until that decision.
     assertBefore("sandboxGatePending", "sandboxGateDecided");
+    // Kept terminal output is swept once, inside boot, against the layout settings loaded: IPC, and with it any window's layout save, comes after
+    // boot returns. The step tells the user of a failed sweep through the notification service, which exists by then.
+    assertBefore("core", "terminalScrollback");
+    expect(h.order.filter((label) => label === "terminalScrollback")).toHaveLength(1);
+    const inputs = h.captured.terminalScrollbackInputs as { settingsService: unknown; notificationService: unknown };
+    expect(inputs.settingsService).toBe(services.settingsService);
+    expect(inputs.notificationService).toBe(services.notificationService);
+    expect(inputs.notificationService).toBeDefined();
   });
 
   // Drive the actual boot closures and require emitHostEvent on every uninstall path; an omitted optional callback silently loses uninstall events.
