@@ -2,6 +2,7 @@ import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
@@ -60,7 +61,7 @@ describe("git runtime IPC boundary", () => {
   it("keeps IPC dispatch available during a shared status probe", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ave-git-status-"));
     const executable = join(directory, process.platform === "win32" ? "git.exe" : "git");
-    const started = Promise.withResolvers<void>();
+    const started = deferred<void>();
     let completeProbe: (() => void) | undefined;
     try {
       vi.resetModules();

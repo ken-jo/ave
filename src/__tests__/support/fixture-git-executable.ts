@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding, type SpawnSyncReturns } from "node:child_process";
 import { posix, win32 } from "node:path";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 
@@ -8,7 +8,9 @@ const DEFAULT_FIXTURE_GIT = {
   linux: "/usr/bin/git",
 } as Partial<Record<NodeJS.Platform, string>>;
 
-export function requireFixtureGit(spawn = spawnSync) {
+type FixtureGitProbe = (file: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => SpawnSyncReturns<string>;
+
+export function requireFixtureGit(spawn: FixtureGitProbe = spawnSync) {
   const pathApi = process.platform === "win32" ? win32 : posix;
   const configured = process.env.AVE_TEST_GIT_EXECUTABLE ?? DEFAULT_FIXTURE_GIT[process.platform];
   if (!configured || !pathApi.isAbsolute(configured)) throw new Error("Set AVE_TEST_GIT_EXECUTABLE to an absolute Git executable");

@@ -1,6 +1,6 @@
 /** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execFileSync, type spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
@@ -48,7 +48,7 @@ vi.mock("../../shared/host-git-executable.js", async (importOriginal) => {
 });
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, win32 } from "node:path";
+import { delimiter, join, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -124,9 +124,9 @@ it.each([
     setProcessPlatform("win32");
     vi.stubEnv("AVE_TEST_GIT_EXECUTABLE", configured);
     vi.stubEnv("PATH", win32.dirname(configured));
-    const spawn = vi.fn<typeof spawnSync>().mockReturnValue({
+    const spawn = vi.fn(() => ({
       pid: 1, status: 0, signal: null, stdout: "git version 2.56.0", stderr: "", output: [null, "git version 2.56.0", ""],
-    });
+    }));
     gitCalls.explicitFixture = requireFixtureGit(spawn).path;
     gitCalls.intercept = () => Buffer.alloc(0);
     vi.resetModules();
