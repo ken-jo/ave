@@ -1,6 +1,6 @@
 import { z } from 'zod';
 export const MemoryMapScopeSchema = z.object({ projectRoot: z.string().trim().min(1).max(2048).optional(), projectName: z.string().trim().min(1).max(120).optional(), includeUnscoped: z.boolean().optional() }).strict();
-export const MemoryMapFiltersSchema = z.object({ sources: z.array(z.enum(['user','assistant','import','capture','unknown'])).max(5).optional(), projectIds: z.array(z.string().min(1).max(128)).max(100).optional(), playbookIds: z.array(z.string().min(1).max(128)).max(100).optional(), text: z.string().max(500).optional() }).strict();
+const MemoryMapFiltersSchema = z.object({ sources: z.array(z.enum(['user','assistant','import','capture','unknown'])).max(5).optional(), projectIds: z.array(z.string().min(1).max(128)).max(100).optional(), playbookIds: z.array(z.string().min(1).max(128)).max(100).optional(), text: z.string().max(500).optional() }).strict();
 export const MemoryRetrievalSchema = z.object({ scope: MemoryMapScopeSchema.optional(), question: z.string().trim().min(1).max(2000), filters: MemoryMapFiltersSchema, snapshotId: z.string().min(1).max(128), queryId: z.string().min(1).max(128) }).strict();
 // biome-ignore lint/suspicious/noControlCharactersInRegex: Model IDs must reject ASCII control characters.
 const MODEL_ID_PATTERN = /^[^\u0000-\u001f\u007f]+$/;

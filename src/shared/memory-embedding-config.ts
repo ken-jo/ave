@@ -1,6 +1,6 @@
 import { z } from 'zod';
 export const MEMORY_EMBEDDING_CONSENT_VERSION = 2;
-export const MemoryEmbeddingConsentSchema = z.object({ version: z.literal(MEMORY_EMBEDDING_CONSENT_VERSION), providerId: z.string().min(1).max(128), modelId: z.string().min(1).max(256), endpointId: z.string().regex(/^[a-f0-9]{64}$/), timestamp: z.string().datetime() }).strict();
+const MemoryEmbeddingConsentSchema = z.object({ version: z.literal(MEMORY_EMBEDDING_CONSENT_VERSION), providerId: z.string().min(1).max(128), modelId: z.string().min(1).max(256), endpointId: z.string().regex(/^[a-f0-9]{64}$/), timestamp: z.string().datetime() }).strict();
 export type MemoryEmbeddingConsent = z.infer<typeof MemoryEmbeddingConsentSchema>;
 const ConfigSchema = z.object({
   localModelPath: z.string().min(1).max(32768).refine(value => !value.includes('\0')).optional(),

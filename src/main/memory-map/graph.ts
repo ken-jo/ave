@@ -4,7 +4,7 @@ import type { EmbeddingNamespace, GraphSnapshot, MemoryMapRecord, MemoryMapProgr
 import type { Embedder } from './embedding.js';
 import { LOCAL_MODEL_ID, LOCAL_MODEL_REVISION, PREPROCESSING_REVISION } from './model-manifest.js';
 export const LOCAL_NAMESPACE: EmbeddingNamespace = Object.freeze({ source: 'local', modelId: LOCAL_MODEL_ID, modelRevision: LOCAL_MODEL_REVISION, preprocessingRevision: PREPROCESSING_REVISION, dimensions: 384 });
-export const PROJECTION_SEED = 42;
+const PROJECTION_SEED = 42;
 export interface VectorCache { [key: string]: number[] }
 export const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 export const vectorKey = (record: MemoryMapRecord, namespace: EmbeddingNamespace): string => digest(JSON.stringify([record.memoryId, record.contentRevision, namespace]));

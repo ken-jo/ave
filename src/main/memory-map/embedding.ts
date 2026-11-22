@@ -4,7 +4,7 @@ import { Tokenizer } from '@huggingface/tokenizers';
 import { assertLocalEmbeddingRuntime } from './local-runtime.js';
 import { MODEL_FILES } from './model-manifest.js';
 export interface Embedder { embed(text: string): Promise<number[]>; dispose(): Promise<void> }
-export function normalizeVector(vector: number[]): number[] {
+function normalizeVector(vector: number[]): number[] {
   if (vector.length !== 384 || vector.some(n => !Number.isFinite(n))) throw new Error('Expected 384 finite embedding dimensions');
   const norm = Math.hypot(...vector);
   if (norm === 0) throw new Error('Embedding has zero norm');

@@ -1,7 +1,7 @@
 import type { EmbeddingNamespace, MemoryMapFilters, MemoryMapRecord, RetrievalAnswer } from '../../shared/memory-map.js';
 import { cosine, vectorKey, LOCAL_NAMESPACE, type VectorCache } from './graph.js';
 const RETRIEVAL_SIMILARITY_CUTOFF = 0.85;
-export function matchesFilters(record: MemoryMapRecord, filters: MemoryMapFilters): boolean {
+function matchesFilters(record: MemoryMapRecord, filters: MemoryMapFilters): boolean {
   if (filters.sources && !filters.sources.includes(record.sourceKind)) return false;
   if (filters.projectIds?.length && (!record.projectId || !filters.projectIds.includes(record.projectId))) return false;
   if (filters.playbookIds?.length) return false;
