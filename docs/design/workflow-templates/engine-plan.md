@@ -493,7 +493,10 @@ Files: new `src/work-board/workflow/stage-workspaces.ts` (the provider), `worksp
 <aveHome>/worktrees/<project>/<run>/<stage>/     one per stage; the stage child's project root, read and write
 <aveHome>/worktrees/<project>/<run>/_join/       git only: the host's integration worktree, branch ave/workflow/<run>
 <aveHome>/worktrees/<project>/<run>/_out/        folder kind only: the run output folder
+<aveHome>/worktrees/<project>/<run>/_run.json    the provider's record of the run folder
 ```
+
+`_run.json` is how the provider finds a run's folder again and repeats a step without redoing it. It holds the run id and item id, the kind, the project root, whether ignore rules apply to seeding, for git the run branch and base commit and a merge in progress, and per stage its attempt, whether its folder is ready, what was seeded into it and its seal (the seal commit, or the manifest of sealed files), plus the joins already collected and which stage put each file into `_out`. It holds no file content and no secret. `open` writes it, by write-then-rename with mode 0600; `prepare`, `seal` and `integrate` rewrite it; after a restart `locate` finds the run by its slug and accepts the folder only if the record names the same run id. Only the host reads or writes it: the name starts with `_`, so it is no stage folder, no binding covers it, and it stays behind the protected-path floor and the sandbox read boundary for every session. It is removed by `release(run, "all")` once the run's folders are gone, except for a folder run whose `_out` remains: there it stays beside `_out`, as its index, and goes when `_out` goes. The boot sweep leaves a run folder that has no readable `_run.json` alone.
 
 ```ts
 function projectSlug(projectRoot: string | undefined, itemId: number): string;   // "<name≤24, [a-z0-9-]>-<8 hex of sha256(canonical root)>", or "board-<itemId>" with no project
@@ -501,7 +504,7 @@ function runSlug(runId: string): string;                                        
 function stageDirName(stageId: string): string;                                   // the stage id; WT-2 bounds it to ^[a-z0-9][a-z0-9-]{0,31}$
 ```
 
-No raw path, user name or title enters a segment. `_join` and `_out` cannot be stage ids. `Request changes` reruns in the same stage folder; `Retry` of a failed stage removes it and prepares again.
+No raw path, user name or title enters a segment. `_join`, `_out` and `_run.json` cannot be stage ids. `Request changes` reruns in the same stage folder; `Retry` of a failed stage removes it and prepares again.
 
 ### 3.2 Git kind
 
