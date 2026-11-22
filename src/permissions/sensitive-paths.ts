@@ -842,9 +842,10 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write", a
 }
 
 /**
- * `isSensitivePath` for the many paths of one request, such as a folder listing: each call decides as a separate
- * `isSensitivePath` call would at that moment. Only the resolution of a policy root asked for again is reused, and only
- * while every entry it passed through still reads the same.
+ * A folder listing reuses the cached pattern index. Each row serially samples the recorded chains for reused policy
+ * roots, comparing device, inode, type, ctime, and readlink text. Failed validation falls back to live canonicalization.
+ * A concurrent change after a sample can leave that row's observation stale. File-tool permission and execution keep
+ * their own checks.
  */
 export function createSensitivePathCheck(effect: PathEffect = "write", audience: KeyMaterialAudience = "agent"): (absPath: string) => string | null {
   const decision = createRevalidatingCanonicalizer();
@@ -900,9 +901,8 @@ function recordResolutionChain(path: string, read: (path: string) => ChainEntry 
   return true;
 }
 
-// canonicalizePathForMatch for a request that resolves the same policy roots for decision after decision. A path asked for
-// again is reused only while each entry recorded around its resolution still reads the same, along the spelling asked for
-// and the one resolved; any difference resolves it afresh. Each `decision()` reads every entry at most once.
+// Share witness samples across cache lookups for one row. Validate both the requested and canonical chains.
+// Seeding a cache entry compares the recorded witness with a fresh read after resolution.
 function createRevalidatingCanonicalizer(): () => (path: string) => string {
   const seen = new Set<string>();
   const resolved = new Map<string, { canonical: string; entries: Map<string, ChainEntry> }>();

@@ -220,15 +220,50 @@ describe("workspace.listDir folder-view entries", () => {
     const scratch = mkdtempSync(join(root, "sibling-cost-"));
     onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
     const dir = join(scratch, "list");
+    const home = join(scratch, "isolated-home");
     mkdirSync(dir);
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
     mkdirSync(join(scratch, "resources", "skill-scripts"), { recursive: true });
     useHostResources(join(scratch, "resources"), onTestFinished);
     writeFileSync(join(dir, "first.txt"), "");
     const realpath = vi.spyOn(fsModule.realpathSync, "native");
-    onTestFinished(() => { realpath.mockRestore(); });
+    const lstat = vi.spyOn(fsModule, "lstatSync");
+    syncBuiltinESMExports();
+    onTestFinished(() => {
+      realpath.mockRestore();
+      lstat.mockRestore();
+      syncBuiltinESMExports();
+    });
+
+    const rows: Array<{ name: string; realpaths: number; lstats: number }> = [];
+    const readdir = fsModule.promises.readdir.bind(fsModule.promises) as (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
+    const readEntries = vi.spyOn(fsModule.promises, "readdir").mockImplementation((async (path: string, options: { withFileTypes: true }) => {
+      const entries = await readdir(path, options);
+      if (path !== dir) return entries;
+      for (const entry of entries) {
+        const isSymbolicLink = entry.isSymbolicLink.bind(entry);
+        entry.isSymbolicLink = () => {
+          // The handler tests the link bit before classifying each row and can test it again for the same row.
+          if (rows.at(-1)?.name !== entry.name) {
+            rows.push({ name: entry.name, realpaths: realpath.mock.calls.length, lstats: lstat.mock.calls.length });
+          }
+          return isSymbolicLink();
+        };
+      }
+      return entries;
+    }) as never);
+    onTestFinished(() => readEntries.mockRestore());
+
+    const policyPrefix = `${home.replaceAll("\\", "/").toLowerCase()}/`;
+    const isPolicyRoot = ([path]: [unknown, ...unknown[]]) => String(path).replaceAll("\\", "/").toLowerCase().startsWith(policyPrefix);
     const resolutions = async (entries: number) => {
       realpath.mockClear();
+      lstat.mockClear();
+      rows.length = 0;
       expect((await listDir(dir)).entries).toHaveLength(entries);
+      expect(rows).toHaveLength(entries);
       return realpath.mock.calls.length;
     };
     // Warm process-wide caches before comparing two requests.
@@ -238,6 +273,14 @@ describe("workspace.listDir folder-view entries", () => {
     const perEntry = (await resolutions(33) - one) / 32;
     // An entry may pay a few checks of its own (about 8 here); resolving the policy roots again costs over a hundred.
     expect(perEntry).toBeLessThanOrEqual(20);
+    // Include cold resolutions and witness seeding in the row budgets.
+    for (const [index, row] of rows.entries()) {
+      const next = rows[index + 1];
+      const realpaths = realpath.mock.calls.slice(row.realpaths, next?.realpaths).filter(isPolicyRoot).length;
+      const lstats = lstat.mock.calls.slice(row.lstats, next?.lstats).filter(isPolicyRoot).length;
+      expect(realpaths, `${row.name} policy-root realpaths`).toBeLessThanOrEqual(64);
+      expect(lstats, `${row.name} policy-root lstats`).toBeLessThanOrEqual(192);
+    }
   });
 
   it("hides a folder that becomes the host's script resources partway through a listing", async ({ onTestFinished }) => {
