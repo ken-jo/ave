@@ -272,7 +272,7 @@ export async function openInvocationProxyListener(
     closing ??= (async () => {
       // A bind still in progress finishes first, so its port is closed rather than left behind.
       await binding?.catch(() => {});
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     })();
     return closing;
   };
