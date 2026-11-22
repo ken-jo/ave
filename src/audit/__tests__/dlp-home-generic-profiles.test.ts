@@ -58,6 +58,15 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     expect(redactJudgeText("cp /home/bob src/x")).toBe("cp [home] src/x");
   });
 
+  it("keeps a serialized drive path through a folder named Users or home", async () => {
+    const { redactFsPath, redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, platform);
+    for (const path of [String.raw`D:\repo\src\Users\model.ts`, String.raw`C:\tools\app\home\index.html`]) {
+      for (const text of [JSON.stringify({ path }), JSON.stringify(JSON.stringify({ path }))]) {
+        for (const redact of [redactHomePathsInText, redactJudgeText, redactFsPath]) expect(redact(text)).toBe(text);
+      }
+    }
+  });
+
   it.each([
     ["/home/bob/x", "[home]/x"],
     [String.raw`C:\Users\Demo Smith\x`, String.raw`[home]\x`],
