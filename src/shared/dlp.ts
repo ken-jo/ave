@@ -544,29 +544,48 @@ function decodeQueryKey(key: string): string {
   return key;
 }
 
+/** A quote and an odd run of backslashes before it form one closer; an even run escapes only itself. */
+function closerAt(text: string, index: number): string {
+  const char = text.charAt(index);
+  if (char === "<" || char === ">") return ">";
+  let run = index;
+  while (text[run - 1] === "\\") run--;
+  return (index - run) % 2 === 0 ? char : text.slice(run, index + 1);
+}
+
+/** Whether a closer's opener is still open before a position: an odd count of the quote, or an unclosed `<`. */
+function openClosers(text: string): (closer: string, before: number) => boolean {
+  const counts = new Map<string, number>();
+  let scanned = 0;
+  return (closer, before) => {
+    for (; scanned < before; scanned++) {
+      if (!"\"'`<>".includes(text.charAt(scanned))) continue;
+      const key = closerAt(text, scanned);
+      const count = counts.get(key) ?? 0;
+      counts.set(key, text.charAt(scanned) === ">" ? Math.max(0, count - 1) : count + 1);
+    }
+    const count = counts.get(closer) ?? 0;
+    return closer === ">" ? count > 0 : count % 2 === 1;
+  };
+}
+
 /**
  * A credential value runs to `&` or whitespace. A quote, backtick or `>` ends it only where it closes an opener
- * earlier in the text and serialization follows, so a quote inside the value stays masked.
+ * still open before the value and serialization follows; any other quote stays inside the masked value.
  */
-function queryValueEnd(text: string, start: number, ampersand: string, opener: (closer: string) => number): number {
-  const closes = (closer: string, after: number): boolean => {
-    const open = opener(closer);
-    SERIALIZATION_AFTER.lastIndex = after;
-    return open >= 0 && open < start && SERIALIZATION_AFTER.test(text);
-  };
+function queryValueEnd(text: string, start: number, ampersand: string, open: (closer: string, before: number) => boolean): number {
   let end = start;
   while (end < text.length) {
     const char = text.charAt(end);
     if (char === "&" || isWhitespace(char) || ampersand && text.startsWith(ampersand, end)) return end;
-    if (char === "\\") {
-      let run = end + 1;
-      while (text[run] === "\\") run++;
-      if (text.startsWith("u0026", run) || text[run] === '"' && closes('\\"', run + 1)) return end;
-      end = run;
-      continue;
+    let quote = end;
+    while (text[quote] === "\\") quote++;
+    if (quote > end && text.startsWith("u0026", quote)) return end;
+    if (quote < text.length && "\"'`>".includes(text.charAt(quote)) && open(closerAt(text, quote), start)) {
+      SERIALIZATION_AFTER.lastIndex = quote + 1;
+      if (SERIALIZATION_AFTER.test(text)) return end;
     }
-    if ("\"'`>".includes(char) && closes(char, end + 1)) return end;
-    end++;
+    end = quote > end ? quote : end + 1;
   }
   return end;
 }
@@ -629,19 +648,12 @@ function queryParameters(text: string): { parameters: QueryParameter[]; signed: 
 /** Mask credential query values, and signatures in a signed query or of a signature shape. */
 function maskQueryCredentials(text: string): string {
   const { parameters, signed } = queryParameters(text);
-  const openers = new Map<string, number>();
-  const opener = (closer: string): number => {
-    const cached = openers.get(closer);
-    if (cached !== undefined) return cached;
-    const index = text.indexOf(closer === ">" ? "<" : closer);
-    openers.set(closer, index);
-    return index;
-  };
+  const open = openClosers(text);
   let out = "";
   let copied = 0;
   for (const { index, start, key, ampersand, query } of parameters) {
     if (index < copied) continue;
-    const end = QUERY_CREDENTIAL_KEY.test(key) ? queryValueEnd(text, start, ampersand, opener)
+    const end = QUERY_CREDENTIAL_KEY.test(key) ? queryValueEnd(text, start, ampersand, open)
       : QUERY_SIGNATURE_KEY.test(key) ? signatureValueEnd(text, start, signed.has(query)) : start;
     if (end === start) continue;
     out += `${text.slice(copied, start)}[REDACTED:TOKEN]`;

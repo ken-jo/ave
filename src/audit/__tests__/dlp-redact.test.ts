@@ -461,6 +461,26 @@ describe("query credentials — signed URLs, encoded keys and serialization deli
     for (const text of ['https://x.example/?token=abc"def&x=1', line]) expect(scrubDiagnosticSecrets(text)).not.toContain("def");
   });
 
+  it.each(bothScrubbers)("%s keeps a quote masked when its opener is already closed", (_name, scrub) => {
+    for (const [text, masked] of [
+      ['see "x" ?token=abc">rest', 'see "x" ?token=[REDACTED:TOKEN]'],
+      ["say 'a' and ?token=abc' rest", "say 'a' and ?token=[REDACTED:TOKEN] rest"],
+      ["<b>x</b> ?token=abc>rest", "<b>x</b> ?token=[REDACTED:TOKEN]"],
+      ['{"m":"see \\"x\\" ?token=abc\\" rest"}', '{"m":"see \\"x\\" ?token=[REDACTED:TOKEN] rest"}'],
+    ]) expect(scrub(text)).toBe(masked);
+  });
+
+  it("ends a credential value at a quote whose opener is still open", () => {
+    for (const [text, masked] of [
+      ['{"url":"https://x.example/?token=abc","next":1}', '{"url":"https://x.example/?token=[REDACTED:TOKEN]","next":1}'],
+      ['<a href="https://x.example/?token=abc">link</a>', '<a href="https://x.example/?token=[REDACTED:TOKEN]">link</a>'],
+      ["curl 'https://x.example/?token=abc' -o out", "curl 'https://x.example/?token=[REDACTED:TOKEN]' -o out"],
+      ['{"dir":"C:\\\\","url":"https://x.example/?token=abc","next":1}', '{"dir":"C:\\\\","url":"https://x.example/?token=[REDACTED:TOKEN]","next":1}'],
+    ]) expect(scrubSecretsForLLM(text)).toBe(masked);
+    const nested = JSON.stringify(JSON.stringify({ command: 'curl "https://x.example/?token=abc" -o out' }));
+    expect(JSON.parse(JSON.parse(scrubSecretsForLLM(nested)))).toEqual({ command: 'curl "https://x.example/?token=[REDACTED:TOKEN]" -o out' });
+  });
+
   it("keeps the parameters after a JSON-escaped ampersand", () => {
     const line = '{"url":"https://example.test/?token=abc\\u0026next=1","next":1}';
     expect(scrubSecretsForLLM(line)).toBe('{"url":"https://example.test/?token=[REDACTED:TOKEN]\\u0026next=1","next":1}');
@@ -1013,6 +1033,7 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
         fill("?a%26"), fill("&a%41"), fill("%253f"), fill("&sig=a1B"), `&sig=${fill("a1B%3D")}`, `?token=${fill("\\")}`, `?token=a${fill("%2526")}`,
         fill("\\u0026token=a"), fill("?\\u0073ig=a1B"), fill('?token=a"'), `"?token=${fill('a\\"')}`, fill("&Expires=1&sig=a"), `?token=${fill("\\\\u0026")}`,
+        fill('"?token=a\\\\\\"'), fill("<?token=a>"), fill("`?token=a'"), `${fill('\\\\"')}?token=a\\"`,
       ];
     };
     const small = familiesAt(SMALL);

@@ -2653,9 +2653,11 @@ other opaque secret) is masked only in these positions:
   or a session `security-token` or prefixed `x-<name>-security-token`. Its
   value runs to `&` (an encoded or JSON-escaped one for a nested URL) or
   whitespace. A quote, backtick or `>` (or an escaped quote) ends it only
-  where it closes an opener earlier in the text and a serialization
-  delimiter or the end follows, so the JSON or shell text around the value
-  stays intact and a quote inside the value stays masked;
+  where it closes an opener still open before the value (an odd count of
+  that quote at the same escape depth, or an unclosed `<`) and a
+  serialization delimiter or the end follows, so the JSON or shell text
+  around the value stays intact; any other quote stays inside the masked
+  value;
 - a signature parameter `signature`, `sig` or `x-<name>-signature`, in a
   query that also carries signed-URL parameters (`Expires`, `Key-Pair-Id`,
   `Policy`, `se`, `sv`, `SignatureVersion`, or `x-<name>-` `algorithm`,
