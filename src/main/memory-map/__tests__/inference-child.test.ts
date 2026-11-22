@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { appendFileSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,7 +29,7 @@ vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: vi.fn() }))
 vi.mock('../model-manifest.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../model-manifest.js')>();
   return { ...actual, MODEL_FILES: actual.MODEL_FILES.map(file => ({
-    ...file, bytes: 32, sha256: createHash('sha256').update(Buffer.alloc(32)).digest('hex'),
+    ...file, bytes: 131081, sha256: createHash('sha256').update(Buffer.alloc(131081)).digest('hex'),
   })) };
 });
 
@@ -57,13 +57,13 @@ afterEach(async () => {
   await rm(folder, { recursive: true, force: true });
 });
 
-function serveReply(onFirstWrite?: () => void) {
+function serveReply(beforeWrite?: (received: number) => void) {
   let received = 0;
   const stdout = new PassThrough();
   const completed = vi.fn();
   const stdin = new Writable({
     write(chunk: Buffer, _encoding, callback) {
-      if (received === 0) onFirstWrite?.();
+      beforeWrite?.(received);
       received += chunk.length;
       if (received === REQUEST_FRAME.length) {
         completed();
@@ -122,9 +122,29 @@ describe('inference model stream', () => {
   ] as const)('rejects a model %s after the handle size check', async (_case, mutate) => {
     const [model] = MODEL_FILES;
     if (model === undefined) throw new Error('The fixture model manifest is empty');
-    const { completed } = serveReply(() => mutate(join(folder, model.name)));
+    const { completed } = serveReply(received => { if (received === 0) mutate(join(folder, model.name)); });
     await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'model-integrity-failed' });
     expect(completed).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['grows', (path: string) => appendFileSync(path, 'x')],
+    ['changes without growing', (path: string) => {
+      writeFileSync(path, Buffer.alloc(MODEL_FILES[0].bytes, 1));
+      utimesSync(path, 1, 1);
+    }],
+  ] as const)('rejects a frame if an earlier model %s while the next model streams', async (_case, mutate) => {
+    const first = MODEL_FILES[0];
+    let changed = false;
+    const { completed } = serveReply(received => {
+      if (received === REQUEST_PREFIX.length + TASK_BYTES.length + first.bytes) {
+        mutate(join(folder, first.name));
+        changed = true;
+      }
+    });
+    const outcome = await runInferenceChild(folder, TASK, new AbortController().signal).catch(error => error);
+    expect(changed).toBe(true);
+    expect(completed).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ code: 'model-integrity-failed' });
   });
 });
 

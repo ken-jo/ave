@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import type { BigIntStats } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -29,19 +30,23 @@ function write(output: Writable, chunk: Buffer): Promise<void> {
 
 // The child reads no model file: the host streams the verified bytes, so no grant reaches the model folder.
 async function writeRequest(output: Writable, folder: string, task: MemoryInferenceTask): Promise<void> {
-  const opened: { handle: FileHandle; file: ModelFile }[] = [];
+  const handles: FileHandle[] = [];
+  const opened: { handle: FileHandle; file: ModelFile; initial: BigIntStats }[] = [];
   try {
     for (const file of INFERENCE_FILES) {
       const handle = await open(join(folder, file.name), 'r');
-      opened.push({ handle, file });
-      const info = await handle.stat();
-      if (!info.isFile() || info.size !== file.bytes) throw new MemoryMapHostError('model-integrity-failed');
+      handles.push(handle);
+      const initial = await handle.stat({ bigint: true });
+      if (!initial.isFile() || initial.size !== BigInt(file.bytes)) throw new MemoryMapHostError('model-integrity-failed');
+      opened.push({ handle, file, initial });
     }
     const header = Buffer.from(JSON.stringify(task), 'utf8');
     const prefix = Buffer.alloc(INFERENCE_PREFIX_BYTES);
     for (const [index, n] of [header.length, ...INFERENCE_FILES.map(file => file.bytes)].entries()) prefix.writeUInt32BE(n, index * 4);
     await write(output, prefix); await write(output, header);
+    let frameTail: Buffer | undefined;
     for (const { handle, file } of opened) {
+      if (frameTail !== undefined) await write(output, frameTail);
       const hash = createHash('sha256');
       let received = 0;
       let finalChunk: Buffer | undefined;
@@ -55,10 +60,18 @@ async function writeRequest(output: Writable, folder: string, task: MemoryInfere
       if (finalChunk === undefined || (await handle.stat()).size !== file.bytes || hash.digest('hex') !== file.sha256) {
         throw new MemoryMapHostError('model-integrity-failed');
       }
-      // The child starts inference only after the complete frame arrives.
-      await write(output, finalChunk);
+      frameTail = finalChunk;
     }
-  } finally { await Promise.all(opened.map(({ handle }) => handle.close())); }
+    // Withhold the end of the frame until every streamed file has passed its final check.
+    await Promise.all(opened.map(async ({ handle, initial }) => {
+      const current = await handle.stat({ bigint: true });
+      if (current.size !== initial.size || current.mtimeNs !== initial.mtimeNs || current.ctimeNs !== initial.ctimeNs) {
+        throw new MemoryMapHostError('model-integrity-failed');
+      }
+    }));
+    if (frameTail === undefined) throw new MemoryMapHostError('model-integrity-failed');
+    await write(output, frameTail);
+  } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
 async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Readable; output: Writable; release: () => void }> {
