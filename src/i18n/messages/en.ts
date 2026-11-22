@@ -1022,6 +1022,10 @@ export const en = {
   "be_pythonRuntime.errPythonVerifyFailed": "Python verification failed (exit {code})\nstdout: {stdout}\nstderr: {stderr}",
   "be_pythonRuntime.errRuntimeVerifyFailed": "Python runtime verification failed.\nCause: {message}",
   "be_pythonRuntime.errRebuildNeeded": "Python runtime rebuild needed; connect to the network and restart Ave.\nCause: {message}",
+  "be_pythonRuntime.errUnsafeVenvClear": "Cannot replace a virtual environment outside its managed runtime location.",
+  "be_pythonRuntime.errProxyRoutesIncompatible": "Python provisioning cannot represent the system routes with a single proxy and bypass list.",
+  "be_pythonRuntime.errProxyRouteUnsupported": "Python provisioning cannot use the system proxy route for {host}.",
+  "be_pythonRuntime.errProxyRouteLookupFailed": "Python provisioning could not resolve the system proxy route for {host}.",
 
   // be_renderHtml
   "be_renderHtml.toolDescription": "Opens HTML in a separate window to display it visually to the user. Isolated via an Electron BrowserWindow (separate process) + strict CSP — infinite loops won't freeze the main UI, and all network requests are blocked. Allowed: inline CSS, data: URI images/fonts, inline <script>, on* event handlers, Function/eval, dynamic interaction via <input>/<canvas>/<svg> (e.g. slider-driven chart updates). Not allowed: loading external URLs (script/css/img/font/fetch/WebSocket), accessing the parent document, form submission, top-level navigation, <a> external links, localStorage. Use for results that are hard to express in Markdown — charts, dashboards, interactive demos, tables, diagrams. Libraries must be inlined in full. Design guide: compose the page to match the current Ave app theme colors. Use CSS variables such as hsl(var(--background)), hsl(var(--foreground)), hsl(var(--primary)), hsl(var(--muted)), hsl(var(--border)) for background, text, and accent colors where possible. For cards, charts, and buttons, prioritize clear hierarchy, spacing, and contrast over heavy gradients to match the app's calm, task-oriented UI tone.",

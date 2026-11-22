@@ -1,5 +1,12 @@
 export declare const DOWNLOAD_ATTEMPTS: number;
 
+export declare class DownloadHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string);
+}
+
+export declare function isTransientNetworkError(error: unknown): boolean;
+
 export interface FetchBytesWithRetryOptions {
   /** Message for a non-OK response; the final transient failure appends the attempt count. */
   readonly httpError: (response: Response) => string;
