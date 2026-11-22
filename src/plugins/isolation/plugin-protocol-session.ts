@@ -159,7 +159,7 @@ function requireServedCapabilities(
   }
 }
 
-/** Refuse a malformed implementedToolNames; bind only host-declared names, so none can be an inherited key. */
+/** Refuse a malformed implementedToolNames; bind only host-declared names. */
 function implementedDeclaredToolNames(
   pluginId: string,
   construction: PluginConstructResult,
@@ -358,7 +358,8 @@ export async function openPluginProtocolSession(
       exited,
     };
 
-    const handlers: Record<string, PluginToolHandler> = {};
+    // A null prototype keeps a declared `__proto__` an own key instead of replacing the prototype.
+    const handlers = Object.create(null) as Record<string, PluginToolHandler>;
     for (const toolName of implementedToolNames) {
       handlers[toolName] = async (payload?: unknown) => {
         const result = await transport.requestMcp("tools/call", {

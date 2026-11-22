@@ -165,6 +165,7 @@ import {
 import { pacePluginChildInput } from "../plugin-child-credit.js";
 import { consumePluginChildInput } from "../../../__tests__/support/plugin-child-input.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
+import { buildMethodMap } from "../../runtime/plugin-loader.js";
 import { PluginChildTerminationUnverifiedError, type ChildLink } from "../plugin-child-transport.js";
 import {
   FRAME_BYTES_MAX,
@@ -1371,8 +1372,33 @@ describe("construct negotiates the host protocol", () => {
       link: child.link,
     });
     const instance = await factory(hostContext(fakeHostApi()));
-    expect(Object.getPrototypeOf(instance.handlers)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(instance.handlers)).toBeNull();
     expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
+    expect(terminated()).toBeUndefined();
+  });
+
+  it("keeps a declared __proto__ tool an own handler, and the method map binds it", async () => {
+    const manifest: PluginManifest = {
+      ...MANIFEST,
+      tools: [...MANIFEST.tools, { name: "__proto__", description: "named like the prototype key", inputSchema: EMPTY_SCHEMA }],
+    };
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames: ["pilot_echo", "__proto__"],
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    expect(Object.getPrototypeOf(instance.handlers)).toBeNull();
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo", "__proto__"]);
+    const missing: string[] = [];
+    const methods = buildMethodMap(manifest, instance, (toolName) => void missing.push(toolName));
+    expect([...methods.keys()]).toEqual(["pilot_echo", "__proto__"]);
+    expect(missing).toEqual(MANIFEST.tools.map((tool) => tool.name).filter((name) => name !== "pilot_echo"));
     expect(terminated()).toBeUndefined();
   });
 

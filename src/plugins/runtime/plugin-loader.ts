@@ -40,6 +40,16 @@ export async function importPluginFactory(
   return module.default ?? module.createPlugin;
 }
 
+/** Read only an own, function-valued handler; an inherited member such as `toString` is not a tool. */
+export function ownToolHandler(
+  handlers: RuntimePlugin["handlers"],
+  toolName: string,
+): PluginToolHandler | undefined {
+  if (!Object.hasOwn(handlers, toolName)) return undefined;
+  const handler = handlers[toolName];
+  return typeof handler === "function" ? handler : undefined;
+}
+
 /** Skip missing declared handlers and report each through the caller diagnostic callback. */
 export function buildMethodMap(
   manifest: Pick<PluginManifest, "tools">,
@@ -48,7 +58,7 @@ export function buildMethodMap(
 ): Map<string, PluginToolHandler> {
   const methods = new Map<string, PluginToolHandler>();
   for (const toolName of declaredRuntimeMethods(manifest)) {
-    const handler = instance.handlers[toolName];
+    const handler = ownToolHandler(instance.handlers, toolName);
     if (!handler) {
       onMissingHandler(toolName);
       continue;

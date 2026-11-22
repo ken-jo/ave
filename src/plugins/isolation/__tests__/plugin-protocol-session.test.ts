@@ -223,6 +223,23 @@ describe("the channel is non-destructive", () => {
   });
 });
 
+describe("the child reports only its own handlers", () => {
+  it("leaves out declared tools that only an inherited member answers", async () => {
+    const child = processLink("runtime");
+    const { hostApi } = watchedHostApi();
+    const inherited = ["toString", "constructor"].map((name) => ({
+      name, description: "named like an inherited member", inputSchema: { type: "object" as const, properties: {} },
+    }));
+    const session = await openPluginProtocolSession({
+      ...sessionSpec(child.link, hostApi, vi.fn(async () => undefined)),
+      manifest: { ...MANIFEST, tools: [...MANIFEST.tools, ...inherited] },
+    });
+    expect(session.construction.implementedToolNames).toEqual(["speak"]);
+    expect(Object.keys(session.instance.handlers)).toEqual(["speak"]);
+    await session.teardown("case over");
+  });
+});
+
 describe("teardown is the one destructive operation", () => {
   it.each([
     ["a teardown", 1, (session: PluginProtocolSession) => session.teardown("torn down")],

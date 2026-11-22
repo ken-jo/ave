@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { isMainThread, workerData } from "node:worker_threads";
 import { openPluginChildInput, ownPluginChildInput, type PluginChildInputOwner } from "./plugin-child-stdin.js";
-import { importPluginFactory } from "../runtime/plugin-loader.js";
+import { importPluginFactory, ownToolHandler } from "../runtime/plugin-loader.js";
 import { frameMessage } from "../../mcp/stdio-framing.js";
 import {
   startPluginChildRuntime,
@@ -188,7 +188,7 @@ export function servePluginChild(
     return {
       // Intersect actual handlers with host-declared tool names; the child cannot announce extra tools.
       implementedToolNames: params.declaredToolNames.filter(
-        (name) => typeof instance.handlers[name] === "function",
+        (name) => ownToolHandler(instance.handlers, name) !== undefined,
       ),
       servesUiResources: runtime.servesUiResources,
       lifecycleHooks: describeLifecycleHooks(instance),
