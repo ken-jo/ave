@@ -1784,7 +1784,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..71ab29747995b93fa457fee0cb6a20c8ca29278d 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..263a89d395234e924323447517428d4215d69f47 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -1,3 +1,18 @@
@@ -1934,7 +1934,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..71ab29747995b93fa457fee0cb6a20c8
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -143,11 +267,52 @@ export interface ISandboxManager {
+@@ -143,11 +267,54 @@ export interface ISandboxManager {
      getMaskedFileStore(): MaskedFileStore;
      updateConfig(newConfig: SandboxRuntimeConfig): void;
      cleanupAfterCommand(): void;
@@ -1946,6 +1946,8 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..71ab29747995b93fa457fee0cb6a20c8
 +     * non-zero, or returned an unlisted status); that ACL state is then kept
 +     * for a later reset() to retry. Otherwise resolves with the rows srt-win
 +     * dropped without releasing (`mismatch`, `missing`), counted per step.
++     * A rejection (an invocation relay port still bound included) carries
++     * those rows as `windowsAclUnreleased`.
 +     */
 +    reset(): Promise<SandboxResetReport>;
 +    /**
@@ -1989,7 +1991,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..71ab29747995b93fa457fee0cb6a20c8
 +export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
  //# sourceMappingURL=sandbox-manager.d.ts.map
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa..9aba4a4 100644
+index 810b0aa..bcf7338 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -4291,7 +4293,7 @@ index 810b0aa..9aba4a4 100644
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3727,48 @@ async function reset() {
+@@ -2229,7 +3727,49 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -4327,20 +4329,21 @@ index 810b0aa..9aba4a4 100644
 +    if (boundRelays > 0) {
 +        failures.push(new Error(`Sandbox reset left ${boundRelays} invocation relay port${boundRelays === 1 ? '' : 's'} bound`));
 +    }
-+    if (failures.length > 1)
-+        throw new AggregateError(failures, 'Sandbox reset incomplete');
-+    if (failures.length === 1)
-+        throw failures[0];
-+    return {
-+        windowsAclUnreleased: [...aclReleaseStale].map(([key, targets]) => {
-+            const [step, status] = key.split('\n');
-+            return { step, status, count: targets.length, targets };
-+        }),
-+    };
++    const windowsAclUnreleased = [...aclReleaseStale].map(([key, targets]) => {
++        const [step, status] = key.split('\n');
++        return { step, status, count: targets.length, targets };
++    });
++    if (failures.length > 0) {
++        const failure = failures.length > 1 ? new AggregateError(failures, 'Sandbox reset incomplete') : failures[0];
++        // Ave patch (invocation listeners): a failed reset still reports the rows its ACL release dropped.
++        failure.windowsAclUnreleased = windowsAclUnreleased;
++        throw failure;
++    }
++    return { windowsAclUnreleased };
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2314,6 +3853,7 @@ function getLinuxGlobPatternWarnings() {
+@@ -2314,6 +3854,7 @@ function getLinuxGlobPatternWarnings() {
   */
  export const SandboxManager = {
      initialize,
@@ -4348,7 +4351,7 @@ index 810b0aa..9aba4a4 100644
      isSupportedPlatform,
      isSandboxingEnabled,
      checkDependencies,
-@@ -2336,6 +3876,12 @@ export const SandboxManager = {
+@@ -2336,6 +3877,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,

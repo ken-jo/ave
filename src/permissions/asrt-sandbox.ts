@@ -2256,7 +2256,19 @@ function windowsAclTargetLabel(target: string, status: string): string {
   return `${key} (per-file floor${status === "mismatch" ? "; identity changed" : ""})`;
 }
 
-function logUnreleasedWindowsAces(report: Awaited<ReturnType<Awaited<ReturnType<typeof loadSandboxManager>>["reset"]>> | undefined): void {
+type SandboxResetReport = Awaited<ReturnType<Awaited<ReturnType<typeof loadSandboxManager>>["reset"]>>;
+
+// A failed reset carries the rows its ACL release dropped (carried patch part 3); any other failure carries none.
+function failedResetReport(error: unknown): SandboxResetReport | undefined {
+  try {
+    const rows: unknown = error instanceof Error ? (error as { windowsAclUnreleased?: unknown }).windowsAclUnreleased : undefined;
+    return Array.isArray(rows) ? { windowsAclUnreleased: rows as SandboxResetReport["windowsAclUnreleased"] } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function logUnreleasedWindowsAces(report: SandboxResetReport | undefined): void {
   const unreleased = report?.windowsAclUnreleased ?? [];
   if (unreleased.length === 0) return;
   log.warn("sandbox runtime reset: Windows ACE rows dropped without release (%s); an explicit ACE may remain on earlier aside copies or targets of dropped rows",
@@ -2278,6 +2290,7 @@ async function discardFailedAsrtInitialization(
     logUnreleasedWindowsAces(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
   } catch (error) {
+    logUnreleasedWindowsAces(failedResetReport(error));
     // The caller must still receive the probe error and boot must remain degraded; a reset failure cannot make the capability verified.
     log.error("discarding a failed initialization: sandbox runtime reset failed: %s", errorMessage(error));
   }
@@ -3252,6 +3265,9 @@ export async function resetAsrtSandbox(): Promise<void> {
     // to retry, and a later reset retries the relay.
     logUnreleasedWindowsAces(await SandboxManager.reset());
     markSrtWinRuntimeReleased();
+  } catch (error) {
+    logUnreleasedWindowsAces(failedResetReport(error));
+    throw error;
   } finally {
     // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
     const { clearWrappedMcpServers, clearWrappedPluginWorkers, clearConfinedPluginChildren } =

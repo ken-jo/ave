@@ -3,7 +3,7 @@ import net from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxManager, type SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
-import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import { setDestinationResolverForTesting, setWindowsAclReleaseForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { deferred, useTempDirs } from "../../__tests__/test-helpers.js";
 import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__tests__/support/proxy-tunnel-probe.js";
@@ -528,12 +528,23 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       }
       return close.call(this, callback);
     });
+    // The session's ACL release completes and drops a row; the reset's failure must not lose it.
+    setWindowsAclReleaseForTesting({
+      sandboxUserSid: "S-1-5-21-1", srtWin: "unused",
+      revoke: ({ onExit }) => { onExit(true); return [{ path: String.raw`D:\example\gone`, status: "missing" }]; },
+      restore: ({ onExit }) => { onExit(true); return []; },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await expect(resetAsrtSandbox()).rejects.toThrow("Sandbox reset left 1 invocation relay port bound");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"), expect.stringMatching(/^grant revoke missing x1 \[/u));
+    warn.mockClear();
     // The rest of the session ended; the relay is still owned, and drops what connects.
     expect(await probePort(sharedPort, sockets)).toBe("refused");
     expect(await probePort(relay.port, sockets)).toBe("dropped");
     refuse = false;
     await expect(resetAsrtSandbox()).resolves.toBeUndefined();
     expect(await probePort(relay.port, sockets)).toBe("refused");
+    // The completed release was not repeated.
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release"), expect.anything());
   });
 });
