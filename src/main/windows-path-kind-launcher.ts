@@ -123,6 +123,8 @@ export function windowsSystemDirectorySpawnOptions(helper: string) {
     env: {
       HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
       TEMP: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", WINDIR: "", NODE_V8_COVERAGE: "",
+      // This native helper ignores the fixed flag, which blocks appending the parent permission flags.
+      NODE_OPTIONS: "--permission",
     },
     timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 128 * 1024,
   };
