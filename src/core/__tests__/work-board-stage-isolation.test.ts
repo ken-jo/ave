@@ -125,7 +125,7 @@ it("boot sweep removes the output folder and record of a run with no record whos
     if (!opened.ok || opened.workspace.kind !== "folder") throw new Error("no folder workspace");
     const prepared = await leftover.prepare(run, stageOf("a"), 1);
     if (!prepared.ok) throw new Error(prepared.code);
-    writeFileSync(join(opened.workspace.outputDir, "result.md"), "left behind\n");
+    writeFileSync(join(opened.workspace.runRoot, "_out", "result.md"), "left behind\n");
     return opened.workspace.runRoot;
   };
   const itemGone = await left({ itemId: 99, runId: "run-of-a-removed-item", runKey: "key" });

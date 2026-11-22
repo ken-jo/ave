@@ -840,6 +840,14 @@ export class WorkBoardStore {
     return (await readBoardOnDisk(this.filePath))?.standing;
   }
 
+  /** Which runs the board holds nothing of: no record in the run file and no row of their item on the board file on disk. Undefined
+   * while either shows nothing. It decides what a run keeps on disk for its item's lifetime, never how a run ends. */
+  async runsWithoutItem(): Promise<((run: { runId: string; itemId: number }) => boolean) | undefined> {
+    const [runs, onDisk] = await Promise.all([this.runs.view(), readBoardOnDisk(this.filePath)]);
+    if (onDisk === undefined || runs.missing === undefined) return undefined;
+    return run => runs.missing?.(run.runId) === true && onDisk.standing(run) === "gone";
+  }
+
   // Each delete whose outcome is unknown, resolved from the board file on disk under the board lock by its operation (markerOutcome). A
   // board that shows nothing resolves none.
   private async resolveUnknownDeletes(): Promise<void> {
