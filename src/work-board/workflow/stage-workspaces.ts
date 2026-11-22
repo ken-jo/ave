@@ -66,6 +66,9 @@ const plainDirectory = (path: string): boolean => {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   return stat?.isDirectory() === true && !stat.isSymbolicLink();
 };
+/** A plain folder's matcher takes its rules from the folder's own ignore files alone, and its case rule from the platform's file names:
+ * neither comes from a configuration file, a variable or the repository the host made for it. */
+const PLAIN_FOLDER_CONFIG = ["-c", "core.excludesFile=", "-c", `core.ignoreCase=${process.platform === "win32" || process.platform === "darwin"}`] as const;
 const nul = (text: string): string[] => text.split("\0").filter(entry => entry !== "");
 const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 
@@ -124,7 +127,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     rmSync(target, { recursive: true, force: true, maxRetries: 3 });
   }
 
-  async function gitOut(cwd: string, args: readonly string[], call?: { stdin?: string; drivers?: readonly string[] }): Promise<string> {
+  async function gitOut(cwd: string, args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> {
     const result = await git.run(cwd, args, call);
     if (result.code !== 0) throw new Error(`git ${args[0] ?? ""} failed (${result.code}): ${result.stderr.trim().slice(0, 300)}`);
     return result.stdout;
@@ -201,11 +204,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         if (!reached) return new Set<string>();
         if (!made) {
           removeFolder(runRoot, scratch);
-          await gitOut(runRoot, ["init", "-q", "--template=", scratch]);
+          await gitOut(runRoot, ["init", "-q", "--template=", scratch], { isolated: true });
           made = true;
         }
         const checked = await git.run(root, [`--git-dir=${join(scratch, ".git")}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
-          { stdin: paths.map(path => `${path}\0`).join(""), drivers: ["-c", "core.excludesFile="] });
+          { stdin: paths.map(path => `${path}\0`).join(""), isolated: true, drivers: PLAIN_FOLDER_CONFIG });
         if (checked.code !== 0 && checked.code !== 1) throw new Error("the folder's ignore rules could not be read");
         return new Set(nul(checked.stdout));
       },

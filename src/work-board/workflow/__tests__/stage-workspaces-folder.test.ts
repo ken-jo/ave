@@ -163,6 +163,35 @@ describe("folder stage workspaces", () => {
     expect(existsSync(join(project, ".git"))).toBe(false);
   });
 
+  it("a plain folder's ignore rules do not change with the git configuration and variables the host process inherited", async () => {
+    write(project, ".gitignore", "private.txt\n");
+    write(project, "PRIVATE.TXT", "private\n");
+    write(project, "user-ignored.txt", "the user's own rule, not the folder's\n");
+    const slashed = (path: string): string => path.split(sep).join("/");
+    write(base, "user-excludes", "user-ignored.txt\n");
+    write(base, "xdg/git/ignore", "user-ignored.txt\n");
+    write(base, "template/info/exclude", "src/\n");
+    const elsewhere = join(base, "elsewhere");
+    mkdirSync(elsewhere);
+    execFileSync("git", ["init", "-q"], { cwd: elsewhere, env });
+    // The matcher folds case as the platform's file names do, and by nothing it inherits.
+    const folds = process.platform === "win32" || process.platform === "darwin";
+    const expected = [".gitignore", ...(folds ? [] : ["PRIVATE.TXT"]), "docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts", "user-ignored.txt"];
+    const clean = env;
+    for (const inherited of ["true", "false"]) {
+      writeFileSync(join(base, "gitconfig"), `[core]\n\tautocrlf = false\n\tignorecase = ${inherited}\n\texcludesFile = ${slashed(join(base, "user-excludes"))}\n`);
+      env = {
+        ...clean, XDG_CONFIG_HOME: join(base, "xdg"), GIT_TEMPLATE_DIR: join(base, "template"), GIT_DIR: join(elsewhere, ".git"), GIT_WORK_TREE: elsewhere,
+        GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "core.ignorecase", GIT_CONFIG_VALUE_0: inherited,
+        GIT_CONFIG_KEY_1: "core.excludesFile", GIT_CONFIG_VALUE_1: slashed(join(base, "user-excludes")),
+        GIT_CONFIG_PARAMETERS: `'core.ignorecase=${inherited}'`,
+      };
+      const handle = await start(project);
+      expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] })), `inherited core.ignoreCase=${inherited}`).toEqual(expected);
+    }
+    expect(readdirSync(elsewhere)).toEqual([".git"]);
+  });
+
   it("a plain folder with no ignore file seeds every declared file and needs no git; with one and no git it refuses", async () => {
     write(project, "build/out.js", "built\n");
     write(project, "debug.log", "log\n");

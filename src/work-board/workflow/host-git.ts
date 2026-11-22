@@ -13,35 +13,42 @@ const HARDENED_CONFIG = [
 const DROPPED_ENV = /^(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|GIT_SSH|GIT_SSH_COMMAND|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE))$/iu;
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
+interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean }
 export class HostGitError extends Error {
   constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name", message: string) { super(message); }
 }
 
 export interface HostGit {
   /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws: one
-   * that ended without an exit code is `terminated`. */
-  run(cwd: string, args: readonly string[], options?: { stdin?: string; drivers?: readonly string[] }): Promise<HostGitResult>;
+   * that ended without an exit code is `terminated`. `isolated` runs it on no configuration but the repository's own and the call's. */
+  run(cwd: string, args: readonly string[], options?: HostGitCall): Promise<HostGitResult>;
   /** `-c` entries that switch off every filter and merge driver the repository's configuration names, and the filter drivers it marks required. */
   drivers(cwd: string): Promise<{ config: string[]; requiredFilters: string[] }>;
 }
 
-function gitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function gitEnv(base: NodeJS.ProcessEnv, dropped = DROPPED_ENV): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(base)) if (!DROPPED_ENV.test(key)) env[key] = value;
+  for (const [key, value] of Object.entries(base)) if (!dropped.test(key)) env[key] = value;
   return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+}
+
+/** No inherited git variable at all, and neither the system's nor the user's configuration file. */
+function isolatedEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...gitEnv(base, /^GIT_/iu), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
 }
 
 /** Every git call of a stage workspace goes through here: an argument vector with no shell, a timeout and a bounded output. */
 export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxOutputBytes?: number } = {}): HostGit {
   const env = gitEnv(options.env ?? process.env);
+  const isolated = isolatedEnv(options.env ?? process.env);
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
 
-  function run(cwd: string, args: readonly string[], call: { stdin?: string; drivers?: readonly string[] } = {}): Promise<HostGitResult> {
+  function run(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<HostGitResult> {
     if (!isHostGitWorkspaceAvailable(cwd)) return Promise.reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
     const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
     return new Promise((resolve, reject) => {
-      const child = spawn("git", buildHostGitArgs(args, { configArgs }), { cwd, env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn("git", buildHostGitArgs(args, { configArgs }), { cwd, env: call.isolated === true ? isolated : env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       let size = 0;

@@ -72,6 +72,25 @@ describe("host git", () => {
     expect(await reasonOf(createHostGit({ env }).run(base, ["status"]))).toBe("terminated");
   });
 
+  it("an isolated call reads no inherited git variable and no system or user configuration; any other call still does", async () => {
+    writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n[fixture]\n\tfile = inherited\n");
+    const git = createHostGit({ env: {
+      ...env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "fixture.count", GIT_CONFIG_VALUE_0: "inherited", GIT_CONFIG_PARAMETERS: "'fixture.parameters=inherited'",
+    } });
+    const listed = async (isolated: boolean): Promise<string[]> => {
+      const result = await git.run(base, ["config", "--show-origin", "--list"], { isolated });
+      expect(result.code).toBe(0);
+      return result.stdout.split("\n").filter(line => line !== "");
+    };
+    const inherited = await listed(false);
+    for (const key of ["fixture.file=inherited", "fixture.count=inherited", "fixture.parameters=inherited"]) expect(inherited.some(line => line.endsWith(key)), key).toBe(true);
+    const isolated = await listed(true);
+    expect(isolated.length).toBeGreaterThan(0);
+    // Only what the call itself carries is left.
+    expect(isolated.filter(line => !line.startsWith("command line:"))).toEqual([]);
+    expect(isolated.filter(line => line.includes("fixture."))).toEqual([]);
+  });
+
   it("a workspace a sandboxed command holds is refused before git starts, and runs again once released", async () => {
     const held = join(base, "held");
     const sibling = join(base, "sibling");
