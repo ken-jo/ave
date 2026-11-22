@@ -7,10 +7,10 @@ import type { Readable, Writable } from 'node:stream';
 import { cleanupAsrtSandboxAfterCommand } from '../../permissions/asrt-sandbox.js';
 import { NODE_PRESERVE_SYMLINK_FLAGS, spawnConfinedChild, srtWinTargetEnv } from '../../permissions/confined-child.js';
 import { createSandboxProcessHome } from '../../permissions/sandbox-process-home.js';
-import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from '../../permissions/windows-acl-grant-holder.js';
 import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from '../../plugins/isolation/child-loopback-link.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
+import { win32SystemBinary } from '../../shared/windows-system-path.js';
 import { buildSafeChildEnv } from '../../tools/safe-env.js';
 import { mainDir } from '../main-paths.js';
 import { MemoryMapHostError } from './errors.js';
@@ -64,17 +64,13 @@ async function writeRequest(output: Writable, folder: string, task: MemoryInfere
 async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Readable; output: Writable; release: () => void }> {
   const windows = process.platform === 'win32';
   const home = windows ? createSandboxProcessHome() : undefined;
-  let grant: HeldWindowsGrant | undefined;
   let wrapped = false;
   const release = () => {
-    grant?.release(); home?.cleanup();
+    home?.cleanup();
     if (wrapped) { wrapped = false; void cleanupAsrtSandboxAfterCommand(); }
   };
   let child: ChildProcess | undefined;
   try {
-    // srt-win starts only in a directory the sandbox account may read; the child writes nowhere.
-    if (home) grant = await holdWindowsFilesystemGrant({ label: 'memory-map-inference:asrt-win-acl', allowRead: [home.path], allowWrite: [] });
-    const held = grant;
     const entry = join(mainDir, 'memory-map-child.js');
     const baseEnv = buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: '1', ...TELEMETRY_OPT_OUT });
     const extraEnv = { ...home?.env, ...TELEMETRY_OPT_OUT };
@@ -84,7 +80,7 @@ async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Read
           args: [...NODE_PRESERVE_SYMLINK_FLAGS, entry, CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv(srtWinTargetEnv(baseEnv, extraEnv))],
           windowsShell: 'cmd' as const,
           windowsCommandLineEnv: { ELECTRON_RUN_AS_NODE: '1', ...TELEMETRY_OPT_OUT },
-          cwd: home.path,
+          cwd: win32SystemBinary(''),
         }
       : { args: [entry] };
     ({ child } = await spawnConfinedChild({
@@ -97,12 +93,10 @@ async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Read
       extraEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
       onWrapped: () => { wrapped = true; },
-      assertStillValid: () => held?.assertAlive(),
     }));
     const running = child;
     running.once('close', release);
     running.once('error', () => { if (running.pid === undefined) release(); });
-    held?.onLost(() => running.kill());
     running.stderr?.resume();
     const { stdout, stdin } = running;
     if (!stdout || !stdin) throw new Error('[memory-map-inference] the child has no pipes');

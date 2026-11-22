@@ -137,6 +137,8 @@ Local inference runs only in a separate child process that the OS sandbox keeps 
 
 Without an active sandbox (turned off, still starting, or a Windows extension plan that would refuse the confined start) local embeddings are unavailable with that reason; the host never falls back to in-process inference. The projection worker thread shares the host process and only projects cached vectors.
 
+On Windows the child starts in the system directory, which the sandbox account can already read. It receives the usual fresh process HOME environment without an ACL grant to that profile.
+
 **Windows residual:** the native runtime can emit ETW TraceLogging events. They go to the operating system's local event-tracing sessions, not through a socket the process opens, so the network block neither applies to them nor needs to. Whether the OS sends diagnostic data anywhere is governed by the system's diagnostic-data setting, not by Ave. Whether the runtime honours the environment opt-out for these events is not verified here.
 
 ## Validation boundary

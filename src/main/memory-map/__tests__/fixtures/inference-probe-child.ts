@@ -1,6 +1,7 @@
 // Stands in for the inference child behind the real transport: reports the environment it started with and what the network let it reach.
 import { connect, type Socket } from 'node:net';
 import { readFile } from 'node:fs/promises';
+import { win32SystemBinary } from '../../../../shared/windows-system-path.js';
 import { serveInferenceChild } from '../../inference-child-serve.js';
 
 const telemetryAtStart = process.env.ORT_DISABLE_TELEMETRY ?? null;
@@ -43,9 +44,10 @@ serveInferenceChild(async (task, files) => {
   if (task.kind !== 'embed') throw new Error('probe expects an embed task');
   const { port, unixPath, modelFile } = JSON.parse(task.text) as { port: number; unixPath?: string; modelFile: string };
   const modelRead = await readFile(modelFile).then(() => 'readable', (error: NodeJS.ErrnoException) => error.code);
+  const windowsSystemCwd = process.platform === 'win32' ? process.cwd().toLowerCase() === win32SystemBinary('').toLowerCase() : undefined;
   const direct = await open({ host: '127.0.0.1', port });
   const unix = unixPath === undefined ? undefined : await open({ path: unixPath });
   unix?.socket?.destroy();
   direct.socket?.destroy();
-  return { telemetryAtStart, direct: direct.socket ? 'connected' : direct.code, proxy: await viaProxy(port), unix: unix?.socket ? 'connected' : unix?.code, modelRead, runtime: await loadRuntime(files.model) };
+  return { telemetryAtStart, direct: direct.socket ? 'connected' : direct.code, proxy: await viaProxy(port), unix: unix?.socket ? 'connected' : unix?.code, modelRead, windowsSystemCwd, runtime: await loadRuntime(files.model) };
 }).then(() => process.exit(0), () => process.exit(1));

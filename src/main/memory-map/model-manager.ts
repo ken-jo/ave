@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { lstat, realpath, rename, rm } from 'node:fs/promises';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from './model-manifest.js';
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
@@ -49,8 +49,20 @@ export class LocalModelManager {
   }
   private publish(state: MemoryModelStatus): MemoryModelStatus { this.state = state; this.options.onProgress?.({ ...state }); return { ...state }; }
   cancel(): void { this.generation++; this.controller?.abort(); }
+  private async checkedDirectory(path: string): Promise<string | undefined> {
+    try {
+      if (!(await lstat(path)).isDirectory()) throw new MemoryModelError('model-integrity-failed');
+      const expected = join(await realpath(dirname(path)), basename(path));
+      const actual = await realpath(path);
+      if (relative(expected, actual) !== '') throw new MemoryModelError('model-integrity-failed');
+      return actual;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+  }
   private async isManagedPath(folder: string): Promise<boolean> {
-    const root = await realpath(this.namespace.dir).catch(() => undefined);
+    const root = await this.checkedDirectory(this.namespace.dir);
     if (root === undefined) return false;
     const fromRoot = relative(root, folder);
     return !isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`);
@@ -148,6 +160,8 @@ export class LocalModelManager {
     }));
   }
   private async install(signal: AbortSignal, stage: (name: string, folder: string) => Promise<void>): Promise<void> {
+    await this.checkedDirectory(this.namespace.dir);
+    await this.checkedDirectory(join(this.namespace.dir, 'multilingual-e5-small'));
     const parent = await this.namespace.childDir('multilingual-e5-small');
     const name = `multilingual-e5-small/${LOCAL_MODEL_REVISION}.tmp-${randomUUID()}`;
     const staging = await this.namespace.childDir(name, { exclusive: true });

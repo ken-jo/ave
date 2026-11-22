@@ -10,8 +10,12 @@ import { setProcessPlatform } from '../../../__tests__/support/process-platform.
 import { runInferenceChild } from '../inference-child.js';
 import { MODEL_FILES } from '../model-manifest.js';
 
-const { spawn } = vi.hoisted(() => ({ spawn: vi.fn() }));
-vi.mock('../../../permissions/confined-child.js', () => ({ spawnConfinedChild: spawn }));
+const { spawn, grant, createHome } = vi.hoisted(() => ({ spawn: vi.fn(), grant: vi.fn(), createHome: vi.fn() }));
+vi.mock('../../../permissions/confined-child.js', () => ({
+  spawnConfinedChild: spawn, NODE_PRESERVE_SYMLINK_FLAGS: [], srtWinTargetEnv: (_base: unknown, extra: unknown) => extra,
+}));
+vi.mock('../../../permissions/windows-acl-grant-holder.js', () => ({ holdWindowsFilesystemGrant: grant }));
+vi.mock('../../../permissions/sandbox-process-home.js', () => ({ createSandboxProcessHome: createHome }));
 vi.mock('../../../permissions/asrt-sandbox.js', () => ({ cleanupAsrtSandboxAfterCommand: vi.fn() }));
 vi.mock('../local-runtime.js', () => ({ assertLocalEmbeddingRuntime: vi.fn() }));
 vi.mock('../model-manifest.js', async importOriginal => {
@@ -35,6 +39,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setProcessPlatform(HOST_PLATFORM);
+  vi.unstubAllEnvs();
   await rm(folder, { recursive: true, force: true });
 });
 
@@ -76,4 +81,20 @@ describe('inference model stream', () => {
     await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'model-integrity-failed' });
     expect(completed).not.toHaveBeenCalled();
   });
+});
+
+it('uses the Windows system directory as cwd without a profile ACL grant', async () => {
+  setProcessPlatform('win32');
+  vi.stubEnv('SystemRoot', 'C:/Windows');
+  const home = { path: 'C:/scratch/inference-home', env: { HOME: 'C:/scratch/inference-home' }, cleanup: vi.fn() };
+  createHome.mockReturnValue(home);
+  grant.mockReturnValue({ release: vi.fn() });
+  const refused = new Error('spawn refused by fixture');
+  spawn.mockRejectedValue(refused);
+  await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toBe(refused);
+  expect(grant).not.toHaveBeenCalled();
+  expect(spawn).toHaveBeenCalledWith(expect.objectContaining({
+    cwd: 'C:\\Windows\\System32', grantMode: 'deny-only', extraEnv: expect.objectContaining(home.env),
+  }));
+  expect(home.cleanup).toHaveBeenCalledOnce();
 });

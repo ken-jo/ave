@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, open, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, open, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,14 +9,15 @@ import { LocalModelManager, verifyModelFolder } from '../model-manager.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function fixture(body = 'model') {
+async function fixture(body = 'model', namespaceName = '') {
   const root = await mkdtemp(join(tmpdir(), 'memory-model-')); roots.push(root);
   const files = [{ name: 'weights.bin', bytes: 5, sha256: createHash('sha256').update('model').digest('hex') }];
+  const namespaceDir = join(root, namespaceName);
   let saved: string | undefined;
   const namespace: FeatureNamespaceHandle = {
-    dir: root, readJson: async (_, fallback) => fallback, writeJson: async () => {},
-    childDir: async name => { const path = join(root, name); await mkdir(path, { recursive: true }); return path; },
-    createFile: name => open(join(root, name), 'wx'),
+    dir: namespaceDir, readJson: async (_, fallback) => fallback, writeJson: async () => {},
+    childDir: async name => { const path = join(namespaceDir, name); await mkdir(path, { recursive: true }); return path; },
+    createFile: name => open(join(namespaceDir, name), 'wx'),
   };
   const server = createServer((_, response) => { response.end(body); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -69,6 +70,19 @@ describe('local model lifecycle', () => {
       f.setSaved(external);
       await expect(f.manager.validatedPath()).rejects.toMatchObject({ code: 'model-integrity-failed' });
       expect(f.saved()).toBe(external);
+    } finally { await f.close(); }
+  });
+  it('refuses a linked models namespace before adopting a model', async () => {
+    const f = await fixture('model', 'models');
+    try {
+      const external = await mkdtemp(join(tmpdir(), 'linked-model-')); roots.push(external);
+      const namespace = join(f.root, 'models');
+      await writeFile(join(external, 'weights.bin'), 'model');
+      await symlink(external, namespace, process.platform === 'win32' ? 'junction' : 'dir');
+      f.setSaved(external);
+      await expect(f.manager.validatedPath()).rejects.toMatchObject({ code: 'model-integrity-failed' });
+      expect(await f.manager.adoptExistingFolder(external)).toMatchObject({ status: 'failed', error: 'model-integrity-failed' });
+      expect(await readdir(external)).toEqual(['weights.bin']);
     } finally { await f.close(); }
   });
   it('cancels in-flight streaming and cannot commit the partial folder', async () => {

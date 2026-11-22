@@ -136,7 +136,7 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
     const modelFile = join(modelDir, MODEL_FILES[0]!.name);
     expect(readFileSync(modelFile)).toEqual(Buffer.alloc(MODEL_FILES[0]!.bytes));
     const before = listenerConnections.length;
-    const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; unix?: string; modelRead: string; runtime: string }>(
+    const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; unix?: string; modelRead: string; windowsSystemCwd?: boolean; runtime: string }>(
       modelDir, { kind: 'embed', text: JSON.stringify({ port: listenerPort, unixPath, modelFile }) }, AbortSignal.timeout(120_000));
     console.info(`[memory-map-child] ${JSON.stringify(report)} decisions=${JSON.stringify(decisions)}`);
     expect(report.telemetryAtStart).toBe('1');
@@ -146,6 +146,7 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
     expect(listenerConnections.length, 'the listener recorded a connection from the inference child').toBe(before);
     expect(decisions, JSON.stringify(report)).toContainEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
     expect(report.modelRead).toMatch(/^(?:EACCES|EPERM|ENOENT)$/u);
+    if (process.platform === 'win32') expect(report.windowsSystemCwd).toBe(true);
     expect(report.runtime, 'the native runtime did not load inside the sandbox').toMatch(/^session-refused:.*protobuf parsing failed/iu);
   }, 180_000);
 });
