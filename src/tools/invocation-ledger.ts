@@ -6,6 +6,7 @@ import { HostExitAbortError } from "../shared/host-exit-abort.js";
 const log = createLogger("invocation-ledger");
 const shutdown = new AbortController();
 const pending = new Set<Promise<unknown>>();
+const detached = new Map<object, () => Promise<unknown>>();
 let closing: Promise<number> | undefined;
 let auditClosed = false;
 let shutdownStarted = false;
@@ -56,6 +57,44 @@ export async function appendToolInvocationAudit(
     throw error;
   }
 }
+/**
+ * Work the ceiling detached is not joined: a settlement before the seal commits its row, and the seal writes its
+ * host-shutdown row instead and refuses the late commit.
+ */
+export function trackDetachedToolInvocation(
+  settlement: Promise<unknown>,
+  commitSettled: () => Promise<unknown>,
+  commitHostShutdown: () => Promise<unknown>,
+): void {
+  const entry = {};
+  detached.set(entry, commitHostShutdown);
+  void settlement.then(
+    () => { if (detached.delete(entry)) commitDetached(commitSettled); },
+    (error: unknown) => {
+      if (detached.delete(entry)) recordToolInvocationAuditFailure(error);
+    },
+  );
+  if (shutdown.signal.aborted) closeDetachedToolInvocations();
+}
+
+function commitDetached(commit: () => Promise<unknown>): void {
+  let written: Promise<unknown>;
+  try {
+    written = commit();
+  } catch (error) {
+    written = Promise.reject(error);
+  }
+  trackToolInvocationSettlement(written.catch((error: unknown) => {
+    log.error("detached tool invocation audit failed: %s", error instanceof Error ? error.message : String(error));
+    throw error;
+  }));
+}
+
+function closeDetachedToolInvocations(): void {
+  const commits = [...detached.values()];
+  detached.clear();
+  for (const commit of commits) commitDetached(commit);
+}
 
 export function recordToolInvocationAuditFailure(error: unknown): void {
   if (shutdownStarted) shutdownFailure ??= { error };
@@ -68,6 +107,7 @@ export function beginToolInvocationAuditShutdown(): void {
 export function sealToolInvocations(): void {
   beginToolInvocationAuditShutdown();
   shutdown.abort(new HostExitAbortError());
+  closeDetachedToolInvocations();
 }
 
 /** Join admitted work, then close audit admission in the same step that observes the set empty. */
@@ -93,5 +133,5 @@ export function markToolInvocationAuditClosed(): void {
 }
 
 export function pendingToolInvocationCount(): number {
-  return pending.size;
+  return pending.size + detached.size;
 }

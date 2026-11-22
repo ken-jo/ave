@@ -99,3 +99,44 @@ it("refuses an invocation admitted while the audit logger closes and fails the s
   expect(logError).toHaveBeenCalledWith("tool invocation admitted after audit close: %s", "late");
   late?.settle();
 });
+
+it("commits a detached settlement that lands before the seal and joins it", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const settled = vi.fn(async () => {});
+  const hostShutdown = vi.fn(async () => {});
+  ledger.trackDetachedToolInvocation(Promise.resolve(), settled, hostShutdown);
+  await Promise.resolve();
+  ledger.sealToolInvocations();
+  await ledger.closeToolInvocationAudit(close);
+  expect(settled).toHaveBeenCalledOnce();
+  expect(hostShutdown).not.toHaveBeenCalled();
+});
+
+it.each(["before", "after"] as const)("closes work detached %s the seal once and refuses its late commit", async (when) => {
+  const ledger = await import("../invocation-ledger.js");
+  let finish!: () => void;
+  const settlement = new Promise<void>((resolve) => { finish = resolve; });
+  const settled = vi.fn(async () => {});
+  const hostShutdown = vi.fn(async () => {});
+  if (when === "after") ledger.sealToolInvocations();
+  ledger.trackDetachedToolInvocation(settlement, settled, hostShutdown);
+  expect(ledger.pendingToolInvocationCount()).toBe(1);
+  ledger.sealToolInvocations();
+  ledger.sealToolInvocations();
+  expect(hostShutdown).toHaveBeenCalledOnce();
+  await ledger.closeToolInvocationAudit(close);
+  expect(close).toHaveBeenCalled();
+  expect(ledger.pendingToolInvocationCount()).toBe(0);
+  finish();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(settled).not.toHaveBeenCalled();
+  expect(hostShutdown).toHaveBeenCalledOnce();
+});
+
+it("fails the shutdown when the host-shutdown row of detached work cannot be written", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  ledger.trackDetachedToolInvocation(new Promise<void>(() => {}), async () => {}, async () => { throw new Error("audit unavailable"); });
+  ledger.sealToolInvocations();
+  await expect(ledger.closeToolInvocationAudit(close)).rejects.toThrow("shutdown invocation audit failed");
+  expect(logError).toHaveBeenCalled();
+});

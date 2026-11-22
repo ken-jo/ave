@@ -16,7 +16,7 @@ import { currentEffectLedger } from "../../permissions/effect-ledger.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
-import { pendingToolInvocationCount } from "../invocation-ledger.js";
+import { closeToolInvocationAudit, pendingToolInvocationCount, sealToolInvocations } from "../invocation-ledger.js";
 import { ToolRegistry } from "../registry.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import type { HostPluginGenerationState } from "../../plugins/plugin-host-generation.js";
@@ -1880,5 +1880,62 @@ describe("ToolExecutor plugin operation governance", () => {
 
     expect(result.is_error).toBeFalsy();
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  // Seals the process-wide ledger, so it stays the last test in this file.
+  it("closes a detached write at the seal with one host-shutdown row and refuses its late settlement", async () => {
+    vi.useFakeTimers();
+    try {
+      const { executor, write, auditLogger } = setup();
+      await runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "r1", name: "domain_read", input: { operation: "status" } }], options()),
+      );
+      const grant = executor.issuePluginOperationGrant({ toolName: "domain_write", input: { operation: "save", value: 21 }, principal });
+      let releaseWrite!: () => void;
+      const writeStarted = new Promise<void>((started) => {
+        write.mockImplementationOnce(() => new Promise((resolve) => {
+          started();
+          releaseWrite = () => resolve({ output: "late saved", isError: false });
+        }));
+      });
+      const timedOutWrite = runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "w1", name: "domain_write", input: { operation: "save", value: 21 } }], options(grant.token)),
+      );
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
+      expect((await timedOutWrite)[0].is_error).toBe(true);
+      const outcomes = () => auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => (entry.pluginOperation as { outcome?: string } | undefined)?.outcome)
+        .filter((outcome) => outcome === "indeterminate" || outcome === "settled");
+      const hostShutdownRows = () => auditLogger.appendPermissionAuditEntry.mock.calls
+        .filter(([entry]) => JSON.stringify(entry.denyReasons ?? []).includes("host-shutdown"));
+
+      sealToolInvocations();
+      const close = vi.fn(async () => {});
+      let joined = false;
+      const joining = closeToolInvocationAudit(close).then((count) => { joined = true; return count; });
+      await vi.advanceTimersByTimeAsync(0);
+      try {
+        expect(joined).toBe(true);
+      } finally {
+        releaseWrite();
+      }
+      await expect(joining).resolves.toBeGreaterThanOrEqual(1);
+      expect(close).toHaveBeenCalledOnce();
+      expect(hostShutdownRows()).toHaveLength(1);
+      expect(hostShutdownRows()[0][0]).toMatchObject({
+        decision: "deny",
+        denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],
+        pluginOperation: { outcome: "indeterminate" },
+      });
+      expect(pendingToolInvocationCount()).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcomes()).toEqual(["indeterminate", "indeterminate"]);
+      expect(hostShutdownRows()).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

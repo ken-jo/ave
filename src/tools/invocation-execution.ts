@@ -1,4 +1,4 @@
-import { appendToolInvocationAudit, trackToolInvocationSettlement } from "./invocation-ledger.js";
+import { appendToolInvocationAudit, trackDetachedToolInvocation } from "./invocation-ledger.js";
 import { isHostExitAbort } from "../shared/host-exit-abort.js";
 import type { ToolAuditTerminationReason } from "../audit/audit-logger.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
@@ -1448,24 +1448,33 @@ export async function executeAuthorizedToolInvocation(
       const pluginId = pluginOperationPrincipal.ownerPluginId;
       const operation = resolvedPluginOperation.operation;
       const grantId = consumedPluginOperationGrantId;
-      const settlementAudit = deferredOperationSettlement
-        .then(async () => {
+      const settlement = deferredOperationSettlement.then(undefined, (error: unknown) => {
+        log.error(
+          "late plugin operation settlement tracking failed; domain remains poisoned for %s: %s",
+          toolUse.name,
+          errorMessage(error),
+        );
+        throw error;
+      });
+      const pluginOperationRow = (outcome: "settled" | "indeterminate") => ({
+        ts: new Date().toISOString(),
+        auditId: randomUUID(),
+        tool: toolUse.name,
+        source,
+        category: invocationCategory,
+        trustOrigin: invocationPermissionContext.trustOrigin,
+        pluginOperation: {
+          pluginId,
+          operation,
+          outcome,
+          ...(grantId ? { grantId } : {}),
+        },
+      });
+      trackDetachedToolInvocation(
+        settlement,
+        async () => {
           try {
-            await appendToolInvocationAudit(services.auditLogger, {
-              ts: new Date().toISOString(),
-              auditId: randomUUID(),
-              tool: toolUse.name,
-              source,
-              category: invocationCategory,
-              trustOrigin: invocationPermissionContext.trustOrigin,
-              decision: "allow",
-              pluginOperation: {
-                pluginId,
-                operation,
-                outcome: "settled",
-                ...(grantId ? { grantId } : {}),
-              },
-            });
+            await appendToolInvocationAudit(services.auditLogger, { ...pluginOperationRow("settled"), decision: "allow" });
             lease.release();
           } catch (error) {
             log.error(
@@ -1475,15 +1484,14 @@ export async function executeAuthorizedToolInvocation(
             );
             throw error;
           }
-        }, (error) => {
-          log.error(
-            "late plugin operation settlement tracking failed; domain remains poisoned for %s: %s",
-            toolUse.name,
-            errorMessage(error),
-          );
-          throw error;
-        });
-      trackToolInvocationSettlement(settlementAudit);
+        },
+        // The worker is stopped with its plugin; its settlement is no longer recorded.
+        () => appendToolInvocationAudit(services.auditLogger, {
+          ...pluginOperationRow("indeterminate"),
+          decision: "deny",
+          denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],
+        }),
+      );
     } else if (operationExecutionLease && deferredOperationSettlement) {
       void deferredOperationSettlement.catch((error) => {
         log.error(
