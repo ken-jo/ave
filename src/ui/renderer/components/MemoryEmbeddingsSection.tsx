@@ -50,9 +50,20 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     try {
       const result = await api.settingsSet(nextSource === 'local' ? { source: 'local' } : { source: 'provider', providerId, modelId, consent });
       if (!result.ok) setError(result.error);
-      else { setSettings(result.value); setSource(result.value.source); }
+      else {
+        setSettings(result.value);
+        setSource(result.value.source);
+        if (result.value.source === 'local') setConsent(false);
+      }
     } catch { setError('provider-embedding-failed'); }
     finally { setBusy(false); }
+  };
+  const handleConsentChange = (checked: boolean) => {
+    if (!checked && settings?.source === 'provider' && settings.consent) {
+      void handleSave('local');
+      return;
+    }
+    setConsent(checked);
   };
   const selectedProvider = settings?.providers?.find(value => value.id === providerId);
   const downloading = status?.status === "downloading";
@@ -62,7 +73,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     <fieldset className="space-y-3 text-xs">
       <legend>{t('memoryEmbeddings.source')}</legend>
       <div className="flex gap-4">
-        <label><input type="radio" name="memory-embedding-source" checked={source === 'local'} disabled={busy || !settings} onChange={() => { setSource('local'); setConsent(false); void handleSave('local'); }}/>{t('memoryEmbeddings.local')}</label>
+        <label><input type="radio" name="memory-embedding-source" checked={source === 'local'} disabled={busy || !settings} onChange={() => void handleSave('local')}/>{t('memoryEmbeddings.local')}</label>
         <label><input type="radio" name="memory-embedding-source" checked={source === 'provider'} disabled={busy || !settings} onChange={() => { setSource('provider'); setConsent(false); }}/>{t('memoryEmbeddings.provider')}</label>
       </div>
       {source === 'provider' && <>
@@ -75,7 +86,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
           {selectedProvider?.models.map(model => <option key={model} value={model}>{model}</option>)}
         </select></label>
         {(!settings?.providers?.length || selectedProvider?.reason) && <p role="status">{t(selectedProvider?.reason ? `memoryMap.error.${selectedProvider.reason}` : 'memoryEmbeddings.noProviders')}</p>}
-        <label className="flex items-start gap-2"><input type="checkbox" checked={consent} disabled={busy || !modelId} onChange={event => setConsent(event.target.checked)}/><span>{t('memoryEmbeddings.consent', { provider: providerId || t('memoryEmbeddings.chooseProvider') })}</span></label>
+        <label className="flex items-start gap-2"><input type="checkbox" checked={consent} disabled={busy || !modelId} onChange={event => handleConsentChange(event.target.checked)}/><span>{t('memoryEmbeddings.consent', { provider: providerId || t('memoryEmbeddings.chooseProvider') })}</span></label>
         <Button size="sm" disabled={busy || !consent || !selectedProvider?.models.includes(modelId)} onClick={() => void handleSave()}>{t('memoryEmbeddings.save')}</Button>
         <p>{t('memoryEmbeddings.rebuildNotice')}</p>
       </>}

@@ -7,6 +7,23 @@ import { en } from '../../../../i18n/messages/en.js';
 import { ko } from '../../../../i18n/messages/ko.js';
 
 describe('memory embeddings settings', () => {
+  it('revokes persisted provider consent when its acknowledgement is cleared', async () => {
+    const api = createMemoryMapApi();
+    const initial = await api.settingsGet();
+    if (!initial.ok) throw new Error('Missing settings');
+    const namespace = { ...initial.value.namespace, source: 'provider' as const, providerId: 'configured', modelId: 'embed-a' };
+    api.settingsGet.mockResolvedValue({ ok: true, value: {
+      ...initial.value, source: 'provider', namespace, providers: [{ id: 'configured', models: ['embed-a'] }],
+      consent: { version: 1, providerId: 'configured', modelId: 'embed-a', timestamp: '2026-11-22T00:00:00Z' },
+    } });
+    api.settingsSet.mockResolvedValue(initial);
+    render(<MemoryEmbeddingsSection api={api} />);
+    const acknowledgement = await screen.findByRole('checkbox');
+    expect(acknowledgement).toBeChecked();
+    fireEvent.click(acknowledgement);
+    expect(api.settingsSet).toHaveBeenCalledWith({ source: 'local' });
+    await waitFor(() => expect(screen.queryByRole('checkbox')).toBeNull());
+  });
   it('requires explicit provider and model consent, resets it on changes, and opts out immediately', async () => {
     const api = createMemoryMapApi();
     const initial = await api.settingsGet();
