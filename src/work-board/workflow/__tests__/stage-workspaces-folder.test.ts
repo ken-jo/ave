@@ -142,6 +142,25 @@ describe("folder stage workspaces", () => {
     expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("linked/private.txt", "linked/**", ".env", "keys/id_rsa", "build/out.js", "debug.log")] }))).toEqual([]);
   });
 
+  it("a plain folder outside any git work tree seeds every declared file, whatever a stray ignore file says", async () => {
+    const outside = join(base, "outside");
+    write(outside, "private.txt", "outside the project\n");
+    symlinkSync(outside, join(project, "linked"), "junction");
+    write(project, ".env", "TOKEN=fixture\n");
+    write(project, "keys/id_rsa", "fixture\n");
+    write(project, "build/out.js", "built\n");
+    write(project, "debug.log", "log\n");
+    // No repository here: nothing reads this file as rules, and it is seeded like any other.
+    write(project, ".gitignore", "build/\n*.log\nnotes.txt\n");
+
+    const handle = await start(project);
+    const root = await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] });
+    expect(tree(root)).toEqual([".gitignore", "build/out.js", "debug.log", "docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts"]);
+    expect(read(root, "build/out.js")).toBe("built\n");
+    // Named one by one they are seeded too; a secret and a link never are.
+    expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("build/out.js", "debug.log", ".env", "keys/id_rsa", "linked/private.txt")] }))).toEqual(["build/out.js", "debug.log"]);
+  });
+
   it("refuses a seed above the bounds", async () => {
     const handle = await start(project, { seedLimits: { files: 2, bytes: 1024 } });
     expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1)).toEqual({ ok: false, code: "seed-too-large" });
