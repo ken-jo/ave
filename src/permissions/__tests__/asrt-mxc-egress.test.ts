@@ -274,6 +274,10 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     }
     expect(observed).toEqual([]);
     invocation.release();
+    const requestApproval = vi.fn(requester);
+    requester = requestApproval;
+    expect(await request(relay.port, relay.proxyAuthorization)).toBe(403);
+    expect(requestApproval).not.toHaveBeenCalled();
     await expect(launchShell().then(() => undefined)).rejects.toThrow(/live shell invocation/u);
   });
 
