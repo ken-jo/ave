@@ -109,14 +109,23 @@ export async function queryWindowsSystemDirectory(): Promise<string> {
 export function queryWindowsSystemDirectorySync(): string {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const helper = resolveWindowsPathKindHelper();
-  const result = spawnSync(helper, ["--system-directory"], {
-    cwd: dirname(helper), windowsHide: true, shell: false, env: {},
-    timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 128 * 1024,
-  });
+  const result = spawnSync(helper, ["--system-directory"], windowsSystemDirectorySpawnOptions(helper));
   if (result.error || result.status !== 0 || result.stderr.length > 0) {
     throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
   }
   return parseWindowsSystemDirectory(result.stdout);
+}
+
+export function windowsSystemDirectorySpawnOptions(helper: string) {
+  return {
+    cwd: dirname(helper), windowsHide: true, shell: false,
+    // Explicit values block parent defaults injected during child creation.
+    env: {
+      HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
+      TEMP: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", WINDIR: "", NODE_V8_COVERAGE: "",
+    },
+    timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 128 * 1024,
+  };
 }
 
 function parseWindowsSystemDirectory(stdout: Uint8Array): string {

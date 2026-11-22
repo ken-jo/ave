@@ -170,7 +170,13 @@ describe("resolveHostGit", () => {
       expect(execFileSync).toHaveBeenCalledTimes(2);
       expect.soft(execFileSync).toHaveBeenNthCalledWith(1, bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
       expect.soft(execFileSync).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions));
-      expect(spawnSync).toHaveBeenCalledExactlyOnceWith(helper, ["--system-directory"], expect.objectContaining({ env: {}, shell: false }));
+      expect(spawnSync).toHaveBeenCalledExactlyOnceWith(helper, ["--system-directory"], expect.objectContaining({
+        shell: false,
+        env: {
+          HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
+          TEMP: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", WINDIR: "", NODE_V8_COVERAGE: "",
+        },
+      }));
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath });
       setProcessPlatform(platform);
