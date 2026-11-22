@@ -255,6 +255,19 @@ function createSession(state: Fixture, options: { store?: Map<string, string>; c
 }
 
 describe("remote authorization", () => {
+  it("preserves a network failure during discovery as the cause of the authentication error", async () => {
+    const state = await fixture();
+    const { session, networkFetch } = createSession(state);
+    const original = new TypeError("fetch failed");
+    vi.mocked(networkFetch).mockRejectedValueOnce(original);
+
+    const failure = await session.authenticate().catch((error: unknown) => error as Error);
+    expect(failure).toMatchObject({ message: "MCP authentication failed" });
+    let cause: unknown = failure;
+    while (cause instanceof Error && cause !== original) cause = cause.cause;
+    expect(cause).toBe(original);
+  });
+
   it("preserves the login callback failure as the cause of the authentication error", async () => {
     const state = await fixture();
     const { session, openAuthorizationUrl, catchers } = createSession(state);
