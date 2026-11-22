@@ -405,12 +405,16 @@ it("a join folder whose worktree link was pointed at another worktree gets no me
   const link = join(open.workspace.runRoot, JOIN_DIR, ".git");
   const written = readFileSync(link, "utf8");
   const head = userGit(userwt, "rev-parse", "HEAD");
-  writeFileSync(link, readFileSync(join(userwt, ".git"), "utf8"));
+  const relink = (text: string): void => {
+    rmSync(link, { force: true });
+    writeFileSync(link, text);
+  };
+  relink(readFileSync(join(userwt, ".git"), "utf8"));
   try {
     await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow();
     expect(userGit(userwt, "rev-parse", "HEAD")).toBe(head);
     expect(existsSync(join(userwt, "new.txt"))).toBe(false);
   } finally {
-    writeFileSync(link, written);
+    relink(written);
   }
 });
