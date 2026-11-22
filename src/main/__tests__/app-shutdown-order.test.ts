@@ -213,18 +213,25 @@ describe("OS sandbox release at quit", () => {
     services.shutdown.mockImplementation(async () => {
       calls.push("servicesShutdown");
       ledger.sealToolInvocations();
-      // A join that waited on the detached work would lose this race.
-      void afterQueuedCallbacks().then(afterQueuedCallbacks).then(() => deadline.resolve());
       await ledger.closeToolInvocationAudit(async () => { calls.push("closeAudit"); });
     });
     getServices.mockReturnValue(services);
     const shutdown = await configuredShutdown();
     gracefulDeadline = deadline.promise;
+    let status: string | undefined;
     try {
-      expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("completed");
+      const stopping = shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+      try {
+        // The deadline fires only if the join never reaches close, as it would when waiting on the detached work.
+        await vi.waitFor(() => expect(calls).toContain("closeAudit"));
+      } finally {
+        if (!calls.includes("closeAudit")) deadline.resolve();
+        status = await stopping;
+      }
     } finally {
       gracefulDeadline = undefined;
     }
+    expect(status).toBe("completed");
     expect(hostShutdownRow).toHaveBeenCalledOnce();
     expect(ledger.pendingToolInvocationCount()).toBe(0);
   });
