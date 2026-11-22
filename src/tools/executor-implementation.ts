@@ -1,4 +1,5 @@
-import { admitToolInvocationWhileAuditOpen } from "./invocation-ledger.js";
+import { admitToolInvocationWhileAuditOpen, claimAtToolInvocationSeal } from "./invocation-ledger.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { t } from "../i18n/index.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
@@ -385,26 +386,31 @@ export class ToolExecutor {
   ): Promise<ToolResult[]> {
     const groupId = randomUUID();
     const results: ToolResult[] = new Array(toolUses.length);
-    for (let idx = 0; idx < toolUses.length;) {
-      if (!this.isParallelSafeToolUse(toolUses[idx])) {
-        results[idx] = await this.executeOne(toolUses[idx], groupId, idx, opts);
-        idx += 1;
-        continue;
-      }
+    const startAt = (index: number) => this.invokeOne(toolUses[index], groupId, index, opts);
+    const queue = claimQueuedAtSeal(toolUses.length, startAt);
+    try {
+      for (let idx = 0; idx < toolUses.length;) {
+        if (!this.isParallelSafeToolUse(toolUses[idx])) {
+          results[idx] = await this.deliverToolResult(queue.take(idx, () => startAt(idx)), opts);
+          idx += 1;
+          continue;
+        }
 
-      const start = idx;
-      while (idx < toolUses.length && this.isParallelSafeToolUse(toolUses[idx])) {
-        idx += 1;
+        const start = idx;
+        while (idx < toolUses.length && this.isParallelSafeToolUse(toolUses[idx])) {
+          idx += 1;
+        }
+        const segmentResults = await Promise.all(
+          toolUses.slice(start, idx).map((_, offset) =>
+            this.deliverToolResult(queue.take(start + offset, () => startAt(start + offset)), opts),
+          ),
+        );
+        for (let offset = 0; offset < segmentResults.length; offset++) {
+          results[start + offset] = segmentResults[offset];
+        }
       }
-      const segment = toolUses.slice(start, idx);
-      const segmentResults = await Promise.all(
-        segment.map((toolUse, offset) =>
-          this.executeOne(toolUse, groupId, start + offset, opts),
-        ),
-      );
-      for (let offset = 0; offset < segmentResults.length; offset++) {
-        results[start + offset] = segmentResults[offset];
-      }
+    } finally {
+      queue.withdraw();
     }
     return results;
   }
@@ -470,74 +476,88 @@ export class ToolExecutor {
         await opts.onToolResult?.(result);
         return result;
       }
-      if (runtime?.requestAnchor) {
-        return this.executeOne(toolUse, batchId, displayOrder, opts, {
+      return this.deliverToolResult(
+        queue.take(displayOrder, () => startTool(toolUse, displayOrder, completedToolUseIds)),
+        opts,
+      );
+    };
+    const startTool = (
+      toolUse: ToolUseBlock,
+      displayOrder: number,
+      completedToolUseIds: string[],
+    ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> => runtime?.requestAnchor
+      ? this.invokeOne(toolUse, batchId, displayOrder, opts, {
           runtime,
           batchId,
           originalToolUseIds,
           completedToolUseIds,
-        });
-      }
-      return this.executeOne(toolUse, batchId, displayOrder, opts);
-    };
-
-    for (let displayOrder = 0; displayOrder < toolUses.length;) {
-      // Ordered (single) execution — the common case, and the only path an
-      // intercepted meta tool or a non-`parallelSafe` tool ever takes.
-      if (!isBatchParallelSafe(toolUses[displayOrder])) {
-        const result = await runOne(
-          toolUses[displayOrder],
-          displayOrder,
-          completedResults.map((item) => item.tool_use_id),
-        );
-        if (isRationaleRequiredExecuteOneOutcome(result)) {
-          return { outcome: "rationale-required", completedResults, control: result.control };
-        }
-        completedResults.push(result);
-        displayOrder += 1;
-        continue;
-      }
-
-      // Contiguous parallel-safe segment. Every member sees the SAME
-      // `completedToolUseIds` snapshot — the ids finished strictly before the
-      // segment opened — because siblings inside a segment have no defined
-      // order relative to one another and must not observe each other.
-      const start = displayOrder;
-      while (displayOrder < toolUses.length && isBatchParallelSafe(toolUses[displayOrder])) {
-        displayOrder += 1;
-      }
-      const segment = toolUses.slice(start, displayOrder);
-      const snapshot = completedResults.map((item) => item.tool_use_id);
-      const segmentOutcomes = await Promise.all(
-        segment.map((toolUse, offset) => runOne(toolUse, start + offset, snapshot)),
-      );
-
-      // Rationale collision inside a parallel segment. Siblings ran
-      // concurrently, so a member demanding a rationale does NOT mean the
-      // others were skipped — their effects have already landed. Dropping
-      // their results would leave a tool that ran with no result the model can
-      // observe, and the model would re-request the same spawn. So settled
-      // results are KEPT, in display order, and only the rationale demand is
-      // deferred. `completedToolUseIds` on the resume therefore stays truthful:
-      // it names exactly the tools whose effects happened.
-      const settled: ToolResult[] = [];
-      let pendingControl: RationaleRequiredExecuteOneOutcome["control"] | null = null;
-      for (const outcome of segmentOutcomes) {
-        if (isRationaleRequiredExecuteOneOutcome(outcome)) {
-          // Lowest display order wins — segmentOutcomes is already in display
-          // order, so the first demand encountered is the earliest one.
-          pendingControl ??= outcome.control;
+        })
+      : this.invokeOne(toolUse, batchId, displayOrder, opts);
+    // An intercepted meta tool is not an executor invocation, so the seal leaves it to the loop.
+    const queue = claimQueuedAtSeal(toolUses.length, (index) => isInterceptedMetaTool(toolUses[index])
+      ? undefined
+      : startTool(toolUses[index], index, completedResults.map((item) => item.tool_use_id)));
+    try {
+      for (let displayOrder = 0; displayOrder < toolUses.length;) {
+        // Ordered (single) execution — the common case, and the only path an
+        // intercepted meta tool or a non-`parallelSafe` tool ever takes.
+        if (!isBatchParallelSafe(toolUses[displayOrder])) {
+          const result = await runOne(
+            toolUses[displayOrder],
+            displayOrder,
+            completedResults.map((item) => item.tool_use_id),
+          );
+          if (isRationaleRequiredExecuteOneOutcome(result)) {
+            return { outcome: "rationale-required", completedResults, control: result.control };
+          }
+          completedResults.push(result);
+          displayOrder += 1;
           continue;
         }
-        settled.push(outcome);
-      }
-      completedResults.push(...settled);
-      if (pendingControl) {
-        return { outcome: "rationale-required", completedResults, control: pendingControl };
-      }
-    }
 
-    return { outcome: "completed", results: completedResults };
+        // Contiguous parallel-safe segment. Every member sees the SAME
+        // `completedToolUseIds` snapshot — the ids finished strictly before the
+        // segment opened — because siblings inside a segment have no defined
+        // order relative to one another and must not observe each other.
+        const start = displayOrder;
+        while (displayOrder < toolUses.length && isBatchParallelSafe(toolUses[displayOrder])) {
+          displayOrder += 1;
+        }
+        const segment = toolUses.slice(start, displayOrder);
+        const snapshot = completedResults.map((item) => item.tool_use_id);
+        const segmentOutcomes = await Promise.all(
+          segment.map((toolUse, offset) => runOne(toolUse, start + offset, snapshot)),
+        );
+
+        // Rationale collision inside a parallel segment. Siblings ran
+        // concurrently, so a member demanding a rationale does NOT mean the
+        // others were skipped — their effects have already landed. Dropping
+        // their results would leave a tool that ran with no result the model can
+        // observe, and the model would re-request the same spawn. So settled
+        // results are KEPT, in display order, and only the rationale demand is
+        // deferred. `completedToolUseIds` on the resume therefore stays truthful:
+        // it names exactly the tools whose effects happened.
+        const settled: ToolResult[] = [];
+        let pendingControl: RationaleRequiredExecuteOneOutcome["control"] | null = null;
+        for (const outcome of segmentOutcomes) {
+          if (isRationaleRequiredExecuteOneOutcome(outcome)) {
+            // Lowest display order wins — segmentOutcomes is already in display
+            // order, so the first demand encountered is the earliest one.
+            pendingControl ??= outcome.control;
+            continue;
+          }
+          settled.push(outcome);
+        }
+        completedResults.push(...settled);
+        if (pendingControl) {
+          return { outcome: "rationale-required", completedResults, control: pendingControl };
+        }
+      }
+
+      return { outcome: "completed", results: completedResults };
+    } finally {
+      queue.withdraw();
+    }
   }
 
   async executeSealedRationaleResume(
@@ -626,17 +646,64 @@ export class ToolExecutor {
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
+    return this.deliverToolResult(
+      rationaleBatchContext
+        ? this.invokeOne(toolUse, groupId, displayOrder, opts, rationaleBatchContext)
+        : rationaleResumeContext
+          ? this.invokeOne(toolUse, groupId, displayOrder, opts, undefined, rationaleResumeContext)
+          : this.invokeOne(toolUse, groupId, displayOrder, opts),
+      opts,
+    );
+  }
+
+  /** The result callback waits on the turn journal, so delivery stays outside the admission the quit joins. */
+  private async deliverToolResult<T extends ToolResult | RationaleRequiredExecuteOneOutcome>(
+    started: Promise<T>,
+    opts: ExecuteOptions,
+  ): Promise<T> {
+    const result = await started;
+    if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result as ToolResult);
+    return result;
+  }
+
+  private async invokeOne(
+    toolUse: ToolUseBlock,
+    groupId: string,
+    displayOrder: number,
+    opts?: ExecuteOptions,
+  ): Promise<ToolResult>;
+  private async invokeOne(
+    toolUse: ToolUseBlock,
+    groupId: string,
+    displayOrder: number,
+    opts: ExecuteOptions,
+    rationaleBatchContext: RationaleBatchExecutionContext,
+  ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome>;
+  private async invokeOne(
+    toolUse: ToolUseBlock,
+    groupId: string,
+    displayOrder: number,
+    opts: ExecuteOptions,
+    rationaleBatchContext: undefined,
+    rationaleResumeContext: RationaleResumeExecutionContext,
+  ): Promise<ToolResult>;
+  private async invokeOne(
+    toolUse: ToolUseBlock,
+    groupId: string,
+    displayOrder: number,
+    opts: ExecuteOptions = {},
+    rationaleBatchContext?: RationaleBatchExecutionContext,
+    rationaleResumeContext?: RationaleResumeExecutionContext,
+  ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
     // Sealed-but-open work is admitted and writes its host-shutdown row; only a closed audit refuses without one.
     const admission = admitToolInvocationWhileAuditOpen(toolUse.name, opts.abortSignal);
     if (!admission) {
-      const refused: ToolResult = {
+      return {
         tool_use_id: toolUse.id,
         content: t("be_executor.toolExecutionCancelled"),
         is_error: true,
         durationMs: 0,
       };
-      await opts.onToolResult?.(refused);
-      return refused;
     }
     let result: Awaited<ReturnType<typeof runToolInvocation>>;
     try {
@@ -669,12 +736,43 @@ export class ToolExecutor {
         rationaleResumeContext,
       );
     } finally {
-      // Its audit rows are written; the result callback only waits on the turn journal and must not hold the quit join.
       admission.settle();
     }
-    if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result);
     return result;
   }
 
 
+}
+
+/**
+ * Queued tools are started at the seal so each is admitted, and writes its host-shutdown row, while the audit is
+ * open; the loop still delivers their results in order.
+ */
+function claimQueuedAtSeal<T>(count: number, start: (index: number) => Promise<T> | undefined): {
+  take(index: number, startNow: () => Promise<T>): Promise<T>;
+  withdraw(): void;
+} {
+  const claimed = new Map<number, Promise<T>>();
+  let next = 0;
+  const runInContext = AsyncLocalStorage.snapshot();
+  const withdraw = claimAtToolInvocationSeal(() => runInContext(() => {
+    for (; next < count; next += 1) {
+      const started = start(next);
+      if (!started) continue;
+      started.catch(() => {});
+      claimed.set(next, started);
+    }
+  }));
+  return {
+    take(index, startNow) {
+      const started = claimed.get(index);
+      if (started) {
+        claimed.delete(index);
+        return started;
+      }
+      next = Math.max(next, index + 1);
+      return startNow();
+    },
+    withdraw,
+  };
 }

@@ -7,6 +7,7 @@ const log = createLogger("invocation-ledger");
 const shutdown = new AbortController();
 const pending = new Set<Promise<unknown>>();
 const detached = new Map<object, () => Promise<unknown>>();
+const sealClaims = new Set<() => void>();
 let closing: Promise<number> | undefined;
 let auditClosed = false;
 let shutdownStarted = false;
@@ -38,6 +39,16 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal): {
 /** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */
 export function admitToolInvocationWhileAuditOpen(tool: string, parent?: AbortSignal): ReturnType<typeof admitToolInvocation> | undefined {
   return auditClosed ? undefined : admitToolInvocation(tool, parent);
+}
+
+/** Runs `claim` at the seal (now, if already sealed) so queued work is admitted while the audit is open. */
+export function claimAtToolInvocationSeal(claim: () => void): () => void {
+  if (shutdown.signal.aborted) {
+    claim();
+    return () => {};
+  }
+  sealClaims.add(claim);
+  return () => { sealClaims.delete(claim); };
 }
 
 /** True once the seal aborted admission; a caller refusing work then has no denial to record. */
@@ -119,6 +130,11 @@ export function beginToolInvocationAuditShutdown(): void {
 export function sealToolInvocations(): void {
   beginToolInvocationAuditShutdown();
   shutdown.abort(new HostExitAbortError());
+  const claims = [...sealClaims];
+  sealClaims.clear();
+  for (const claim of claims) {
+    try { claim(); } catch (error) { recordToolInvocationAuditFailure(error); }
+  }
   closeDetachedToolInvocations();
 }
 

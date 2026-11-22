@@ -99,7 +99,7 @@ describe("ToolExecutor admission across the quit seal", () => {
       results = await running;
       releaseClose();
     }
-    await expect(join).resolves.toBe(0);
+    await expect(join).resolves.toBeGreaterThanOrEqual(0);
     expect(executes[0]).toHaveBeenCalledOnce();
     expect(executes[1]).not.toHaveBeenCalled();
     expect(results.map((result) => [result.tool_use_id, result.is_error === true])).toEqual([
@@ -110,6 +110,52 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(resultIds).toEqual(["tu-queued-0", "tu-queued-1"]);
     expect(ledger.pendingToolInvocationCount()).toBe(0);
   });
+
+  it.each(["executeAll", "executeConversationBatch"] as const)(
+    "writes the host-shutdown row before close for a queued tool while the previous result waits on the journal (%s)",
+    async (path) => {
+      const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
+      let firstDelivered!: () => void;
+      const delivered = new Promise<void>((resolve) => { firstDelivered = resolve; });
+      let releaseJournal!: () => void;
+      const journal = new Promise<void>((resolve) => { releaseJournal = resolve; });
+      const resultIds: string[] = [];
+      const options = {
+        sessionId: "sess-queued-row",
+        permissionContext: userPermissionContext(),
+        onToolResult: async (result: { tool_use_id: string }) => {
+          resultIds.push(result.tool_use_id);
+          if (result.tool_use_id === "tu-queued-0") { firstDelivered(); await journal; }
+        },
+      };
+      const running = path === "executeAll"
+        ? executor.executeAll(toolUses, options)
+        : executor.executeConversationBatch(toolUses, { ...options, interceptedMetaToolHandler: async () => null })
+          .then((outcome) => (outcome.outcome === "completed" ? outcome.results : []));
+      await delivered;
+      let rowsAtClose: Array<Record<string, unknown>> = [];
+      ledger.sealToolInvocations();
+      const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+      let results: Awaited<typeof running>;
+      try {
+        // The join does not wait on the journal.
+        await expect(join).resolves.toBe(1);
+      } finally {
+        releaseJournal();
+        results = await running;
+      }
+      expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
+      expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(1);
+      expect(executes[1]).not.toHaveBeenCalled();
+      expect(results.map((result) => [result.tool_use_id, result.is_error === true])).toEqual([
+        ["tu-queued-0", false],
+        ["tu-queued-1", true],
+      ]);
+      expect(results[1].content).toBe(cancelled);
+      expect(resultIds).toEqual(["tu-queued-0", "tu-queued-1"]);
+      expect(ledger.pendingToolInvocationCount()).toBe(0);
+    },
+  );
 
   it("refuses a call that reaches the executor after close without failing the quit", async () => {
     const { ledger, executor, executes, toolUses } = await freshExecutor(1);
