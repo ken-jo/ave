@@ -126,7 +126,7 @@ interface Probe {
   onClosed: ReturnType<typeof vi.fn>;
 }
 
-async function openProbe(options: { watcherFailure?: boolean; subscriptionFailure?: boolean } = {}): Promise<Probe> {
+async function openProbe(options: { watcherFailure?: boolean; subscriptionFailure?: boolean; allowMode?: boolean } = {}): Promise<Probe> {
   const raised: Probe["raised"] = [];
   const requestAndWait = vi.fn(async () => ({ choice: "allow-once" as const }));
   let watcherFailure = options.watcherFailure === true;
@@ -150,7 +150,7 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
     },
   };
   const permissionManager = new PermissionManager(join(moduleDir, `permissions-${randomUUID()}.json`));
-  permissionManager.setMode("strict");
+  permissionManager.setMode(options.allowMode ? "allow" : "strict");
   // Wrap the implementation with the effect gate before binding dispatch.
   const hostApi = enforceMutatingEffects(plain, {
     pluginId: PLUGIN_ID,
@@ -258,17 +258,25 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
   });
 });
 
-describe("a request that names no invocation runs in none", () => {
-  // A restarted child can inherit a tool spawn context; lifecycle work must still run outside that invocation.
+describe("standalone effects use their own approval", () => {
   it.each<[string, Parameters<typeof runWithEffectGateContext>[0]]>([
     ["headless", { headless: true, approvalSurface: "unavailable", toolName: "config_set" }],
     ["foreground", { headless: false, approvalSurface: "interactive", toolName: "config_set", sessionId: "session-3" }],
   ])("ignores the %s invocation the child was spawned in", async (_label, spawnedIn) => {
-    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe());
+    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe({ allowMode: true }));
     try {
-      await probe.session.instance.start!();
+      await runWithEffectGateContext({ headless: false, toolName: "raise" }, async () => {
+        await probe.session.instance.handlers.raise?.();
+      });
       expect(probe.requestAndWait).not.toHaveBeenCalled();
-      expect(probe.raised).toEqual([{ key: "start", toolName: undefined }]);
+      await probe.session.instance.start!();
+      expect(probe.requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        toolName: "raiseAlert",
+        sourcePluginId: PLUGIN_ID,
+        forceExplicit: true,
+      }));
+      expect(probe.requestAndWait.mock.calls[0]?.[0]).not.toHaveProperty("sessionId");
+      expect(probe.raised).toEqual([{ key: "now", toolName: "raise" }, { key: "start", toolName: "raiseAlert" }]);
     } finally {
       await probe.session.teardown("case over");
     }

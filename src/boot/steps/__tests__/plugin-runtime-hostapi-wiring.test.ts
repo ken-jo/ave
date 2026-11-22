@@ -98,7 +98,8 @@ vi.mock("../../../plugins/dev-watcher.js", () => ({
   startPluginDevWatcher: vi.fn(() => ({ stop: vi.fn() })),
 }));
 
-vi.mock("../../../permissions/worker-spawn.js", () => ({
+vi.mock("../../../permissions/worker-spawn.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/worker-spawn.js")>(),
   spawnWorker: runtimeTestState.spawnWorker,
 }));
 
@@ -1390,7 +1391,11 @@ describe("HostApi incarnation authority", () => {
     settings.getSecret.mockImplementation((key: string) =>
       key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
     const transport = vi.fn(async () => new Response("ok")) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport);
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-wire-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode("allow");
+    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, { requestAndWait }, { permissionManager });
     const manifest = {
       id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js",
       description: "sample", tools: [], config: {},
@@ -1399,7 +1404,7 @@ describe("HostApi incarnation authority", () => {
     } as PluginManifest;
     const api = createHostApi(
       "plugin-a", manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-wire-")))), activeIncarnation(), "plugin-a",
+      pluginDataDirIn(root), activeIncarnation(), "plugin-a",
     );
     let host!: HostApiDispatcher;
     let child!: Awaited<ReturnType<typeof startPluginChildRuntime>>;
@@ -1428,8 +1433,19 @@ describe("HostApi incarnation authority", () => {
     const key = await child.hostApi.resolveApiKey!({ purpose: "llm", vendor: "openai" });
     expect(key).toMatchObject({ ok: true, exposure: "lease" });
     if (!key.ok || key.exposure !== "lease") throw new Error("expected lease");
+    await expect(child.hostApi.hostFetch!("https://refused.example.test")).rejects.toThrow("Host request failed.");
+    expect(lastBootAuditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.stringContaining("not in networkAccess.allowedDomains"),
+    }));
+    expect(requestAndWait).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
     const response = await child.hostApi.hostFetch!("https://api.openai.com/v1/models", { auth: { lease: key.leaseId } });
     expect(await response.text()).toBe("ok");
+    expect(requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      sourcePluginId: "plugin-a",
+      forceExplicit: true,
+      args: { effect: "read", methodPath: "hostFetch", target: "https://api.openai.com" },
+    }));
     const networkInit = (transport as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as RequestInit & { auth?: unknown };
     expect(networkInit.auth).toBeUndefined();
     expect(new Headers(networkInit.headers).get("authorization")).toBe("Bearer synthetic-secret");

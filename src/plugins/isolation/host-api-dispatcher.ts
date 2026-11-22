@@ -13,6 +13,7 @@ import {
   currentEffectGateContext,
   EffectBoundaryDeniedError,
   GATED_EFFECT_PATHS,
+  runWithEffectGateContext,
 } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
 import { methodEffect } from "../../permissions/effect-kind.js";
@@ -1425,7 +1426,7 @@ export class HostApiDispatcher {
       );
       const token = invocationTokenOf(request.params);
       const value = await (token === undefined
-        ? this.runTokenless(handler.path, args, invoke)
+        ? this.runTokenless(handler.path, args, controller.signal, invoke)
         : this.runInInvocation(handler.path, token, invoke));
       // JSON-RPC requires result; void or absent values cross as null.
       return { jsonrpc: "2.0", id, result: this.checkResult(handler, value) ?? null };
@@ -1437,8 +1438,7 @@ export class HostApiDispatcher {
     }
   }
 
-  /** Tokenless work runs outside invocation context; warn on gated writes while tool calls are in flight. */
-  private runTokenless<R>(path: HostApiPath, args: readonly unknown[], invoke: () => R): R {
+  private runTokenless(path: HostApiPath, args: readonly unknown[], signal: AbortSignal, invoke: () => Promise<unknown>): Promise<unknown> {
     // Fetch gates its verb inline; use checked args only to select diagnostics.
     const rawMethod = path === "hostFetch" ? (args[1] as { method?: unknown } | undefined)?.method : undefined;
     const isFetchWrite = path === "hostFetch"
@@ -1453,7 +1453,17 @@ export class HostApiDispatcher {
         );
       }
     }
-    return runOutsideInvocation(invoke);
+    return runOutsideInvocation(() => {
+      if (!GATED_EFFECT_PATHS.has(path) && path !== "hostFetch") return invoke();
+      return runWithEffectGateContext({
+        headless: false,
+        toolName: path,
+        abortSignal: signal,
+        permissionContext: {
+          floor: { code: "other-principal", reason: "A standalone plugin effect requires one-time approval." },
+        },
+      }, invoke);
+    });
   }
 
   /** A named invocation must resolve or the request refuses. */
