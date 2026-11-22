@@ -605,6 +605,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (stageIds.some(stageId => file.stages[stageId]?.sealed !== true)) throw new Error("a stage of the join is not sealed");
     if (!(await identityOf(root))) return conflictOf(run, joinId, "identity-missing", [], seals);
     const drivers = (await git.drivers(root)).config;
+    // Git writes where the folder's `.git` file points: before each merge and abort it is still the run's own registration.
+    const guarded = async (): Promise<void> => {
+      await assertRepository(at);
+      joined.check();
+      const link = /^gitdir: (.+?)\r?\n?$/u.exec(joined.readFile(".git")?.toString("utf8") ?? "")?.[1];
+      const registration = file.registrations[JOIN_DIR];
+      if (link === undefined || registration === undefined || realDirId(resolve(joinDir, link)) !== registration.id) throw new Error("the integration worktree is not the run's own");
+    };
     const merging = async (): Promise<boolean> => (await git.run(joinDir, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).code === 0;
     const unmerged = async (): Promise<string[]> => nul(await gitOut(joinDir, ["diff", "--name-only", "-z", "--diff-filter=U", "--no-ext-diff", "--no-textconv"], { drivers }));
     if (await merging()) {
@@ -612,8 +620,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         // The user is in the middle of resolving here; their work is left exactly as it is.
         return conflictOf(run, joinId, "merge-conflict", (await unmerged()).map(path => ({ path, stageIds: [...stageIds] })), seals, "a merge is still in progress in the integration folder");
       }
-      await assertRepository(at);
-      joined.check();
+      await guarded();
       await git.run(joinDir, ["merge", "--abort"], { drivers });
     }
     if (file.merging !== undefined) { delete file.merging; writeRunFile(at, file); }
@@ -624,8 +631,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if ((await git.run(joinDir, ["merge-base", "--is-ancestor", sealCommit, "HEAD"])).code === 0) continue;
       file.merging = sealCommit;
       writeRunFile(at, file);
-      await assertRepository(at);
-      joined.check();
+      await guarded();
       const merged = await git.run(joinDir, ["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, sealCommit], { drivers });
       if (merged.code !== 0) {
         const paths = await unmerged().catch(() => []);
@@ -641,8 +647,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           files.push({ path, stageIds: stageIds.filter(id => touched.includes(id)) });
         }
         if (await merging()) {
-          await assertRepository(at);
-          joined.check();
+          await guarded();
           await git.run(joinDir, ["merge", "--abort"], { drivers });
         }
         delete file.merging;

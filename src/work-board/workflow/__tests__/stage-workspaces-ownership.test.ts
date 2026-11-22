@@ -392,3 +392,25 @@ describe("the repository's identity", () => {
     expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining("repo.gitDir")]);
   });
 });
+
+it("a join folder whose worktree link was pointed at another worktree gets no merge", async () => {
+  const { repo, userGit } = fx;
+  const userwt = join(fx.base, "userwt");
+  userGit(repo, "worktree", "add", "-q", "--detach", userwt);
+  const handle = fx.start();
+  const open = await handle.provider.open(handle.run, repo);
+  if (!open.ok) throw new Error(open.code);
+  write(await stageRoot(handle, "s1"), "new.txt", "new\n");
+  await sealed(handle, "s1");
+  const link = join(open.workspace.runRoot, JOIN_DIR, ".git");
+  const written = readFileSync(link, "utf8");
+  const head = userGit(userwt, "rev-parse", "HEAD");
+  writeFileSync(link, readFileSync(join(userwt, ".git"), "utf8"));
+  try {
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow();
+    expect(userGit(userwt, "rev-parse", "HEAD")).toBe(head);
+    expect(existsSync(join(userwt, "new.txt"))).toBe(false);
+  } finally {
+    writeFileSync(link, written);
+  }
+});
