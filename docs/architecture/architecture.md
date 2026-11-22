@@ -3622,6 +3622,12 @@ with its own owner rule:
     plugin lockfiles when a plugin next needs them. Until a rebuild
     succeeds, the plugin reports "Python runtime rebuild needed" and does
     not start. There is no offline fallback to older contents.
+    Python provisioning sets `UV_SYSTEM_CERTS=1` so the bundled platform
+    verifier uses the OS trust store and certificate policy. Certificate chains
+    can be accepted or rejected differently from the earlier combination of
+    native roots and WebPKI. See the [0.11.0 changelog](https://github.com/astral-sh/uv/releases/tag/0.11.0#breaking-changes).
+    Representative corporate-proxy validation is unavailable. Run a real
+    provisioning check on Windows and macOS before merge.
   - No sandbox grant names `runtime` itself, so a grant entry left by a
     crash never lands on the boundary's own DACL. The sandbox account
     crosses the owner-only boundary through bypass-traverse.
