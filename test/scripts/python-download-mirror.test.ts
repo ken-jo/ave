@@ -133,6 +133,30 @@ describe("interpreter archive staging", () => {
     expect(download).not.toHaveBeenCalled();
   });
 
+  it.each([release, legacyRelease].flatMap((url) => {
+    const { host } = new URL(url);
+    const prefix = url.slice(0, -releasePath.length);
+    return [
+      url.replace(host, `${host}@evil.example`),
+      url.replace(host, `evil.example@${host}`),
+      `${url}?download=archive.tar.gz`,
+      `${url}#download=archive.tar.gz`,
+      `https://evil.example/?download=${url}`,
+      `https://evil.example/#download=${url}`,
+      `${prefix}20261110/extra%252Farchive.tar.gz`,
+      `${prefix}20261110/extra%255Carchive.tar.gz`,
+      `${prefix}20261110/%2e%2e/archive.tar.gz`,
+    ];
+  }))("rejects an ambiguous archive URL before download: %s", async (url) => {
+    vi.stubEnv("GITHUB_TOKEN", "fixture-token");
+    vi.stubEnv("UV_PYTHON_INSTALL_MIRROR", "");
+    const download = vi.fn(async () => Buffer.from("unexpected archive"));
+    await expect(preparePythonDownloadMirror({
+      uv: "unused", mirrorRoot: temporaryRoot(), listDownloads: () => selection(url), download,
+    })).rejects.toThrow(/Cannot identify|Invalid managed interpreter release path/);
+    expect(download).not.toHaveBeenCalled();
+  });
+
   it("retains the installed tool's distribution pin when consuming a local mirror", async () => {
     vi.stubEnv("GITHUB_TOKEN", "fixture-token");
     vi.stubEnv("UV_PYTHON_INSTALL_MIRROR", "");
