@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } from "../../shared/ave-home.js";
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
@@ -11,6 +12,8 @@ import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { copySeedFiles, hashSeedFile, isInside, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
+
+const log = createLogger("work-board-stage-workspace");
 
 type Refusal = typeof WORKSPACE_REFUSALS[number];
 type ConflictFile = JoinConflict["files"][number];
@@ -662,7 +665,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const selected = await options.removable?.().catch(() => undefined);
     for (const seen of recordedRuns()) {
       const { runId, itemId } = seen.file;
-      if (active.has(runSlug(runId))) continue;
+      if (active.has(runSlug(runId))) {
+        // A run that goes on keeps its stages and its output; what a stop during a seeding left of the ignore matcher still goes.
+        await serial(runId, async () => {
+          const current = heldStill(seen);
+          if (current !== null) clearIgnoreFolders(current);
+        }).catch((error: unknown) => log.warn("an ignore matcher's folder was not removed: %s", (error as Error).message));
+        continue;
+      }
       await serial(runId, async () => {
         const output = selected?.({ runId, itemId }) === true && await removableNow({ runId, itemId }).catch(() => false) ? "drop" : "keep";
         const current = heldStill(seen);

@@ -85,7 +85,7 @@ it("retry prepares a fresh folder", () => withProductionParts(async (h) => {
   await h.until(id, item => item.runStatus === "cancelled");
 }));
 
-it("boot sweep removes folders of runs that are no longer active only", () => withProductionParts(async (h) => {
+it("boot sweep removes folders of runs that are no longer active only, and of a parked run only what its ignore matcher left", () => withProductionParts(async (h) => {
   const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
   const id = await h.addItem(version);
   void h.start(id, h.local(version));
@@ -93,6 +93,9 @@ it("boot sweep removes folders of runs that are no longer active only", () => wi
   first.finish();
   await h.untilStage(id, "a", "awaiting_gate");
   writeFileSync(join(folderOf(first), "kept.md"), "kept\n");
+  // What a stop while a stage folder was seeded left in the parked run: the ignore matcher's repository.
+  const residue = join(dirname(folderOf(first)), "_ignore-Ab12Cd");
+  mkdirSync(join(residue, ".git"), { recursive: true });
 
   // What a run that is on no record left behind: its folders, and nothing that names it.
   const leftover = createStageWorkspaceProvider();
@@ -106,6 +109,7 @@ it("boot sweep removes folders of runs that are no longer active only", () => wi
   await h.makeEngine().adoptParkedTemplateRuns();
   expect(existsSync(prepared.workspace.root)).toBe(false);
   expect(readFileSync(join(folderOf(first), "kept.md"), "utf8")).toBe("kept\n");
+  expect(existsSync(residue)).toBe(false);
 }));
 
 it("boot sweep removes the output folder and record of a run with no record whose item is gone, and follows no link out of it", () => withProductionParts(async (h) => {

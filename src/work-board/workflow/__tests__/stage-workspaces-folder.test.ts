@@ -442,6 +442,25 @@ describe("folder stage workspaces", () => {
     expect(read(project, "notes.txt")).toBe("notes\n");
   });
 
+  it("the boot sweep takes what a stop left of the ignore matcher out of a run that goes on, and nothing else of that run", async () => {
+    const handle = await start(project);
+    const stage = await stageRoot(handle, "s1", { inputFiles: [fromProject("notes.txt")] });
+    write(handle.out, "result.md", "collected\n");
+    // As a stop during a seeding leaves it: the matcher's repository, and beside it one whose name is a link out of the run.
+    write(handle.runRoot, "_ignore-Ab12Cd/.git/HEAD", "ref: refs/heads/main\n");
+    const outside = join(base, "outside");
+    write(outside, "keep.md", "not the run's\n");
+    symlinkSync(outside, join(handle.runRoot, "_ignore-linked"), "junction");
+
+    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true }).sweep([handle.run.runId]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
+    expect(tree(stage)).toEqual(["notes.txt"]);
+    expect(read(handle.out, "result.md")).toBe("collected\n");
+    expect(read(outside, "keep.md")).toBe("not the run's\n");
+    // The run is still the provider's to prepare in.
+    expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("notes.txt")] }))).toEqual(["notes.txt"]);
+  });
+
   it("an output folder goes only when the stores still allow it once its run's queue is held, whatever an earlier read said", async () => {
     const handle = await start(project);
     write(handle.out, "result.md", "collected\n");
