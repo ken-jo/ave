@@ -116,23 +116,32 @@ const UV_EGRESS_PROBE_URLS = [
 export function uvProxyEnvFromPacResolutions(
   resolutions: ReadonlyArray<readonly [url: string, pac: string]>,
 ): Record<string, string> {
-  const proxies = new Set<string>();
+  let proxy: string | undefined;
+  const proxied: string[] = [];
   const direct: string[] = [];
   for (const [url, pac] of resolutions) {
     const first = pac.split(";")[0] ?? "";
+    const host = new URL(url).hostname;
     if (first.trim().toUpperCase() === "DIRECT") {
-      direct.push(new URL(url).hostname);
+      direct.push(host);
       continue;
     }
     const proxyUrl = proxyUrlFromPacEntry(first);
-    if (!proxyUrl) return {};
-    proxies.add(proxyUrl);
+    if (!proxyUrl) throw new Error(t("be_pythonRuntime.errProxyRouteUnsupported", { host }));
+    if (proxy !== undefined && proxy !== proxyUrl) {
+      throw new Error(t("be_pythonRuntime.errProxyRoutesIncompatible"));
+    }
+    proxy = proxyUrl;
+    proxied.push(host);
   }
-  if (proxies.size !== 1) return {};
-  const [proxy] = [...proxies];
+  if (proxy === undefined) return {};
+  // NO_PROXY matches subdomains as well as the listed domain.
+  if (proxied.some((host) => direct.some((domain) => host === domain || host.endsWith(`.${domain}`)))) {
+    throw new Error(t("be_pythonRuntime.errProxyRoutesIncompatible"));
+  }
   return {
-    HTTP_PROXY: proxy!,
-    HTTPS_PROXY: proxy!,
+    HTTP_PROXY: proxy,
+    HTTPS_PROXY: proxy,
     ...(direct.length > 0 ? { NO_PROXY: direct.join(",") } : {}),
   };
 }
@@ -480,23 +489,15 @@ export class PythonRuntimeBootstrapper {
       };
       const resolve = this.options.resolveOsProxy;
       if (!resolve) return env;
-      try {
-        const resolutions = await Promise.all(
-          UV_EGRESS_PROBE_URLS.map(async (url) => [url, await resolve(url)] as const),
-        );
-        const proxyEnv = uvProxyEnvFromPacResolutions(resolutions);
-        if (Object.keys(proxyEnv).length === 0 && resolutions.some(([, pac]) =>
-          pac.split(";")[0]?.trim().toUpperCase() !== "DIRECT")) {
-          await this.log(
-            "[python-runtime] the OS routes uv's hosts through more than one proxy; "
-            + "HTTP_PROXY cannot express that, so uv runs without proxy variables",
-          );
+      const resolutions = await Promise.all(UV_EGRESS_PROBE_URLS.map(async (url) => {
+        try {
+          return [url, await resolve(url)] as const;
+        } catch (error) {
+          const host = new URL(url).hostname;
+          throw new Error(t("be_pythonRuntime.errProxyRouteLookupFailed", { host }), { cause: error });
         }
-        return { ...env, ...proxyEnv };
-      } catch (error) {
-        await this.log(`[python-runtime] OS proxy resolution failed: ${(error as Error).message}`);
-        return env;
-      }
+      }));
+      return { ...env, ...uvProxyEnvFromPacResolutions(resolutions) };
     })();
     return this.uvEgressEnvOnce;
   }

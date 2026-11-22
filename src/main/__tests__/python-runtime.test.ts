@@ -224,16 +224,16 @@ describe("uvProxyEnvFromPacResolutions", () => {
   it("refuses to guess when two hosts route through different proxies", () => {
     // `HTTP_PROXY` is one value for all hosts, so per-host routing cannot be expressed. Picking one would send the other host's traffic somewhere the
     // configuration did not choose.
-    expect(uvProxyEnvFromPacResolutions([
+    expect(() => uvProxyEnvFromPacResolutions([
       ["https://pypi.org/simple/", "PROXY one.example.com:8080"],
       ["https://astral.sh/", "PROXY two.example.com:3128"],
-    ])).toEqual({});
+    ])).toThrow(t("be_pythonRuntime.errProxyRoutesIncompatible"));
   });
 
   it("refuses a proxy kind these variables cannot express", () => {
-    expect(uvProxyEnvFromPacResolutions([
+    expect(() => uvProxyEnvFromPacResolutions([
       ["https://pypi.org/simple/", "SOCKS4 legacy.example.com:1080"],
-    ])).toEqual({});
+    ])).toThrow(t("be_pythonRuntime.errProxyRouteUnsupported", { host: "pypi.org" }));
   });
 
   it("maps each expressible kind onto its scheme", () => {
@@ -336,6 +336,34 @@ describe("PythonRuntimeBootstrapper", () => {
 
     expect(resolveOsProxy).toHaveBeenCalledWith("https://releases.astral.sh/github/python-build-standalone/releases/download/");
     expect(resolveOsProxy).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([
+    ["different proxy", "PROXY mirror.example.com:3128"],
+    ["direct parent domain", "PROXY proxy.example.com:8080"],
+    ["rejected lookup", new Error("PAC fixture failed")],
+  ])("stops provisioning when the mirror has a %s route", async (scenario, mirrorRoute) => {
+    setupPythonRuntimeSetupSpawns();
+    const resolveOsProxy = vi.fn(async (url: string) => {
+      const host = new URL(url).hostname;
+      if (host === "releases.astral.sh") {
+        if (mirrorRoute instanceof Error) throw mirrorRoute;
+        return mirrorRoute;
+      }
+      if (host === "astral.sh" && scenario === "direct parent domain") return "DIRECT";
+      return "PROXY proxy.example.com:8080";
+    });
+    const bootstrapper = new PythonRuntimeBootstrapper({
+      lockFilePath: "/installed/local-indexer/python-requirements.lock",
+      resolveOsProxy,
+    });
+
+    const message = mirrorRoute instanceof Error
+      ? t("be_pythonRuntime.errProxyRouteLookupFailed", { host: "releases.astral.sh" })
+      : t("be_pythonRuntime.errProxyRoutesIncompatible");
+    await expect(bootstrapper.ensureReady(null)).rejects.toThrow(message);
+    expect(resolveOsProxy).toHaveBeenCalledWith("https://pypi.org/simple/");
+    expect(mockedSpawn).not.toHaveBeenCalled();
   });
 
   it(".ready sentinel이 없으면 uv spawn을 호출한다", async () => {
