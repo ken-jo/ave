@@ -28,7 +28,7 @@ const drive = vi.hoisted(() => ({
 }));
 const runtime = vi.hoisted(() => ({
   initialize: vi.fn(), wrap: vi.fn(), update: vi.fn(), grant: vi.fn(), stamp: vi.fn(), revoke: vi.fn(), spawn: vi.fn(), nativeSpawn: vi.fn(),
-  identityQuery: vi.fn(),
+  identityQuery: vi.fn(), openMxcEgressLease: vi.fn(),
   containerBackend: false,
   policyFrames: [] as Buffer[],
 }));
@@ -71,18 +71,21 @@ vi.mock("../windows-stamp-targets.js", async (original) => {
   return { ...actual, pinWindowsFilesystemConfig: <T extends Parameters<typeof actual.pinWindowsFilesystemConfig>[0]>(filesystem: T): T =>
     runtime.containerBackend ? actual.pinWindowsFilesystemConfig(filesystem) : simulated.pinWindowsFilesystemConfig(filesystem) };
 });
-// A foreign host's literal expansion must use drive paths; pinning and missing-grant admission still run for real.
+// Keep both overrides in one mock. Container fixtures use literal drive paths so real pinning
+// reaches the holder's missing-grant decision, and only the worker path uses the async stamp stand-in.
 vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async (original) => {
-  const actual = await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
-  if (hostPlatform === "win32") return actual;
+  const utils = {
+    ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>(),
+    stampWindowsAclAsync: async (opts: unknown) => runtime.stamp(opts),
+  };
   const { win32 } = await vi.importActual<typeof import("node:path")>("node:path");
-  return { ...actual, expandWindowsFsPaths: (entries: Parameters<typeof actual.expandWindowsFsPaths>[0], options: Parameters<typeof actual.expandWindowsFsPaths>[1]) => {
-    if (process.platform !== "win32" || !runtime.containerBackend) return actual.expandWindowsFsPaths(entries, options);
+  return { ...utils, expandWindowsFsPaths: (entries: Parameters<typeof utils.expandWindowsFsPaths>[0], options: Parameters<typeof utils.expandWindowsFsPaths>[1]) => {
+    if (process.platform !== "win32" || !runtime.containerBackend) return utils.expandWindowsFsPaths(entries, options);
     if (options?.mode !== "deny") throw new Error("The drive fixture requires literal deny-mode expansion");
     return entries.map((entry) => {
       const path = typeof entry === "string" ? entry : entry.path;
       if (!/^[a-z]:[\\/]/iu.test(path) || /[*?]/u.test(path)) throw new Error("The drive fixture requires an absolute literal path");
-      return win32.normalize(path);
+      return win32.normalize(path).replace(/^[a-z]:/u, drive => drive.toUpperCase());
     });
   } };
 });
@@ -292,7 +295,7 @@ vi.mock("node:os", async (original) => {
 vi.mock("../egress-host-listener.js", async (original) => ({
   ...await original<typeof import("../egress-host-listener.js")>(),
   openHostEgressListener: async () => ({ port: 9, proxyAuthorization: "Basic eA==", registerPort: () => {}, recordRefusal: () => {}, close: async () => {} }),
-  openMxcEgressLease: async () => ({ url: "http://127.0.0.1:43210", port: 43210, close: async () => {} }),
+  openMxcEgressLease: runtime.openMxcEgressLease.mockImplementation(async () => ({ url: "http://127.0.0.1:43210", port: 43210, close: async () => {} })),
 }));
 // The container holder's OS edge: the native process entry, and the boot plan that selects the container backend.
 vi.mock("../mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: (...args: unknown[]) => runtime.nativeSpawn(...args) }));
@@ -332,10 +335,6 @@ vi.mock("@anthropic-ai/sandbox-runtime", async (original) => {
     revokeWindowsAcl: runtime.revoke,
   };
 });
-vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => ({
-  ...(await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>()),
-  stampWindowsAclAsync: async (opts: unknown) => runtime.stamp(opts),
-}));
 vi.mock("../srt-win-integrity.js", async (original) => ({
   ...await original<typeof import("../srt-win-integrity.js")>(),
   prepareSrtWinExecutable: () => srtPath,
@@ -1076,21 +1075,30 @@ describe("the browser download staging folder in a container holder's native req
     }
   }
 
+  async function expectHolderRefusal(request: Parameters<typeof containedServer>[0], message: string | RegExp, label?: string): Promise<void> {
+    const starts = runtime.nativeSpawn.mock.calls.length;
+    const leases = runtime.openMxcEgressLease.mock.calls.length;
+    await expect(containedServer(request), label).rejects.toThrow(message);
+    expect(runtime.nativeSpawn).toHaveBeenCalledTimes(starts);
+    expect(runtime.openMxcEgressLease).toHaveBeenCalledTimes(leases);
+    expect(runtime.stamp).not.toHaveBeenCalled();
+    expect(runtime.grant).not.toHaveBeenCalled();
+    expect(runtime.revoke).not.toHaveBeenCalled();
+  }
+
   it.each(["read", "write"])("refuses a missing %s holder grant before the native entry", async (kind) => {
     useLayout(PROFILE_CHILD, { staged: false });
     const missing = `${aveHome()}\\mcp\\fs\\sandbox\\missing`;
     expect(existsSync(missing)).toBe(false);
     const request = kind === "read" ? { allowRead: [missing], ownedReadRoots: [missing] } : { allowWrite: [missing] };
-    await expect(containedServer(request)).rejects.toThrow("Container filesystem grant target is missing");
-    expect(runtime.nativeSpawn).not.toHaveBeenCalled();
+    await expectHolderRefusal(request, "Container filesystem grant target is missing");
   });
 
   it.each([PROFILE_CHILD, OUTSIDE_PROFILE])("reaches neither the folder nor a staged file under $name, before and after a file is staged", async (layout) => {
     useLayout(layout, { staged: false });
     const asked = () => ({ allowRead: [staging()], ownedReadRoots: [staging()], allowWrite: [staging()] });
     expect(existsSync(staging())).toBe(false);
-    await expect(containedServer(asked())).rejects.toThrow("Container filesystem grant target is missing");
-    expect(runtime.nativeSpawn).not.toHaveBeenCalled();
+    await expectHolderRefusal(asked(), "Container filesystem grant target is missing");
     // A container grant must name an existing directory, even when the protected floor withholds it at handoff.
     mkdirSync(staging(), { recursive: true });
     expect(pinWindowsPaths([staging()])[0]).toMatchObject({ exists: true, directory: true });
@@ -1116,9 +1124,7 @@ describe("the browser download staging folder in a container holder's native req
     // A grant on the Ave home or a directory holding it reaches other holders' and the host's storage: refused before the native entry.
     const parent = aveHome().replace(/\\[^\\]+$/, "");
     for (const [kind, asked] of [["read", aveHome()], ["read", parent], ["write", aveHome()], ["write", parent]] as const) {
-      const starts = runtime.nativeSpawn.mock.calls.length;
-      await expect(containedServer(asking(kind, asked)), `${kind} ${asked}`).rejects.toThrow(/ownership reaches another holder or host storage/);
-      expect(runtime.nativeSpawn.mock.calls.length).toBe(starts);
+      await expectHolderRefusal(asking(kind, asked), /ownership reaches another holder or host storage/, `${kind} ${asked}`);
     }
   });
 });
