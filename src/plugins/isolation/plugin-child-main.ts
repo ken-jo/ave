@@ -15,6 +15,7 @@ import {
   classifyMultiplexedMessage,
   FramedMessageStream,
   PendingCallTable,
+  type FramedMessageInput,
   type MultiplexedMessage,
 } from "./child-stream-multiplex.js";
 import {
@@ -81,7 +82,7 @@ function describeLifecycleHooks(instance: PluginChildRuntime["instance"]): Plugi
 
 /** Inject streams to exercise the same child runtime without subprocess setup. */
 export function servePluginChild(
-  input: NodeJS.ReadableStream,
+  input: FramedMessageInput & { destroy(): void },
   output: Writable,
 ): PluginChildService {
   let runtime: PluginChildRuntime | undefined;
@@ -101,13 +102,13 @@ export function servePluginChild(
   const mcpIn = new PassThrough();
 
   const stream = new FramedMessageStream(
-    input as never,
+    input,
     output,
     (message) => route(message),
     (reason) => {
       // A framing failure destroys input and triggers the same exit path as host loss.
       process.stderr.write(`[plugin-child] ${reason}; ending\n`);
-      (input as NodeJS.ReadableStream & { destroy(): void }).destroy();
+      input.destroy();
     },
     (dropped) => {
       // Log drops to stderr because the dropped frame may itself be a log notification.
@@ -301,17 +302,9 @@ function serveReferenceChild(mode: Exclude<ChildLaunchMode, { transport: "relay"
   const { transport } = mode;
   const { input, output, stdin } = openPluginChildInput(new URL(import.meta.url), {
     transport, privateInput: transport === "stdio" && mode.privateInput === true,
-  }, stdout);
+  }, stdout, () => service.hostGone());
   Object.defineProperty(process, "stdin", { value: stdin, configurable: false, writable: false });
   const service = servePluginChild(input, transport === "stdio" ? stdout : output);
-  let hostGone = false;
-  const end = (): void => {
-    if (hostGone) return;
-    hostGone = true;
-    service.hostGone();
-  };
-  input.once("end", end);
-  input.once("close", end);
 }
 
 /** The relay loads no plugin; it runs the authenticated program and maps channel EOF to stdin closure. */

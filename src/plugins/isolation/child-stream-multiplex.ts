@@ -1,6 +1,6 @@
 // Multiplex one bounded JSON-RPC stream per direction; duplicate decoders can misroute frames.
 // This module must remain safe to import in the child.
-import type { Readable, Writable } from "node:stream";
+import type { Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../mcp/stdio-framing.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
@@ -50,6 +50,11 @@ function isParamsObject(params: unknown): boolean {
   return typeof params === "object" && params !== null && !Array.isArray(params);
 }
 
+export interface FramedMessageInput {
+  on(event: "data", listener: (chunk: Buffer) => void): unknown;
+  off(event: "data", listener: (chunk: Buffer) => void): unknown;
+}
+
 /** Use one decoder per direction and report oversized outbound notifications through the owner. */
 export class FramedMessageStream {
   private readonly decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
@@ -57,7 +62,7 @@ export class FramedMessageStream {
   private violated = false;
 
   constructor(
-    private readonly input: Readable,
+    private readonly input: FramedMessageInput,
     private readonly output: Writable,
     private readonly onMessage: (message: MultiplexedMessage) => void,
     private readonly onViolation: (reason: string) => void,

@@ -317,6 +317,8 @@ export const createPlugin = async () => {
     const entryPath = join(root, "stdin-observer.mjs");
     writeFileSync(entryPath, `import { readSync, writeSync, writeFileSync } from "node:fs";
 import { Worker } from "node:worker_threads";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 export const createPlugin = async () => {
   const view = process.stdin;
   let read = null;
@@ -339,18 +341,37 @@ export const createPlugin = async () => {
     ownerReached = true;
     return Reflect.apply(previousPost, this, args);
   };
+  let parserDispatchReached = false;
+  const previousEmit = EventEmitter.prototype.emit;
+  EventEmitter.prototype.emit = function (event, ...args) {
+    if (event === "data" && Buffer.isBuffer(args[0]) && args[0].includes("/onPublished")) {
+      parserDispatchReached = true;
+    }
+    return Reflect.apply(previousEmit, this, [event, ...args]);
+  };
+  const previousOn = Readable.prototype.on;
+  Readable.prototype.on = function (...args) { return Reflect.apply(previousOn, this, args); };
+  const previousPush = Readable.prototype.push;
+  Readable.prototype.push = function (chunk, ...args) {
+    if (chunk?.includes("/onPublished")) parserDispatchReached = true;
+    return Reflect.apply(previousPush, this, [chunk, ...args]);
+  };
   let seen = false;
   view.once("data", (chunk) => {
-    seen = chunk.includes("stdin-observation");
+    seen = chunk.includes("/onPublished");
     chunk.fill(0);
   });
   view.on("end", () => {
     setTimeout(() => writeFileSync(${JSON.stringify(marker)}, "ended"), 25);
   });
-  return { handlers: { probe_changes: () => ({
-    read, writeIsInert, writeReplaced, destinationReplaced, ownerReached,
-    seen, writable: typeof view.write, fd: typeof view.fd,
-  }) } };
+  let published = false;
+  return {
+    onPublished() { published = true; },
+    handlers: { probe_changes: () => ({
+      read, writeIsInert, writeReplaced, destinationReplaced, ownerReached,
+      seen, published, parserDispatchReached, writable: typeof view.write, fd: typeof view.fd,
+    }) },
+  };
 };
 `);
     const { hostApi } = hostApiFor();
@@ -361,17 +382,12 @@ export const createPlugin = async () => {
       pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
       userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
     });
-    await new Promise<void>((resolve, reject) =>
-      link.output.write('{"jsonrpc":"2.0","method":"notifications/stdin-observation","params":{}}\n', (error) => {
-        if (error) reject(error);
-        else resolve();
-      }),
-    );
+    await instance.onPublished!();
     expect(await instance.handlers.probe_changes!()).toEqual({
       read: transport === "native stdio" ? null : 0,
       writeIsInert: transport === "native stdio" ? null : true,
       writeReplaced: false, destinationReplaced: false,
-      ownerReached: false, seen: true, writable: "undefined", fd: "undefined",
+      ownerReached: false, seen: true, published: true, parserDispatchReached: false, writable: "undefined", fd: "undefined",
     });
     await instance.stop?.();
     expect(readFileSync(marker, "utf8")).toBe("ended");

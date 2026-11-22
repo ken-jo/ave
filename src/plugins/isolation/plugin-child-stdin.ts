@@ -1,16 +1,17 @@
-import { EventEmitter } from "node:events";
 import { write } from "node:fs";
 import { Socket } from "node:net";
-import { Readable, Writable } from "node:stream";
-import { MessageChannel, Worker, parentPort } from "node:worker_threads";
+import { Writable } from "node:stream";
+import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import { errorMessage } from "../../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { acceptHostOverLoopback } from "./child-loopback-link.js";
+import type { FramedMessageInput } from "./child-stream-multiplex.js";
 import { PLUGIN_CHILD_INPUT_BYTES_MAX, PLUGIN_CHILD_INPUT_FD, pluginChildInputCredit } from "./plugin-child-credit.js";
 
 type OwnerMessage = Uint8Array | null | { readonly announce: string } | { readonly error?: string };
 type StdinEvent = "data" | "end";
 type StdinListener = (chunk: Buffer) => void;
+type StdinObserver = { readonly listener: StdinListener; readonly once: boolean };
 
 interface PluginStdinView {
   on(event: StdinEvent, listener: StdinListener): PluginStdinView;
@@ -20,43 +21,65 @@ interface PluginStdinView {
 
 export interface PluginChildInputOwner {
   readonly queuedBytes: Int32Array;
+  readonly port: MessagePort;
   readonly transport: "stdio" | "loopback";
   readonly privateInput: boolean;
 }
 
 export function openPluginChildInput(
   entry: URL,
-  { transport, privateInput }: Omit<PluginChildInputOwner, "queuedBytes">,
+  { transport, privateInput }: Pick<PluginChildInputOwner, "transport" | "privateInput">,
   stdout: Writable,
+  onHostGone: () => void,
 ): {
-  input: Readable;
+  input: FramedMessageInput & { destroy(): void };
   output: Writable;
   stdin: PluginStdinView;
 } {
   const queuedBytes = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const acknowledgeBytes = Atomics.sub;
-  const input = new Readable({ read() {} });
-  const deliver = input.push.bind(input);
-  const observers = new EventEmitter();
-  const observe = observers.emit.bind(observers);
-  const observerListeners = observers.rawListeners.bind(observers);
+  const { port1: receiver, port2: port } = new MessageChannel();
+  const postToOwner = receiver.postMessage.bind(receiver);
+  const closeReceiver = receiver.close.bind(receiver);
+  let receive: ((chunk: Buffer) => void) | undefined;
+  const input = {
+    on(_event: "data", listener: (chunk: Buffer) => void) { receive = listener; },
+    off(_event: "data", listener: (chunk: Buffer) => void) { if (receive === listener) receive = undefined; },
+    destroy() {
+      receive = undefined;
+      if (!closed) postToOwner(null);
+    },
+  };
+  const observers: Record<StdinEvent, StdinObserver[]> = { data: [], end: [] };
   const stdin: PluginStdinView = Object.freeze({
     on(event: StdinEvent, listener: StdinListener) {
-      observers.on(event, listener);
+      observers[event].push({ listener, once: false });
       return stdin;
     },
     once(event: StdinEvent, listener: StdinListener) {
-      observers.once(event, listener);
+      observers[event].push({ listener, once: true });
       return stdin;
     },
     off(event: StdinEvent, listener: StdinListener) {
-      observers.off(event, listener);
+      const list = observers[event];
+      const index = list.findLastIndex((observer) => observer.listener === listener);
+      if (index !== -1) list.splice(index, 1);
       return stdin;
     },
   });
-  const workerData: PluginChildInputOwner = { queuedBytes, transport, privateInput };
-  const reader = new Worker(entry, { workerData });
-  const postToOwner = reader.postMessage.bind(reader);
+  function observe(event: StdinEvent, listeners: StdinObserver[], observed?: Buffer): void {
+    for (const observer of listeners) {
+      if (observer.once) {
+        const list = observers[event];
+        const index = list.indexOf(observer);
+        if (index === -1) continue;
+        list.splice(index, 1);
+      }
+      Reflect.apply(observer.listener, stdin, observed ? [observed] : []);
+    }
+  }
+  const workerData: PluginChildInputOwner = { queuedBytes, transport, privateInput, port };
+  const reader = new Worker(entry, { workerData, transferList: [port] });
   // Keep the main loop alive without exposing a referenced owner port as an active handle.
   const { port1: keepAlive, port2 } = new MessageChannel();
   keepAlive.ref();
@@ -78,27 +101,26 @@ export function openPluginChildInput(
   });
   const creditOutput = transport === "stdio" ? stdout : output;
   const sendCredit = creditOutput.write.bind(creditOutput);
-  reader.on("message", (message: OwnerMessage) => {
+  receiver.onmessage = ({ data: message }: { data: OwnerMessage }) => {
     if (message === null) {
       closed = true;
-      deliver(null);
-      observe("end");
+      receive = undefined;
+      closeReceiver();
       written?.(new Error("Plugin child channel closed"));
       written = undefined;
       keepAlive.close();
       port2.close();
+      onHostGone();
+      observe("end", observers.end.slice());
       return;
     }
     if (message instanceof Uint8Array) {
       const bytes = Buffer.from(message.buffer, message.byteOffset, message.byteLength);
-      const listeners = observerListeners("data");
-      deliver(bytes);
-      if (listeners.length > 0) {
-        const observed = Buffer.from(bytes);
-        for (const listener of listeners) Reflect.apply(listener, stdin, [observed]);
-      }
+      const listeners = observers.data.slice();
+      receive?.(bytes);
       acknowledgeBytes(queuedBytes, 0, message.byteLength);
-      if (!input.destroyed) sendCredit(pluginChildInputCredit(message.byteLength));
+      if (receive) sendCredit(pluginChildInputCredit(message.byteLength));
+      if (listeners.length > 0) observe("data", listeners, Buffer.from(bytes));
     } else if ("announce" in message) {
       stdout.write(message.announce);
     } else {
@@ -106,8 +128,8 @@ export function openPluginChildInput(
       written = undefined;
       callback?.(message.error === undefined ? undefined : new Error(message.error));
     }
-  });
-  input.once("close", () => { if (!closed) postToOwner(null); });
+  };
+  receiver.unref();
   reader.on("error", (error) => {
     process.stderr.write(`[plugin-child] stdin reader failed: ${errorMessage(error)}\n`);
   });
@@ -116,9 +138,7 @@ export function openPluginChildInput(
   return { input, output, stdin };
 }
 
-export async function ownPluginChildInput({ transport, queuedBytes, privateInput }: PluginChildInputOwner): Promise<void> {
-  const port = parentPort;
-  if (!port) throw new Error("[plugin-child] input owner requires a worker");
+export async function ownPluginChildInput({ transport, queuedBytes, privateInput, port }: PluginChildInputOwner): Promise<void> {
   const input = transport === "stdio"
     ? new Socket({ fd: privateInput ? PLUGIN_CHILD_INPUT_FD : 0, readable: true, writable: false })
     : await acceptHostOverLoopback({
