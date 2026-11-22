@@ -493,11 +493,16 @@ describe("setupPluginToolExecutor production auth wiring", () => {
     const invoke = ctx.lateBinding.pluginToolInvokerRef.fn;
     if (!invoke) throw new Error("Plugin invoker missing");
     ledger.sealToolInvocations();
-    await expect(invoke("auth_login", {}, invocationContext())).rejects.toThrow("application shutdown");
+    await expect(invoke("auth_login", {}, {
+      ...invocationContext(),
+      appInvocation: { surface: "trusted-panel", sessionId: "window-1" },
+    })).rejects.toThrow("application shutdown");
     expect(mocks.dispatchAppOnlyRuntimeInvocation).not.toHaveBeenCalled();
     expect(mocks.invalidateFailedPluginAuthInvocation).toHaveBeenCalledWith(pluginId, activeGenerationId, 8);
+    const grants = ctx.pluginOperationGrants;
+    if (!grants) throw new Error("Plugin operation grants missing");
     let acquired = false;
-    const next = ctx.pluginOperationGrants!.acquireAccountTransitionLease({
+    const next = grants.acquireAccountTransitionLease({
       ownerPluginId: pluginId,
       generationId: activeGenerationId,
       appSessionId: "next-window",
