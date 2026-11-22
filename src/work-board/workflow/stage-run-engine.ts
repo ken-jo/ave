@@ -1241,6 +1241,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (named) await showOnRow(ref.itemId, "error", undefined);
     }
     await workspace.release(ref, "all").catch(() => undefined);
+    // The row may have gone while the workspace was opened, before there was a folder for that removal's discard to find. The release
+    // keeps a run's output for its row, so the stores are asked once more whether this one still has a row or a record.
+    await workspace.discard().catch(() => undefined);
     return result;
   }
 

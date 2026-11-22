@@ -307,3 +307,30 @@ it("deleting a row whose runs have no record left removes their output folders",
   expect(readFileSync(join(ofOther, "_out", "result.md"), "utf8")).toBe("left behind\n");
   expect(existsSync(join(ofOther, "_run.json"))).toBe(true);
 }));
+
+it("a start refused because its row was deleted while its workspace was opened leaves no run folder", () => withProductionParts(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  // A board that lists a row, so its file on disk says which items are gone.
+  await h.addItem(version);
+  const open = production.open.bind(production);
+  for (const deleted of ["before the folder is published", "after it"] as const) {
+    const id = await h.addItem(version);
+    let runRoot = "";
+    const spy = vi.spyOn(production, "open").mockImplementation(async (...args) => {
+      const removeRow = async (): Promise<void> => {
+        expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+        // The discard that removal asks for has run its course.
+        await production.discard();
+      };
+      if (deleted === "before the folder is published") await removeRow();
+      const opened = await open(...args);
+      if (opened.ok) runRoot = opened.workspace.runRoot;
+      if (deleted === "after it") await removeRow();
+      return opened;
+    });
+    await h.start(id, h.local(version));
+    spy.mockRestore();
+    expect(runRoot, deleted).not.toBe("");
+    expect(existsSync(runRoot), deleted).toBe(false);
+  }
+}));
