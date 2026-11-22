@@ -73,7 +73,7 @@ export async function stageRunHarness(opts: {
   integrate?: () => IntegrateResult | Promise<IntegrateResult>;
   /** Replaces a part of the workspace provider. */
   workspace?: Partial<StageWorkspaceProvider>;
-  /** Track detached work for the current engine. */
+  /** Track detached work for each engine. */
   observeRunWork?: boolean;
   onRunWorkScheduled?: () => void;
 } = {}) {
@@ -91,8 +91,7 @@ export async function stageRunHarness(opts: {
   const sweeps: string[][] = [];
   const registry = boardParentToolRegistry();
   const launches = new AsyncLocalStorage<ObservedLaunch>();
-  const observeEngineWork = () => opts.observeRunWork ? observeRunWork(launches, opts.onRunWorkScheduled) : undefined;
-  let runWork = observeEngineWork();
+  const runWorkObservers: ReturnType<typeof observeRunWork>[] = [];
   const childChanges = new Set<() => void>();
   const progressChanges = new Set<() => void>();
 
@@ -155,6 +154,8 @@ export async function stageRunHarness(opts: {
   };
 
   function engineOn(store: WorkBoardStore) {
+    const runWork = opts.observeRunWork ? observeRunWork(launches, opts.onRunWorkScheduled) : undefined;
+    if (runWork) runWorkObservers.push(runWork);
     const workflow = {
       templates, attachments: templates, runs: boardRunState(store), workspace, authoriseRunSource, passConditions: createPassConditionRegistry(),
       scopeAuthorised: (scope: TemplateScope) => scope.kind === "all" || !unauthorised.has(scope.projectRoot),
@@ -178,7 +179,6 @@ export async function stageRunHarness(opts: {
   /** The next process over the same files: a new board store and a new engine. The first engine is left as a crash leaves it. */
   const makeEngine = () => {
     board = new WorkBoardStore(boardPath);
-    runWork = observeEngineWork();
     engine = engineOn(board);
     return engine;
   };
@@ -288,7 +288,8 @@ export async function stageRunHarness(opts: {
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
-    drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWork?.drain(options); },
+    drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); },
+    drainAllRunWork: async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); },
     cleanup: () => cleanupTmpDir(dir),
   };
 }

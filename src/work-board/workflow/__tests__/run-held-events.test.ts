@@ -57,7 +57,7 @@ function makeHarness(options: NonNullable<Parameters<typeof stageRunHarness>[0]>
     const h = await harness;
     try {
       for (const child of h.children) child.finish();
-      await h.drainRunWork();
+      await h.drainAllRunWork();
     } finally {
       await h.cleanup();
     }
@@ -379,6 +379,26 @@ it("a run boot kept while its class held it is adopted by a later permitted read
     await h.drainRunWork();
     expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "cancelled" }));
   }));
+
+it("drains a live child from a replaced engine before removing the fixture", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, children: [child] } = run;
+    await linked(run);
+    h.makeEngine();
+    expect(child.ended).toBe(false);
+
+    const cleanup = h.cleanup;
+    h.cleanup = async () => {
+      const completed = h.events.some(event => event.itemId === id && event.phase === "done");
+      try {
+        // Even if the drain is missing, finish the run before deleting its files.
+        await h.settleEvent();
+        expect(completed, "the original run completed before fixture removal").toBe(true);
+      } finally {
+        await cleanup();
+      }
+    };
+  }, undefined, "row-lost", createPassConditionRegistry()));
 
 it.each((["row-lost", "board-unread"] as const).flatMap(reason => [false, true].map(superseded => ({ reason, superseded }))))("a pre-spawn workspace write held by $reason retains its spawn attempt and revalidates it (superseded: $superseded)", async ({ reason, superseded }) => {
   let refusing = true;
