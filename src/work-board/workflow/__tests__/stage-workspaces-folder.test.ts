@@ -432,6 +432,9 @@ describe("folder stage workspaces", () => {
     await createStageWorkspaceProvider({ git: createHostGit({ env }) }).discard();
     await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => undefined }).discard();
     expect(read(handle.out, "plan.md")).toBe("the plan\n");
+    // What a stop during a seeding left, under the name of this build and under the one an earlier build used, goes with the run.
+    write(handle.runRoot, "_ignore-Ab12Cd/.git/HEAD", "ref: refs/heads/main\n");
+    write(handle.runRoot, "_ignore/.git/HEAD", "ref: refs/heads/main\n");
     // As after a restart: a provider that never saw the run finds it by its record.
     const asked: { runId: string; itemId: number }[] = [];
     const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => (run) => { asked.push(run); return run.runId === handle.run.runId; } });
@@ -450,6 +453,8 @@ describe("folder stage workspaces", () => {
     write(handle.out, "result.md", "collected\n");
     // As a stop during a seeding leaves it: the matcher's repository, and beside it one whose name is a link out of the run.
     write(handle.runRoot, "_ignore-Ab12Cd/.git/HEAD", "ref: refs/heads/main\n");
+    // An earlier build made it under one fixed name.
+    write(handle.runRoot, "_ignore/.git/HEAD", "ref: refs/heads/main\n");
     const outside = join(base, "outside");
     write(outside, "keep.md", "not the run's\n");
     symlinkSync(outside, join(handle.runRoot, "_ignore-linked"), "junction");

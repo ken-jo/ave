@@ -9,6 +9,8 @@ export const OUT_DIR = "_out";
 export const RUN_FILE = "_run.json";
 /** `_ignore-<random>`: an empty repository git's ignore matcher needs for a plain folder; one per seeding, there only while it runs. */
 export const IGNORE_PREFIX = "_ignore-";
+/** A matcher folder by its name, `_ignore` included: the one name an earlier build used, which a home carried over may still hold. */
+export const isIgnoreFolder = (name: string): boolean => name === "_ignore" || name.startsWith(IGNORE_PREFIX);
 
 const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
 

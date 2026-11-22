@@ -10,7 +10,7 @@ import { plainFolderIgnore } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
-import { IGNORE_PREFIX, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
+import { isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { copySeedFiles, hashSeedFile, isInside, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -190,7 +190,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   /** What a stop while a stage folder was seeded left of the ignore matcher. */
   function clearIgnoreFolders(at: Held): void {
     assertHeld(at);
-    for (const name of readdirSync(at.runRoot)) if (name.startsWith(IGNORE_PREFIX)) removeFolder(at, join(at.runRoot, name));
+    for (const name of readdirSync(at.runRoot)) if (isIgnoreFolder(name)) removeFolder(at, join(at.runRoot, name));
   }
 
   /**
