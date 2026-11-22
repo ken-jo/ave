@@ -37,9 +37,10 @@ type ObservedLaunch = { linked(): void; resume(): void };
 
 function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
   const pending = new Set<Promise<unknown>>();
-  function track(work: Promise<unknown>): void {
-    pending.add(work);
-    const remove = () => { pending.delete(work); };
+  const launchesPending = new Set<Promise<unknown>>();
+  function track(work: Promise<unknown>, queue = pending): void {
+    queue.add(work);
+    const remove = () => { queue.delete(work); };
     void work.then(remove, remove);
   }
   const observe: NonNullable<WorkflowDeps["_observeDetachedWorkForTest"]> = (work, kind) => {
@@ -49,11 +50,13 @@ function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
     }
     // A controlled child parks its launch after linkage and resumes tracking before it ends.
     const linked = deferred<void>();
-    const done = launches.run({ linked: linked.resolve, resume: () => track(done) }, work);
-    track(Promise.race([linked.promise, done]));
+    const done = launches.run({ linked: linked.resolve, resume: () => track(done, launchesPending) }, work);
+    track(Promise.race([linked.promise, done]), launchesPending);
   };
-  async function drain(): Promise<void> {
-    while (pending.size > 0) await Promise.allSettled(pending);
+  async function drain({ includeLaunches = true } = {}): Promise<void> {
+    while (pending.size > 0 || (includeLaunches && launchesPending.size > 0)) {
+      await Promise.allSettled(includeLaunches ? [...pending, ...launchesPending] : pending);
+    }
   }
   return { observe, drain };
 }
@@ -283,7 +286,7 @@ export async function stageRunHarness(opts: {
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
-    drainRunWork: async () => { await runWork?.drain(); },
+    drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWork?.drain(options); },
     cleanup: () => cleanupTmpDir(dir),
   };
 }
