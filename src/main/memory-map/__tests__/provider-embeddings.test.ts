@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SettingsService } from '../../../data/settings-store.js';
-import type { MemoryEmbeddingConfig } from '../../../shared/memory-embedding-config.js';
+import { MEMORY_EMBEDDING_CONSENT_VERSION, type MemoryEmbeddingConfig } from '../../../shared/memory-embedding-config.js';
 import type { MemoryMapProgress } from '../../../shared/memory-map.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
-import { ProviderEmbeddings, providerNamespace } from '../provider-embeddings.js';
+import { ProviderEmbeddings } from '../provider-embeddings.js';
 import { buildGraph } from '../graph.js';
 import { createMemoryProviderEgress } from '../provider-egress.js';
 import type { MemoryWorkerRunner } from '../worker-client.js';
@@ -16,13 +16,13 @@ import { MemoryMapHost } from '../host.js';
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const close of cleanup.splice(0).reverse()) await close(); });
 async function fixture(allowedDomains = ['127.0.0.1']) {
-  const requests: { model: string; input: string[] }[] = [];
+  const requests: { endpoint?: string; model: string; input: string[] }[] = [];
   let dimensions = 3; let inconsistent = false; let fail = false; let responseWait: Promise<void> | undefined;
   const key = 'fixture-private-credential';
   const server: Server = createServer(async (request, response) => {
     let body = ''; for await (const chunk of request) body += chunk;
     const parsed = JSON.parse(body) as { model: string; input: string[] };
-    requests.push(parsed); await responseWait;
+    requests.push({ ...parsed, endpoint: request.url }); await responseWait;
     if (fail) { response.writeHead(400, { 'content-type': 'application/json' }); response.end(JSON.stringify({ error: { message: key, type: 'invalid_request_error' } })); return; }
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ object: 'list', model: parsed.model, data: parsed.input.map((_, index) => ({ object: 'embedding', index, embedding: Array.from({ length: inconsistent && index ? dimensions + 1 : dimensions }, (_, i) => i === 0 ? 2 : 0) })), usage: { prompt_tokens: 1, total_tokens: 1 } }));
@@ -32,7 +32,12 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing server address');
   const baseUrl = 'http://127.0.0.1:' + address.port + '/v1';
   let config: MemoryEmbeddingConfig = { source: 'provider', providerId: 'openai-compatible', modelId: 'embed-a' };
-  const consent = () => { config.consent = { version: 1, providerId: 'openai-compatible', modelId: config.modelId!, timestamp: new Date().toISOString() }; };
+  const consent = () => {
+    config.consent = {
+      version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId: 'openai-compatible', modelId: config.modelId!,
+      endpointId: provider.namespace().modelRevision, timestamp: new Date().toISOString(),
+    };
+  };
   const llm = { vendors: { 'openai-compatible': { baseUrl } }, modelListCache: { saved: { vendor: 'openai-compatible', baseUrl, endpoint: baseUrl + '/models', models: ['embed-a', 'embed-b'], modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }, { id: 'embed-b', outputModalities: ['embedding'] }], fetchedAt: new Date().toISOString() } } };
   const settings = { get: (name: string) => name === 'memoryEmbedding' ? config : name === 'llm' ? llm : {}, hasStoredSecret: vi.fn(async (name: string) => name === 'llm.apiKey.openai-compatible' || name === 'llm.apiKey.claude'), getSecret: vi.fn(async () => key) } as unknown as SettingsService;
   const nativeFetch = globalThis.fetch;
@@ -50,7 +55,12 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   const catalog = { authorizationScopeId: 'scope', excluded: 0, records: Array.from({ length: 2 }, (_, i) => ({ memoryId: 'id-' + i, contentRevision: 'r-' + i, title: 'Title ' + i, text: 'Private memory ' + i, sourceKind: 'user' as const })) };
   const progress: MemoryMapProgress[] = [];
   const host = new MemoryMapHost({ namespace, provider, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
-  return { pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
+  return { changeEndpoint: () => {
+    const next = baseUrl + '/alternate';
+    llm.vendors['openai-compatible'].baseUrl = next;
+    llm.modelListCache.saved.baseUrl = next;
+    llm.modelListCache.saved.endpoint = next + '/models';
+  }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
   it('denies a consented provider absent from the host allow-list before sending credentials or text', async () => {
@@ -63,8 +73,10 @@ describe('provider memory embeddings', () => {
     expect(f.audit).toHaveBeenCalledWith(expect.objectContaining({ allowed: false }));
   });
   it('refuses every send without matching current versioned consent', async () => {
-    const f = await fixture(); const selected = providerNamespace('openai-compatible', 'embed-a');
-    for (const consent of [undefined, { version: 1, providerId: 'other', modelId: 'embed-a', timestamp: new Date().toISOString() }, { version: 1, providerId: 'openai-compatible', modelId: 'other', timestamp: new Date().toISOString() }, { version: 0, providerId: 'openai-compatible', modelId: 'embed-a', timestamp: new Date().toISOString() }]) {
+    const f = await fixture(); const selected = f.provider.namespace();
+    f.consent();
+    const valid = f.config.consent!;
+    for (const consent of [undefined, { ...valid, providerId: 'other' }, { ...valid, modelId: 'other' }, { ...valid, version: 1 }]) {
       f.config.consent = consent as MemoryEmbeddingConfig['consent'];
       await expect(f.provider.embed(selected, ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
     }
@@ -72,12 +84,26 @@ describe('provider memory embeddings', () => {
   });
   it('sends only after consent through the host transport and uses the same namespace for questions', async () => {
     const f = await fixture(); f.consent(); const snapshot = await f.host.build(() => f.catalog);
-    expect(snapshot.model.namespace).toEqual(providerNamespace('openai-compatible', 'embed-a', 3));
+    expect(snapshot.model.namespace).toEqual({ ...f.provider.namespace(), dimensions: 3 });
     const answer = await f.host.retrieve(() => f.catalog, { question: 'Question', filters: {}, snapshotId: snapshot.snapshotId, queryId: 'q' });
     expect(answer.matches).toHaveLength(2); expect(f.requests.map(value => value.model)).toEqual(['embed-a', 'embed-a']); expect(f.requests[1]!.input).toEqual(['Question']); expect(f.chokepoint).toHaveBeenCalledTimes(2);
     const restarted = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, validatedModelPath: async () => '' });
     expect(await restarted.get(() => f.catalog)).toEqual(snapshot);
     expect(JSON.stringify(f.progress)).not.toMatch(/Private|Title|memoryId/);
+  });
+  it('requires renewed consent and discards equal-dimension vectors when the endpoint changes', async () => {
+    const f = await fixture();
+    f.consent();
+    const original = await f.host.build(() => f.catalog);
+    f.changeEndpoint();
+    expect(await f.host.get(() => f.catalog)).toBeNull();
+    await expect(f.host.build(() => f.catalog)).rejects.toMatchObject({ code: 'provider-consent-required' });
+    expect(f.requests).toHaveLength(1);
+    f.consent();
+    const rebuilt = await f.host.build(() => f.catalog);
+    expect(rebuilt.model.namespace.dimensions).toBe(original.model.namespace.dimensions);
+    expect(rebuilt.model.namespace.modelRevision).not.toBe(original.model.namespace.modelRevision);
+    expect(f.requests.map(request => request.endpoint)).toEqual(['/v1/embeddings', '/v1/alternate/embeddings']);
   });
   it('invalidates saved snapshot and vectors on a provider model switch', async () => {
     const f = await fixture(); f.consent(); await f.host.build(() => f.catalog);
@@ -126,7 +152,7 @@ describe('provider memory embeddings', () => {
   it('rechecks consent after asynchronous credential resolution before host egress', async () => {
     const f = await fixture(); f.consent();
     vi.mocked(f.settings.getSecret).mockImplementation(async () => { f.config.consent!.modelId = 'other'; return f.key; });
-    await expect(f.provider.embed(providerNamespace('openai-compatible', 'embed-a'), ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
+    await expect(f.provider.embed(f.provider.namespace(), ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
     expect(f.chokepoint).not.toHaveBeenCalled(); expect(f.requests).toEqual([]);
   });
   it('cancels an in-flight provider request when opting out', async () => {
@@ -144,7 +170,7 @@ describe('provider memory embeddings', () => {
     const f = await fixture();
     expect((await f.provider.providers()).find(value => value.id === 'claude')).toEqual({ id: 'claude', models: [], reason: 'provider-no-embedding-model' });
     await expect(f.provider.validate('claude', 'chat-only')).rejects.toThrow('provider-no-embedding-model');
-    f.consent(); await expect(f.provider.embed(providerNamespace('openai-compatible', 'chat-only'), ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
+    f.consent(); await expect(f.provider.embed({ ...f.provider.namespace(), modelId: 'chat-only' }, ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
     expect(f.chokepoint).not.toHaveBeenCalled();
   });
   it('fails clearly for inconsistent dimensions within a response and against a saved namespace', async () => {

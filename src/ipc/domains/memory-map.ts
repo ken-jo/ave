@@ -11,7 +11,6 @@ import { MemoryMapScopeSchema, MemoryRetrievalSchema, MemoryEmbeddingSettingsSch
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
 import { readGraphCatalog, memoryFacets, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
-import { MEMORY_EMBEDDING_CONSENT_VERSION } from '../../shared/memory-embedding-config.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
 import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
 import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
@@ -83,10 +82,10 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     return read;
   };
   const settings = async (): Promise<MemoryEmbeddingSettings> => {
-    const config = deps.settingsService.get('memoryEmbedding');
+    const consent = provider.currentConsent();
     const providers = await provider.providers();
     const namespace = provider.namespace();
-    return { source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0), ...(config?.consent ? { consent: config.consent } : {}) };
+    return { source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0), ...(consent ? { consent } : {}) };
   };
   function handle<T>(channel: string, schema: z.ZodType<T>, action: (value: T, event: IpcMainInvokeEvent) => unknown) {
     ipcMain.handle(channel, async (event, raw: unknown, ...extra: unknown[]) => {
@@ -121,17 +120,15 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     provider.suspend(); host.cancel();
     const pending = settingsWrite.catch(() => {}).then(async () => {
       if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
-      if (input.source === 'provider') {
-        if (!input.consent) throw new MemoryMapHostError('provider-consent-required');
-        await provider.validate(input.providerId, input.modelId);
-      }
+      if (input.source === 'provider' && !input.consent) throw new MemoryMapHostError('provider-consent-required');
+      const consent = input.source === 'provider' ? await provider.issueConsent(input.providerId, input.modelId) : undefined;
       if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
       const previous = deps.settingsService.get('memoryEmbedding');
       await deps.settingsService.set('memoryEmbedding', {
         ...(previous?.localModelPath ? { localModelPath: previous.localModelPath } : {}),
         ...input.source === 'local' ? { source: 'local' as const } : {
           source: 'provider' as const, providerId: input.providerId, modelId: input.modelId,
-          consent: { version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId: input.providerId, modelId: input.modelId, timestamp: new Date().toISOString() },
+          consent,
         },
       });
       if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');

@@ -32,7 +32,7 @@ describe('memory map host boundary', () => {
     expect(await invoke('settingsSet', selection)).toEqual({ ok: false, error: 'provider-consent-required' }); expect(set).not.toHaveBeenCalled();
     expect(await invoke('settingsSet', { ...selection, consent: true, timestamp: 'renderer-value' })).toEqual({ ok: false, error: 'invalid-input' });
     expect(await invoke('settingsSet', { ...selection, consent: true })).toMatchObject({ ok: true, value: { source: 'provider' } });
-    expect(config).toMatchObject({ source: 'provider', providerId: selection.providerId, modelId: selection.modelId, consent: { version: 1, providerId: selection.providerId, modelId: selection.modelId, timestamp: expect.any(String) } });
+    expect(config).toMatchObject({ source: 'provider', providerId: selection.providerId, modelId: selection.modelId, consent: { version: 2, providerId: selection.providerId, modelId: selection.modelId, endpointId: expect.stringMatching(/^[a-f0-9]{64}$/), timestamp: expect.any(String) } });
     expect(state.invalidate).toHaveBeenCalledOnce();
     expect(await invoke('settingsSet', { source: 'local' })).toMatchObject({ ok: true, value: { source: 'local' } });
     expect(config).toEqual({ source: 'local' }); expect(state.cancel).toHaveBeenCalled();

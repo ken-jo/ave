@@ -28,7 +28,7 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     void api.settingsGet().then(result => { if (active && result.ok) {
       setSettings(result.value); setRevision(result.value.namespace.modelRevision); setSource(result.value.source);
       setProviderId(result.value.namespace.providerId ?? ''); setModelId(result.value.source === 'provider' ? result.value.namespace.modelId : '');
-      setConsent(result.value.consent?.version === MEMORY_EMBEDDING_CONSENT_VERSION && result.value.consent.providerId === result.value.namespace.providerId && result.value.consent.modelId === result.value.namespace.modelId);
+      setConsent(result.value.consent?.version === MEMORY_EMBEDDING_CONSENT_VERSION && result.value.consent.providerId === result.value.namespace.providerId && result.value.consent.modelId === result.value.namespace.modelId && result.value.consent.endpointId === result.value.namespace.modelRevision);
     } }).catch(() => {});
     return () => { active = false; generation.current++; stop(); };
   }, [api]);

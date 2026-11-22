@@ -14,7 +14,7 @@ describe('memory embeddings settings', () => {
     const namespace = { ...initial.value.namespace, source: 'provider' as const, providerId: 'configured', modelId: 'embed-a' };
     api.settingsGet.mockResolvedValue({ ok: true, value: {
       ...initial.value, source: 'provider', namespace, providers: [{ id: 'configured', models: ['embed-a'] }],
-      consent: { version: 1, providerId: 'configured', modelId: 'embed-a', timestamp: '2026-11-22T00:00:00Z' },
+      consent: { version: 2, providerId: 'configured', modelId: 'embed-a', endpointId: namespace.modelRevision, timestamp: '2026-11-22T00:00:00Z' },
     } });
     api.settingsSet.mockResolvedValue(initial);
     render(<MemoryEmbeddingsSection api={api} />);

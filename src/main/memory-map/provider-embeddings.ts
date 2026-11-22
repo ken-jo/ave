@@ -8,11 +8,11 @@ import { LLM_VENDORS, getLlmVendorSettings, canUseLlmVendorWithoutApiKey, isOpen
 import { marketplaceProviderPresetSecretKey } from '../../shared/marketplace-package-assets.js';
 import { createSafeLlmFetch } from '../safe-llm-fetch.js';
 import { isDefaultModelListEndpoint } from '../../engine/llm/model-list.js';
-import { MEMORY_EMBEDDING_CONSENT_VERSION, type MemoryEmbeddingConfig } from '../../shared/memory-embedding-config.js';
+import { MEMORY_EMBEDDING_CONSENT_VERSION, type MemoryEmbeddingConsent } from '../../shared/memory-embedding-config.js';
 import type { EmbeddingNamespace, MemoryEmbeddingProvider, MemoryMapProgress, GraphSnapshot, MemoryMapRecord } from '../../shared/memory-map.js';
 import type { MemoryMapCatalog } from './catalog.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
-import { LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
+import { digest, LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
 import { MemoryMapHostError } from './errors.js';
 import type { ProviderEgress } from './provider-egress.js';
 
@@ -22,9 +22,6 @@ const SDK_EMBEDDING_MODELS: Record<string, string[]> = {
   gemini: ['gemini-embedding-001', 'gemini-embedding-2', 'gemini-embedding-2-preview'],
 };
 const DEFAULT_ENDPOINTS: Record<string, string> = { openai: 'https://api.openai.com/v1', gemini: 'https://generativelanguage.googleapis.com/v1beta' };
-export function providerNamespace(providerId: string, modelId: string, dimensions = 0): EmbeddingNamespace {
-  return { source: 'provider', providerId, modelId, modelRevision: modelId, preprocessingRevision: 'text-l2-v1', dimensions };
-}
 export class ProviderEmbeddings {
   private suspended = false;
   suspend(): void { this.suspended = true; }
@@ -32,14 +29,41 @@ export class ProviderEmbeddings {
   constructor(private readonly settings: SettingsService, private readonly send: ProviderEgress, private readonly runWorker: MemoryWorkerRunner = runMemoryWorker) {}
   namespace(): EmbeddingNamespace {
     const config = this.settings.get('memoryEmbedding');
-    return config?.source === 'provider' ? providerNamespace(config.providerId ?? '', config.modelId ?? '') : LOCAL_NAMESPACE;
+    if (config?.source !== 'provider') return LOCAL_NAMESPACE;
+    const providerId = config.providerId ?? '';
+    return {
+      source: 'provider', providerId, modelId: config.modelId ?? '',
+      modelRevision: this.endpointId(providerId) ?? 'unavailable', preprocessingRevision: 'text-l2-v1', dimensions: 0,
+    };
   }
-  private consent(providerId: string, modelId: string, signal?: AbortSignal): MemoryEmbeddingConfig {
+  currentConsent(): MemoryEmbeddingConsent | undefined {
     const config = this.settings.get('memoryEmbedding');
     const consent = config?.consent;
-    if (signal?.aborted) throw new MemoryMapHostError('request-stale');
-    if (this.suspended || config?.source !== 'provider' || config.providerId !== providerId || config.modelId !== modelId || consent?.version !== MEMORY_EMBEDDING_CONSENT_VERSION || consent.providerId !== providerId || consent.modelId !== modelId || !Number.isFinite(Date.parse(consent.timestamp))) throw new MemoryMapHostError('provider-consent-required');
-    return config;
+    if (this.suspended || config?.source !== 'provider' || !consent
+      || consent.version !== MEMORY_EMBEDDING_CONSENT_VERSION || consent.providerId !== config.providerId
+      || consent.modelId !== config.modelId || consent.endpointId !== this.endpointId(consent.providerId)
+      || !Number.isFinite(Date.parse(consent.timestamp))) return undefined;
+    return consent;
+  }
+  async issueConsent(providerId: string, modelId: string): Promise<MemoryEmbeddingConsent> {
+    const endpointId = this.endpointId(providerId);
+    if (!endpointId) throw new MemoryMapHostError('provider-unavailable');
+    await this.validate(providerId, modelId);
+    if (endpointId !== this.endpointId(providerId)) throw new MemoryMapHostError('request-stale');
+    return { version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId, modelId, endpointId, timestamp: new Date().toISOString() };
+  }
+  private assertConsent(namespace: EmbeddingNamespace, signal: AbortSignal): void {
+    if (signal.aborted) throw new MemoryMapHostError('request-stale');
+    const consent = this.currentConsent();
+    if (!consent || consent.providerId !== namespace.providerId || consent.modelId !== namespace.modelId
+      || consent.endpointId !== namespace.modelRevision) throw new MemoryMapHostError('provider-consent-required');
+  }
+  private endpointId(providerId: string): string | undefined {
+    try {
+      const { baseUrl, vendor, block, preset } = this.route(providerId);
+      if (baseUrl) return digest(JSON.stringify([new URL(baseUrl).href, vendor, block.wire, preset?.trust?.networkAccess]));
+    } catch { /* unavailable destination */ }
+    return undefined;
   }
   private route(providerId: string) {
     const preset = (this.settings.get('marketplace')?.installedProviderPresets ?? []).find(value => value.providerId === providerId);
@@ -78,17 +102,14 @@ export class ProviderEmbeddings {
   }
   async embed(namespace: EmbeddingNamespace, values: string[], signal: AbortSignal, assertAuthority?: () => void): Promise<number[][]> {
     const providerId = namespace.providerId ?? ''; const modelId = namespace.modelId;
-    this.consent(providerId, modelId, signal);
+    this.assertConsent(namespace, signal);
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
     await this.validate(providerId, modelId);
     const route = this.route(providerId);
     if (!route.baseUrl || !this.send) throw new MemoryMapHostError('provider-unavailable');
-    const configAtStart = JSON.stringify(this.settings.get('llm'));
-    const presetAtStart = JSON.stringify(route.preset);
     const assertCurrent = () => {
-      this.consent(providerId, modelId, signal);
+      this.assertConsent(namespace, signal);
       assertAuthority?.();
-      if (configAtStart !== JSON.stringify(this.settings.get('llm')) || presetAtStart !== JSON.stringify(this.route(providerId).preset)) throw new MemoryMapHostError('request-stale');
     };
     let egressError: MemoryMapHostError | undefined;
     const egress: typeof fetch = async (input, init) => {
@@ -128,7 +149,7 @@ export class ProviderEmbeddings {
     }
   }
   async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void) {
-    this.consent(namespace.providerId ?? '', namespace.modelId, signal);
+    this.assertConsent(namespace, signal);
     const records = [...catalog.records].sort((a, b) => a.memoryId.localeCompare(b.memoryId));
     let selected = { ...namespace };
     const stored = saved.snapshot?.model.namespace;
@@ -149,7 +170,7 @@ export class ProviderEmbeddings {
       completed += batch.length; onProgress({ jobId, phase: 'embedding', completed, total: records.length });
     }
     if (!selected.dimensions) throw new MemoryMapHostError('provider-embedding-failed');
-    this.consent(selected.providerId ?? '', selected.modelId, signal);
+    this.assertConsent(selected, signal);
     return this.runWorker<{ snapshot: GraphSnapshot; cache: VectorCache }>('', { kind: 'project', input: { ...catalog, namespace: selected, cache, jobId } }, signal, progress => { if (progress.phase !== 'embedding') onProgress(progress); });
   }
 }
