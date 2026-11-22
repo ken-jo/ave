@@ -1,15 +1,28 @@
 import { mkdtemp, mkdir, open, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryMapHost } from '../host.js';
 import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import type { MemoryMapCatalog } from '../catalog.js';
 import type { MemoryWorkerRunner } from '../worker-client.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
+
+const inferenceBudget = vi.hoisted(() => ({ bytes: undefined as number | undefined }));
+vi.mock(import('../inference-request.js'), async importOriginal => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    get MAX_INFERENCE_TASK_BYTES() { return inferenceBudget.bytes ?? actual.MAX_INFERENCE_TASK_BYTES; },
+  };
+});
+
 const roots: string[] = [];
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  inferenceBudget.bytes = undefined;
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'memory-host-')); roots.push(root);
   const namespace: FeatureNamespaceHandle = { dir: root,
@@ -64,6 +77,60 @@ describe('memory graph publication', () => {
     })));
     const { cache } = JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8'));
     for (const [index, record] of records.entries()) expect(cache[vectorKey(record, LOCAL_NAMESPACE)]).toEqual(vectors[index]);
+  });
+
+  it.each(['failure', 'cancellation'] as const)('preserves the previous snapshot after a second-batch %s', async interruption => {
+    class InspectableMemoryMapHost extends MemoryMapHost {
+      get cacheKeys(): string[] { return Object.keys(this.cache); }
+    }
+
+    const f = await fixture();
+    const [previousRecord] = f.catalog.records;
+    const records = [
+      { ...previousRecord, memoryId: 'note-1', title: 'First note' },
+      { ...previousRecord, memoryId: 'note-2', title: 'Second note' },
+    ];
+    const catalog = { ...f.catalog, records };
+    const expectedBatches = records.map(record => [`${record.title}\n${record.text}`]);
+    const batches: string[][] = [];
+    const failure = new Error('Second embedding batch failed');
+    let cancelledSignal: AbortSignal | undefined;
+    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [, task, signal] = args;
+      if (task.kind === 'embed-batch') {
+        batches.push(task.texts);
+        if (batches.length === 2) {
+          if (interruption === 'failure') throw failure;
+          cancelledSignal = signal;
+          host.cancel();
+          signal.throwIfAborted();
+        }
+      }
+      return f.runWorker<T>(...args);
+    };
+    const host = new InspectableMemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker });
+    await host.build(() => f.catalog);
+    const path = join(f.root, 'snapshot.json');
+    const previousBytes = await readFile(path);
+    batches.length = 0;
+    inferenceBudget.bytes = 120;
+
+    const build = host.build(() => catalog);
+    if (interruption === 'failure') {
+      await expect(build).rejects.toBe(failure);
+    } else {
+      await expect(build).rejects.toMatchObject({ code: 'request-stale' });
+      expect(cancelledSignal?.aborted).toBe(true);
+    }
+    expect(batches).toEqual(expectedBatches);
+    const storedBytes = await readFile(path);
+    expect.soft(storedBytes.equals(previousBytes), 'snapshot.json bytes changed').toBe(true);
+    const previousCacheKeys = [vectorKey(previousRecord, LOCAL_NAMESPACE)];
+    expect.soft(Object.keys(JSON.parse(storedBytes.toString('utf8')).cache)).toEqual(previousCacheKeys);
+    expect.soft(host.cacheKeys).toEqual(previousCacheKeys);
+
+    await expect(host.build(() => catalog)).resolves.toMatchObject({ status: 'ready', coverage: { embedded: records.length } });
+    expect(batches.slice(expectedBatches.length)).toEqual(expectedBatches);
   });
 
   it('refuses a single note that cannot fit in an inference frame', async () => {
