@@ -12,7 +12,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { win32SystemBinary, windowsSystemRoot } from "../../shared/windows-system-path.js";
 import { ensureAveHomePrivate } from "../../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { powerShellMxcCommandLine } from "../mxc-windows.js";
@@ -54,9 +54,9 @@ describe.runIf(process.platform === "win32")("container control-file write bound
         const invocation = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
           context: { sessionId: undefined, workspaceRoot: project, approvalSurface: "unavailable" } });
         const policy = buildMandatorySandboxWritePolicy([project, configuration]);
-        let launch: Awaited<ReturnType<typeof prepareMxcShellLaunch>> | undefined;
+        let launch: Awaited<ReturnType<typeof prepareOwnedMxcShellLaunch>> | undefined;
         try {
-          launch = await prepareMxcShellLaunch({
+          launch = await prepareOwnedMxcShellLaunch({
           egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command), cwd: project,
           filesystem: { allowRead: [windowsSystemRoot(), gitRoot, project, configuration], allowWrite: policy.allowWrite,
             denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path) },

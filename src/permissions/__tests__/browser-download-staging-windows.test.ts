@@ -422,7 +422,7 @@ const { TEST_WORKER_EGRESS_OWNER } = await import("../../__tests__/support/egres
 const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-policy.js");
 const { pinWindowsPaths, windowsPathKey } = await import("../../shared/windows-path-facts.js");
 const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
-const { prepareMxcShellLaunch } = await import("../../tools/mxc-shell-launch.js");
+const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/contained-shell-launch.js");
 const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
@@ -564,7 +564,7 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([input.cwd, ...sandboxWritePaths, ...(input.readPaths ?? [])], profileRoot, sandboxHome);
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths();
   const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
-  const launch = await prepareMxcShellLaunch({
+  const launch = await prepareOwnedMxcShellLaunch({
     egressToken: "staging-probe",
     commandLine: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -EncodedCommand AA==",
     cwd: input.cwd,

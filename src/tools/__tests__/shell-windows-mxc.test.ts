@@ -66,6 +66,9 @@ import { egressGrantFilePath } from "../../permissions/egress-grants.js";
 import * as egressHostListener from "../../permissions/egress-host-listener.js";
 import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as mxcWindows from "../../permissions/mxc-windows.js";
+import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
+import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
+import * as chatOrigin from "../../shared/chat-origin.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
@@ -85,6 +88,8 @@ import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import type { PrepareMxcShellLaunchInput } from "../mxc-shell-launch.js";
+import type { ContainedShellLifecycle } from "../contained-shell-lifecycle.js";
+import * as powerShellLaunch from "../powershell-launch.js";
 import { POWERSHELL_EGRESS_PROXY_PRELUDE } from "../powershell-launch.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -173,8 +178,8 @@ describe("builtin shell — Windows MXC containers", () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
     if (!prepare) throw new Error("Container preparation fixture is unavailable");
-    mxcLaunchMock.prepare.mockImplementation(async input => {
-      const launch = await prepare(input);
+    mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
+      const launch = await prepare(input, lifecycle);
       setWindowsShellLocalNetworkAccess(false);
       return launch;
     });
@@ -189,8 +194,8 @@ describe("builtin shell — Windows MXC containers", () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
     if (!prepare) throw new Error("Container preparation fixture is unavailable");
-    mxcLaunchMock.prepare.mockImplementation(async input => {
-      const launch = await prepare(input);
+    mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
+      const launch = await prepare(input, lifecycle);
       if (!isParserLaunch(input)) setWindowsShellLocalNetworkAccess(false);
       return launch;
     });
@@ -205,8 +210,8 @@ describe("builtin shell — Windows MXC containers", () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
     if (!prepare) throw new Error("Container preparation fixture is unavailable");
-    mxcLaunchMock.prepare.mockImplementation(async input => {
-      const launch = await prepare(input);
+    mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
+      const launch = await prepare(input, lifecycle);
       setWindowsShellLocalNetworkAccess(false);
       setWindowsShellLocalNetworkAccess(true);
       return launch;
@@ -228,13 +233,15 @@ describe("builtin shell — Windows MXC containers", () => {
       const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
       return parser || args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : fakeChild(`${CONTAINER_OUTPUT}\n`, 0);
     });
-    mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }) => ({
-      argv: [WXC_EXEC, "--config-base64", isParserLaunch(input) ? PARSER_REQUEST : "eyJ9"],
-      proxyPort: 51234,
-      activate: mxcLaunchMock.activate,
-      bindChild: mxcLaunchMock.bindChild,
-      release: mxcLaunchMock.release,
-    }));
+    mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }, lifecycle: ContainedShellLifecycle) => {
+      lifecycle.defer(mxcLaunchMock.release);
+      return {
+        argv: [WXC_EXEC, "--config-base64", isParserLaunch(input) ? PARSER_REQUEST : "eyJ9"],
+        proxyPort: 51234,
+        activate: mxcLaunchMock.activate,
+        bindChild: mxcLaunchMock.bindChild,
+      };
+    });
   });
 
   afterEach(() => {
@@ -413,7 +420,7 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it.each([false, true])("fails closed on policy delivery failure with headless=%s", async (headless) => {
     bootMxcShells();
-    mxcLaunchMock.prepare.mockResolvedValueOnce({ argv: [WXC_EXEC, "--config-base64", PARSER_REQUEST], proxyPort: 51234, activate: mxcLaunchMock.activate, bindChild: mxcLaunchMock.bindChild, release: mxcLaunchMock.release });
+    mxcLaunchMock.prepare.mockResolvedValueOnce({ argv: [WXC_EXEC, "--config-base64", PARSER_REQUEST], proxyPort: 51234, activate: mxcLaunchMock.activate, bindChild: mxcLaunchMock.bindChild });
     const message = "Windows sandbox policy is too large: 40324 characters, limit 24574";
     mxcLaunchMock.prepare.mockRejectedValueOnce(new Error(message));
     const result = await executePowerShell({ ...context("policy-delivery-failure"), headless });
@@ -489,6 +496,181 @@ describe("builtin shell — Windows MXC containers", () => {
     await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
   });
 
+  // Probes of the command container's lifecycle, egress and HOME, captured as its launch is prepared; `bindChild` binds only the command's child.
+  function captureCommandLaunch(bindChild: (child: unknown) => void = mxcLaunchMock.bindChild) {
+    let captured: { lifecycle: ContainedShellLifecycle; token: string; home: string | undefined } | undefined;
+    mxcLaunchMock.prepare.mockImplementation(async (input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
+      const parser = isParserLaunch(input);
+      if (!parser) {
+        captured = { lifecycle, token: input.egressToken, home: input.filesystem.allowWrite.find((path) => path.includes("ave-mxc-test-home-")) };
+      }
+      lifecycle.defer(mxcLaunchMock.release);
+      return {
+        argv: [WXC_EXEC, "--config-base64", parser ? PARSER_REQUEST : "eyJ9"],
+        proxyPort: 51234,
+        activate: mxcLaunchMock.activate,
+        bindChild: parser ? mxcLaunchMock.bindChild : bindChild,
+      };
+    });
+    return {
+      revoked: () => captured?.lifecycle.signal.aborted === true,
+      egressLive: () => captured !== undefined && egressInvocationOwner(captured.token) !== undefined,
+      homeExists: () => captured?.home !== undefined && existsSync(captured.home),
+    };
+  }
+
+  // The command's launcher runs until the test ends it. Each process-tree kill records what was still live when it began.
+  function runningLauncher(kills: Array<{ revoked: boolean; egressLive: boolean; launchReleases: number; homeExists: boolean }>, command: ReturnType<typeof captureCommandLaunch>) {
+    const launchers: Array<EventEmitter & { exitCode: number | null }> = [];
+    const started = deferred<void>();
+    const spawn = childProcessMock.spawn.getMockImplementation();
+    if (spawn === undefined) throw new Error("Missing child spawn fixture");
+    childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
+      if (/taskkill\.exe$/iu.test(file) && args.includes("4242")) {
+        kills.push({
+          revoked: command.revoked(),
+          egressLive: command.egressLive(),
+          launchReleases: mxcLaunchMock.release.mock.calls.length,
+          homeExists: command.homeExists(),
+        });
+      }
+      if (file !== WXC_EXEC || args.includes(PARSER_REQUEST)) return spawn(file, args, options);
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null as number | null, signalCode: null, pid: 4242, kill: vi.fn(() => true),
+      });
+      launchers.push(child);
+      started.resolve();
+      return child;
+    });
+    return {
+      started: started.promise,
+      exit(code: number): void {
+        for (const launcher of launchers) {
+          launcher.exitCode = code;
+          launcher.emit("exit", code, null);
+          launcher.emit("close", code, null);
+        }
+      },
+    };
+  }
+
+  it.each(["cancellation", "timeout"] as const)("revokes the command's egress at %s before the kill, and releases its launch and HOME only after the job exits", async (ending) => {
+    bootMxcShells();
+    const command = captureCommandLaunch();
+    const kills: Parameters<typeof runningLauncher>[0] = [];
+    const launcher = runningLauncher(kills, command);
+    const abort = new AbortController();
+    if (ending === "timeout") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const execution = new PowerShellTool().execute(
+        { command: "Write-Output hi", timeoutSeconds: 1 },
+        { ...context(`ps-mxc-${ending}-revokes`), abortSignal: abort.signal },
+      );
+      await launcher.started;
+      expect(command.revoked()).toBe(false);
+      if (ending === "cancellation") {
+        abort.abort();
+        // Synchronous: nothing the job started can reach the network once cancellation returns.
+        expect(command.revoked()).toBe(true);
+        expect(command.egressLive()).toBe(false);
+      } else {
+        await vi.advanceTimersByTimeAsync(999);
+        expect(command.revoked()).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      await vi.waitFor(() => expect(kills).toHaveLength(1));
+      expect(kills).toEqual([{ revoked: true, egressLive: false, launchReleases: 1, homeExists: true }]);
+      // The job has not exited: its launch and HOME are still held.
+      expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
+      expect(command.homeExists()).toBe(true);
+      launcher.exit(1);
+      const result = await execution;
+      expect(result.isError).toBe(true);
+      expect(result.output).toMatch(ending === "timeout" ? /timed out/u : /cancelled/u);
+      // A result that settled once the kill finished does not wait for the release that follows the job's exit.
+      await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(command.homeExists()).toBe(false));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("revokes and kills a launcher whose child binding throws, withholding details while its job is live", async () => {
+    bootMxcShells();
+    const failure = new Error("child binding failed");
+    const command = captureCommandLaunch(() => { throw failure; });
+    const kills: Parameters<typeof runningLauncher>[0] = [];
+    const launcher = runningLauncher(kills, command);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await executePowerShell(context("ps-mxc-bind-child-throws"));
+    expect(kills).toEqual([{ revoked: true, egressLive: false, launchReleases: 1, homeExists: true }]);
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result.output).toBe("PowerShell spawn failed: failure details unavailable");
+    expect(log).toHaveBeenCalledWith("[shell-tasks] contained shell failed while its job was live",
+      expect.objectContaining({ label: "tool:powershell:mxc", err: "child binding failed" }));
+    expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
+    expect(command.homeExists()).toBe(true);
+    launcher.exit(1);
+    await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(command.homeExists()).toBe(false));
+  });
+
+  it("settles and releases everything when the remote authority refresh rejects", async () => {
+    bootMxcShells();
+    const container = failCommandContainerRelease({});
+    const failure = new Error("authority refresh failed");
+    const refresh = chatOrigin.refreshRemoteControllerBoundToSession;
+    // Only the refresh that follows the command's own preparation fails.
+    vi.spyOn(chatOrigin, "refreshRemoteControllerBoundToSession").mockImplementation(async (...args) => {
+      if (mxcLaunchMock.prepare.mock.calls.length === 2) throw failure;
+      return refresh(...args);
+    });
+    const result = await executePowerShell(context("ps-mxc-refresh-rejects"));
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result.output).toBe("PowerShell spawn failed: authority refresh failed");
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+    expect(egressInvocationOwner(container.token())).toBeUndefined();
+    expect(existsSync(container.home())).toBe(false);
+    expect(childProcessMock.spawn.mock.calls.some(([, args]) => (args as readonly string[]).includes("eyJ9"))).toBe(false);
+  });
+
+  it.each(["launch environment", "read policy"] as const)("releases the isolated HOME when the %s cannot be built", async (stage) => {
+    bootMxcShells();
+    const failure = new Error(`${stage} failed`);
+    if (stage === "launch environment") {
+      vi.spyOn(powerShellLaunch, "preparePowerShellLaunch").mockImplementation(() => { throw failure; });
+    } else {
+      vi.spyOn(asrtSandbox, "getBuiltinShellReadPolicy").mockImplementation(() => { throw failure; });
+    }
+    const result = await executePowerShell(context(`ps-mxc-${stage.replace(" ", "-")}-throws`));
+    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result.output).toBe(`PowerShell spawn failed: ${stage} failed`);
+    expect(sandboxHomeMock.onCleanup.mock.calls.map(([home]) => existsSync(home))).toEqual([false]);
+    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+  });
+
+  // The command's launcher has a pid, reports an error and keeps running until the test ends it.
+  function runningLauncherWithError(): () => EventEmitter {
+    const launchers: EventEmitter[] = [];
+    const spawn = childProcessMock.spawn.getMockImplementation();
+    if (spawn === undefined) throw new Error("Missing child spawn fixture");
+    childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
+      if (file !== WXC_EXEC || args.includes(PARSER_REQUEST)) return spawn(file, args, options);
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null as number | null, signalCode: null, pid: 4242, kill: vi.fn(() => true),
+      });
+      child.once("exit", (code: number) => { child.exitCode = code; });
+      queueMicrotask(() => child.emit("error", Object.assign(new Error("kill EPERM"), { code: "EPERM" })));
+      launchers.push(child);
+      return child;
+    });
+    return () => {
+      const [launcher] = launchers;
+      if (launcher === undefined) throw new Error("The command's launcher was not started");
+      return launcher;
+    };
+  }
+
   const releaseListenerCleanups: (() => void)[] = [];
   afterEach(() => { for (const cleanup of releaseListenerCleanups.splice(0)) cleanup(); });
 
@@ -498,7 +680,10 @@ describe("builtin shell — Windows MXC containers", () => {
   ): { token: () => string; home: () => string } {
     let token: string | undefined;
     let home: string | undefined;
-    mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string; egressToken: string; filesystem: { allowWrite: string[] } }) => {
+    mxcLaunchMock.prepare.mockImplementation(async (
+      input: { commandLine: string; egressToken: string; filesystem: { allowWrite: string[] } },
+      lifecycle: ContainedShellLifecycle,
+    ) => {
       const parser = isParserLaunch(input);
       if (!parser) {
         token = input.egressToken;
@@ -506,12 +691,12 @@ describe("builtin shell — Windows MXC containers", () => {
         if ("prepareRejects" in failure) throw failure.prepareRejects;
       }
       const rejects = parser ? undefined : failure.launchRejects;
+      lifecycle.defer(rejects === undefined ? mxcLaunchMock.release : async () => { await mxcLaunchMock.release(); throw rejects; });
       return {
         argv: [WXC_EXEC, "--config-base64", parser ? PARSER_REQUEST : "eyJ9"],
         proxyPort: 51234,
         activate: mxcLaunchMock.activate,
         bindChild: mxcLaunchMock.bindChild,
-        release: rejects === undefined ? mxcLaunchMock.release : async () => { await mxcLaunchMock.release(); throw rejects; },
       };
     });
     const thrown = failure.egressThrows;
@@ -542,25 +727,24 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(existsSync(container.home())).toBe(false);
   });
 
+  // The real preparation and transport wrapper; only the policy pipe beneath the wrapper is replaced.
   async function configureCommandLauncher(
-    openTransport: typeof mxcWindows.openMxcRequestTransport,
+    openPipe: typeof mxcPolicyPipe.openMxcPolicyPipe,
     observerError: Error,
   ) {
     const { prepareMxcShellLaunch } = await vi.importActual<typeof import("../mxc-shell-launch.js")>("../mxc-shell-launch.js");
     const prepareParser = mxcLaunchMock.prepare.getMockImplementation();
     if (prepareParser === undefined) throw new Error("Missing parser launch fixture");
     const closeRelay = vi.fn(async () => {});
-    vi.spyOn(egressHostListener, "openHostEgressListener").mockResolvedValue({
-      port: 9,
-      proxyAuthorization: "Basic eA==",
-      registerPort: vi.fn(),
-      recordRefusal: vi.fn(),
-      close: closeRelay,
+    // As the runtime does, the relay hands its close to the admission as soon as it exists.
+    vi.spyOn(egressHostListener, "openHostEgressListener").mockImplementation(async (_token, admission) => {
+      admission?.adopt(closeRelay);
+      return { port: 9, proxyAuthorization: "Basic eA==", registerPort: vi.fn(), recordRefusal: vi.fn(), close: closeRelay };
     });
     vi.spyOn(mxcWindows, "resolveHostWxcExecPath").mockResolvedValue(WXC_EXEC);
-    vi.spyOn(mxcWindows, "openMxcRequestTransport").mockImplementation(openTransport);
-    mxcLaunchMock.prepare.mockImplementation((input: PrepareMxcShellLaunchInput) => {
-      if (isParserLaunch(input)) return prepareParser(input);
+    vi.spyOn(mxcPolicyPipe, "openMxcPolicyPipe").mockImplementation(openPipe);
+    mxcLaunchMock.prepare.mockImplementation((input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
+      if (isParserLaunch(input)) return prepareParser(input, lifecycle);
       releaseListenerCleanups.push(onEgressInvocationReleased((token) => {
         if (token === input.egressToken) throw observerError;
       }));
@@ -569,10 +753,11 @@ describe("builtin shell — Windows MXC containers", () => {
         ...input,
         cwd: FIXTURE_WORKSPACE,
         filesystem: { allowWrite: [FIXTURE_WORKSPACE], allowRead: [], denyRead: [], denyWrite: [], floorPierces: [] },
-        env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\ave-fixture\home\AppData\Local` },
+        // Too large for the command line, so the request travels over the policy pipe.
+        env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\ave-fixture\home\AppData\Local`, AVE_FIXTURE_PADDING: "x".repeat(25_000) },
         exists: (path) => path === WXC_EXEC || path === FIXTURE_WORKSPACE,
         list: () => [],
-      });
+      }, lifecycle);
     });
     return closeRelay;
   }
@@ -593,8 +778,9 @@ describe("builtin shell — Windows MXC containers", () => {
     transportFailure.resolve(new Error("policy transport open failed"));
     const result = await execution;
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
-    expect(result.output).toMatch(/^PowerShell spawn failed: policy transport open failed.*invocation release observer failed/u);
-    expect(mxcWindows.openMxcRequestTransport).toHaveBeenCalledOnce();
+    expect(result.output).toBe("PowerShell spawn failed: Windows sandbox policy pipe could not be opened: policy transport open failed\n"
+      + "Shell resource release failed: invocation release observer failed");
+    expect(mxcPolicyPipe.openMxcPolicyPipe).toHaveBeenCalledOnce();
     expect(closeRelay).toHaveBeenCalledOnce();
   });
 
@@ -605,7 +791,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const release = vi.fn(async () => {
       throw new Error(`${transportMessage} at /home/bob/policy with api_key=transport-secret-example`);
     });
-    const closeRelay = await configureCommandLauncher(async () => ({ args: ["--config-base64", "eyJ9"], bindChild: vi.fn(), release }),
+    const closeRelay = await configureCommandLauncher(async () => ({ bindChild: vi.fn(), release }),
       new Error(String.raw`${observerMessage} at C:\Users\alice\observer with password=observer-secret-example`));
     let rendered: string;
     if (sink === "result") {
@@ -617,11 +803,12 @@ describe("builtin shell — Windows MXC containers", () => {
       vi.spyOn(console, "error").mockImplementation((message: unknown, details: unknown) => {
         if (message === "[shell-tasks] shell resource release failed after the result settled") logged.resolve(details);
       });
-      const setupError = new Error("could not start shell observation");
-      setAgentTerminalObservationSink({ start: () => { throw setupError; }, egress: vi.fn(), releaseSessions: vi.fn() });
-      const identity = { sessionId: "observed-shell", turnId: "observed-turn", toolUseId: "ps-mxc-both-release-failures" };
-      await expect(runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
-        () => executePowerShell(context(identity.toolUseId))))).rejects.toBe(setupError);
+      const launcher = runningLauncherWithError();
+      const result = await executePowerShell(context("ps-mxc-both-release-failures"));
+      expect(result.output).toBe("PowerShell spawn failed: failure details unavailable");
+      expect(release).not.toHaveBeenCalled();
+      launcher().emit("exit", 1, null);
+      launcher().emit("close", 1, null);
       const entry = await logged.promise;
       expect(entry).toMatchObject({ label: "tool:powershell:mxc", failures: expect.any(String) });
       rendered = JSON.stringify(entry);
@@ -629,7 +816,7 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(rendered).toContain(`${observerMessage} at [home]`);
     expect(rendered).toContain(`${transportMessage} at [home]`);
     expect(rendered).not.toMatch(/alice|bob|observer-secret-example|transport-secret-example/u);
-    expect(mxcWindows.openMxcRequestTransport).toHaveBeenCalledOnce();
+    expect(mxcPolicyPipe.openMxcPolicyPipe).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
     expect(closeRelay).toHaveBeenCalledOnce();
   });
@@ -646,7 +833,7 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(existsSync(container.home())).toBe(false);
   });
 
-  it("releases egress when HOME cleanup throws after observation start fails", async () => {
+  it("reports an observation start failure with a HOME cleanup failure after releasing egress", async () => {
     bootMxcShells();
     const container = failCommandContainerRelease({});
     const setupError = new Error("could not start shell observation");
@@ -658,13 +845,13 @@ describe("builtin shell — Windows MXC containers", () => {
     setAgentTerminalObservationSink({ start: () => { throw setupError; }, egress: vi.fn(), releaseSessions: vi.fn() });
     const identity = { sessionId: "observed-shell", turnId: "observed-turn", toolUseId: "ps-mxc-observation-start-fails" };
     try {
-      const execution = runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+      const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
         () => executePowerShell(context(identity.toolUseId))));
-      const outcome = await execution.catch((error: unknown) => error);
       expect(sandboxHomeMock.onCleanup).toHaveBeenCalledWith(container.home());
       expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
       expect(egressInvocationOwner(container.token())).toBeUndefined();
-      expect(outcome).toBe(setupError);
+      expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable", sandboxCleanupFailed: true } });
+      expect(result.output).toBe("PowerShell spawn failed: could not start shell observation\nShell resource release failed: HOME cleanup failed");
     } finally {
       releaseEgressInvocation(container.token());
     }
@@ -720,13 +907,12 @@ describe("builtin shell — Windows MXC containers", () => {
         () => executePowerShell(context(identity.toolUseId))));
       expect(result.isError).toBe(true);
       expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(500);
-      expect(result.output === `PowerShell spawn failed: ${rendered}`).toBe(true);
+      if (stage === "finalization") expect(result.output.endsWith(`\nShell resource release failed: ${rendered}`)).toBe(true);
+      else expect(result.output === `PowerShell spawn failed: ${rendered}`).toBe(true);
       expect(releaseState.mock.results.map(({ value }) => value)).toEqual([
         { egressLive: false, homeExists: false, launchReleases: 2 },
       ]);
-      if (stage === "finalization") {
-        expect(log).toHaveBeenCalledWith("[shell-tasks] shell finalization failed", { label: "tool:powershell:mxc", err: rendered });
-      }
+      expect(log).not.toHaveBeenCalledWith("[shell-tasks] shell finalization failed", expect.anything());
     });
   });
 
@@ -772,6 +958,31 @@ describe("builtin shell — Windows MXC containers", () => {
       return loop;
     }, "before; loop"],
     ["unreadable aggregate members", unreadableAggregate, "failure details unavailable"],
+    ["an unreadable member after a readable one", () => {
+      const aggregate = new AggregateError([], "partly unreadable");
+      const members = new Proxy([new Error("first member failed"), new Error("hidden member")], {
+        get: (target, key, receiver) => {
+          if (key === "1") throw new Error("member read failed");
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      Object.defineProperty(aggregate, "errors", { value: members });
+      return aggregate;
+    }, "first member failed; failure details unavailable"],
+    // Not coerced: only a string or a verified Error's string message is read, and only after its length is bounded.
+    ["a message that is not a string", () => {
+      const error = new Error("placeholder");
+      Object.defineProperty(error, "message", { value: { toString: () => "x".repeat(1_000_000) } });
+      return error;
+    }, "failure details unavailable"],
+    ["a thrown string", () => "plain failure text", "plain failure text"],
+    ["an error and the causes its text lacks", () => new Error("transport failed", { cause: new Error("pipe busy", { cause: new Error("transport failed") }) }),
+      "transport failed: pipe busy"],
+    ["an unreadable cause", () => {
+      const error = new Error("transport failed");
+      Object.defineProperty(error, "cause", { get: () => { throw new Error("cause read failed"); } });
+      return error;
+    }, "transport failed"],
   ];
 
   it.each(FAILURE_STAGES.flatMap((stage) => BOUNDED_FAILURES.map(([name, error, text]) => [stage, name, error, text] as const)))(

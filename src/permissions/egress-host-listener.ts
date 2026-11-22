@@ -33,7 +33,11 @@ export async function openMxcEgressLease(token: string): Promise<InvocationProxy
     });
     return { port: listener.port, url: listener.url, close };
   } catch (error) {
-    await close();
+    try {
+      await close();
+    } catch (closeError) {
+      throw new AggregateError([error, closeError], "Container egress lease failed to open and to close");
+    }
     throw error;
   }
 }

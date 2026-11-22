@@ -12,7 +12,7 @@ import { openEgressInvocation, type EgressInvocationOwner } from "../egress-invo
 import { egressIdentityStrength } from "../egress-identity.js";
 import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
-import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../audit/sandbox-audit.js";
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
 import { DEFAULT_UPSTREAM_PROXY, type UpstreamProxySettings } from "../../shared/upstream-proxy.js";
@@ -223,7 +223,7 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
   }
 
   async function launchFor(token: string) {
-    const launch = await prepareMxcShellLaunch({
+    const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",
       cwd: String.raw`C:\work\repo`,

@@ -11,7 +11,7 @@ import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { resolveTrustedPowerShellExecutable } from "../../shared/powershell-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 
 describe.runIf(process.platform === "win32")("native pipe policy lifetime", () => {
   registerMxcShellLaunchAdmissionFixture();
@@ -25,14 +25,14 @@ describe.runIf(process.platform === "win32")("native pipe policy lifetime", () =
     const readonly = Array.from({ length: 100 }, (_, index) => join(home, `example-${index}`));
     for (const path of readonly) mkdirSync(path);
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([home]);
-    let launch: Awaited<ReturnType<typeof prepareMxcShellLaunch>> | undefined;
+    let launch: Awaited<ReturnType<typeof prepareOwnedMxcShellLaunch>> | undefined;
     let egress: ReturnType<typeof openEgressInvocation> | undefined;
     try {
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
       egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
         context: { sessionId: undefined, workspaceRoot: directory, approvalSurface: "unavailable" } });
       const executable = resolveTrustedPowerShellExecutable()!.executable;
-      launch = await prepareMxcShellLaunch({
+      launch = await prepareOwnedMxcShellLaunch({
         egressToken: egress.token, cwd: directory,
         commandLine: `"${executable}" -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 20; Write-Output done"`,
         filesystem: { allowWrite: [directory], allowRead: [home, ...readonly], denyRead: getProtectedReadDenyFloor(), denyWrite: getDefaultSensitiveWriteDenyPaths() },

@@ -17,7 +17,7 @@ import {
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { EgressGrantStore, egressGrantScopesFor } from "../egress-grants.js";
-import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 
 vi.mock("../mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-windows.js")>(),
@@ -144,7 +144,7 @@ type LaneKind = "listener" | "launcher";
 
 async function lane(token: string, kind: LaneKind) {
   if (kind === "launcher") {
-    const launch = await prepareMxcShellLaunch({
+    const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",
       cwd: String.raw`C:\work\repo`,

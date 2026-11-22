@@ -626,7 +626,8 @@ export async function openMxcRequestTransport(request: MxcContainerRequest, laun
   try {
     return { args, ...await openMxcPolicyPipe(Buffer.from(json, "utf8"), pipe) };
   } catch (error) {
-    throw new Error(`Windows sandbox policy pipe could not be opened: ${errorMessage(error)}`, { cause: error });
+    // The cause is read only by whoever reports the failure, after its resources are released.
+    throw new Error("Windows sandbox policy pipe could not be opened", { cause: error });
   }
 }
 
