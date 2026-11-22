@@ -1,6 +1,6 @@
 import { abortRunningTurnsForExit } from "../engine/turn/turn-journal.js";
 import { HostExitAbortError } from "../shared/host-exit-abort.js";
-import { sealToolInvocations, joinToolInvocations, markToolInvocationAuditClosed } from "../tools/invocation-ledger.js";
+import { sealToolInvocations, closeToolInvocationAudit } from "../tools/invocation-ledger.js";
 import { requireDesktopHost } from "./host-runtime.js";
 /** Lifecycle closures share mutable boot context so timers and event disposers survive window recreation. */
 import {
@@ -147,9 +147,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
         attempt(() => ctx.askUserQuestionGate.disposeAll());
         attempt(() => ctx.mcpGovernance.stopPolicyRefresh());
         await attemptAsync(() => ctx.mcpManager.disconnectAll());
-        await attemptAsync(async () => { await joinToolInvocations(); });
-        await attemptAsync(() => ctx.bootAuditLogger.close());
-        markToolInvocationAuditClosed();
+        await attemptAsync(async () => { await closeToolInvocationAudit(() => ctx.bootAuditLogger.close()); });
         await attemptAsync(() => ctx.auditService.stop());
         await attemptAsync(() => ctx.tracing.shutdown());
 

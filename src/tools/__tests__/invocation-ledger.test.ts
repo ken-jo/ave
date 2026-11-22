@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const { logError } = vi.hoisted(() => ({ logError: vi.fn() }));
 vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ error: logError }) }));
+const close = vi.fn(async () => {});
 
 beforeEach(() => {
   vi.resetModules();
@@ -32,8 +33,8 @@ it("aborts current and later admissions and joins work admitted during the drain
   ledger.sealToolInvocations();
   expect(tracked.signal.reason).toBe(shutdown);
 
-  const join = ledger.joinToolInvocations();
-  expect(ledger.joinToolInvocations()).toBe(join);
+  const join = ledger.closeToolInvocationAudit(close);
+  expect(ledger.closeToolInvocationAudit(close)).toBe(join);
   const later = ledger.admitToolInvocation("later");
   expect(later.signal.reason).toBe(shutdown);
   first.settle();
@@ -50,7 +51,7 @@ it("settles ordinary rejected invocations without treating them as audit failure
   const admission = ledger.admitToolInvocation("ordinary");
   const failed = Promise.reject(new Error("handler failure")).finally(admission.settle);
   ledger.sealToolInvocations();
-  const joining = ledger.joinToolInvocations();
+  const joining = ledger.closeToolInvocationAudit(close);
   await expect(failed).rejects.toThrow("handler failure");
   expect(await joining).toBe(1);
 });
@@ -61,7 +62,7 @@ it("finishes draining a rejected settlement and surfaces its failure", async () 
   const late = new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; });
   ledger.trackToolInvocationSettlement(late);
   ledger.sealToolInvocations();
-  const joining = expect(ledger.joinToolInvocations()).rejects.toThrow("shutdown invocation audit failed");
+  const joining = expect(ledger.closeToolInvocationAudit(close)).rejects.toThrow("shutdown invocation audit failed");
   reject(new Error("audit unavailable"));
   await joining;
   expect(ledger.pendingToolInvocationCount()).toBe(0);
@@ -85,13 +86,16 @@ it("keeps other admissions pending when one settles repeatedly", async () => {
   expect(ledger.pendingToolInvocationCount()).toBe(0);
 });
 
-it("diagnoses an invocation admitted after the audit logger closed", async () => {
+it("refuses an invocation admitted while the audit logger closes and fails the shutdown", async () => {
   const ledger = await import("../invocation-ledger.js");
   ledger.sealToolInvocations();
-  await ledger.joinToolInvocations();
-  ledger.markToolInvocationAuditClosed();
-  const late = ledger.admitToolInvocation("late");
-  expect(late.signal.aborted).toBe(true);
+  let late: ReturnType<typeof ledger.admitToolInvocation> | undefined;
+  const closing = ledger.closeToolInvocationAudit(async () => {
+    late = ledger.admitToolInvocation("late");
+  });
+  await expect(closing).rejects.toThrow("shutdown invocation audit failed");
+  expect(late?.signal.aborted).toBe(true);
+  expect(ledger.pendingToolInvocationCount()).toBe(0);
   expect(logError).toHaveBeenCalledWith("tool invocation admitted after audit close: %s", "late");
-  late.settle();
+  late?.settle();
 });

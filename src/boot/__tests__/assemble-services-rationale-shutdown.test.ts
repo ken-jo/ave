@@ -12,8 +12,10 @@ vi.mock("../../main/auth-window-service.js", () => ({
 const { ledgerOrder } = vi.hoisted(() => ({ ledgerOrder: [] as string[] }));
 vi.mock("../../tools/invocation-ledger.js", () => ({
   sealToolInvocations: () => ledgerOrder.push("invocations-seal"),
-  joinToolInvocations: async () => { ledgerOrder.push("invocations-join"); },
-  markToolInvocationAuditClosed: vi.fn(),
+  closeToolInvocationAudit: async (close: () => Promise<void>) => {
+    ledgerOrder.push("invocations-join");
+    await close();
+  },
 }));
 
 describe("assembleAppServices rationale shutdown", () => {

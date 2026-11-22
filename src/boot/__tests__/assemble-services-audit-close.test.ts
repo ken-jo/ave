@@ -181,6 +181,57 @@ describe("shutdown permission audit ordering", () => {
     expect(outcome).toMatchObject({ status: "fulfilled", value: [{ is_error: true }] });
   });
 
+  it.each([...Array.from({ length: 13 }, (_, hops) => hops), "close"] as const)(
+    "an arrival after the last drained entry (%s) is joined before close or fails the shutdown",
+    async (when) => {
+      const ledger = await import("../../tools/invocation-ledger.js");
+      const { assembleAppServices } = await import("../assemble-services.js");
+      const arrive = async (): Promise<"written" | "rejected"> => {
+        const admission = ledger.admitToolInvocation("late_probe");
+        try {
+          await nextMacrotask();
+          await ledger.appendToolInvocationAudit(audit, {
+            decision: "deny", ts: new Date().toISOString(), auditId: "late-probe", tool: "late_probe",
+            source: "builtin", category: "write", trustOrigin: "user-keyboard",
+            denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
+          });
+          return "written";
+        } catch {
+          return "rejected";
+        } finally {
+          admission.settle();
+        }
+      };
+      let arrival: Promise<"written" | "rejected"> | undefined;
+      const close = audit.close.bind(audit);
+      vi.spyOn(audit, "close").mockImplementation(async () => {
+        if (when === "close") arrival = arrive();
+        const closed = close();
+        await arrival;
+        return closed;
+      });
+      const last = ledger.admitToolInvocation("last_probe");
+      const shutdown = Promise.allSettled([assembleAppServices(shutdownContext(audit, new ApprovalGate(null))).shutdown!()]);
+      await nextMacrotask();
+      if (when !== "close") {
+        let hop = Promise.resolve();
+        for (let i = 0; i < when; i += 1) hop = hop.then(() => {});
+        arrival = hop.then(arrive);
+      }
+      last.settle();
+      const [outcome] = await shutdown;
+      if (await arrival === "written") {
+        expect(outcome.status).toBe("fulfilled");
+        expect(audit.order).toEqual(["append:deny", "close"]);
+      } else {
+        expect(outcome).toMatchObject({
+          status: "rejected",
+          reason: { errors: [expect.objectContaining({ message: "shutdown invocation audit failed" })] },
+        });
+      }
+    },
+  );
+
   it("aborts slow HTTP and script lifecycle hooks at seal and drains without advancing timers", async () => {
     const { ToolExecutor } = await import("../../tools/executor.js");
     const { ScriptHookManager } = await import("../../hooks/script-hook-manager.js");

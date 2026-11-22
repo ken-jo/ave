@@ -398,10 +398,10 @@ export async function runAppShutdownCleanup(options: {
     const closeAuditAfterForceKill = (): void => {
       // The graceful deadline also bounds audit draining.
       sealToolInvocations();
+      markToolInvocationAuditClosed();
       void (async () => { await auditLogger.close(); })().catch((error: unknown) => {
         log.warn("shutdown: audit logger close failed: %s", errorMessage(error));
       });
-      markToolInvocationAuditClosed();
     };
 
     if (result.status === "timed-out") {
