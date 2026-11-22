@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { WorkflowRunStore } from "../../../main/workflow-run-store.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry, type PassConditionRegistry } from "../stage-gates.js";
@@ -20,6 +21,7 @@ async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSp
   let losing = false;
   const lose = (on: boolean): void => { losing = on; };
   const h = await stageRunHarness({
+    observeRunWork: true,
     script: () => { onSpawn?.(lose); return undefined; },
     workflow: passConditions ? { passConditions } : undefined,
     wiring: (store) => {
@@ -55,6 +57,11 @@ async function permittedRead(h: Harness): Promise<void> {
   if (listed.status === "ok") await h.engine.projectTemplateRuns(listed.items);
   await h.engine.adoptParkedTemplateRuns();
 }
+async function replayHeldEvents(h: Harness): Promise<void> {
+  await permittedRead(h);
+  await h.drainRunWork();
+}
+
 const settle = () => new Promise(resolve => setTimeout(resolve, 50));
 const logged = (spy: { mock: { calls: unknown[][] } }, text: string): number => spy.mock.calls.filter(call => call.some(arg => arg === text)).length;
 
@@ -406,26 +413,25 @@ it.each(["before", "before-evaluation", "after", "none"] as const)("a held repla
     lose(true);
     child.finish();
     const held = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
-    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([held]));
+    await h.drainRunWork();
+    expect(runsOnDisk(h).heldEvents).toEqual([held]);
     const warnings = vi.spyOn(console, "warn");
     const write = failure === "before" ? vi.spyOn(h.board, "updateRun").mockRejectedValue(new Error("before gate effect")) : undefined;
     lose(false);
     await h.engine.adoptParkedTemplateRuns();
+    await h.drainRunWork();
     if (failure === "before") {
-      await vi.waitFor(() => expect(write).toHaveBeenCalled());
-      await settle();
+      expect(write).toHaveBeenCalled();
       expect(runsOnDisk(h).heldEvents).toEqual([held]);
       expect((await h.runOf(runId))?.settled).toBeUndefined();
       expect(evaluate).not.toHaveBeenCalled();
       write?.mockRestore();
     } else if (failure === "before-evaluation") {
-      await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
-      await settle();
+      expect(evaluate).toHaveBeenCalledTimes(1);
       expect(runsOnDisk(h).heldEvents).toEqual([held]);
       expect((await h.runOf(runId))?.settled).toBeUndefined();
     } else if (failure === "after") {
-      await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
-      await settle();
+      expect(evaluate).toHaveBeenCalledTimes(1);
       expect(runsOnDisk(h).heldEvents).toBeUndefined();
     }
     const boundary = failure === "before-evaluation" ? "before" : failure;
@@ -433,8 +439,7 @@ it.each(["before", "before-evaluation", "after", "none"] as const)("a held repla
     await Promise.all([permittedRead(h), permittedRead(h)]);
     if (failure === "after") await h.untilStage(id, "a", "failed");
     else expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "done" });
-    await permittedRead(h);
-    await settle();
+    await replayHeldEvents(h);
     expect(evaluate).toHaveBeenCalledTimes(failure === "before-evaluation" ? 2 : 1);
     expect(runsOnDisk(h).heldEvents).toBeUndefined();
     expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(failure === "after" ? 0 : 1);
@@ -458,22 +463,78 @@ it.each(["before", "after", "none"] as const)("a registered gate retries only an
     lose(true);
     child.finish();
     const identity = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
-    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([identity]));
+    await h.drainRunWork();
+    expect(runsOnDisk(h).heldEvents).toEqual([identity]);
     const warnings = vi.spyOn(console, "warn");
     lose(false);
-    await permittedRead(h);
-    await vi.waitFor(() => expect(calls).toBe(1));
-    await settle();
+    await replayHeldEvents(h);
+    expect(calls).toBe(1);
     if (failure === "before") {
       expect(effects).toBe(0);
       expect(runsOnDisk(h).heldEvents).toEqual([identity]);
     } else expect(runsOnDisk(h).heldEvents).toBeUndefined();
     if (failure !== "none") expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes(`${failure} registered effect`)))).toBe(true);
-    await permittedRead(h);
+    await replayHeldEvents(h);
     if (failure === "after") await h.untilStage(id, "a", "failed");
     else expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "done" });
-    await permittedRead(h);
+    await replayHeldEvents(h);
     expect(calls).toBe(failure === "before" ? 2 : 1);
     expect(effects).toBe(1);
+  }, undefined, "row-lost", conditions);
+});
+
+it("waits for held-event removal after a registered gate claims its effect and throws", async () => {
+  const conditions = createPassConditionRegistry();
+  const evaluate = vi.fn((facts: Parameters<PassConditionRegistry["evaluate"]>[1]) => {
+    expect(facts.claimEffect?.()).toBe(true);
+    throw new Error("after registered effect");
+  });
+  conditions.register("stage_ok", { evaluate });
+
+  await withRun(["a"], async run => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    await h.drainRunWork();
+    const identity = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
+    expect(runsOnDisk(h).heldEvents).toEqual([identity]);
+
+    const dropStarted = deferred<void>();
+    const allowDrop = deferred<void>();
+    const dropHeld = h.board.runs.dropHeld.bind(h.board.runs);
+    const drop = vi.spyOn(h.board.runs, "dropHeld").mockImplementationOnce(async (...args) => {
+      dropStarted.resolve();
+      await allowDrop.promise;
+      await dropHeld(...args);
+    });
+    const drainStarted = deferred<void>();
+    const drainRunWork = h.drainRunWork;
+    vi.spyOn(h, "drainRunWork").mockImplementationOnce(() => {
+      drainStarted.resolve();
+      return drainRunWork();
+    });
+
+    lose(false);
+    const replayed = replayHeldEvents(h).then(() => {
+      expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    });
+    try {
+      // Keep the write paused until the reader joins the drain or tries to read the file.
+      await Promise.race([drainStarted.promise, replayed]);
+      await dropStarted.promise;
+      expect(evaluate).toHaveBeenCalledOnce();
+      expect(runsOnDisk(h).heldEvents).toEqual([identity]);
+    } finally {
+      allowDrop.resolve();
+      await drainRunWork();
+    }
+    await replayed;
+    expect(drop).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ itemId: id, runId }), {
+      stage: "a", attempt: 1, kind: "stage_ended",
+    });
+    await h.untilStage(id, "a", "failed");
+    await replayHeldEvents(h);
+    expect(evaluate).toHaveBeenCalledOnce();
   }, undefined, "row-lost", conditions);
 });
