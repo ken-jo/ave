@@ -27,7 +27,7 @@ import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
-import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
+import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
@@ -1860,7 +1860,7 @@ function getDefaultSensitiveDenyPaths(
   return out;
 }
 
-const WINDOWS_PROFILE_WRITE_FLOOR_ERROR = "Windows profile write floor could not establish the Documents path";
+const WINDOWS_PROFILE_WRITE_FLOOR_ERROR = "Windows profile write floor could not establish all profile paths";
 
 function windowsProfileWriteDenies(homes: readonly string[], resolveDocumentsPath: (() => string) | undefined) {
   const roots = homes.map(home => win32.join(home, "Documents"));
@@ -1878,7 +1878,14 @@ function windowsProfileWriteDenies(homes: readonly string[], resolveDocumentsPat
   const paths = roots.flatMap(root => ["WindowsPowerShell", "PowerShell"].flatMap(engine =>
     ["profile.ps1", "Microsoft.PowerShell_profile.ps1"].flatMap(name => {
       const path = win32.join(root, engine, name);
-      return [path, stripExtendedPathPrefix(resolvePathForPolicy(path))];
+      if (isUncPath(path)) return [path];
+      try {
+        const physical = HOST_PLATFORM === "win32" ? projectLocalWindowsFilesystemPath(path, MAX_WALK_UP) : resolvePathForPolicy(path);
+        return [path, stripExtendedPathPrefix(physical)];
+      } catch {
+        bounded = false;
+        return [path];
+      }
     })));
   return { paths, bounded };
 }

@@ -92,6 +92,33 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     expect(grants.readwrite).toContain(adjacent);
   });
 
+  it("protects the absent physical target of an engine junction", () => {
+    const linkedDocuments = join(root, "linked-documents");
+    const targetParent = join(root, "writable-targets");
+    const target = join(targetParent, "future-engine");
+    const unrelated = join(targetParent, "work");
+    mkdirSync(linkedDocuments);
+    mkdirSync(unrelated, { recursive: true });
+    const engine = join(linkedDocuments, "PowerShell");
+    symlinkSync(target, engine, "junction");
+
+    const { filesystem } = buildSandboxConfig({
+      allowWrite: [targetParent, linkedDocuments], resolveWindowsDocumentsPath: () => linkedDocuments,
+      windows: { externalConfinement: true },
+    });
+    const paths = (entries: typeof filesystem.denyWrite) => entries.map(entry => typeof entry === "string" ? entry : entry.path);
+    const denyWrite = paths(filesystem.denyWrite);
+    expect(denyWrite).toEqual(expect.arrayContaining([
+      join(engine, "profile.ps1"), join(target, "profile.ps1"), join(target, "Microsoft.PowerShell_profile.ps1"),
+    ]));
+    const grants = rankMxcFilesystem({
+      allowWrite: paths(filesystem.allowWrite), allowRead: [], denyWrite, denyRead: [], protectedFloor: [],
+    }, existsSync);
+    expect(grants.denied).toContain(target);
+    expect(grants.readwrite).toContain(targetParent);
+    expect(grants.denied.some(path => unrelated.startsWith(`${path}\\`))).toBe(false);
+  });
+
   it("protects a configured Documents directory before it exists", () => {
     const parent = join(root, "configured");
     const missingDocuments = join(parent, "Documents");
