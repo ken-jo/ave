@@ -405,3 +405,18 @@ it("a child wait outlives the confirmed end of the item's earlier stopped run", 
     await h.cleanup();
   }
 });
+
+it("a child wait created after a refused start settles at once", async () => {
+  const h = await stageRunHarness();
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    expect(await h.start(id, h.local(version, h.dir))).toMatchObject({ status: "error" });
+    const result = await Promise.race([Promise.allSettled([h.untilLive(1, id), h.untilSpawned(1, id)]), setImmediate("still pending")]);
+    expect(result).toEqual(Array.from({ length: 2 }, () => ({
+      status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/project-mismatch/) }),
+    })));
+  } finally {
+    await h.cleanup();
+  }
+});

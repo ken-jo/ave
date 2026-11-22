@@ -210,20 +210,25 @@ export async function stageRunHarness(opts: {
       async runItem(...args: Parameters<typeof current.runItem>) {
         const [itemId] = args;
         const origin = workBoardOriginSessionId(itemId);
+        const previous = lastRequestedOrigin;
         if (engine === wrapped) {
           lastRequestedOrigin = origin;
           failures.delete(origin);
         }
         const first = children.length;
+        const spawned = () => children.slice(first).some(child => child.input.originSessionId === origin);
+        // A start that ended before any child of it spawned is not the one aggregate waits follow afterwards.
+        const ended = (reason: string) => {
+          failChildWaits(reason, origin, true);
+          if (!spawned() && lastRequestedOrigin === origin) lastRequestedOrigin = previous;
+        };
         try {
           const result = await current.runItem(...args);
-          if (engine === wrapped && (result.status !== "awaiting_approval"
-            || !children.slice(first).some(child => child.input.originSessionId === origin))) {
-            failChildWaits(`${result.status}: ${"reason" in result ? result.reason : "run ended without the requested child"}`, origin);
-          }
+          if (engine === wrapped && result.status !== "awaiting_approval") ended(`${result.status}: ${"reason" in result ? result.reason : "run ended"}`);
+          else if (engine === wrapped && !spawned()) failChildWaits("awaiting_approval: run ended without the requested child", origin);
           return result;
         } catch (error) {
-          if (engine === wrapped) failChildWaits(String(error), origin);
+          if (engine === wrapped) ended(String(error));
           throw error;
         }
       },
