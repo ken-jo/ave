@@ -1,9 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createHostGit } from "../host-git.js";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { aveHome } from "../../../shared/ave-home.js";
+import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
+import { nodeIdOf } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
+import { JOIN_DIR, RUN_FILE, runBranch, runRootOf } from "../workspace-layout.js";
 import { setPath, writeUnder as write } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
@@ -14,13 +17,17 @@ vi.mock("../../../lib/logger.js", () => {
 });
 
 let fx: GitFixture;
+/** Set while a group of tests that change nothing shares one fixture. */
+let shared = false;
 
 beforeEach(() => {
-  fx = gitFixture();
+  if (!shared) fx = gitFixture();
   warned.length = 0;
 });
 
-afterEach(() => fx.done());
+afterEach(async () => {
+  if (!shared) await fx.done();
+});
 
 /** The admin folder a worktree's `.git` file names. */
 const adminOf = (worktree: string): string => resolve(worktree, readFileSync(join(worktree, ".git"), "utf8").replace(/^gitdir: /u, "").trim());
@@ -97,6 +104,9 @@ const refused: Row[] = [
   ["branch", ["branch"], () => "keep"],
   ["joinDir", ["joinDir"], () => "1:1"],
   ["stages.s1.dir", ["stages", "s1", "dir"], () => "1:1"],
+  ["baseCommit", ["baseCommit"], at => fx.userGit(fx.repo, "rev-parse", runBranch(at.other.run.runId))],
+  ["refs[0].name", ["refs", 0, "name"], () => "refs/heads/keep"],
+  ["refs[0].oid", ["refs", 0, "oid"], at => fx.userGit(fx.repo, "rev-parse", runBranch(at.other.run.runId))],
 ];
 
 /** A field that names the project or its repository: the run folder is still the run's and goes; the repository is left as it is. */
@@ -114,18 +124,32 @@ describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run"
     expectUsersOwn(at);
   });
 
-  it.each(refused)("a record whose %s no longer matches stops it: nothing of the run goes", async (_field, path, value) => {
-    const at = await scene();
-    setPath(at.record, path, value(at));
-    try {
-      await operate(operation);
-      expect(existsSync(join(at.stage, "a.txt"))).toBe(true);
-      expect(existsSync(join(at.runRoot, JOIN_DIR, "a.txt"))).toBe(true);
-      expectRepositoryUntouched(at);
-      expectUsersOwn(at);
-    } finally {
-      writeFileSync(at.record, at.written);
-    }
+  describe("a record changed in place", () => {
+    let at: Scene;
+
+    beforeAll(async () => {
+      fx = gitFixture();
+      shared = true;
+      at = await scene();
+    });
+
+    afterAll(async () => {
+      shared = false;
+      await fx.done();
+    });
+
+    it.each(refused)("a record whose %s no longer matches stops it: nothing of the run goes", async (_field, path, value) => {
+      setPath(at.record, path, value(at));
+      try {
+        await operate(operation);
+        expect(existsSync(join(at.stage, "a.txt"))).toBe(true);
+        expect(existsSync(join(at.runRoot, JOIN_DIR, "a.txt"))).toBe(true);
+        expectRepositoryUntouched(at);
+        expectUsersOwn(at);
+      } finally {
+        writeFileSync(at.record, at.written);
+      }
+    });
   });
 
   it.each(repositoryLeft)("a record whose %s no longer matches leaves the repository as it is: the run folder goes, and the field is named", async (field, path, value) => {
@@ -136,5 +160,88 @@ describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run"
     expectRepositoryUntouched(at);
     expectUsersOwn(at);
     expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining(field)]);
+  });
+});
+
+/** The call that makes the run's branch. */
+const makesBranch = (args: readonly string[]): boolean => args.includes("-b") || (args[0] === "update-ref" && args.length === 4 && args[3] === "");
+
+describe("the run branch", () => {
+  const code = (cwd: string, ...args: string[]): number | null => spawnSync("git", args, { cwd, env: fx.env, encoding: "utf8" }).status;
+
+  it("update-ref with an empty old value creates only an absent ref", () => {
+    const { repo, userGit } = fx;
+    const base = userGit(repo, "rev-parse", "HEAD");
+    write(repo, "c.txt", "two\n");
+    const next = fx.commitAll("second");
+    expect(code(repo, "update-ref", "refs/heads/pin", base, "")).toBe(0);
+    expect(code(repo, "update-ref", "refs/heads/pin", base, "")).not.toBe(0);
+    expect(code(repo, "update-ref", "refs/heads/pin", next, "")).not.toBe(0);
+    expect(userGit(repo, "rev-parse", "refs/heads/pin")).toBe(base);
+  });
+
+  it("update-ref -d with an old value deletes only a ref still there", () => {
+    const { repo, userGit } = fx;
+    const base = userGit(repo, "rev-parse", "HEAD");
+    write(repo, "c.txt", "two\n");
+    const next = fx.commitAll("second");
+    userGit(repo, "update-ref", "refs/heads/pin", next);
+    expect(code(repo, "update-ref", "-d", "refs/heads/pin", base)).not.toBe(0);
+    expect(userGit(repo, "rev-parse", "refs/heads/pin")).toBe(next);
+    expect(code(repo, "update-ref", "-d", "refs/heads/absent", base)).not.toBe(0);
+    expect(code(repo, "update-ref", "-d", "refs/heads/pin", next)).toBe(0);
+    expect(code(repo, "rev-parse", "--verify", "--quiet", "refs/heads/pin")).toBe(1);
+  });
+
+  it("a worktree add into an empty folder the host made attaches to the run branch by its short name and keeps the folder", () => {
+    const { repo, userGit } = fx;
+    userGit(repo, "update-ref", "refs/heads/ave/workflow/pin", userGit(repo, "rev-parse", "HEAD"), "");
+    const attached = join(fx.base, "attached");
+    const detached = join(fx.base, "detached");
+    for (const [folder, args] of [[attached, [attached, "ave/workflow/pin"]], [detached, ["--detach", detached, "HEAD"]]] as const) {
+      mkdirSync(folder);
+      const made = nodeIdOf(folder);
+      expect(code(repo, "worktree", "add", ...args)).toBe(0);
+      expect(nodeIdOf(folder)).toBe(made);
+    }
+    expect(userGit(attached, "symbolic-ref", "HEAD")).toBe("refs/heads/ave/workflow/pin");
+    expect(code(detached, "symbolic-ref", "-q", "HEAD")).toBe(1);
+  });
+
+  it("an open that loses the race for its branch leaves the other branch", async () => {
+    const { repo, userGit } = fx;
+    const real = createHostGit({ env: fx.env });
+    let raced = false;
+    const run: HostGit["run"] = async (cwd, args, call) => {
+      if (makesBranch(args) && !raced) {
+        raced = true;
+        userGit(repo, "branch", runBranch(handle.run.runId));
+      }
+      return real.run(cwd, args, call);
+    };
+    const handle = fx.start({ git: { run, drivers: real.drivers } });
+    const base = userGit(repo, "rev-parse", "HEAD");
+    expect(await handle.provider.open(handle.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+    expect(raced).toBe(true);
+    expect(userGit(repo, "rev-parse", runBranch(handle.run.runId))).toBe(base);
+    expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
+  });
+
+  it("an open whose branch creation ends without an answer leaves the branch", async () => {
+    const { repo, userGit } = fx;
+    const real = createHostGit({ env: fx.env });
+    const run: HostGit["run"] = async (cwd, args, call) => {
+      const result = await real.run(cwd, args, call);
+      if (makesBranch(args)) throw new HostGitError("terminated", "fixture: no answer");
+      return result;
+    };
+    const handle = fx.start({ git: { run, drivers: real.drivers } });
+    const base = userGit(repo, "rev-parse", "HEAD");
+    expect(await handle.provider.open(handle.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+    // Whether git made the branch is not known, so it is not the run's to delete.
+    expect(userGit(repo, "rev-parse", runBranch(handle.run.runId))).toBe(base);
+    const root = realpathSync.native(repo);
+    expect(existsSync(runRootOf(realpathSync.native(aveHome()), process.platform === "win32" ? root.toLowerCase() : root, handle.run.itemId, handle.run.runId))).toBe(false);
+    expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
   });
 });

@@ -266,10 +266,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       refs: [], registrations: {}, stages: {}, joins: {}, out: {},
     };
     const at: Held = { runRoot, file, ...chain };
-    /** The commit the run's branch was asked to start from, once this call is the one that makes it. */
-    let branchFrom: string | undefined;
+    let recorded = false;
     try {
       writeRunFile(at, file);
+      recorded = true;
       if (project === undefined || gitRun === undefined) {
         file.outDir = at.run.make(OUT_DIR).id;
         writeRunFile(at, file);
@@ -280,22 +280,25 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const joined = at.run.make(JOIN_DIR);
       file.joinDir = joined.id;
       writeRunFile(at, file);
-      // A branch of that name that is already there is not this run's: it is neither used nor, below, removed.
-      if ((await git.run(project.root, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).code !== 1) throw new HostGitError("unavailable", "the run's branch is taken");
+      // The branch is made only where no ref has its name: one that is already there is not this run's and stays as it is. A ref is
+      // recorded once git answered that it made it, and only a recorded ref is ever deleted.
+      const ref = `refs/heads/${branch}`;
       at.run.check();
-      branchFrom = baseCommit;
-      await gitOut(project.root, ["worktree", "add", "-b", branch, joined.path, baseCommit], { drivers: gitRun.drivers });
+      if ((await git.run(project.root, ["update-ref", ref, baseCommit, ""])).code !== 0) throw new Error("the run's branch is taken");
+      file.refs = [{ name: ref, oid: baseCommit }];
+      writeRunFile(at, file);
       joined.check();
+      await gitOut(project.root, ["worktree", "add", joined.path, branch], { drivers: gitRun.drivers });
+      joined.check();
+      if ((await gitOut(joined.path, ["symbolic-ref", "-q", "HEAD"])).trim() !== ref) throw new Error("the integration worktree is not on the run's branch");
       roots.set(basename(runRoot), runRoot);
       return { ok: true, workspace: { kind: "git", runRoot, branch, baseCommit } };
     } catch {
-      // The folder this call made goes only while it is still that folder; a plain folder's project sees no git call here.
-      await at.project.remove(basename(runRoot), at.run.id).catch(() => undefined);
-      if (project !== undefined && gitRun !== undefined) {
-        await forgetWorktrees(project.root, runRoot);
-        // Only the branch this call made, and only while it is still where it was made.
-        if (branchFrom !== undefined) await git.run(project.root, ["update-ref", "-d", `refs/heads/${gitRun.branch}`, branchFrom]).catch(() => undefined);
-      }
+      // What this call made goes the way a release takes it, by the record as far as it was written; a folder that got no record is
+      // still the directory this call made.
+      if (recorded) await releaseIn(at, "all", "drop").catch(() => undefined);
+      else await at.project.remove(basename(runRoot), at.run.id).catch(() => undefined);
+      roots.delete(basename(runRoot));
       return refused(project !== undefined ? "git-unavailable" : "workspace-unavailable");
     }
   }
@@ -628,6 +631,20 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
+  /** The refs the run made go only while each is still at the commit it was made at: a branch a stage was collected onto is the run's
+   * result and stays, and so does one git gave no answer for. */
+  async function deleteRunRefs(at: Held): Promise<void> {
+    const { file } = at;
+    const root = file.project?.root;
+    if (root === undefined) return;
+    for (const ref of [...file.refs]) {
+      const deleted = await git.run(root, ["update-ref", "-d", ref.name, ref.oid]).catch(() => undefined);
+      if (deleted?.code !== 0) continue;
+      file.refs = file.refs.filter(entry => entry !== ref);
+      writeRunFile(at, file);
+    }
+  }
+
   /** What of the run is no longer what its record names, read before a removal starts. */
   function preflight(at: Held): Mismatch[] {
     const { file } = at;
@@ -672,8 +689,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       await at.run.remove(JOIN_DIR, file.joinDir);
       if (repo) {
         await forgetWorktrees(root, runRoot);
-        // The branch is the run's result; it goes only when nothing was collected onto it.
-        await git.run(root, ["update-ref", "-d", `refs/heads/${runBranch(file.runId)}`, file.baseCommit]).catch(() => undefined);
+        await deleteRunRefs(at);
       }
     }
     if (file.kind === "folder" && at.run.entryId(OUT_DIR) !== undefined) {
