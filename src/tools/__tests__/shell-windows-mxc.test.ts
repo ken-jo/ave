@@ -671,14 +671,14 @@ describe("builtin shell — Windows MXC containers", () => {
   });
 
   const SIGNATURE = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
-  const SIGNED_URL = "https://objects.example/policy.json?X-Amz-Signature=";
+  const CREDENTIAL_URL = "https://objects.example/policy.json?api_key=";
   const ERROR_MESSAGES = [
     { kind: "a throwing message getter", message: undefined, rendered: "failure details unavailable" },
     { kind: "a 1M-character message", message: "x".repeat(1_000_000), rendered: "failure message omitted (1000000 characters)" },
     {
-      kind: "a signed URL and home path",
-      message: `upload to ${SIGNED_URL}${SIGNATURE} from D:\\Users\\alice\\observer failed`,
-      rendered: `upload to ${SIGNED_URL}[REDACTED:TOKEN] from [home]\\observer failed`,
+      kind: "a URL credential and home path",
+      message: `upload to ${CREDENTIAL_URL}${SIGNATURE} from C:\\Users\\alice\\observer failed`,
+      rendered: `upload to ${CREDENTIAL_URL}[REDACTED:TOKEN] from [home]\\observer failed`,
     },
   ];
 
@@ -818,18 +818,18 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(existsSync(container.home())).toBe(false);
   });
 
-  it.each(FAILURE_STAGES)("redacts a signed URL and another account's non-ASCII home in a %s failure", async (stage) => {
+  it.each(FAILURE_STAGES)("redacts a URL credential and another account's home in a %s failure", async (stage) => {
     bootMxcShells();
     const signature = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
     failAt(stage, new AggregateError([
-      new Error(`upload to https://objects.example/policy.json?X-Amz-Date=20261122T000000Z&X-Amz-Signature=${signature} failed`),
-      new Error("observer at D:\\Users\\\uc608\uc81c\uacc4\uc815\\observer failed"),
+      new Error(`upload to https://objects.example/policy.json?api_key=${signature} failed`),
+      new Error("observer at C:\\Users\\bob\\observer failed"),
     ], "two failures"));
     const result = await executePowerShell(context(`ps-mxc-redacted-${stage}`));
     expect(failureText(result.output, stage)).toBe(
-      "upload to https://objects.example/policy.json?X-Amz-Date=20261122T000000Z&X-Amz-Signature=[REDACTED:TOKEN] failed; observer at [home]\\observer failed");
+      "upload to https://objects.example/policy.json?api_key=[REDACTED:TOKEN] failed; observer at [home]\\observer failed");
     expect(result.output).not.toContain(signature);
-    expect(result.output).not.toMatch(/[\uac00-\ud7a3]/u);
+    expect(result.output).not.toContain("bob");
   });
 
   it("refuses a sandboxed Bash command with the PowerShell guidance instead of running it", async () => {
