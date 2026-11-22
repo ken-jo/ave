@@ -3739,7 +3739,11 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
   const result = await spawnPowerShellInMxc(plan, parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
     typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response);
   if (result.isError) return { failure: result };
-  return normalizePowerShellAstSummary(JSON.parse(response.read()));
+  const text = response.read();
+  let summary: unknown;
+  // What the container wrote is never echoed into the result.
+  try { summary = JSON.parse(text); } catch { throw new Error("PowerShell parser response is not valid JSON"); }
+  return normalizePowerShellAstSummary(summary);
 }
 
 interface VerifiedPowerShellExecution {

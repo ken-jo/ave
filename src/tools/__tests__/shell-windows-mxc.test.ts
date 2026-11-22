@@ -354,6 +354,15 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses an internal response that is not JSON without echoing it", async () => {
+    bootMxcShells();
+    childProcessMock.spawn.mockImplementation(() => fakeChild("password=parser-secret-example", 0));
+    const result = await executePowerShell(context("invalid-parser-response"), "Write-Output a");
+    expect(result).toMatchObject({ isError: true, output: "PowerShell parser failed: PowerShell parser response is not valid JSON" });
+    expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(1);
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses an untrusted image before preparing either parser or caller container", async () => {
     bootMxcShells();
     installationMock.resolve.mockReturnValue(null);
