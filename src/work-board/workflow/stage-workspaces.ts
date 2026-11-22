@@ -313,7 +313,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const existing = file.stages[stage.id];
       if (existing?.ready === true && plainDirectory(dir)) {
         // The same folder again: a repeated call, or a rerun after `Request changes`.
-        if (existing.attempt !== attempt) { existing.attempt = attempt; writeRunFile(runRoot, file); }
+        if (existing.attempt !== attempt) {
+          Object.assign(existing, { attempt, sealed: false, manifest: undefined });
+          writeRunFile(runRoot, file);
+        }
         return { ok: true as const, workspace: { root: dir, kind: file.kind, ...(existing.base !== undefined ? { baseCommit: existing.base } : {}) } };
       }
       // A folder nobody recorded is not the provider's to replace.

@@ -72,7 +72,7 @@ export interface StageRunEngineDeps {
   emit: (e: Omit<WorkBoardRunEvent, "at">) => void;
   /** What a board reader is told about the item's run changed without a board write (a gate opened, a restart's run was taken over). */
   itemChanged?: (itemId: number) => void;
-  /** Default: no template run can start until a real provider is wired. */
+  /** Where the stages of a run work. */
   workspace: StageWorkspaceProvider;
   authoriseRunSource: AuthoriseRunSource;
   /** The project-access check the template handlers use, applied to the scope an approval bound. */
@@ -85,6 +85,8 @@ export interface StageRunEngineDeps {
   outputs?: RequestedOutputHooks;
   /** Absent: no-op. */
   runScope?: RunScopeHooks;
+  /** Binds a stage child's session to its own workspace folder for the permission floor. Absent: no session is bound. */
+  workspaceBinding?: { bind(sessionId: string, workspaceRoot: string): void; unbind(sessionId: string): void };
   passConditions: PassConditionRegistry;
   /** The core engine's in-flight guard: a template run holds its item from start to settle. */
   holdItem: (itemId: number) => void;
@@ -928,6 +930,9 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       const lane = (await authorise()).lane;
       if ((stage.requestedOutputs?.length ?? 0) > 0 && !deps.outputs) throw new WorkflowInvariantError("outputs-unavailable");
 
+      // `Retry` starts from a fresh folder; a rerun after `Request changes` keeps the one it has.
+      const revising = run.gate?.type === "human" && run.gate.status === "changes_requested";
+      if (attempt > 1 && !revising) await workspace.release(state.ref, [stageId]);
       const prepared = await workspace.prepare(state.ref, stage, attempt);
       const runRoot = record.runWorkspace?.runRoot;
       if (!prepared.ok) throw new WorkflowInvariantError("workspace-missing", prepared.code);
@@ -991,8 +996,11 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               linked = childSessionId;
               state.live.set(stageId, childSessionId);
               state.starting.delete(stageId);
+              // A child whose folder cannot be bound does not work in it.
+              let bound = true;
+              try { deps.workspaceBinding?.bind(childSessionId, stageRoot); } catch { bound = false; }
               // A stop, a rejection or a revocation that arrived while the child was starting reaches it here.
-              if (state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
+              if (!bound || state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
               deps.runScope?.sessionLinked(runKey, childSessionId);
               if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
@@ -1007,6 +1015,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       } finally {
         state.live.delete(stageId);
         if (linked !== undefined) {
+          deps.workspaceBinding?.unbind(linked);
           deps.runScope?.sessionEnded(linked);
           if (lane === "unattended") deps.lane?.sessionEnded(linked);
         }
