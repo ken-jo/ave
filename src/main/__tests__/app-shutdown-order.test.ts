@@ -139,6 +139,8 @@ function makeServices() {
   return {
     shutdown: vi.fn(async () => { calls.push("servicesShutdown"); }),
     auditLogger: { close: vi.fn(async () => { calls.push("closeAudit"); }) },
+    approvalGate: { disposeAll: vi.fn(() => { calls.push("cancelApprovals"); }) },
+    askUserQuestionGate: { disposeAll: vi.fn(() => { calls.push("cancelQuestions"); }) },
     pluginRuntime: {
       beginShutdown: vi.fn(() => { calls.push("closePluginAdmission"); }),
       stopAll: vi.fn(async () => { calls.push("stopPluginRuntime"); }),
@@ -175,6 +177,28 @@ describe("OS sandbox release at quit", () => {
     expect(logError).toHaveBeenCalledWith(
       expect.anything(), "%s: shutdown cleanup failed: %s", "before-quit", "shutdown invocation audit failed",
     );
+  });
+
+  it.each(["timed-out", "failed"] as const)("cancels parked cards before the fallback audit close (%s cleanup)", async (status) => {
+    const services = makeServices();
+    if (status === "failed") services.shutdown.mockRejectedValueOnce(new Error("Earlier shutdown stage failed"));
+    services.approvalGate.disposeAll.mockImplementationOnce(() => {
+      calls.push("cancelApprovals");
+      throw new Error("approval gate dispose failed");
+    });
+    getServices.mockReturnValue(services);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    hardTimeoutFires = status === "timed-out";
+    try {
+      expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe(status);
+    } finally {
+      hardTimeoutFires = false;
+    }
+    expect(calls.indexOf("cancelApprovals")).toBeGreaterThan(-1);
+    expect(calls.indexOf("cancelApprovals")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(calls.indexOf("cancelQuestions")).toBeGreaterThan(-1);
+    expect(calls.indexOf("cancelQuestions")).toBeLessThan(calls.indexOf("closeAudit"));
   });
 
   // The private srt-win copy is removed by an exit handler; every quit path must reset the runtime first, once its confined children are down.

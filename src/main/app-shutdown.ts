@@ -395,9 +395,16 @@ export async function runAppShutdownCleanup(options: {
     if (!svc) return finishIncompleteBootShutdown(result);
 
     const auditLogger = svc.auditLogger;
+    const cardGates = [svc.approvalGate, svc.askUserQuestionGate];
     const closeAuditAfterForceKill = (): void => {
       // The graceful deadline also bounds audit draining.
       sealToolInvocations();
+      // Parked cards hold no admission signal; cancel them while their rows can still be written.
+      for (const gate of cardGates) {
+        try { gate?.disposeAll(); } catch (error) {
+          log.warn("shutdown: parked card cancel failed: %s", errorMessage(error));
+        }
+      }
       markToolInvocationAuditClosed();
       void (async () => { await auditLogger.close(); })().catch((error: unknown) => {
         log.warn("shutdown: audit logger close failed: %s", errorMessage(error));
