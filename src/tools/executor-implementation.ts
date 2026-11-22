@@ -459,7 +459,9 @@ export class ToolExecutor {
       completedToolUseIds: string[],
     ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> => {
       if (isInterceptedMetaTool(toolUse) && interceptedMetaToolHandler) {
-        // The handler changes session activation outside the ledger, so quit refuses it instead.
+        // The handler changes session activation outside the ledger, so quit refuses it instead. Limits: the check
+        // runs at entry only, so a handler already running is not joined (its effect is memory-only), and the
+        // refusal between seal and close writes no permission row, only the plain log lines.
         if (toolInvocationsSealed()) {
           const refused: ToolResult = {
             tool_use_id: toolUse.id,
