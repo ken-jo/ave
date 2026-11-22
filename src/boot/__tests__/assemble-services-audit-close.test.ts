@@ -211,7 +211,9 @@ describe("shutdown permission audit ordering", () => {
         return closed;
       });
       const last = ledger.admitToolInvocation("last_probe");
-      const shutdown = Promise.allSettled([assembleAppServices(shutdownContext(audit, new ApprovalGate(null))).shutdown!()]);
+      const app = assembleAppServices(shutdownContext(audit, new ApprovalGate(null)));
+      if (!app.shutdown) throw new Error("Shutdown handler missing");
+      const shutdown = Promise.allSettled([app.shutdown()]);
       await nextMacrotask();
       if (when !== "close") {
         let hop = Promise.resolve();

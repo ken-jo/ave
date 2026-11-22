@@ -443,11 +443,13 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       return { refreshed: true };
     });
     await setup(ctx);
-    const call = ctx.lateBinding.pluginToolInvokerRef.fn!("panel_refresh", {}, {
+    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn;
+    if (!invoke) throw new Error("Plugin invoker missing");
+    const call = invoke("panel_refresh", {}, {
       origin: "ui",
       ownerPluginId: pluginId,
       ownerGenerationId: activeGenerationId,
-      appInvocation: { sessionId: "window-1" },
+      appInvocation: { surface: "trusted-panel", sessionId: "window-1" },
     });
     ledger.sealToolInvocations();
     lease.resolve();
@@ -653,7 +655,8 @@ it("revokes an issued plugin operation grant instead of delivering it after the 
   });
   Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
   await setupPluginToolExecutor(ctx);
-  await expect(ctx.requestPluginOperationGrant!({
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  await expect(ctx.requestPluginOperationGrant({
     pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
   })).rejects.toThrow("operation grant cancelled");
   expect(mocks.revokePluginOperationSession).toHaveBeenCalledWith("grant-window");
