@@ -50,7 +50,8 @@ function wellKnownLocations(platform: NodeJS.Platform): string[] {
 }
 
 function isFullyQualified(path: string, platform: NodeJS.Platform): boolean {
-  // A Windows path with a leading slash but no drive still depends on the current drive.
+  // Require a drive prefix before probing, excluding UNC, device and current-drive paths.
+  // Drive letters and links can still reach remote storage. The subprocess timeout doesn't bound filesystem probes.
   return platform === "win32" ? /^[A-Za-z]:[\\/]/u.test(path) : posix.isAbsolute(path);
 }
 
