@@ -363,6 +363,63 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["exits nonzero", "PowerShell parser exited with code 1.", { returncode: 1 }],
+    ["times out", "PowerShell parser timed out after 7 seconds.", { timedOut: true }],
+    ["is cancelled", "Shell command cancelled.", { aborted: true }],
+  ] as const)("reports a parser that %s in fixed words, never its stderr", async (ending, output, metadata) => {
+    bootMxcShells();
+    const marker = String.raw`parser-stderr-marker D:\example\outside\parser.log`;
+    const spawn = childProcessMock.spawn.getMockImplementation();
+    if (spawn === undefined) throw new Error("Missing child spawn fixture");
+    const wrote = deferred<void>();
+    let parser: (EventEmitter & { exitCode: number | null }) | undefined;
+    const exit = (code: number): void => {
+      if (parser === undefined || parser.exitCode !== null) return;
+      parser.exitCode = code;
+      parser.emit("exit", code, null);
+      parser.emit("close", code, null);
+    };
+    childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
+      // Killing the parser's job ends it.
+      if (/taskkill\.exe$/iu.test(file) && args.includes("4343")) queueMicrotask(() => exit(1));
+      if (file !== WXC_EXEC || !args.includes(PARSER_REQUEST)) return spawn(file, args, options);
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      parser = Object.assign(new EventEmitter(), { stdout, stderr, exitCode: null as number | null, signalCode: null, pid: 4343, kill: vi.fn(() => true) });
+      // Every data listener has the marker once this one does.
+      stderr.once("data", () => wrote.resolve());
+      queueMicrotask(() => {
+        stderr.write(`${marker}\n`);
+        if (ending === "exits nonzero") {
+          stdout.end();
+          stderr.end();
+          exit(1);
+        }
+      });
+      return parser;
+    });
+    const abort = new AbortController();
+    if (ending === "times out") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const execution = new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 },
+        { ...context(`ps-mxc-parser-${ending}`), abortSignal: abort.signal });
+      if (ending !== "exits nonzero") {
+        await wrote.promise;
+        if (ending === "times out") await vi.advanceTimersByTimeAsync(7_000);
+        else abort.abort();
+      }
+      const result = await execution;
+      expect(result.output).not.toContain("parser-stderr-marker");
+      expect(result.output).not.toContain(String.raw`D:\example`);
+      expect(result).toMatchObject({ isError: true, output, metadata });
+      // The command's own container is never prepared.
+      expect(mxcLaunchMock.prepare).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refuses an untrusted image before preparing either parser or caller container", async () => {
     bootMxcShells();
     installationMock.resolve.mockReturnValue(null);
@@ -457,19 +514,24 @@ describe("builtin shell — Windows MXC containers", () => {
     }
   });
 
-  it("releases the listener when the launcher fails to spawn and never closes", async () => {
+  it.each(["reports an error", "throws"] as const)("releases the listener and shows only the error code when the launcher's spawn %s", async (failure) => {
     bootMxcShells();
+    // Node names the launcher's absolute path in the message, `syscall`, `path` and `spawnargs`.
+    const spawnError = (): Error => Object.assign(new Error(`spawn ${WXC_EXEC} ENOENT`), {
+      code: "ENOENT", errno: -4058, syscall: `spawn ${WXC_EXEC}`, path: WXC_EXEC, spawnargs: ["--config-base64", "eyJ9"],
+    });
     childProcessMock.spawn.mockImplementation((command: string, args: readonly string[], options?: { stdio?: unknown }) => {
       if (args.includes(PARSER_REQUEST)) return fakeChild(PARSED, 0);
       if (command !== WXC_EXEC) {
         const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
         return fakeChild(parser ? PARSED : "", 0);
       }
-      return childWithSpawnError(Object.assign(new Error("spawn wxc-exec.exe ENOENT"), { code: "ENOENT" }));
+      if (failure === "throws") throw spawnError();
+      return childWithSpawnError(spawnError());
     });
-    const result = await executePowerShell(context("ps-mxc-enoent"));
+    const result = await executePowerShell(context(`ps-mxc-enoent-${failure}`));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
-    expect(result.output).toContain("ENOENT");
+    expect(result.output).toBe("PowerShell spawn failed: container launcher error ENOENT");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
@@ -935,7 +997,7 @@ describe("builtin shell — Windows MXC containers", () => {
   ];
 
   describe.each(["spawn catch", "child error", "finalization"] as const)("MXC %s diagnostics", (stage) => {
-    it.each(ERROR_MESSAGES)("settles with bounded, redacted details for $kind after releasing resources", async ({ message, rendered }) => {
+    it.each(ERROR_MESSAGES)("settles after releasing resources, with bounded, redacted details for $kind (none from the launcher)", async ({ message, rendered }) => {
       bootMxcShells();
       const container = failCommandContainerRelease({});
       const error = new Error();
@@ -972,11 +1034,17 @@ describe("builtin shell — Windows MXC containers", () => {
         () => executePowerShell(context(identity.toolUseId))));
       expect(result.isError).toBe(true);
       expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(500);
-      if (stage === "finalization") expect(result.output.endsWith(`\nShell resource release failed: ${rendered}`)).toBe(true);
-      else expect(result.output === `PowerShell spawn failed: ${rendered}`).toBe(true);
-      expect(releaseState.mock.results.map(({ value }) => value)).toEqual([
-        { egressLive: false, homeExists: false, launchReleases: 2 },
-      ]);
+      if (stage === "finalization") {
+        expect(result.output.endsWith(`\nShell resource release failed: ${rendered}`)).toBe(true);
+        expect(releaseState.mock.results.map(({ value }) => value)).toEqual([
+          { egressLive: false, homeExists: false, launchReleases: 2 },
+        ]);
+      } else {
+        // A launcher's error shows only a validated code: its message is never read.
+        expect(result.output).toBe("PowerShell spawn failed: container launcher error");
+        expect(releaseState).not.toHaveBeenCalled();
+        expect(releaseState()).toEqual({ egressLive: false, homeExists: false, launchReleases: 2 });
+      }
       expect(log).not.toHaveBeenCalledWith("[shell-tasks] shell finalization failed", expect.anything());
     });
   });

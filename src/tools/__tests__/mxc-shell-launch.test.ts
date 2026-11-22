@@ -177,8 +177,21 @@ describe("prepareMxcShellLaunch", () => {
   it("refuses when the launcher is missing from the installation", async () => {
     relay();
     const lifecycle = createContainedShellLifecycle();
+    // Fixed words: the launcher's absolute path is not part of the failure.
     await expect(prepareMxcShellLaunch({ ...INPUT, exists: (p) => !p.endsWith("wxc-exec.exe") }, lifecycle))
-      .rejects.toThrow(/launcher is missing/);
+      .rejects.toThrow(/^Contained shell launcher is missing from this installation$/u);
+    expect(await lifecycle.dispose()).toEqual([]);
+    expect(h.openRelay).not.toHaveBeenCalled();
+  });
+
+  it("refuses in fixed words, with no cause, when the launcher cannot be verified", async () => {
+    relay();
+    h.wxcExec.mockRejectedValueOnce(new Error(String.raw`launcher D:\example\outside\wxc-exec.exe is not the pinned build`));
+    const lifecycle = createContainedShellLifecycle();
+    const error: unknown = await prepareMxcShellLaunch(INPUT, lifecycle).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Contained shell launcher could not be verified on this installation");
+    expect((error as Error).cause).toBeUndefined();
     expect(await lifecycle.dispose()).toEqual([]);
     expect(h.openRelay).not.toHaveBeenCalled();
   });

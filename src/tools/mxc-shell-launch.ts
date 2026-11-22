@@ -108,9 +108,15 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   lifecycle.defer(() => invocationSignal?.removeEventListener("abort", revokeOnAbort));
   if (invocationSignal?.aborted === true) lifecycle.revoke();
   assertAdmission();
-  const wxcExec = await resolveHostWxcExecPath();
+  let wxcExec: string;
+  try {
+    wxcExec = await resolveHostWxcExecPath();
+  } catch {
+    // The resolver's failures name the launcher's absolute path.
+    throw new Error("Contained shell launcher could not be verified on this installation");
+  }
   if (!input.exists(wxcExec)) {
-    throw new Error(`Microsoft Execution Containers launcher is missing: ${wxcExec}`);
+    throw new Error("Contained shell launcher is missing from this installation");
   }
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;

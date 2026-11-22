@@ -2490,6 +2490,24 @@ function mxcSpawnFailure(details: string): ToolExecutionResult {
   return { output: `PowerShell spawn failed: ${details}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
 }
 
+// Node's launcher errors name the launcher's absolute path (message, `syscall`, `path`, `spawnargs`): only a validated code is kept.
+function launcherError(error: unknown): Error {
+  let code: unknown;
+  try {
+    code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  } catch {
+    code = undefined;
+  }
+  return new Error(typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) ? `container launcher error ${code}` : "container launcher error");
+}
+
+// The parser's output and stderr are never shown: how it ended is reported in fixed words.
+function powerShellParserEnding(aborted: boolean, timedOut: boolean, timeoutSeconds: number, code: number | null): string {
+  if (aborted) return "Shell command cancelled.";
+  if (timedOut) return `PowerShell parser timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.`;
+  return code === null ? "PowerShell parser ended without an exit code." : `PowerShell parser exited with code ${code}.`;
+}
+
 export async function spawnWithSandbox(
   command: string,
   resolvedCwd: string,
@@ -4167,17 +4185,21 @@ async function spawnPowerShellInMxc(
     const [cmd, ...args] = launch.argv;
     if (cmd === undefined) throw new Error("Container launcher is missing");
     launch.activate();
-    child = spawn(cmd, args, {
-      // The launcher runs from its own (per-machine, admin-only) directory, so
-      // nothing in the workspace sits beside it; the container's working
-      // directory travels in the request.
-      cwd: win32Path.dirname(cmd),
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      windowsHide: true,
-      // The launcher's own environment: the container's is in the request.
-      env: buildSafeChildEnv({}),
-    });
+    try {
+      child = spawn(cmd, args, {
+        // The launcher runs from its own (per-machine, admin-only) directory, so
+        // nothing in the workspace sits beside it; the container's working
+        // directory travels in the request.
+        cwd: win32Path.dirname(cmd),
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+        windowsHide: true,
+        // The launcher's own environment: the container's is in the request.
+        env: buildSafeChildEnv({}),
+      });
+    } catch (error) {
+      throw launcherError(error);
+    }
   } catch (error) {
     lifecycle.revoke();
     const ended = await runReleaseSteps([() => endObservation(null, "failed")]);
@@ -4239,7 +4261,7 @@ async function spawnPowerShellInMxc(
             () => endObservation(null, "failed"),
           ]);
           return release(() => {
-            const failed = spawnFailure(err);
+            const failed = spawnFailure(launcherError(err));
             return { ...failed, metadata: { ...artifactMetadata, ...failed.metadata } };
           }, failures);
         });
@@ -4257,7 +4279,8 @@ async function spawnPowerShellInMxc(
       launch.bindChild(spawned);
       collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
       spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
-      spawned.stderr.on("data", collector.collectStderr);
+      // The parser's stderr is drained, never kept.
+      spawned.stderr.on("data", parserResponse === undefined ? collector.collectStderr : () => {});
       // Timeout and cancellation revoke the invocation before the kill starts.
       lifetime = watchShellLifetime(spawned, timeoutSeconds, signal, () => lifecycle.revoke());
     } catch (error) {
@@ -4283,6 +4306,11 @@ async function spawnPowerShellInMxc(
         const failures = await runReleaseSteps([
           async () => {
             const artifactMetadata = await output.finish(watch.timedOut || watch.aborted || exitSignal !== null);
+            if (parserResponse !== undefined) {
+              completed = { output: powerShellParserEnding(watch.aborted, watch.timedOut, timeoutSeconds, code),
+                isError: watch.aborted || watch.timedOut || code !== 0, metadata: { ...artifactMetadata, ...metadata } };
+              return;
+            }
             // The refusals recorded under this call's token outlive its release.
             const text = await annotateWithSandboxViolations(egressToken, watch.output(output.format(
               watch.timedOut || watch.aborted ? undefined : { code, signal: exitSignal },
@@ -4297,7 +4325,7 @@ async function spawnPowerShellInMxc(
           },
           () => endObservation(code, watch.aborted ? "cancelled" : watch.timedOut || exitSignal !== null ? "failed" : undefined),
         ]);
-        const result = !watch.aborted && !watch.timedOut && code !== null && code !== 0
+        const result = parserResponse === undefined && !watch.aborted && !watch.timedOut && code !== null && code !== 0
           ? await attachFilesystemBlock(completed, egressToken, command, cwd) : completed;
         return release(() => result, failures);
       });
