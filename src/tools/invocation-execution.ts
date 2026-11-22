@@ -1594,6 +1594,7 @@ export async function executeAuthorizedToolInvocation(
           errorMessage: content,
           durationMs: Date.now() - startTime,
         },
+        abortSignal,
       );
       if (failureHooks.result?.decision === "deny" && failureHooks.result.results.length > 0) {
         content = `${content}\n\n[Script Hook Feedback]\n${failureHooks.result.reason}`;

@@ -1,4 +1,10 @@
 import { deferred } from "../../__tests__/support/deferred.js";
+import { spawn } from "node:child_process";
+import { promises as dns } from "node:dns";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { directHostFetchTransport } from "../../__tests__/support/host-fetch-transport.js";
+import { createDynamicTool } from "../../tools/base.js";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +41,17 @@ class ObservedAuditLogger extends AuditLogger {
     return super.close();
   }
 }
+
+const { killScript } = vi.hoisted(() => ({ killScript: vi.fn() }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:child_process")>();
+  return { ...original, spawn: vi.fn(original.spawn) };
+});
+vi.mock("../../main/managed-child-processes.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../main/managed-child-processes.js")>(),
+  trackManagedChildProcess: vi.fn(),
+  forceKillManagedChildProcess: killScript,
+}));
 
 function shutdownContext(audit: AuditLogger, approvalGate: ApprovalGate, abortCurrentTurn = () => {}): ReadyBootContext {
   const stop = () => {};
@@ -164,4 +181,89 @@ describe("shutdown permission audit ordering", () => {
     expect(outcome).toMatchObject({ status: "fulfilled", value: [{ is_error: true }] });
   });
 
+  it("aborts slow HTTP and script lifecycle hooks at seal and drains without advancing timers", async () => {
+    const { ToolExecutor } = await import("../../tools/executor.js");
+    const { ScriptHookManager } = await import("../../hooks/script-hook-manager.js");
+    const { parseHookConfig } = await import("../../hooks/hook-config.js");
+    const { assembleAppServices } = await import("../assemble-services.js");
+    const hooks = new ScriptHookManager();
+    const url = "https://hooks.example.com/check";
+    hooks.setTrustedRegistry([], parseHookConfig({ hooks: {
+      PostToolUseFailure: [
+        { matcher: "http_probe", hooks: [{ type: "http", url }] },
+        { matcher: "script_probe", hooks: [{ type: "command", command: "node slow-hook.js" }] },
+      ],
+    } }).entries.map((entry) => ({ ...entry, configDir: workspace })));
+    vi.spyOn(dns, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }] as never);
+
+    const httpStarted = deferred<AbortSignal>();
+    const scriptStarted = deferred<void>();
+    const response = deferred<Response>();
+    let httpAborted = false;
+    hooks.setHttpHookRuntime({
+      transport: directHostFetchTransport((_input, init) => {
+        const signal = init?.signal;
+        if (!signal) throw new Error("HTTP hook signal missing");
+        httpStarted.resolve(signal);
+        signal.addEventListener("abort", () => {
+          httpAborted = true;
+          response.resolve(new Response("{}"));
+        }, { once: true });
+        return response.promise;
+      }),
+      allowedUrls: [url],
+      allowedEnvVars: [],
+      auditTarget: vi.fn(),
+    });
+
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null,
+    });
+    child.stdin.once("finish", scriptStarted.resolve);
+    vi.mocked(spawn).mockImplementationOnce(() => child as unknown as ReturnType<typeof spawn>);
+    killScript.mockImplementationOnce(() => { child.emit("close", null, "SIGKILL"); });
+
+    const registry = new ToolRegistry();
+    for (const name of ["http_probe", "script_probe"]) {
+      registry.register(createDynamicTool({
+        name,
+        description: "Failing probe",
+        source: "builtin",
+        category: "read",
+        jsonSchema: { type: "object", properties: {} },
+        execute: async () => ({ output: "probe failed", isError: true }),
+      }));
+    }
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const manager = new PermissionManager(join(root, "hook-permissions.json"));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, hooks, audit);
+    const invocations = Promise.allSettled(["http_probe", "script_probe"].map((name) =>
+      executor.executeAll([{ id: name, name, input: {} }], {
+        sessionId: name,
+        executionCwd: workspace,
+        permissionContext: userPermissionContext({ additionalDirectories: [workspace] }),
+      })));
+    try {
+      const [signal] = await Promise.race([
+        Promise.all([httpStarted.promise, scriptStarted.promise]),
+        invocations.then((results) => { throw new Error(`Hooks did not start: ${JSON.stringify(results)}`); }),
+      ]);
+      const app = assembleAppServices(shutdownContext(audit, new ApprovalGate(null)));
+      await expect(app.shutdown?.()).resolves.toBeUndefined();
+      expect(signal.aborted).toBe(true);
+      expect(httpAborted).toBe(true);
+      expect(killScript).toHaveBeenCalledWith(child, "hook caller aborted");
+      expect(await invocations).toMatchObject([
+        { status: "fulfilled", value: [{ is_error: true }] },
+        { status: "fulfilled", value: [{ is_error: true }] },
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(audit.order.at(-1)).toBe("close");
+    } finally {
+      response.resolve(new Response("{}"));
+      child.emit("close", 0, null);
+      await invocations;
+      vi.useRealTimers();
+    }
+  });
 });

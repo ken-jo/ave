@@ -527,6 +527,7 @@ async function runToolInvocationAttempt(
         });
       }
       args[16] = currentAuditMetadata(args[4]);
+      args[18] = abortSignal;
       return services.auditWriter.auditToolCall(...args);
     };
     const auditCurrentPermissionAsk = (

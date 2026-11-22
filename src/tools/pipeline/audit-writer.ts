@@ -55,6 +55,7 @@ export class AuditWriter {
     sessionId: string | undefined,
     context: ToolPermissionContext,
     payload: LifecycleEventPayload,
+    abortSignal?: AbortSignal,
   ): Promise<LifecycleDispatchObservation> {
     if (!this.scriptHookManager) return { status: "unwired" };
     try {
@@ -63,7 +64,7 @@ export class AuditWriter {
         sessionId ?? "unknown",
         context.trustOrigin as HookTrustOrigin,
         payload,
-        { cwd: currentToolExecutionCwd() ?? process.cwd() },
+        { cwd: currentToolExecutionCwd() ?? process.cwd(), abortSignal },
       );
       recordHookContext(result.results);
       recordHookExecutionAudit(this.auditLogger, sessionId ?? "unknown", result.results);
@@ -199,6 +200,7 @@ export class AuditWriter {
     hookChain?: HookResult[],
     audit?: ToolExecutionAuditMetadata,
     suppressPermissionDeniedLifecycle = false,
+    abortSignal?: AbortSignal,
   ): Promise<void> {
     const governedTool = audit?.governedOperation !== undefined;
     const auditSafeInput = auditSafeToolInput(input, audit);
@@ -223,6 +225,7 @@ export class AuditWriter {
           toolName,
           denyReason: { source: "tool-executor", reason: permission.reason },
         },
+        abortSignal,
       );
     }
     try {
