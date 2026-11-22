@@ -4,9 +4,9 @@ import { serveInferenceChild } from '../../inference-child-serve.js';
 
 const telemetryAtStart = process.env.ORT_DISABLE_TELEMETRY ?? null;
 
-function open(host: string, port: number): Promise<{ socket?: Socket; code?: string }> {
+function open(options: { host: string; port: number } | { path: string }): Promise<{ socket?: Socket; code?: string }> {
   return new Promise(resolve => {
-    const socket = connect({ host, port });
+    const socket = connect(options);
     const timer = setTimeout(() => { socket.destroy(); resolve({ code: 'TIMEOUT' }); }, 5_000);
     socket.once('connect', () => { clearTimeout(timer); resolve({ socket }); });
     socket.once('error', (error: NodeJS.ErrnoException) => { clearTimeout(timer); resolve({ code: error.code ?? 'ERROR' }); });
@@ -17,7 +17,7 @@ async function viaProxy(port: number): Promise<string> {
   const raw = process.env.HTTPS_PROXY ?? process.env.https_proxy ?? process.env.HTTP_PROXY ?? process.env.http_proxy;
   if (!raw) return 'no-proxy';
   const proxy = new URL(raw);
-  const { socket, code } = await open(proxy.hostname, Number(proxy.port));
+  const { socket, code } = await open({ host: proxy.hostname, port: Number(proxy.port) });
   if (!socket) return `proxy-unreachable:${code}`;
   const auth = proxy.username ? `Proxy-Authorization: Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString('base64')}\r\n` : '';
   return new Promise(resolve => {
@@ -40,8 +40,10 @@ async function loadRuntime(model: Uint8Array): Promise<string> {
 
 serveInferenceChild(async (task, files) => {
   if (task.kind !== 'embed') throw new Error('probe expects an embed task');
-  const port = Number(task.text);
-  const direct = await open('127.0.0.1', port);
+  const { port, unixPath } = JSON.parse(task.text) as { port: number; unixPath?: string };
+  const direct = await open({ host: '127.0.0.1', port });
+  const unix = unixPath === undefined ? undefined : await open({ path: unixPath });
+  unix?.socket?.destroy();
   direct.socket?.destroy();
-  return { telemetryAtStart, direct: direct.socket ? 'connected' : direct.code, proxy: await viaProxy(port), runtime: await loadRuntime(files.model) };
+  return { telemetryAtStart, direct: direct.socket ? 'connected' : direct.code, proxy: await viaProxy(port), unix: unix?.socket ? 'connected' : unix?.code, runtime: await loadRuntime(files.model) };
 }).then(() => process.exit(0), () => process.exit(1));

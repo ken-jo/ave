@@ -598,6 +598,7 @@ async function resolveSpawnLine(
       boundarySnapshot,
       ...(binShell !== undefined ? { binShell } : {}),
       commandId: egress.token,
+      ...(offline ? { denyUnixSockets: true } : {}),
     }));
   } catch (error) {
     egress.release();

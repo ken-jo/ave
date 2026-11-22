@@ -250,12 +250,14 @@ describe("spawnConfinedChild", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("wraps an offline owner on the offline gate with extension confinement off, and grants it no write root", async () => {
+  it.each(["darwin", "linux"] as const)("denies Unix sockets in the %s offline wrap with extension confinement off", async platform => {
+    setProcessPlatform(platform);
     sandboxActiveMock.mockReturnValue(false);
     const { confinement } = await spawnConfinedChild({ egressOwner: { ...EGRESS_OWNER, pluginId: undefined, network: "offline" },
       command: "/usr/bin/node", args: [], label: "offline-service", grantMode: "deny-only", baseEnv: {},
     });
-    expect(confinement).toBe("linux-bubblewrap");
+    expect(confinement).toBe(platform === "darwin" ? "macos-sandbox" : "linux-bubblewrap");
+    expect(wrapWorkerCommandMock).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ denyUnixSockets: true }));
     expect(lastFilesystem().allowWrite).toEqual([]);
     expect(spawnMock).toHaveBeenCalledWith("/bin/sandbox", expect.anything(), expect.anything());
   });

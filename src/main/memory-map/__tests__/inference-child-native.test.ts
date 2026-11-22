@@ -1,13 +1,13 @@
 // The local inference child through the real launch path: it starts with the telemetry opt-out and reaches no listener, directly or through the proxy, that the host reaches in the same run.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, createServer, type Server } from 'node:net';
-import { userInfo } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { protectAveHomeFixture, useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from '../../../__tests__/support/ave-home-privacy.js';
 import { configureHostResources } from '../../host-resources.js';
-import { initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, resetAsrtSandbox } from '../../../permissions/asrt-sandbox.js';
+import { initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, registerWorkerUnixSocketDir, resetAsrtSandbox } from '../../../permissions/asrt-sandbox.js';
 import type { ApprovalDecision, ApprovalRequestInput } from '../../../permissions/approval-gate.js';
 import { EGRESS_DENY_REASONS } from '../../../permissions/egress-ask.js';
 import { createEgressAskRuntimeCallback, setWorkerEgressAllowlists } from '../../../permissions/egress-runtime.js';
@@ -38,6 +38,9 @@ let root: string | undefined;
 let modelDir = '';
 let listener: Server | undefined;
 let listenerPort = 0;
+let unixRoot: string | undefined;
+let unixListener: Server | undefined;
+let unixPath: string | undefined;
 const listenerConnections: string[] = [];
 
 beforeAll(async () => {
@@ -67,6 +70,16 @@ beforeAll(async () => {
   listener = server;
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   listenerPort = (server.address() as { port: number }).port;
+  if (process.platform !== 'win32') {
+    unixRoot = realpathSync(mkdtempSync(join(tmpdir(), 'mmu-')));
+    unixPath = join(unixRoot, 's');
+    const socketServer = createServer(socket => socket.destroy());
+    unixListener = socketServer;
+    await new Promise<void>((resolve, reject) => {
+      socketServer.once('error', reject);
+      socketServer.listen(unixPath, resolve);
+    });
+  }
 }, 120_000);
 
 afterAll(async () => {
@@ -74,15 +87,17 @@ afterAll(async () => {
   __resetSandboxRequestedAtBootForTest();
   const server = listener;
   if (server !== undefined) await new Promise<void>(resolve => server.close(() => resolve()));
+  if (unixListener !== undefined) await new Promise<void>(resolve => unixListener?.close(() => resolve()));
+  if (unixRoot !== undefined) rmSync(unixRoot, { recursive: true, force: true });
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
   vi.unstubAllEnvs();
   if (root !== undefined) rmSync(root, { recursive: true, force: true });
 });
 
-function hostConnect(port: number): Promise<void> {
+function hostConnect(options: { host: string; port: number } | { path: string }): Promise<void> {
   return new Promise((resolve, reject) => {
-    const socket = connect({ host: '127.0.0.1', port });
+    const socket = connect(options);
     socket.once('connect', () => { socket.destroy(); resolve(); });
     socket.once('error', reject);
   });
@@ -93,7 +108,7 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
     if (!(await sandboxCasesRun())) context.skip('ASRT cannot initialize (sandbox dependencies missing)');
     // Control: the listener is reachable from this process in this run.
     const beforeControl = listenerConnections.length;
-    await hostConnect(listenerPort);
+    await hostConnect({ host: '127.0.0.1', port: listenerPort });
     await vi.waitFor(() => expect(listenerConnections.length).toBe(beforeControl + 1));
 
     // Extension confinement off and the listener's host on the worker allowlist: only the offline owner keeps it out.
@@ -110,13 +125,18 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
       return decision;
     });
     expect(isOfflineProcessConfinementActive()).toBe(true);
+    if (unixRoot !== undefined && unixPath !== undefined) {
+      await hostConnect({ path: unixPath });
+      await registerWorkerUnixSocketDir(unixRoot, {});
+    }
 
     const before = listenerConnections.length;
-    const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; runtime: string }>(
-      modelDir, { kind: 'embed', text: String(listenerPort) }, AbortSignal.timeout(120_000));
+    const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; unix?: string; runtime: string }>(
+      modelDir, { kind: 'embed', text: JSON.stringify({ port: listenerPort, unixPath }) }, AbortSignal.timeout(120_000));
     console.info(`[memory-map-child] ${JSON.stringify(report)} decisions=${JSON.stringify(decisions)}`);
     expect(report.telemetryAtStart).toBe('1');
     expect(report.direct, JSON.stringify(report)).not.toBe('connected');
+    if (unixPath !== undefined) expect(report.unix).toMatch(/^(?:EACCES|EPERM)$/u);
     expect(report.proxy, JSON.stringify(report)).not.toMatch(/^HTTP\/1\.[01] 200/u);
     expect(listenerConnections.length, 'the listener recorded a connection from the inference child').toBe(before);
     expect(decisions, JSON.stringify(report)).toContainEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
