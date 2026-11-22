@@ -341,35 +341,48 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
 
   const bundledPath = installerGitPath(installerRoot);
   if (installerRoot !== null && bundledPath !== null && bundledPath !== failedPath) {
-    const bundled = yield* findInstallerLayout(installerRoot, bundledPath);
-    const identity = bundled && (yield* executableIdentity(bundled.path));
-    if (bundled && identity !== null) {
-      const git = yield* probeInstallerGit(bundled);
-      if (git) return { selection: { git }, identity };
-    }
+    const candidate = yield* probeStableGit(bundledPath, function* () {
+      const bundled = yield* findInstallerLayout(installerRoot, bundledPath);
+      return bundled ? yield* probeInstallerGit(bundled) : null;
+    });
+    if (candidate) return { selection: { git: candidate.result }, identity: candidate.identity };
   }
 
   const selection: GitDiscovery = { git: null };
   let shimDirectory: string | undefined;
   for (const path of systemGitCandidates(process.platform, process.env.PATH)) {
-    if (failedPath !== undefined && (yield* sameFile(path, failedPath))) continue;
-    const identity = yield* executableIdentity(path);
-    if (identity === null || (bundledPath !== null && (yield* sameFile(path, bundledPath)))) continue;
-    let developerDirectory: string | undefined;
-    if (process.platform === "darwin" && (yield* sameFile(path, DARWIN_GIT_SHIM))) {
-      if (shimDirectory === undefined) {
-        const guard = yield* runProbe(DARWIN_CLT_PROBE, ["-p"]);
-        shimDirectory = guard.exitCode === 0 ? guard.stdout.trim() : "";
+    const candidate = yield* probeStableGit(path, function* () {
+      if (failedPath !== undefined && (yield* sameFile(path, failedPath))) return null;
+      if (bundledPath !== null && (yield* sameFile(path, bundledPath))) return null;
+      let developerDirectory: string | undefined;
+      if (process.platform === "darwin" && (yield* sameFile(path, DARWIN_GIT_SHIM))) {
+        if (shimDirectory === undefined) {
+          const guard = yield* runProbe(DARWIN_CLT_PROBE, ["-p"]);
+          shimDirectory = guard.exitCode === 0 ? guard.stdout.trim() : "";
+        }
+        if (!posix.isAbsolute(shimDirectory)) return null;
+        developerDirectory = shimDirectory;
       }
-      if (!posix.isAbsolute(shimDirectory)) continue;
-      developerDirectory = shimDirectory;
-    }
-    const probe = yield* probeSystemGit(path);
-    if (!probe) continue;
-    if (probe.supported) return { selection: { ...selection, git: { path, version: probe.version } }, identity, developerDirectory };
-    if (!meetsMinimumGitVersion(probe.version)) selection.systemTooOld ??= { path, version: probe.version.text };
+      const probe = yield* probeSystemGit(path);
+      return probe && { ...probe, developerDirectory };
+    });
+    if (!candidate) continue;
+    const { version, supported, developerDirectory } = candidate.result;
+    if (supported) return { selection: { ...selection, git: { path, version } }, identity: candidate.identity, developerDirectory };
+    if (!meetsMinimumGitVersion(version)) selection.systemTooOld ??= { path, version: version.text };
   }
   return { selection, identity: null };
+}
+
+function* probeStableGit<T>(path: string, probe: () => GitChecks<T | null>): GitChecks<{ result: T; identity: string } | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const identity = yield* executableIdentity(path);
+    if (identity === null) return null;
+    const result = yield* probe();
+    if (result === null) return null;
+    if ((yield* executableIdentity(path)) === identity) return { result, identity };
+  }
+  return null;
 }
 
 function finishDiscovery(installerRoot: string | null, cached: GitScan | undefined, result: GitScan): GitDiscovery {

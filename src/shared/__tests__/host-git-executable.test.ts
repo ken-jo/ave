@@ -3,6 +3,7 @@ import { accessSync, existsSync, mkdtempSync, renameSync, statSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { delimiter, join, parse, win32 } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { requireFixtureGit } from "../../__tests__/support/fixture-git-executable.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -87,7 +88,7 @@ describe("resolveHostGit", () => {
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     vi.stubEnv("PATH", join(root, "changed-bin"));
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
-    expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary), join(host, binary)]);
+    expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary), join(host, binary), join(host, binary)]);
     expect(execFileSync).toHaveBeenCalledExactlyOnceWith(join(host, binary), ["--no-lazy-fetch", "--version"], expect.anything());
   });
 
@@ -168,6 +169,44 @@ describe("resolveHostGit", () => {
       expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(
         failure === "cannot start" ? [selected, selected, fallback] : [selected, selected, selected, fallback],
       );
+    } finally {
+      await cleanupTmpDir(fixture);
+    }
+  });
+
+  it.each([false, true])("rechecks identity across an awaited probe (second replacement: %s)", async (replaceAgain) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { discoverHostGitAsync } = await import("../host-git-executable.js");
+    const fixture = mkdtempSync(join(tmpdir(), "ave-pending-git-"));
+    const path = join(fixture, binary);
+    const staged = join(fixture, "replacement");
+    const started = deferred<() => void>();
+    try {
+      writeFileSync(path, "original", { mode: 0o755 });
+      writeFileSync(staged, "replaced with a different identity", { mode: 0o755 });
+      vi.stubEnv("PATH", fixture);
+      vi.mocked(statSync).mockImplementation((file) => fs.statSync(file, { bigint: true }));
+      vi.mocked(execFile).mockImplementationOnce((_file, _args, _options, callback) => {
+        started.resolve(() => callback?.(null, "git version 2.55.0", ""));
+        return {} as ReturnType<typeof execFile>;
+      }).mockImplementationOnce((_file, _args, _options, callback) => {
+        if (replaceAgain) {
+          writeFileSync(staged, "third identity", { mode: 0o755 });
+          renameSync(staged, path);
+        }
+        callback?.(null, "git version 2.56.0", "");
+        return {} as ReturnType<typeof execFile>;
+      });
+
+      const first = discoverHostGitAsync(null);
+      const second = discoverHostGitAsync(null);
+      const finishProbe = await started.promise;
+      renameSync(staged, path);
+      finishProbe();
+      const expected = replaceAgain ? null : { path, version: { text: "2.56.0" } };
+      await expect(first).resolves.toMatchObject({ git: expected });
+      await expect(second).resolves.toMatchObject({ git: expected });
+      expect(vi.mocked(execFile).mock.calls.map(([file]) => file)).toEqual([path, path]);
     } finally {
       await cleanupTmpDir(fixture);
     }
