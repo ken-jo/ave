@@ -159,6 +159,22 @@ function requireServedCapabilities(
   }
 }
 
+/** Refuse a malformed implementedToolNames; bind only host-declared names, so none can be an inherited key. */
+function implementedDeclaredToolNames(
+  pluginId: string,
+  construction: PluginConstructResult,
+  declared: readonly string[],
+): string[] {
+  const names: unknown = construction.implementedToolNames;
+  if (!Array.isArray(names) || !names.every((name) => typeof name === "string")) {
+    throw new Error(
+      `[out-of-process-plugin] ${pluginId}: construct answered no implementedToolNames list`,
+    );
+  }
+  const declaredNames = new Set(declared);
+  return names.filter((name) => declaredNames.has(name));
+}
+
 function readUiResourceHtml(pluginId: string, uri: string, result: unknown): string {
   const contents = (result as { contents?: unknown } | undefined)?.contents;
   const first = Array.isArray(contents) ? (contents[0] as { text?: unknown } | undefined) : undefined;
@@ -317,6 +333,11 @@ export async function openPluginProtocolSession(
       TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs,
     )) as PluginConstructResult;
     requireServedCapabilities(pluginId, construction, capabilities);
+    const implementedToolNames = implementedDeclaredToolNames(
+      pluginId,
+      construction,
+      constructParams.declaredToolNames,
+    );
 
     const stopReason = `[out-of-process-plugin] ${pluginId}: stopped`;
     const channel: PluginProtocolChannel = {
@@ -338,7 +359,7 @@ export async function openPluginProtocolSession(
     };
 
     const handlers: Record<string, PluginToolHandler> = {};
-    for (const toolName of construction.implementedToolNames) {
+    for (const toolName of implementedToolNames) {
       handlers[toolName] = async (payload?: unknown) => {
         const result = await transport.requestMcp("tools/call", {
           name: toolName,

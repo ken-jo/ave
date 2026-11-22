@@ -1358,6 +1358,44 @@ describe("construct negotiates the host protocol", () => {
     );
     expect(terminated()).toMatch(/startup failed/);
   });
+
+  it("binds only declared tool names from a construct reply, never an inherited key", async () => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames: ["pilot_echo", "pilot_unlisted", "__proto__"],
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    expect(Object.getPrototypeOf(instance.handlers)).toBe(Object.prototype);
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
+    expect(terminated()).toBeUndefined();
+  });
+
+  it.each([
+    ["a non-string entry", ["pilot_echo", 1]],
+    ["a bare string", "pilot_echo"],
+    ["no field", undefined],
+  ])("fails a construct reply whose implementedToolNames is %s", async (_case, implementedToolNames) => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames,
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(
+      /construct answered no implementedToolNames list/,
+    );
+    expect(terminated()).toMatch(/startup failed/);
+  });
 });
 
 /** Record both launch forms as received by spawn; live confinement is measured separately. */
