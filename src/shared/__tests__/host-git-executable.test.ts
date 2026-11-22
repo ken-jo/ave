@@ -231,7 +231,6 @@ describe("resolveHostGit", () => {
         env: {
           HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
           TEMP: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", WINDIR: "", NODE_V8_COVERAGE: "",
-          NODE_OPTIONS: "--permission",
         },
       }));
     } finally {

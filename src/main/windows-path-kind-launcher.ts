@@ -119,12 +119,10 @@ export function queryWindowsSystemDirectorySync(): string {
 export function windowsSystemDirectorySpawnOptions(helper: string) {
   return {
     cwd: dirname(helper), windowsHide: true, shell: false,
-    // Explicit values block parent defaults injected during child creation.
+    // Explicit values block parent defaults injected during child creation. NODE_OPTIONS is left alone: the helper is native and Ave never runs under Node's --permission model.
     env: {
       HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
       TEMP: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", WINDIR: "", NODE_V8_COVERAGE: "",
-      // This native helper ignores the fixed flag, which blocks appending the parent permission flags.
-      NODE_OPTIONS: "--permission",
     },
     timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 128 * 1024,
   };
