@@ -1947,20 +1947,20 @@ describe("on Windows a confined child holds a grant on its own directories for e
           return true;
         });
         spawnConfinedChild.mockImplementation(loopbackChild({ ignoresEof: { child, onEof: () => eof.resolve() } }));
-        const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
-        const instance = await factory(hostContext(fakeHostApi(), layout.context));
-
-        expect(instance.stop).toBeTypeOf("function");
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        const stopped = Promise.resolve(instance.stop?.()).then(() => windowsGrant.events.push("stop resolved"));
         try {
+          const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+          const instance = await factory(hostContext(fakeHostApi(), layout.context));
+
+          expect(instance.stop).toBeTypeOf("function");
+          const stopped = Promise.resolve(instance.stop?.()).then(() => windowsGrant.events.push("stop resolved"));
           await eof.promise;
           expect(child.kill).not.toHaveBeenCalled();
 
           await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs);
           expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
 
-          await vi.advanceTimersToNextTimerAsync();
+          await vi.runOnlyPendingTimersAsync();
           expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
           expect([...windowsGrant.events]).toEqual(["grant", "spawn"]);
           expect(windowsGrant.holders.size).toBe(1);
