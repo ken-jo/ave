@@ -25,7 +25,7 @@ const binary = process.platform === "win32" ? "git.exe" : "git";
 const platform = process.platform;
 
 function systemDirectoryReply(directory: string): ReturnType<typeof spawnSync> {
-  const stdout = Buffer.from(directory + "\r\n");
+  const stdout = Buffer.from(`${directory}\r\n`);
   const stderr = Buffer.alloc(0);
   return { pid: 1, status: 0, signal: null, stdout, stderr, output: [null, stdout, stderr] };
 }
