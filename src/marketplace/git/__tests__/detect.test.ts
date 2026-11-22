@@ -197,7 +197,7 @@ describe("detectGitRuntime with real executables", () => {
     probe.intercept = true;
     try {
       const searchPath = ["", ".", "project/bin", bin].join(delimiter);
-      expect(await detectGitRuntime({ ...deps, searchPath, pathExt: ".CMD;.BAT;.EXE" })).toMatchObject({
+      expect(await detectGitRuntime({ ...deps, searchPath })).toMatchObject({
         state: "ready",
         git: { kind: "system", path },
       });
