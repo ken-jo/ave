@@ -179,6 +179,21 @@ describe("resolveHostGit", () => {
     }
   });
 
+  it("does not launch a macOS shim alias without the command line tools", async () => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    setProcessPlatform("darwin");
+    vi.stubEnv("PATH", "/alias:/toolchain");
+    vi.mocked(statSync).mockImplementation((file) => ({
+      isFile: () => true, dev: 1n, ino: file === "/toolchain/git" ? 2n : 1n,
+    }) as ReturnType<typeof statSync>);
+    vi.mocked(execFileSync).mockImplementation((file) => {
+      if (file === "/usr/bin/xcode-select") throw new Error("missing tools");
+      return "git version 2.56.0";
+    });
+    expect(resolveHostGit({ packaged: false })?.path).toBe("/toolchain/git");
+    expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(["/usr/bin/xcode-select", "/toolchain/git"]);
+  });
+
   it("rejects Windows UNC and device PATH entries before filesystem probes", async () => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     setProcessPlatform("win32");

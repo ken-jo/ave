@@ -247,7 +247,7 @@ export function discoverHostGit(installerRoot: string | null): GitDiscovery {
   let cltInstalled: boolean | undefined;
   for (const path of systemGitCandidates(process.platform, process.env.PATH)) {
     if (!isExecutableFile(path) || (bundledPath !== null && sameFile(path, bundledPath))) continue;
-    if (process.platform === "darwin" && path === DARWIN_GIT_SHIM) {
+    if (process.platform === "darwin" && sameFile(path, DARWIN_GIT_SHIM)) {
       cltInstalled ??= commandLineToolsInstalled();
       if (!cltInstalled) continue;
     }
