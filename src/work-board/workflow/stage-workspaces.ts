@@ -772,18 +772,18 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const mismatches = await preflight(at);
     const fields = (side: Mismatch["side"]): string => mismatches.filter(entry => entry.side === side).map(entry => entry.field).join(", ");
     // Said once for a run folder: a folder that stays is found again at every boot.
-    const once = (said: string, side: Mismatch["side"]): void => {
-      const key = `${side}\n${at.runRoot}\n${fields(side)}`;
-      if (warnedOnce.has(key)) return;
-      warnedOnce.add(key);
-      log.warn(said, fields(side), file.runId);
+    const first = (side: Mismatch["side"]): boolean => {
+      const key = `${side}
+${at.runRoot}
+${fields(side)}`;
+      return !warnedOnce.has(key) && warnedOnce.add(key).has(key);
     };
     if (fields("host") !== "") {
-      once("a run's workspace stays as it is: %s is not what its record names (run=%s)", "host");
+      if (first("host")) log.warn("a run's workspace stays as it is: %s is not what its record names (run=%s)", fields("host"), file.runId);
       return;
     }
     const repo = fields("repo") === "";
-    if (!repo) once("a run's repository is left as it is: %s is not what its record names (run=%s)", "repo");
+    if (!repo && first("repo")) log.warn("a run's repository is left as it is: %s is not what its record names (run=%s)", fields("repo"), file.runId);
     for (const stageId of Object.keys(file.stages)) await removeStage(at, stageId, repo);
     await clearIgnoreFolders(at);
     const root = file.project?.root;
