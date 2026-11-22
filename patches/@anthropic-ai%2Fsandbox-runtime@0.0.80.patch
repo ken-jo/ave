@@ -76,7 +76,8 @@ the installed package.
    and closes it once nothing can reach the port. A key an invocation listener
    or host relay owns is never attributed from a shared front end's proxy
    username, and a callback denial marked `unattributed: true` is recorded
-   without its key.
+   without its key. reset() logs a relay close that fails and completes the
+   rest of its teardown.
 
 4. Upstream routes (Ave): `SandboxManager.setParentProxyRouter(router)`
    replaces the single static `parentProxy` with a per-destination hook. The
