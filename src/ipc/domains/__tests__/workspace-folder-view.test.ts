@@ -1,6 +1,6 @@
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import fsModule, { type Dirent } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -146,7 +146,7 @@ function changeDuringListing(dir: string, rows: number, change: () => void, onTe
   return () => changed;
 }
 // After the first `rows` entries, models sibling writes that move `bumped`'s change time, and runs `change` right after the
-// row's first read of `watched`, between two policy-root lookups of that row.
+// row's first read of `watched`, between two policy-root lookups of that row. The modeled change time moves again then.
 function changeWithinRow(dir: string, rows: number, bumped: string, watched: string, change: () => void, onTestFinished: TestFinished): () => boolean {
   const armed = changeDuringListing(dir, rows, () => {}, onTestFinished);
   const at = (path: unknown, expected: string) => typeof path === "string" && relative(path, expected) === "";
@@ -154,7 +154,7 @@ function changeWithinRow(dir: string, rows: number, bumped: string, watched: str
   const statPath = fsModule.lstatSync;
   const lstat = vi.spyOn(fsModule, "lstatSync").mockImplementation((...args) => {
     const stat = statPath(...args);
-    if (armed() && at(args[0], bumped) && stat && "ctimeNs" in stat) stat.ctimeNs += 1n;
+    if (armed() && at(args[0], bumped) && stat && "ctimeNs" in stat) stat.ctimeNs += changed ? 2n : 1n;
     if (armed() && !changed && at(args[0], watched)) {
       changed = true;
       change();
@@ -384,33 +384,94 @@ describe("workspace.listDir folder-view entries", () => {
   });
 
   // Each row looks up `packages/ledger.json` just before `packages/mcp-installs.json`; the third row reuses the second's witnesses.
-  async function listWhilePackagesBecomesLink(bumped: "home" | "scratch", onTestFinished: TestFinished): Promise<void> {
+  async function listWhilePackagesBecomesLink(bumped: "home" | "scratch", name: "ledger.json" | "mcp-installs.json", onTestFinished: TestFinished): Promise<void> {
     const scratch = mkdtempSync(join(root, "row-route-"));
     onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
     const dir = join(scratch, "list");
     const home = join(scratch, "home");
     for (const path of [dir, home]) mkdirSync(path);
-    for (const name of ["a-1.txt", "a-2.txt", "mcp-installs.json"]) writeFileSync(join(dir, name), "");
+    for (const entry of ["a-1.txt", "a-2.txt", name]) writeFileSync(join(dir, entry), "");
     vi.stubEnv("AVE_HOME", home);
     onTestFinished(() => { vi.unstubAllEnvs(); });
-    const target = join(dir, "mcp-installs.json");
+    const target = join(dir, name);
     const packages = join(home, "packages");
     expect(isSensitivePath(target, "write", "person")).toBeNull();
     const changed = changeWithinRow(dir, 2, bumped === "home" ? home : scratch, packages, () => symlinkSync(dir, packages, directoryLink), onTestFinished);
+    const res = await listDir(dir);
+    expect(changed()).toBe(true);
+    expect(isSensitivePath(target, "write", "person")).toBe(`ave-home:packages/${name}`);
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt"], hidden: 1 });
+  }
+
+  it("hides an entry that a missing Ave home component starts routing to within one row", async ({ onTestFinished }) => {
+    // The home's own change time moved, so confirming the home's spelling says nothing about its missing child.
+    await listWhilePackagesBecomesLink("home", "mcp-installs.json", onTestFinished);
+  });
+
+  it("hides that entry within one row when a common ancestor's change time moved", async ({ onTestFinished }) => {
+    // The resolution count regression's case: one recheck of the ancestor's child serves the row.
+    await listWhilePackagesBecomesLink("scratch", "mcp-installs.json", onTestFinished);
+  });
+
+  it("hides the entry that the first lookup through a missing child of a changed Ave home routes to", async ({ onTestFinished }) => {
+    // That lookup reads the child itself just before the child starts routing, so only refusing the home's own spelling sees it.
+    await listWhilePackagesBecomesLink("home", "ledger.json", onTestFinished);
+  });
+
+  // The third row's `packages/ledger.json` lookup reads the home's missing `packages` first; `replace` runs right after.
+  async function listWhileHomeIsReplaced(replace: (home: string, next: string) => void, onTestFinished: TestFinished): Promise<void> {
+    const scratch = mkdtempSync(join(root, "row-home-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    const next = join(scratch, "next");
+    for (const path of [dir, home, next]) mkdirSync(path);
+    for (const name of ["a-1.txt", "a-2.txt", "mcp-installs.json"]) writeFileSync(join(dir, name), "");
+    symlinkSync(dir, join(next, "packages"), directoryLink);
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const target = join(dir, "mcp-installs.json");
+    expect(isSensitivePath(target, "write", "person")).toBeNull();
+    const changed = changeWithinRow(dir, 2, scratch, join(home, "packages"), () => replace(home, next), onTestFinished);
     const res = await listDir(dir);
     expect(changed()).toBe(true);
     expect(isSensitivePath(target, "write", "person")).toBe("ave-home:packages/mcp-installs.json");
     expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt"], hidden: 1 });
   }
 
-  it("hides an entry that a missing Ave home component starts routing to within one row", async ({ onTestFinished }) => {
-    // The home's own change time moved, so confirming the home's spelling says nothing about its missing child.
-    await listWhilePackagesBecomesLink("home", onTestFinished);
+  it("hides an entry that the Ave home routes to once it becomes a link within one row", async ({ onTestFinished }) => {
+    await listWhileHomeIsReplaced((home, next) => {
+      rmdirSync(home);
+      symlinkSync(next, home, directoryLink);
+    }, onTestFinished);
   });
 
-  it("hides that entry within one row when a common ancestor's change time moved", async ({ onTestFinished }) => {
-    // The resolution count regression's case: one recheck of the ancestor's child serves the row.
-    await listWhilePackagesBecomesLink("scratch", onTestFinished);
+  it("hides an entry that the Ave home routes to once another directory is renamed into its place within one row", async ({ onTestFinished }) => {
+    await listWhileHomeIsReplaced((home, next) => {
+      renameSync(home, `${home}-old`);
+      renameSync(next, home);
+    }, onTestFinished);
+  });
+
+  it("confirms a changed ancestor's child again when the ancestor's change time moves between two lookups of one row", async ({ onTestFinished }) => {
+    // No route changes, so only the realpath of the ancestor's child shows that the earlier confirmation was not reused.
+    const scratch = mkdtempSync(join(root, "row-spelling-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    for (const path of [dir, home]) mkdirSync(path);
+    for (const name of ["a-1.txt", "a-2.txt", "a-3.txt"]) writeFileSync(join(dir, name), "");
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const realpath = vi.spyOn(fsModule.realpathSync, "native");
+    onTestFinished(() => realpath.mockRestore());
+    let moved = Number.POSITIVE_INFINITY;
+    const changed = changeWithinRow(dir, 2, scratch, join(home, "packages"), () => { moved = realpath.mock.calls.length; }, onTestFinished);
+    const res = await listDir(dir);
+    const confirmations = realpath.mock.calls.slice(moved).filter(([path]) => relative(String(path), home) === "").length;
+    expect(changed()).toBe(true);
+    expect(confirmations).toBeGreaterThan(0);
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 0 });
   });
 
   it("hides exactly the entries a separate sensitivity check of each one hides", async ({ onTestFinished }) => {
