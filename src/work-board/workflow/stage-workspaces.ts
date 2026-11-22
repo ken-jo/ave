@@ -171,6 +171,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
     if (worktrees === undefined) return undefined;
     const name = basename(registration.admin);
+    if (!samePath(dirname(dirname(registration.gitdir)), at.runRoot)) throw new OwnedFsError("changed", "the registration points outside the run's folder");
     if (realDirId(dirname(registration.admin)) !== worktrees.id) throw new OwnedFsError("changed", "the registration is not in the run's repository");
     if (worktrees.entryId(name) === undefined) return undefined;
     const text = worktrees.child(name, registration.id)?.readFile("gitdir")?.toString("utf8");

@@ -110,6 +110,7 @@ const refused: Row[] = [
   ["baseCommit", ["baseCommit"], at => fx.userGit(fx.repo, "rev-parse", runBranch(at.other.run.runId))],
   ["refs[0].name", ["refs", 0, "name"], () => "refs/heads/keep"],
   ["refs[0].oid", ["refs", 0, "oid"], at => fx.userGit(fx.repo, "rev-parse", runBranch(at.other.run.runId))],
+  ["registrations._join.gitdir", ["registrations", "_join", "gitdir"], at => join(at.otherRoot, JOIN_DIR, ".git")],
 ];
 
 /** A field that names the project or its repository: the run folder is still the run's and goes; the repository is left as it is. */
@@ -119,7 +120,6 @@ const repositoryLeft: Row[] = [
   ["repo.id", ["repo", "id"], () => "1:1"],
   ["registrations._join.admin", ["registrations", "_join", "admin"], at => at.userAdmin],
   ["registrations._join.id", ["registrations", "_join", "id"], () => "1:1"],
-  ["registrations._join.gitdir", ["registrations", "_join", "gitdir"], at => join(at.otherRoot, JOIN_DIR, ".git")],
 ];
 
 describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run", (operation) => {

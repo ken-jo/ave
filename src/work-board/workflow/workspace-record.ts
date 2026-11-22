@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { isStageId } from "../template-graph.js";
 import type { NodeId } from "./owned-fs.js";
 import { JOIN_DIR, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
@@ -108,7 +108,7 @@ export function recordFits(home: string, run: { path: string; id: NodeId }, file
     if (!file.refs.every(ref => ref.name === `refs/heads/${file.branch}` && ref.oid === file.baseCommit)) return false;
   }
   return Object.entries(file.registrations).every(([key, entry]) =>
-    basename(entry.gitdir) === ".git" && basename(dirname(entry.gitdir)) === (key === JOIN_DIR ? JOIN_DIR : stageDirName(key)));
+    samePath(entry.gitdir, join(run.path, key === JOIN_DIR ? JOIN_DIR : stageDirName(key), ".git")));
 }
 
 /** The fields that name the owner: a record that differs in one of them from the one seen earlier is another run's. */
