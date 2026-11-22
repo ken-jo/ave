@@ -159,20 +159,34 @@ function requireServedCapabilities(
   }
 }
 
-/** Refuse a malformed implementedToolNames; bind only host-declared names. */
-function implementedDeclaredToolNames(
-  pluginId: string,
-  construction: PluginConstructResult,
-  declared: readonly string[],
-): string[] {
-  const names: unknown = construction.implementedToolNames;
-  if (!Array.isArray(names) || !names.every((name) => typeof name === "string")) {
+/** Refuse construct reply lists and flags outside the schema; a malformed field is not a default. */
+function requireConstructReplyFields(pluginId: string, construction: PluginConstructResult): void {
+  for (const field of ["implementedToolNames", "lifecycleHooks"] as const) {
+    const value: unknown = construction[field];
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+      throw new Error(`[out-of-process-plugin] ${pluginId}: construct answered no ${field} list`);
+    }
+  }
+  const servesUiResources: unknown = construction.servesUiResources;
+  if (typeof servesUiResources !== "boolean") {
     throw new Error(
-      `[out-of-process-plugin] ${pluginId}: construct answered no implementedToolNames list`,
+      `[out-of-process-plugin] ${pluginId}: construct answered no servesUiResources flag`,
     );
   }
+}
+
+/** Bind only host-declared names; the child intersects already, so an extra name is a contract breach. */
+function declaredImplementedToolNames(
+  pluginId: string,
+  implemented: readonly string[],
+  declared: readonly string[],
+): string[] {
   const declaredNames = new Set(declared);
-  return names.filter((name) => declaredNames.has(name));
+  const undeclared = implemented.filter((name) => !declaredNames.has(name));
+  if (undeclared.length > 0) {
+    log.warn({ pluginId, undeclared }, "construct reply named undeclared tools; they stay unbound");
+  }
+  return implemented.filter((name) => declaredNames.has(name));
 }
 
 function readUiResourceHtml(pluginId: string, uri: string, result: unknown): string {
@@ -333,9 +347,10 @@ export async function openPluginProtocolSession(
       TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs,
     )) as PluginConstructResult;
     requireServedCapabilities(pluginId, construction, capabilities);
-    const implementedToolNames = implementedDeclaredToolNames(
+    requireConstructReplyFields(pluginId, construction);
+    const implementedToolNames = declaredImplementedToolNames(
       pluginId,
-      construction,
+      construction.implementedToolNames,
       constructParams.declaredToolNames,
     );
 

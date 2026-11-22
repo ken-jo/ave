@@ -116,12 +116,18 @@ vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) =
 
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
 const factoryDebug = vi.hoisted(() => [] as string[]);
+const sessionWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
   return {
     ...actual,
     createLogger: (name: string) => {
       const logger = actual.createLogger(name);
+      if (name === "plugin-protocol-session") {
+        return Object.assign(Object.create(logger) as typeof logger, {
+          warn: (...args: unknown[]) => void sessionWarnings.push(args),
+        });
+      }
       if (name === "out-of-process-plugin" || name === "plugin-runtime") {
         return Object.assign(Object.create(logger) as typeof logger, {
           debug: (...args: unknown[]) => void factoryDebug.push(args.map(String).join(" ")),
@@ -1421,6 +1427,47 @@ describe("construct negotiates the host protocol", () => {
       /construct answered no implementedToolNames list/,
     );
     expect(terminated()).toMatch(/startup failed/);
+  });
+
+  it.each([
+    ["lifecycleHooks is a bare string", { lifecycleHooks: "start" }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks has a non-string entry", { lifecycleHooks: ["start", 1] }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks is missing", { lifecycleHooks: undefined }, /construct answered no lifecycleHooks list/],
+    ["servesUiResources is a string", { servesUiResources: "yes" }, /construct answered no servesUiResources flag/],
+    ["servesUiResources is missing", { servesUiResources: undefined }, /construct answered no servesUiResources flag/],
+  ])("fails a construct reply whose %s", async (_case, fields, refusal) => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      ...fields,
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(refusal);
+    expect(terminated()).toMatch(/startup failed/);
+  });
+
+  it("warns once when a construct reply names undeclared tools, and not for a declared subset", async () => {
+    const construct = async (implementedToolNames: readonly string[]) => {
+      const { child } = scriptedChild({ ...CONSTRUCTED, implementedToolNames, pluginProtocol: { requires: [] } });
+      return sessionFactory({
+        manifest: MANIFEST,
+        entryPath: join(tmpdir(), "never-imported.mjs"),
+        link: child.link,
+      })(hostContext(fakeHostApi()));
+    };
+    sessionWarnings.length = 0;
+    await construct(["pilot_echo"]);
+    expect(sessionWarnings).toEqual([]);
+    const instance = await construct(["pilot_echo", "pilot_unlisted", "pilot_other"]);
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
+    expect(sessionWarnings).toEqual([[
+      { pluginId: PLUGIN_ID, undeclared: ["pilot_unlisted", "pilot_other"] },
+      expect.stringMatching(/undeclared tools/),
+    ]]);
   });
 });
 
