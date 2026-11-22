@@ -15,6 +15,7 @@ export type FenceTag =
   | "ave-memory-consolidation-source"
   | "ave-long-term-memory-overview"
   | "ave-parent-directive"
+  | "ave-stage-input"
   | "prior-context-summary"
   | "compact-focus"
   | "mcp-resource"

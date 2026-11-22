@@ -1,0 +1,479 @@
+/** Held events (work-board-run-ending.md): a scheduler event whose run write finds the row not naming the run while its class holds it. */
+import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { expect, it, vi } from "vitest";
+import { WorkflowRunStore } from "../../../main/workflow-run-store.js";
+import { boardRunState } from "../run-state.js";
+import { createPassConditionRegistry, type PassConditionRegistry } from "../stage-gates.js";
+import { autoStageOf, stageOf } from "./stage-fixtures.js";
+import { type FakeChild, stageRunHarness } from "./stage-run-harness.js";
+
+type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+interface RunsOnDisk { runs: { runId: string; stageRuns: Record<string, unknown>[] }[]; heldEvents?: unknown[] }
+interface Run { h: Harness; id: number; runId: string; children: FakeChild[]; lose(on: boolean): void }
+
+/** One run on its own home. While `lose` is on, every run write reads `row-lost` while the class stays live: as a board edit between the
+ * class read and the write leaves it. `onSpawn` runs right after each child links. */
+async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSpawn?: (lose: (on: boolean) => void) => void, reason: "row-lost" | "board-unread" = "row-lost", passConditions?: PassConditionRegistry): Promise<void> {
+  let losing = false;
+  const lose = (on: boolean): void => { losing = on; };
+  const h = await stageRunHarness({
+    script: () => { onSpawn?.(lose); return undefined; },
+    workflow: passConditions ? { passConditions } : undefined,
+    wiring: (store) => {
+      const runs = boardRunState(store);
+      return { runs: { ...runs, update: async (...a) => losing ? { ok: false, reason } : runs.update(...a) } };
+    },
+  });
+  try {
+    const version = await h.confirm(stages.map(id => passConditions ? autoStageOf(id) : stageOf(id)));
+    const id = await h.addItem(version);
+    void h.start(id, h.local(version)).catch(() => undefined);
+    const children = await h.untilLive(stages.length);
+    const runId = (await h.until(id, item => item.runId !== undefined && item.stageRuns.every(stage => stage.status === "running"))).runId ?? "";
+    await body({ h, id, runId, children, lose });
+  } finally {
+    vi.restoreAllMocks();
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+}
+
+const runsOnDisk = (h: Harness): RunsOnDisk => JSON.parse(readFileSync(join(h.dir, "workflow-runs.json"), "utf8")) as RunsOnDisk;
+function editRuns(h: Harness, edit: (file: RunsOnDisk) => void): void {
+  const file = runsOnDisk(h);
+  edit(file);
+  writeFileSync(join(h.dir, "workflow-runs.json"), JSON.stringify(file));
+}
+const linked = (run: Run) => run.h.until(run.id, item => item.stageRuns.every(stage => stage.childSessionId !== undefined));
+
+/** A permitted read: a reader, then the takeover. */
+async function permittedRead(h: Harness): Promise<void> {
+  const listed = await h.board.list();
+  if (listed.status === "ok") await h.engine.projectTemplateRuns(listed.items);
+  await h.engine.adoptParkedTemplateRuns();
+}
+const settle = () => new Promise(resolve => setTimeout(resolve, 50));
+const logged = (spy: { mock: { calls: unknown[][] } }, text: string): number => spy.mock.calls.filter(call => call.some(arg => arg === text)).length;
+
+it("the run file stores a held event once by its identity, drops it by identity or with its run, and lets it go with its run's end", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "held-events-"));
+  try {
+    const path = join(dir, "runs.json");
+    const store = new WorkflowRunStore(path);
+    const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+    await store.put({ itemId: 1, runId: "run-1", pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z", stageRuns: [] });
+    const run = { itemId: 1, runId: "run-1" };
+    const ended = { ...run, stage: "a", attempt: 1, kind: "stage_ended" };
+    const stop = { ...run, stage: null, attempt: 0, kind: "stop_requested" };
+    expect(await store.holdEvent(ended)).toBe(true);
+    expect(await store.holdEvent(ended)).toBe(true);
+    expect(await store.holdEvent(stop)).toBe(true);
+    // A run the file does not hold keeps no held event.
+    await store.holdEvent({ ...ended, itemId: 2, runId: "run-2" });
+    expect(JSON.parse(await readFile(path, "utf8")).heldEvents).toEqual([ended, stop]);
+    await store.dropHeld(run, { stage: "a", attempt: 1, kind: "stage_ended" });
+    expect(await store.heldEvents(run)).toEqual([stop]);
+    await store.holdEvent(ended);
+    await store.dropHeld(run);
+    expect(JSON.parse(await readFile(path, "utf8")).heldEvents).toBeUndefined();
+
+    const malformed = { ...run, stage: "a", attempt: -1, kind: "stage_ended" };
+    const file = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    await writeFile(path, JSON.stringify({ ...file, heldEvents: [ended, malformed] }));
+    expect(await store.heldEvents(run)).toEqual([ended]);
+    const settled = await store.settleRun("run-1", current => ({ run: current, ends: "stopped", at: "2026-01-01T00:00:01.000Z" }), () => true);
+    expect(settled.status).toBe("stored");
+    expect(JSON.parse(await readFile(path, "utf8")).heldEvents).toEqual([malformed]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it("a completion held behind its run write replays once the class is live, and a second release changes nothing", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" }]));
+    expect((await h.stageRun(id, "a")).status).toBe("running");
+    lose(false);
+    await Promise.all([permittedRead(h), permittedRead(h)]);
+    const gated = await h.untilStage(id, "a", "awaiting_gate");
+    expect(gated.stageRuns[0]?.output).toBe(`output of ${child.sessionId}`);
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
+    await permittedRead(h);
+    await settle();
+    expect(await h.runOf(runId)).toEqual(gated.record);
+  }));
+
+it("a later Stop wins over an earlier completion still held: the completion replays under it, its output kept, and the run ends stopped", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toHaveLength(1));
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([
+      { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" },
+      { itemId: id, runId, stage: null, attempt: 0, kind: "stop_requested" },
+    ]));
+    lose(false);
+    await permittedRead(h);
+    expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "cancelled", message: "user-stopped" });
+    const record = await h.runOf(runId);
+    expect(record?.settled?.status).toBe("cancelled");
+    expect(record?.stageRuns[0]).toMatchObject({ status: "cancelled", output: `output of ${child.sessionId}` });
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+  }));
+
+it("held events whose stage moved on to another attempt are dropped with their reason, never applied to it, and that attempt takes the lost path", async () =>
+  withRun(["a"], async ({ h, id, runId, children: [child], lose }) => {
+    const ended = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ ...ended, kind: "stage_linked" }]));
+    child.finish();
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ ...ended, kind: "stage_linked" }, ended]));
+    // A retry the run file shows: the stage runs again as its second attempt.
+    editRuns(h, (file) => {
+      const stage = file.runs.find(candidate => candidate.runId === runId)?.stageRuns[0];
+      if (stage) stage.attempt = 2;
+    });
+    lose(false);
+    const log = vi.spyOn(console, "log");
+    await permittedRead(h);
+    const failed = await h.untilStage(id, "a", "failed");
+    expect(failed.stageRuns[0]).toMatchObject({ attempt: 2, failure: "interrupted" });
+    expect(failed.stageRuns[0]?.childSessionId).toBeUndefined();
+    expect(failed.stageRuns[0]?.output).toBeUndefined();
+    expect(logged(log, "its stage moved on to another attempt")).toBe(2);
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+  }, lose => lose(true)));
+
+it("a running stage with no child, none starting, no launch and no held event ends interrupted at a permitted read; one with a live child does not", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child] } = run;
+    await linked(run);
+    await permittedRead(h);
+    await settle();
+    expect((await h.stageRun(id, "a")).status).toBe("running");
+    expect(child.ended).toBe(false);
+    child.finish();
+    await h.untilStage(id, "a", "awaiting_gate");
+    // The run file shows the stage running again, with nothing that will end it.
+    editRuns(h, (file) => {
+      const stage = file.runs.find(candidate => candidate.runId === runId)?.stageRuns[0];
+      if (!stage) return;
+      stage.status = "running";
+      delete stage.gate;
+      delete stage.resultHash;
+    });
+    await permittedRead(h);
+    expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ attempt: 1, failure: "interrupted" });
+  }));
+
+it.each(["sibling", "prior attempt"] as const)("a live child of a %s does not suppress a lost stage attempt", async live =>
+  withRun(["a", "b"], async (run) => {
+    const { h, id, runId, children: [first, second] } = run;
+    await linked(run);
+    if (live === "sibling") {
+      first.finish();
+      await h.untilStage(id, "a", "awaiting_gate");
+    }
+    const attempt = live === "sibling" ? 1 : 2;
+    editRuns(h, file => {
+      const stored = file.runs.find(candidate => candidate.runId === runId);
+      if (!stored) throw new Error("Run missing");
+      stored.stageRuns[0] = { stageId: "a", attempt, status: "running" };
+    });
+    await permittedRead(h);
+    expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ attempt, failure: "interrupted" });
+    expect(second.ended).toBe(false);
+    expect((await h.stageRun(id, "b")).status).toBe("running");
+    if (live === "prior attempt") expect(first.ended).toBe(false);
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+  }));
+
+it("a pending preparation protects its exact stage attempt at a permitted read", async () => {
+  let preparing = false;
+  let release: () => void = () => undefined;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const h = await stageRunHarness({
+    wiring: (_store, { workspace }) => ({
+      workspace: { ...workspace, prepare: async (...args) => { preparing = true; await pending; return workspace.prepare(...args); } },
+    }),
+  });
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const running = h.start(id, h.local(version));
+    await vi.waitFor(() => expect(preparing).toBe(true));
+    await permittedRead(h);
+    await settle();
+    expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 1, status: "running" });
+    expect(h.children).toHaveLength(0);
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    release();
+    const [child] = await h.untilLive(1);
+    child.finish();
+    await running;
+    expect((await h.stageRun(id, "a")).status).toBe("awaiting_gate");
+  } finally {
+    release();
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});
+
+it("a held event the run file cannot store is held in memory, keeps its stage off the lost path, and replays once live", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, children: [child], lose } = run;
+    await linked(run);
+    const stored = vi.spyOn(h.board.runs, "holdEvent").mockRejectedValue(new Error("run file not writable"));
+    lose(true);
+    child.finish();
+    await vi.waitFor(() => expect(stored).toHaveBeenCalledTimes(1));
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    lose(false);
+    await permittedRead(h);
+    expect((await h.untilStage(id, "a", "awaiting_gate")).stageRuns[0]?.output).toBe(`output of ${child.sessionId}`);
+  }));
+
+it("a user decision is refused while its run holds events, and goes through once they replay", async () =>
+  withRun(["a", "b"], async (run) => {
+    const { h, id, runId, children: [first, second], lose } = run;
+    await linked(run);
+    first.finish();
+    await h.untilStage(id, "a", "awaiting_gate");
+    lose(true);
+    second.finish();
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ itemId: id, runId, stage: "b", attempt: 1, kind: "stage_ended" }]));
+    expect(await h.decide(id, "a", "approve")).toEqual({ ok: false, reason: "run_mismatch" });
+    expect((await h.stageRun(id, "a")).status).toBe("awaiting_gate");
+    lose(false);
+    await permittedRead(h);
+    await h.untilStage(id, "b", "awaiting_gate");
+    expect(await h.decide(id, "a", "approve")).toMatchObject({ ok: true });
+  }));
+
+it.each([true, false])("of the events a process held, a restart drops each but a Stop, which still stops the run (Stop held: %s)", async (stopped) =>
+  withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    if (stopped) h.engine.cancelRun(id);
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toHaveLength(stopped ? 2 : 1));
+    lose(false);
+    const log = vi.spyOn(console, "log");
+    h.makeEngine();
+    await h.engine.adoptParkedTemplateRuns();
+    if (stopped) expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "cancelled" });
+    else await h.untilStage(id, "a", "failed");
+    const record = await h.runOf(runId);
+    expect(record?.settled?.status).toBe(stopped ? "cancelled" : undefined);
+    expect(record?.stageRuns[0]).toMatchObject({ status: "failed", failure: "interrupted" });
+    expect(record?.stageRuns[0]?.output).toBeUndefined();
+    expect(log.mock.calls.some(call => String(call[0]).includes("superseded by the restart reconcile") && call.includes("stage_ended"))).toBe(true);
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+  }));
+
+it("a run boot kept while its class held it is adopted by a later permitted read once its class is live, without a sweep", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, runId } = run;
+    await linked(run);
+    const goodBoard = readFileSync(h.boardPath, "utf8");
+    h.editRow(id, ({ runId: _runId, runHistory: _history, ...row }) => row);
+    expect(await h.board.runs.markDeleted({ itemId: id, runId })).toBe("marked");
+    h.makeEngine();
+    await h.engine.adoptParkedTemplateRuns();
+    expect((await h.runOf(runId))?.stageRuns[0]?.status).toBe("running");
+    expect(h.sweeps.at(-1)).toContain(runId);
+    const sweeps = h.sweeps.length;
+    writeFileSync(h.boardPath, goodBoard);
+    expect(await h.board.runs.withdrawIntent({ itemId: id, runId })).toBe(true);
+    await permittedRead(h);
+    expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ failure: "interrupted" });
+    expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: "executing", message: "resumed" }));
+    expect(h.sweeps).toHaveLength(sweeps);
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "cancelled" });
+  }));
+
+it.each((["row-lost", "board-unread"] as const).flatMap(reason => [false, true].map(superseded => ({ reason, superseded }))))("a pre-spawn workspace write held by $reason retains its spawn attempt and revalidates it (superseded: $superseded)", async ({ reason, superseded }) => {
+  let refusing = true;
+  let prepared = false;
+  const h = await stageRunHarness({
+    wiring: (store, { workspace }) => {
+      const runs = boardRunState(store);
+      return {
+        workspace: { ...workspace, prepare: async (...args) => { const result = await workspace.prepare(...args); prepared = true; return result; } },
+        runs: { ...runs, update: async (...args) => refusing && prepared ? { ok: false, reason } : runs.update(...args) },
+      };
+    },
+  });
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    expect(await h.start(id, h.local(version))).toMatchObject({ status: "awaiting_approval" });
+    const runId = (await h.item(id)).runId ?? "";
+    const held = { itemId: id, runId, stage: "a", attempt: 1, kind: "spawn_requested" };
+    expect(runsOnDisk(h).heldEvents).toEqual([held]);
+    expect(h.children).toHaveLength(0);
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+    await permittedRead(h);
+    await settle();
+    expect(runsOnDisk(h).heldEvents).toEqual([held]);
+    if (superseded) editRuns(h, file => { file.runs[0].stageRuns[0].attempt = 2; });
+    const log = vi.spyOn(console, "log");
+    refusing = false;
+    await Promise.all([permittedRead(h), permittedRead(h)]);
+    if (superseded) {
+      expect((await h.untilStage(id, "a", "failed")).stageRuns[0]).toMatchObject({ attempt: 2, failure: "interrupted" });
+      expect(h.children).toHaveLength(0);
+      expect(logged(log, "its stage moved on to another attempt")).toBe(1);
+    } else {
+      const [child] = await h.untilLive(1);
+      expect(h.children).toHaveLength(1);
+      child.finish();
+      await h.untilStage(id, "a", "awaiting_gate");
+      await permittedRead(h);
+      expect(h.children).toHaveLength(1);
+    }
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+  } finally {
+    vi.restoreAllMocks();
+    for (const child of h.children) child.finish();
+    await h.cleanup();
+  }
+});
+
+it("board-unread holds each completion with one coded notice per episode and revalidates without a restart", async () =>
+  withRun(["a", "b"], async (run) => {
+    const { h, id, runId, children, lose } = run;
+    await linked(run);
+    for (const [index, child] of children.entries()) {
+      lose(true);
+      child.finish();
+      const stage = index === 0 ? "a" : "b";
+      await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ itemId: id, runId, stage, attempt: 1, kind: "stage_ended" }]));
+      expect((await h.stageRun(id, stage)).status).toBe("running");
+      expect((await h.runOf(runId))?.settled).toBeUndefined();
+      expect(h.events.filter(event => event.reasonCode === "template-runs-board-unread")).toHaveLength(index + 1);
+      await permittedRead(h);
+      await settle();
+      expect(h.events.filter(event => event.reasonCode === "template-runs-board-unread")).toHaveLength(index + 1);
+      lose(false);
+      await permittedRead(h);
+      await h.untilStage(id, stage, "awaiting_gate");
+      await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
+      expect(h.events.filter(event => event.message === "resumed")).toHaveLength(index + 1);
+    }
+    expect(h.events.some(event => event.phase === "error")).toBe(false);
+  }, undefined, "board-unread"));
+
+it("a completion held by an unreadable board replays after the actual board file is restored", async () =>
+  withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child] } = run;
+    await linked(run);
+    const readable = readFileSync(h.boardPath);
+    writeFileSync(h.boardPath, "{unreadable");
+    child.finish();
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([{ itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" }]));
+    expect((await h.runOf(runId))?.stageRuns[0].status).toBe("running");
+    expect((await h.runOf(runId))?.settled).toBeUndefined();
+    expect(h.events.filter(event => event.reasonCode === "template-runs-board-unread")).toHaveLength(1);
+    writeFileSync(h.boardPath, readable);
+    await permittedRead(h);
+    await h.untilStage(id, "a", "awaiting_gate");
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toBeUndefined());
+    expect(h.events.some(event => event.phase === "error")).toBe(false);
+  }));
+
+it.each(["before", "before-evaluation", "after", "none"] as const)("a held replay claims effects at most once when its handle throws %s the effect", async (failure) => {
+  const conditions = createPassConditionRegistry();
+  const original = conditions.evaluate;
+  const evaluate = vi.spyOn(conditions, "evaluate");
+  if (failure === "before-evaluation") evaluate.mockRejectedValueOnce(new Error("before gate effect"));
+  if (failure === "after") evaluate.mockImplementationOnce(async (...args) => { await original(...args); throw new Error("after gate effect"); });
+  await withRun(["a"], async (run) => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    const held = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([held]));
+    const warnings = vi.spyOn(console, "warn");
+    const write = failure === "before" ? vi.spyOn(h.board, "updateRun").mockRejectedValue(new Error("before gate effect")) : undefined;
+    lose(false);
+    await h.engine.adoptParkedTemplateRuns();
+    if (failure === "before") {
+      await vi.waitFor(() => expect(write).toHaveBeenCalled());
+      await settle();
+      expect(runsOnDisk(h).heldEvents).toEqual([held]);
+      expect((await h.runOf(runId))?.settled).toBeUndefined();
+      expect(evaluate).not.toHaveBeenCalled();
+      write?.mockRestore();
+    } else if (failure === "before-evaluation") {
+      await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(runsOnDisk(h).heldEvents).toEqual([held]);
+      expect((await h.runOf(runId))?.settled).toBeUndefined();
+    } else if (failure === "after") {
+      await vi.waitFor(() => expect(evaluate).toHaveBeenCalledTimes(1));
+      await settle();
+      expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    }
+    const boundary = failure === "before-evaluation" ? "before" : failure;
+    if (failure !== "none") expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes(`${boundary} gate effect`)))).toBe(true);
+    await Promise.all([permittedRead(h), permittedRead(h)]);
+    if (failure === "after") await h.untilStage(id, "a", "failed");
+    else expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "done" });
+    await permittedRead(h);
+    await settle();
+    expect(evaluate).toHaveBeenCalledTimes(failure === "before-evaluation" ? 2 : 1);
+    expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(failure === "after" ? 0 : 1);
+  }, undefined, "row-lost", conditions);
+});
+
+it.each(["before", "after", "none"] as const)("a registered gate retries only an unconsumed effect after %s failure", async failure => {
+  const conditions = createPassConditionRegistry();
+  let calls = 0;
+  let effects = 0;
+  conditions.register("stage_ok", { evaluate: facts => {
+    calls += 1;
+    if (failure === "before" && calls === 1) throw new Error("before registered effect");
+    if (facts.claimEffect?.() !== false) effects += 1;
+    if (failure === "after") throw new Error("after registered effect");
+    return { passed: true, evidence: "applied", judgedBy: "host" };
+  } });
+  await withRun(["a"], async run => {
+    const { h, id, runId, children: [child], lose } = run;
+    await linked(run);
+    lose(true);
+    child.finish();
+    const identity = { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_ended" };
+    await vi.waitFor(() => expect(runsOnDisk(h).heldEvents).toEqual([identity]));
+    const warnings = vi.spyOn(console, "warn");
+    lose(false);
+    await permittedRead(h);
+    await vi.waitFor(() => expect(calls).toBe(1));
+    await settle();
+    if (failure === "before") {
+      expect(effects).toBe(0);
+      expect(runsOnDisk(h).heldEvents).toEqual([identity]);
+    } else expect(runsOnDisk(h).heldEvents).toBeUndefined();
+    if (failure !== "none") expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes(`${failure} registered effect`)))).toBe(true);
+    await permittedRead(h);
+    if (failure === "after") await h.untilStage(id, "a", "failed");
+    else expect(await h.settleEvent()).toMatchObject({ itemId: id, phase: "done" });
+    await permittedRead(h);
+    expect(calls).toBe(failure === "before" ? 2 : 1);
+    expect(effects).toBe(1);
+  }, undefined, "row-lost", conditions);
+});

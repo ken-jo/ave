@@ -67,6 +67,8 @@ export const WORK_BOARD = {
   complete: "ave:work-board:complete",
   reopen: "ave:work-board:reopen",
   remove: "ave:work-board:remove",
+  // Renderer → main: the user's clear of a row whose template run has no record (WorkItemResolved.templateRunError).
+  clearRun: "ave:work-board:clear-run",
   // Emitted by the work-board IPC domain after any successful mutation
   // (created/updated/transitioned/completed/reopened/removed) so the renderer board view re-lists without polling.
   itemChanged: "ave:work-board:item-changed",
@@ -88,6 +90,11 @@ export const WORK_BOARD = {
   // sender-validated, board-owner frame, CHANNEL_GESTURE "required"; the engine resolves the child, the renderer never names it.
   steerRun: "ave:work-board:steer-run",
   cancelRun: "ave:work-board:cancel-run",
+  // Renderer → main: the user's decision at a stage gate or on a join of a template run, and a retry of a failed stage. The same
+  // work-approval boundary as decide-plan; CHANNEL_GESTURE "required".
+  decideStage: "ave:work-board:decide-stage",
+  decideJoin: "ave:work-board:decide-join",
+  retryStage: "ave:work-board:retry-stage",
   // Renderer → main: the user's work approval of a stored plan (approve / request changes / reject). Internal, sender-validated,
   // board-owner frame, CHANNEL_GESTURE "required"; bound to the run id and the hash of the stored plan (permission-decision-tree.md
   // "Work approvals").

@@ -18,6 +18,8 @@ const stage = { stageId: "plan", attempt: 1, status: "awaiting_gate", output: "r
 const start = (): TemplateRunStart => ({ ...pin, source, stageRuns: [structuredClone(stage)] });
 const row = (id: number, patch: Record<string, unknown> = {}) => ({ id, title: `Work ${id}`, status: "planned", priority: "medium", created_at: "2026-01-01", updated_at: "2026-01-01", ...patch });
 const readJson = async (path: string) => JSON.parse(await readFile(path, "utf8"));
+/** The runs the run file holds; it also keeps the row-id floor, so it exists once a row was read or added. */
+const storedRuns = async (): Promise<unknown[]> => (await readJson(runsPath)).runs;
 async function templateItem(store: WorkBoardStore): Promise<number> {
   const created = await store.create({ title: "Template", templateId: pin.templateId });
   if (created.status !== "created") throw new Error("Missing item");
@@ -30,7 +32,7 @@ function holdRunFileForReview(): void {
     path === runsPath ? { status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" } : read(path));
 }
 
-it("ignores run fields written by hand into a board row", async () => {
+it("keeps a board row with run fields written by hand as it was written, unlisted, and lets them authorise nothing", async () => {
   const forged = {
     runTemplateVersion: 1, runTemplateGraphHash: pin.graphHash, runStartedBy: source, pin,
     stageRuns: [{ ...stage, gate: { type: "human", status: "approved", revision: 0 } }],
@@ -47,26 +49,26 @@ it("ignores run fields written by hand into a board row", async () => {
     planApproval: { ...approval, templateGraphHash: pin.graphHash },
   }] }));
   const store = new WorkBoardStore(boardPath);
+  const written = (await readJson(boardPath)).items[0];
 
-  const found = await store.get(1);
-  if (found.status !== "found") throw new Error("Missing item");
-  const { mutationRevision, status_resolved, planStale, ...surfaced } = found.item;
-  expect(surfaced).toEqual(kept);
+  // A row with run fields edited in is not one a board write writes: it is kept as written and not listed.
+  expect(await store.get(1)).toEqual({ status: "not_found", itemId: 1 });
   const listed = await store.list();
   if (listed.status !== "ok") throw new Error("Missing list");
-  for (const key of [...Object.keys(forged), "templateRunError"]) expect(listed.items[0]).not.toHaveProperty(key);
+  expect(listed.items).toEqual([]);
+  expect(listed.unreadableRows?.map((entry) => entry.id)).toEqual([1]);
 
   // The run file holds no such run, so the forged gate and pin authorise nothing.
   expect(await store.getRun(1)).toEqual({ status: "not-found" });
   expect(await store.runs.get("run-1")).toEqual({ status: "not-found" });
   const mutate = vi.fn((value: WorkflowRunRecord) => value);
-  expect(await store.updateRun(1, "run-1", mutate)).toEqual({ status: "not-found" });
+  expect(await store.updateRun(1, "run-1", mutate)).toEqual({ status: "board-unread" });
   expect(mutate).not.toHaveBeenCalled();
-  expect(await store.beginRun(1, "run-2", "2026-01-01")).toMatchObject({ status: "invalid", reason: "template-run-unavailable" });
-  await expect(readFile(runsPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await store.beginRun(1, "run-2", "2026-01-01")).toMatchObject({ status: "not_found" });
+  expect(await storedRuns()).toEqual([]);
 
-  expect(await store.update(1, { title: "Updated" })).toMatchObject({ status: "updated" });
-  expect((await readJson(boardPath)).items).toEqual([{ ...kept, title: "Updated", updated_at: expect.any(String) }]);
+  expect(await store.create({ title: "Next" })).toMatchObject({ status: "created" });
+  expect((await readJson(boardPath)).items.find((entry: { id: number }) => entry.id === 1)).toEqual(written);
 });
 
 it("accepts legacy items and persists only templateId from creation", async () => {
@@ -85,7 +87,7 @@ it("parks template execution until a run pin is supplied", async () => {
   const ordinary = await store.create({ title: "Ordinary" });
   if (ordinary.status !== "created") throw new Error("Missing item");
   expect(await store.beginRun(ordinary.itemId, "run-2", "2026-01-01")).toMatchObject({ status: "updated", item: { runId: "run-2" } });
-  await expect(readFile(runsPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await storedRuns()).toEqual([]);
 });
 
 it("begins a template run in the run file and leaves only the runId on the row", async () => {
@@ -96,12 +98,12 @@ it("begins a template run in the run file and leaves only the runId on the row",
   await expect(store.beginRun(id, "run-a", "2026-01-01", { ...start(), templateId: "other" })).rejects.toMatchObject({ code: "invalid-template-run" });
   await expect(store.beginRun(id, "run-a", "2026-01-01", { ...start(), stageRuns: [{ ...stage, output: "x".repeat(48_001) }] })).rejects.toMatchObject({ code: "invalid-template-run", message: "Stage output exceeds 48000 characters" });
   expect(await readFile(boardPath, "utf8")).toBe(before);
-  await expect(readFile(runsPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await storedRuns()).toEqual([]);
 
   const begun = await store.beginRun(id, "run-a", "2026-01-01", start());
   expect(begun).toMatchObject({ status: "updated", item: { runId: "run-a", runStatus: "planning" } });
   const run: WorkflowRunRecord = { runId: "run-a", itemId: id, pin, runStartedBy: source, startedAt: "2026-01-01", stageRuns: [stage] };
-  expect(await readJson(runsPath)).toEqual({ version: 1, runs: [run] });
+  expect(await readJson(runsPath)).toEqual({ version: 1, rowIdFloor: id, runs: [run] });
   expect(await store.getRun(id)).toEqual({ status: "found", run });
   const stored = (await readJson(boardPath)).items[0];
   expect(Object.keys(stored).sort()).toEqual(["created_at", "id", "priority", "runHistory", "runId", "runStatus", "runUpdatedAt", "status", "templateId", "title", "updated_at"]);
@@ -113,8 +115,11 @@ it("updates run state under the board lock and never invokes a stale mutation", 
   const id = await templateItem(store);
   await store.beginRun(id, "run-1", "2026-01-01", start());
   const stale = vi.fn((value: WorkflowRunRecord) => value);
-  expect(await store.updateRun(id, "other-run", stale)).toEqual({ status: "not-found" });
-  expect(await store.updateRun(99, "run-1", stale)).toEqual({ status: "not-found" });
+  // A row there that never named the run shows it lost; an id the board does not list shows the run's row gone, unless an entry of
+  // the file holds the run's id: that entry could still be its row.
+  expect(await store.updateRun(id, "other-run", stale)).toEqual({ status: "row-lost" });
+  expect(await store.updateRun(99, "run-99", stale)).toEqual({ status: "not-found" });
+  expect(await store.updateRun(99, "run-1", stale)).toEqual({ status: "board-unread" });
   expect(stale).not.toHaveBeenCalled();
   const bump = (value: WorkflowRunRecord): WorkflowRunRecord => ({ ...value, stageRuns: value.stageRuns.map(entry => ({ ...entry, attempt: entry.attempt + 1 })) });
   await Promise.all([store.updateRun(id, "run-1", bump), store.updateRun(id, "run-1", bump)]);

@@ -67,6 +67,17 @@ describe("seedSampleWorkBoard", () => {
     expect(store.items).toEqual([]);
     expect(marker.files).toEqual({});
   });
+  it("leaves the decision to a later boot when no row can be added, and seeds then", async () => {
+    const store = makeStore();
+    const create = store.create;
+    store.create = async () => ({ status: "invalid", reason: "work-item-ids-unavailable" });
+    const marker = makeMarker();
+    expect(await seedSampleWorkBoard({ store, marker, alreadyMigrated: false, now: () => NOW })).toEqual({ seeded: false, reason: "work-item-ids-unavailable" });
+    expect(marker.files).toEqual({});
+    store.create = create;
+    expect(await seedSampleWorkBoard({ store, marker, alreadyMigrated: false, now: () => NOW })).toMatchObject({ seeded: true, count: 3 });
+  });
+
   it("seeds a fresh board once, with a completed sample carrying plan + output", async () => {
     const store = makeStore();
     const marker = makeMarker();

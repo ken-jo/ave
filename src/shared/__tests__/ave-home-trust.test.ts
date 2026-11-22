@@ -951,11 +951,14 @@ describe("workflow run file", () => {
     expect(await marks()).toEqual([[started, "template-runs-pending-review"], [unstarted, undefined], [ordinary, undefined]]);
     expect(await board.beginRun(unstarted, "other", run.startedAt, begin)).toMatchObject({ status: "invalid", reason: "template-runs-pending-review" });
     expect(await board.updateRun(started, "run", value => value)).toEqual({ status: "pending-review" });
-    expect(await board.update(ordinary, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    // The user's text waits while the run file cannot be read: its edit could take out the last id of a run that is not over.
+    await expect(board.update(ordinary, { title: "Renamed" })).rejects.toMatchObject({ code: "work-board-runs-unreadable" });
+    expect(await board.setRunStatus(ordinary, "executing")).toMatchObject({ status: "updated" });
     expect(readFileSync(path, "utf8")).toBe(changed);
 
     writeFileSync(path, trusted);
     expect(await marks()).toEqual([[started, undefined], [unstarted, undefined], [ordinary, undefined]]);
+    expect(await board.update(ordinary, { title: "Renamed" })).toMatchObject({ status: "updated" });
   });
 
   it("stays under the size limit when rows with large settled runs are deleted one after another", async () => {
@@ -968,7 +971,7 @@ describe("workflow run file", () => {
       const made = await board.create({ title: "Work", templateId: pin.templateId });
       if (made.status !== "created") throw new Error("Missing item");
       expect(await board.beginRun(made.itemId, runId, run.startedAt, { ...pin, source: run.runStartedBy, stageRuns: [] })).toMatchObject({ status: "updated" });
-      expect(await board.updateRun(made.itemId, runId, value => ({ ...value, stageRuns, settled: { status: "completed" as const, at: run.startedAt } }))).toMatchObject({ status: "stored" });
+      expect(await board.updateRun(made.itemId, runId, value => ({ run: { ...value, stageRuns }, ends: "completed", at: run.startedAt }))).toMatchObject({ status: "stored" });
       expect(await board.setRunResult(made.itemId, { runStatus: "completed" })).toMatchObject({ status: "updated" });
       return made.itemId;
     };

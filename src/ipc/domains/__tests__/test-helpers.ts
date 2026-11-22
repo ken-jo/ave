@@ -52,3 +52,14 @@ export function invokeFileIpcHandler(
     fn({ ...hostFrameEvent(), frameId: 0, processId: 0 } as never, ...args),
   );
 }
+
+/** Looks up a registered IPC handler by channel; a missing one fails the test. */
+export function registeredIpcHandlers(
+  handlers: Map<string, (...args: unknown[]) => unknown>,
+): (channel: string) => (...args: unknown[]) => Promise<unknown> {
+  return (channel) => {
+    const fn = handlers.get(channel);
+    if (!fn) throw new Error(`missing handler for ${channel}`);
+    return fn as (...args: unknown[]) => Promise<unknown>;
+  };
+}

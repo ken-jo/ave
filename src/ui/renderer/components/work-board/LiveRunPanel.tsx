@@ -527,9 +527,10 @@ function SettledFooter({ entry }: { entry: LiveRunEntry }) {
   switch (run.phase) {
     case "cancelled":
       return (
-        <p className="rounded-md bg-muted px-2 py-1.5 text-dense text-muted-foreground" data-testid="live-step-cancelled">
-          {t("workBoard.liveCancelledNarration", { turns })}
-        </p>
+        <div className="rounded-md bg-muted px-2 py-1.5 text-dense text-muted-foreground">
+          <p data-testid="live-step-cancelled">{t("workBoard.liveCancelledNarration", { turns })}</p>
+          {run.endUnconfirmed && <p className="mt-0.5" data-testid="live-step-end-unconfirmed">{t("reasonCodes.run-end-unconfirmed")}</p>}
+        </div>
       );
     case "error":
       return (

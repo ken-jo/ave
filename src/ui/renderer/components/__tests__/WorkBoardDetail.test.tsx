@@ -167,3 +167,15 @@ describe.each(SUPPORTED_LOCALES)("%s work item detail refusals", (locale) => {
     expect(console.warn).not.toHaveBeenCalled();
   });
 });
+
+describe("work item delete", () => {
+  it("deletes an item only as its card showed it, by its id and revision, and says so when the host finds it changed", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const api = apiFor();
+    vi.mocked(api.removeWorkBoardItem).mockResolvedValue({ status: "invalid", itemId: ITEM.id, reason: "work-item-changed" });
+    await openDetails(api);
+    fireEvent.click(screen.getByTestId("work-board-detail-delete"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(t("workBoard.itemChangedReload"));
+    expect(api.removeWorkBoardItem).toHaveBeenCalledExactlyOnceWith(ITEM.id, { revision: ITEM.mutationRevision });
+  });
+});

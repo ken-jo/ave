@@ -124,7 +124,7 @@ it("stores the authorized project root instead of its renderer alias", async () 
 it("returns typed row refusals over IPC without invoking execution or gates", async () => {
   const { WorkflowTemplateError } = await import("../../../work-board/template-graph.js");
   const board = { get: vi.fn(async () => ({ status: "found", itemId: 2, item: { id: 2, templateRunError: "invalid-template-run" } })), update: vi.fn(async () => { throw new WorkflowTemplateError("invalid-template-run"); }) };
-  const engine = { runItem: vi.fn(), decidePlan: vi.fn(), cancelRun: vi.fn(() => { throw new WorkflowTemplateError("invalid-template-run"); }) };
+  const engine = { runItem: vi.fn(), decidePlan: vi.fn(), projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {}, cancelRun: vi.fn(() => { throw new WorkflowTemplateError("invalid-template-run"); }) };
   const { event } = setup({ workBoardStore: board, workBoardEngine: engine } as unknown as Partial<IpcDeps>);
   expect(await handler(WORK_BOARD.get)(event, 2)).toMatchObject({ status: "found", item: { templateRunError: "invalid-template-run" } });
   expect(await handler(WORK_BOARD.update)(event, 2, { title: "Changed" })).toMatchObject({ status: "invalid", reason: "invalid-template-run" });
@@ -132,6 +132,11 @@ it("returns typed row refusals over IPC without invoking execution or gates", as
   expect(await handler(WORK_BOARD.decidePlan)(event, 2, { runId: "run", planHash: "a".repeat(64), decision: "approve" }, gesture)).toEqual({ ok: false, reason: "invalid-template-run" });
   expect(engine.runItem).not.toHaveBeenCalled(); expect(engine.decidePlan).not.toHaveBeenCalled();
   expect(await handler(WORK_BOARD.cancelRun)(event, 2, gesture)).toEqual({ ok: false, error: "invalid-template-run" });
+  // A row whose run file awaits review is refused the same way by run and decide.
+  board.get.mockImplementation(async () => ({ status: "found", itemId: 2, item: { id: 2, templateRunError: "template-runs-pending-review" } }));
+  expect(await handler(WORK_BOARD.run)(event, 2)).toEqual({ status: "error", reason: "invalid-template-run" });
+  expect(await handler(WORK_BOARD.decidePlan)(event, 2, { runId: "run", planHash: "a".repeat(64), decision: "approve" }, gesture)).toEqual({ ok: false, reason: "invalid-template-run" });
+  expect(engine.runItem).not.toHaveBeenCalled(); expect(engine.decidePlan).not.toHaveBeenCalled();
 });
 
 it("passes the resolved authorized project snapshot to attachment storage", async () => {
