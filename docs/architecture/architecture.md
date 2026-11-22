@@ -2822,6 +2822,12 @@ worker grants until reset. Confinement stays marked active so callers cannot
 fall back to host execution. Previously issued commands are not revoked by this
 check.
 
+The in-process reference runtime is not a boundary against plugin code; the
+host treats all child frames as untrusted. The boundary is the child process
+and its OS confinement, plus a worker thread that never runs plugin code: it
+owns the host pipe, decodes host input and ends the child within 2 s of host
+loss, even while plugin code blocks or misleads the main thread.
+
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,
