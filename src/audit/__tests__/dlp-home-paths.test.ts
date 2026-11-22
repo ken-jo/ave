@@ -679,3 +679,19 @@ it("propagates application RangeErrors through structured judge arguments", asyn
     expect(serializeRuntimeAuditData(argument)).toBe('{"unserializable":true}');
   }
 });
+
+it.each([
+  ["win32", String.raw`C:\Users\alice`],
+  ["linux", "/home/alice"],
+  ["darwin", "/Users/alice"],
+] as const)("redacts another account's non-ASCII profile name on %s", async (platform, home) => {
+  fixture.platform = platform;
+  fixture.home = home;
+  vi.resetModules();
+  const { redactHomePathsInText } = await import("../dlp-filter.js");
+  expect(redactHomePathsInText(String.raw`open D:\Users\예제계정\project\a.txt`)).toBe(String.raw`open [home]\project\a.txt`);
+  expect(redactHomePathsInText("open D:/Users/예제계정/a and file:///D:/Users/예제계정/b")).toBe("open [home]/a and file://[home]/b");
+  expect(redactHomePathsInText("open /home/예제계정/a and /Users/김bob/b")).toBe("open [home]/a and [home]/b");
+  expect(redactHomePathsInText("open /Users/demo\u0301/a")).toBe("open [home]/a");
+  expect(redactHomePathsInText("open D:\\Users\\\uc608\uc81c\uacc4\uc815C:\\Users\\\uae40bob\\x")).toBe(String.raw`open [home][home]\x`);
+});

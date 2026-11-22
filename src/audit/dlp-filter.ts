@@ -203,13 +203,16 @@ interface HomeRedaction {
   requiredPathCharacter: string;
 }
 
+// Any account's profile name, in any script. It ends where a joined drive profile starts.
+const PROFILE_NAME = String.raw`(?:(?![a-z]:[\\/]+users[\\/])[\p{L}\p{M}\p{N}._-])+`;
+const genericHome = (prefix: string, marker: string): HomeForm => ({ literal: new RegExp(prefix + PROFILE_NAME, "giu"), marker });
 const GENERIC_HOME_FORMS: readonly HomeForm[] = [
-  { literal: /file:\/\/\/[a-z]:\/users\/[a-z0-9._-]+/giu, marker: "file://[home]" },
-  { literal: /file:\/\/\/users\/[a-z0-9._-]+/giu, marker: "file://[home]" },
-  { literal: /file:\/\/\/home\/[a-z0-9._-]+/giu, marker: "file://[home]" },
-  { literal: /[a-z]:[\\/]+users[\\/]+[a-z0-9._-]+/giu, marker: "[home]" },
-  { literal: /\/users\/[a-z0-9._-]+/giu, marker: "[home]" },
-  { literal: /\/home\/[a-z0-9._-]+/giu, marker: "[home]" },
+  genericHome(String.raw`file:\/\/\/[a-z]:\/users\/`, "file://[home]"),
+  genericHome(String.raw`file:\/\/\/users\/`, "file://[home]"),
+  genericHome(String.raw`file:\/\/\/home\/`, "file://[home]"),
+  genericHome(String.raw`[a-z]:[\\/]+users[\\/]+`, "[home]"),
+  genericHome(String.raw`\/users\/`, "[home]"),
+  genericHome(String.raw`\/home\/`, "[home]"),
 ];
 
 const HOME_DECODE_LAYERS = 3;
