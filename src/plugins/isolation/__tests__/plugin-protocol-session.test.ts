@@ -224,18 +224,32 @@ describe("the channel is non-destructive", () => {
 });
 
 describe("the child reports only its own handlers", () => {
-  it("leaves out declared tools that only an inherited member answers", async () => {
+  const inherited = ["toString", "constructor"].map((name) => ({
+    name, description: "named like an inherited member", inputSchema: { type: "object" as const, properties: {} },
+  }));
+
+  async function openInherited(): Promise<PluginProtocolSession> {
     const child = processLink("runtime");
     const { hostApi } = watchedHostApi();
-    const inherited = ["toString", "constructor"].map((name) => ({
-      name, description: "named like an inherited member", inputSchema: { type: "object" as const, properties: {} },
-    }));
-    const session = await openPluginProtocolSession({
+    return openPluginProtocolSession({
       ...sessionSpec(child.link, hostApi, vi.fn(async () => undefined)),
       manifest: { ...MANIFEST, tools: [...MANIFEST.tools, ...inherited] },
     });
+  }
+
+  it("leaves out declared tools that only an inherited member answers", async () => {
+    const session = await openInherited();
     expect(session.construction.implementedToolNames).toEqual(["speak"]);
     expect(Object.keys(session.instance.handlers)).toEqual(["speak"]);
+    await session.teardown("case over");
+  });
+
+  it("refuses a call to a declared tool that only an inherited member answers", async () => {
+    const session = await openInherited();
+    await expect(session.channel.requestMcp("tools/call", { name: "toString", arguments: {} })).resolves.toMatchObject({
+      isError: true,
+      content: [{ text: expect.stringMatching(/tool 'toString' has no handler/) }],
+    });
     await session.teardown("case over");
   });
 });
