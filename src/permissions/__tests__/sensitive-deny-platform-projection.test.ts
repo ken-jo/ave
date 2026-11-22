@@ -2,12 +2,13 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-// The OS deny floor projected per platform, pinned inline. Every platform's list is locked so a table edit is a reviewed change to this file, and the darwin list must be main's floor minus exactly the rows whose location belongs to another OS.
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../shared/policy-home.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../shared/policy-home.js")>()),
-  policyHomeAnchors: () => ["/fixture-home/user"],
+  policyHomeAnchors: () => [hostFixturePath(FIXTURE_HOME)],
 }));
 
 import { getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths, getVendoredSrtWinExePath } from "../asrt-sandbox.js";
@@ -17,11 +18,21 @@ const FIXTURE_HOME = "/fixture-home/user";
 const FIXTURE_AVE_HOME = `${FIXTURE_HOME}/.ave`;
 const FIXTURE_USER_DATA = "/fixture-home/user-data/Ave";
 const realPlatform = process.platform;
+const hostFixtureRoot = realPlatform === "win32" ? resolve(tmpdir(), "fixture-home").replaceAll("\\", "/") : "/fixture-home";
+
+function hostFixturePath(path: string): string {
+  return path.replace(/^\/fixture-home(?=\/)/, hostFixtureRoot);
+}
+
+function fixtureSpelling(path: string): string {
+  const spelled = path.replaceAll("\\", "/");
+  return spelled.startsWith(`${hostFixtureRoot}/`) ? `/fixture-home${spelled.slice(hostFixtureRoot.length)}` : spelled;
+}
 
 // Stands for the Electron userData dir, the one entry whose spelling differs per platform.
 const USER_DATA = "<user-data>";
 
-// main's deny floor before the macOS pruning, captured with the fixture home. Spelled as win32 emits it: a directory entry carries a trailing separator, which POSIX floors omit. Linux and Windows must still produce exactly this list.
+// Shared write floor before OS-specific changes, with the Windows trailing separator for directories.
 const MAIN_FLOOR: readonly string[] = [
   `${FIXTURE_HOME}/.ssh/`,
   `${FIXTURE_HOME}/.aws/`,
@@ -175,6 +186,13 @@ const MAIN_FLOOR: readonly string[] = [
   "<srt-win>",
 ];
 
+const WINDOWS_PROFILE_WRITE_DENIES = [
+  `${FIXTURE_HOME}/Documents/WindowsPowerShell/profile.ps1`, // Runs for the current user in all legacy shell hosts.
+  `${FIXTURE_HOME}/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1`, // Runs for the current user in the legacy console host.
+  `${FIXTURE_HOME}/Documents/PowerShell/profile.ps1`, // Runs for the current user in all modern shell hosts.
+  `${FIXTURE_HOME}/Documents/PowerShell/Microsoft.PowerShell_profile.ps1`, // Runs for the current user in the modern console host.
+] as const;
+
 // The rows the macOS floor leaves out, named here so a newly tagged row is a reviewed change. Each is a location only Windows (`%APPDATA%`, `%LOCALAPPDATA%` below the profile) or Linux packaging (snap, Flatpak) creates; nothing on macOS keeps a secret at these home-anchored paths, and the host guard still denies them anywhere.
 const DARWIN_DROPPED = [
   "snap/firefox",
@@ -211,11 +229,12 @@ const DARWIN_DROPPED = [
   "AppData/Roaming/Mozilla/Firefox/Profiles",
 ];
 
-function denyFloor(platform: NodeJS.Platform, userDataDir?: string): string[] {
+function writeDenyFloor(platform: NodeJS.Platform, userDataDir?: string): string[] {
   Object.defineProperty(process, "platform", { value: platform, configurable: true });
   try {
     const vendored = getVendoredSrtWinExePath().replace(/[\\/][^\\/]+[\\/][^\\/]+$/, "");
-    return getDefaultSensitiveWriteDenyPaths(userDataDir).map((path) => path.split(vendored).join("<srt-win>"));
+    return getDefaultSensitiveWriteDenyPaths(userDataDir === undefined ? undefined : hostFixturePath(userDataDir))
+      .map((path) => fixtureSpelling(path.split(vendored).join("<srt-win>")));
   } finally {
     Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
   }
@@ -226,14 +245,13 @@ function posixFloor(userData: string): string[] {
   return MAIN_FLOOR.map((path) => path === USER_DATA ? userData : path.replace(/\/$/, ""));
 }
 
-// The pinned lists use POSIX `path.join` spellings, which a Windows host would write with backslashes.
-describe.runIf(realPlatform !== "win32")("the OS deny floor per platform", () => {
+describe("the OS deny floor per platform", () => {
   let previousAveHome: string | undefined;
   let previousXdgConfigHome: string | undefined;
   beforeEach(() => {
     previousAveHome = process.env.AVE_HOME;
     previousXdgConfigHome = process.env.XDG_CONFIG_HOME;
-    process.env.AVE_HOME = FIXTURE_AVE_HOME;
+    process.env.AVE_HOME = hostFixturePath(FIXTURE_AVE_HOME);
     delete process.env.XDG_CONFIG_HOME;
   });
   afterEach(() => {
@@ -243,20 +261,21 @@ describe.runIf(realPlatform !== "win32")("the OS deny floor per platform", () =>
     else process.env.XDG_CONFIG_HOME = previousXdgConfigHome;
   });
 
-  it.each([undefined, FIXTURE_USER_DATA])("win32 keeps main's floor (userData %s)", (userData) => {
-    expect(denyFloor("win32", userData))
-      .toEqual(MAIN_FLOOR.map((path) => path === USER_DATA ? `${userData ?? `${FIXTURE_HOME}/AppData/Roaming/Ave`}/` : path));
+  it.each([undefined, FIXTURE_USER_DATA])("win32 adds the profile entries to the write floor (userData %s)", (userData) => {
+    const dataDeny = `${userData ?? `${FIXTURE_HOME}/AppData/Roaming/Ave`}/`;
+    const expected = MAIN_FLOOR.flatMap((path) => path === USER_DATA ? [dataDeny, ...WINDOWS_PROFILE_WRITE_DENIES] : [path]);
+    expect(writeDenyFloor("win32", userData)).toEqual(expected);
   });
 
   it.each([undefined, FIXTURE_USER_DATA])("linux keeps main's floor (userData %s)", (userData) => {
-    expect(denyFloor("linux", userData)).toEqual(posixFloor(userData ?? `${FIXTURE_HOME}/.config/Ave`));
+    expect(writeDenyFloor("linux", userData)).toEqual(posixFloor(userData ?? `${FIXTURE_HOME}/.config/Ave`));
   });
 
   it.each([undefined, FIXTURE_USER_DATA])("darwin is main's floor minus the other-OS rows (userData %s)", (userData) => {
     const dropped = new Set(DARWIN_DROPPED.map((segments) => `${FIXTURE_HOME}/${segments}`));
     const expected = posixFloor(userData ?? `${FIXTURE_HOME}/Library/Application Support/Ave`).filter((path) => !dropped.has(path));
     expect(expected.length).toBe(MAIN_FLOOR.length - DARWIN_DROPPED.length);
-    expect(denyFloor("darwin", userData)).toEqual(expected);
+    expect(writeDenyFloor("darwin", userData)).toEqual(expected);
   });
 
   // The runtime boundary carries no row until slice 3. A table row also lands in the read floor and would stop every sandboxed venv;
@@ -266,7 +285,7 @@ describe.runIf(realPlatform !== "win32")("the OS deny floor per platform", () =>
     const runtime = `${FIXTURE_AVE_HOME}/runtime`;
     Object.defineProperty(process, "platform", { value: platform, configurable: true });
     try {
-      const floors = [...getDefaultSensitiveReadDenyPaths(), ...getDefaultSensitiveWriteDenyPaths()].map((path) => path.replace(/[\\/]$/, ""));
+      const floors = [...getDefaultSensitiveReadDenyPaths(), ...getDefaultSensitiveWriteDenyPaths()].map((path) => fixtureSpelling(path).replace(/\/$/, ""));
       expect(floors.filter((path) => path === runtime || path.startsWith(`${runtime}/`))).toEqual([]);
       expect(floors).toContain(`${FIXTURE_AVE_HOME}/config`);
     } finally {
@@ -278,11 +297,11 @@ describe.runIf(realPlatform !== "win32")("the OS deny floor per platform", () =>
     const tagged = SENSITIVE_PATH_ENTRIES.filter((entry) => !sensitiveEntryOnSandboxFloor(entry, "darwin"));
     expect(tagged.map((entry) => entry.segments.join("/"))).toEqual(DARWIN_DROPPED);
     expect(tagged.every((entry) => entry.anchor === "home" && entry.platform !== undefined)).toBe(true);
-    const darwin = denyFloor("darwin");
+    const darwin = writeDenyFloor("darwin");
     for (const segments of DARWIN_DROPPED) expect(darwin).not.toContain(`${FIXTURE_HOME}/${segments}`);
     for (const platform of ["linux", "win32"] as const) {
       expect(SENSITIVE_PATH_ENTRIES.every((entry) => sensitiveEntryOnSandboxFloor(entry, platform))).toBe(true);
-      const floor = denyFloor(platform).map((path) => path.replace(/[\\/]$/, ""));
+      const floor = writeDenyFloor(platform).map((path) => path.replace(/\/$/, ""));
       for (const segments of DARWIN_DROPPED) expect(floor).toContain(`${FIXTURE_HOME}/${segments}`);
     }
   });

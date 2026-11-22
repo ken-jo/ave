@@ -27,6 +27,24 @@ export function resolveWindowsPathKindHelper(): string {
   return binary;
 }
 
+export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const helper = resolveWindowsPathKindHelper();
+  return new Promise((resolve, reject) => {
+    execFile(helper, ["--documents-directory"], {
+      windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsDocumentsLookupMs, encoding: "buffer", maxBuffer: 128 * 1024, signal,
+    }, (error, stdout) => {
+      try {
+        signal?.throwIfAborted();
+        if (error) throw error;
+        resolve(decodeWindowsNativeReply(stdout).replace(/\r?\n$/u, ""));
+      } catch (cause) {
+        reject(cause);
+      }
+    });
+  });
+}
+
 // QueryDosDeviceW opens nothing on the drive; no-mapping is a classification, while helper failure is a broken-install error.
 // See multi-source-git-marketplace.md §18.4.1 for the path contract.
 export function queryDosDevice(drive: string): Promise<string | null> {

@@ -654,6 +654,7 @@ src/permissions/__tests__/powershell-invocation-views.test.ts
 src/permissions/__tests__/powershell-launcher-output.test.ts
 src/permissions/__tests__/powershell-materialized-execution.test.ts
 src/permissions/__tests__/powershell-package-runner-shims.test.ts
+src/permissions/__tests__/powershell-profile-write-floor.test.ts
 src/permissions/__tests__/powershell-reusable-startup-proof.test.ts
 src/permissions/__tests__/powershell-runner-task-options.test.ts
 src/permissions/__tests__/powershell-static-analysis.test.ts

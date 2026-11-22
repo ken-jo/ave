@@ -67,13 +67,14 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
   sandboxTempEnvLaunch: (await vi.importActual<typeof import("../../../permissions/asrt-sandbox.js")>(
     "../../../permissions/asrt-sandbox.js",
   )).sandboxTempEnvLaunch,
+  runWithSandboxWritePreflight: async (_signal: AbortSignal, compose: () => unknown) => compose(),
   isAsrtSandboxActive: () => gateActive,
   isShellSandboxActive: () => gateActive,
   wrapWorkerCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapWorkerCommandMock(command, options), options),
   wrapTerminalCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapTerminalCommandMock(command, options), options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
   getDefaultSensitiveReadDenyPaths: () => ["/home/u/.ave/secrets", "/home/u/.ssh"],
-  getDefaultSensitiveWriteDenyPaths: () => [
+  getDefaultSensitiveWriteDenyEntries: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
     "/home/u/.zshrc",

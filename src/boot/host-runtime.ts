@@ -48,6 +48,7 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
 /** Runtime services required before any host state or outbound connection exists. */
 export interface BootHost {
   readonly userDataPath: string;
+  readonly queryWindowsDocumentsPath?: (signal?: AbortSignal) => Promise<string>;
   readonly resourcePath: string;
   readonly systemLocale: string;
   readonly isPackaged: boolean;

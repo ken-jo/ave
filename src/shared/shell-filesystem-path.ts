@@ -14,12 +14,30 @@ function tryRealpathNative(path: string): string | undefined {
   try { return realpathSync.native(path); } catch { return undefined; }
 }
 
-/** Check each link from a local volume root before any syscall can follow it. */
-export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platform = process.platform, maxSymlinkHops = MAX_FILESYSTEM_SYMLINK_HOPS, facts?: {
+interface LocalFilesystemFacts {
   knownPath: (path: string) => { canonical: string; missing: boolean } | undefined;
   onLocalPath: (path: string, canonical: string, missing: boolean) => void;
-}): void {
+}
+
+/** Check each link from a local volume root before any syscall can follow it. */
+export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platform = process.platform, maxSymlinkHops = MAX_FILESYSTEM_SYMLINK_HOPS, facts?: LocalFilesystemFacts): void {
   if (platform !== "win32") return;
+  try { walkLocalWindowsFilesystemChain(path, maxSymlinkHops, facts); }
+  catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH") throw error;
+    // Leave I/O failures to the caller's existing resolution behavior.
+  }
+}
+
+/** Resolve a protected local path through links, even if a target has yet to be created. */
+export function projectLocalWindowsFilesystemPath(path: string, maxSymlinkHops = MAX_FILESYSTEM_SYMLINK_HOPS): string {
+  const projected = walkLocalWindowsFilesystemChain(path, maxSymlinkHops, undefined, true);
+  if (projected === undefined) throw new Error("Could not project the local filesystem path");
+  return projected;
+}
+
+function walkLocalWindowsFilesystemChain(path: string, maxSymlinkHops: number, facts: LocalFilesystemFacts | undefined, projectMissing = false): string | undefined {
+  const platform = "win32";
   let hops = 0;
   const walk = (absolute: string): string | undefined => {
     rejectNetworkOrDevicePath(absolute, platform);
@@ -45,7 +63,8 @@ export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platfo
     if (known?.missing) return undefined;
     let physicalParent = known?.canonical ?? realpathSync.native(root);
     facts?.onLocalPath(lexicalParent, physicalParent, false);
-    for (const component of components.slice(remaining)) {
+    const pending = components.slice(remaining);
+    for (const [index, component] of pending.entries()) {
       if (component === ".") continue;
       if (component === "..") { physicalParent = win32.dirname(physicalParent); continue; }
       const candidate = win32.join(physicalParent, component);
@@ -53,7 +72,7 @@ export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platfo
       const entry = lstatSync(candidate, { throwIfNoEntry: false });
       if (entry === undefined) {
         facts?.onLocalPath(lexicalParent, candidate, true);
-        return undefined;
+        return projectMissing ? win32.join(candidate, ...pending.slice(index + 1)) : undefined;
       }
       if (entry.isSymbolicLink()) {
         const target = readlinkSync(candidate);
@@ -63,22 +82,20 @@ export function verifyLocalFilesystemChain(path: string, platform: NodeJS.Platfo
         if (++hops > maxSymlinkHops) throw new Error("Filesystem path exceeds the component limit");
         // A local spelling can itself contain links. Inspect that entire chain
         // before realpath is allowed to follow this entry.
-        if (walk(effectiveTarget) === undefined) return undefined;
-        physicalParent = realpathSync.native(candidate);
+        const resolvedTarget = walk(effectiveTarget);
+        if (resolvedTarget === undefined) return undefined;
+        physicalParent = projectMissing ? resolvedTarget : realpathSync.native(candidate);
       } else {
         // The physical parent and this non-link entry establish the next parent. Facts consumers match on the
         // canonical spelling, so expand 8.3 aliases and casing; other callers keep the input spelling.
-        physicalParent = facts ? (tryRealpathNative(candidate) ?? candidate) : candidate;
+        physicalParent = projectMissing ? realpathSync.native(candidate) : facts ? (tryRealpathNative(candidate) ?? candidate) : candidate;
+        if (projectMissing) rejectNetworkOrDevicePath(physicalParent, platform);
       }
       facts?.onLocalPath(lexicalParent, physicalParent, false);
     }
     return physicalParent;
   };
-  try { walk(path); }
-  catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH") throw error;
-    // Leave I/O failures to the caller's existing resolution behavior.
-  }
+  return walk(path);
 }
 
 // Follow existing links before collapsing operand components: path.resolve changes link/.. targets. Refuse ambiguous link-parent semantics on Windows; new suffixes inherit the observed existing parent identity.

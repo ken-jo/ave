@@ -4589,11 +4589,12 @@ index 65b8eef..40dec6d 100644
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
-@@ -860,7 +862,25 @@ export interface WindowsAclStampOptions {
+@@ -860,7 +862,26 @@ export interface WindowsAclStampOptions {
   *   2, so on throw the caller should call {@link restoreWindowsAcl}
   *   to release whatever WAS stamped.
   */
 +export declare function assertWindowsAclPolicyBudget(denyRead?: readonly FilesystemPathEntry[], denyWrite?: readonly FilesystemPathEntry[], extraRead?: readonly FilesystemPathEntry[]): void;
++export declare function expandWindowsAclDenyLists(read?: readonly FilesystemPathEntry[], write?: readonly FilesystemPathEntry[], credential?: readonly FilesystemPathEntry[], masked?: readonly string[]): { denyRead: string[]; denyWrite: string[]; credentialDeny: string[] };
  export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
 +export declare function stampWindowsAclAsync(opts: WindowsAclStampOptions): Promise<void>;
 +/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
@@ -4689,7 +4690,18 @@ index 540c566..337dca5 100644
              timeoutMs: 30000,
              srtWin: opts.srtWin,
          });
-@@ -996,13 +1008,14 @@ export function expandWindowsFsPaths(patterns, opts) {
+@@ -983,7 +995,9 @@ export function expandWindowsFsPaths(patterns, opts) {
+         const marked = typeof entry !== 'string';
+         const raw = marked ? markedLiteralPath(entry) : entry;
+-        const norm = normalizePathForSandbox(raw, marked ? { literal: true } : undefined);
++        const norm = marked && opts?.preserveLiteralWriteDenies && path.win32.isAbsolute(raw) && /%(?:USERPROFILE|HOMEDRIVE|HOMEPATH)%/i.test(raw)
++            ? path.win32.normalize(stripExtendedPathPrefix(raw))
++            : normalizePathForSandbox(raw, marked ? { literal: true } : undefined);
+         if (marked && containsGlobCharsWin(norm)) {
+             logForDebugging(`[Sandbox Windows] Skipping a literal path that no file can have: ${norm}`, { level: 'warn' });
+             continue;
+         }
+@@ -996,13 +1010,14 @@ export function expandWindowsFsPaths(patterns, opts) {
          }
          const candidates = isGlob
              ? [
@@ -4781,7 +4793,7 @@ index 540c566..337dca5 100644
 +    };
 +    const expand = entries => expandWindowsFsPaths(entries, { mode: 'deny', windowsAclWork });
 +    const denyRead = expand(read);
-+    const denyWrite = expand(write);
++    const denyWrite = expandWindowsFsPaths(write, { mode: 'deny', windowsAclWork, preserveLiteralWriteDenies: true });
 +    const credentialDeny = [...expand(credential), ...masked];
 +    assertWindowsAclPolicyBudget(denyRead, denyWrite, credentialDeny);
 +    return { denyRead, denyWrite, credentialDeny };

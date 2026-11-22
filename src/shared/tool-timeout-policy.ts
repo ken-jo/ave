@@ -29,6 +29,7 @@ export const TOOL_TIMEOUT_POLICY = {
   browserDownloadHelperStallMs: 30_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
+  windowsDocumentsLookupMs: 5_000,
   // Cold native startup includes module loading, compilation and account-provider initialization before READY.
   windowsAclHostStartupMs: 120_000,
   // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.

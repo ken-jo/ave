@@ -83,7 +83,9 @@ import {
   filesystemSandboxBlockForCommand,
   cleanupAsrtSandboxAfterCommand,
   getBuiltinShellReadPolicy,
+  getDefaultSensitiveWriteDenyEntries,
   getDefaultSensitiveWriteDenyPaths,
+  runWithSandboxWritePreflight,
   type SandboxWrapResult,
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
@@ -2412,14 +2414,6 @@ export async function spawnWithSandbox(
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(
     [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath, boundarySnapshot,
   );
-  const filesystem = {
-    allowWrite: sandboxWritePaths,
-    allowRead,
-    denyRead,
-    denyWrite: getDefaultSensitiveWriteDenyPaths(),
-    floorPierces,
-  };
-
   const abortController = new AbortController();
   const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
   const egress = openEgressInvocation(
@@ -2429,14 +2423,20 @@ export async function spawnWithSandbox(
   let wrapped: SandboxWrapResult;
   try {
     const binShell = shell.cmd;
-    wrapped = await wrapToolCommand(preparedSandboxBootstrap(prepared, { cwdProbe: true }), {
-      filesystem,
+    wrapped = await runWithSandboxWritePreflight(wrapAbortSignal, () => wrapToolCommand(preparedSandboxBootstrap(prepared, { cwdProbe: true }), {
+      filesystem: {
+        allowWrite: sandboxWritePaths,
+        allowRead,
+        denyRead,
+        denyWrite: getDefaultSensitiveWriteDenyEntries(),
+        floorPierces,
+      },
       boundarySnapshot,
       abortSignal: wrapAbortSignal,
       commandId: egress.token,
       denyUnixSockets: true,
       binShell,
-    });
+    }));
   } catch (err) {
     return withReleaseFailures({
       output: `spawn failed: ${(err as Error).message}`,
@@ -3775,14 +3775,6 @@ async function spawnPowerShellWithSandbox(
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const boundarySnapshot = createAveHomeBoundarySnapshot();
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
-  const filesystem = {
-    allowWrite: sandboxWritePaths,
-    allowRead,
-    denyRead,
-    denyWrite: getDefaultSensitiveWriteDenyPaths(),
-    floorPierces,
-  };
-
   const abortController = new AbortController();
   const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
   const egress = openEgressInvocation(
@@ -3791,14 +3783,20 @@ async function spawnPowerShellWithSandbox(
   );
   let wrapped: SandboxWrapResult;
   try {
-    wrapped = await wrapToolCommand(sandboxCommand, {
-      filesystem,
+    wrapped = await runWithSandboxWritePreflight(wrapAbortSignal, () => wrapToolCommand(sandboxCommand, {
+      filesystem: {
+        allowWrite: sandboxWritePaths,
+        allowRead,
+        denyRead,
+        denyWrite: getDefaultSensitiveWriteDenyEntries(),
+        floorPierces,
+      },
       boundarySnapshot,
       abortSignal: wrapAbortSignal,
       commandId: egress.token,
       denyUnixSockets: true,
       ...(binShell !== undefined ? { binShell } : {}),
-    });
+    }));
   } catch (err) {
     return withReleaseFailures({
       output: `PowerShell spawn failed: ${(err as Error).message}`,
@@ -4025,7 +4023,7 @@ async function spawnPowerShellInMxc(
     // controls, .vscode, .husky, .claude, .envrc, …) and Ave's permission,
     // approval and egress grant stores. Ranking keeps a deny inside a granted
     // directory as read-only (existing) or denied (absent).
-    const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths();
+    const sensitiveDenyWrite = await runWithSandboxWritePreflight(signal, () => getDefaultSensitiveWriteDenyPaths());
     const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
     launch = await prepareMxcShellLaunch({
       egressToken: egress.token,

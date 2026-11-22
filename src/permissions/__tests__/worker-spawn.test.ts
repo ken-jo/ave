@@ -99,6 +99,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   }),
   isAsrtSandboxActive: () => gateActive,
   isPluginWorkerConfinementActive: () => gateActive,
+  runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
@@ -114,7 +115,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
     "/home/u/.ave/sandbox/home",
   ],
   // The persistence-vector write floor restated on the worker wrap SOT).
-  getDefaultSensitiveWriteDenyPaths: () => [
+  getDefaultSensitiveWriteDenyEntries: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
     "/home/u/.zshrc",
