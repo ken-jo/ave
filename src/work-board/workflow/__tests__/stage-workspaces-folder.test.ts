@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
-import { namesFoldCase, plainFolderIgnore } from "../folder-ignore.js";
+import { type NameReader, plainFolderIgnore, projectFoldsCase } from "../folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { holdDir, nodeIdOf } from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
@@ -25,6 +25,11 @@ const read = (root: string, path: string): string => readFileSync(join(root, pat
 /** Every file under `root`, as sorted `/` paths. */
 const tree = (root: string, prefix = ""): string[] => readdirSync(join(root, prefix), { withFileTypes: true })
   .flatMap(entry => entry.isDirectory() ? tree(root, `${prefix}${entry.name}/`) : [`${prefix}${entry.name}`]).sort();
+/** Which entry a path names, as the provider reads it off the disk. */
+const diskId = (path: string): string | undefined => {
+  const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  return stat === undefined ? undefined : `${stat.dev}:${stat.ino}`;
+};
 const fromProject = (...paths: string[]): StageInputDecl => ({ from: "project", paths });
 
 async function start(root: string | undefined, options: StageWorkspaceOptions = {}, itemId = 7): Promise<Handle> {
@@ -394,7 +399,7 @@ describe("folder stage workspaces", () => {
     execFileSync("git", ["init", "-q", "--template="], { cwd: twin, env });
     // What git found out about the place by writing into its own repository there, the host reads off the folder without writing.
     const folds = execFileSync("git", ["config", "--get", "core.ignorecase"], { cwd: twin, env, encoding: "utf8" }).trim() === "true";
-    expect(namesFoldCase(project)).toBe(folds);
+    expect(projectFoldsCase(project)).toBe(folds);
     const status = execFileSync("git", ["-c", "core.excludesFile=", "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: twin, env, encoding: "utf8" });
     const unignored = status.split("\0").filter(Boolean).map(entry => entry.slice(3)).sort();
     expect(unignored).toEqual(expect.arrayContaining([".gitignore", "notes.txt", "Upper2/in.txt"]));
@@ -404,17 +409,101 @@ describe("folder stage workspaces", () => {
     expect([...new Set(watched.matched)]).toEqual([`core.ignoreCase=${folds}`]);
   });
 
-  it("the file name rule is read off the ignore file under its name in the other case, and is no rule at all when that cannot be told", () => {
-    const reader = (names: string[], ids: Record<string, string>): Parameters<typeof namesFoldCase>[1] => ({ list: () => names, id: path => ids[path.slice(path.lastIndexOf(sep) + 1)] });
-    // Names fold: the other case names the same file. They do not: it names nothing, or a second file stands beside the first.
-    expect(namesFoldCase(project, reader([".gitignore", "src"], { ".gitignore": "1:7", ".GITIGNORE": "1:7" }))).toBe(true);
-    expect(namesFoldCase(project, reader([".GitIgnore"], { ".GitIgnore": "1:7", ".gitignore": "1:7" }))).toBe(true);
-    expect(namesFoldCase(project, reader([".gitignore"], { ".gitignore": "1:7" }))).toBe(false);
-    expect(namesFoldCase(project, reader([".gitignore", ".GITIGNORE"], { ".gitignore": "1:7", ".GITIGNORE": "1:8" }))).toBe(false);
-    // Another file under the other case that the listing does not show, or no ignore file: no answer.
-    expect(() => namesFoldCase(project, reader([".gitignore"], { ".gitignore": "1:7", ".GITIGNORE": "1:8" }))).toThrow();
-    expect(() => namesFoldCase(project, reader(["src"], {}))).toThrow();
-    expect(() => namesFoldCase(project, reader([".gitignore"], {}))).toThrow();
+  it("the file name rule is read off an entry of the project root under its name in the other case, and is no rule where that cannot be told", () => {
+    const reader = (names: string[], ids: Record<string, string>): NameReader => ({ list: () => names, id: path => ids[path.slice(path.lastIndexOf(sep) + 1)] });
+    // Names fold: the other case names the same entry. They do not: it names nothing, or a second entry stands beside the first.
+    expect(projectFoldsCase(project, reader(["한글", "src"], { src: "1:7", SRC: "1:7" }))).toBe(true);
+    expect(projectFoldsCase(project, reader([".GitIgnore"], { ".GitIgnore": "1:7", ".gITiGNORE": "1:7" }))).toBe(true);
+    expect(projectFoldsCase(project, reader(["src"], { src: "1:7" }))).toBe(false);
+    expect(projectFoldsCase(project, reader(["src", "SRC"], { src: "1:7", SRC: "1:8" }))).toBe(false);
+    // An entry that went since the listing is passed over.
+    expect(projectFoldsCase(project, reader(["gone", "src"], { src: "1:7", SRC: "1:7" }))).toBe(true);
+    // Another entry under the other case that the listing does not show: no answer at all.
+    expect(() => projectFoldsCase(project, reader(["src"], { src: "1:7", SRC: "1:8" }))).toThrow();
+    // No name with a letter to ask with, or no name: the root cannot tell.
+    expect(projectFoldsCase(project, reader(["한글", "123"], { 한글: "1:7", 123: "1:8" }))).toBeUndefined();
+    expect(projectFoldsCase(project, reader([], {}))).toBeUndefined();
+  });
+
+  it("the ignore case rule comes from the project root, not the first nested ignore file", async () => {
+    write(project, "child/.gitignore", "BUILD.LOG\n");
+    write(project, "child/build.log", "built\n");
+    const root = realpathSync.native(project);
+    const real = projectFoldsCase(root);
+    if (real === undefined) throw new Error("the fixture's root has names with letters");
+    // The root answers the opposite of what the disk does; every other folder answers as the disk does.
+    const nameReader: NameReader = {
+      list: directory => readdirSync(directory),
+      id: (path) => {
+        const listed = readdirSync(root);
+        if (dirname(path) !== root || listed.includes(basename(path))) return diskId(path);
+        const twin = listed.find(name => name.toLowerCase() === basename(path).toLowerCase());
+        return real || twin === undefined ? undefined : diskId(join(root, twin));
+      },
+    };
+    const watched = watchedGit();
+    const handle = await start(project, { git: watched.git, nameReader });
+    const seeded = tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }));
+    expect([...new Set(watched.matched)]).toEqual([`core.ignoreCase=${!real}`]);
+    expect(seeded.includes("child/build.log")).toBe(real);
+  });
+
+  it.skipIf(process.platform !== "win32")("a nested folder with a case rule of its own does not change the project root's", async (context) => {
+    mkdirSync(join(project, "child"));
+    try { execFileSync("fsutil", ["file", "setCaseSensitiveInfo", join(project, "child"), "enable"], { stdio: "ignore" }); } catch { /* told by the folder below */ }
+    write(project, "child/.gitignore", "BUILD.LOG\n");
+    write(project, "child/build.log", "built\n");
+    // Not every installation lets a folder be given a rule of its own.
+    if (projectFoldsCase(join(project, "child")) !== false) context.skip();
+    const handle = await start(project);
+    expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }))).not.toContain("child/build.log");
+  });
+
+  it("an indeterminate project root case rule refuses the seed and changes nothing", async () => {
+    write(project, ".gitignore", "*.log\n");
+    write(project, "a.log", "log\n");
+    const before = tree(project);
+    // Every name is an entry of its own, the one in the other case too, though the listing shows no second one.
+    const nameReader: NameReader = { list: directory => readdirSync(directory), id: path => `1:${path}` };
+    const handle = await start(project, { nameReader });
+    expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+    expect(tree(project)).toEqual(before);
+    expect(readdirSync(handle.runRoot).sort()).toEqual([OUT_DIR, RUN_FILE]);
+  });
+
+  describe("a project root whose names have no letter to ask with", () => {
+    beforeEach(() => {
+      rmSync(project, { recursive: true });
+      mkdirSync(project);
+      write(project, "한글/.gitignore", "BUILD.LOG\n");
+      write(project, "한글/build.log", "built\n");
+      write(project, "한글/메모.txt", "memo\n");
+    });
+
+    it("takes its case rule from a folder made and removed in the run folder on the same volume", async () => {
+      expect(projectFoldsCase(project)).toBeUndefined();
+      const folds = projectFoldsCase(base);
+      if (folds === undefined) throw new Error("the fixture's base has names with letters");
+      const before = tree(project);
+      const watched = watchedGit();
+      const handle = await start(project, { git: watched.git });
+      const seeded = tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }));
+      expect([...new Set(watched.matched)]).toEqual([`core.ignoreCase=${folds}`]);
+      expect(seeded.includes("한글/build.log")).toBe(!folds);
+      expect(seeded).toContain("한글/메모.txt");
+      expect(tree(project)).toEqual(before);
+      expect(readdirSync(handle.runRoot).filter(name => name.startsWith("_ignore"))).toEqual([]);
+    });
+
+    it("has no case rule when the run folder is on another volume, and the seed is refused", async () => {
+      const root = realpathSync.native(project);
+      const before = tree(project);
+      const nameReader: NameReader = { list: directory => readdirSync(directory), id: path => path === root ? "elsewhere:1" : diskId(path) };
+      const handle = await start(project, { nameReader });
+      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+      expect(tree(project)).toEqual(before);
+      expect(readdirSync(handle.runRoot).sort()).toEqual([OUT_DIR, RUN_FILE]);
+    });
   });
 
   it("a plain folder with no ignore file seeds every declared file and needs no git; with one and no git it refuses", async () => {

@@ -6,7 +6,7 @@ import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } 
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
-import { plainFolderIgnore } from "./folder-ignore.js";
+import { type NameReader, plainFolderIgnore } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import { holdDir, type NodeId, type OwnedDir, OwnedFsError, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
@@ -32,6 +32,8 @@ export interface StageWorkspaceOptions {
   /** Which runs may lose their output folder: those with no record whose item is gone, as the stores are now. With none, or an
    * answer of undefined, nothing is discarded. */
   removable?: () => Promise<((run: { runId: string; itemId: number }) => boolean) | undefined>;
+  /** How a folder's names and their identities are read when a plain project's case rule is asked for; the default reads the disk. */
+  nameReader?: NameReader;
 }
 
 /** Which directory a path is, when it is a real one; a link or a file is none. */
@@ -426,7 +428,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     let files = 0;
     let bytes = 0;
     const limits = options.seedLimits ?? { files: MAX_SEED_FILES, bytes: MAX_SEED_BYTES };
-    const plain = file.project !== undefined && file.ignoreRules !== true ? plainFolderIgnore(git, runRoot, file.project.root, { check: () => at.run.check(), makeTemp: () => at.run.makeTemp(IGNORE_PREFIX), remove: scratch => at.run.remove(basename(scratch.path), scratch.id) }) : undefined;
+    const plain = file.project !== undefined && file.ignoreRules !== true ? plainFolderIgnore(git, runRoot, file.project.root, { check: () => at.run.check(), makeTemp: () => at.run.makeTemp(IGNORE_PREFIX), remove: scratch => at.run.remove(basename(scratch.path), scratch.id) }, options.nameReader) : undefined;
     try {
       for (const input of inputs) {
         let source: SourceRoot;
