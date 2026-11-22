@@ -26,14 +26,15 @@ it.each([
 ])("recovers from a cached marketplace launch reporting $code (fallback failure: $fallbackFails)", async ({ code, fallbackFails }) => {
   const root = await mkdtemp(join(tmpdir(), "ave-marketplace-cache-"));
   const binDirs = ["first", "second", "third"].map((name) => join(root, name));
-  const candidates = binDirs.map((dir) => join(dir, process.platform === "win32" ? "git.exe" : "git"));
+  const binary = process.platform === "win32" ? "git.exe" : "git";
+  const candidates = binDirs.map((dir) => join(dir, binary));
   try {
     vi.resetModules();
     vi.resetAllMocks();
     vi.stubEnv("PATH", binDirs.join(delimiter));
-    await Promise.all(binDirs.map(async (dir, index) => {
+    await Promise.all(binDirs.map(async (dir) => {
       await mkdir(dir);
-      await writeFile(candidates[index]!, "git fixture", { mode: 0o755 });
+      await writeFile(join(dir, binary), "git fixture", { mode: 0o755 });
     }));
     const probes: string[] = [];
     vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => {

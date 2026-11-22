@@ -1,19 +1,38 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync, spawn } from "node:child_process";
+import { beforeEach, expect, it, vi } from "vitest";
+import { gitProbeChild } from "../../__tests__/support/git-probe-child.js";
 import { runGitProbeAsync, runGitProbeSync } from "../host-git-probe.js";
 
-describe.each([
-  ["async", runGitProbeAsync],
-  ["sync", runGitProbeSync],
-] as const)("%s Git capability probe", (_name, probe) => {
-  it("accepts bounded stdout while ignoring a long stderr diagnostic", async () => {
-    const result = await probe(process.execPath, ["-e", "process.stderr.write('x'.repeat(16384)); process.stdout.write('git version 2.56.0')"], {});
-    expect(result).toEqual({ stdout: "git version 2.56.0", exitCode: 0 });
-  });
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+  execFileSync: vi.fn(),
+  spawn: vi.fn(),
+}));
 
-  it("preserves the exit status and rejects output beyond the stdout limit", async () => {
-    const exited = await probe(process.execPath, ["-e", "process.exitCode = 129"], {});
-    expect(exited.exitCode).toBe(129);
-    const oversized = await probe(process.execPath, ["-e", "process.stdout.write('x'.repeat(16384))"], {});
-    expect(oversized.exitCode).not.toBe(0);
-  });
+beforeEach(() => vi.resetAllMocks());
+
+it("discards stderr independently of the synchronous stdout limit", () => {
+  vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
+  expect(runGitProbeSync("git", ["--version"], {})).toEqual({ stdout: "git version 2.56.0", exitCode: 0 });
+  expect(execFileSync).toHaveBeenCalledWith("git", ["--version"], expect.objectContaining({
+    stdio: ["ignore", "pipe", "ignore"],
+    maxBuffer: 4096,
+  }));
+  vi.mocked(execFileSync).mockImplementation(() => { throw Object.assign(new Error("unknown option"), { status: 129 }); });
+  expect(runGitProbeSync("git", ["--version"], {})).toEqual({ stdout: "", exitCode: 129 });
+});
+
+it("discards stderr while asynchronously reading stdout and preserving the exit status", async () => {
+  vi.mocked(spawn).mockImplementationOnce(() => gitProbeChild((complete) => complete("git version 2.56.0")))
+    .mockImplementationOnce(() => gitProbeChild((complete) => complete("", 129)));
+  await expect(runGitProbeAsync("git", ["--version"], {})).resolves.toEqual({ stdout: "git version 2.56.0", exitCode: 0 });
+  expect(spawn).toHaveBeenCalledWith("git", ["--version"], expect.objectContaining({
+    stdio: ["ignore", "pipe", "ignore"],
+  }));
+  await expect(runGitProbeAsync("git", ["--version"], {})).resolves.toEqual({ stdout: "", exitCode: 129 });
+});
+
+it("rejects an asynchronous probe with oversized stdout", async () => {
+  vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => complete("x".repeat(4097))));
+  await expect(runGitProbeAsync("git", ["--version"], {})).resolves.toEqual({ stdout: "" });
 });

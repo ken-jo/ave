@@ -375,7 +375,7 @@ function discoverGit(installerRoot: string | null, failedPath?: string): Promise
   const pending = pendingDiscoveries.get(installerRoot);
   if (pending) return pending;
   const cached = discoveredGit.get(installerRoot);
-  const discovery = runChecksAsync(selectGit(installerRoot, cached, failedPath))
+  const discovery: Promise<GitDiscovery> = runChecksAsync(selectGit(installerRoot, cached, failedPath))
     .then((result) => pendingDiscoveries.get(installerRoot) === discovery
       ? finishDiscovery(installerRoot, cached, result)
       : result.selection)

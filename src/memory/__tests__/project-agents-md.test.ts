@@ -1,6 +1,6 @@
 /** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { type ExecFileException, execFileSync, type ExecFileOptions, type SpawnOptions } from "node:child_process";
+import { type ExecException, execFileSync, type ExecFileOptions, type SpawnOptions } from "node:child_process";
 
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
@@ -21,7 +21,7 @@ vi.mock("node:child_process", async (importOriginal) => {
         ? gitProbeChild((complete) => complete("git version 2.56.0"))
         : actual.spawn(file, args, options)) as typeof actual.spawn,
     execFile: ((file: string, args: readonly string[], options: ExecFileOptions,
-      callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
+      callback: (error: ExecException | null, stdout: string | Buffer, stderr: string | Buffer) => void,
     ) => {
       if (args.includes("check-ignore")) {
         gitCalls.checkIgnore.push(file);
@@ -37,7 +37,7 @@ vi.mock("node:child_process", async (importOriginal) => {
             }
             callback(null, "", "");
           } catch (error) {
-            callback(error as ExecFileException, "", "");
+            callback(error as ExecException, "", "");
           }
           return {};
         }
@@ -59,7 +59,7 @@ vi.mock("../../shared/host-git-executable.js", async (importOriginal) => {
 });
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, win32 } from "node:path";
+import { delimiter, join, posix, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -124,18 +124,19 @@ it("uses an absolute host Git path even with an executable in the project and re
 });
 
 it.each([
-  ["C:/example/tools/git.exe", "C:\\example\\tools\\git.exe"],
-  ["C:\\example\\tools\\git-2.56.0.exe", "C:\\example\\tools\\git-2.56.0.exe"],
-])("runs the ignore query using the explicitly selected fixture %s", async (configured, expected) => {
+  { platform: "win32", configured: "C:/example/tools/git.exe", expected: "C:\\example\\tools\\git.exe" },
+  { platform: "win32", configured: "C:\\example\\tools\\git-2.56.0.exe", expected: "C:\\example\\tools\\git-2.56.0.exe" },
+  { platform: "linux", configured: "/example/tools/link/../bin/git", expected: "/example/tools/link/../bin/git" },
+] as const)("runs the ignore query using the explicitly selected fixture $configured", async ({ platform, configured, expected }) => {
   const project = mkdtempSync(join(tmpdir(), "ave-explicit-git-"));
-  const platform = process.platform;
+  const originalPlatform = process.platform;
   try {
     mkdirSync(join(project, ".git"));
     mkdirSync(join(project, "build"));
     writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
-    setProcessPlatform("win32");
+    setProcessPlatform(platform);
     vi.stubEnv("AVE_TEST_GIT_EXECUTABLE", configured);
-    vi.stubEnv("PATH", win32.dirname(configured));
+    vi.stubEnv("PATH", (platform === "win32" ? win32 : posix).dirname(configured));
     const spawn = vi.fn(() => ({
       pid: 1, status: 0, signal: null, stdout: "git version 2.56.0", stderr: "", output: [null, "git version 2.56.0", ""],
     }));
@@ -149,7 +150,7 @@ it.each([
     expect(gitCalls.checkIgnore.slice(before)).toEqual([expected]);
     expect(spawn).toHaveBeenCalledExactlyOnceWith(expected, ["--no-lazy-fetch", "--version"], expect.anything());
   } finally {
-    setProcessPlatform(platform);
+    setProcessPlatform(originalPlatform);
     gitCalls.explicitFixture = undefined;
     gitCalls.intercept = undefined;
     vi.unstubAllEnvs();
@@ -205,16 +206,17 @@ it("keeps the ignore query local when a skip-worktree ignore blob is missing", a
 
 it("rediscovers when the cached Git cannot launch check-ignore", async () => {
   const project = mkdtempSync(join(tmpdir(), "ave-ignore-git-launch-"));
-  const dirs = ["first", "second"].map((name) => join(project, name));
-  const candidates = dirs.map((dir) => join(dir, process.platform === "win32" ? "git.exe" : "git"));
-  const [first, second] = candidates as [string, string];
+  const dirs = [join(project, "first"), join(project, "second")] as const;
+  const binary = process.platform === "win32" ? "git.exe" : "git";
+  const first = join(dirs[0], binary);
+  const second = join(dirs[1], binary);
   try {
     mkdirSync(join(project, ".git"));
     mkdirSync(join(project, "build"));
     writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
-    for (const [index, dir] of dirs.entries()) {
+    for (const dir of dirs) {
       mkdirSync(dir);
-      writeFileSync(candidates[index]!, "fixture executable", { mode: 0o755 });
+      writeFileSync(join(dir, binary), "fixture executable", { mode: 0o755 });
     }
     vi.stubEnv("PATH", dirs.join(delimiter));
     vi.resetModules();

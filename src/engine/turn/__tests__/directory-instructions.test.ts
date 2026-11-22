@@ -82,7 +82,7 @@ describe("directoryInstructionsForToolResult", () => {
       started.resolve();
     }));
     vi.mocked(execFile).mockClear().mockImplementation((_file, _args, _options, callback) => {
-      callback?.(Object.assign(new Error("not ignored"), { code: 1 }), "", "");
+      callback?.(Object.assign(new Error("not ignored"), { code: 1, cmd: "check-ignore" }), "", "");
       return {} as ReturnType<typeof execFile>;
     });
     try {
