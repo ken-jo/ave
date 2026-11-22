@@ -68,6 +68,7 @@ import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocat
 import * as mxcWindows from "../../permissions/mxc-windows.js";
 import * as mxcPolicyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as asrtSandbox from "../../permissions/asrt-sandbox.js";
+import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import * as chatOrigin from "../../shared/chat-origin.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -1050,7 +1051,9 @@ describe("builtin shell — Windows MXC containers", () => {
       expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(500);
       if (stage === "finalization") {
         expect(result.output.endsWith(`\nShell resource release failed: ${rendered}`)).toBe(true);
+        // Read once for the result's text and once for the log's, both after every release step.
         expect(releaseState.mock.results.map(({ value }) => value)).toEqual([
+          { egressLive: false, homeExists: false, launchReleases: 2 },
           { egressLive: false, homeExists: false, launchReleases: 2 },
         ]);
       } else {
@@ -1202,6 +1205,48 @@ describe("builtin shell — Windows MXC containers", () => {
       "Shell resource release failed: host system error ETIMEDOUT",
     ]);
     expect(result.output).not.toContain(String.raw`D:\example`);
+    expect(existsSync(container.home())).toBe(false);
+  });
+
+  const HELPER = String.raw`D:\example\resources\windows-path-kind\x64\ave-path-kind.exe`;
+  const helperSystemError = (code: string) =>
+    Object.assign(new Error(`spawnSync ${HELPER} ${code}`), { code, syscall: `spawnSync ${HELPER}`, spawnargs: ["--dacl"] });
+
+  it.each([
+    ["an Ave error that carries a path", new AveHomeConfigurationUntrustedError(String.raw`D:\example\home\.ave\config.json`, "link"),
+      String.raw`Configuration boundary is untrusted at D:\example\home\.ave\config.json: link`],
+    ["a system error with a Node code", helperSystemError("ERR_CHILD_PROCESS_STDIO_MAXBUFFER"), "host system error ERR_CHILD_PROCESS_STDIO_MAXBUFFER"],
+  ] as const)("reports %s before the spawn and logs its redacted full text", async (_name, error, text) => {
+    bootMxcShells();
+    failCommandContainerRelease({ prepareRejects: error });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await executePowerShell(context("ps-mxc-pre-spawn-text"));
+    expect(result.output).toBe(`PowerShell spawn failed: ${text}`);
+    expect(log).toHaveBeenCalledWith("[shell-tasks] contained shell failed before its job started",
+      expect.objectContaining({ label: "tool:powershell:mxc", err: error.message }));
+  });
+
+  it.each(["cancellation", "finished command"] as const)("reports a system error in the release after %s by its code alone", async (ending) => {
+    bootMxcShells();
+    const failure = helperSystemError("ETIMEDOUT");
+    const container = failCommandContainerRelease(ending === "cancellation" ? { egressThrows: failure } : { launchRejects: failure });
+    const abort = new AbortController();
+    const prepare = mxcLaunchMock.prepare.getMockImplementation();
+    if (prepare === undefined) throw new Error("Missing command launch fixture");
+    if (ending === "cancellation") {
+      mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }, lifecycle: ContainedShellLifecycle) => {
+        const launch = await prepare(input, lifecycle);
+        if (!isParserLaunch(input)) abort.abort();
+        return launch;
+      });
+    }
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await executePowerShell({ ...context(`ps-mxc-release-${ending}`), abortSignal: abort.signal });
+    expect(result.output.split("\n").at(0)).toBe(ending === "cancellation" ? "Shell command cancelled." : CONTAINER_OUTPUT);
+    expect(result.output.split("\n").at(-1)).toBe("Shell resource release failed: host system error ETIMEDOUT");
+    expect(result.output).not.toContain(String.raw`D:\example`);
+    expect(log).toHaveBeenCalledWith("[shell-tasks] contained shell resource release failed",
+      expect.objectContaining({ label: "tool:powershell:mxc", failures: failure.message }));
     expect(existsSync(container.home())).toBe(false);
   });
 

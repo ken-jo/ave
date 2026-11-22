@@ -2363,19 +2363,19 @@ function clipUtf8(text: string, maxBytes: number): string {
 function validatedErrorCode(error: unknown): string | undefined {
   try {
     const code: unknown = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-    return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) ? code : undefined;
+    return typeof code === "string" && /^(?:E[A-Z0-9]{1,31}|ERR_[A-Z0-9_]{1,60})$/u.test(code) ? code : undefined;
   } catch {
     return undefined;
   }
 }
 
 // "shown" keeps a system error's message; "code" keeps only its validated code, since a Node spawn, spawnSync or fs error names host
-// paths in its message, `syscall`, `path` and `spawnargs`.
+// paths in its message, `syscall`, `path` and `spawnargs`. Only a `syscall` or `spawnargs` marks one: Ave's own errors may carry a `path`.
 type SystemErrorText = "shown" | "code";
 
 // The text of a string or a verified Error, bounded before anything reads it further; any other value has none.
 function boundedFailureText(error: unknown, systemErrors: SystemErrorText): string | undefined {
-  if (systemErrors === "code" && error instanceof Error && ("syscall" in error || "path" in error || "spawnargs" in error)) {
+  if (systemErrors === "code" && error instanceof Error && ("syscall" in error || "spawnargs" in error)) {
     const code = validatedErrorCode(error);
     return code === undefined ? "host system error" : `host system error ${code}`;
   }
@@ -2505,6 +2505,13 @@ const MXC_SHELL_LABEL = "tool:powershell:mxc";
 
 function mxcSpawnFailure(details: string): ToolExecutionResult {
   return { output: `PowerShell spawn failed: ${details}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
+}
+
+// The contained route's host helpers and disposers name their install paths in system errors: the result keeps their codes, the log
+// their redacted full text.
+function withContainedReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly unknown[]): T {
+  if (failures.length > 0) shellTaskLog.error({ label: MXC_SHELL_LABEL, failures: shellFailureText(failures) }, "contained shell resource release failed");
+  return withReleaseFailures(result, failures, "code");
 }
 
 // Node's launcher errors name the launcher's absolute path (message, `syscall`, `path`, `spawnargs`): only a validated code is kept.
@@ -4131,7 +4138,7 @@ async function spawnPowerShellInMxc(
     return mxcSpawnFailure("trusted system installation is unavailable");
   }
   // The invocation's one owner: each resource below registers with it as it is allocated, and every
-  // failure is formatted once, after disposal, from the raw errors.
+  // failure is formatted only after disposal, from the raw errors.
   const lifecycle = createContainedShellLifecycle();
   const controllerRevoked = new Error("remote-controller-revoked");
   let failurePrefix = "could not create isolated HOME: ";
@@ -4221,10 +4228,11 @@ async function spawnPowerShellInMxc(
       throw error;
     }
     if (signal?.aborted === true && error === signal.reason) {
-      return withReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } }, released);
+      return withContainedReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } }, released);
     }
     // Pre-spawn steps run host helpers (path facts, the policy pipe) whose system errors name their install paths.
-    return withReleaseFailures(mxcSpawnFailure(`${failurePrefix}${shellFailureText([error], "code")}`), released, "code");
+    shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([error]) }, "contained shell failed before its job started");
+    return withContainedReleaseFailures(mxcSpawnFailure(`${failurePrefix}${shellFailureText([error], "code")}`), released);
   }
   const spawned = child;
   const egressToken = token;
@@ -4237,10 +4245,10 @@ async function spawnPowerShellInMxc(
     const release = async (result: () => ToolExecutionResult, failures: readonly unknown[]): Promise<ToolExecutionResult> => {
       if (!jobLive()) {
         const released = await lifecycle.dispose();
-        return withReleaseFailures(result(), [...failures, ...released]);
+        return withContainedReleaseFailures(result(), [...failures, ...released]);
       }
       void lifecycle.dispose().then((released) => logReleaseFailures(MXC_SHELL_LABEL, released));
-      return withReleaseFailures(result(), failures);
+      return withContainedReleaseFailures(result(), failures);
     };
     // A failure's details while the job is live are withheld from the result and logged.
     const spawnFailure = (error: unknown): ToolExecutionResult => {
