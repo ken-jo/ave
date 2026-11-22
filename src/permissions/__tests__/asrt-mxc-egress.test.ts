@@ -273,10 +273,15 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       expect(await request(relay.port, relay.proxyAuthorization, "GET", `http://127.0.0.1:${port}/`)).toBe(403);
     }
     expect(observed).toEqual([]);
-    invocation.release();
+    const launch = await launchShell(invocation.token, false);
+    await launch.release();
     const requestApproval = vi.fn(requester);
     requester = requestApproval;
     expect(await request(relay.port, relay.proxyAuthorization)).toBe(403);
+    expect(observed).toEqual([{
+      context: expect.objectContaining({ attributionKey: invocation.token, identity: "listener", phase: "name" }),
+      decision: { allow: false, reason: EGRESS_DENY_REASONS.unattributed },
+    }]);
     expect(requestApproval).not.toHaveBeenCalled();
     await expect(launchShell().then(() => undefined)).rejects.toThrow(/live shell invocation/u);
   });
