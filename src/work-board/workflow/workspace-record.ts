@@ -63,7 +63,7 @@ export interface WorkspaceRecord {
   out: Record<string, { sha256: string; size: number; stageId: string }>;
 }
 
-export const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 export const samePath = (left: string, right: string): boolean => {
   const fold = (value: string): string => process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value);
   return fold(left) === fold(right);

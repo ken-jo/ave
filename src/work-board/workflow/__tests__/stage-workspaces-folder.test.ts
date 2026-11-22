@@ -450,7 +450,7 @@ describe("folder stage workspaces", () => {
 
   it.skipIf(process.platform !== "win32")("a nested folder with a case rule of its own does not change the project root's", async (context) => {
     mkdirSync(join(project, "child"));
-    try { execFileSync("fsutil", ["file", "setCaseSensitiveInfo", join(project, "child"), "enable"], { stdio: "ignore" }); } catch { /* told by the folder below */ }
+    try { execFileSync("cmd.exe", ["/d", "/c", "fsutil", "file", "setCaseSensitiveInfo", join(project, "child"), "enable"], { stdio: "ignore" }); } catch { /* told by the folder below */ }
     write(project, "child/.gitignore", "BUILD.LOG\n");
     write(project, "child/build.log", "built\n");
     // Not every installation lets a folder be given a rule of its own.
