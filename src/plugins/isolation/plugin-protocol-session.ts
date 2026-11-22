@@ -318,6 +318,7 @@ export async function openPluginProtocolSession(
     )) as PluginConstructResult;
     requireServedCapabilities(pluginId, construction, capabilities);
 
+    const stopReason = `[out-of-process-plugin] ${pluginId}: stopped`;
     const channel: PluginProtocolChannel = {
       requestMcp: (method, params, timeoutMs) => transport.requestMcp(method, params, timeoutMs),
       probe: (method, params) => transport.probe(method, params),
@@ -331,7 +332,7 @@ export async function openPluginProtocolSession(
         );
       },
       closeInput: () => {
-        spec.link.output.end();
+        void transport.closeInput(stopReason);
       },
       exited,
     };
@@ -357,19 +358,10 @@ export async function openPluginProtocolSession(
           await channel.runStopHook();
         } finally {
           // EOF gives the child time to release its own resources before signal-based termination.
-          channel.closeInput();
-          let graceTimer: ReturnType<typeof setTimeout> | undefined;
           try {
-            await Promise.race([
-              channel.exited,
-              new Promise<void>((resolve) => {
-                graceTimer = setTimeout(resolve, TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs);
-              }),
-            ]);
+            await transport.closeInput(stopReason);
           } finally {
-            clearTimeout(graceTimer);
-            // Retire authority only after the cleanup grace has ended.
-            await teardown(`[out-of-process-plugin] ${pluginId}: stopped`);
+            await teardown(stopReason);
           }
         }
       },

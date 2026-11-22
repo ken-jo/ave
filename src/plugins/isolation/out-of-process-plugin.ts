@@ -628,7 +628,7 @@ export async function spawnConfinedPluginChild(
     const terminateChild = (): void => {
       if (terminated) return;
       terminated = true;
-      const forceTimer = terminateChildProcess(child, 3_000);
+      const forceTimer = terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
       child.once("exit", () => clearTimeout(forceTimer));
     };
     // A holder that dies takes the grant's guarantee with it; the child it served stops rather than run on a grant nobody holds.

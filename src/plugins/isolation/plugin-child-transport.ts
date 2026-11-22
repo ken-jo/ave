@@ -4,6 +4,7 @@ import type { Readable, Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
   classifyMultiplexedMessage,
   FramedMessageStream,
@@ -131,6 +132,8 @@ export class PluginChildTransport {
   /** Mark termination started before calling the link because signal faults can reenter synchronously. */
   private terminating = false;
   private exitReason: string | undefined;
+  private pipeLossGrace: Promise<void> | undefined;
+  private finishPipeLossGrace: (() => void) | undefined;
   private resolveExited!: (reason: string) => void;
   /** Only observed terminal exit settles exited; close, timeout and fault do not. */
   readonly exited: Promise<string> = new Promise((resolve) => {
@@ -177,7 +180,42 @@ export class PluginChildTransport {
   start(): void {
     this.link.onGone((reason) => this.peerGone(reason));
     this.link.onFault((reason) => this.fault(reason));
+    const handlePipeLoss = (): void => {
+      void this.beginPipeLossGrace(`[plugin-child-transport] ${this.pluginId}: channel closed`);
+    };
+    const handlePipeError = (error: Error): void => {
+      this.fault(`[plugin-child-transport] ${this.pluginId}: channel error: ${error.message}`);
+    };
+    for (const pipe of new Set([this.link.input, this.link.output])) {
+      pipe.once("close", handlePipeLoss);
+      pipe.on("error", handlePipeError);
+    }
+    this.link.input.once("end", handlePipeLoss);
+    this.link.output.once("finish", handlePipeLoss);
     this.stream.start();
+    if (this.link.input.readableEnded || this.link.input.destroyed
+      || this.link.output.writableFinished || this.link.output.destroyed) {
+      handlePipeLoss();
+    }
+  }
+
+  closeInput(reason: string): Promise<void> {
+    const grace = this.beginPipeLossGrace(reason);
+    this.link.output.end();
+    return grace;
+  }
+
+  private beginPipeLossGrace(reason: string): Promise<void> {
+    if (this.closedReason !== undefined) return Promise.resolve();
+    this.pipeLossGrace ??= new Promise<void>((resolve) => {
+      const timer = setTimeout(() => this.close(reason), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs);
+      this.finishPipeLossGrace = () => {
+        this.finishPipeLossGrace = undefined;
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+    return this.pipeLossGrace;
   }
 
   /** Lifecycle calls carry existing caller bounds; do not add competing timeouts. */
@@ -300,6 +338,7 @@ export class PluginChildTransport {
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
     this.terminating = true;
+    this.finishPipeLossGrace?.();
     // Release invocation contexts before signal or subscription cleanup can fail.
     this.releaseInvocations();
     this.logPartialFrame();
@@ -319,6 +358,7 @@ export class PluginChildTransport {
     }
     if (this.closedReason !== undefined) return;
     this.closedReason = reason;
+    this.finishPipeLossGrace?.();
     this.releaseInvocations();
     this.logPartialFrame();
     this.pending.rejectAll(reason);

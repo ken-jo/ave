@@ -2,6 +2,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
 import { PassThrough } from "node:stream";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { terminateChildProcess } from "../../../tools/terminate-child-process.js";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { servePluginChild } from "../plugin-child-main.js";
@@ -207,6 +209,38 @@ describe("an observed exit is not a requested termination", () => {
     childToHost.write(Buffer.alloc(FRAME_BYTES_MAX + 1, 0x78));
     await expect(pending).rejects.toThrow(/exceeded .* bytes/);
     expect(terminated).toHaveLength(1);
+  });
+});
+
+describe("host pipe loss", () => {
+  it("starts one graceful shutdown and escalates from the first pipe loss", async () => {
+    vi.useFakeTimers();
+    const { link, childToHost, fireGone } = recordedLink();
+    const kill = vi.fn(() => true);
+    const child = { exitCode: null, signalCode: null, kill };
+    const transport = transportOver({
+      ...link,
+      terminate: () => { terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs); },
+    });
+    const grace = TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs;
+
+    link.output.end();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(grace - 1);
+    childToHost.emit("end");
+    expect(kill).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(kill.mock.calls).toEqual([["SIGTERM"]]);
+
+    const force = TOOL_TIMEOUT_POLICY.pluginChildForceKillMs;
+    await vi.advanceTimersByTimeAsync(force - 1);
+    expect(kill.mock.calls).toEqual([["SIGTERM"]]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+
+    fireGone("child exited");
+    await expect(transport.exited).resolves.toBe("child exited");
   });
 });
 

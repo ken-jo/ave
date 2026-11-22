@@ -3,6 +3,8 @@ import { PassThrough, Writable } from "node:stream";
 import { Console } from "node:console";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { isMainThread, workerData } from "node:worker_threads";
+import { openPluginChildStdin, readPluginChildStdin } from "./plugin-child-stdin.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { importPluginFactory } from "../runtime/plugin-loader.js";
 import { frameMessage } from "../../mcp/stdio-framing.js";
@@ -298,15 +300,18 @@ function isProcessEntryModule(): boolean {
 
 /** The stdio child exits when host pipes close. */
 function serveOverStdio(): void {
-  const service = servePluginChild(process.stdin, claimProtocolStdout());
+  const input = openPluginChildStdin(new URL(import.meta.url));
+  // Expose the bridged stream to plugin stdin listeners, including EOF cleanup.
+  Object.defineProperty(process, "stdin", { get: () => input });
+  const service = servePluginChild(input, claimProtocolStdout());
+  let hostGone = false;
   const end = (): void => {
+    if (hostGone) return;
+    hostGone = true;
     service.hostGone();
-    // Let EOF cleanup finish; a lost host cannot leave plugin-owned handles alive forever.
-    process.exitCode = 0;
-    setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
   };
-  process.stdin.on("end", end);
-  process.stdin.on("close", end);
+  input.once("end", end);
+  input.once("close", end);
 }
 
 /** Apply the intended Windows environment, authenticate loopback, and fail nonzero before connection on errors. */
@@ -361,6 +366,14 @@ function serveAsRelay(): void {
 
 /** Guard the process entry so test imports cannot take over stdio. */
 if (isProcessEntryModule()) {
+  if (!isMainThread) {
+    readPluginChildStdin(workerData as Int32Array);
+  } else {
+    launchPluginChild();
+  }
+}
+
+function launchPluginChild(): void {
   let mode: ChildLaunchMode;
   try {
     mode = parseChildLaunchArgs(process.argv.slice(2));

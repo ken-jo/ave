@@ -17,7 +17,6 @@ import {
   subscribePluginConfigChange,
   _resetPluginConfigChangeBus,
 } from "../../config-change-bus.js";
-import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 
 const PLUGIN_ID = "sampleassistant";
@@ -87,7 +86,7 @@ const MANIFEST = {
   ],
 } as PluginManifest;
 
-function spawnPlainChild(childEntryPath: string): ChildLink {
+function spawnPlainChild(childEntryPath: string, canTerminate = true): ChildLink {
   const child = spawn(process.execPath, [childEntryPath], {
     stdio: ["pipe", "pipe", "pipe"],
     // Set ELECTRON_RUN_AS_NODE so the executable acts as Node and exposes no main-process API.
@@ -104,7 +103,7 @@ function spawnPlainChild(childEntryPath: string): ChildLink {
   return {
     input: child.stdout,
     output: child.stdin,
-    terminate: () => child.kill("SIGTERM"),
+    terminate: () => { if (canTerminate) child.kill("SIGTERM"); },
     onGone: (handler) => {
       child.once("exit", (code, signal) =>
         handler(`child exited code=${String(code)} signal=${String(signal)}`),
@@ -126,6 +125,7 @@ function plainSessionFactory(spec: {
   readonly manifest: PluginManifest;
   readonly entryPath: string;
   readonly childEntryPath: string;
+  readonly canTerminate?: boolean;
 }): (context: PluginRuntimeContext) => Promise<RuntimePlugin> {
   return async (context) => {
     const envelope = derivePluginChildEnvelope({
@@ -138,7 +138,7 @@ function plainSessionFactory(spec: {
       pluginId: spec.manifest.id,
       manifest: spec.manifest,
       hostProtocolVersion: "5",
-      link: spawnPlainChild(spec.childEntryPath),
+      link: spawnPlainChild(spec.childEntryPath, spec.canTerminate),
       context,
       entryPath: spec.entryPath,
       table: createBoundHostApiDispatchTable(context.hostApi, envelope),
@@ -291,43 +291,59 @@ export const createPlugin = async () => {
     expect(readFileSync(marker, "utf8")).toBe("cleaned");
   }, 180_000);
 
-  it("exits after host pipe loss even when the plugin keeps an interval alive", async () => {
-    const root = temporaryRoot!;
-    const entryPath = join(root, "interval-plugin.mjs");
-    writeFileSync(entryPath, `export const createPlugin = async () => {
-  setInterval(() => {}, 100);
-  return { handlers: {} };
-};
-`);
-    const { hostApi } = hostApiFor();
-    const factory = plainSessionFactory({
-      manifest: { ...MANIFEST, tools: [] }, entryPath,
-      childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-    });
-    await factory({
-      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
-      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
-      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
-    });
-    const child = [...spawnedChildren][0]!;
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      child.once("exit", (code, signal) => resolve({ code, signal }));
-    });
-    // Drop the host's protocol input without the normal stop hook or any signal.
-    child.stdin!.end();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const result = await Promise.race([
-        exited,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error("child survived host pipe loss")),
-            TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2 + 1_000);
-        }),
-      ]);
-      expect(result).toEqual({ code: 0, signal: null });
-    } finally {
-      clearTimeout(timer);
+  it.each(["an interval", "a blocked event loop"])(
+    "exits after host pipe loss with %s",
+    async (pluginWork) => {
+      const root = temporaryRoot;
+      if (!root) throw new Error("missing plugin fixture directory");
+      const entryPath = join(root, "pipe-loss-plugin.mjs");
+      writeFileSync(entryPath, `import { writeSync } from "node:fs";
+export const createPlugin = async () => ({
+  handlers: {},
+  start: () => {
+    writeSync(2, "plugin started\\n");
+    if (${JSON.stringify(pluginWork)} === "an interval") {
+      setInterval(() => {}, 100);
+    } else {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
     }
-  }, 180_000);
+  },
+});
+`);
+      const { hostApi } = hostApiFor();
+      const factory = plainSessionFactory({
+        manifest: { ...MANIFEST, tools: [] }, entryPath, canTerminate: false,
+        childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
+      });
+      const instance = await factory({
+        pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+        pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+        userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+      });
+      const child = [...spawnedChildren][0];
+      if (!child?.stdin || !child.stderr || !instance.start) {
+        throw new Error("missing plugin pipes or start hook");
+      }
+      const { stdin, stderr } = child;
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+      });
+      const started = new Promise<void>((resolve) => {
+        let diagnostics = "";
+        stderr.on("data", (chunk: Buffer) => {
+          diagnostics += chunk.toString();
+          if (diagnostics.includes("plugin started\n")) resolve();
+        });
+      });
+      void instance.start().catch(() => undefined);
+      await started;
+      stdin.end();
 
+      // This unconfined link never sends a signal on pipe closure.
+      expect(await exited).toEqual(process.platform === "win32"
+        ? { code: 1, signal: null }
+        : { code: null, signal: "SIGKILL" });
+    },
+    180_000,
+  );
 });
