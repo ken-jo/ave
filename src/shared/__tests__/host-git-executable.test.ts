@@ -251,6 +251,38 @@ describe("resolveHostGit", () => {
     expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(["/usr/bin/xcode-select", "/toolchain/git"]);
   });
 
+  it("rediscovers after the cached macOS shim guard fails", async () => {
+    const { detectGitRuntime } = await import("../../marketplace/git/detect.js");
+    setProcessPlatform("darwin");
+    vi.stubEnv("PATH", "/alias:/toolchain");
+    let installed = true;
+    vi.mocked(statSync).mockImplementation((file) => {
+      if (file === "/developer" && !installed) throw new Error("missing developer directory");
+      return {
+        isFile: () => file !== "/developer",
+        isDirectory: () => file === "/developer",
+        dev: 1n, ino: file === "/toolchain/git" ? 2n : 1n,
+      } as ReturnType<typeof statSync>;
+    });
+    vi.mocked(execFile).mockImplementation((file, _args, _options, callback) => {
+      if (file === "/usr/bin/xcode-select" && !installed) {
+        callback?.(Object.assign(new Error("missing tools"), { code: 1 }), "", "");
+      } else {
+        callback?.(null, file === "/usr/bin/xcode-select" ? "/developer\n" : "git version 2.56.0", "");
+      }
+      return {} as ReturnType<typeof execFile>;
+    });
+
+    await expect(detectGitRuntime(null)).resolves.toMatchObject({ git: { path: "/alias/git" } });
+    await expect(detectGitRuntime(null)).resolves.toMatchObject({ git: { path: "/alias/git" } });
+    expect(execFile).toHaveBeenCalledTimes(2);
+    installed = false;
+    await expect(detectGitRuntime(null)).resolves.toMatchObject({ git: { path: "/toolchain/git" } });
+    expect(vi.mocked(execFile).mock.calls.map(([path]) => path)).toEqual([
+      "/usr/bin/xcode-select", "/alias/git", "/usr/bin/xcode-select", "/toolchain/git",
+    ]);
+  });
+
   it("rejects Windows UNC and device PATH entries before filesystem probes", async () => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     setProcessPlatform("win32");

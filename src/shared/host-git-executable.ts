@@ -211,7 +211,7 @@ type DiscoveredGit = { path: string; version: GitVersion } & (
   | { installer?: never }
 );
 
-interface GitDiscovery {
+export interface GitDiscovery {
   git: DiscoveredGit | null;
   systemTooOld?: { path: string; version: string };
 }
@@ -321,16 +321,26 @@ function* probeSystemGit(path: string): GitChecks<{ version: GitVersion; support
 interface GitScan {
   selection: GitDiscovery;
   identity: string | null;
+  developerDirectory?: string;
 }
 
 const discoveredGit = new Map<string | null, GitScan>();
 const pendingDiscoveries = new Map<string | null, Promise<GitDiscovery>>();
 
-function* selectGit(installerRoot: string | null, cached: GitScan | undefined): GitChecks<GitScan> {
-  if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.identity) return cached;
+function* isDirectory(path: string): GitChecks<boolean> {
+  try {
+    return (yield* check(() => statSync(path), () => stat(path))).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function* selectGit(installerRoot: string | null, cached: GitScan | undefined, failedPath?: string): GitChecks<GitScan> {
+  if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.identity
+    && (!cached.developerDirectory || (yield* isDirectory(cached.developerDirectory)))) return cached;
 
   const bundledPath = installerGitPath(installerRoot);
-  if (installerRoot !== null && bundledPath !== null) {
+  if (installerRoot !== null && bundledPath !== null && bundledPath !== failedPath) {
     const bundled = yield* findInstallerLayout(installerRoot, bundledPath);
     const identity = bundled && (yield* executableIdentity(bundled.path));
     if (bundled && identity !== null) {
@@ -340,17 +350,23 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined): 
   }
 
   const selection: GitDiscovery = { git: null };
-  let cltInstalled: boolean | undefined;
+  let shimDirectory: string | undefined;
   for (const path of systemGitCandidates(process.platform, process.env.PATH)) {
+    if (failedPath !== undefined && (yield* sameFile(path, failedPath))) continue;
     const identity = yield* executableIdentity(path);
     if (identity === null || (bundledPath !== null && (yield* sameFile(path, bundledPath)))) continue;
+    let developerDirectory: string | undefined;
     if (process.platform === "darwin" && (yield* sameFile(path, DARWIN_GIT_SHIM))) {
-      cltInstalled ??= (yield* runProbe(DARWIN_CLT_PROBE, ["-p"])).exitCode === 0;
-      if (!cltInstalled) continue;
+      if (shimDirectory === undefined) {
+        const guard = yield* runProbe(DARWIN_CLT_PROBE, ["-p"]);
+        shimDirectory = guard.exitCode === 0 ? guard.stdout.trim() : "";
+      }
+      if (!posix.isAbsolute(shimDirectory)) continue;
+      developerDirectory = shimDirectory;
     }
     const probe = yield* probeSystemGit(path);
     if (!probe) continue;
-    if (probe.supported) return { selection: { ...selection, git: { path, version: probe.version } }, identity };
+    if (probe.supported) return { selection: { ...selection, git: { path, version: probe.version } }, identity, developerDirectory };
     if (!meetsMinimumGitVersion(probe.version)) selection.systemTooOld ??= { path, version: probe.version.text };
   }
   return { selection, identity: null };
@@ -371,16 +387,51 @@ function discoverHostGitSync(installerRoot: string | null): GitDiscovery {
   return finishDiscovery(installerRoot, cached, result);
 }
 
+function discoverGit(installerRoot: string | null, failedPath?: string): Promise<GitDiscovery> {
+  const pending = pendingDiscoveries.get(installerRoot);
+  if (pending) return pending;
+  const cached = discoveredGit.get(installerRoot);
+  const discovery = runChecksAsync(selectGit(installerRoot, cached, failedPath))
+    .then((result) => pendingDiscoveries.get(installerRoot) === discovery
+      ? finishDiscovery(installerRoot, cached, result)
+      : result.selection)
+    .finally(() => {
+      if (pendingDiscoveries.get(installerRoot) === discovery) pendingDiscoveries.delete(installerRoot);
+    });
+  pendingDiscoveries.set(installerRoot, discovery);
+  return discovery;
+}
+
 export function discoverHostGitAsync(installerRoot: string | null): Promise<GitDiscovery> {
-  let pending = pendingDiscoveries.get(installerRoot);
-  if (!pending) {
-    const cached = discoveredGit.get(installerRoot);
-    pending = runChecksAsync(selectGit(installerRoot, cached))
-      .then((result) => finishDiscovery(installerRoot, cached, result))
-      .finally(() => pendingDiscoveries.delete(installerRoot));
-    pendingDiscoveries.set(installerRoot, pending);
+  return discoverGit(installerRoot);
+}
+
+function isLaunchFailure(error: unknown, path: string): boolean {
+  if (!(error instanceof Error)) return false;
+  const launch = (error.cause ?? error) as { code?: string; path?: string };
+  return launch.path === path && (launch.code === "ENOENT" || launch.code === "EACCES");
+}
+
+export async function withHostGitRecovery<T>(
+  installerRoot: string | null,
+  use: (discovery: GitDiscovery) => Promise<T>,
+): Promise<T> {
+  let discovery = await discoverGit(installerRoot);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await use(discovery);
+    } catch (error) {
+      const { git } = discovery;
+      if (!git || !isLaunchFailure(error, git.path)) throw error;
+      const ownsSelection = discoveredGit.get(installerRoot)?.selection.git === git;
+      if (ownsSelection) {
+        discoveredGit.delete(installerRoot);
+        pendingDiscoveries.delete(installerRoot);
+      }
+      if (attempt === 1) throw error;
+      discovery = await discoverGit(installerRoot, ownsSelection ? git.path : undefined);
+    }
   }
-  return pending;
 }
 
 /** Verified calls require a protected installation. Discovery caches a selected executable and checks again after a miss. */

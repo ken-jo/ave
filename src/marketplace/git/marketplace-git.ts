@@ -1,10 +1,11 @@
 /** Keeps an isolated runner until invalidated by a runtime change. */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { discoverHostGitAsync, type GitDiscovery, withHostGitRecovery } from "../../shared/host-git-executable.js";
 import { MarketplaceError } from "../errors.js";
 import { AskpassBroker } from "./askpass.js";
 import { installerRunnerOptions } from "./installer-git.js";
-import { detectGitRuntime, type GitExecutable } from "./detect.js";
+import { classifyGitDiscovery, type GitExecutable } from "./detect.js";
 import { readCopiedCredentialConfig, writeGeneratedGlobalConfig, type CopiedConfigEntry } from "./global-config.js";
 import { GitRunner, type GitCommands, type GitRemote, type GitRunnerOptions } from "./run-git.js";
 
@@ -27,7 +28,7 @@ function isHelperEntry(entry: CopiedConfigEntry): boolean {
 
 export class MarketplaceGit {
   private broker: Promise<AskpassBroker> | null = null;
-  private built: Promise<BuiltRunner> | null = null;
+  private built: { git: NonNullable<GitDiscovery["git"]>; result: Promise<BuiltRunner> } | null = null;
   private closed = false;
 
   constructor(private readonly options: MarketplaceGitOptions) {}
@@ -40,8 +41,8 @@ export class MarketplaceGit {
     return this.broker;
   }
 
-  private async detect(): Promise<GitExecutable> {
-    const detection = await detectGitRuntime(this.options.installerRoot);
+  private requireGit(discovery: GitDiscovery): GitExecutable {
+    const detection = classifyGitDiscovery(discovery);
     if (detection.state === "ready") return detection.git;
     if (detection.systemTooOld) {
       throw new MarketplaceError(
@@ -52,8 +53,7 @@ export class MarketplaceGit {
     throw new MarketplaceError("GIT_RUNTIME_MISSING", "no usable git was found: no installer git is usable and no system git is installed");
   }
 
-  private async build(): Promise<BuiltRunner> {
-    const git = await this.detect();
+  private async build(git: GitExecutable): Promise<BuiltRunner> {
     await mkdir(this.options.envRoot, { recursive: true, mode: 0o700 });
     const emptyDir = join(this.options.envRoot, "empty");
     await mkdir(emptyDir, { recursive: true });
@@ -72,23 +72,31 @@ export class MarketplaceGit {
     return { runner, copied };
   }
 
-  private current(): Promise<BuiltRunner> {
-    if (this.closed) return Promise.reject(new Error("the marketplace git runtime is closed"));
-    this.built ??= this.build().catch((error: unknown) => {
-      // Nothing is cached for a failed detection: installing a system git fixes it without a restart.
-      this.built = null;
+  private async current(discovery: GitDiscovery): Promise<BuiltRunner> {
+    if (this.closed) throw new Error("the marketplace git runtime is closed");
+    const previous = this.built;
+    if (previous && previous.git === discovery.git) return previous.result;
+    this.built = null;
+    const git = this.requireGit(discovery);
+    const result = Promise.resolve(previous?.result).catch(() => undefined).then(() => this.build(git));
+    const built = { git: discovery.git!, result };
+    this.built = built;
+    try {
+      return await result;
+    } catch (error) {
+      if (this.built === built) this.built = null;
       throw error;
-    });
-    return this.built;
+    }
   }
 
   async runner(): Promise<GitRunner> {
-    return (await this.current()).runner;
+    return (await this.current(await discoverHostGitAsync(this.options.installerRoot))).runner;
   }
 
   /** Resolve the current runner per command while retaining the syncer and its source locks. */
   readonly commands: GitCommands = {
-    run: async (args, options) => (await this.runner()).run(args, options),
+    run: (args, options) => withHostGitRecovery(this.options.installerRoot, async (discovery) =>
+      (await this.current(discovery)).runner.run(args, options)),
   };
 
   async preflight(remote: GitRemote): Promise<void> {
@@ -97,7 +105,7 @@ export class MarketplaceGit {
 
   /** A generic helper or a matching per-host helper counts as available credentials. */
   async credentialHelperFor(host: string): Promise<boolean> {
-    const { copied } = await this.current();
+    const { copied } = await this.current(await discoverHostGitAsync(this.options.installerRoot));
     return copied.some((entry) => {
       if (!isHelperEntry(entry)) return false;
       if (entry.key === "credential.helper") return true;
