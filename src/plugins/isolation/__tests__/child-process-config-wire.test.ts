@@ -656,14 +656,23 @@ export const createPlugin = async () => ({
     await expect(probe()).rejects.toThrow(/Invalid plugin child input credit/);
     expect(terminations).toEqual([expect.stringMatching(/Invalid plugin child input credit/)]);
 
-    // The realm never learns of the loss, so only the owner's deadline can end the child. The host's
-    // force-kill bound caps the wait; the recording link never signals.
-    const exited = once(child, "exit", { signal: AbortSignal.timeout(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs) });
+    // The realm never learns of the loss, so only the owner's deadline can end the child; the recording
+    // link never signals. Wait for that deadline plus slack for the exit to reach the host. The bound is
+    // what fails a run with no owner deadline in seconds rather than at the test timeout.
+    const { pluginChildHostLossMs } = TOOL_TIMEOUT_POLICY;
+    const exitSlackMs = 1_000;
+    // A timer can fire a few ms before a fresh clock read; a crash or a cooperative exit lands far earlier.
+    const timerEarlyToleranceMs = 50;
+    const exited = once(child, "exit", { signal: AbortSignal.timeout(pluginChildHostLossMs + exitSlackMs) });
+    let exitedAfterMs = Number.NaN;
+    const cutAt = performance.now();
+    child.once("exit", () => { exitedAfterMs = performance.now() - cutAt; });
     link.disconnect();
-    expect(await state.outcomeAfterExit(exited)).toEqual({
-      exit: process.platform === "win32" ? [1, null] : [null, "SIGKILL"],
-      resumed: false,
-    });
+    // This fixture writes no resume marker; outcomeAfterExit is read for the exit once stderr drains.
+    const { exit } = await state.outcomeAfterExit(exited);
+    expect(exit).toEqual(process.platform === "win32" ? [1, null] : [null, "SIGKILL"]);
+    // On win32 a crash also exits [1, null]; only the owner's timer waits out the deadline.
+    expect(exitedAfterMs).toBeGreaterThanOrEqual(pluginChildHostLossMs - timerEarlyToleranceMs);
     expect(terminations).toHaveLength(1);
   }, 180_000);
 
