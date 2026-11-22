@@ -122,10 +122,12 @@ function useHostResources(resourcePath: string, onTestFinished: TestFinished): v
   configureHostResources({ resourcePath, isPackaged: true });
   onTestFinished(() => configureHostResources({ resourcePath: join(root, "no-host-resources"), isPackaged: true }));
 }
-// Runs `change` once the listing of `dir` has classified its first `rows` entries in name order.
+// Runs `change` once the listing of `dir` has classified its first `rows` entries in name order. The returned check rethrows
+// a failed `change`, which the listing would otherwise absorb.
 function changeDuringListing(dir: string, rows: number, change: () => void, onTestFinished: TestFinished): () => boolean {
   const readdir = fsModule.promises.readdir.bind(fsModule.promises) as (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
   let changed = false;
+  let failure: { error: unknown } | undefined;
   const spy = vi.spyOn(fsModule.promises, "readdir").mockImplementation((async (path: string, options: { withFileTypes: true }) => {
     const entries = await readdir(path, options);
     if (path !== dir || changed) return entries;
@@ -136,14 +138,21 @@ function changeDuringListing(dir: string, rows: number, change: () => void, onTe
     entry.isFile = () => {
       if (!changed) {
         changed = true;
-        change();
+        try {
+          change();
+        } catch (error) {
+          failure = { error };
+        }
       }
       return isFile();
     };
     return entries;
   }) as never);
   onTestFinished(() => spy.mockRestore());
-  return () => changed;
+  return () => {
+    if (failure !== undefined) throw failure.error;
+    return changed;
+  };
 }
 // After the first `rows` entries, models sibling writes that move `bumped`'s change time, and runs `change` right after the
 // row's first read of `watched`, between two policy-root lookups of that row. The modeled change time moves again then.
@@ -465,6 +474,7 @@ describe("workspace.listDir folder-view entries", () => {
 
   it("refuses an Ave home that another directory is renamed into before confirming any spelling below it", async ({ onTestFinished }) => {
     // Live resolution gives the same entries, so only the realpath of the home's child shows that its identity was checked.
+    // POSIX limit: if a change to the shared /tmp stops the second row from seeding, this passes without reaching that check.
     const scratch = mkdtempSync(join(root, "row-identity-"));
     onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
     const dir = join(scratch, "list");
