@@ -81,7 +81,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryMap.error.invalid-input": "메모리 지도 요청이 올바르지 않습니다.",
   "memoryMap.error.project-not-allowed": "이 메모리 범위에 접근할 수 없습니다.",
   "memoryMap.error.model-unconfigured": "먼저 로컬 임베딩 모델을 설정하세요.",
-  "memoryMap.error.local-runtime-unavailable": "이 플랫폼의 런타임에서는 텔레메트리 비활성화를 보장할 수 없어 로컬 임베딩을 사용할 수 없습니다.",
+  "memoryMap.error.local-runtime-unavailable": "로컬 모델을 네트워크에서 차단하는 OS 샌드박스가 활성화되어 있지 않아 로컬 임베딩을 사용할 수 없습니다.",
   "memoryMap.error.model-integrity-failed": "모델 파일이 고정된 버전과 일치하지 않습니다.",
   "memoryMap.error.graph-unavailable": "먼저 메모리 지도를 만드세요.",
   "memoryMap.error.graph-stale": "메모리가 변경되었습니다. 지도를 다시 만드세요.",
