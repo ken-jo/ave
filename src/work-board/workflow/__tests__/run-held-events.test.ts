@@ -34,9 +34,17 @@ beforeEach(() => {
 afterEach(async () => {
   resources.closing = true;
   for (const release of resources.releaseGates) release();
-  vi.restoreAllMocks();
-  const results = await Promise.allSettled(resources.disposeFixtures.map(dispose => dispose()));
-  const failures = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+  const failures: unknown[] = [];
+  try {
+    vi.restoreAllMocks();
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    const results = await Promise.allSettled(resources.disposeFixtures.map(dispose => dispose()));
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
+  }
   if (failures.length > 0) throw new AggregateError(failures, "Held-event fixture cleanup failed");
 });
 
