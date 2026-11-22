@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { setImmediate } from "node:timers/promises";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import type { WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { boardRunState } from "../run-state.js";
@@ -7,10 +8,18 @@ import { stageRunHarness } from "./stage-run-harness.js";
 
 const isFailedFirstAttempt = (stage: WorkItemStageRun) => stage.stageId === "a" && stage.attempt === 1 && stage.status === "failed";
 
-it.each(["row-lost", "board-unread", "throw", "memory-only"] as const)("a failed seal stays blocked while its outcome write is held by %s", async mode => {
+it.each([
+  ["row-lost", "stored"],
+  ["board-unread", "stored"],
+  ["throw", "stored"],
+  ["memory-only", "stored"],
+  ["row-lost", "skipped replay"],
+  ["row-lost", "refused storage"],
+] as const)("a failed seal held by %s checks recovery with %s", async (mode, recovery) => {
   const replayReachedWrite = deferred<void>();
   const releaseWrite = deferred<void>();
-  const outcomeStored = deferred<void>();
+  let replayResult: Awaited<ReturnType<ReturnType<typeof boardRunState>["update"]>> | undefined;
+  let skipReplay = false;
   let blocked = true;
   let failedSeal = false;
   let failureWrites = 0;
@@ -23,6 +32,7 @@ it.each(["row-lost", "board-unread", "throw", "memory-only"] as const)("a failed
       const records = boardRunState(store);
       return { runs: {
         ...records,
+        get: (...args) => skipReplay ? Promise.resolve(null) : records.get(...args),
         update: async (...args) => {
           if (failedSeal) {
             const current = await records.get(args[0], args[1]);
@@ -36,11 +46,11 @@ it.each(["row-lost", "board-unread", "throw", "memory-only"] as const)("a failed
               }
               replayReachedWrite.resolve();
               await releaseWrite.promise;
+              replayResult = recovery === "refused storage" ? { ok: false, reason: "row-lost" } : await records.update(...args);
+              return replayResult;
             }
           }
-          const result = await records.update(...args);
-          if (result.ok && result.run.stageRuns.some(isFailedFirstAttempt)) outcomeStored.resolve();
-          return result;
+          return records.update(...args);
         },
         holdEvent: async event => {
           heldWrites += 1;
@@ -89,12 +99,36 @@ it.each(["row-lost", "board-unread", "throw", "memory-only"] as const)("a failed
     expect(held.map(event => ({ stage: event.stage, attempt: event.attempt, kind: event.kind }))).toEqual(mode === "memory-only" ? [] : [{ stage: "a", attempt: 1, kind: "seal_failed" }]);
 
     blocked = false;
+    skipReplay = recovery === "skipped replay";
     await h.engine.adoptParkedTemplateRuns();
-    await replayReachedWrite.promise;
-    expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 1, status: "passed" });
-    releaseWrite.resolve();
-    await outcomeStored.promise;
-    await h.drainRunWork();
+    const drain = h.drainRunWork();
+    async function checkReplay() {
+      try {
+        const first = await Promise.race([
+          replayReachedWrite.promise.then(() => "writer"),
+          drain.then(() => "drain"),
+        ]);
+        expect(first, "seal replay ended before reaching the writer").toBe("writer");
+        expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 1, status: "passed" });
+      } finally {
+        releaseWrite.resolve();
+        await drain;
+      }
+      expect(replayResult, "seal replay did not store the failed outcome").toMatchObject({
+        ok: true, run: { stageRuns: expect.arrayContaining([expect.objectContaining({ stageId: "a", attempt: 1, status: "failed" })]) },
+      });
+    }
+    const replay = checkReplay();
+    if (recovery !== "stored") {
+      const failure = await Promise.race([
+        replay.then(() => "replay succeeded", (error: Error) => error.message),
+        drain.then(() => setImmediate("replay check stayed pending after drain completion")),
+      ]);
+      expect(failure).toContain(recovery === "skipped replay"
+        ? "seal replay ended before reaching the writer" : "seal replay did not store the failed outcome");
+      return;
+    }
+    await replay;
     await started;
     expect(await h.stageRun(id, "a")).toMatchObject({ attempt: 1, status: "failed", failure: "error", gate: { status: "approved" } });
     expect((await h.item(id)).stageJoins).toEqual([]);
@@ -115,6 +149,7 @@ it.each(["row-lost", "board-unread", "throw", "memory-only"] as const)("a failed
     expect(await boardRunState(h.board).heldEvents({ itemId: id, runId })).toEqual([]);
   } finally {
     blocked = false;
+    skipReplay = false;
     releaseWrite.resolve();
     for (const child of h.live()) child.finish({ ok: false });
     await started?.catch(() => undefined);
