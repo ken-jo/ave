@@ -278,7 +278,7 @@ describe("folder stage workspaces", () => {
     const runRoot = join(base, "run");
     mkdirSync(runRoot);
     const removed: string[] = [];
-    const rules = plainFolderIgnore(createHostGit({ env }), runRoot, project, (scratch) => { removed.push(scratch); rmSync(scratch, { recursive: true }); });
+    const rules = plainFolderIgnore(createHostGit({ env }), runRoot, project, { check: () => undefined, remove: (scratch) => { removed.push(scratch); rmSync(scratch, { recursive: true }); } });
     expect([...await rules.ignored(["line\nbreak.log", "line\nbreak.txt", "plain.log", "notes.txt", "src/"])].sort()).toEqual(["line\nbreak.log", "plain.log"]);
     rules.done();
     expect(removed).toHaveLength(1);
@@ -559,6 +559,39 @@ describe("folder stage workspaces", () => {
       // The run that was not swapped went as usual.
       expect(handles.filter(handle => handle !== swapped).map(handle => existsSync(handle.runRoot)), level).toEqual([false]);
       rmSync(level === "run" ? swapped.runRoot : dirname(swapped.runRoot));
+    }
+  });
+
+  it("a run folder swapped for a link before the ignore matcher is needed gets no repository made through the link", async () => {
+    write(project, ".gitignore", "*.log\n");
+    write(project, "a.log", "ignored\n");
+    const restored = join(base, "restored");
+    const watched = watchedGit();
+    let runRoot = "";
+    const provider = createStageWorkspaceProvider({ git: watched.git, sensitive: () => {
+      if (runRoot !== "" && !existsSync(restored)) {
+        renameSync(runRoot, restored);
+        symlinkSync(restored, runRoot, "junction");
+      }
+      return false;
+    } });
+    runs += 1;
+    const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key" };
+    const open = await provider.open(run, project);
+    if (!open.ok) throw new Error(open.code);
+    runRoot = open.workspace.runRoot;
+    try {
+      const prepared = await provider.prepare(run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1).catch((error: unknown) => error);
+      expect(existsSync(restored)).toBe(true);
+      expect(watched.made).toEqual([]);
+      expect(readdirSync(restored).filter(name => name.startsWith("_ignore"))).toEqual([]);
+      expect(prepared).toEqual({ ok: false, code: "seed-unreadable" });
+    } finally {
+      if (existsSync(restored)) {
+        rmSync(runRoot);
+        renameSync(restored, runRoot);
+      }
+      await provider.release(run, "all");
     }
   });
 });

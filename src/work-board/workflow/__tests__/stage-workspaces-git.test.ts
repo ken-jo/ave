@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createHostGit } from "../host-git.js";
+import { createHostGit, type HostGit } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
@@ -353,6 +353,40 @@ describe("git stage workspaces", () => {
       rmSync(dirname(copy), { recursive: true, force: true });
     } finally {
       writeFileSync(join(runRoot, RUN_FILE), record);
+    }
+  });
+
+  it("a run folder swapped for a link while its worktrees are released is not deleted through, by the host or by git", async () => {
+    const handle = start();
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    const runRoot = open.workspace.runRoot;
+    await stageRoot(handle, "s1");
+    write(await stageRoot(handle, "s2"), "sentinel.txt", "outside\n");
+    const restored = join(base, "restored");
+    const real = createHostGit({ env });
+    const calls: string[] = [];
+    // As a restore of the home does, at the first worktree call of the release: the folder is moved away and a link stands in its place.
+    const run: HostGit["run"] = async (cwd, args, call) => {
+      calls.push(args.join(" "));
+      if (args[0] === "worktree" && !existsSync(restored)) {
+        renameSync(runRoot, restored);
+        symlinkSync(restored, runRoot, "junction");
+      }
+      return real.run(cwd, args, call);
+    };
+    try {
+      await createStageWorkspaceProvider({ git: { run, drivers: real.drivers } }).release(handle.run, "all").catch(() => undefined);
+      expect(existsSync(restored)).toBe(true);
+      expect(readFileSync(join(restored, "s2", "sentinel.txt"), "utf8")).toBe("outside\n");
+      expect(existsSync(join(restored, "s2", "a.txt"))).toBe(true);
+      expect(existsSync(join(restored, JOIN_DIR, "a.txt"))).toBe(true);
+      expect(calls.filter(call => /^worktree remove|^branch -D/u.test(call))).toEqual([]);
+    } finally {
+      if (existsSync(restored)) {
+        rmSync(runRoot);
+        renameSync(restored, runRoot);
+      }
     }
   });
 });
