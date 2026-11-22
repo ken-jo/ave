@@ -224,7 +224,10 @@ export async function stageRunHarness(opts: {
     /** An accepted retry or decision clears the failure it superseded, unless a newer one arrived while it ran. */
     function restarted<T extends { ok: boolean }>(itemId: number, result: T, before: Error | undefined): T {
       const origin = workBoardOriginSessionId(itemId);
-      if (result.ok && engine === wrapped && failures.get(origin) === before) failures.delete(origin);
+      if (result.ok && engine === wrapped) {
+        inFlight.add(origin);
+        if (failures.get(origin) === before) failures.delete(origin);
+      }
       return result;
     }
     const wrapped = {
