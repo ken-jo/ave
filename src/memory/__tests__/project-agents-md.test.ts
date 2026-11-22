@@ -563,12 +563,12 @@ describe("discoverDirectoryInstructions", () => {
     }
   });
 
-  it("loads eligible instructions when Git rejects the no-lazy-fetch option", async () => {
+  it.each([129, 128, undefined])("retries an inconclusive Git ignore query after exit %s", async (status) => {
     mkdirSync(join(project, ".git"));
     const fixtureGit = join(project, "fixture-git");
     const resolve = () => ({ path: fixtureGit, options: { env: {} } });
     const unsupported = vi.fn(() => {
-      throw Object.assign(new Error("unknown option: --no-lazy-fetch"), { status: 129 });
+      throw Object.assign(new Error("Git query failed"), { status });
     });
     vi.resetModules();
     vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: resolve }));
@@ -576,10 +576,17 @@ describe("discoverDirectoryInstructions", () => {
     try {
       const before = gitCalls.checkIgnore.length;
       const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
-      const layers = discover(project, join("src", "handler.ts"), new Set());
+      const verdicts = new Map<string, boolean>();
+      const opts = { gitIgnoreVerdicts: verdicts };
+      const layers = discover(project, join("src", "handler.ts"), new Set(), opts);
       expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit]);
       expect(unsupported).toHaveBeenCalledWith(expect.arrayContaining(["--no-lazy-fetch", "check-ignore"]));
       expect(layers.map((layer) => layer.content)).toEqual(["src rule"]);
+      expect.soft(verdicts.size).toBe(0);
+      gitCalls.intercept = () => { throw Object.assign(new Error("not ignored"), { status: 1 }); };
+      expect(discover(project, join("src", "handler.ts"), new Set(), opts)).toEqual(layers);
+      expect([...verdicts.values()]).toEqual([false]);
+      expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit, fixtureGit]);
     } finally {
       gitCalls.intercept = undefined;
       vi.doUnmock("../../shared/host-git-executable.js");

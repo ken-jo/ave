@@ -244,7 +244,7 @@ function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts 
  * reads as "not ignored". A missing executable is not a verdict, so the session can pick up a new Git installation. */
 function askGitIgnores(repoRoot: string, path: string): boolean | undefined {
   if (!isHostGitWorkspaceAvailable(repoRoot)) return undefined;
-  if (!hasGitEntry(repoRoot)) return false;
+  if (!hasGitEntry(repoRoot)) return undefined;
   const git = resolveHostGit({ packaged: isConfigured() ? getIsPackaged() : isPackagedElectronProcess() });
   if (git === null) return undefined;
   try {
@@ -259,8 +259,8 @@ function askGitIgnores(repoRoot: string, path: string): boolean | undefined {
       timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs,
     });
     return true; // exit 0: ignored
-  } catch {
-    return false; // exit 1: not ignored; anything else: unknown
+  } catch (error) {
+    return (error as { status?: number }).status === 1 ? false : undefined;
   }
 }
 

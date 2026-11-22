@@ -226,7 +226,8 @@ const discoveredGit = new Map<string | null, GitDiscovery>();
 
 export function discoverHostGit(installerRoot: string | null): GitDiscovery {
   const cached = discoveredGit.get(installerRoot);
-  if (cached?.git) return cached;
+  if (cached?.git && isExecutableFile(cached.git.path)) return cached;
+  discoveredGit.delete(installerRoot);
 
   const bundledPath = installerGitPath(installerRoot);
   const bundled = findInstallerGit(installerRoot);

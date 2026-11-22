@@ -71,7 +71,7 @@ describe("resolveHostGit", () => {
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     vi.stubEnv("PATH", join(root, "changed-bin"));
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
-    expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary)]);
+    expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary), join(host, binary)]);
     expect(execFileSync).toHaveBeenCalledExactlyOnceWith(join(host, binary), ["--no-lazy-fetch", "--version"], expect.anything());
   });
 
@@ -107,6 +107,19 @@ describe("resolveHostGit", () => {
       return "git version 2.56.0";
     });
     expect(resolveHostGit({ packaged: false })?.path).toBe(selected);
+  });
+
+  it("discovers another executable when the cached executable disappears", async () => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    const replacement = join(root, "replacement");
+    const selected = join(host, binary);
+    vi.stubEnv("PATH", [host, replacement].join(delimiter));
+    vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    expect(resolveHostGit({ packaged: false })?.path).toBe(selected);
+    vi.mocked(accessSync).mockImplementation((file) => {
+      if (file === selected) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    expect(resolveHostGit({ packaged: false })?.path).toBe(join(replacement, binary));
   });
 
   it.each([
