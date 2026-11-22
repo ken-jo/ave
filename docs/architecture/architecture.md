@@ -3512,9 +3512,13 @@ Both scrubbers in `src/shared/dlp.ts` mask credential query values, signed-URL
 signatures and session tokens, by the credential detector contract in
 [multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md).
 A value ends before the delimiters of the text that carries it, so a scrubbed
-JSON log line in a diagnostics bundle stays one valid object. A quote ends a
-credential value only where it closes an earlier opener before a delimiter, so
-a quote inside the value never exposes the rest of it. An opaque signature is
+JSON log line in a diagnostics bundle stays one valid object. The value is
+masked up to `&` or whitespace. A quote, backtick or `>` ends it earlier only
+where it closes an opener still open before the value (an odd count of that
+quote at the same escape depth, or an unclosed `<`) and a delimiter follows;
+any other quote is masked with the value. The count covers the whole text
+before the value, so an unrelated quote there, such as an apostrophe in
+prose, can open the span that a later quote closes. An opaque signature is
 masked in a signed query, identified by its other parameters, and elsewhere
 only by a digest or mixed-case base64 shape, so a digest option such as
 `?sig=sha256` stays readable. Query syntax is read through up to three
