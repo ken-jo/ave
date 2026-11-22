@@ -277,6 +277,7 @@ it("a rerun's stage that fails before registration settles its child waits after
   const release = deferred<void>();
   const rerunPreparing = deferred<void>();
   const rerunRelease = deferred<void>();
+  const oldLinked = deferred<void>();
   let engines = 0;
   let prepared = false;
   const h = await stageRunHarness({
@@ -285,6 +286,7 @@ it("a rerun's stage that fails before registration settles its child waits after
       const engine = engines++;
       const runs = boardRunState(store);
       return {
+        runScope: { sessionLinked: () => { if (engine === 0) oldLinked.resolve(); }, sessionEnded: () => {}, runEnded: () => {} },
         runs: {
           ...runs,
           update: async (...args: Parameters<typeof runs.update>) => {
@@ -327,10 +329,12 @@ it("a rerun's stage that fails before registration settles its child waits after
     const waits = Promise.allSettled([h.untilSpawned(2, id), h.untilLive(2, id)]);
     await rerunPreparing.promise;
     release.resolve();
-    await h.waitForProgress(event => h.events.indexOf(event) >= rerun && event.stageId === "a" && event.attempt === 1 && event.runSessionId !== undefined);
+    await oldLinked.promise;
     rerunRelease.resolve();
-    await h.waitForProgress(event => h.events.indexOf(event) >= rerun && event.phase === "stage_failed" && event.stageId === "a" && event.attempt === 1);
     await h.drainRunWork();
+    const after = h.events.slice(rerun).filter(event => event.stageId === "a" && event.attempt === 1);
+    expect(after.map(event => event.phase)).toEqual(["executing", "stage_failed"]);
+    expect(after[0].runSessionId).toBeDefined();
     const result = await Promise.race([waits, setImmediate("still pending")]);
     expect(result).toEqual(Array.from({ length: 2 }, () => ({
       status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }),
