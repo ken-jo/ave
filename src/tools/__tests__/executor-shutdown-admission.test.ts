@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import type { PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
 
 const roots: string[] = [];
 const loggers: Array<{ close(): Promise<void> }> = [];
@@ -14,7 +15,7 @@ afterEach(async () => {
 });
 
 /** Each call loads a fresh module graph, so a sealed ledger never leaks into another test. */
-async function freshExecutor(toolCount: number, metaToolNames: string[] = []) {
+async function freshExecutor(toolCount: number, metaToolNames: string[] = [], generationAccess?: PluginRuntimeGenerationAccess) {
   vi.resetModules();
   const ledger = await import("../invocation-ledger.js");
   const { ToolExecutor } = await import("../executor.js");
@@ -23,6 +24,7 @@ async function freshExecutor(toolCount: number, metaToolNames: string[] = []) {
   const { PermissionManager } = await import("../../permissions/permission-manager.js");
   const { AuditLogger } = await import("../../audit/audit-logger.js");
   const { t } = await import("../../i18n/index.js");
+  const { ScriptHookManager } = await import("../../hooks/script-hook-manager.js");
   const root = mkdtempSync(join(tmpdir(), "ave-executor-shutdown-"));
   roots.push(root);
   const manager = new PermissionManager(join(root, "permissions.json"));
@@ -36,7 +38,9 @@ async function freshExecutor(toolCount: number, metaToolNames: string[] = []) {
     registry.register(createDynamicTool({
       name: `queued_probe_${index}`,
       description: "Shutdown admission probe",
-      source: "builtin",
+      ...(generationAccess
+        ? { source: "plugin" as const, pluginId: "probe-plugin", pluginGeneration: { pluginId: "probe-plugin", generationId: "gen-1" } }
+        : { source: "builtin" as const }),
       category: "write",
       isReadOnly: () => false,
       jsonSchema: { type: "object", properties: { value: { type: "string" } } },
@@ -54,7 +58,7 @@ async function freshExecutor(toolCount: number, metaToolNames: string[] = []) {
       execute: async () => ({ output: "unintercepted", isError: false }),
     }));
   }
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, generationAccess && new ScriptHookManager(), audit, undefined, undefined, undefined, generationAccess && (() => generationAccess));
   const rows = (): Array<Record<string, unknown>> => {
     const file = audit.getPermissionAuditLogFile();
     if (!existsSync(file)) return [];
@@ -240,5 +244,37 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(results[0]).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true });
     expect(delivered).toEqual(["tu-queued-0"]);
     expect(ledger.pendingToolInvocationCount()).toBe(0);
+  });
+
+  it("refuses a claimed plugin tool at the seal instead of waiting on a pending generation transition", async () => {
+    let releaseBlocker!: () => void;
+    const blocker = new Promise<void>((resolve) => { releaseBlocker = resolve; });
+    const lease = { generation: { generationId: "gen-1", state: { runtime: {} } }, release: () => {} };
+    // The first call holds the active generation; later calls wait on a transition that never commits.
+    const acquireExact = vi.fn(async () => {
+      if (acquireExact.mock.calls.length === 1) return lease;
+      return new Promise<never>(() => {});
+    });
+    const access = {
+      getActive: () => undefined,
+      isExactAdmitted: () => false,
+      acquire: async () => lease,
+      acquireExact,
+      runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
+    } as unknown as PluginRuntimeGenerationAccess;
+    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses } = await freshExecutor(2, [], access);
+    executes[0].mockImplementationOnce(async () => { await blocker; return "done 0"; });
+    const running = executor.executeAll(toolUses, { sessionId: "sess-generation", permissionContext: userPermissionContext() });
+    await vi.waitFor(() => expect(executes[0]).toHaveBeenCalledOnce(), { timeout: 10_000 });
+    ledger.sealToolInvocations();
+    let rowsAtClose: Array<Record<string, unknown>> = [];
+    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    releaseBlocker();
+    const settled = await Promise.race([join, new Promise((resolve) => { setTimeout(() => resolve("held"), 3_000); })]);
+    expect(settled).toBe(2);
+    expect(acquireExact).toHaveBeenCalledOnce();
+    expect(executes[1]).not.toHaveBeenCalled();
+    expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
+    expect((await running)[1].is_error).toBe(true);
   });
 });
