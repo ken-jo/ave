@@ -241,7 +241,10 @@ describe("OS sandbox release at quit", () => {
       expect(hostExit).not.toHaveBeenCalled();
     } finally {
       finishReset.resolve();
-      try { await stopping; } finally {
+      try {
+        await stopping;
+        expect(reset).toHaveBeenCalledOnce();
+      } finally {
         gracefulDeadline = undefined;
         hostExit.mockReset();
         reset.mockRestore();

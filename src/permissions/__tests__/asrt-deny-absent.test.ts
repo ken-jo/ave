@@ -422,13 +422,14 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   it.each([0, 2])("restores the session ACEs after a pending stamp exits with code %i", async (exitCode) => {
     captureRuntime();
     const workspace = join(root, "reset-stamp");
-    mkdirSync(workspace);
-    const first = join(workspace, "first");
+    const firstParent = join(workspace, "first-parent");
+    mkdirSync(firstParent, { recursive: true });
+    const first = join(firstParent, "first");
     const second = join(workspace, "second");
     const targets = [first, second];
     await initializeAsrtSandbox({ denyRead: targets });
     const initialAcls = new Map<string, denyAcl.WindowsDenyAcl>([
-      [first, { denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false }],
+      [first, { denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0, directory: false }],
       [second, { denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false }],
     ]);
     const nativeAcls = new Map(initialAcls);
@@ -475,6 +476,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       await resetting;
     }
     expect(stampedPaths).toEqual(exitCode === 2 ? targets.slice(0, 1) : targets);
+    expect(readAcl(first).parentMask).toBe(0);
     expect(nativeAcls).toEqual(initialAcls);
     expect(ledger.size).toBe(0);
     expect(await outcome).toMatchObject({
