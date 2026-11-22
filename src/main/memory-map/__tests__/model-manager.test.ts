@@ -26,7 +26,47 @@ async function fixture(body = 'model', namespaceName = '', beforeSave?: () => vo
   const manager = new LocalModelManager({ namespace, files, readPath: () => saved, savePath: path => { beforeSave?.(); saved = path; }, downloadFile: (_, signal) => fetch(`http://127.0.0.1:${port}`, { signal }) });
   return { manager, root, files, saved: () => saved, setSaved: (path: string) => { saved = path; }, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
+async function linkedFixture(beforeSave?: () => void) {
+  const f = await fixture('model', 'via-link/ave/models', beforeSave);
+  try {
+    const realRoot = join(f.root, 'real-root');
+    const parent = join(realRoot, 'ave', 'models', 'multilingual-e5-small');
+    const canonical = join(parent, LOCAL_MODEL_REVISION);
+    await mkdir(canonical, { recursive: true });
+    await writeFile(join(canonical, 'weights.bin'), 'wrong');
+    await symlink(realRoot, join(f.root, 'via-link'), process.platform === 'win32' ? 'junction' : 'dir');
+    const external = join(f.root, 'external');
+    await mkdir(external);
+    await writeFile(join(external, 'weights.bin'), 'model');
+    return { ...f, parent, external };
+  } catch (error) {
+    await f.close();
+    throw error;
+  }
+}
 describe('local model lifecycle', () => {
+  it('reuses a verified recovery slot when the Ave home has a linked ancestor', async () => {
+    const f = await linkedFixture();
+    try {
+      expect(await f.manager.adoptExistingFolder(f.external)).toMatchObject({ status: 'ready' });
+      const recovery = await f.manager.validatedPath();
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      expect(await f.manager.adoptExistingFolder(f.external)).toMatchObject({ status: 'ready' });
+      expect(f.saved()).toBe(recovery);
+      expect((await readdir(f.parent)).sort()).toEqual([LOCAL_MODEL_REVISION, basename(recovery)].sort());
+    } finally { await f.close(); }
+  });
+
+  it('removes an unpublished slot after a save failure under a linked Ave home ancestor', async () => {
+    const f = await linkedFixture(() => { throw new Error('Save failed'); });
+    try {
+      f.setSaved(f.external);
+      expect(await f.manager.adoptExistingFolder(f.external)).toMatchObject({ status: 'failed', error: 'model-download-failed' });
+      expect(f.saved()).toBe(f.external);
+      expect(await readdir(f.parent)).toEqual([LOCAL_MODEL_REVISION]);
+    } finally { await f.close(); }
+  });
+
   it('does not request files on status, and commits only a complete verified download', async () => {
     const f = await fixture();
     try {

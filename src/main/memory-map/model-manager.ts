@@ -222,7 +222,9 @@ export class LocalModelManager {
   private async install(signal: AbortSignal, stage: (name: string, folder: string) => Promise<void>): Promise<void> {
     await this.checkedDirectory(this.namespace.dir);
     await this.checkedDirectory(join(this.namespace.dir, MODEL_SLOT_PARENT));
-    const parent = await this.namespace.childDir(MODEL_SLOT_PARENT);
+    await this.namespace.childDir(MODEL_SLOT_PARENT);
+    const parent = await this.recoveryParent();
+    if (parent === undefined) throw new MemoryModelError('model-integrity-failed');
     const previousRecovery = recoverySlotName(parent, this.options.readPath());
     if (previousRecovery !== undefined) {
       let validated: string | undefined;
