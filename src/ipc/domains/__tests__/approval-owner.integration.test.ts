@@ -1,4 +1,5 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
-import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
@@ -41,8 +42,12 @@ const resources = new PermissionTestResources();
 const cleanup: Array<() => Promise<void>> = [];
 const SESSION_ID = "approval-owner-session";
 
-afterEach(async () => {
+async function closeFixtures() {
   for (const close of cleanup.splice(0)) await close();
+}
+
+afterEach(async () => {
+  await closeFixtures();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   __resetWindowsSandboxSubstrateForTest();
@@ -81,6 +86,10 @@ async function subject(mode: "auto" | "default" = "auto") {
   const auditLog = vi.spyOn(audit, "log");
   const windowA = appWindow(101);
   const windowB = appWindow(202);
+  const firstCard = deferred<ApprovalRequest>();
+  windowA.webContents.send.mockImplementation((channel: string, card: ApprovalRequest) => {
+    if (channel === IPC_APPROVAL_REQUEST) firstCard.resolve(card);
+  });
   let owner: AppWindow | undefined = windowA;
   const gate = new ApprovalGate(
     (sessionId) => sessionId === SESSION_ID && owner ? owner.webContents as unknown as WebContents : null,
@@ -108,6 +117,11 @@ async function subject(mode: "auto" | "default" = "auto") {
   const hooks = new ScriptHookManager();
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks, audit);
   const pending: Promise<unknown>[] = [];
+  const track = <T>(run: Promise<T>): Promise<T> => {
+    pending.push(run);
+    void run.catch(() => undefined);
+    return run;
+  };
   const selectComplete = vi.fn<LlmReviewerProvider["complete"]>(async () => ({
     text: JSON.stringify({ optionId: "o1", confidence: "high", reason: "requested one action" }), tokensIn: 1, tokensOut: 1, costUsd: 0,
   }));
@@ -123,6 +137,7 @@ async function subject(mode: "auto" | "default" = "auto") {
     toolRegistry: registry, getMainWindow: () => windowA, getAppWindows: () => [windowA, windowB],
     getApprovalSentenceSelector: () => selector,
   } as never);
+  const executeAll = (...args: Parameters<ToolExecutor["executeAll"]>) => track(executor.executeAll(...args));
   const pause = async () => {
     level = "high";
     for (let index = 0; index < 3; index += 1) {
@@ -136,18 +151,22 @@ async function subject(mode: "auto" | "default" = "auto") {
     expect(manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   };
   const start = (headless = false) => {
-    const run = executor.executeAll([{ id: randomUUID(), name: "write_probe", input: { path: join(root, "requested.txt") } }], {
+    return executeAll([{ id: randomUUID(), name: "write_probe", input: { path: join(root, "requested.txt") } }], {
       sessionId: SESSION_ID, executionCwd: root,
       permissionContext: userPermissionContext({ additionalDirectories: [root], headless }),
     });
-    pending.push(run);
-    return run;
   };
   const cards = (window: AppWindow): ApprovalRequest[] => window.webContents.send.mock.calls
-    .filter(([channel]) => channel === "ave:approval:request").map(([, card]) => card as ApprovalRequest);
+    .filter(([channel]) => channel === IPC_APPROVAL_REQUEST).map(([, card]) => card as ApprovalRequest);
   const waitForCard = async () => {
-    await vi.waitFor(() => expect(cards(windowA)).toHaveLength(1));
-    return cards(windowA)[0];
+    const card = await Promise.race([
+      firstCard.promise,
+      ...pending.map((run) => run.then(() => {
+        throw new Error("Approval work settled before the owner received its card");
+      })),
+    ]);
+    expect(cards(windowA)).toEqual([card]);
+    return card;
   };
   const holdNextPreToolUse = () => {
     const original = hooks.runPreToolUse.bind(hooks);
@@ -173,11 +192,9 @@ async function subject(mode: "auto" | "default" = "auto") {
       }),
       ...overrides,
     };
-    const result = gate.requestAndWait(request);
-    pending.push(result);
-    return { request, result };
+    return { request, result: track(gate.requestAndWait(request)) };
   };
-  return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executor, execute, complete, selectComplete, pause, start, cards, waitForCard, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
+  return { root, audit, auditLog, windowA, windowB, gate, manager, registry, executeAll, execute, complete, selectComplete, pause, start, cards, waitForCard, holdNextPreToolUse, queueCard, setOwner: (next: AppWindow | undefined) => { owner = next; } };
 }
 
 describe("live native approval ownership", () => {
@@ -210,12 +227,11 @@ describe("live native approval ownership", () => {
       return { output: "approved", isError: false };
     });
     f.registry.register(bash);
-    const running = f.executor.executeAll([{ id: "saved-rule-host", name: "bash",
+    const running = f.executeAll([{ id: "saved-rule-host", name: "bash",
       input: { command: "echo sbon-c2", executionMode: "host", justification: "Verify saved rule" } }], {
       sessionId: SESSION_ID, executionCwd,
       permissionContext: userPermissionContext({ additionalDirectories: [project] }),
     });
-    cleanup.push(async () => { f.gate.disposeAll(); await running; });
     const card = await f.waitForCard();
     const action = scenario.startsWith("project allow") ? "allow" : "deny";
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
@@ -376,14 +392,13 @@ describe("live native approval ownership", () => {
     const bash = new BashTool();
     const execute = vi.spyOn(bash, "execute");
     f.registry.register(bash);
-    const running = f.executor.executeAll([{
+    const running = f.executeAll([{
       id: "prefix-host-action", name: "bash",
       input: { command: "printf prefix-proof", executionMode: "host", justification: "Print one local value", timeoutSeconds: 1 },
     }], {
       sessionId: SESSION_ID, executionCwd: f.root,
       permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
     });
-    cleanup.push(async () => { f.gate.disposeAll(); await running; });
     const card = await f.waitForCard();
     expect(execute).not.toHaveBeenCalled();
     expect(card.shellRule?.persistentAllowed).toBe(true);
@@ -654,5 +669,40 @@ describe("live native approval ownership", () => {
     expect(f.gate.pendingCount).toBe(0);
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it("audits a host denial before closing the fixture with a card still being prepared", async () => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
+    f.registry.register(bash);
+    const askReached = deferred<void>();
+    const releaseAsk = deferred<void>();
+    const appendEntry = f.audit.appendPermissionAuditEntry.bind(f.audit);
+    const append = vi.spyOn(f.audit, "appendPermissionAuditEntry").mockImplementationOnce(async (entry) => {
+      askReached.resolve();
+      await releaseAsk.promise;
+      return appendEntry(entry);
+    });
+    const running = f.executeAll([{
+      id: "host-approval-during-cleanup", name: "bash",
+      input: { command: "printf approval", executionMode: "host", justification: "Check approval cleanup" },
+    }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await askReached.promise;
+    const closing = closeFixtures();
+    releaseAsk.resolve();
+    await closing;
+
+    expect(await running).toMatchObject([{ is_error: true }]);
+    expect(f.cards(f.windowA)).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(await Promise.all(append.mock.results.map(({ value }) => value))).toEqual([
+      expect.objectContaining({ decision: "ask", tool: "bash" }),
+      expect.objectContaining({ decision: "deny", tool: "bash" }),
+    ]);
   });
 });
