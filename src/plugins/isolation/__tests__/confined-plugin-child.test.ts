@@ -2441,6 +2441,7 @@ async function openUnixProbeSession(plugin: ShortRootedPlugin): Promise<UnixProb
 import { connect, Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { unlinkSync } from "node:fs";
+import { PassThrough } from "node:stream";
 const servers = new Set();
 const sockets = new Set();
 let watchdog;
@@ -2484,13 +2485,40 @@ async function run(request) {
     socket.once("error", error => { socket.destroy(); resolve({ ok: false, code: error.code ?? error.name }); });
   });
 }
+// Each host write arrives as a 16-byte ID and a 4-byte length before its payload; credit echoes the ID with the bytes consumed so far.
 const input = new Socket({ fd: ${PLUGIN_CHILD_INPUT_FD}, readable: true, writable: false });
+const payloads = new PassThrough();
+const header = Buffer.alloc(20);
+let headerBytes = 0;
+let remaining = 0;
+let consumed = 0;
 input.on("data", (chunk) => {
-  const credit = Buffer.alloc(5);
-  credit.writeUInt32BE(chunk.length, 1);
-  process.stdout.write(credit);
+  let offset = 0;
+  while (offset < chunk.length) {
+    if (remaining === 0) {
+      const count = Math.min(20 - headerBytes, chunk.length - offset);
+      chunk.copy(header, headerBytes, offset, offset + count);
+      headerBytes += count;
+      offset += count;
+      if (headerBytes < 20) return;
+      headerBytes = 0;
+      consumed = 0;
+      remaining = header.readUInt32BE(16);
+      continue;
+    }
+    const count = Math.min(remaining, chunk.length - offset);
+    payloads.write(chunk.subarray(offset, offset + count));
+    offset += count;
+    remaining -= count;
+    consumed += count;
+    const credit = Buffer.alloc(21);
+    header.copy(credit, 1, 0, 16);
+    credit.writeUInt32BE(consumed, 17);
+    process.stdout.write(credit);
+  }
 });
-for await (const line of createInterface({ input })) {
+input.once("end", () => payloads.end());
+for await (const line of createInterface({ input: payloads })) {
   const request = JSON.parse(line);
   report(request.id, await run(request));
 }
