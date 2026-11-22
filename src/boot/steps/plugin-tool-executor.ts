@@ -335,6 +335,8 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
       const authInvocationEpoch = authInvocation?.epoch;
       if (appOnlyRuntimeInvocation) {
         let releaseAuthTransitionDeferred = false;
+        // Admission ends at handler entry: the bypass has no audit obligation for the join to wait on.
+        const admission = admitToolInvocation(toolName);
         try {
           if (authInvocation && ownerPluginId && ownerGenerationId) {
             const exactGeneration =
@@ -352,9 +354,11 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             toPluginToolInput(payload),
             context,
             authHandlerCeilingMs,
-            authTransitionLease
-              ? () => authTransitionLease.assertAuthorized()
-              : undefined,
+            () => {
+              admission.signal.throwIfAborted();
+              authTransitionLease?.assertAuthorized();
+              admission.settle();
+            },
           );
           if (context.ownerPluginId && context.ownerGenerationId) {
             observePluginAuthResult(
@@ -386,6 +390,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
           }
           throw error;
         } finally {
+          admission.settle();
           if (!releaseAuthTransitionDeferred) {
             authTransitionLease?.release();
           }

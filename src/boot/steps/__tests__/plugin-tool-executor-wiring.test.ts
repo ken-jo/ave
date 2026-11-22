@@ -425,6 +425,33 @@ describe("setupPluginToolExecutor production auth wiring", () => {
       invoke("auth_login", {}, invocationContext()),
     ).rejects.toThrow("plugin operation session is revoked");
   });
+
+  it("refuses a trusted-panel handler whose lease resolves after the shutdown seal", async () => {
+    vi.resetModules();
+    const { setupPluginToolExecutor: setup } = await import("../plugin-tool-executor.js");
+    const ledger = await import("../../../tools/invocation-ledger.js");
+    const ctx = makeContext();
+    const lease = deferred<void>();
+    const handler = vi.fn();
+    mocks.dispatchAppOnlyRuntimeInvocation.mockImplementation(async (...args: unknown[]) => {
+      await lease.promise;
+      (args[5] as (() => void) | undefined)?.();
+      handler();
+      return { refreshed: true };
+    });
+    await setup(ctx);
+    const call = ctx.lateBinding.pluginToolInvokerRef.fn!("panel_refresh", {}, {
+      origin: "ui",
+      ownerPluginId: pluginId,
+      ownerGenerationId: activeGenerationId,
+      appInvocation: { sessionId: "window-1" },
+    });
+    ledger.sealToolInvocations();
+    lease.resolve();
+    await expect(call).rejects.toThrow("application shutdown");
+    expect(handler).not.toHaveBeenCalled();
+    expect(ledger.pendingToolInvocationCount()).toBe(0);
+  });
 });
 
 /** The effective origin, including nested hops, selects interactive versus headless approval handling. */
@@ -519,6 +546,9 @@ describe("setupPluginToolExecutor approval lane by effective chain origin", () =
 });
 
 it("writes a host-shutdown denial for a parked plugin operation grant before audit close", async () => {
+  // Each sealing case simulates its own process-wide ledger.
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
   const { assembleAppServices } = await import("../../assemble-services.js");
   const ctx = makeContext();
   const stop = () => {};
