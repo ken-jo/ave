@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { Writable } from "node:stream";
 import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
@@ -12,9 +13,9 @@ import { derivePluginChildEnvelope } from "../out-of-process-plugin.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
-import { CHILD_LOOPBACK_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from "../child-loopback-link.js";
+import { CHILD_LOOPBACK_TRANSPORT_ARG, CHILD_PRIVATE_STDIO_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from "../child-loopback-link.js";
 import { OUTBOUND_QUEUE_BYTES_MAX } from "../child-stream-multiplex.js";
-import { pacePluginChildInput } from "../plugin-child-credit.js";
+import { pacePluginChildInput, PLUGIN_CHILD_INPUT_FD } from "../plugin-child-credit.js";
 import { SECRET_REDACTED_SENTINEL } from "../host-api-wire.js";
 import {
   emitPluginConfigChange,
@@ -95,15 +96,18 @@ async function spawnPlainChild(
   canTerminate = true,
   transport = "stdio",
 ): Promise<ChildLink & { disconnect(): void }> {
-  const args = transport === "loopback" ? [CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({})] : [];
+  const args = transport === "loopback" ? [CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({})]
+    : transport === "stdio" ? [CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : [];
   const child = spawn(process.execPath, [childEntryPath, ...args], {
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: [transport === "native stdio" ? "pipe" : "ignore", "pipe", "pipe",
+      ...(transport === "stdio" ? ["pipe" as const] : [])],
     // Set ELECTRON_RUN_AS_NODE so the executable acts as Node and exposes no main-process API.
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
   });
   spawnedChildren.add(child);
   child.once("exit", () => spawnedChildren.delete(child));
-  if (!child.stdin || !child.stdout) {
+  const pipe = transport === "stdio" ? child.stdio[PLUGIN_CHILD_INPUT_FD] : child.stdin;
+  if (!child.stdout || (transport !== "loopback" && !(pipe instanceof Writable))) {
     child.kill("SIGKILL");
     throw new Error("the spawned child has no pipes");
   }
@@ -114,7 +118,7 @@ async function spawnPlainChild(
     exited: new Promise((resolve) => child.once("exit", () => resolve("test child exited"))),
     timeoutMs: 10_000,
   }) : undefined;
-  const rawOutput = socket ?? child.stdin;
+  const rawOutput = socket ?? pipe as Writable;
   return {
     ...pacePluginChildInput(socket ?? child.stdout, rawOutput),
     disconnect: () => rawOutput.end(),
@@ -306,11 +310,80 @@ export const createPlugin = async () => {
     expect(readFileSync(marker, "utf8")).toBe("cleaned");
   }, 180_000);
 
+  it.each(["stdio", "loopback", "native stdio"])("exposes only %s stdin observation", async (transport) => {
+    const root = temporaryRoot;
+    if (!root) throw new Error("missing plugin fixture directory");
+    const marker = join(root, "stdin-end.txt");
+    const entryPath = join(root, "stdin-observer.mjs");
+    writeFileSync(entryPath, `import { readSync, writeSync, writeFileSync } from "node:fs";
+import { Worker } from "node:worker_threads";
+export const createPlugin = async () => {
+  const view = process.stdin;
+  let read = null;
+  let writeIsInert = null;
+  if (${JSON.stringify(transport)} !== "native stdio") {
+    read = readSync(0, Buffer.alloc(1));
+    try {
+      writeIsInert = writeSync(0, "inert") === 5;
+    } catch (error) {
+      writeIsInert = error.code === "EBADF";
+    }
+  }
+  const previousWrite = view.write;
+  const writeReplaced = Reflect.set(view, "write", () => { throw new Error("wrong destination"); });
+  if (writeReplaced) Reflect.set(view, "write", previousWrite);
+  const destinationReplaced = Reflect.defineProperty(process, "stdin", { value: {} });
+  let ownerReached = false;
+  const previousPost = Worker.prototype.postMessage;
+  Worker.prototype.postMessage = function (...args) {
+    ownerReached = true;
+    return Reflect.apply(previousPost, this, args);
+  };
+  let seen = false;
+  view.once("data", (chunk) => {
+    seen = chunk.includes("stdin-observation");
+    chunk.fill(0);
+  });
+  view.on("end", () => {
+    setTimeout(() => writeFileSync(${JSON.stringify(marker)}, "ended"), 25);
+  });
+  return { handlers: { probe_changes: () => ({
+    read, writeIsInert, writeReplaced, destinationReplaced, ownerReached,
+    seen, writable: typeof view.write, fd: typeof view.fd,
+  }) } };
+};
+`);
+    const { hostApi } = hostApiFor();
+    const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+    const link = await spawnPlainChild(childEntryPath, false, transport);
+    const instance = await plainSessionFactory({ manifest: MANIFEST, entryPath, childEntryPath, link })({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    await new Promise<void>((resolve, reject) =>
+      link.output.write('{"jsonrpc":"2.0","method":"notifications/stdin-observation","params":{}}\n', (error) => {
+        if (error) reject(error);
+        else resolve();
+      }),
+    );
+    expect(await instance.handlers.probe_changes!()).toEqual({
+      read: transport === "native stdio" ? null : 0,
+      writeIsInert: transport === "native stdio" ? null : true,
+      writeReplaced: false, destinationReplaced: false,
+      ownerReached: false, seen: true, writable: "undefined", fd: "undefined",
+    });
+    await instance.stop?.();
+    expect(readFileSync(marker, "utf8")).toBe("ended");
+  }, 180_000);
+
   it.each([
     ["stdio", "an interval"],
     ["stdio", "a blocked event loop"],
     ["loopback", "an interval"],
     ["loopback", "a blocked event loop"],
+    ["native stdio", "an interval"],
+    ["native stdio", "a blocked event loop"],
   ])(
     "exits after %s host loss with %s",
     async (transport, pluginWork) => {
@@ -375,7 +448,8 @@ export const createPlugin = async () => ({
   );
 
   it.each(["stdio", "loopback"])("paces %s while stalled and delivers beyond the previous queue bound in order", async (transport) => {
-    const root = temporaryRoot!;
+    const root = temporaryRoot;
+    if (!root) throw new Error("missing plugin fixture directory");
     const entryPath = join(root, "pressure-plugin.mjs");
     const frame = Buffer.alloc(1024 * 1024, 0x20);
     const frameCount = Math.ceil(OUTBOUND_QUEUE_BYTES_MAX / frame.length) + 2;
@@ -406,9 +480,10 @@ export const createPlugin = async () => ({
       pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
       userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
     });
-    const child = [...spawnedChildren][0]!;
+    const child = [...spawnedChildren][0];
+    if (!child?.stderr) throw new Error("missing child diagnostics");
     let diagnostics = "";
-    child.stderr!.on("data", (chunk: Buffer) => { diagnostics += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { diagnostics += chunk.toString(); });
     void instance.start().catch(() => undefined);
     await waitFor(() => diagnostics.includes("plugin stalled\n"), "the plugin stall");
     const expected = createHash("sha256");

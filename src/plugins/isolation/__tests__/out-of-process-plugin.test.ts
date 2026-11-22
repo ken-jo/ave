@@ -1157,6 +1157,7 @@ describe("construct negotiates the host protocol", () => {
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough(), stderr = new PassThrough();
     const service = servePluginChild(input, output);
+    input.on("data", (chunk: Buffer) => output.write(pluginChildInputCredit(chunk.length)));
     let finish!: (result: { exitCode: number; timedOut: boolean }) => void;
     const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve) => { finish = resolve; });
     const dispose = vi.fn(async () => {
@@ -1204,6 +1205,7 @@ describe("construct negotiates the host protocol", () => {
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough();
     const service = servePluginChild(input, output);
+    input.on("data", (chunk: Buffer) => output.write(pluginChildInputCredit(chunk.length)));
     // The supervisor already reported exit, so termination begins at attach; disposal stays pending, which keeps
     // the streams up and lets the handshake complete regardless.
     const dispose = vi.fn(() => new Promise<void>(() => {}));
@@ -1540,7 +1542,8 @@ describe("the factory's launch reaches the spawn as decided", () => {
 describe("on Windows a confined child holds a grant on its own directories for exactly its lifetime", () => {
   type FakeChild = EventEmitter & {
     pid: number | undefined;
-    stdin: PassThrough;
+    stdin: null;
+    stdio: Array<PassThrough | null>;
     stdout: PassThrough;
     stderr: PassThrough;
     exitCode: number | null;
@@ -1555,11 +1558,15 @@ describe("on Windows a confined child holds a grant on its own directories for e
       if (own) ownStream(own, pipe);
       return pipe;
     };
+    const input = makePipe();
+    const stdout = makePipe();
+    const stderr = makePipe();
     const child = Object.assign(new EventEmitter(), {
       pid,
-      stdin: makePipe(),
-      stdout: makePipe(),
-      stderr: makePipe(),
+      stdin: null,
+      stdout,
+      stderr,
+      stdio: [null, stdout, stderr, input],
       exitCode: null as number | null,
       signalCode: null as NodeJS.Signals | null,
       kill: vi.fn(),
@@ -2166,8 +2173,9 @@ describe("on Windows a confined child holds a grant on its own directories for e
       });
       const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
       await factory(hostContext(fakeHostApi(), layout.context));
-      const socket = peer!;
-      const child = wrapper!;
+      if (!peer || !wrapper) throw new Error("missing wrapped child or peer");
+      const socket = peer;
+      const child = wrapper;
       vi.useFakeTimers();
       try {
         const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));

@@ -172,6 +172,14 @@ today is a JavaScript `entry`.
 Authors implementing their own transport use the JSON schema directly. The host
 does not maintain a generated TypeScript protocol client.
 
+The JavaScript reference runtime exposes `process.stdin` as a read-only event
+view. Use `on` or `once` to observe `data` (a copy of each received chunk) or
+`end` (host input closed), and `off` to remove a listener. Use `end` for brief
+local cleanup. The view has no writable side or file descriptor. The reference
+runtime reserves its protocol stream for the host bridge. Direct fd 0 access is
+unsupported. It is inert on ordinary reference launches. The native container
+provides its host pipe on fd 0, so use the event view there as well.
+
 ### Loopback OAuth with PKCE
 
 **Available in Ave 0.15.0 with protocol 5.** The example below targets that

@@ -2,6 +2,7 @@ import { Transform, Writable, type Readable } from "node:stream";
 import { FRAME_BYTES_MAX } from "./host-api-wire.js";
 
 export const PLUGIN_CHILD_INPUT_BYTES_MAX = FRAME_BYTES_MAX + 1;
+export const PLUGIN_CHILD_INPUT_FD = 3;
 
 // Raw NUL cannot occur in a JSON frame. The four bytes after it acknowledge consumed input.
 const CREDIT_MARKER = 0;
@@ -82,7 +83,7 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
   input.on("error", () => undefined);
   output.on("error", () => undefined);
   source.on("error", (error: Error) => input.destroy(error));
-  if (source !== sink) sink.on("error", (error: Error) => output.destroy(error));
+  if (!Object.is(source, sink)) sink.on("error", (error: Error) => output.destroy(error));
   source.once("close", () => {
     if (!source.readableEnded) input.destroy();
   });

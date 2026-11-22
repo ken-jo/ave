@@ -58,6 +58,7 @@ vi.mock("../child-loopback-link.js", async (importOriginal) => ({
 
 import { afterQueuedCallbacks, deferred } from "../../../__tests__/support/deferred.js";
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
+import { pluginChildInputCredit } from "../plugin-child-credit.js";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
@@ -84,6 +85,7 @@ function childPipes(): { hostToChild: PassThrough; childToHost: PassThrough } {
   const childToHost = new PassThrough();
   const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
   hostToChild.on("data", (chunk: Buffer) => {
+    childToHost.write(pluginChildInputCredit(chunk.length));
     for (const message of decoder.push(chunk)) {
       if (message.method !== PLUGIN_INSTANCE_METHODS.construct) continue;
       childToHost.write(frameMessage({

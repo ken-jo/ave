@@ -296,11 +296,13 @@ function isProcessEntryModule(): boolean {
   return realpathSync.native(entry) === realpathSync.native(fileURLToPath(import.meta.url));
 }
 
-function serveReferenceChild(transport: PluginChildInputOwner["transport"]): void {
+function serveReferenceChild(mode: Exclude<ChildLaunchMode, { transport: "relay" }>): void {
   const stdout = claimProtocolStdout();
-  const { input, output } = openPluginChildInput(new URL(import.meta.url), transport, stdout);
-  // Expose the bridged stream to plugin stdin listeners, including EOF cleanup.
-  Object.defineProperty(process, "stdin", { get: () => input });
+  const { transport } = mode;
+  const { input, output, stdin } = openPluginChildInput(new URL(import.meta.url), {
+    transport, privateInput: transport === "stdio" && mode.privateInput === true,
+  }, stdout);
+  Object.defineProperty(process, "stdin", { value: stdin, configurable: false, writable: false });
   const service = servePluginChild(input, transport === "stdio" ? stdout : output);
   let hostGone = false;
   const end = (): void => {
@@ -355,5 +357,5 @@ function launchPluginChild(): void {
   if (mode.transport === "loopback") {
     for (const [name, value] of Object.entries(mode.env)) process.env[name] = value;
   }
-  serveReferenceChild(mode.transport);
+  serveReferenceChild(mode);
 }

@@ -10,6 +10,7 @@ import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import { windowsCommandLine } from "../../shared/windows-command-line.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
+import { pacePluginChildInput } from "./plugin-child-credit.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 
@@ -210,7 +211,8 @@ export async function spawnMxcPluginChild(
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
-    return child;
+    const { link } = child;
+    return { ...child, link: { ...link, ...pacePluginChildInput(link.input, link.output) } };
   } catch (error) {
     child.link.terminate(`refused after spawn: ${errorMessage(error)}`);
     try {
