@@ -483,8 +483,10 @@ describe("builtin shell — Windows MXC containers", () => {
   const releaseListenerCleanups: (() => void)[] = [];
   afterEach(() => { for (const cleanup of releaseListenerCleanups.splice(0)) cleanup(); });
 
-  // Fails only the caller's (second) container release; returns its token and HOME.
-  function failCommandContainerRelease(failure: { egressThrows?: Error; launchRejects?: Error }): { token: () => string; home: () => string } {
+  // Fails only the caller's (second) container preparation or release; returns its token and HOME.
+  function failCommandContainerRelease(
+    failure: { egressThrows?: Error; launchRejects?: unknown; prepareRejects?: unknown },
+  ): { token: () => string; home: () => string } {
     let token: string | undefined;
     let home: string | undefined;
     mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string; egressToken: string; filesystem: { allowWrite: string[] } }) => {
@@ -492,6 +494,7 @@ describe("builtin shell — Windows MXC containers", () => {
       if (!parser) {
         token = input.egressToken;
         home = input.filesystem.allowWrite.find((path) => path.includes("ave-mxc-test-home-"));
+        if ("prepareRejects" in failure) throw failure.prepareRejects;
       }
       const rejects = parser ? undefined : failure.launchRejects;
       return {
@@ -611,7 +614,7 @@ describe("builtin shell — Windows MXC containers", () => {
       await expect(runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
         () => executePowerShell(context(identity.toolUseId))))).rejects.toBe(setupError);
       const entry = await logged.promise;
-      expect(entry).toMatchObject({ label: "tool:powershell:mxc", failures: expect.any(Array) });
+      expect(entry).toMatchObject({ label: "tool:powershell:mxc", failures: expect.any(String) });
       rendered = JSON.stringify(entry);
     }
     expect(rendered).toContain(`${observerMessage} at [home]`);
@@ -632,6 +635,108 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
     expect(egressInvocationOwner(container.token())).toBeUndefined();
     expect(existsSync(container.home())).toBe(false);
+  });
+
+  const FAILURE_STAGES = ["preparation", "launch release"] as const;
+  const failAt = (stage: (typeof FAILURE_STAGES)[number], error: unknown) =>
+    failCommandContainerRelease(stage === "preparation" ? { prepareRejects: error } : { launchRejects: error });
+  const failureText = (output: string, stage: (typeof FAILURE_STAGES)[number]) =>
+    stage === "preparation" ? output.replace(/^PowerShell spawn failed: /u, "") : output.split("\nShell resource release failed: ").at(-1);
+
+  function deepAggregate(): Error {
+    let error = new Error("leaf");
+    for (let level = 0; level < 100_000; level++) error = new AggregateError([error], `level ${level}`);
+    return error;
+  }
+
+  function unreadableAggregate(): Error {
+    const aggregate = new AggregateError([], "unreadable");
+    const members = new Proxy([new Error("hidden member")], {
+      get: (target, key, receiver) => {
+        if (key === "0") throw new Error("member read failed");
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    Object.defineProperty(aggregate, "errors", { value: members });
+    return aggregate;
+  }
+
+  // A cut at the redaction window would keep part of this password: the home before it shrinks to a few characters.
+  const STRADDLING = `D:\\Users\\${"n".repeat(4060)} https://deploy:userinfo-secret-example@objects.example/a`;
+  const BOUNDED_FAILURES: ReadonlyArray<readonly [string, () => unknown, string]> = [
+    ["a 1M-character message", () => new Error("x".repeat(1_000_000)), "failure message omitted (1000000 characters)"],
+    ["a credential across the redaction window", () => new Error(STRADDLING), `failure message omitted (${STRADDLING.length} characters)`],
+    ["a 100,000-level aggregate", deepAggregate, "level 99997"],
+    ["a 200,000-member aggregate", () => new AggregateError(new Array(200_000).fill(new Error("member failed")), "wide"),
+      "member failed; member failed; member failed; member failed (+199996 more)"],
+    ["an inner aggregate shared by two members", () => {
+      const inner = new AggregateError([new Error("first"), new Error("second")], "inner");
+      return new AggregateError([inner, inner], "outer");
+    }, "first; second; first; second"],
+    ["an aggregate that contains itself", () => {
+      const loop = new AggregateError([new Error("before")], "loop");
+      loop.errors.push(loop);
+      return loop;
+    }, "before; loop"],
+    ["unreadable aggregate members", unreadableAggregate, "failure details unavailable"],
+  ];
+
+  it.each(FAILURE_STAGES.flatMap((stage) => BOUNDED_FAILURES.map(([name, error, text]) => [stage, name, error, text] as const)))(
+    "bounds a %s failure from %s and still releases egress and HOME",
+    async (stage, _name, error, text) => {
+      bootMxcShells();
+      const container = failAt(stage, error());
+      const result = await executePowerShell(context(`ps-mxc-bounded-${stage}`));
+      expect(result.isError).toBe(true);
+      expect(failureText(result.output, stage)).toBe(text);
+      expect(egressInvocationOwner(container.token())).toBeUndefined();
+      expect(existsSync(container.home())).toBe(false);
+    },
+  );
+
+  it("keeps each failure list within 2 KB when a wide preparation failure meets a failing release", async () => {
+    bootMxcShells();
+    const wide = () => new AggregateError(new Array(10).fill(new Error("\u{1f600}".repeat(2_000))), "wide");
+    const container = failCommandContainerRelease({ prepareRejects: wide(), egressThrows: wide() });
+    const result = await executePowerShell(context("ps-mxc-bounded-worst-case"));
+    const lines = result.output.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^PowerShell spawn failed: .+ \(\+6 more\)$/u);
+    expect(lines[1]).toMatch(/^Shell resource release failed: .+ \(\+6 more\)$/u);
+    for (const line of lines) expect(Buffer.byteLength(line.slice(line.indexOf(": ") + 2))).toBeLessThanOrEqual(2048);
+    expect(existsSync(container.home())).toBe(false);
+  });
+
+  it.each(FAILURE_STAGES)("formats a %s failure only after every release step ran", async (stage) => {
+    bootMxcShells();
+    let atFirstRead: { egressLive: boolean; homeExists: boolean } | undefined;
+    const probe = new Error("probe");
+    Object.defineProperty(probe, "message", {
+      get: () => {
+        atFirstRead ??= { egressLive: egressInvocationOwner(container.token()) !== undefined, homeExists: existsSync(container.home()) };
+        throw new Error("message read failed");
+      },
+    });
+    const container = failAt(stage, probe);
+    const result = await executePowerShell(context(`ps-mxc-format-last-${stage}`));
+    expect(atFirstRead).toEqual({ egressLive: false, homeExists: false });
+    expect(failureText(result.output, stage)).toBe("failure details unavailable");
+    expect(egressInvocationOwner(container.token())).toBeUndefined();
+    expect(existsSync(container.home())).toBe(false);
+  });
+
+  it.each(FAILURE_STAGES)("redacts a signed URL and another account's non-ASCII home in a %s failure", async (stage) => {
+    bootMxcShells();
+    const signature = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
+    failAt(stage, new AggregateError([
+      new Error(`upload to https://objects.example/policy.json?X-Amz-Date=20261122T000000Z&X-Amz-Signature=${signature} failed`),
+      new Error("observer at D:\\Users\\\uc608\uc81c\uacc4\uc815\\observer failed"),
+    ], "two failures"));
+    const result = await executePowerShell(context(`ps-mxc-redacted-${stage}`));
+    expect(failureText(result.output, stage)).toBe(
+      "upload to https://objects.example/policy.json?X-Amz-Date=20261122T000000Z&X-Amz-Signature=[REDACTED:TOKEN] failed; observer at [home]\\observer failed");
+    expect(result.output).not.toContain(signature);
+    expect(result.output).not.toMatch(/[\uac00-\ud7a3]/u);
   });
 
   it("refuses a sandboxed Bash command with the PowerShell guidance instead of running it", async () => {

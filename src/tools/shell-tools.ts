@@ -2342,23 +2342,74 @@ async function annotateSandboxCommandResult(
   };
 }
 
-function shellFailureMessages(error: unknown, seen = new Set<AggregateError>()): string[] {
-  if (error instanceof AggregateError && error.errors.length > 0 && !seen.has(error)) {
-    seen.add(error);
-    return error.errors.flatMap((member: unknown) => shellFailureMessages(member, seen));
-  }
-  return [redactHomePathsInText(scrubDiagnosticSecrets(errorMessage(error)))];
+// Failure text copied into a result or log: at most four messages from up to two aggregate levels, each redacted and cut to 500 bytes.
+// A message too long to redact whole is left out, since a cut could split what a redactor must see whole.
+const SHOWN_FAILURES = 4;
+const FAILURE_DEPTH = 2;
+const FAILURE_SCAN_CHARS = 4096;
+const FAILURE_MESSAGE_BYTES = 500;
+const FAILURE_UNAVAILABLE = "failure details unavailable";
+
+function clipUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes - 3;
+  // Back up to the start of a character; the `…` takes the last three bytes.
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return `${bytes.subarray(0, end).toString("utf8")}…`;
 }
 
-// Every step runs in order even after an earlier one throws or rejects.
+function failureMessage(error: unknown): string {
+  try {
+    const raw: unknown = errorMessage(error);
+    if (typeof raw !== "string") return FAILURE_UNAVAILABLE;
+    if (raw.length > FAILURE_SCAN_CHARS) return `failure message omitted (${raw.length} characters)`;
+    return clipUtf8(redactHomePathsInText(scrubDiagnosticSecrets(raw)), FAILURE_MESSAGE_BYTES);
+  } catch {
+    return FAILURE_UNAVAILABLE;
+  }
+}
+
+function aggregateMembers(error: unknown): readonly unknown[] | undefined {
+  try {
+    const members: unknown = error instanceof AggregateError ? error.errors : undefined;
+    return Array.isArray(members) && members.length > 0 ? members : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Never throws. An aggregate already on the path is shown by its message, so a member shared by two branches still shows in both.
+function shellFailureText(errors: readonly unknown[]): string {
+  try {
+    const shown: string[] = [];
+    let more = 0;
+    const visit = (list: readonly unknown[], ancestors: readonly unknown[]): void => {
+      let index = 0;
+      for (; index < list.length && shown.length < SHOWN_FAILURES; index++) {
+        const error = list[index];
+        const members = ancestors.length < FAILURE_DEPTH && !ancestors.includes(error) ? aggregateMembers(error) : undefined;
+        if (members === undefined) shown.push(failureMessage(error));
+        else visit(members, [...ancestors, error]);
+      }
+      more += list.length - index;
+    };
+    visit(errors, []);
+    return more > 0 ? `${shown.join("; ")} (+${more} more)` : shown.join("; ");
+  } catch {
+    return FAILURE_UNAVAILABLE;
+  }
+}
+
+// Every step runs in order even after an earlier one throws or rejects. Failures come back raw and are formatted only after every step.
 // Only a returned promise is awaited, so leading sync steps stay synchronous.
-async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>): Promise<string[]> {
-  const failures: string[] = [];
+async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>): Promise<unknown[]> {
+  const failures: unknown[] = [];
   for (const step of steps) {
     try {
       const pending = step();
       if (pending instanceof Promise) await pending;
-    } catch (err) { failures.push(...shellFailureMessages(err)); }
+    } catch (err) { failures.push(err); }
   }
   return failures;
 }
@@ -2376,19 +2427,19 @@ async function attachFilesystemBlock(result: SpawnResult, commandId: string, com
 }
 
 // Release failures make the result an error, like an ASRT cleanup failure.
-function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly string[]): T {
+function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly unknown[]): T {
   if (failures.length === 0) return result;
   return carrySandboxBlock(result, {
     ...result,
-    output: `${result.output}\nShell resource release failed: ${failures.join("; ")}`,
+    output: `${result.output}\nShell resource release failed: ${shellFailureText(failures)}`,
     isError: true,
     metadata: { ...result.metadata, sandboxCleanupFailed: true },
   });
 }
 
 // For a release that runs after the result has already settled.
-function logReleaseFailures(label: string, failures: readonly string[]): void {
-  if (failures.length > 0) shellTaskLog.error({ label, failures }, "shell resource release failed after the result settled");
+function logReleaseFailures(label: string, failures: readonly unknown[]): void {
+  if (failures.length > 0) shellTaskLog.error({ label, failures: shellFailureText(failures) }, "shell resource release failed after the result settled");
 }
 
 // A fault inside finalization still settles the spawn, as an error result.
@@ -2540,7 +2591,7 @@ export async function spawnWithSandbox(
     let settled = false;
 
     let lifecycleCleaned = false;
-    const cleanupAfterTermination = async (): Promise<string[]> => {
+    const cleanupAfterTermination = async (): Promise<unknown[]> => {
       if (lifecycleCleaned) return [];
       if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
@@ -3817,7 +3868,7 @@ async function spawnPowerShellWithSandbox(
     }, await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]));
   }
 
-  const releaseSandboxResources = (): Promise<string[]> =>
+  const releaseSandboxResources = (): Promise<unknown[]> =>
     runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup(), () => cleanupAsrtSandboxAfterCommand()]);
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
@@ -3900,7 +3951,7 @@ async function spawnPowerShellWithSandbox(
     let settled = false;
 
     let lifecycleCleaned = false;
-    const cleanupAfterTermination = async (): Promise<string[]> => {
+    const cleanupAfterTermination = async (): Promise<unknown[]> => {
       if (lifecycleCleaned) return [];
       if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
@@ -4056,13 +4107,14 @@ async function spawnPowerShellInMxc(
       exists: existsSync,
     });
   } catch (err) {
+    const released = await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]);
     return withReleaseFailures({
-      output: `PowerShell spawn failed: ${shellFailureMessages(err).join("; ")}`,
+      output: `PowerShell spawn failed: ${shellFailureText([err])}`,
       isError: true,
       metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    }, await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]));
+    }, released);
   }
-  const releaseContainerResources = (): Promise<string[]> =>
+  const releaseContainerResources = (): Promise<unknown[]> =>
     runReleaseSteps([() => sandboxHome.cleanup(), () => launch.release(), () => egress.release()]);
   const [cmd, ...args] = launch.argv;
   if (signal?.aborted || cmd === undefined) {
@@ -4123,7 +4175,7 @@ async function spawnPowerShellInMxc(
     let lifecycleCleaned = false;
     // After wxc-exec exits the container is gone, so the listener can close:
     // nothing is left that could reach its port.
-    const cleanupAfterTermination = async (): Promise<string[]> => {
+    const cleanupAfterTermination = async (): Promise<unknown[]> => {
       if (lifecycleCleaned) return [];
       if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
@@ -4173,7 +4225,7 @@ async function spawnPowerShellInMxc(
         // listener, the egress token and the sandbox HOME here. A running
         // child keeps its timeout and abort watch, and "close" releases its
         // resources (cleanupAfterTermination's guard waits for the exit).
-        let released: string[] = [];
+        let released: unknown[] = [];
         if (child.pid === undefined) {
           lifetime.dispose();
           released = await cleanupAfterTermination();
