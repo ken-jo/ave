@@ -387,6 +387,11 @@ describe("workspace.listDir folder-view entries", () => {
     await listWhilePackagesBecomesLink("home", onTestFinished);
   });
 
+  it("hides that entry within one row when a common ancestor's change time moved", async ({ onTestFinished }) => {
+    // The resolution count regression's case: one recheck of the ancestor's child serves the row.
+    await listWhilePackagesBecomesLink("scratch", onTestFinished);
+  });
+
   it("hides exactly the entries a separate sensitivity check of each one hides", async ({ onTestFinished }) => {
     const scratch = mkdtempSync(join(root, "mixed-"));
     onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
