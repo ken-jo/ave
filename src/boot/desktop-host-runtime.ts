@@ -22,6 +22,7 @@ import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import { getBrowserWorkspaceService } from "../main/browser/browser-workspace-desktop.js";
 import type { BootHost } from "./host-runtime.js";
 import { desktopResourcePath } from "../main/desktop-resource-path.js";
+import { queryWindowsDocumentsDirectory } from "../main/windows-path-kind-launcher.js";
 import { relaunchDesktopHost } from "./desktop-relaunch.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
@@ -34,7 +35,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
   };
   const host: BootHost = {
     userDataPath: app.getPath("userData"),
-    ...(process.platform === "win32" ? { resolveWindowsDocumentsPath: () => app.getPath("documents") } : {}),
+    ...(process.platform === "win32" ? { resolveWindowsDocumentsPath: queryWindowsDocumentsDirectory } : {}),
     resourcePath: desktopResourcePath(projectRoot),
     systemLocale: app.getPreferredSystemLanguages()[0] ?? "en",
     isPackaged: app.isPackaged,

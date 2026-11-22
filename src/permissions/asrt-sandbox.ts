@@ -1860,21 +1860,27 @@ function getDefaultSensitiveDenyPaths(
   return out;
 }
 
-function windowsProfileWriteDenies(homes: readonly string[], resolveDocumentsPath: (() => string) | undefined): string[] {
-  let documents: string | undefined;
-  try {
-    const path = stripExtendedPathPrefix(resolveDocumentsPath?.() ?? "");
-    // Windows filesystem grants require a local drive path.
-    if (/^[a-z]:[\\/]/i.test(path) && !/[\0*?:]/.test(path.slice(2))) documents = win32.normalize(path);
-  } catch {
-    // Keep the default locations covered when the known folder is unavailable.
+const WINDOWS_PROFILE_WRITE_FLOOR_ERROR = "Windows profile write floor could not establish the Documents path";
+
+function windowsProfileWriteDenies(homes: readonly string[], resolveDocumentsPath: (() => string) | undefined) {
+  const roots = homes.map(home => win32.join(home, "Documents"));
+  let bounded = true;
+  if (resolveDocumentsPath !== undefined) {
+    try {
+      const path = stripExtendedPathPrefix(resolveDocumentsPath());
+      if (/^[a-z]:[\\/]/i.test(path) && !/[\0\r\n*?:]/.test(path.slice(2))) roots.push(win32.normalize(path));
+      // Direct UNC paths cannot be reached by local filesystem grants.
+      else if (!isUncPath(path)) bounded = false;
+    } catch {
+      bounded = false;
+    }
   }
-  const roots = documents === undefined ? homes.map(home => win32.join(home, "Documents")) : [documents];
-  return roots.flatMap(root => ["WindowsPowerShell", "PowerShell"].flatMap(engine =>
+  const paths = roots.flatMap(root => ["WindowsPowerShell", "PowerShell"].flatMap(engine =>
     ["profile.ps1", "Microsoft.PowerShell_profile.ps1"].flatMap(name => {
       const path = win32.join(root, engine, name);
       return [path, stripExtendedPathPrefix(resolvePathForPolicy(path))];
     })));
+  return { paths, bounded };
 }
 
 // The write floor overrides write grants and includes sensitive stores, saved conversations and persistence/re-exec paths, including config, shell startup and scheduler files; reading secrets alone does not prevent sandbox escape through later execution.
@@ -1883,8 +1889,15 @@ export function getDefaultSensitiveWriteDenyPaths(
   userDataDir = _baseTrustedSettings?.userDataDir,
   resolveDocumentsPath = _baseTrustedSettings?.resolveWindowsDocumentsPath,
 ): string[] {
+  const floor = buildSensitiveWriteFloor(userDataDir, resolveDocumentsPath);
+  if (!floor.bounded) throw new Error(WINDOWS_PROFILE_WRITE_FLOOR_ERROR);
+  return floor.paths;
+}
+
+function buildSensitiveWriteFloor(userDataDir: string | undefined, resolveDocumentsPath: (() => string) | undefined) {
   const homes = sensitiveDenyHomes();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
+  const profiles = process.platform === "win32" ? windowsProfileWriteDenies(homes, resolveDocumentsPath) : undefined;
   // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
   const homeWritePersistence = homes.flatMap((home) => [
     // POSIX shell startup files — a write here re-executes on the next shell
@@ -1905,7 +1918,7 @@ export function getDefaultSensitiveWriteDenyPaths(
   ]);
   const writePersistence = [
     ...hostScriptWriteDenyPaths(),
-    ...(process.platform === "win32" ? [...srtWinPrivateDirectories(), ...windowsProfileWriteDenies(homes, resolveDocumentsPath)] : []),
+    ...(profiles === undefined ? [] : [...srtWinPrivateDirectories(), ...profiles.paths]),
     ...homeWritePersistence,
     // Deny cron persistence paths because later scheduler execution escapes the sandbox.
     ...POSIX_CRON_DENIES,
@@ -1922,7 +1935,7 @@ export function getDefaultSensitiveWriteDenyPaths(
       out.push(p);
     }
   }
-  return out;
+  return { paths: out, bounded: profiles?.bounded ?? true };
 }
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
@@ -1977,9 +1990,12 @@ export function buildSandboxConfig(
     }
   }
   // denyWrite floor: same boot-level belt as denyRead for callers that do not supply per-command filesystem.denyWrite. Per-command wraps still restate this SOT because ASRT's customConfig filesystem section replaces the shared arrays, but the session config now has a real persistence-vector floor too.
-  const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(trustedSettings.userDataDir, trustedSettings.resolveWindowsDocumentsPath);
+  const writeFloor = buildSensitiveWriteFloor(trustedSettings.userDataDir, trustedSettings.resolveWindowsDocumentsPath);
+  const sensitiveDenyWrite = writeFloor.paths;
+  if (!writeFloor.bounded && liveGrants.allowWrite?.length) throw new Error(WINDOWS_PROFILE_WRITE_FLOOR_ERROR);
+  const requestedWrite = admittedWindowsPolicies.get(trustedSettings)?.allowWrite ?? trustedSettings.allowWrite ?? [];
   const mandatory = buildMandatorySandboxWritePolicy(
-    admittedWindowsPolicies.get(trustedSettings)?.allowWrite ?? trustedSettings.allowWrite ?? [],
+    writeFloor.bounded ? requestedWrite : [],
     trustedSettings.userDataDir,
     sensitiveDenyWrite,
     sensitiveDenyWrite.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),

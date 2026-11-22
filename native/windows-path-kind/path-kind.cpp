@@ -17,6 +17,11 @@
 // other failure as a broken helper, never as a classification.
 #define _WIN32_WINNT 0x0A00
 #include <windows.h>
+#include <shlobj.h>
+
+#pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "Ole32.lib")
+#pragma comment(lib, "Uuid.lib")
 
 #include <cstdio>
 #include <cstring>
@@ -75,6 +80,20 @@ int print_system_directory() {
   }
 }
 
+int print_documents_directory() {
+  const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(initialized)) return 4;
+  PWSTR directory = nullptr;
+  const HRESULT found = SHGetKnownFolderPath(FOLDERID_Documents, KF_FLAG_DONT_VERIFY, nullptr, &directory);
+  int result = 4;
+  if (SUCCEEDED(found) && directory != nullptr && directory[0] != L'\0') {
+    result = write_utf8(directory) ? 0 : 3;
+  }
+  CoTaskMemFree(directory);
+  CoUninitialize();
+  return result;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
@@ -83,6 +102,7 @@ int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
     return print_system_directory();
   }
+  if (argc == 2 && std::wstring(argv[1]) == L"--documents-directory") return print_documents_directory();
   if (argc >= 2 && (std::wstring(argv[1]) == L"--pin" || std::wstring(argv[1]) == L"--dacl")) return print_path_facts(argc, argv);
   if (argc >= 2 && std::wstring(argv[1]) == L"--deny-acls") return print_deny_acls(argc, argv);
   if (argc >= 2 && std::wstring(argv[1]).rfind(L"--dir-", 0) == 0) return dir_ops::run(argc, argv);

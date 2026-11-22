@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -25,6 +25,13 @@ export function resolveWindowsPathKindHelper(): string {
     throw new Error(`Windows folder classifier is missing: ${binary}. Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. ${REPAIR}`);
   }
   return binary;
+}
+
+export function queryWindowsDocumentsDirectory(): string {
+  const bytes = execFileSync(resolveWindowsPathKindHelper(), ["--documents-directory"], {
+    windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBuffer: 128 * 1024,
+  });
+  return decodeWindowsNativeReply(bytes).replace(/\r?\n$/u, "");
 }
 
 // QueryDosDeviceW opens nothing on the drive; no-mapping is a classification, while helper failure is a broken-install error.

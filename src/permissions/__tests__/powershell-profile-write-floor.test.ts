@@ -7,6 +7,9 @@ import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWri
 import { rankMxcFilesystem } from "../mxc-windows.js";
 
 const ENGINES = ["WindowsPowerShell", "PowerShell"];
+const profilesIn = (documents: string): string[] => ENGINES.flatMap(engine => [
+  join(documents, engine, "profile.ps1"), join(documents, engine, "Microsoft.PowerShell_profile.ps1"),
+]);
 
 vi.mock("node:os", async importOriginal => ({
   ...await importOriginal<typeof import("node:os")>(),
@@ -89,16 +92,38 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     expect(grants.readwrite).toContain(adjacent);
   });
 
+  it("protects a configured Documents directory before it exists", () => {
+    const parent = join(root, "configured");
+    const missingDocuments = join(parent, "Documents");
+    const defaultDocuments = join(root, "alice", "Documents");
+    mkdirSync(parent);
+    mkdirSync(defaultDocuments);
+    const config = buildSandboxConfig({
+      allowWrite: [parent, defaultDocuments], resolveWindowsDocumentsPath: () => missingDocuments,
+      windows: { externalConfinement: true },
+    });
+
+    expect(config.filesystem.allowWrite).toContainEqual(expect.objectContaining({ path: parent, literal: true }));
+    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining([...profilesIn(missingDocuments), ...profilesIn(defaultDocuments)]));
+  });
+
   it.each([
     { reason: "lookup error", resolveDocumentsPath: () => { throw new Error("Documents lookup failed"); } },
     { reason: "empty result", resolveDocumentsPath: () => "" },
-    { reason: "network location outside local grants", resolveDocumentsPath: () => "\\\\server\\share\\Documents" },
-  ])("protects default profile locations after a $reason", ({ resolveDocumentsPath }) => {
-    const home = join(root, "alice");
-    const denyWrite = getDefaultSensitiveWriteDenyPaths(undefined, resolveDocumentsPath);
+  ])("withholds writes and protects default locations after a $reason", ({ resolveDocumentsPath }) => {
+    const defaultDocuments = join(root, "alice", "Documents");
+    mkdirSync(defaultDocuments);
+    const config = buildSandboxConfig({
+      allowWrite: [join(root, "relocated"), defaultDocuments], resolveWindowsDocumentsPath: resolveDocumentsPath,
+      windows: { externalConfinement: true },
+    });
 
-    expect(denyWrite).toEqual(expect.arrayContaining(ENGINES.flatMap(engine => [
-      join(home, "Documents", engine, "profile.ps1"), join(home, "Documents", engine, "Microsoft.PowerShell_profile.ps1"),
-    ])));
+    expect(config.filesystem.allowWrite).toEqual([]);
+    expect(config.filesystem.denyWrite).toEqual(expect.arrayContaining(profilesIn(defaultDocuments)));
+  });
+
+  it("protects default profile locations when Documents is outside local grants", () => {
+    const denyWrite = getDefaultSensitiveWriteDenyPaths(undefined, () => "\\\\server\\share\\Documents");
+    expect(denyWrite).toEqual(expect.arrayContaining(profilesIn(join(root, "alice", "Documents"))));
   });
 });
