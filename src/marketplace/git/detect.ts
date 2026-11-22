@@ -3,12 +3,11 @@
  * a missing toolchain as "no git there", so probing never pops a dialog. */
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
-import { posix } from "node:path";
+import { access, stat } from "node:fs/promises";
 import type { GitRuntimeStatus } from "../../shared/git-runtime.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { buildHostGitArgs } from "../../shared/host-git.js";
-import { findInstallerGit, type InstallerGitInstall } from "./installer-git.js";
+import { DARWIN_CLT_PROBE, DARWIN_GIT_SHIM, findInstallerGit, type InstallerGitInstall, systemGitCandidates } from "../../shared/host-git-executable.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
 
 export interface GitExecutable {
@@ -33,6 +32,7 @@ export interface GitDetectionDeps {
   platform: NodeJS.Platform;
   /** The PATH value to search, usually `process.env.PATH`. */
   searchPath: string | undefined;
+  pathExt?: string;
   isExecutableFile(path: string): Promise<boolean>;
   /** Output of `<path> --version`, or null when it cannot be run. */
   readVersion(path: string): Promise<string | null>;
@@ -41,41 +41,14 @@ export interface GitDetectionDeps {
   findInstallerGit(): Promise<InstallerGitInstall | null>;
 }
 
-const DARWIN_CLT_SHIM = "/usr/bin/git";
-
-function wellKnownLocations(platform: NodeJS.Platform): string[] {
-  if (platform === "win32") return ["C:\\Program Files\\Git\\cmd\\git.exe"];
-  if (platform === "darwin") return ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"];
-  return ["/usr/bin/git", "/usr/local/bin/git"];
-}
-
-export function systemGitCandidates(platform: NodeJS.Platform, searchPath: string | undefined): string[] {
-  const binary = platform === "win32" ? "git.exe" : "git";
-  const sep = platform === "win32" ? ";" : ":";
-  const fromPath = (searchPath ?? "")
-    .split(sep)
-    .map((entry) => entry.trim().replace(/^"(.*)"$/u, "$1"))
-    .filter((entry) => entry.length > 0 && (platform === "win32" ? /^[A-Za-z]:[\\/]/u.test(entry) : entry.startsWith("/")))
-    .map((entry) => (platform === "win32" ? `${entry.replace(/[\\/]+$/u, "")}\\${binary}` : posix.join(entry, binary)));
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const candidate of [...fromPath, ...wellKnownLocations(platform)]) {
-    const key = platform === "win32" ? candidate.toLowerCase() : candidate;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(candidate);
-  }
-  return out;
-}
-
 async function findSystemGit(
   deps: GitDetectionDeps,
 ): Promise<{ git: GitExecutable | null; tooOld: TooOldGit | null }> {
   let tooOld: TooOldGit | null = null;
   let cltChecked: boolean | null = null;
-  for (const candidate of systemGitCandidates(deps.platform, deps.searchPath)) {
+  for (const candidate of systemGitCandidates(deps.platform, deps.searchPath, deps.pathExt)) {
     if (!(await deps.isExecutableFile(candidate))) continue;
-    if (deps.platform === "darwin" && candidate === DARWIN_CLT_SHIM) {
+    if (deps.platform === "darwin" && candidate === DARWIN_GIT_SHIM) {
       cltChecked ??= await deps.commandLineToolsInstalled();
       if (!cltChecked) continue;
     }
@@ -142,10 +115,11 @@ export function nodeGitDetectionDeps(installerRoot: string | null): GitDetection
   return {
     platform: process.platform,
     searchPath: process.env.PATH,
+    pathExt: process.env.PATHEXT,
     async isExecutableFile(path) {
       try {
         await access(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-        return true;
+        return (await stat(path)).isFile();
       } catch {
         return false;
       }
@@ -155,7 +129,7 @@ export function nodeGitDetectionDeps(installerRoot: string | null): GitDetection
       return result.ok ? result.stdout : null;
     },
     async commandLineToolsInstalled() {
-      return (await execFileText("/usr/bin/xcode-select", ["-p"])).ok;
+      return (await execFileText(DARWIN_CLT_PROBE, ["-p"])).ok;
     },
     findInstallerGit: async () => findInstallerGit(installerRoot),
   };

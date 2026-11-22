@@ -2,20 +2,23 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 
-const gitCalls = vi.hoisted(() => ({ checkIgnore: 0 }));
+const gitCalls = vi.hoisted(() => ({ checkIgnore: [] as string[], intercept: false }));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     execFileSync: ((file: string, args: readonly string[], options: object) => {
-      if (file === "git" && args.includes("check-ignore")) gitCalls.checkIgnore += 1;
+      if (args.includes("check-ignore")) {
+        gitCalls.checkIgnore.push(file);
+        if (gitCalls.intercept) return Buffer.alloc(0);
+      }
       return actual.execFileSync(file, args, options);
     }) as typeof actual.execFileSync,
   };
 });
 import { mkdtempSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import {
   discoverDirectoryInstructions,
@@ -34,6 +37,36 @@ function initIgnoredBuild(project: string, patterns: string, layout: "nested" | 
   else mkdirSync(join(project, "build"));
   writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
 }
+
+it("uses an absolute host Git path even with an executable in the project and relative PATH entries", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ave-git-path-"));
+  const project = join(root, "project");
+  const host = join(root, "host-bin");
+  const binary = process.platform === "win32" ? "git.exe" : "git";
+  const cwd = process.cwd();
+  try {
+    mkdirSync(join(project, ".git"), { recursive: true });
+    mkdirSync(join(project, "build"));
+    mkdirSync(host);
+    writeFileSync(join(project, "build", "AGENTS.md"), "fixture instructions");
+    writeFileSync(join(project, binary), "project sentinel", { mode: 0o755 });
+    writeFileSync(join(host, binary), "host fixture", { mode: 0o755 });
+    process.chdir(project);
+    vi.stubEnv("PATH", ["", ".", "", host].join(delimiter));
+    vi.stubEnv("PATHEXT", ".CMD;.BAT;.EXE");
+    vi.resetModules();
+    gitCalls.intercept = true;
+    const before = gitCalls.checkIgnore.length;
+    const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
+    expect(discover(project, join("build", "x.js"), new Set())).toEqual([]);
+    expect(gitCalls.checkIgnore.slice(before)).toEqual([join(host, binary)]);
+  } finally {
+    gitCalls.intercept = false;
+    vi.unstubAllEnvs();
+    process.chdir(cwd);
+    await cleanupTmpDir(root);
+  }
+});
 
 describe("discoverProjectAgentsMd", () => {
   let root: string;
@@ -376,32 +409,48 @@ describe("discoverDirectoryInstructions", () => {
   it("asks git once per path for the session's repeated touches", () => {
     initIgnoredBuild(project, "build/\n", "recursive");
     const verdicts = new Map<string, boolean>();
-    const before = gitCalls.checkIgnore;
+    const before = gitCalls.checkIgnore.length;
     for (let touch = 0; touch < 3; touch++) {
       expect(discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
     }
-    expect(gitCalls.checkIgnore - before).toBe(1);
+    expect(gitCalls.checkIgnore.length - before).toBe(1);
     // A new session starts with an empty memo and asks again.
     verdicts.clear();
     discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
-    expect(gitCalls.checkIgnore - before).toBe(2);
+    expect(gitCalls.checkIgnore.length - before).toBe(2);
+  });
+
+  it("does not spawn a Git process when host Git is unavailable", async () => {
+    initIgnoredBuild(project, "build/\n", "plain");
+    vi.resetModules();
+    vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: () => null }));
+    try {
+      const before = gitCalls.checkIgnore.length;
+      const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
+      const layers = discover(project, join("build", "x.js"), new Set());
+      expect(layers.map((layer) => layer.content)).toEqual(["generated rule"]);
+      expect(gitCalls.checkIgnore).toHaveLength(before);
+    } finally {
+      vi.doUnmock("../../shared/host-git-executable.js");
+      vi.resetModules();
+    }
   });
 
   it("defers workspace Git queries until sandbox cleanup releases the hold without caching the temporary answer", () => {
     initIgnoredBuild(project, "build/\n", "plain");
     const verdicts = new Map<string, boolean>();
-    const before = gitCalls.checkIgnore;
+    const before = gitCalls.checkIgnore.length;
     const release = holdSandboxGitWrites([join(project, "build")]);
     try {
       const deferred = discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts });
       expect(deferred.map((layer) => layer.content)).toEqual(["generated rule"]);
-      expect(gitCalls.checkIgnore).toBe(before);
+      expect(gitCalls.checkIgnore).toHaveLength(before);
       expect(verdicts.size).toBe(0);
     } finally {
       release();
     }
     expect(discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
-    expect(gitCalls.checkIgnore - before).toBe(1);
+    expect(gitCalls.checkIgnore.length - before).toBe(1);
     expect([...verdicts.values()]).toEqual([true]);
   });
 });

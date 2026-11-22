@@ -1,16 +1,31 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { delimiter, join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   detectGitRuntime,
   type GitDetectionDeps,
   gitRuntimeStatus,
   nodeGitDetectionDeps,
-  systemGitCandidates,
 } from "../detect.js";
-import type { InstallerGitInstall } from "../installer-git.js";
+import { type InstallerGitInstall, systemGitCandidates } from "../../../shared/host-git-executable.js";
 import { parseGitVersion } from "../git-version.js";
+
+const probe = vi.hoisted(() => ({ paths: [] as string[], intercept: false }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    execFile: ((file: string, args: string[], options: object, callback: (error: Error | null, stdout: string) => void) => {
+      if (probe.intercept) {
+        probe.paths.push(file);
+        callback(null, "git version 2.50.1");
+        return;
+      }
+      return actual.execFile(file, args, options, callback);
+    }) as typeof actual.execFile,
+  };
+});
 
 describe("parseGitVersion", () => {
   it.each([
@@ -39,6 +54,13 @@ describe("systemGitCandidates", () => {
       "C:\\Tools\\Git\\cmd\\git.exe",
       "C:\\Program Files\\Git\\cmd\\git.exe",
     ]);
+  });
+
+  it("uses only the native executable extension when searching Windows PATH", () => {
+    const path = ";;.;bin;C:drive-relative;\\root-relative;C:\\Tools\\Git\\cmd";
+    const fallback = "C:\\Program Files\\Git\\cmd\\git.exe";
+    expect(systemGitCandidates("win32", path, ".CMD;.BAT;.eXe")).toEqual(["C:\\Tools\\Git\\cmd\\git.exe", fallback]);
+    expect(systemGitCandidates("win32", path, ".CMD;.BAT")).toEqual([fallback]);
   });
 });
 
@@ -149,6 +171,25 @@ describe("detectGitRuntime with real executables", () => {
     dir = mkdtempSync(join(tmpdir(), "ave-fake-git-"));
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("probes the absolute host Git path from PATH", async () => {
+    const bin = join(dir, "host");
+    const path = join(bin, process.platform === "win32" ? "git.exe" : "git");
+    mkdirSync(bin);
+    writeFileSync(path, "fixture executable", { mode: 0o755 });
+    const deps = nodeGitDetectionDeps(null);
+    probe.intercept = true;
+    try {
+      const searchPath = ["", ".", "project/bin", bin].join(delimiter);
+      expect(await detectGitRuntime({ ...deps, searchPath, pathExt: ".CMD;.BAT;.EXE" })).toMatchObject({
+        state: "ready",
+        git: { kind: "system", path },
+      });
+      expect(probe.paths).toEqual([path]);
+    } finally {
+      probe.intercept = false;
+    }
+  });
 
   it.skipIf(process.platform === "win32")("refuses 2.45.0 and accepts 2.45.1", async () => {
     const old = fakeGit("old", "2.45.0");

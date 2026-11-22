@@ -2,7 +2,7 @@
 import { app, ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { scrubMarketplaceStrings } from "../../marketplace/errors.js";
-import { installerGitRoot } from "../../marketplace/git/installer-git.js";
+import { installerGitRoot } from "../../shared/host-git-executable.js";
 import { detectGitRuntime, gitRuntimeStatus, nodeGitDetectionDeps } from "../../marketplace/git/detect.js";
 import type { GitRuntimeResult, GitRuntimeStatus } from "../../shared/git-runtime.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";

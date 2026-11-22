@@ -27,7 +27,7 @@ import { MarketplaceError, scrubMarketplaceErrorDetail, scrubMarketplaceStrings 
 import { MarketplaceGit } from "../../marketplace/git/marketplace-git.js";
 import { migrateLegacyContent } from "../../marketplace/migration/legacy-content.js";
 import { clearKeptArtifacts, createArtifactCache, resolveKeepArtifacts } from "../../marketplace/resolve/artifact-cache.js";
-import { installerGitRoot } from "../../marketplace/git/installer-git.js";
+import { installerGitRoot } from "../../shared/host-git-executable.js";
 import { updateHistoryStore } from "../../marketplace/updates/history.js";
 import { NetworkGate } from "../../marketplace/net/network-gate.js";
 import { createPinnedFetch } from "../../marketplace/net/pinned-fetch.js";

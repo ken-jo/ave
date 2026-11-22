@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findInstallerGit, installerGitRoot, installerRunnerOptions } from "../installer-git.js";
+import { findInstallerGit, installerGitRoot } from "../../../shared/host-git-executable.js";
+import { installerRunnerOptions } from "../installer-git.js";
 
 let dir: string;
 

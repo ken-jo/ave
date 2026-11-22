@@ -4,9 +4,12 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { isSensitivePath } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { buildHostGitArgs, isHostGitWorkspaceAvailable } from "../shared/host-git.js";
+import { resolveHostGit } from "../shared/host-git-executable.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 interface ProjectAgentsMdLayer {
   /** Path of the instruction file relative to the repository root. */
@@ -242,14 +245,16 @@ function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts 
 function askGitIgnores(repoRoot: string, path: string): boolean {
   if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   if (!hasGitEntry(repoRoot)) return false;
+  const git = resolveHostGit(isConfigured() ? getIsPackaged() : isPackagedElectronProcess());
+  if (git === null) return false;
   const env = { ...process.env };
   // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
   try {
-    execFileSync("git", buildHostGitArgs(["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)]), {
+    execFileSync(git, buildHostGitArgs(["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)]), {
       windowsHide: true,
       stdio: "ignore",
-      timeout: 2_000,
+      timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs,
       env,
     });
     return true; // exit 0: ignored
