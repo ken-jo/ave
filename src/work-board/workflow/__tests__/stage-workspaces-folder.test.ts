@@ -637,6 +637,21 @@ describe("folder stage workspaces", () => {
     expect(tree(handle.out)).toEqual([]);
   });
 
+  it("outputs spelled with a letter's compatibility sign, or composed and decomposed, are one path where names fold case", async () => {
+    const nameReader: NameReader = { list: directory => readdirSync(directory), id: path => `1:${path.toLowerCase()}` };
+    const handle = await start(project, { nameReader });
+    // The Kelvin sign and the letter k; an e with its acute accent as one character and as two.
+    const pairs: [string, string][] = [["K.md", "k.md"], ["é.md", "é.md"]];
+    for (const [index, [first, second]] of pairs.entries()) {
+      const stages = [`a${index}`, `b${index}`];
+      write(await stageRoot(handle, stages[0] as string), first, "one\n");
+      write(await stageRoot(handle, stages[1] as string), second, "other\n");
+      for (const stage of stages) expect(await handle.provider.seal(handle.run, stage)).toEqual({ ok: true });
+      expect(await handle.provider.integrate(handle.run, `j${index}`, stages), first).toMatchObject({ ok: false, conflict: { reason: "same-path", files: [{ path: first, stageIds: stages }] } });
+    }
+    expect(tree(handle.out)).toEqual([]);
+  });
+
   it("collects outputs into _out and reports the same path from two stages as a conflict", async () => {
     const handle = await start(project);
     const first = await stageRoot(handle, "s1", { outputs: ["report/**"] });
