@@ -1,5 +1,6 @@
 import net from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
@@ -38,6 +39,7 @@ import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 
 const WS = String.raw`C:\work\repo`;
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+registerMxcShellLaunchAdmissionFixture("tok");
 const INPUT = {
   egressToken: "tok",
   commandLine: "cmd.exe /d /c echo hi",

@@ -11,6 +11,8 @@ import {
   type InvocationProxyListener,
 } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
+import { egressInvocationOwner } from "../permissions/egress-invocations.js";
+import { detectMxcShellCapability } from "../permissions/sandbox-capability.js";
 import {
   buildMxcShellRequest,
   openMxcRequestTransport,
@@ -65,6 +67,16 @@ function listDirectory(directory: string): MxcDirectoryEntry[] {
 const MXC_TIMEOUT_MARGIN_MS = 30_000;
 
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): Promise<MxcShellLaunch> {
+  const capability = detectMxcShellCapability();
+  if (capability === undefined) throw new Error("Container shell route is unavailable");
+  const assertAdmission = (): void => {
+    if (detectMxcShellCapability() !== capability) throw new Error("Container shell route is unavailable");
+    const owner = egressInvocationOwner(input.egressToken);
+    if (owner?.kind !== "shell" || owner.requiresListener !== true) {
+      throw new Error("Container egress requires a live shell invocation");
+    }
+  };
+  assertAdmission();
   const wxcExec = await resolveHostWxcExecPath();
   if (!input.exists(wxcExec)) {
     throw new Error(`Microsoft Execution Containers launcher is missing: ${wxcExec}`);
@@ -77,8 +89,21 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
     allowWrite: input.filesystem.allowWrite.filter((path) => !insideBoundary(path)),
     protectedFloor: getProtectedReadDenyFloor(),
   }, input.exists, input.list ?? listDirectory);
+  assertAdmission();
   let listener: InvocationProxyListener | undefined;
+  let transport: Awaited<ReturnType<typeof openMxcRequestTransport>> | undefined;
   const relay = await openHostEgressListener(input.egressToken);
+  const release = async (): Promise<void> => {
+    try {
+      await transport?.release();
+    } finally {
+      try {
+        await listener?.close();
+      } finally {
+        await relay.close();
+      }
+    }
+  };
   try {
     listener = await openInvocationProxyListener({
       upstream: () => ({ host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }),
@@ -96,30 +121,16 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
       proxyUrl: listener.url,
       timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
     });
-    const opened = listener;
-    const transport = await openMxcRequestTransport(request, wxcExec);
+    transport = await openMxcRequestTransport(request, wxcExec);
+    assertAdmission();
     return {
       argv: [wxcExec, ...transport.args],
-      proxyPort: opened.port,
+      proxyPort: listener.port,
       bindChild: transport.bindChild,
-      release: async () => {
-        try {
-          await transport.release();
-        } finally {
-          try {
-            await opened.close();
-          } finally {
-            await relay.close();
-          }
-        }
-      },
+      release,
     };
   } catch (error) {
-    try {
-      await listener?.close();
-    } finally {
-      await relay.close();
-    }
+    await release();
     throw error;
   }
 }

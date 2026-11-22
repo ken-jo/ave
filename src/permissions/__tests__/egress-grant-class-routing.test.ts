@@ -17,6 +17,7 @@ import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, Sand
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
 import { DEFAULT_UPSTREAM_PROXY, type UpstreamProxySettings } from "../../shared/upstream-proxy.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
@@ -215,6 +216,8 @@ describe.runIf(process.platform === "win32")("egress grant class on Windows with
 });
 
 describe.runIf(process.platform === "win32")("egress grant class through the container lane", () => {
+  registerMxcShellLaunchAdmissionFixture(TOKEN, "fedcba9876543210fedcba9876543210");
+
   async function initializeProxy(callback: SandboxAskCallback) {
     await SandboxManager.initialize(proxyOnlyConfig(), callback);
   }
@@ -260,7 +263,7 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
   });
 
   it("records a listener refusal in invocation output and network denials", async () => {
-    const invocation = openEgressInvocation(SHELL);
+    const invocation = openEgressInvocation({ ...SHELL, requiresListener: true });
     const approval = approvalFixture("shell", invocation.token);
     const rows: (SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressFailureAuditEntry)[] = [];
     const store = SandboxManager.getSandboxViolationStore();

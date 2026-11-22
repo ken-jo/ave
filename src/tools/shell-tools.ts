@@ -4015,7 +4015,7 @@ async function spawnPowerShellInMxc(
   const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path);
   const egress = openEgressInvocation(
-    { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
+    { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },
     signal ? { abortSignal: signal } : {},
   );
   let launch: MxcShellLaunch;

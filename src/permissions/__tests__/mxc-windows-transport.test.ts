@@ -9,6 +9,7 @@ import * as policyHome from "../../shared/policy-home.js";
 import * as hostEgress from "../egress-host-listener.js";
 import { getProtectedReadDenyFloor, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { requireMxcPolicyPipeHelper, requireMxcPrerequisites } from "../../__tests__/support/mxc-capability.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import * as policyPipe from "../mxc-policy-pipe.js";
 import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -86,6 +87,8 @@ describe("request size admission", () => {
 });
 
 describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () => {
+  registerMxcShellLaunchAdmissionFixture("length");
+
   it("withholds policy bytes from an impostor before delivering to the bound child", async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     requireMxcPolicyPipeHelper(context.skip);

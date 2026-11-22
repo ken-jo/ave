@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { resetFixtureAcls } from "../../__tests__/support/fixture-owner.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
@@ -20,6 +21,8 @@ import * as policyHome from "../../shared/policy-home.js";
 
 // Exercise native filesystem policy directly so argument analysis cannot cause the refusal.
 describe.runIf(process.platform === "win32")("container control-file write boundary", () => {
+  registerMxcShellLaunchAdmissionFixture();
+
   it("blocks opaque control writes and permits ordinary repository commits", {
     timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs,
   }, async (testContext) => {
@@ -48,7 +51,7 @@ describe.runIf(process.platform === "win32")("container control-file write bound
         join(project, ".bash_profile"), join(configuration, "future-control.json")];
       for (const target of targets) if (!existsSync(target)) writeFileSync(target, "original");
       async function run(command: string, target: string): Promise<{ status: number | null; output: string }> {
-        const invocation = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined,
+        const invocation = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
           context: { sessionId: undefined, workspaceRoot: project, approvalSurface: "unavailable" } });
         const policy = buildMandatorySandboxWritePolicy([project, configuration]);
         let launch: Awaited<ReturnType<typeof prepareMxcShellLaunch>> | undefined;

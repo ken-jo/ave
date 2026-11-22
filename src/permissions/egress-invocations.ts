@@ -7,6 +7,8 @@ import type { EffectGateContext } from "./effect-enforcement.js";
 export interface ShellEgressOwner {
   readonly kind: "shell";
   readonly toolName: "bash" | "powershell";
+  /** The invocation was issued for a shell route with its own egress listener. */
+  readonly requiresListener?: true;
   // The provider's tool-use id, when the call carried one. Never the key.
   readonly toolUseId: string | undefined;
   // What an egress ask for this call needs to know. Required: a shell call that cannot say whether anyone can answer is treated as one nobody can.

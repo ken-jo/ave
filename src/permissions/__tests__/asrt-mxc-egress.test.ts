@@ -34,9 +34,8 @@ vi.mock("../mxc-windows.js", async (importOriginal) => ({
 
 const DESTINATION = "http://egress.example.invalid:8443/";
 const PUBLIC_ADDRESS = "203.0.113.10";
-const policyFixture = useTempDirs("contained-shell-egress-");
-
 describe.skipIf(process.platform !== "win32")("contained shell egress identity", () => {
+  const policyFixture = useTempDirs("contained-shell-egress-");
   const cleanups: Array<() => void | Promise<void>> = [];
   let invocation: EgressInvocation;
   let observed: Array<{ context: SandboxAskContext | undefined; decision: unknown }>;
@@ -84,7 +83,9 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
 
   function sharedAuthorization(token: string): string {
     const label = `srt.${Buffer.from(token).toString("base64")}`;
-    return `Basic ${Buffer.from(`${label}:${SandboxManager.getProxyAuthToken()!}`).toString("base64")}`;
+    const credential = SandboxManager.getProxyAuthToken();
+    if (credential === undefined) throw new Error("Shared proxy did not issue a credential");
+    return `Basic ${Buffer.from(`${label}:${credential}`).toString("base64")}`;
   }
 
   function request(port: number, authorization: string, method: "GET" | "CONNECT" = "GET", destination = DESTINATION): Promise<number | undefined> {
@@ -119,7 +120,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     observed = [];
     requester = async () => ({ allow: true, scope: "once" });
     invocation = openInvocation({
-      kind: "shell", toolName: "powershell", toolUseId: "contained-call",
+      kind: "shell", toolName: "powershell", toolUseId: "contained-call", requiresListener: true,
       context: { sessionId: "conversation", workspaceRoot: dir, approvalSurface: "interactive" },
     });
     setShellSandboxRequestedAtBoot(true);
@@ -222,9 +223,9 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     const open = vi.spyOn(hostListener, "openHostEgressListener");
     const launch = await launchShell();
     const relay = await open.mock.results[0]?.value;
-    expect(relay?.port).toBeTypeOf("number");
+    if (relay === undefined) throw new Error("Shell launch did not open a relay");
     const worker = openInvocation({ kind: "worker", role: "worker", pluginId: "fixture" });
-    for (const port of [launch.proxyPort, relay!.port]) {
+    for (const port of [launch.proxyPort, relay.port]) {
       expect(await request(sharedPort, sharedAuthorization(worker.token), method, `http://127.0.0.1:${port}/`)).toBe(403);
     }
     expect(observed).toEqual([]);
@@ -247,18 +248,23 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
   });
 
   it("does not prepare a contained shell listener for an unsettled substrate, unknown token or worker token", async () => {
+    const open = vi.spyOn(hostListener, "openHostEgressListener");
     const worker = openInvocation({ kind: "worker", role: "worker", pluginId: "fixture" });
     recordSubstrate("checking");
     await expect.soft(launchShell().then(() => undefined)).rejects.toThrow(/unavailable/u);
     recordSubstrate("available");
     await expect.soft(launchShell("f".repeat(32)).then(() => undefined)).rejects.toThrow(/live shell invocation/u);
     await expect.soft(launchShell(worker.token).then(() => undefined)).rejects.toThrow(/live shell invocation/u);
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("refuses a mismatched relay credential, proxy hops and an ended invocation before approval", async () => {
     const relay = await openRelay();
+    const sameInvocation = await openRelay();
     const other = openInvocation(invocation.owner);
     const otherRelay = await openRelay(other.token);
+    expect(await request(relay.port, sameInvocation.proxyAuthorization)).toBe(407);
+    expect(await request(sameInvocation.port, relay.proxyAuthorization)).toBe(407);
     expect(await request(relay.port, otherRelay.proxyAuthorization)).toBe(407);
     for (const port of [sharedPort, relay.port]) {
       expect(await request(relay.port, relay.proxyAuthorization, "GET", `http://127.0.0.1:${port}/`)).toBe(403);

@@ -6,6 +6,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { SandboxManager, type SandboxAskCallback, type ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
 import {
   closeAllEgressConnections,
@@ -175,6 +176,8 @@ async function initialize(upstreamRouter: ParentProxyRouter, callback: SandboxAs
 
 // The host relay and proxy-only initialization are Windows-only contracts.
 describe.skipIf(process.platform !== "win32")("container proxy regression coverage", () => {
+  registerMxcShellLaunchAdmissionFixture(TOKEN_A, TOKEN_B);
+
   it("excludes the configured range from relay binds and frontend registration", async () => {
     await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } });
     const forced = forceFirstPort(42008);

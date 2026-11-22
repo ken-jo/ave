@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor, initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
@@ -13,6 +14,8 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
 
 describe.runIf(process.platform === "win32")("native pipe policy lifetime", () => {
+  registerMxcShellLaunchAdmissionFixture();
+
   it("keeps a pipe-launched command alive beyond the delivery deadline", async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     await requireMxcCapability(context.skip);
@@ -26,7 +29,7 @@ describe.runIf(process.platform === "win32")("native pipe policy lifetime", () =
     let egress: ReturnType<typeof openEgressInvocation> | undefined;
     try {
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
-      egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined,
+      egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
         context: { sessionId: undefined, workspaceRoot: directory, approvalSurface: "unavailable" } });
       const executable = resolveTrustedPowerShellExecutable()!.executable;
       launch = await prepareMxcShellLaunch({

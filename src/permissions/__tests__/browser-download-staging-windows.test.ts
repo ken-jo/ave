@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isolation-guard.js";
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { claimRunDir, STALE_RUN_DIR_AGE_MS, sweepStaleRunDirs } from "../../__tests__/support/test-run-dirs.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
@@ -550,6 +551,8 @@ function containerAccess(filesystem: { readwritePaths: string[]; readonlyPaths: 
 }
 
 type ContainerFilesystem = { readwritePaths: string[]; readonlyPaths: string[]; deniedPaths: string[] };
+
+registerMxcShellLaunchAdmissionFixture("staging-probe");
 
 /** The filesystem a container shell command is launched with, composed as `spawnPowerShellInMxc` composes it (the shell read
  * policy, the write floor and the mandatory write policy), ranked and encoded by the real launch preparation, and decoded from the
