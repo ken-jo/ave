@@ -5,8 +5,7 @@ import { join } from "node:path";
 import type {
   RunAuthoritySource, StageJoin, TemplateScope, TemplateStage, TemplateVersion, TemplateVersionPin, WorkItemStageRun,
 } from "../../../shared/workflow-template-types.js";
-import type { WorkBoardRunEvent, WorkItemResolved } from "../../../shared/work-board-types.js";
-import { workBoardOriginSessionId } from "../../../shared/work-board-types.js";
+import { type WorkBoardRunEvent, type WorkItemResolved, workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import type { SubAgentRunner, SubAgentSpawnInput, SubAgentSpawnResult } from "../../../engine/subagent-runner.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { WorkflowTemplateStore } from "../../../main/workflow-template-store.js";
@@ -94,6 +93,7 @@ export async function stageRunHarness(opts: {
   const childChanges = new Set<(failure?: ChildWaitFailure) => void>();
   const progressChanges = new Set<() => void>();
   let closed = false;
+  let lastRequestedOrigin: string | undefined;
 
   function failChildWaits(reason: string, originSessionId?: string): void {
     const error = new Error(`Child wait ended: ${reason}`);
@@ -188,7 +188,8 @@ export async function stageRunHarness(opts: {
             const prior = events.findLast(candidate => candidate.itemId === itemId && candidate.phase === "executing"
               && (candidate.stageId === undefined ? candidate.message === undefined : candidate.stageId === stageId && candidate.attempt === attempt));
             if (!prior?.runSessionId) failChildWaits(`${phase}: ${event.message ?? "child did not register"}`, workBoardOriginSessionId(itemId));
-          } else if (phase === "done" || phase === "denied" || phase === "cancelled" || phase === "error") {
+          } else if (event.message !== "restored" && event.reasonCode !== "run-end-confirmed"
+            && (phase === "done" || phase === "denied" || phase === "cancelled" || phase === "error")) {
             failChildWaits(`${phase}: ${event.reasonCode ?? event.message ?? "run ended"}`, workBoardOriginSessionId(itemId));
           }
         }
@@ -202,6 +203,7 @@ export async function stageRunHarness(opts: {
       async runItem(...args: Parameters<typeof current.runItem>) {
         const [itemId] = args;
         const origin = workBoardOriginSessionId(itemId);
+        if (engine === wrapped) lastRequestedOrigin = origin;
         const first = children.length;
         try {
           const result = await current.runItem(...args);
@@ -227,6 +229,7 @@ export async function stageRunHarness(opts: {
   /** The next process over the same files: a new board store and a new engine. The first engine is left as a crash leaves it. */
   const makeEngine = () => {
     failChildWaits("engine replaced");
+    lastRequestedOrigin = undefined;
     board = new WorkBoardStore(boardPath);
     runWork = observeEngineWork();
     engine = engineOn(board);
@@ -310,9 +313,11 @@ export async function stageRunHarness(opts: {
     if (closed) return Promise.reject(new Error("Child wait ended: harness cleaned up"));
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
-    const origin = itemId === undefined ? undefined : workBoardOriginSessionId(itemId);
+    // Aggregate counts still follow the most recent start for failure signals.
+    let origin = itemId === undefined ? lastRequestedOrigin : workBoardOriginSessionId(itemId);
     return new Promise((resolve, reject) => {
       function changed(failure?: ChildWaitFailure) {
+        origin ??= lastRequestedOrigin;
         if (origin !== undefined && failure?.originSessionId !== undefined && origin !== failure.originSessionId) return;
         const value = get();
         if (value === undefined && !failure) return;
