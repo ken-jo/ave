@@ -127,10 +127,11 @@ export function beginToolInvocationAuditShutdown(): void {
   shutdownStarted = true;
 }
 
-export function sealToolInvocations(): void {
+/** `startQueued: false` drops the claims for a caller that closes the audit in the same tick; their tools meet the closed gate. */
+export function sealToolInvocations({ startQueued = true }: { startQueued?: boolean } = {}): void {
   beginToolInvocationAuditShutdown();
   shutdown.abort(new HostExitAbortError());
-  const claims = [...sealClaims];
+  const claims = startQueued ? [...sealClaims] : [];
   sealClaims.clear();
   for (const claim of claims) {
     try { claim(); } catch (error) { recordToolInvocationAuditFailure(error); }
