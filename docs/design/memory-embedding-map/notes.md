@@ -145,6 +145,9 @@ toward the inference request limit. The host commits the snapshot and cache
 together after all batches and projection succeed. A failed build leaves the
 previously stored snapshot and cache intact.
 
+If `realpath` fails for the saved model path with an error other than `ENOENT`,
+the model-slot sweep skips every slot and deletes nothing.
+
 The batch JSON budget is 194,900,080 bytes. It covers 4,000 uncached managed
 notes at the 120 UTF-16 unit title and 8,000 unit body limits. The worst-case
 JSON encoding uses six bytes per unit, plus two bytes for the escaped newline,

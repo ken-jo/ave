@@ -235,6 +235,7 @@ export class LocalModelManager {
       for (const path of [this.options.readPath(), preservePath]) {
         if (!path) continue;
         protectedPaths.push(path);
+        // A non-ENOENT realpath failure skips the sweep before any deletion.
         try { protectedPaths.push(await realpath(path)); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       }

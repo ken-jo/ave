@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { lstat, mkdtemp, mkdir, writeFile, open, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, writeFile, open, readFile, readdir, realpath, rm, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +10,7 @@ import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return { ...actual, rm: vi.fn(actual.rm) };
+  return { ...actual, realpath: vi.fn(actual.realpath), rm: vi.fn(actual.rm) };
 });
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -96,6 +96,30 @@ describe('local model lifecycle', () => {
       expect(await f.manager.validatedPath()).toBe(canonical);
       expect((await readdir(parent)).sort()).toEqual([LOCAL_MODEL_REVISION, basename(busy)].sort());
       expect(log).toHaveBeenCalledWith('[memory-map] Could not clean up a model slot', 'EBUSY');
+    } finally { log.mockRestore(); await f.close(); }
+  });
+  it('skips all slot deletion when the saved path cannot be resolved with ENOTDIR or EACCES', async () => {
+    const f = await fixture();
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const parent = join(f.root, 'multilingual-e5-small');
+      const saved = join(parent, `${LOCAL_MODEL_REVISION}-11111111-1111-4111-8111-111111111111`);
+      const recovery = join(parent, `${LOCAL_MODEL_REVISION}-22222222-2222-4222-8222-222222222222`);
+      const staging = join(parent, `${LOCAL_MODEL_REVISION}.tmp-33333333-3333-4333-8333-333333333333`);
+      const slots = [join(parent, LOCAL_MODEL_REVISION), saved, recovery, staging];
+      for (const slot of slots) await mkdir(slot, { recursive: true });
+      f.setSaved(saved);
+      const { realpath: resolvePath } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      for (const code of ['ENOTDIR', 'EACCES']) {
+        await vi.mocked(realpath).withImplementation(async (path, options) => {
+          if (path === saved) throw Object.assign(new Error('Saved path resolution failed'), { code });
+          return resolvePath(path, options);
+        }, async () => {
+          expect(await f.manager.adoptExistingFolder(join(f.root, 'missing-model'))).toMatchObject({ status: 'failed', error: 'model-integrity-failed' });
+        });
+        expect((await readdir(parent)).sort()).toEqual(slots.map(slot => basename(slot)).sort());
+        expect(log).toHaveBeenCalledWith('[memory-map] Could not clean up a model slot', code);
+      }
     } finally { log.mockRestore(); await f.close(); }
   });
 
