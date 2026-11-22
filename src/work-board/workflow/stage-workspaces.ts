@@ -6,7 +6,7 @@ import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } 
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
-import { type NameReader, plainFolderIgnore } from "./folder-ignore.js";
+import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import { holdDir, type NodeId, type OwnedDir, OwnedFsError, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
@@ -675,14 +675,24 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       return dir;
     };
     const next = new Map(Object.entries(file.out));
+    // Where the output folder's names fold case, two paths that differ by case alone are one file: the run folder's own entries tell.
+    const folds = projectFoldsCase(at.run.path, options.nameReader) === true;
+    const spelled = new Map([...next.keys()].map(path => [folds ? path.toLowerCase() : path, path]));
     const contested = new Map<string, Set<string>>();
     const copies: { stageId: string; path: string; sha256: string; size: number }[] = [];
     for (const stageId of stageIds) {
       const entry = file.stages[stageId] as StageEntry;
       for (const item of entry.manifest ?? []) {
-        const held = next.get(item.path);
-        if (held === undefined || held.sha256 === item.sha256) {
-          if (held === undefined) { next.set(item.path, { sha256: item.sha256, size: item.size, stageId }); copies.push({ stageId, ...item }); }
+        const folded = folds ? item.path.toLowerCase() : item.path;
+        const known = spelled.get(folded) ?? item.path;
+        const held = next.get(known);
+        if (held === undefined || (known === item.path && held.sha256 === item.sha256)) {
+          if (held === undefined) { next.set(item.path, { sha256: item.sha256, size: item.size, stageId }); spelled.set(folded, item.path); copies.push({ stageId, ...item }); }
+          continue;
+        }
+        if (known !== item.path) {
+          // The same file under another spelling: two answers for one name, whatever each holds.
+          contested.set(known, (contested.get(known) ?? new Set([held.stageId])).add(stageId));
           continue;
         }
         // A stage may replace exactly the content it was seeded with; any other difference is two answers for one path.

@@ -607,6 +607,23 @@ describe("folder stage workspaces", () => {
     expect(tree(await stageRoot(handle, "s2", fromFirst))).toEqual(["plan.md"]);
   });
 
+  it("two stages' outputs that differ by case alone are one path where the output folder's names fold case", async () => {
+    const handle = await start(project);
+    write(await stageRoot(handle, "s1"), "Report.md", "from s1\n");
+    write(await stageRoot(handle, "s2"), "report.md", "from s2\n");
+    expect(await handle.provider.seal(handle.run, "s1")).toEqual({ ok: true });
+    expect(await handle.provider.seal(handle.run, "s2")).toEqual({ ok: true });
+    const folds = diskId(join(dirname(handle.out), basename(handle.out).toUpperCase())) === diskId(handle.out);
+    const joined = await handle.provider.integrate(handle.run, "j1", ["s1", "s2"]);
+    if (!folds) {
+      expect(joined).toEqual({ ok: true });
+      expect(tree(handle.out)).toEqual(["Report.md", "report.md"]);
+      return;
+    }
+    expect(joined).toMatchObject({ ok: false, conflict: { reason: "same-path", files: [{ path: "Report.md", stageIds: ["s1", "s2"] }] } });
+    expect(tree(handle.out)).toEqual([]);
+  });
+
   it("collects outputs into _out and reports the same path from two stages as a conflict", async () => {
     const handle = await start(project);
     const first = await stageRoot(handle, "s1", { outputs: ["report/**"] });
