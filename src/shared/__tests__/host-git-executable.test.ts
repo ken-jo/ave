@@ -59,7 +59,7 @@ describe("resolveHostGit", () => {
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary)]);
   });
 
-  it("ignores relative and empty PATH entries and caches a refusal when no Git exists", async () => {
+  it("ignores relative and empty PATH entries and discovers an executable after a miss", async () => {
     vi.stubEnv("PATH", ["", ".", "project/bin", "", " "].join(delimiter));
     vi.mocked(accessSync).mockImplementation(() => { throw new Error("missing"); });
     const { resolveHostGit, systemGitCandidates } = await import("../host-git-executable.js");
@@ -68,9 +68,11 @@ describe("resolveHostGit", () => {
     const fallbacks = systemGitCandidates(process.platform, undefined);
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual(fallbacks);
     vi.stubEnv("PATH", host);
-    vi.mocked(accessSync).mockReset();
     expect(resolveHostGit({ packaged: false })).toBeNull();
-    expect(accessSync).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+    vi.mocked(accessSync).mockReset();
+    vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    expect(resolveHostGit({ packaged: false })).toBe(join(host, binary));
   });
 
   it("rejects Windows UNC and device PATH entries before filesystem probes", async () => {

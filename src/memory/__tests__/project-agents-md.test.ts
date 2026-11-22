@@ -496,17 +496,25 @@ describe("discoverDirectoryInstructions", () => {
     expect(gitCalls.checkIgnore.length - before).toBe(2);
   });
 
-  it("does not spawn a Git process when host Git is unavailable", async () => {
+  it("does not query Git while unavailable and checks again for the same path when it appears", async () => {
     initIgnoredBuild(project, "build/\n", "plain");
+    const resolve = vi.fn().mockReturnValue(null);
     vi.resetModules();
-    vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: () => null }));
+    vi.doMock("../../shared/host-git-executable.js", () => ({ resolveHostGit: resolve }));
     try {
       const before = gitCalls.checkIgnore.length;
       const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
-      const layers = discover(project, join("build", "x.js"), new Set());
+      const opts = { gitIgnoreVerdicts: new Map<string, boolean>() };
+      const layers = discover(project, join("build", "x.js"), new Set(), opts);
       expect(layers.map((layer) => layer.content)).toEqual(["generated rule"]);
       expect(gitCalls.checkIgnore).toHaveLength(before);
+      const fixtureGit = join(project, "fixture-git");
+      resolve.mockReturnValue(fixtureGit);
+      gitCalls.intercept = true;
+      expect(discover(project, join("build", "x.js"), new Set(), opts)).toEqual([]);
+      expect(gitCalls.checkIgnore.slice(before)).toEqual([fixtureGit]);
     } finally {
+      gitCalls.intercept = false;
       vi.doUnmock("../../shared/host-git-executable.js");
       vi.resetModules();
     }

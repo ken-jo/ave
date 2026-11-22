@@ -236,17 +236,17 @@ function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts 
   const known = verdicts?.get(key);
   if (known !== undefined) return known;
   const verdict = askGitIgnores(repoRoot, path);
-  verdicts?.set(key, verdict);
-  return verdict;
+  if (verdict !== undefined) verdicts?.set(key, verdict);
+  return verdict ?? false;
 }
 
 /** Whether git reports `path` as ignored in the repository at `repoRoot`. A tracked file is never reported. Any failure to ask
- * (no git, not a repository) reads as "not ignored": the nested-repository and `node_modules` stops still hold without git. */
-function askGitIgnores(repoRoot: string, path: string): boolean {
-  if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
+ * reads as "not ignored". A missing executable is not a verdict, so the session can pick up a new Git installation. */
+function askGitIgnores(repoRoot: string, path: string): boolean | undefined {
+  if (!isHostGitWorkspaceAvailable(repoRoot)) return undefined;
   if (!hasGitEntry(repoRoot)) return false;
   const git = resolveHostGit({ packaged: isConfigured() ? getIsPackaged() : isPackagedElectronProcess() });
-  if (git === null) return false;
+  if (git === null) return undefined;
   const env = { ...process.env };
   // Inherited Git settings can redirect the query. Windows matches environment names without case.
   const gitVariable = process.platform === "win32" ? /^GIT_/iu : /^GIT_/u;

@@ -121,9 +121,9 @@ function canRunInstallerGit(path: string): boolean {
   }
 }
 
-let hostGitPath: string | null | undefined;
+let hostGitPath: string | undefined;
 
-/** Verified calls require a protected installation. Discovery caches its own result. */
+/** Verified calls require a protected installation. Discovery caches a selected executable and checks again after a miss. */
 export function resolveHostGit(policy: "verified" | { packaged: boolean }): string | null {
   if (policy === "verified") {
     const candidates = VERIFIED_GIT_INSTALLATIONS[process.platform];
@@ -133,7 +133,7 @@ export function resolveHostGit(policy: "verified" | { packaged: boolean }): stri
     const bundled = findInstallerGit(installerGitRoot(policy.packaged));
     hostGitPath = bundled !== null && canRunInstallerGit(bundled.path)
       ? bundled.path
-      : systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit) ?? null;
+      : systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit);
   }
-  return hostGitPath;
+  return hostGitPath ?? null;
 }
