@@ -191,7 +191,7 @@ interface HomeForm {
   marker: string;
   /** The first group is a root kept before the marker. */
   keep?: boolean;
-  /** Every match contains this root word, so text without it skips the form. */
+  /** Every match contains this root word, so text without it skips the form. The test is a substring test: a word such as `homepage` still runs the form. */
   root?: RegExp;
 }
 
