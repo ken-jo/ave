@@ -1,6 +1,6 @@
 import { write } from "node:fs";
 import { Socket } from "node:net";
-import { Writable } from "node:stream";
+import { Writable, type Duplex } from "node:stream";
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import { errorMessage } from "../../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -146,19 +146,40 @@ export async function ownPluginChildInput({ transport, queuedBytes, privateInput
       acceptTimeoutMs: 60_000,
       handshakeTimeoutMs: 10_000,
     });
+  watchPluginChildInput(input, port, queuedBytes);
+}
+
+interface PluginChildInputControl {
+  schedule(callback: () => void, delayMs: number): void;
+  forceExit(): void;
+  report(reason: string): void;
+}
+
+const inputControl: PluginChildInputControl = {
+  schedule(callback, delayMs) { setTimeout(callback, delayMs); },
+  forceExit() { process.kill(process.pid, "SIGKILL"); },
+  report(reason) { write(2, `[plugin-child] ${reason}\n`, () => undefined); },
+};
+
+export function watchPluginChildInput(
+  input: Duplex,
+  port: MessagePort,
+  queuedBytes: Int32Array,
+  control: PluginChildInputControl = inputControl,
+): void {
   let lost = false;
   const handleLoss = (): void => {
     if (lost) return;
     lost = true;
     // This timer runs even if plugin code never returns control to its event loop.
-    setTimeout(() => process.kill(process.pid, "SIGKILL"), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2);
+    control.schedule(control.forceExit, TOOL_TIMEOUT_POLICY.pluginChildHostLossMs);
     port.postMessage(null);
     input.destroy();
   };
   input.once("end", handleLoss);
   const fail = (reason: string): void => {
     handleLoss();
-    write(2, `[plugin-child] ${reason}\n`, () => undefined);
+    control.report(reason);
   };
   input.once("error", (error) => fail(`channel error: ${errorMessage(error)}`));
   input.once("close", handleLoss);
@@ -170,6 +191,7 @@ export async function ownPluginChildInput({ transport, queuedBytes, privateInput
     });
   });
   input.on("data", (chunk: Buffer) => {
+    if (lost) return;
     // A valid host waits for consumption of its current write. The owner can always read through to EOF.
     if (Atomics.add(queuedBytes, 0, chunk.byteLength) + chunk.byteLength > PLUGIN_CHILD_INPUT_BYTES_MAX) {
       fail("host input exceeded the credit window");
