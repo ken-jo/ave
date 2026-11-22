@@ -77,7 +77,7 @@ describe("authenticated interpreter archive staging", () => {
     if (mirror === null) throw new Error("Interpreter mirror was not prepared");
     const env = { ...process.env, UV_PYTHON_INSTALL_MIRROR: mirror, UV_CACHE_DIR: join(root, "cache"),
       UV_PYTHON_INSTALL_DIR: join(root, "python"), UV_PYTHON_CACHE_DIR: join(root, "archives") };
-    const result = spawnSync(uv, ["python", "install", PYTHON_VERSION], { env, encoding: "utf8", windowsHide: true });
+    const result = spawnSync(uv, ["python", "install", PYTHON_VERSION, "--no-bin", "--no-registry"], { env, encoding: "utf8", windowsHide: true });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/Hash mismatch[\s\S]*Expected:\s+[0-9a-f]{64}/);
     expect(readdirSync(join(root, "python")).filter((name) => name.startsWith("cpython-"))).toEqual([]);

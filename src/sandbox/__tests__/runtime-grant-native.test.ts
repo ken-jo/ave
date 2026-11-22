@@ -123,7 +123,7 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
       UV_PYTHON_CACHE_DIR: process.env.UV_PYTHON_CACHE_DIR ?? join(env, "python-archives"),
       ...(process.env.AVE_PYTHON_DOWNLOAD_MIRROR ? { UV_PYTHON_INSTALL_MIRROR: process.env.AVE_PYTHON_DOWNLOAD_MIRROR } : {}),
       UV_PYTHON_PREFERENCE: "only-managed", UV_NO_PROGRESS: "1" };
-    execFileSync(uv, ["python", "install", PYTHON_VERSION], { env: uvEnv, windowsHide: true, stdio: "pipe" });
+    execFileSync(uv, ["python", "install", PYTHON_VERSION, "--no-bin", "--no-registry"], { env: uvEnv, windowsHide: true, stdio: "pipe" });
     execFileSync(uv, ["venv", join(env, "venv"), "--python", PYTHON_VERSION], { env: uvEnv, windowsHide: true, stdio: "pipe" });
     const python = join(env, "venv", "Scripts", "python.exe");
     // A pip-synced package, as provisioning installs one from the plugin lockfile: uv links it into site-packages from the uv cache

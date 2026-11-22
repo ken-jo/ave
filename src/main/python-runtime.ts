@@ -222,6 +222,17 @@ export class PythonRuntimeBootstrapper {
     return bootstrapper.ensureReady(mainWindow);
   }
 
+  private async hasExistingVenv(venvDir: string): Promise<boolean> {
+    try {
+      // Clearing resolves links at the target. Only rebuild a venv in the runtime directory itself.
+      if (!(await fs.lstat(venvDir)).isDirectory()) return false;
+      return (await fs.lstat(path.join(venvDir, "pyvenv.cfg"))).isFile();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
   private async checkSentinel(): Promise<boolean> {
     try {
       await fs.access(this.readySentinelPath());
@@ -282,16 +293,17 @@ export class PythonRuntimeBootstrapper {
     this.sendStatus({ phase: "installing-python", msg: t("be_pythonRuntime.statusInstallingPython"), pct: 10 });
     await this.log("[python-runtime] Step 1: uv python install 3.12");
     const uvVersion = await this.rebuildStep(() => this.runUv(uvBin, [
-      "python", "install", "3.12",
+      "python", "install", "3.12", "--no-bin", "--no-registry",
     ], {
       UV_PYTHON_INSTALL_DIR: this.pythonInstallDir(),
     }));
 
     this.sendStatus({ phase: "installing-python", msg: t("be_pythonRuntime.statusCreatingVenv"), pct: 30 });
     await this.log("[python-runtime] Step 2: uv venv");
-    await this.runUv(uvBin, [
-      "venv", this.venvDir(), "--python", "3.12",
-    ], {
+    const venvDir = this.venvDir();
+    const venvArgs = ["venv", venvDir, "--python", "3.12"];
+    if (await this.hasExistingVenv(venvDir)) venvArgs.push("--clear");
+    await this.runUv(uvBin, venvArgs, {
       UV_PYTHON_INSTALL_DIR: this.pythonInstallDir(),
     });
 
@@ -444,7 +456,7 @@ export class PythonRuntimeBootstrapper {
     this.uvEgressEnvOnce ??= (async () => {
       const env: Record<string, string> = {
         // Use native TLS trust; a corporate-only SSL_CERT_FILE would replace public roots and break package downloads.
-        UV_NATIVE_TLS: "1",
+        UV_SYSTEM_CERTS: "1",
       };
       const resolve = this.options.resolveOsProxy;
       if (!resolve) return env;

@@ -12,7 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 
-const DEFAULT_VERSION = "0.7.3"; // Pin downloads to a reproducible version.
+const DEFAULT_VERSION = "0.13.9"; // Pin downloads to a reproducible version.
 const METADATA_FILE = "uv.meta.json";
 
 function usage() {

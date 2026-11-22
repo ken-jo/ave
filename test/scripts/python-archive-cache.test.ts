@@ -10,12 +10,12 @@ const read = (file: string) => readFileSync(resolve(file), "utf8");
 
 describe("managed interpreter archive cache", () => {
   it("keys downloads by the installed tool version, interpreter version and target", () => {
-    const key = pythonArchiveCacheKey("uv 0.7.3 (build)\n", "win32", "x64");
-    expect(key).toBe(`python-archive-v1-uv-0.7.3-python-${PYTHON_VERSION}-win32-x64`);
-    expect(pythonArchiveCacheKey("uv 0.7.4", "win32", "x64")).not.toBe(key);
-    expect(pythonArchiveCacheKey("uv 0.7.3", "darwin", "arm64")).not.toBe(key);
+    const key = pythonArchiveCacheKey("uv 0.13.9 (build)\n", "win32", "x64");
+    expect(key).toBe(`python-archive-v1-uv-0.13.9-python-${PYTHON_VERSION}-win32-x64`);
+    expect(pythonArchiveCacheKey("uv 0.13.10", "win32", "x64")).not.toBe(key);
+    expect(pythonArchiveCacheKey("uv 0.13.9", "darwin", "arm64")).not.toBe(key);
   });
-  it.each(["", "something 0.7.3", "uv latest", "uv 0.7.3-invalid"])("refuses an unidentified version %s", (version) => {
+  it.each(["", "something 0.13.9", "uv latest", "uv 0.13.9-invalid"])("refuses an unidentified version %s", (version) => {
     expect(() => pythonArchiveCacheKey(version, "win32", "x64")).toThrow("Cannot identify");
   });
   it("restores archives before the real install and keeps installed environments out of the cache", () => {
@@ -31,7 +31,16 @@ describe("managed interpreter archive cache", () => {
     expect(native).toContain('UV_PYTHON_INSTALL_DIR: join(env, "python")');
     expect(native).toContain('UV_CACHE_DIR: join(env, "uv-cache")');
     expect(native).toContain('UV_PYTHON_CACHE_DIR: process.env.UV_PYTHON_CACHE_DIR ?? join(env, "python-archives")');
-    expect(native).toContain('["python", "install", PYTHON_VERSION]');
+    expect(native).toContain('["python", "install", PYTHON_VERSION, "--no-bin", "--no-registry"]');
     expect(native).toContain('["venv", join(env, "venv"), "--python", PYTHON_VERSION]');
+  });
+});
+
+describe("managed interpreter fixture isolation", () => {
+  it.each([
+    ["src/plugins/isolation/__tests__/python-smoke-harness.ts", "UV_INSTALL_PYTHON"],
+    ["test/scripts/python-download-mirror.test.ts", "PYTHON_VERSION"],
+  ])("disables executable links and registration in %s", (file, version) => {
+    expect(read(file)).toContain(`["python", "install", ${version}, "--no-bin", "--no-registry"]`);
   });
 });
