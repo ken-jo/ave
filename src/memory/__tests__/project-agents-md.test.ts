@@ -1,6 +1,6 @@
 /** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, type spawnSync } from "node:child_process";
 
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
@@ -8,6 +8,7 @@ const gitCalls = vi.hoisted(() => ({
   lastCwd: undefined as string | undefined,
   traceEnv: undefined as NodeJS.ProcessEnv | undefined,
   versionFixture: undefined as string | undefined,
+  explicitFixture: undefined as string | undefined,
   ignoreFixture: undefined as { path: string; patterns: string[] } | undefined,
   intercept: undefined as ((args: readonly string[]) => Buffer) | undefined,
 }));
@@ -39,14 +40,15 @@ vi.mock("../../shared/host-git-executable.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../shared/host-git-executable.js")>();
   return {
     ...actual,
-    resolveHostGit: (policy: { packaged: boolean }) => gitCalls.ignoreFixture
-      ? { path: gitCalls.ignoreFixture.path, options: { env: { GIT_ALLOW_PROTOCOL: "" } } }
-      : actual.resolveHostGit(policy),
+    resolveHostGit: (policy: { packaged: boolean }) => {
+      const path = gitCalls.explicitFixture ?? gitCalls.ignoreFixture?.path;
+      return path ? { path, options: { env: { GIT_ALLOW_PROTOCOL: "" } } } : actual.resolveHostGit(policy);
+    },
   };
 });
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -109,6 +111,40 @@ it("uses an absolute host Git path even with an executable in the project and re
   }
 });
 
+it.each([
+  ["C:/example/tools/git.exe", "C:\\example\\tools\\git.exe"],
+  ["C:\\example\\tools\\git-2.56.0.exe", "C:\\example\\tools\\git-2.56.0.exe"],
+])("runs the ignore query using the explicitly selected fixture %s", async (configured, expected) => {
+  const project = mkdtempSync(join(tmpdir(), "ave-explicit-git-"));
+  const platform = process.platform;
+  try {
+    mkdirSync(join(project, ".git"));
+    mkdirSync(join(project, "build"));
+    writeFileSync(join(project, "build", "AGENTS.md"), "generated rule");
+    setProcessPlatform("win32");
+    vi.stubEnv("AVE_TEST_GIT_EXECUTABLE", configured);
+    vi.stubEnv("PATH", win32.dirname(configured));
+    const spawn = vi.fn<typeof spawnSync>().mockReturnValue({
+      pid: 1, status: 0, signal: null, stdout: "git version 2.56.0", stderr: "", output: [null, "git version 2.56.0", ""],
+    });
+    gitCalls.explicitFixture = requireFixtureGit(spawn).path;
+    gitCalls.intercept = () => Buffer.alloc(0);
+    vi.resetModules();
+    const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
+    const before = gitCalls.checkIgnore.length;
+
+    discover(project, join("build", "file.ts"), new Set());
+    expect(gitCalls.checkIgnore.slice(before)).toEqual([expected]);
+    expect(spawn).toHaveBeenCalledExactlyOnceWith(expected, ["--no-lazy-fetch", "--version"], expect.anything());
+  } finally {
+    setProcessPlatform(platform);
+    gitCalls.explicitFixture = undefined;
+    gitCalls.intercept = undefined;
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(project);
+  }
+});
+
 it("keeps the ignore query local when a skip-worktree ignore blob is missing", async () => {
   const root = mkdtempSync(join(tmpdir(), "ave-ignore-blob-"));
   const source = join(root, "source");
@@ -138,8 +174,7 @@ it("keeps the ignore query local when a skip-worktree ignore blob is missing", a
     writeFileSync(join(project, "build", "AGENTS.md"), "fixture instructions");
 
     gitCalls.traceEnv = { GIT_TRACE2_EVENT: trace };
-    vi.stubEnv("PATH", dirname(fixture.path));
-    vi.resetModules();
+    gitCalls.explicitFixture = fixture.path;
     const { discoverDirectoryInstructions: discover } = await import("../project-agents-md.js");
     const before = gitCalls.checkIgnore.length;
     const layers = discover(project, join("build", "x.js"), new Set());
@@ -150,7 +185,7 @@ it("keeps the ignore query local when a skip-worktree ignore blob is missing", a
     expect(inspectBlob()).toBe(`${ignoreBlob} missing`);
     expect(layers.map((layer) => layer.content)).toEqual(["fixture instructions"]);
   } finally {
-    vi.unstubAllEnvs();
+    gitCalls.explicitFixture = undefined;
     gitCalls.traceEnv = undefined;
     await cleanupTmpDir(root);
   }
