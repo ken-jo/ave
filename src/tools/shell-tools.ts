@@ -3961,7 +3961,7 @@ async function spawnPowerShellWithSandbox(
  * The container runs System32 Windows PowerShell 5.1 with the command
  * `-EncodedCommand`-encoded. Its filesystem lists are the same per-command
  * policy {@link spawnPowerShellWithSandbox} hands ASRT, ranked for MXC. Its
- * network reaches only this invocation's proxy listener, which stamps the
+ * proxy traffic goes through this invocation's listener, which stamps the
  * invocation's identity on every request it forwards to the ASRT proxy, so a
  * refused host is recorded under this call's token exactly as on macOS and
  * Linux. `wxc-exec.exe` relays stdout, stderr and the exit code; killing it on

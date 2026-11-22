@@ -2,9 +2,11 @@
 import type {
   SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
-import type {
-  SandboxMxcUnavailableReason,
-  SandboxWindowsSubstrateInfo,
+import {
+  egressProtocolCoverageFor,
+  type SandboxMxcUnavailableReason,
+  type SandboxWindowsExtensionPlan,
+  type SandboxWindowsSubstrateInfo,
 } from "../../shared/sandbox-capability-info.js";
 
 import SRT_WIN_PINS from "../../permissions/srt-win-pins.json" with { type: "json" };
@@ -81,28 +83,33 @@ export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: Wi
     extensions,
     shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared",
     extensionEgressIdentity: extensions === "mxc" ? "kernel-channel" : "shared",
-    extensionPlan: started === "none" && extensionPlan.selectedBackend !== "none" ? { ...extensionPlan, selectedBackend: "none", readiness: "unavailable", reason: "runtime-unavailable", fallbackVersion: null, egressIdentity: "shared" } : extensionPlan,
+    extensionPlan: started === "none" ? withoutWindowsExtensionBackend(extensionPlan) : extensionPlan,
   };
 }
 
 export function windowsSubstrateWithoutAsrt(substrate: SandboxWindowsSubstrateInfo): SandboxWindowsSubstrateInfo {
   return { ...substrate, shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
-    ...(substrate.extensionPlan ? { extensionPlan: substrate.extensionPlan.selectedBackend === "none"
-      ? substrate.extensionPlan
-      : { ...substrate.extensionPlan, selectedBackend: "none", readiness: "unavailable", reason: "runtime-unavailable", fallbackVersion: null, egressIdentity: "shared" } } : {}),
+    ...(substrate.extensionPlan ? { extensionPlan: withoutWindowsExtensionBackend(substrate.extensionPlan) } : {}),
   };
 }
 
-/** Container confinement covers processes and outbound connections, not DNS signaling or inbound traffic. */
+function withoutWindowsExtensionBackend(plan: SandboxWindowsExtensionPlan): SandboxWindowsExtensionPlan {
+  if (plan.selectedBackend === "none") return plan;
+  return {
+    ...plan, selectedBackend: "none", readiness: "unavailable", reason: "runtime-unavailable",
+    fallbackVersion: null, egressIdentity: "shared", egressProtocolCoverage: egressProtocolCoverageFor("none"),
+  };
+}
+
+/** Container confinement covers processes and applies endpoint-scoped proxy policy. */
 export function mxcShellCapability(): SandboxCapability {
   return {
     kind: "asrt",
     confidence: "verified",
     platform: "win32",
     reason:
-      "Microsoft Execution Containers (BaseContainer) — each command in its own container with per-command " +
-      "filesystem grants, outbound connections only through its own proxy port, and no process outliving the " +
-      "command; DNS lookups still go through the host resolver, and inbound relies on Windows Firewall",
+      "Each command runs in its own container with per-command filesystem grants, a dedicated egress proxy, " +
+      "and a process tree scoped to the invocation.",
     confines: { filesystem: true, process: true, network: true },
   };
 }
