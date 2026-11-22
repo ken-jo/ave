@@ -4,10 +4,14 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, open, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalModelManager, verifyModelFolder } from '../model-manager.js';
 import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, rm: vi.fn(actual.rm) };
+});
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 async function fixture(body = 'model', namespaceName = '', beforeSave?: () => void) {
@@ -65,6 +69,34 @@ describe('local model lifecycle', () => {
       expect(f.saved()).toBe(f.external);
       expect(await readdir(f.parent)).toEqual([LOCAL_MODEL_REVISION]);
     } finally { await f.close(); }
+  });
+
+  it('keeps the saved model ready when a superseded slot cannot be removed', async () => {
+    const f = await fixture();
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      const canonical = await f.manager.validatedPath();
+      const parent = dirname(canonical);
+      const busy = join(parent, `${LOCAL_MODEL_REVISION}-11111111-1111-4111-8111-111111111111`);
+      const stale = join(parent, `${LOCAL_MODEL_REVISION}-22222222-2222-4222-8222-222222222222`);
+      await mkdir(busy);
+      await mkdir(stale);
+      f.setSaved(busy);
+
+      const { rm: remove } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      await vi.mocked(rm).withImplementation(async (path, options) => {
+        if (path === busy) throw Object.assign(new Error('Slot is busy'), { code: 'EBUSY' });
+        await remove(path, options);
+      }, async () => {
+        expect(await f.manager.adoptExistingFolder(canonical)).toMatchObject({ status: 'ready', error: undefined });
+      });
+      expect(f.saved()).toBe(canonical);
+      expect(await f.manager.status()).toMatchObject({ status: 'ready', error: undefined });
+      expect(await f.manager.validatedPath()).toBe(canonical);
+      expect((await readdir(parent)).sort()).toEqual([LOCAL_MODEL_REVISION, basename(busy)].sort());
+      expect(log).toHaveBeenCalledWith('[memory-map] Could not clean up a model slot', 'EBUSY');
+    } finally { log.mockRestore(); await f.close(); }
   });
 
   it('does not request files on status, and commits only a complete verified download', async () => {
