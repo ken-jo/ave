@@ -1,3 +1,4 @@
+import { admitToolInvocation } from "./invocation-ledger.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolRegistry } from "./registry.js";
@@ -624,35 +625,41 @@ export class ToolExecutor {
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
-    const result = await runToolInvocation(
-      {
-        toolRegistry: this.toolRegistry,
-        skillAdmissionCheck: this.skillAdmissionCheck,
-        hookRunner: this.hookRunner,
-        permissionManager: this.permissionManager,
-        approvalGate: this.approvalGate,
-        auditLogger: this.auditLogger,
-        requirePermissionAuditChain: this.requirePermissionAuditChain,
-        rateLimiter: this.rateLimiter,
-        bashAstValidator: this.bashAstValidator,
-        scriptHookManager: this.scriptHookManager,
-        sandboxFsContainedProvider: this.sandboxFsContainedProvider,
-        workspaceRootLifecycleProvider: this.workspaceRootLifecycleProvider,
-        auditWriter: this.auditWriter,
-        tryUserApprovalMemorySkip: this.tryUserApprovalMemorySkip.bind(this),
-        pluginOperationGrants: this.pluginOperationGrants,
-        pluginGenerationAccessProvider: this.pluginGenerationAccessProvider,
-        pluginOperationIdentityProvider: this.pluginOperationIdentityProvider,
-      },
-      toolUse,
-      groupId,
-      displayOrder,
-      opts,
-      rationaleBatchContext,
-      rationaleResumeContext,
-    );
-    if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result);
-    return result;
+    const admission = admitToolInvocation(toolUse.name, opts.abortSignal);
+    try {
+      const result = await runToolInvocation(
+        {
+          executeReplay: (replay, replayOpts) => this.executeOne(replay, randomUUID(), 0, replayOpts),
+          toolRegistry: this.toolRegistry,
+          skillAdmissionCheck: this.skillAdmissionCheck,
+          hookRunner: this.hookRunner,
+          permissionManager: this.permissionManager,
+          approvalGate: this.approvalGate,
+          auditLogger: this.auditLogger,
+          requirePermissionAuditChain: this.requirePermissionAuditChain,
+          rateLimiter: this.rateLimiter,
+          bashAstValidator: this.bashAstValidator,
+          scriptHookManager: this.scriptHookManager,
+          sandboxFsContainedProvider: this.sandboxFsContainedProvider,
+          workspaceRootLifecycleProvider: this.workspaceRootLifecycleProvider,
+          auditWriter: this.auditWriter,
+          tryUserApprovalMemorySkip: this.tryUserApprovalMemorySkip.bind(this),
+          pluginOperationGrants: this.pluginOperationGrants,
+          pluginGenerationAccessProvider: this.pluginGenerationAccessProvider,
+          pluginOperationIdentityProvider: this.pluginOperationIdentityProvider,
+        },
+        toolUse,
+        groupId,
+        displayOrder,
+        { ...opts, abortSignal: admission.signal },
+        rationaleBatchContext,
+        rationaleResumeContext,
+      );
+      if (!isRationaleRequiredExecuteOneOutcome(result)) await opts.onToolResult?.(result);
+      return result;
+    } finally {
+      admission.settle();
+    }
   }
 
 

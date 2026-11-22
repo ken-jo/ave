@@ -1,3 +1,5 @@
+import { admitToolInvocation, appendToolInvocationAudit } from "../../tools/invocation-ledger.js";
+import { isHostExitAbort } from "../../shared/host-exit-abort.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
@@ -582,149 +584,156 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     origin = "ui",
     expectedGenerationId,
   }) => {
-    const lifecycle = ctx.pluginBundleLifecycle;
-    if (!lifecycle) {
-      throw new Error("[plugin-operation-policy] active plugin generation is missing");
-    }
-    const generationLease = expectedGenerationId
-      ? await lifecycle.acquireExact(pluginId, expectedGenerationId)
-      : await lifecycle.acquire(pluginId);
+    const admission = admitToolInvocation(toolName);
     try {
-      return await lifecycle.runWithLease(generationLease, async () => {
-        const activeGeneration = generationLease.generation;
-        const manifest = activeGeneration.state.runtime.manifest;
-        const authOperationAccount = pluginRuntime.getPluginAuthOperationAccount(
-          pluginId,
-          activeGeneration.generationId,
-          toolName,
-          appSessionId,
-        );
-        if (authOperationAccount && origin === "mcp-app") {
-          throw new Error(
-            "[plugin-operation-policy] manifest auth tools are reserved for the trusted panel",
+      const lifecycle = ctx.pluginBundleLifecycle;
+      if (!lifecycle) {
+        throw new Error("[plugin-operation-policy] active plugin generation is missing");
+      }
+      const generationLease = expectedGenerationId
+        ? await lifecycle.acquireExact(pluginId, expectedGenerationId)
+        : await lifecycle.acquire(pluginId);
+      try {
+        return await lifecycle.runWithLease(generationLease, async () => {
+          const activeGeneration = generationLease.generation;
+          const manifest = activeGeneration.state.runtime.manifest;
+          const authOperationAccount = pluginRuntime.getPluginAuthOperationAccount(
+            pluginId,
+            activeGeneration.generationId,
+            toolName,
+            appSessionId,
           );
-        }
-        const account = authOperationAccount ?? resolvePluginOperationAccount(
-          pluginRuntime,
-          manifest,
-          pluginId,
-          activeGeneration.generationId,
-        );
-        if (!account) {
-          throw new Error("[plugin-operation-policy] fresh authenticated account status is required");
-        }
-        const principal = {
-          ownerPluginId: pluginId,
-          ownerVersion: manifest.version,
-          generationId: activeGeneration.generationId,
-          appSessionId,
-          ...account,
-        };
-        const inspected = pluginSurfaceExecutor.inspectPluginOperationGrant({
-          toolName,
-          input,
-          principal,
-          origin,
-        });
-        const decision = await approvalGate.requestAndWait({
-          id: randomUUID(),
-          category: "tool",
-          kind: "tool",
-          allowedChoices: ["allow-once", "deny-once"],
-          durableApprovalRecordAllowed: false,
-          toolName,
-          toolCategory: "write",
-          args: inspected.approvalArgs,
-          reason: `Plugin '${pluginId}' requests one execution of '${inspected.operation}'`,
-          source: "plugin",
-          sourcePluginId: pluginId,
-          approvalScope: `operation:${inspected.operation}`,
-          trustOrigin: "user-keyboard",
-          createdAt: Date.now(),
-          forceExplicit: true,
-            });
-        const governedTool = toolRegistry.findByName(toolName);
-        if (!governedTool) {
-          throw new Error(`[plugin-operation-policy] governed plugin tool '${toolName}' disappeared`);
-        }
-        if (decision.choice !== "allow-once") {
-          await bootAuditLogger.appendPermissionAuditEntry({
-            decision: "deny",
-            ts: new Date().toISOString(),
-            auditId: randomUUID(),
-            tool: toolName,
-            source: "plugin",
-            category: governedTool.category,
-            denyReasons: [{
-              reason: "plugin operation grant denied by user",
-              source: "plugin-operation-grant",
-            }],
-            trustOrigin: "user-keyboard",
-            pluginOperation: {
-              pluginId,
-              operation: inspected.operation,
-              outcome: "denied",
-            },
-          });
-          throw new Error("[plugin-operation-policy] operation grant denied");
-        }
-        const recheckedAccount = authOperationAccount
-          ? pluginRuntime.getPluginAuthOperationAccount(
-              pluginId,
-              activeGeneration.generationId,
-              toolName,
-              appSessionId,
-            )
-          : resolvePluginOperationAccount(
-              pluginRuntime,
-              manifest,
-              pluginId,
-              activeGeneration.generationId,
+          if (authOperationAccount && origin === "mcp-app") {
+            throw new Error(
+              "[plugin-operation-policy] manifest auth tools are reserved for the trusted panel",
             );
-        if (
-          !recheckedAccount ||
-          recheckedAccount.accountScopeHash !== account.accountScopeHash ||
-          recheckedAccount.accountHash !== account.accountHash
-        ) {
-          throw new Error(
-            "[plugin-operation-policy] operation identity changed before grant issuance",
+          }
+          const account = authOperationAccount ?? resolvePluginOperationAccount(
+            pluginRuntime,
+            manifest,
+            pluginId,
+            activeGeneration.generationId,
           );
-        }
-        const ttlMs = 60_000;
-        const issued = pluginSurfaceExecutor.issueInspectedPluginOperationGrant({
-          toolName,
-          principal,
-          inspected,
-          ttlMs,
-        });
-        try {
-          await bootAuditLogger.appendPermissionAuditEntry({
-            decision: "allow",
-            ts: new Date().toISOString(),
-            auditId: randomUUID(),
-            tool: toolName,
-            source: "plugin",
-            category: governedTool.category,
-            trustOrigin: "user-keyboard",
-            pluginOperation: {
-              pluginId,
-              operation: inspected.operation,
-              outcome: "issued",
-              grantId: issued.grantId,
-            },
+          if (!account) {
+            throw new Error("[plugin-operation-policy] fresh authenticated account status is required");
+          }
+          const principal = {
+            ownerPluginId: pluginId,
+            ownerVersion: manifest.version,
+            generationId: activeGeneration.generationId,
+            appSessionId,
+            ...account,
+          };
+          const inspected = pluginSurfaceExecutor.inspectPluginOperationGrant({
+            toolName,
+            input,
+            principal,
+            origin,
           });
-        } catch (error) {
-          pluginSurfaceExecutor.revokePluginOperationSession(appSessionId);
-          throw error;
-        }
-        return {
-          operationGrantToken: issued.token,
-          grantId: issued.grantId,
-          expiresAt: Date.now() + ttlMs,
-        };
-      });
+          const decision = await approvalGate.requestAndWait({
+            id: randomUUID(),
+            category: "tool",
+            kind: "tool",
+            allowedChoices: ["allow-once", "deny-once"],
+            durableApprovalRecordAllowed: false,
+            toolName,
+            toolCategory: "write",
+            args: inspected.approvalArgs,
+            reason: `Plugin '${pluginId}' requests one execution of '${inspected.operation}'`,
+            source: "plugin",
+            sourcePluginId: pluginId,
+            approvalScope: `operation:${inspected.operation}`,
+            trustOrigin: "user-keyboard",
+            createdAt: Date.now(),
+            forceExplicit: true,
+            abortSignal: admission.signal,
+              });
+          const governedTool = toolRegistry.findByName(toolName);
+          if (!governedTool) {
+            throw new Error(`[plugin-operation-policy] governed plugin tool '${toolName}' disappeared`);
+          }
+          const hostShutdown = isHostExitAbort(admission.signal.reason);
+          if (hostShutdown || decision.choice !== "allow-once") {
+            await appendToolInvocationAudit(bootAuditLogger, {
+              decision: "deny",
+              ts: new Date().toISOString(),
+              auditId: randomUUID(),
+              tool: toolName,
+              source: "plugin",
+              category: governedTool.category,
+              denyReasons: [{
+                reason: hostShutdown ? "host-shutdown" : "plugin operation grant denied by user",
+                source: "plugin-operation-grant",
+              }],
+              trustOrigin: "user-keyboard",
+              pluginOperation: {
+                pluginId,
+                operation: inspected.operation,
+                outcome: "denied",
+              },
+            });
+            throw new Error("[plugin-operation-policy] operation grant denied");
+          }
+          const recheckedAccount = authOperationAccount
+            ? pluginRuntime.getPluginAuthOperationAccount(
+                pluginId,
+                activeGeneration.generationId,
+                toolName,
+                appSessionId,
+              )
+            : resolvePluginOperationAccount(
+                pluginRuntime,
+                manifest,
+                pluginId,
+                activeGeneration.generationId,
+              );
+          if (
+            !recheckedAccount ||
+            recheckedAccount.accountScopeHash !== account.accountScopeHash ||
+            recheckedAccount.accountHash !== account.accountHash
+          ) {
+            throw new Error(
+              "[plugin-operation-policy] operation identity changed before grant issuance",
+            );
+          }
+          const ttlMs = 60_000;
+          const issued = pluginSurfaceExecutor.issueInspectedPluginOperationGrant({
+            toolName,
+            principal,
+            inspected,
+            ttlMs,
+          });
+          try {
+            await appendToolInvocationAudit(bootAuditLogger, {
+              decision: "allow",
+              ts: new Date().toISOString(),
+              auditId: randomUUID(),
+              tool: toolName,
+              source: "plugin",
+              category: governedTool.category,
+              trustOrigin: "user-keyboard",
+              pluginOperation: {
+                pluginId,
+                operation: inspected.operation,
+                outcome: "issued",
+                grantId: issued.grantId,
+              },
+            });
+          } catch (error) {
+            pluginSurfaceExecutor.revokePluginOperationSession(appSessionId);
+            throw error;
+          }
+          return {
+            operationGrantToken: issued.token,
+            grantId: issued.grantId,
+            expiresAt: Date.now() + ttlMs,
+          };
+        });
+      } finally {
+        generationLease.release();
+      }
     } finally {
-      generationLease.release();
+      admission.settle();
     }
   };
   ctx.revokePluginOperationGeneration = (pluginId, generationId) => {

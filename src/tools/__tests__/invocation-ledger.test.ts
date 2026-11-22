@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { isHostExitAbort } from "../../shared/host-exit-abort.js";
 
 const { logError } = vi.hoisted(() => ({ logError: vi.fn() }));
 vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ error: logError }) }));
@@ -17,6 +16,7 @@ afterEach(() => {
 
 it("aborts current and later admissions and joins work admitted during the drain", async () => {
   const ledger = await import("../invocation-ledger.js");
+  const { isHostExitAbort } = await import("../../shared/host-exit-abort.js");
   const parent = new AbortController();
   const first = ledger.admitToolInvocation("first", parent.signal);
   const stopped = ledger.admitToolInvocation("stopped", parent.signal);

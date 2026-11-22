@@ -103,7 +103,7 @@ describe("executor human re-adjudication card production", () => {
       hostClassifiesRiskProvider: () => true, sandboxFsContainedProvider: () => false,
       workspaceRootLifecycleProvider: () => undefined,
       auditWriter: new AuditWriter(audit, tools, hooks, true), rateLimiter: new RateLimiter(),
-      tryUserApprovalMemorySkip, pluginOperationGrants: new PluginOperationGrantCoordinator(),
+      executeReplay: vi.fn(), tryUserApprovalMemorySkip, pluginOperationGrants: new PluginOperationGrantCoordinator(),
       pluginGenerationAccessProvider: () => generations, pluginOperationIdentityProvider: () => undefined,
     };
     const input = { operation: "publish" };

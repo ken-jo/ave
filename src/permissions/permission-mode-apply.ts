@@ -1,3 +1,4 @@
+import { admitToolInvocation, appendToolInvocationAudit } from "../tools/invocation-ledger.js";
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { t } from "../i18n/index.js";
@@ -112,10 +113,12 @@ export async function applyPermissionModeCommand(
   const completion = new Promise<void>((resolve) => { release = resolve; });
   const tail = preceding.then(() => completion);
   modeChanges.set(deps.permissionManager, tail);
+  const admission = admitToolInvocation("/permission mode");
   await preceding;
   try {
-    return await applyPermissionModeChange(cmd, deps);
+    return await applyPermissionModeChange(cmd, deps, admission.signal);
   } finally {
+    admission.settle();
     release();
     if (modeChanges.get(deps.permissionManager) === tail) modeChanges.delete(deps.permissionManager);
   }
@@ -124,7 +127,14 @@ export async function applyPermissionModeCommand(
 async function applyPermissionModeChange(
   cmd: PermissionModeCommand,
   deps: PermissionModeApplyDeps,
+  signal: AbortSignal,
 ): Promise<PermissionModeApplyResult> {
+  const cancelled = {
+    ok: false as const,
+    error: "host-shutdown",
+    message: t("be_executor.toolExecutionCancelled"),
+  };
+  if (signal.aborted) return cancelled;
   const previous = deps.permissionManager.getMode();
 
   // Skip duplicate confirmation only for a trusted keyboard UI action or a real prior gate allow at the external transport boundary; callers cannot assert consent without that observed decision.
@@ -166,7 +176,9 @@ async function applyPermissionModeChange(
       source: "builtin",
       createdAt: Date.now(),
       trustOrigin: "user-keyboard",
+      abortSignal: signal,
     });
+    if (signal.aborted) return cancelled;
     // Any allow approves this switch; the card answers a conversation-scoped remembered allow with allow-session.
     if (decision.choice !== "allow-once" && decision.choice !== "allow-session" && decision.choice !== "allow-always") {
       return {
@@ -186,7 +198,7 @@ async function applyPermissionModeChange(
       };
     }
     try {
-      await deps.auditLogger.appendPermissionAuditEntry({
+      await appendToolInvocationAudit(deps.auditLogger, {
         decision: "mode_change",
         auditId: randomUUID(),
         ts: new Date().toISOString(),
