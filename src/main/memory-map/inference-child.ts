@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { type FileHandle, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -15,7 +16,7 @@ import { mainDir } from '../main-paths.js';
 import { MemoryMapHostError } from './errors.js';
 import { INFERENCE_PREFIX_BYTES } from './inference-child-serve.js';
 import { assertLocalEmbeddingRuntime } from './local-runtime.js';
-import { MODEL_FILES } from './model-manifest.js';
+import { MODEL_FILES, type ModelFile } from './model-manifest.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
 // Set in the process environment at creation, where the native runtime reads it; the network block is the boundary, this is defense in depth.
@@ -28,24 +29,34 @@ function write(output: Writable, chunk: Buffer): Promise<void> {
 
 // The child reads no model file: the host streams the verified bytes, so no grant reaches the model folder.
 async function writeRequest(output: Writable, folder: string, task: MemoryInferenceTask): Promise<void> {
-  const opened: { handle: FileHandle; bytes: number }[] = [];
+  const opened: { handle: FileHandle; file: ModelFile }[] = [];
   try {
     for (const file of INFERENCE_FILES) {
       const handle = await open(join(folder, file.name), 'r');
-      opened.push({ handle, bytes: file.bytes });
-      if ((await handle.stat()).size !== file.bytes) throw new MemoryMapHostError('model-integrity-failed');
+      opened.push({ handle, file });
+      const info = await handle.stat();
+      if (!info.isFile() || info.size !== file.bytes) throw new MemoryMapHostError('model-integrity-failed');
     }
     const header = Buffer.from(JSON.stringify(task), 'utf8');
     const prefix = Buffer.alloc(INFERENCE_PREFIX_BYTES);
-    for (const [index, n] of [header.length, ...opened.map(file => file.bytes)].entries()) prefix.writeUInt32BE(n, index * 4);
+    for (const [index, n] of [header.length, ...INFERENCE_FILES.map(file => file.bytes)].entries()) prefix.writeUInt32BE(n, index * 4);
     await write(output, prefix); await write(output, header);
-    for (const { handle, bytes } of opened) {
-      let sent = 0;
-      for await (const chunk of handle.createReadStream({ start: 0, end: bytes - 1, autoClose: false })) {
-        sent += (chunk as Buffer).length;
-        await write(output, chunk as Buffer);
+    for (const { handle, file } of opened) {
+      const hash = createHash('sha256');
+      let received = 0;
+      let finalChunk: Buffer | undefined;
+      for await (const chunk of handle.createReadStream({ start: 0, end: file.bytes - 1, autoClose: false })) {
+        const bytes = chunk as Buffer;
+        received += bytes.length;
+        hash.update(bytes);
+        if (received === file.bytes) finalChunk = bytes;
+        else await write(output, bytes);
       }
-      if (sent !== bytes) throw new MemoryMapHostError('model-integrity-failed');
+      if (finalChunk === undefined || (await handle.stat()).size !== file.bytes || hash.digest('hex') !== file.sha256) {
+        throw new MemoryMapHostError('model-integrity-failed');
+      }
+      // The child starts inference only after the complete frame arrives.
+      await write(output, finalChunk);
     }
   } finally { await Promise.all(opened.map(({ handle }) => handle.close())); }
 }

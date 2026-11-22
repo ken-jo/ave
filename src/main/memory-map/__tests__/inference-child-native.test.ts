@@ -1,5 +1,6 @@
 // The local inference child through the real launch path: it starts with the telemetry opt-out and reaches no listener, directly or through the proxy, that the host reaches in the same run.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, createServer, type Server } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
@@ -22,7 +23,9 @@ vi.mock('../../main-paths.js', () => ({ get mainDir() { return state.mainDir; } 
 // The child never parses the model, so short files stand in for it.
 vi.mock('../model-manifest.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../model-manifest.js')>();
-  return { ...actual, MODEL_FILES: actual.MODEL_FILES.map(file => ({ ...file, bytes: 32 })) };
+  const bytes = Buffer.alloc(32);
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  return { ...actual, MODEL_FILES: actual.MODEL_FILES.map(file => ({ ...file, bytes: bytes.length, sha256 })) };
 });
 vi.mock('node:os', async importOriginal => {
   const original = await importOriginal<typeof import('node:os')>();
