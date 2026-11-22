@@ -291,10 +291,7 @@ function ownChildProcess(own: OwnResource, child: ChildProcess): Promise<string>
   const { promise: exited, resolve: recordExit } = deferred<string>();
   const errors: Error[] = [];
   const onExit = (code: number | null) => recordExit(`code=${String(code)}`);
-  const onClose = () => {
-    onExit(child.exitCode);
-    recordClose();
-  };
+  const onClose = () => recordClose();
   const onError = (error: Error) => errors.push(error);
   own("child exit listener", () => child.off("exit", onExit));
   own("child close listener", () => child.off("close", onClose));
@@ -313,6 +310,7 @@ function ownChildProcess(own: OwnResource, child: ChildProcess): Promise<string>
 /** Import a real on-disk plugin module; replacing the loader would bypass the boundary under test. */
 function writePluginModule(own?: OwnResource): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "oop-plugin-"));
+  if (own) ownDirectory(own, dir);
   const entryPath = join(dir, "plugin.mjs");
   try {
     writeFileSync(
@@ -346,7 +344,6 @@ function writePluginModule(own?: OwnResource): { dir: string; entryPath: string 
     }
     throw error;
   }
-  if (own) ownDirectory(own, dir);
   return { dir, entryPath };
 }
 
