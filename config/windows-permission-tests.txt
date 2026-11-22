@@ -4,6 +4,7 @@ src/engine/__tests__/conversation-loop-rounds.test.ts
 src/engine/turn/__tests__/directory-instructions.test.ts
 src/engine/__tests__/subagent-runner.test.ts
 src/permissions/__tests__/approval-gate.test.ts
+src/permissions/__tests__/approval-gate-dispose-audit.test.ts
 src/tools/__tests__/tool-result-chunk.test.ts
 src/tools/__tests__/browser-tools.test.ts
 src/tools/__tests__/executor-approval-memory-skip-integration.test.ts
@@ -246,6 +247,8 @@ src/hooks/__tests__/hook-matcher-safety.test.ts
 src/hooks/__tests__/hook-source-controller.test.ts
 src/hooks/__tests__/hook-trust-commands.test.ts
 src/boot/__tests__/bootstrap-integration.test.ts
+src/boot/__tests__/assemble-services-audit-close.test.ts
+src/boot/__tests__/assemble-services-rationale-shutdown.test.ts
 src/boot/steps/__tests__/plugin-runtime.test.ts
 src/boot/steps/__tests__/plugin-runtime-auth-partition.test.ts
 src/boot/steps/__tests__/plugin-runtime-hostapi-wiring.test.ts

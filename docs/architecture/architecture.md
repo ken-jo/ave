@@ -3506,6 +3506,31 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Permission audit during shutdown
+
+Desktop and headless shutdown share the same service teardown. The early
+running-turn interruption waits up to three seconds for turn journals to
+settle. Shutdown routines run before service teardown can seal tool admission.
+
+Service teardown aborts the main, side chat, and pane turns and shuts down the
+rationale service. It then seals the invocation ledger and signals every
+running turn again without waiting for turn journals. The seal aborts active
+tool calls, plugin operation grant requests, and permission mode changes.
+Late admissions have an already-aborted signal. The approval gate records
+`host-shutdown` for cancelled requests, then service teardown disposes
+question requests, stops MCP policy refresh, and disconnects MCP.
+
+The invocation ledger joins terminal audit appends, including the late
+settlement record of an interrupted governed operation. Then the audit logger
+closes and drains its accepted writes. A cancelled tool approval records a
+deny row with the same tool-use ID as its ask. Lifecycle HTTP hooks and script
+hooks observe the invocation signal. Broker calls cancel through their request
+connection.
+
+The existing hard shutdown deadline also bounds the join. Join or append
+failure marks cleanup as failed. Failed and timed-out cleanup force-kills
+managed children and starts a best-effort audit logger close before exit.
+
 ### Home path redaction
 
 The redactor identifies tokens in the original audit or display text. It
