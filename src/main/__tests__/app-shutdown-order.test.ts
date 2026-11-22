@@ -267,10 +267,9 @@ describe("OS sandbox release at quit", () => {
       await close.mock.results[0]?.value;
       const rows = readdirSync(join(root, "audit"), { recursive: true, withFileTypes: true })
         .filter((entry) => entry.isFile())
-        .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"))
-        .join("");
-      expect(rows).toContain("[approval:cancelled] parked-card");
-      expect(rows).toContain("reason=host-shutdown");
+        .flatMap((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8").split("\n"));
+      expect(rows.filter((row) => row.includes("[approval:cancelled] parked-card") && row.includes("reason=host-shutdown")))
+        .toHaveLength(1);
     } finally {
       parkedGate?.disposeAll();
       await cleanupTmpDir(root);
