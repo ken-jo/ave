@@ -3402,10 +3402,9 @@ in its directory.
   `dns: "host-resolver"` and `rawIp: "unknown"`. Direct UDP port 53 and ICMP
   blocking remain unverified. Protocol-level verification needs administrator
   access for WFP observation, and the direct connection checks above do not
-  establish coverage for either protocol. Settings reads the coverage to
-  disclose both limits. A caller that explicitly requires fully brokered
-  egress gets `brokered-egress-unverified` unless DNS is brokered and raw IP is
-  blocked.
+  establish coverage for either protocol. Plan coverage is reporting metadata.
+  Settings uses it to disclose both limits. Launch and admission policies do
+  not enforce this coverage metadata.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`. The pinned SDK describes
   host-loopback allow as stateful outbound connectivity at baseline; native

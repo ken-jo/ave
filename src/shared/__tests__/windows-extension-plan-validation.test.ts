@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import * as sandboxCapabilityInfo from "../sandbox-capability-info.js";
 import { assertSandboxWindowsExtensionPlan } from "../sandbox-capability-info.js";
 import { planWindowsExtensionHolder } from "../../permissions/mxc-extension-readiness.js";
 
@@ -17,27 +16,13 @@ describe("serialized extension backend plan", () => {
     });
   });
 
-  it("refuses strict egress on MXC, fallback and absent evidence", () => {
+  it("reports unknown protocol coverage for the fallback route", () => {
     const fallback = planWindowsExtensionHolder({
       requested: true, mxc: { state: "unavailable", reason: "native-validation-required" },
       fallback: { version: "0.0.80", ready: true },
     });
     expect(fallback.selectedBackend).toBe("srt-win");
-    for (const plan of [ready(), fallback, undefined]) {
-      expect(sandboxCapabilityInfo.checkBrokeredEgressAdmission(plan)).toEqual({
-        allowed: false, reason: "brokered-egress-unverified",
-      });
-    }
     expect(fallback.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
-  });
-
-  it("requires positive evidence for both protocol dimensions", () => {
-    for (const egressProtocolCoverage of [{ dns: "brokered", rawIp: "unknown" }, { dns: "host-resolver", rawIp: "blocked" }] as const) {
-      expect(sandboxCapabilityInfo.checkBrokeredEgressAdmission({ egressProtocolCoverage }).allowed).toBe(false);
-    }
-    expect(sandboxCapabilityInfo.checkBrokeredEgressAdmission({
-      egressProtocolCoverage: { dns: "brokered", rawIp: "blocked" },
-    })).toEqual({ allowed: true });
   });
 
   it("accepts every produced state and fallback reason", () => {

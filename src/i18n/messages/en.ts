@@ -2318,7 +2318,6 @@ export const en = {
   "formatIpcError.removeFailed": "Failed to remove the rule.",
   "formatIpcError.notFound": "The requested item could not be found.",
   "formatIpcError.egressGrantStoreUnreadable": "The saved network grants could not be read. Fix or remove the grants file, then try again.",
-  "formatIpcError.brokeredEgressUnverified": "This operation requires fully brokered egress. The selected sandbox cannot verify that coverage.",
   "formatIpcError.invalidEgressGrantScope": "Only \"This session\", \"This tab\", \"This project\" and \"Always\" network grants can be revoked here.",
   "formatIpcError.invalidEgressGrantDestination": "That network grant names no valid host and port.",
   "formatIpcError.invalidEgressGrantProject": "That network grant's project does not match its scope.",

@@ -5,7 +5,6 @@ import { MCP_GOVERNANCE_UNAPPROVED_SERVER, stripMcpErrorCode } from "../../share
 import type { AttachmentRejection, AttachmentRejectReason } from "../../shared/attachment-rejection.js";
 import { MAX_COMPOSER_ATTACHMENT_COUNT, MAX_COMPOSER_IMAGE_BYTES } from "../../shared/composer-image-input.js";
 import { displaySafeLabel } from "../../shared/display-safe-text.js";
-import { BROKERED_EGRESS_UNVERIFIED } from "../../shared/sandbox-capability-info.js";
 
 /** Read a leading machine code after the invoke rejection wrapper, independent of localized detail. */
 export function invokeErrorCode(error: unknown): typeof MCP_GOVERNANCE_UNAPPROVED_SERVER | undefined {
@@ -323,7 +322,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 
   // ── Recently denied history ──
   "not-found": "formatIpcError.notFound",
-  [BROKERED_EGRESS_UNVERIFIED]: "formatIpcError.brokeredEgressUnverified",
   // ── Shell egress grants (ave:permissions:egress-grant*) ──
   "egress-grant-store-unreadable": "formatIpcError.egressGrantStoreUnreadable",
   "invalid-egress-grant-scope": "formatIpcError.invalidEgressGrantScope",

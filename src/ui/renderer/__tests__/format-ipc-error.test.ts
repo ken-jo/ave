@@ -46,8 +46,6 @@ describe("formatIpcError (SOT — #830)", () => {
     ["en", "sub-agent-runner-unavailable", "Sub-agents are unavailable right now."],
     ["ko", "sub-agent-transcript-not-found", "서브에이전트 대화 기록을 찾을 수 없습니다."],
     ["en", "sub-agent-transcript-not-found", "The sub-agent transcript could not be found."],
-    ["en", "brokered-egress-unverified", "This operation requires fully brokered egress. The selected sandbox cannot verify that coverage."],
-    ["ko", "brokered-egress-unverified", "이 작업은 모든 송신 트래픽의 중개가 필요합니다. 선택된 샌드박스에서는 해당 범위를 확인할 수 없습니다."],
   ] as const)("localizes the %s message for %s", (locale, code, expectedMessage) => {
     const previousLocale = getLocale();
     try {

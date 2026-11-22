@@ -236,18 +236,6 @@ export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" 
   return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
 }
 
-export const BROKERED_EGRESS_UNVERIFIED = "brokered-egress-unverified";
-
-/** Evaluate an explicit requirement on a host-selected plan without changing its route. */
-export function checkBrokeredEgressAdmission(
-  plan: { readonly egressProtocolCoverage: EgressProtocolCoverage } | undefined,
-): { readonly allowed: true } | { readonly allowed: false; readonly reason: typeof BROKERED_EGRESS_UNVERIFIED } {
-  const coverage = plan?.egressProtocolCoverage;
-  return coverage?.dns === "brokered" && coverage.rawIp === "blocked"
-    ? { allowed: true }
-    : { allowed: false, reason: BROKERED_EGRESS_UNVERIFIED };
-}
-
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
  * tab's ladder is once, tab, always (`tab` takes the place of `session`: a terminal belongs to no conversation, design F). */
 export type EgressGrantScope = "once" | "session" | "tab" | "project" | "always";

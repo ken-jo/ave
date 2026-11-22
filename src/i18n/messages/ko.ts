@@ -2320,7 +2320,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "formatIpcError.removeFailed": "규칙 삭제에 실패했습니다.",
   "formatIpcError.notFound": "요청한 항목을 찾을 수 없습니다.",
   "formatIpcError.egressGrantStoreUnreadable": "저장된 네트워크 허용 목록을 읽을 수 없습니다. 허용 파일을 고치거나 지운 뒤 다시 시도하세요.",
-  "formatIpcError.brokeredEgressUnverified": "이 작업은 모든 송신 트래픽의 중개가 필요합니다. 선택된 샌드박스에서는 해당 범위를 확인할 수 없습니다.",
   "formatIpcError.invalidEgressGrantScope": "여기서는 세션·탭·프로젝트·항상 범위의 네트워크 허용만 취소할 수 있습니다.",
   "formatIpcError.invalidEgressGrantDestination": "이 네트워크 허용에 올바른 호스트와 포트가 없습니다.",
   "formatIpcError.invalidEgressGrantProject": "이 네트워크 허용의 프로젝트가 범위와 맞지 않습니다.",
