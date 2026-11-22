@@ -214,6 +214,12 @@ export async function stageRunHarness(opts: {
       },
       workflow,
     });
+    /** An accepted retry or decision clears the failure it superseded, unless a newer one arrived while it ran. */
+    function restarted<T extends { ok: boolean }>(itemId: number, result: T, before: Error | undefined): T {
+      const origin = workBoardOriginSessionId(itemId);
+      if (result.ok && engine === wrapped && failures.get(origin) === before) failures.delete(origin);
+      return result;
+    }
     const wrapped = {
       ...current,
       async runItem(...args: Parameters<typeof current.runItem>) {
@@ -238,13 +244,13 @@ export async function stageRunHarness(opts: {
           throw error;
         }
       },
-      retryStage(...args: Parameters<typeof current.retryStage>) {
-        if (engine === wrapped) failures.delete(workBoardOriginSessionId(args[0]));
-        return current.retryStage(...args);
+      async retryStage(...args: Parameters<typeof current.retryStage>) {
+        const before = failures.get(workBoardOriginSessionId(args[0]));
+        return restarted(args[0], await current.retryStage(...args), before);
       },
-      decideStageGate(...args: Parameters<typeof current.decideStageGate>) {
-        if (engine === wrapped) failures.delete(workBoardOriginSessionId(args[0]));
-        return current.decideStageGate(...args);
+      async decideStageGate(...args: Parameters<typeof current.decideStageGate>) {
+        const before = failures.get(workBoardOriginSessionId(args[0]));
+        return restarted(args[0], await current.decideStageGate(...args), before);
       },
       cancelRun(itemId: number) {
         const result = current.cancelRun(itemId);

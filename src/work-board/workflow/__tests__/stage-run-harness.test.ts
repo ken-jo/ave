@@ -260,6 +260,10 @@ it("a child wait created after a failed relaunch settles at once", async () => {
     expect(result).toEqual(Array.from({ length: 3 }, () => ({
       status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }),
     })));
+    // A refused retry or gate decision starts nothing, so the failure still stands.
+    expect(await h.engine.retryStage(id, { runId: "run-other", stageId: "a" })).toMatchObject({ ok: false });
+    expect(await h.engine.decideStageGate(id, { runId: "run-other", stageId: "a", attempt: 2, resultHash: "", decision: "approve" })).toMatchObject({ ok: false });
+    await expect(Promise.race([h.untilSpawned(2, id), setImmediate("still pending")])).rejects.toThrow(/stage_failed/);
     expect(h.children).toHaveLength(1);
   } finally {
     for (const child of h.live()) child.finish();
