@@ -67,6 +67,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     assertExtensionStartAllowed: actual.assertExtensionStartAllowed,
     isAsrtSandboxActive: () => gateActive,
     isPluginWorkerConfinementActive: () => gateActive,
+    runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
     wrapWorkerCommand: (command: string, options?: unknown) =>
       wrapWorkerCommandMock(command, options),
     cleanupAsrtSandboxAfterCommand: () => cleanupMock(),

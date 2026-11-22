@@ -99,6 +99,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   }),
   isAsrtSandboxActive: () => gateActive,
   isPluginWorkerConfinementActive: () => gateActive,
+  runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
