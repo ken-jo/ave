@@ -365,16 +365,17 @@ describe("the repository's identity", () => {
     userGit(repo, "clone", "-q", repo, child);
     const handle = fx.start();
     const open = await handle.provider.open(handle.run, child);
-    if (!open.ok || open.workspace.kind !== "git") throw new Error("expected a git workspace");
+    const base = open.ok && open.workspace.kind === "git" ? open.workspace.baseCommit : undefined;
+    if (!open.ok || base === undefined) throw new Error("expected a git workspace");
     await stageRoot(handle, "s1");
     // The child is now a plain folder of the parent's work tree, and the parent has a branch of the run's name at the run's commit.
     rmSync(join(child, ".git"), { recursive: true, force: true });
     const branch = runBranch(handle.run.runId);
-    userGit(repo, "update-ref", `refs/heads/${branch}`, open.workspace.baseCommit);
+    userGit(repo, "update-ref", `refs/heads/${branch}`, base);
     const listed = userGit(repo, "worktree", "list", "--porcelain");
     await handle.provider.release(handle.run, "all");
     await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => () => true }).sweep([]);
-    expect(userGit(repo, "rev-parse", `refs/heads/${branch}`)).toBe(open.workspace.baseCommit);
+    expect(userGit(repo, "rev-parse", `refs/heads/${branch}`)).toBe(base);
     expect(userGit(repo, "worktree", "list", "--porcelain")).toBe(listed);
     expect(existsSync(open.workspace.runRoot)).toBe(false);
     expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining("repo.gitDir")]);
