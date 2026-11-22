@@ -130,7 +130,7 @@ describe("ToolExecutor admission across the quit seal", () => {
       };
       const running = path === "executeAll"
         ? executor.executeAll(toolUses, options)
-        : executor.executeConversationBatch(toolUses, { ...options, interceptedMetaToolHandler: async () => null })
+        : executor.executeConversationBatch(toolUses, { ...options, executionCwd: process.cwd(), interceptedMetaToolHandler: async () => null })
           .then((outcome) => (outcome.outcome === "completed" ? outcome.results : []));
       await delivered;
       let rowsAtClose: Array<Record<string, unknown>> = [];
@@ -168,7 +168,7 @@ describe("ToolExecutor admission across the quit seal", () => {
       };
       const exited = path === "executeAll"
         ? executor.executeAll(toolUses, options)
-        : executor.executeConversationBatch(toolUses, { ...options, interceptedMetaToolHandler: async () => null });
+        : executor.executeConversationBatch(toolUses, { ...options, executionCwd: process.cwd(), interceptedMetaToolHandler: async () => null });
       await expect(exited).rejects.toThrow("journal write failed");
       ledger.sealToolInvocations();
       await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
