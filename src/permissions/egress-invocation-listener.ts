@@ -264,6 +264,13 @@ export async function openInvocationProxyListener(
     for (const forward of forwards) forward.destroy();
     forwards.clear();
   };
+  // An already-unbound server is closed; any other close failure is the caller's.
+  const unbind = (): Promise<void> => new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error === undefined || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") resolve();
+      else reject(error);
+    });
+  });
   let binding: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
   const close = (): Promise<void> => {
@@ -272,8 +279,12 @@ export async function openInvocationProxyListener(
     closing ??= (async () => {
       // A bind still in progress finishes first, so its port is closed rather than left behind.
       await binding?.catch(() => {});
-      if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
-    })();
+      if (server.listening) await unbind();
+    })().catch((error: unknown) => {
+      // The port may still be bound: a later close tries again.
+      closing = undefined;
+      throw error;
+    });
     return closing;
   };
   options.admission?.adopt(close);
@@ -297,7 +308,7 @@ export async function openInvocationProxyListener(
         port = address.port;
         break;
       }
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await unbind();
     }
     if (port === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
     options.admission?.assertCanBind();
