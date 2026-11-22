@@ -193,7 +193,10 @@ export class PluginChildTransport {
     this.link.input.once("end", handlePipeLoss);
     this.link.output.once("finish", handlePipeLoss);
     this.stream.start();
-    if (this.link.input.readableEnded || this.link.input.destroyed
+    const priorError = this.link.input.errored ?? this.link.output.errored;
+    if (priorError) {
+      handlePipeError(priorError);
+    } else if (this.link.input.readableEnded || this.link.input.destroyed
       || this.link.output.writableFinished || this.link.output.destroyed) {
       handlePipeLoss();
     }

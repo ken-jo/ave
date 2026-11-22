@@ -666,10 +666,8 @@ export async function spawnConfinedPluginChild(
       child.stdout.on("data", (chunk: Buffer) => {
         log.debug(`[${spec.pluginId}] stdout: ${chunk.toString("utf-8").trimEnd()}`);
       });
-      // The connection IS the child's lifetime from here: a channel that closes or fails leaves
-      // nothing to serve, so the process is ended and its exit reported through `onGone` as for a pipe.
+      // The transport owns grace for socket EOF and termination for socket errors.
       const connected = channel;
-      connected.once("close", terminateChild);
       connected.on("error", (error: Error) => {
         log.debug(`[${spec.pluginId}] channel error: ${error.message}`);
         connected.destroy();

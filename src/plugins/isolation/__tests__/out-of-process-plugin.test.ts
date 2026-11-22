@@ -1967,7 +1967,11 @@ describe("on Windows a confined child holds a grant on its own directories for e
   }
 
   /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
-  function loopbackChild(own: OwnResource, opts: { readonly onAnnounce?: (server: Server, port: number) => void; readonly ignoresEof?: boolean } = {}) {
+  function loopbackChild(own: OwnResource, opts: {
+    readonly onAnnounce?: (server: Server, port: number) => void;
+    readonly onAccepted?: (socket: Socket) => void;
+    readonly ignoresEof?: boolean;
+  } = {}) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
       const child = fakeChild(undefined, own);
@@ -1987,6 +1991,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         acceptTimeoutMs: 5_000,
         handshakeTimeoutMs: 5_000,
       }, (socket) => {
+        opts.onAccepted?.(socket);
         if (opts.ignoresEof) socket.allowHalfOpen = true;
         const service = servePluginChild(socket, socket);
         socket.on("data", (chunk: Buffer) => socket.write(pluginChildInputCredit(chunk.length)));
@@ -2139,6 +2144,43 @@ describe("on Windows a confined child holds a grant on its own directories for e
       const stop = own("loopback session", () => instance.stop?.());
       await stop();
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+    }, { own });
+  });
+
+  it("gives the wrapped child the full grace after a clean socket close", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
+    const { entryPath } = writePluginModule(own);
+    await asWindows(layout, async () => {
+      let peer: Socket | undefined;
+      let wrapper: FakeChild | undefined;
+      const spawnLoopback = loopbackChild(own, {
+        ignoresEof: true,
+        onAccepted: (socket) => { peer = socket; },
+      });
+      spawnConfinedChild.mockImplementation(async (spec: { args: string[] }) => {
+        const result = await spawnLoopback(spec);
+        wrapper = result.child;
+        wrapper.kill.mockReset().mockReturnValue(true);
+        return result;
+      });
+      const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+      await factory(hostContext(fakeHostApi(), layout.context));
+      const socket = peer!;
+      const child = wrapper!;
+      vi.useFakeTimers();
+      try {
+        const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+        socket.end();
+        await closed;
+        await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs - 1);
+        expect(child.kill.mock.calls).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+      } finally {
+        end(child, 0, null);
+        vi.useRealTimers();
+      }
     }, { own });
   });
 

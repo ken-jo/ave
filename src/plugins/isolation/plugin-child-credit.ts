@@ -78,6 +78,9 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
       done(error);
     },
   });
+  // A link can fault before the protocol session attaches its listeners.
+  input.on("error", () => undefined);
+  output.on("error", () => undefined);
   source.on("error", (error: Error) => input.destroy(error));
   if (source !== sink) sink.on("error", (error: Error) => output.destroy(error));
   source.once("close", () => {
@@ -85,6 +88,9 @@ export function pacePluginChildInput(source: Readable, sink: Writable): {
   });
   sink.once("close", () => {
     if (!output.writableFinished) output.destroy();
+  });
+  sink.once("finish", () => {
+    if (!output.writableEnded || pending) output.destroy();
   });
   source.pipe(input);
   if (source.destroyed && !source.readableEnded) input.destroy();
