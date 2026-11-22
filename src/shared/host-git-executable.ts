@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { execFile, execFileSync, type ExecFileOptions } from "node:child_process";
+import { accessSync, constants, existsSync, realpathSync, statSync, type BigIntStats } from "node:fs";
+import { access, realpath, stat } from "node:fs/promises";
 import { dirname, join, posix, win32 } from "node:path";
-import { queryWindowsSystemDirectorySync } from "../main/windows-path-kind-launcher.js";
+import { queryWindowsSystemDirectory, queryWindowsSystemDirectorySync } from "../main/windows-path-kind-launcher.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
@@ -46,15 +47,10 @@ export function installerGitRoot(
 }
 
 export function findInstallerGit(root: string | null): InstallerGitInstall | null {
-  const install = installerGitLayout(root);
-  return install && executableIdentity(install.path) !== null ? install : null;
-}
-
-function installerGitLayout(root: string | null): InstallerGitInstall | null {
   const path = installerGitPath(root);
   if (root === null || path === null) return null;
-  const prefix = MINGIT_PREFIXES.find((name) => existsSync(join(root, name, "libexec", "git-core")));
-  return prefix ? { path, root, prefix } : null;
+  const install = runChecksSync(findInstallerLayout(root, path));
+  return install && executableIdentitySync(path) !== null ? install : null;
 }
 
 function installerGitPath(root: string | null): string | null {
@@ -118,33 +114,88 @@ export function systemGitCandidates(
   });
 }
 
-function executableIdentity(path: string): string | null {
+interface DiscoveryCheck<T = unknown> {
+  sync(): T;
+  async(): Promise<T>;
+}
+
+type GitChecks<T> = Generator<DiscoveryCheck, T, unknown>;
+
+// Both drivers perform the same checks and feed their results back into the same selection policy.
+function* check<T>(sync: () => T, async: () => Promise<T>): GitChecks<T> {
+  return (yield { sync, async }) as T;
+}
+
+function runChecksSync<T>(checks: GitChecks<T>): T {
+  let step = checks.next();
+  while (!step.done) {
+    let value: unknown;
+    try {
+      value = step.value.sync();
+    } catch (error) {
+      step = checks.throw(error);
+      continue;
+    }
+    step = checks.next(value);
+  }
+  return step.value;
+}
+
+async function runChecksAsync<T>(checks: GitChecks<T>): Promise<T> {
+  let step = checks.next();
+  while (!step.done) {
+    let value: unknown;
+    try {
+      value = await step.value.async();
+    } catch (error) {
+      step = checks.throw(error);
+      continue;
+    }
+    step = checks.next(value);
+  }
+  return step.value;
+}
+
+function executableAccessMode(): number {
+  return process.platform === "win32" ? constants.F_OK : constants.X_OK;
+}
+
+function fileIdentity(stat: BigIntStats): string | null {
+  return stat.isFile() ? [stat.dev, stat.ino, stat.size, stat.mtimeNs].join(":") : null;
+}
+
+function executableIdentitySync(path: string): string | null {
   try {
-    accessSync(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-    const stat = statSync(path, { bigint: true });
-    return stat.isFile() ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}` : null;
+    accessSync(path, executableAccessMode());
+    return fileIdentity(statSync(path, { bigint: true }));
   } catch {
     return null;
   }
 }
 
-function sameFile(left: string, right: string): boolean {
-  if (left === right) return true;
-  if (process.platform === "win32" && win32.normalize(left).toLowerCase() === win32.normalize(right).toLowerCase()) return true;
+async function executableIdentityAsync(path: string): Promise<string | null> {
   try {
-    const a = statSync(left, { bigint: true });
-    const b = statSync(right, { bigint: true });
-    if (a.ino && b.ino) return a.dev === b.dev && a.ino === b.ino;
-    return realpathSync.native(left) === realpathSync.native(right);
+    await access(path, executableAccessMode());
+    return fileIdentity(await stat(path, { bigint: true }));
   } catch {
-    return false;
+    return null;
   }
 }
 
-function commandLineToolsInstalled(): boolean {
+function executableIdentity(path: string) {
+  return check(() => executableIdentitySync(path), () => executableIdentityAsync(path));
+}
+
+function* sameFile(left: string, right: string): GitChecks<boolean> {
+  if (left === right) return true;
+  if (process.platform === "win32" && win32.normalize(left).toLowerCase() === win32.normalize(right).toLowerCase()) return true;
   try {
-    execFileSync(DARWIN_CLT_PROBE, ["-p"], { stdio: "ignore", timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs });
-    return true;
+    const a = yield* check(() => statSync(left, { bigint: true }), () => stat(left, { bigint: true }));
+    const b = yield* check(() => statSync(right, { bigint: true }), () => stat(right, { bigint: true }));
+    if (a.ino && b.ino) return a.dev === b.dev && a.ino === b.ino;
+    const realLeft = yield* check(() => realpathSync.native(left), () => realpath(left));
+    const realRight = yield* check(() => realpathSync.native(right), () => realpath(right));
+    return realLeft === realRight;
   } catch {
     return false;
   }
@@ -165,24 +216,59 @@ interface GitDiscovery {
   systemTooOld?: { path: string; version: string };
 }
 
-function readGitVersion(launch: HostGitLaunch, args: string[]): GitVersion | null {
-  const output = execFileSync(launch.path, args, {
-    ...launch.options, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
-    timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 4096,
-  });
-  return parseGitVersion(output);
+interface ProbeOutput {
+  stdout: string;
+  exitCode?: number;
+}
+
+const GIT_PROBE_OPTIONS = {
+  encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 4096,
+} as const;
+
+type ProbeOptions = Pick<ExecFileOptions, "cwd" | "env">;
+
+function runProbeSync(path: string, args: string[], options: ProbeOptions): ProbeOutput {
+  try {
+    return { stdout: execFileSync(path, args, { ...GIT_PROBE_OPTIONS, ...options, stdio: ["ignore", "pipe", "pipe"] }), exitCode: 0 };
+  } catch (error) {
+    return { stdout: "", exitCode: (error as { status?: number }).status };
+  }
+}
+
+function runProbeAsync(path: string, args: string[], options: ProbeOptions): Promise<ProbeOutput> {
+  return new Promise<ProbeOutput>((resolve) => {
+    const child = execFile(path, args, { ...GIT_PROBE_OPTIONS, ...options }, (error, stdout) => resolve({
+      stdout,
+      exitCode: error ? (typeof error.code === "number" ? error.code : undefined) : 0,
+    }));
+    child.stdin?.end();
+  }).catch(() => ({ stdout: "" }));
+}
+
+function runProbe(path: string, args: string[], options: ProbeOptions = {}) {
+  return check(() => runProbeSync(path, args, options), () => runProbeAsync(path, args, options));
+}
+
+function* findInstallerLayout(root: string, path: string): GitChecks<InstallerGitInstall | null> {
+  for (const prefix of MINGIT_PREFIXES) {
+    const core = join(root, prefix, "libexec", "git-core");
+    const exists = yield* check(() => existsSync(core), () => access(core).then(() => true, () => false));
+    if (exists) return { path, root, prefix };
+  }
+  return null;
 }
 
 let retryBundledGitAt = 0;
 
-function probeInstallerGit(install: InstallerGitInstall): DiscoveredGit | null {
+function* probeInstallerGit(install: InstallerGitInstall): GitChecks<DiscoveredGit | null> {
   if (performance.now() < retryBundledGitAt) return null;
   let selected: DiscoveredGit | null = null;
   try {
     const cwd = dirname(install.path);
     const pathEntries = [cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin")];
     if (pathEntries.some((entry) => entry.includes(";"))) return null;
-    const systemDirectory = queryWindowsSystemDirectorySync();
+    const systemDirectory = yield* check(queryWindowsSystemDirectorySync,
+      () => queryWindowsSystemDirectory(TOOL_TIMEOUT_POLICY.projectGitQueryMs));
     const systemRoot = win32.dirname(systemDirectory);
     if (systemDirectory.includes(";")) return null;
     const options = {
@@ -196,10 +282,10 @@ function probeInstallerGit(install: InstallerGitInstall): DiscoveredGit | null {
         GIT_ALLOW_PROTOCOL: "",
       },
     };
-    const launch = { path: install.path, options };
-    const version = readGitVersion(launch, ["--no-lazy-fetch", "--version"]);
+    const probe = yield* runProbe(install.path, ["--no-lazy-fetch", "--version"], options);
+    const version = probe.exitCode === 0 && parseGitVersion(probe.stdout);
     if (version && meetsMinimumGitVersion(version)) {
-      selected = { ...launch, version, installer: { ...install, systemDirectory, systemRoot } };
+      selected = { path: install.path, options, version, installer: { ...install, systemDirectory, systemRoot } };
     }
   } catch {
     return null;
@@ -217,58 +303,84 @@ function systemGitEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
-function probeSystemGit(path: string): { version: GitVersion; supported: boolean } | null {
-  const launch = { path, options: { env: buildSafeChildEnv({ LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" }) } };
-  try {
-    const version = readGitVersion(launch, ["--no-lazy-fetch", "--version"]);
+function* probeSystemGit(path: string): GitChecks<{ version: GitVersion; supported: boolean } | null> {
+  const env = buildSafeChildEnv({ LC_ALL: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" });
+  const options = { env };
+  const probe = yield* runProbe(path, ["--no-lazy-fetch", "--version"], options);
+  if (probe.exitCode === 0) {
+    const version = parseGitVersion(probe.stdout);
     return version ? { version, supported: meetsMinimumGitVersion(version) } : null;
-  } catch (error) {
-    if ((error as { status?: number }).status !== 129) return null;
-    // An unknown option can still leave a version to report in the runtime status.
-    try {
-      const version = readGitVersion(launch, ["--version"]);
-      return version ? { version, supported: false } : null;
-    } catch {
-      return null;
-    }
   }
+  if (probe.exitCode !== 129) return null;
+  // An unknown option can still leave a version to report in the runtime status.
+  const fallback = yield* runProbe(path, ["--version"], options);
+  const version = fallback.exitCode === 0 && parseGitVersion(fallback.stdout);
+  return version ? { version, supported: false } : null;
 }
 
-const discoveredGit = new Map<string | null, { identity: string; selection: GitDiscovery & { git: DiscoveredGit } }>();
+interface GitScan {
+  selection: GitDiscovery;
+  identity: string | null;
+}
 
-export function discoverHostGit(installerRoot: string | null): GitDiscovery {
-  const cached = discoveredGit.get(installerRoot);
-  if (cached && executableIdentity(cached.selection.git.path) === cached.identity) return cached.selection;
-  discoveredGit.delete(installerRoot);
+const discoveredGit = new Map<string | null, GitScan>();
+const pendingDiscoveries = new Map<string | null, Promise<GitDiscovery>>();
+
+function* selectGit(installerRoot: string | null, cached: GitScan | undefined): GitChecks<GitScan> {
+  if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.identity) return cached;
 
   const bundledPath = installerGitPath(installerRoot);
-  const bundled = installerGitLayout(installerRoot);
-  const bundledIdentity = bundled && executableIdentity(bundled.path);
-  const git = bundled && bundledIdentity !== null ? probeInstallerGit(bundled) : null;
-  if (git && bundledIdentity !== null) {
-    const found = { git };
-    discoveredGit.set(installerRoot, { identity: bundledIdentity, selection: found });
-    return found;
+  if (installerRoot !== null && bundledPath !== null) {
+    const bundled = yield* findInstallerLayout(installerRoot, bundledPath);
+    const identity = bundled && (yield* executableIdentity(bundled.path));
+    if (bundled && identity !== null) {
+      const git = yield* probeInstallerGit(bundled);
+      if (git) return { selection: { git }, identity };
+    }
   }
+
   const selection: GitDiscovery = { git: null };
   let cltInstalled: boolean | undefined;
   for (const path of systemGitCandidates(process.platform, process.env.PATH)) {
-    const identity = executableIdentity(path);
-    if (identity === null || (bundledPath !== null && sameFile(path, bundledPath))) continue;
-    if (process.platform === "darwin" && sameFile(path, DARWIN_GIT_SHIM)) {
-      cltInstalled ??= commandLineToolsInstalled();
+    const identity = yield* executableIdentity(path);
+    if (identity === null || (bundledPath !== null && (yield* sameFile(path, bundledPath)))) continue;
+    if (process.platform === "darwin" && (yield* sameFile(path, DARWIN_GIT_SHIM))) {
+      cltInstalled ??= (yield* runProbe(DARWIN_CLT_PROBE, ["-p"])).exitCode === 0;
       if (!cltInstalled) continue;
     }
-    const probe = probeSystemGit(path);
+    const probe = yield* probeSystemGit(path);
     if (!probe) continue;
-    if (probe.supported) {
-      const found = { ...selection, git: { path, version: probe.version } };
-      discoveredGit.set(installerRoot, { identity, selection: found });
-      return found;
-    }
+    if (probe.supported) return { selection: { ...selection, git: { path, version: probe.version } }, identity };
     if (!meetsMinimumGitVersion(probe.version)) selection.systemTooOld ??= { path, version: probe.version.text };
   }
-  return selection;
+  return { selection, identity: null };
+}
+
+function finishDiscovery(installerRoot: string | null, cached: GitScan | undefined, result: GitScan): GitDiscovery {
+  // A synchronous caller may have already updated the memo while an async probe was pending.
+  if (discoveredGit.get(installerRoot) === cached) {
+    if (result.identity === null) discoveredGit.delete(installerRoot);
+    else discoveredGit.set(installerRoot, result);
+  }
+  return result.selection;
+}
+
+function discoverHostGitSync(installerRoot: string | null): GitDiscovery {
+  const cached = discoveredGit.get(installerRoot);
+  const result = runChecksSync(selectGit(installerRoot, cached));
+  return finishDiscovery(installerRoot, cached, result);
+}
+
+export function discoverHostGitAsync(installerRoot: string | null): Promise<GitDiscovery> {
+  let pending = pendingDiscoveries.get(installerRoot);
+  if (!pending) {
+    const cached = discoveredGit.get(installerRoot);
+    pending = runChecksAsync(selectGit(installerRoot, cached))
+      .then((result) => finishDiscovery(installerRoot, cached, result))
+      .finally(() => pendingDiscoveries.delete(installerRoot));
+    pendingDiscoveries.set(installerRoot, pending);
+  }
+  return pending;
 }
 
 /** Verified calls require a protected installation. Discovery caches a selected executable and checks again after a miss. */
@@ -279,7 +391,7 @@ export function resolveHostGit(policy: "verified" | { packaged: boolean }): Host
     const candidates = VERIFIED_GIT_INSTALLATIONS[process.platform];
     return candidates === undefined ? null : resolveVerifiedExecutable(candidates)?.executable ?? null;
   }
-  const { git } = discoverHostGit(installerGitRoot(policy.packaged));
+  const { git } = discoverHostGitSync(installerGitRoot(policy.packaged));
   if (!git) return null;
   return { path: git.path, options: git.installer ? git.options : { env: systemGitEnvironment() } };
 }

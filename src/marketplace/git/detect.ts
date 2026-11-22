@@ -1,6 +1,6 @@
 import type { GitRuntimeStatus } from "../../shared/git-runtime.js";
 import type { GitVersion } from "../../shared/git-version.js";
-import { discoverHostGit, type VerifiedInstallerGit } from "../../shared/host-git-executable.js";
+import { discoverHostGitAsync, type VerifiedInstallerGit } from "../../shared/host-git-executable.js";
 
 export type GitExecutable = { path: string; version: GitVersion } & (
   | { kind: "installer"; installer: VerifiedInstallerGit }
@@ -16,8 +16,8 @@ export type GitDetection =
   | { state: "ready"; git: GitExecutable; systemTooOld?: TooOldGit }
   | { state: "missing"; systemTooOld?: TooOldGit };
 
-export function detectGitRuntime(installerRoot: string | null): GitDetection {
-  const { git, systemTooOld } = discoverHostGit(installerRoot);
+export async function detectGitRuntime(installerRoot: string | null): Promise<GitDetection> {
+  const { git, systemTooOld } = await discoverHostGitAsync(installerRoot);
   const status = systemTooOld ? { systemTooOld } : {};
   if (!git) return { state: "missing", ...status };
   const { path, version, installer } = git;

@@ -12,7 +12,7 @@ type ReadGitRuntimeStatus = () => Promise<GitRuntimeStatus>;
 
 async function readGitRuntimeStatus(): Promise<GitRuntimeStatus> {
   const root = installerGitRoot(app.isPackaged);
-  return gitRuntimeStatus(detectGitRuntime(root), root !== null);
+  return gitRuntimeStatus(await detectGitRuntime(root), root !== null);
 }
 
 export function registerGitRuntimeHandlers(deps: IpcDeps, readStatus: ReadGitRuntimeStatus = readGitRuntimeStatus): void {

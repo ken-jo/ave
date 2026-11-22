@@ -40,8 +40,8 @@ export class MarketplaceGit {
     return this.broker;
   }
 
-  private detect(): GitExecutable {
-    const detection = detectGitRuntime(this.options.installerRoot);
+  private async detect(): Promise<GitExecutable> {
+    const detection = await detectGitRuntime(this.options.installerRoot);
     if (detection.state === "ready") return detection.git;
     if (detection.systemTooOld) {
       throw new MarketplaceError(
@@ -53,7 +53,7 @@ export class MarketplaceGit {
   }
 
   private async build(): Promise<BuiltRunner> {
-    const git = this.detect();
+    const git = await this.detect();
     await mkdir(this.options.envRoot, { recursive: true, mode: 0o700 });
     const emptyDir = join(this.options.envRoot, "empty");
     await mkdir(emptyDir, { recursive: true });

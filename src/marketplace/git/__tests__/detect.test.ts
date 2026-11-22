@@ -14,16 +14,29 @@ const probe = vi.hoisted(() => ({
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
-  execFileSync: probe.calls,
+  execFile(file: string, args: readonly string[], _options: unknown,
+    callback: (error: (Error & { code?: number }) | null, stdout: string) => void,
+  ) {
+    let output: string;
+    try {
+      output = probe.calls(file, args);
+    } catch (error) {
+      const code = (error as { status?: number }).status;
+      callback(Object.assign(new Error("probe failed"), { code }), "");
+      return {};
+    }
+    callback(null, output);
+    return {};
+  },
 }));
 
-vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    accessSync(file: string, mode?: number) {
+    async access(file: string, mode?: number) {
       if (!probe.versions.has(file)) throw new Error("missing fixture");
-      actual.accessSync(file, mode);
+      await actual.access(file, mode);
     },
   };
 });
@@ -100,7 +113,7 @@ describe("detectGitRuntime", () => {
     vi.stubEnv("PATHEXT", ".CMD;.BAT");
     const { detectGitRuntime } = await import("../detect.js");
     const path = join(supported, executable);
-    expect(detectGitRuntime(null)).toMatchObject({ state: "ready", git: { kind: "system", path } });
+    expect(await detectGitRuntime(null)).toMatchObject({ state: "ready", git: { kind: "system", path } });
     expect(probe.calls.mock.calls.map(([file, args]) => [file, args])).toEqual([[path, ["--no-lazy-fetch", "--version"]]]);
   });
 
@@ -108,9 +121,9 @@ describe("detectGitRuntime", () => {
     vi.stubEnv("PATH", old);
     const { detectGitRuntime } = await import("../detect.js");
     const systemTooOld = { path: join(old, executable), version: "2.45.0" };
-    expect(detectGitRuntime(null)).toEqual({ state: "missing", systemTooOld });
+    expect(await detectGitRuntime(null)).toEqual({ state: "missing", systemTooOld });
     vi.stubEnv("PATH", [old, supported].join(delimiter));
-    expect(detectGitRuntime(null)).toMatchObject({
+    expect(await detectGitRuntime(null)).toMatchObject({
       state: "ready", git: { kind: "system", path: join(supported, executable) }, systemTooOld,
     });
   });

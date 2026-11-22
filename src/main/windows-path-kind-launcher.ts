@@ -1,5 +1,6 @@
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { dirname, join, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
@@ -22,9 +23,14 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
 export function resolveWindowsPathKindHelper(): string {
   const binary = windowsPathKindHelperIn(getHostResources().resourcePath);
   if (!existsSync(binary)) {
-    throw new Error(`Windows folder classifier is missing: ${binary}. Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. ${REPAIR}`);
+    throw missingWindowsPathKindHelper(binary);
   }
   return binary;
+}
+
+function missingWindowsPathKindHelper(binary: string): Error {
+  return new Error("Windows folder classifier is missing: " + binary
+    + ". Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. " + REPAIR);
 }
 
 export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Promise<string> {
@@ -85,13 +91,17 @@ export function queryDosDevice(drive: string): Promise<string | null> {
 }
 
 // The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
-export async function queryWindowsSystemDirectory(): Promise<string> {
+export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
-  const helper = resolveWindowsPathKindHelper();
+  const helper = windowsPathKindHelperIn(getHostResources().resourcePath);
+  try {
+    await access(helper);
+  } catch {
+    throw missingWindowsPathKindHelper(helper);
+  }
   return new Promise((resolve, reject) => {
     execFile(helper, ["--system-directory"], {
-      windowsHide: true, shell: false, env: {}, encoding: "buffer",
-      timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBuffer: 128 * 1024,
+      ...windowsSystemDirectorySpawnOptions(helper), timeout, encoding: "buffer",
     }, (error, stdout, stderr) => {
       if (error || stderr.length > 0) {
         reject(new Error(`Windows system directory query failed. ${REPAIR}`, { cause: error ?? undefined }));
