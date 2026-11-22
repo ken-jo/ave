@@ -57,8 +57,16 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     const { redactFsPath, redactHomePathsInText } = await loadHomeRedactors(home, platform);
     const line = JSON.stringify({ p: "C:\\Users\\bob\\uface\\x" });
     expect(JSON.parse(redactHomePathsInText(line))).toEqual({ p: "[home]\\uface\\x" });
+    expect(JSON.parse(JSON.parse(redactHomePathsInText(JSON.stringify(line))))).toEqual({ p: "[home]\\uface\\x" });
     const escaped = '{"c":"cat \\"/home/\\uc608\\uc81c\\"","d":"C:\\\\Users\\\\bob\\uc608\\\\x","e":"/home/bob\\uc608\\nx"}';
     for (const redact of [redactHomePathsInText, redactFsPath]) expect(redact(escaped)).not.toMatch(/uc608|uc81c/u);
+  });
+
+  it("masks a name escaped in a string serialized twice", async () => {
+    const { redactFsPath, redactHomePathsInText } = await loadHomeRedactors(home, platform);
+    // A second serialization doubles the backslashes of both the escapes and the separators.
+    const twice = '{"r":"/home/\\\\uc608\\\\uc81c/z","s":"C:\\\\\\\\Users\\\\\\\\bob\\\\uc608\\\\\\\\x","t":"/home/bob\\\\uc608/x"}';
+    for (const redact of [redactHomePathsInText, redactFsPath]) expect(redact(twice)).not.toMatch(/uc608|uc81c/u);
   });
 
   it("keeps the arguments of a serialized command", async () => {
@@ -148,6 +156,7 @@ it("scans adversarial home text and paths in linear time", async () => {
     ["\\\\a\\b", ""], ["a", "\\\\"], ["\\", ""], ["x y ", '"/home/'], ['"/home/x y ', ""], ["\\u00e9", "/home/"],
     ["\\u002fhome", ""], ["%27", "/home/"], ["%2D", "file://"],
     ["\\uabcd", "/home/"], ["\\\\\\uabcd", "/home/"], ["\\uabcd\\x", "C:\\Users\\"], ["\\\\uabcd", "C:\\\\Users\\\\"],
+    ["\\\\uabcd\\\\x", "C:\\\\Users\\\\"], ["\\\\uabcd\\\\u", "/home/"],
   ] as const;
   for (const [unit, head] of families) {
     for (const redact of [redactHomePathsInText, redactFsPath]) {

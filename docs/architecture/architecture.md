@@ -3562,9 +3562,10 @@ device prefix, which is kept), a UNC server and optional share (both kept), a
 `/users/` or a `/home/` root. A profile name is letters,
 marks, digits, `._-` and apostrophes before a letter or digit, each also
 percent-encoded up to the same three layers or written as a JSON `\u` escape,
-an odd backslash run; a single backslash followed by a raw folder separator
-is a separator, so `C:\Users\bob\uface\x` keeps the folder `uface`. Its
-separators may be encoded either way too. Encodings deeper than three
+whose backslashes double with each serialization. An escape-like run followed
+by the same run of backslashes before a folder name is a separator, so
+`C:\Users\bob\uface\x` keeps the folder `uface`. Its separators may be
+encoded either way too. Encodings deeper than three
 layers are outside the contract. Words after a space join the name in a path
 value, before a separator, a quote, the value's end, or a query or fragment. In display
 text they join only inside a quoted or backtick span that starts with the home,

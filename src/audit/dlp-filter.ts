@@ -225,8 +225,9 @@ function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
   const separator = `(?:[\\\\/]|${escaped("2f|5c")})`;
   const colon = `(?::|${escaped("3a")})`;
   const letter = String.raw`3\d|[46][1-9a-f]|[57][\da]|[89a-f][\da-f]`;
-  // A JSON escape is an odd backslash run. A single backslash before a raw folder separator is a separator itself.
-  const wide = String.raw`(?:\\{3}|\\{5}|\\{7})u(?!00)[\da-f]{4}|\\u(?!00)[\da-f]{4}(?!\\[^"\\/bfnrtu])`;
+  // A JSON escape doubles its backslashes per layer. A run followed by the same run before a folder is a separator.
+  const wide = Array.from({ length: 7 }, (_, index) => String.raw`\\{${index + 1}}u(?!00)[\da-f]{4}(?!\\{${index + 1}}[^\\"/bfnrtu])`)
+    .join("|");
   // Unquoted text reads a JSON-escaped space as whitespace; elsewhere an encoded space joins the name.
   const unit = (space: string): string => `(?:[\\p{L}\\p{M}\\p{N}._-]|'(?=[\\p{L}\\p{N}])|${escaped(`2[de]|5f|${letter}`)}`
     + `|${space}|${escaped("27")}(?=[\\p{L}\\p{N}]|${escaped(letter)})|${wide})`;
