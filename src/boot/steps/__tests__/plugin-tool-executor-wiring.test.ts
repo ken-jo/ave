@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   revokePluginOperationAccount: vi.fn(),
   executeAll: vi.fn(),
   resolvePluginOperationAccount: vi.fn(),
+  revokePluginOperationSession: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
@@ -36,6 +37,8 @@ vi.mock("../../../tools/executor.js", () => ({
     revokePluginOperationAccount = mocks.revokePluginOperationAccount;
     executeAll = mocks.executeAll;
     inspectPluginOperationGrant = vi.fn(() => ({ operation: "update", approvalArgs: {} }));
+    issueInspectedPluginOperationGrant = vi.fn(() => ({ token: "issued-token", grantId: "issued-grant" }));
+    revokePluginOperationSession = mocks.revokePluginOperationSession;
   },
 }));
 
@@ -622,4 +625,41 @@ it("writes a host-shutdown denial for a parked plugin operation grant before aud
     "close",
   ]);
   expect(generationLease.release).toHaveBeenCalledOnce();
+});
+
+it("revokes an issued plugin operation grant instead of delivering it after the shutdown seal", async () => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ledger = await import("../../../tools/invocation-ledger.js");
+  const ctx = makeContext();
+  const rows: Array<Record<string, unknown>> = [];
+  mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate: { requestAndWait: async () => ({ choice: "allow-once" }) },
+    bootAuditLogger: {
+      appendPermissionAuditEntry: async (row: Record<string, unknown>) => {
+        rows.push(row);
+        if ((row.pluginOperation as { outcome?: string } | undefined)?.outcome === "issued") ledger.sealToolInvocations();
+      },
+    },
+    pluginBundleLifecycle: {
+      acquire: async () => ({
+        generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+        release: vi.fn(),
+      }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  await expect(ctx.requestPluginOperationGrant!({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  })).rejects.toThrow("operation grant cancelled");
+  expect(mocks.revokePluginOperationSession).toHaveBeenCalledWith("grant-window");
+  expect(rows.map((row) => row.pluginOperation)).toEqual([
+    { pluginId, operation: "update", outcome: "issued", grantId: "issued-grant" },
+    { pluginId, operation: "update", outcome: "denied", grantId: "issued-grant" },
+  ]);
+  expect(rows[1]).toMatchObject({ decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }] });
 });

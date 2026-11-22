@@ -441,3 +441,24 @@ describe("durable mode change across a restart", () => {
     expect(restarted.getMode()).toBe("auto");
   });
 });
+
+describe("mode change at quit", () => {
+  it.each([true, false])("applies no mode when quit seals admission during the mode audit (durable=%s)", async (durable) => {
+    // A sealed ledger is process-wide; load a fresh one.
+    vi.resetModules();
+    const { applyPermissionModeCommand: apply } = await import("../permission-mode-apply.js");
+    const ledger = await import("../../tools/invocation-ledger.js");
+    const deps = makeDeps();
+    deps.auditLogger.appendPermissionAuditEntry.mockImplementation(async (...args: unknown[]) => {
+      if ((args[0] as { decision?: string }).decision === "mode_change") ledger.sealToolInvocations();
+      return undefined;
+    });
+    const result = await apply({ ...durableAuto, durable }, { ...deps, approvalBypass: { source: "settings-ui", trustOrigin: "user-keyboard", explicitUserAction: true } } as never);
+    expect(result).toMatchObject({ ok: false, error: "host-shutdown" });
+    expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
+    expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
+    expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenLastCalledWith(expect.objectContaining({
+      decision: "deny", tool: "/permission mode", denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }],
+    }));
+  });
+});

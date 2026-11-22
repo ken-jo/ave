@@ -1785,6 +1785,7 @@ async function runToolInvocationAttempt(
         });
         dirLayerResult = surfaceResolution.permission;
         decision = surfaceResolution.decision;
+        if (abortSignal?.aborted) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
         if (decision.choice.startsWith("deny")) return { allowed: false, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: dirLayerResult.reason, is_error: true, durationMs: Date.now() - startTime }) };
         const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult : { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
         // No remembered grant is kept while boot refuses the home folder (the card already answers once with a notice); an
@@ -1807,6 +1808,7 @@ async function runToolInvocationAttempt(
             permissionContext: invocationPermissionContext,
             audit: currentAuditMetadata(),
           });
+          if (abortSignal?.aborted) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
           let lifecycle: PermissionDirectoryLifecycle | undefined;
           try {
             lifecycle = services.workspaceRootLifecycleProvider();

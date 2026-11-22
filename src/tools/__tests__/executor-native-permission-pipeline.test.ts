@@ -33,6 +33,7 @@ import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { modelShellPath } from "../../shared/shell-native-path.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { ToolExecutor } from "../executor.js";
 import { ApplyPatchTool, CopyPathTool, ExtractArchiveTool, GlobFilesTool, GrepFilesTool, ListFilesTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import { BashTool } from "../shell-tools.js";
@@ -175,6 +176,32 @@ describe("native invocation permission evidence", () => {
       .rejects.toThrow("grant audit append failed");
     expect(allowDirectory).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
+  });
+  it("persists no folder rule when quit aborts the invocation during its grant audit", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const turn = new AbortController();
+    const append = audit.appendPermissionAuditEntry.bind(audit);
+    vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(async entry => {
+      const row = await append(entry);
+      if ("grantLifetime" in entry && entry.grantLifetime === "always") turn.abort(new HostExitAbortError());
+      return row;
+    });
+    const allowDirectory = vi.fn(async (directory: string) => [directory]);
+    const gate = { requestAndWait: async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" }) };
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
+      () => ({ allowDirectory, denyDirectory: async () => [] }));
+    const execute = vi.spyOn(writeTool, "execute");
+    const [result] = await subject.executeAll([{ id: randomUUID(), name: "write_file", input: { path: join(outside, "result.txt"), content: "must not write" } }], {
+      sessionId, executionCwd: project, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "user-keyboard", additionalDirectories: [] },
+    });
+    expect(result.is_error).toBe(true);
+    expect(allowDirectory).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(rows.at(-1)).toMatchObject({ tool: "write_file", decision: "deny", denyReasons: [{ reason: "host-shutdown" }] });
   });
   it.each(["allow-once", "allow-session", "allow-always"] as const)("persists the directory grant audit before executing an outside write with %s", async (choice) => {
     await audit.setupPermissionAuditChain("aa".repeat(32));

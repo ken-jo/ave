@@ -728,6 +728,26 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             pluginSurfaceExecutor.revokePluginOperationSession(appSessionId);
             throw error;
           }
+          if (admission.signal.aborted) {
+            pluginSurfaceExecutor.revokePluginOperationSession(appSessionId);
+            await appendToolInvocationAudit(bootAuditLogger, {
+              decision: "deny",
+              ts: new Date().toISOString(),
+              auditId: randomUUID(),
+              tool: toolName,
+              source: "plugin",
+              category: governedTool.category,
+              denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }],
+              trustOrigin: "user-keyboard",
+              pluginOperation: {
+                pluginId,
+                operation: inspected.operation,
+                outcome: "denied",
+                grantId: issued.grantId,
+              },
+            });
+            throw new Error("[plugin-operation-policy] operation grant cancelled by host shutdown");
+          }
           return {
             operationGrantToken: issued.token,
             grantId: issued.grantId,

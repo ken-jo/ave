@@ -21,6 +21,8 @@ import { ToolExecutor } from "../executor.js";
 import { BashTool } from "../shell-tools.js";
 import * as invocationExecution from "../invocation-execution.js";
 import * as hostShellPermits from "../../permissions/host-shell-execution-permit.js";
+import * as userOwnedSurface from "../pipeline/user-owned-surface.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { WriteFileTool } from "../file-tools.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { createTestRequestAnchor, rationaleResponseFor } from "../pipeline/__tests__/rationale-fixtures.js";
@@ -762,6 +764,41 @@ describe("executor automated approval pause", () => {
     }
     expect(cards).toHaveLength(1);
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  it("mints no late host permit when quit aborts the invocation during surface resolution", async () => {
+    const f = await subject();
+    f.manager.setMode("auto");
+    const registry = new ToolRegistry();
+    const shell = new BashTool();
+    const execute = vi.spyOn(shell, "execute");
+    registry.register(shell);
+    const mint = vi.spyOn(hostShellPermits, "mintHostShellExecutionPermit");
+    const held = heldHandlerFinalizers("late-host-shutdown", 1);
+    const { gate, cards, approve } = manualGate();
+    const turn = new AbortController();
+    const resolveSurface = userOwnedSurface.resolveUserOwnedSurfaceApproval;
+    vi.spyOn(userOwnedSurface, "resolveUserOwnedSurfaceApproval").mockImplementation(async (args) => {
+      const resolved = await resolveSurface(args);
+      if (cards.length > 0) turn.abort(new HostExitAbortError());
+      return resolved;
+    });
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "late-host-shutdown", name: "bash", input: { command: "printf late-shutdown", executionMode: "host", justification: "Read fixture output" } }], {
+      sessionId: SESSION_ID, executionCwd: f.root, abortSignal: turn.signal,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await held.waits[0].reached;
+    expect(mint).toHaveBeenCalledTimes(1);
+    await f.pause();
+    held.waits[0].release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    approve(cards[0]);
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(turn.signal.aborted).toBe(true);
+    expect(mint).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("preserves a rule-issued host permit when the reviewer pauses before the handler", async () => {

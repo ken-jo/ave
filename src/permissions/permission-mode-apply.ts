@@ -224,6 +224,22 @@ async function applyPermissionModeChange(
   if (!previousReviewer.ok) {
     return { ok: false, error: "reviewer-mode-change-failed", message: "Reviewer settings could not be read" };
   }
+  if (signal.aborted) {
+    // The mode_change row is written; record that quit refused it before anything is applied.
+    if (deps.auditLogger) {
+      await appendToolInvocationAudit(deps.auditLogger, {
+        decision: "deny",
+        ts: new Date().toISOString(),
+        auditId: randomUUID(),
+        tool: "/permission mode",
+        source: "builtin",
+        category: "meta",
+        trustOrigin: "user-keyboard",
+        denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }],
+      }).catch(() => undefined);
+    }
+    return cancelled;
+  }
   const previousOverride = runtimeReviewerModes.get(deps.permissionManager);
   const restoreOverride = () => {
     if (previousOverride === undefined) runtimeReviewerModes.delete(deps.permissionManager);

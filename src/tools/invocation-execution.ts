@@ -1101,6 +1101,7 @@ export async function executeAuthorizedToolInvocation(
     }) : { permission: permissionResult, decision, humanApproved: undefined };
     permissionResult = surfaceResolution.permission;
     decision = surfaceResolution.decision;
+    abortSignal?.throwIfAborted();
     const failure = approvalFailureOutcome(decision, toolUse.name, permissionResult);
     if (failure) {
       permissionResult = failure.permission;
