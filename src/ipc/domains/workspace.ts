@@ -24,7 +24,7 @@ import {
   canonicalizePathForMatch,
   caseFoldForMatch,
   resolvePathForPolicy,
-  isSensitivePath,
+  createSensitivePathMatcher,
   allowKeyMaterialInspectionUnder,
 } from "../../permissions/sensitive-paths.js";
 import { listAuthorizedWorkspaceRoots } from "../../permissions/workspace-authorized-roots.js";
@@ -1002,6 +1002,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const realRoot = root === null ? null : await fs.realpath(root.path).catch(() => null);
         // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
         // (folders first), and only the kept rows cost an lstat.
+        const isSensitiveEntry = createSensitivePathMatcher("write", undefined, undefined, { audience: "person" });
         const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
         let hidden = 0;
         for (const ent of dirents) {
@@ -1011,7 +1012,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
           const sensitivePath = link ? join(realDir ?? dir, ent.name) : full;
           // Filter sensitive entries using the file tools' policy. A key-extension file is hidden only when it holds a key:
           // one whose content was not shown harmless stays listed for the person, and an agent read of it still asks.
-          if (isSensitivePath(sensitivePath, "write", "person")) {
+          if (isSensitiveEntry(sensitivePath)) {
             hidden += 1;
             continue;
           }

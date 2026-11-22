@@ -1025,13 +1025,14 @@ function sensitivePatternIndex(insensitivePlatform: boolean, admissionOnly: bool
 }
 
 interface SensitivePathMatcherOptions {
+  audience?: KeyMaterialAudience;
   inspectKeyMaterial?: boolean;
   includeKeyMaterial?: boolean;
   resolveNativePath?: (path: string) => string;
 }
 
 export function createSensitivePathMatcher(effect: PathEffect = "write", spend?: () => void, canonicalize: (path: string) => string = canonicalizePathForMatch, options: SensitivePathMatcherOptions = {}): (absPath: string) => string | null {
-  return createPathSensitivityMatcher(effect, spend, canonicalize, false, "agent", undefined, 0, undefined, options);
+  return createPathSensitivityMatcher(effect, spend, canonicalize, false, options.audience, undefined, 0, undefined, options);
 }
 
 function createPathSensitivityMatcher(
@@ -1111,6 +1112,7 @@ function createPathSensitivityMatcher(
   type ApplicationPath = { entry: SensitiveEntry; base: string };
   interface ApplicationNode { children: Map<string, ApplicationNode>; directories: ApplicationPath[] }
   let roots: { session?: string; keys: readonly string[] } | undefined;
+  let hostScriptBases: string[] | undefined;
   let applicationPaths: ApplicationPath[] | undefined;
   let applicationExact: Map<string, ApplicationPath[]> | undefined;
   let applicationRotations: Map<string, ApplicationPath[]> | undefined;
@@ -1138,13 +1140,14 @@ function createPathSensitivityMatcher(
     const normalizedPath = candidates[0]!;
     const eligible = candidatesFor(normalizedPath);
     if (!nameOnly && effect === "write") {
-      for (const path of hostScriptWriteDenyPaths()) {
-        const bases = [canonicalize(path), pathResolve(path)].map((value) => caseFoldForMatch(value).replace(/\/+$/u, ""));
-        if (candidates.some((candidate) => bases.some((base) => {
-          const folded = caseFoldForMatch(candidate);
-          return folded === base || folded.startsWith(`${base}/`);
-        }))) return "host-script-resources";
-      }
+      hostScriptBases ??= hostScriptWriteDenyPaths()
+        .flatMap((path) => [canonicalize(path), pathResolve(path)])
+        .map((value) => caseFoldForMatch(value).replace(/\/+$/u, ""));
+      const bases = hostScriptBases;
+      if (candidates.some((candidate) => {
+        const folded = caseFoldForMatch(candidate);
+        return bases.some((base) => folded === base || folded.startsWith(`${base}/`));
+      })) return "host-script-resources";
     }
     if (!admissionOnly && effect === "write" && candidates.some((candidate) => {
       const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");

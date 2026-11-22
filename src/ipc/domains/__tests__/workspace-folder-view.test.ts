@@ -1,9 +1,10 @@
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import * as fsModule from "node:fs";
+import fsModule from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -37,7 +38,6 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
 
 import { registerWorkspaceHandlers } from "../workspace.js";
 import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
-import * as sensitivePaths from "../../../permissions/sensitive-paths.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
@@ -156,23 +156,37 @@ describe("workspace.searchFiles in one folder", () => {
 });
 
 describe("workspace.listDir folder-view entries", () => {
-  it("sorts before it caps, so a folder past the first 1,000 names is still listed, and counts what the cap left out", async () => {
-    const many = join(root, "many");
-    mkdirSync(many);
-    try {
-      for (let i = 0; i < 1_100; i += 1) writeFileSync(join(many, `f${String(i).padStart(4, "0")}.txt`), "x");
-      mkdirSync(join(many, "zz-folder"));
-      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult & { omitted?: number };
-      expect(res.ok).toBe(true);
-      expect(res.entries).toHaveLength(1_000);
-      expect(res.entries?.[0]).toMatchObject({ name: "zz-folder", type: "directory" });
-      expect(res.entries?.[1]?.name).toBe("f0000.txt");
-      expect(res.entries?.[999]?.name).toBe("f0998.txt");
-      expect(res.truncated).toBe(true);
-      expect(res.omitted).toBe(101);
-    } finally {
-      rmSync(many, { recursive: true, force: true });
-    }
+  it("sorts before it caps, so a folder past the first 1,000 names is still listed, and counts what the cap left out", async ({ onTestFinished }) => {
+    const many = mkdtempSync(join(root, "sort-cap-"));
+    onTestFinished(() => rmSync(many, { recursive: true, force: true }));
+    for (let i = 0; i < 1_100; i += 1) writeFileSync(join(many, `f${String(i).padStart(4, "0")}.txt`), "x");
+    mkdirSync(join(many, "zz-folder"));
+    const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult & { omitted?: number };
+    expect(res.ok).toBe(true);
+    expect(res.entries).toHaveLength(1_000);
+    expect(res.entries?.[0]).toMatchObject({ name: "zz-folder", type: "directory" });
+    expect(res.entries?.[1]?.name).toBe("f0000.txt");
+    expect(res.entries?.[999]?.name).toBe("f0998.txt");
+    expect(res.truncated).toBe(true);
+    expect(res.omitted).toBe(101);
+  });
+
+  it("keeps synchronous realpath lookups constant as regular siblings are added", async ({ onTestFinished }) => {
+    const dir = mkdtempSync(join(root, "sibling-cost-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const list = () => invoke(CHANNELS.workspace.listDir, frameEvent(), dir) as Promise<ListResult>;
+    writeFileSync(join(dir, "first.txt"), "");
+    // Warm process-wide policy caches before comparing two requests.
+    expect((await list()).entries).toHaveLength(1);
+    const realpath = vi.spyOn(fsModule.realpathSync, "native");
+    onTestFinished(() => { realpath.mockRestore(); });
+    expect((await list()).entries).toHaveLength(1);
+    const oneEntryCalls = realpath.mock.calls.length;
+    expect(oneEntryCalls).toBeGreaterThan(0);
+    realpath.mockClear();
+    for (let i = 1; i < 32; i += 1) writeFileSync(join(dir, `sibling-${i}.txt`), "");
+    expect((await list()).entries).toHaveLength(32);
+    expect(realpath).toHaveBeenCalledTimes(oneEntryCalls);
   });
 
   it("reports nothing omitted for a folder under the cap", async () => {
@@ -251,17 +265,19 @@ describe("workspace.listDir folder-view entries", () => {
       writeFileSync(join(dir, name), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
     }
     const storedNames = await fsModule.promises.readdir(dir);
-    const sensitivity = vi.spyOn(sensitivePaths, "isSensitivePath");
+    const opened = vi.spyOn(fsModule, "openSync");
+    syncBuiltinESMExports();
     try {
       const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), dir)) as ListResult;
       expect(res).toMatchObject({ ok: true, hidden: 0 });
       expect(res.entries?.map((entry) => entry.name).sort()).toEqual(storedNames.sort());
-      const inspectedPaths = sensitivity.mock.calls
-        .filter(([, effect, audience]) => effect === "write" && audience === "person")
-        .map(([path]) => path);
+      const inspectedPaths = opened.mock.calls
+        .map(([path]) => path)
+        .filter((path): path is string => typeof path === "string" && dirname(path) === dir);
       expect(inspectedPaths.sort()).toEqual(storedNames.map((name) => join(dir, name)).sort());
     } finally {
-      sensitivity.mockRestore();
+      opened.mockRestore();
+      syncBuiltinESMExports();
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -301,18 +317,14 @@ describe("workspace.listDir folder-view entries", () => {
     expect(res).toMatchObject({ ok: false, error: "not-found" });
   });
 
-  it("sets truncated at the 1,001st entry", async () => {
-    const many = join(root, "many");
-    mkdirSync(many);
+  it("sets truncated at the 1,001st entry", async ({ onTestFinished }) => {
+    const many = mkdtempSync(join(root, "truncation-"));
+    onTestFinished(() => rmSync(many, { recursive: true, force: true }));
     for (let i = 0; i < 1_001; i += 1) writeFileSync(join(many, `f${i}.txt`), "");
-    try {
-      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult;
-      expect(res.ok).toBe(true);
-      expect(res.entries).toHaveLength(1_000);
-      expect(res.truncated).toBe(true);
-    } finally {
-      rmSync(many, { recursive: true, force: true });
-    }
+    const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult;
+    expect(res.ok).toBe(true);
+    expect(res.entries).toHaveLength(1_000);
+    expect(res.truncated).toBe(true);
   });
 });
 
