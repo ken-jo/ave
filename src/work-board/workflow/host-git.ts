@@ -14,11 +14,12 @@ const DROPPED_ENV = /^(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_A
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
 export class HostGitError extends Error {
-  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "driver-name", message: string) { super(message); }
+  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name", message: string) { super(message); }
 }
 
 export interface HostGit {
-  /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws. */
+  /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws: one
+   * that ended without an exit code is `terminated`. */
   run(cwd: string, args: readonly string[], options?: { stdin?: string; drivers?: readonly string[] }): Promise<HostGitResult>;
   /** `-c` entries that switch off every filter and merge driver the repository's configuration names, and the filter drivers it marks required. */
   drivers(cwd: string): Promise<{ config: string[]; requiredFilters: string[] }>;
@@ -58,7 +59,9 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
       child.on("close", (code) => {
         clearTimeout(timer);
         if (failure) reject(failure);
-        else resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+        // Ended by something other than the host: what it wrote is not a whole answer.
+        else if (code === null) reject(new HostGitError("terminated", "git ended without an exit code"));
+        else resolve({ code, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
       });
       child.stdin.on("error", () => undefined);
       child.stdin.end(call.stdin ?? "");

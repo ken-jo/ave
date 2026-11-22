@@ -63,6 +63,15 @@ describe("host git", () => {
     expect(await reasonOf(createHostGit({ env, maxOutputBytes: 4 }).run(base, ["no-such-command"]))).toBe("output-limit");
   });
 
+  it("a git process that ends without an exit code rejects as terminated, whatever it wrote first", async () => {
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
+    spawned.fake = () => {
+      queueMicrotask(() => { child.stdout.emit("data", Buffer.from("half an answer")); child.emit("close", null); });
+      return child;
+    };
+    expect(await reasonOf(createHostGit({ env }).run(base, ["status"]))).toBe("terminated");
+  });
+
   it("a workspace a sandboxed command holds is refused before git starts, and runs again once released", async () => {
     const held = join(base, "held");
     const sibling = join(base, "sibling");
