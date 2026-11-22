@@ -191,6 +191,8 @@ interface HomeForm {
   marker: string;
   /** The first group is a root kept before the marker. */
   keep?: boolean;
+  /** Every match contains this root word, so text without it skips the form. */
+  root?: RegExp;
 }
 
 interface HomeDetector extends HomeForm {
@@ -235,19 +237,21 @@ function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
   const nameUnit = (space = escaped("20")): string =>
     `(?:(?![a-z]${colon}${separator}+users${separator}+${unit(space)})${unit(space)})`;
   const joined = (end: string): string => `${nameUnit()}+(?:(?: +[\\p{L}\\p{N}]${nameUnit()}*)+${end})?`;
-  const roots: [prefix: string, marker: string, keep?: boolean][] = [
-    [`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]"],
-    [`file${colon}${slash}{3}users${slash}`, "file://[home]"],
-    [`file${colon}${slash}{3}home${slash}`, "file://[home]"],
+  const usersRoot = /users/iu;
+  const homeRoot = /home/iu;
+  const roots: [prefix: string, marker: string, root: RegExp, keep?: boolean][] = [
+    [`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]", usersRoot],
+    [`file${colon}${slash}{3}users${slash}`, "file://[home]", usersRoot],
+    [`file${colon}${slash}{3}home${slash}`, "file://[home]", homeRoot],
     // A drive profile goes first, so a device path such as `\\?\C:\Users\bob` keeps its drive in the marker.
-    [`[a-z]${colon}${separator}+users${separator}+`, "[home]"],
+    [`[a-z]${colon}${separator}+users${separator}+`, "[home]", usersRoot],
     // A UNC root keeps its server and share. Its leading run is twice its separator, also when serialized.
-    [String.raw`((?<!\\)(\\{1,8})\2[^\s\\/]+\2(?:[^\s\\/]+\2)?)(?:users|home)\2`, "[home]", true],
-    [`${slash}users${slash}`, "[home]"],
-    [`${slash}home${slash}`, "[home]"],
+    [String.raw`((?<!\\)(\\{1,8})\2[^\s\\/]+\2(?:[^\s\\/]+\2)?)(?:users|home)\2`, "[home]", /users|home/iu, true],
+    [`${slash}users${slash}`, "[home]", usersRoot],
+    [`${slash}home${slash}`, "[home]", homeRoot],
   ];
   const forms = (name: string, opened = ""): HomeForm[] =>
-    roots.map(([prefix, marker, keep]) => ({ literal: new RegExp(opened + prefix + name, "giu"), marker, keep }));
+    roots.map(([prefix, marker, root, keep]) => ({ literal: new RegExp(opened + prefix + name, "giu"), marker, root, keep }));
   return mode === "path"
     ? forms(joined(`(?=${separator}|[?#"'\\x60]|$)`))
     : [...forms(joined(`(?=${separator}|["'\\x60])`), QUOTE_OPENED), ...forms(`${nameUnit(percent("20"))}+`)];
@@ -332,7 +336,8 @@ function keptRoot(text: string, match: RegExpExecArray | RegExpMatchArray, keep:
 }
 
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
-  for (const { literal, marker, keep } of forms) {
+  for (const { literal, marker, keep, root } of forms) {
+    if (root && !root.test(text)) continue;
     let copied = 0;
     let pieces: string[] | undefined;
     let insideJson: boolean | undefined;
