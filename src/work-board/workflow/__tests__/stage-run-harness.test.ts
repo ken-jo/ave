@@ -115,7 +115,7 @@ it.each(["hook failure", "script failure", "scripted exit", "interrupt"] as cons
   }
 });
 
-it("waits for child registration while stage preparation is held", async () => {
+it.each(["registered", "ended before preparation", "ended after release"] as const)("checks the preparation and registration order when %s", async outcome => {
   const preparing = deferred<void>();
   const release = deferred<void>();
   const linked = deferred<void>();
@@ -126,6 +126,7 @@ it("waits for child registration while stage preparation is held", async () => {
         prepare: async (...args) => {
           preparing.resolve();
           await release.promise;
+          if (outcome === "ended after release") throw new Error("preparation failed after release");
           return workspace.prepare(...args);
         },
       },
@@ -136,23 +137,37 @@ it("waits for child registration while stage preparation is held", async () => {
   try {
     const version = await h.confirm([autoStageOf("a")]);
     const id = await h.addItem(version);
-    running = h.start(id, h.local(version));
-    await Promise.race([preparing.promise, running]);
-    expect(h.children).toHaveLength(0);
+    const started = h.start(id, h.local(version, outcome === "ended before preparation" ? h.dir : undefined));
+    running = started;
+    async function checkRegistration() {
+      const first = await Promise.race([preparing.promise.then(() => "preparing"), started.then(result => result.status)]);
+      expect(first, "run ended before preparation").toBe("preparing");
+      expect(h.children).toHaveLength(0);
 
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const waits = [h.waitForLive(1), h.untilLive(1), h.untilSpawned(1)];
-    const settled = vi.fn();
-    for (const wait of waits) void wait.then(settled, settled);
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(settled).not.toHaveBeenCalled();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const waits = [h.waitForLive(1), h.untilLive(1), h.untilSpawned(1)];
+      const settled = vi.fn();
+      for (const wait of waits) void wait.then(settled, settled);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(settled).not.toHaveBeenCalled();
 
-    vi.useRealTimers();
-    release.resolve();
-    const [[child], live, spawned] = await Promise.all(waits);
-    expect(live).toEqual([child]);
-    expect(spawned).toEqual([child]);
-    expect(h.events).toContainEqual(expect.objectContaining({ phase: "executing", runSessionId: child.sessionId }));
+      vi.useRealTimers();
+      release.resolve();
+      const [[child], live, spawned] = await Promise.race([
+        Promise.all(waits).catch((cause: Error) => { throw new Error(`run ended before child registration: ${cause.message}`, { cause }); }),
+        started.then(result => { throw new Error(`run ended before child registration: ${result.status}`); }),
+      ]);
+      expect(live).toEqual([child]);
+      expect(spawned).toEqual([child]);
+      expect(h.events).toContainEqual(expect.objectContaining({ phase: "executing", runSessionId: child.sessionId }));
+    }
+    const registration = checkRegistration();
+    if (outcome === "registered") await registration;
+    else if (outcome === "ended before preparation") {
+      const result = await Promise.race([registration, started.then(() => setImmediate("registration stayed pending"))].map(promise =>
+        promise.catch((error: Error) => error.message)));
+      expect(result).toContain("run ended before preparation");
+    } else await expect(registration).rejects.toThrow("run ended before child registration");
   } finally {
     vi.useRealTimers();
     release.resolve();
