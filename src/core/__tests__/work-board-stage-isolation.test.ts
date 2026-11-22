@@ -236,3 +236,52 @@ it("a delete of a live run's item keeps the output folder until the run has sett
   await vi.waitFor(async () => expect(await h.runOf(runId)).toBeNull(), { timeout: 5000 });
   await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
 }));
+
+it("a discard whose first read of the stores is older than an item keeps the workspace of that item's starting run", () => withProductionParts(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  // A board that lists a row, so its file on disk says which items are gone.
+  await h.addItem(version);
+  const readStores = h.board.runsWithoutItem.bind(h.board);
+  let reads = 0;
+  let taken = false;
+  let deliver = (): void => undefined;
+  const held = new Promise<void>((resolve) => { deliver = resolve; });
+  vi.spyOn(h.board, "runsWithoutItem").mockImplementation(async () => {
+    reads += 1;
+    const answer = await readStores();
+    if (reads > 1) return answer;
+    taken = true;
+    await held;
+    return answer;
+  });
+  const discarding = production.discard();
+  await vi.waitFor(() => expect(taken).toBe(true), { timeout: 5000 });
+
+  // An unrelated item is added and started; its start is held where the folder is published and no record is stored yet.
+  const open = production.open.bind(production);
+  let runRoot = "";
+  let proceed = (): void => undefined;
+  const publishedOnly = new Promise<void>((resolve) => { proceed = resolve; });
+  vi.spyOn(production, "open").mockImplementation(async (...args) => {
+    const opened = await open(...args);
+    if (opened.ok) runRoot = opened.workspace.runRoot;
+    await publishedOnly;
+    return opened;
+  });
+  const id = await h.addItem(version);
+  void h.start(id, h.local(version));
+  await vi.waitFor(() => expect(runRoot).not.toBe(""), { timeout: 5000 });
+  expect((await h.item(id)).runId).toBeUndefined();
+
+  deliver();
+  await discarding;
+  expect(reads).toBeGreaterThan(1);
+  expect(existsSync(join(runRoot, "_out"))).toBe(true);
+  expect(existsSync(join(runRoot, "_run.json"))).toBe(true);
+
+  proceed();
+  const [child] = await h.untilLive(1);
+  expect(dirname(folderOf(child))).toBe(runRoot);
+  expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+  await h.until(id, item => item.runStatus === "cancelled");
+}));

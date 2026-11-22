@@ -442,6 +442,34 @@ describe("folder stage workspaces", () => {
     expect(read(project, "notes.txt")).toBe("notes\n");
   });
 
+  it("an output folder goes only when the stores still allow it once its run's queue is held, whatever an earlier read said", async () => {
+    const handle = await start(project);
+    write(handle.out, "result.md", "collected\n");
+    await handle.provider.release(handle.run, "all");
+    // The first read is the stale one: it allows the removal, and every later read does not.
+    let reads = 0;
+    let fails = false;
+    const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => {
+      reads += 1;
+      const first = reads === 1;
+      if (!first && fails) throw new Error("the stores cannot be read");
+      return run => run.runId === handle.run.runId && first;
+    } });
+    await restarted.discard();
+    expect(reads).toBe(2);
+    reads = 0;
+    await restarted.sweep([]);
+    expect(reads).toBe(2);
+    // A second read that cannot be had removes nothing either.
+    fails = true;
+    reads = 0;
+    await expect(restarted.discard()).rejects.toThrow("the stores cannot be read");
+    reads = 0;
+    await restarted.sweep([]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
+    expect(read(handle.out, "result.md")).toBe("collected\n");
+  });
+
   it("a run record that is a link, has a second name or lacks a field authorizes no cleanup", async () => {
     const handle = await start(project);
     await stageRoot(handle, "s1");

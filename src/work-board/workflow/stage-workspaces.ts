@@ -634,13 +634,21 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return same ? { ...seen, file } : null;
   }
 
+  /** Whether the stores let the run's output go, read now. A start publishes its folder before it stores its record, so only a read
+   * begun after the folder was listed, with the run's queue held, decides: by then the run's row is on the board. */
+  async function removableNow(run: { runId: string; itemId: number }): Promise<boolean> {
+    return (await options.removable?.())?.(run) === true;
+  }
+
   async function discard(): Promise<void> {
-    const removable = await options.removable?.();
-    if (removable === undefined) return;
+    // A first selection only, so that the stores are read again for the few runs it names and not for every folder.
+    const selected = await options.removable?.();
+    if (selected === undefined) return;
     for (const seen of recordedRuns()) {
       const { runId, itemId } = seen.file;
-      if (!removable({ runId, itemId })) continue;
+      if (!selected({ runId, itemId })) continue;
       await serial(runId, async () => {
+        if (!(await removableNow({ runId, itemId }))) return;
         const current = heldStill(seen);
         if (current !== null) await releaseIn(current, "all", "drop");
       });
@@ -651,12 +659,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   async function sweep(activeRunIds: readonly string[]): Promise<void> {
     const active = new Set(activeRunIds.map(runSlug));
     // What a stop between a record's removal and the discard left behind goes here; an answer that could not be had keeps it.
-    const removable = await options.removable?.().catch(() => undefined);
+    const selected = await options.removable?.().catch(() => undefined);
     for (const seen of recordedRuns()) {
       const { runId, itemId } = seen.file;
       if (active.has(runSlug(runId))) continue;
-      const output = removable?.({ runId, itemId }) === true ? "drop" : "keep";
       await serial(runId, async () => {
+        const output = selected?.({ runId, itemId }) === true && await removableNow({ runId, itemId }).catch(() => false) ? "drop" : "keep";
         const current = heldStill(seen);
         if (current !== null) await releaseIn(current, "all", output);
       }).catch(() => undefined);
