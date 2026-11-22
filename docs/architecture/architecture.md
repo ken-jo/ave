@@ -3556,8 +3556,10 @@ in audit path values (`redactFsPath`), after the configured home's own forms,
 with `[home]` or `file://[home]`, under a drive, a UNC server and optional
 share (both kept), a `/users/` or a `/home/` root. A profile name is letters,
 marks, digits, `._-` and apostrophes before a letter or digit, each also
-percent-encoded up to the same three layers or written as a JSON `\u` escape;
-its separators may be encoded either way too. Encodings deeper than three
+percent-encoded up to the same three layers or written as a JSON `\u` escape,
+an odd backslash run; a single backslash followed by a raw folder separator
+is a separator, so `C:\Users\bob\uface\x` keeps the folder `uface`. Its
+separators may be encoded either way too. Encodings deeper than three
 layers are outside the contract. Words after a space join the name in a path
 value, before a separator, the value's end, or a query or fragment. In display
 text they join only inside a quoted or backtick span that starts with the home,

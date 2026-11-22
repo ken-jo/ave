@@ -224,8 +224,10 @@ function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
   const separator = `(?:[\\\\/]|${escaped("2f|5c")})`;
   const colon = `(?::|${escaped("3a")})`;
   const letter = String.raw`3\d|[46][1-9a-f]|[57][\da]|[89a-f][\da-f]`;
+  // A JSON escape is an odd backslash run. A single backslash before a raw folder separator is a separator itself.
+  const wide = String.raw`(?:\\{3}|\\{5}|\\{7})u(?!00)[\da-f]{4}|\\u(?!00)[\da-f]{4}(?!\\[^"\\/bfnrtu])`;
   const unit = `(?:[\\p{L}\\p{M}\\p{N}._-]|'(?=[\\p{L}\\p{N}])|${escaped(`2[0de]|5f|${letter}`)}`
-    + `|${escaped("27")}(?=[\\p{L}\\p{N}]|${escaped(letter)})|\\\\{1,7}u(?!00)[\\da-f]{4})`;
+    + `|${escaped("27")}(?=[\\p{L}\\p{N}]|${escaped(letter)})|${wide})`;
   // A drive profile joined directly to a name starts the next home.
   const nameUnit = `(?:(?![a-z]${colon}${separator}+users${separator}+${unit})${unit})`;
   const joined = (end: string): string => `${nameUnit}+(?:(?: +[\\p{L}\\p{N}]${nameUnit}*)+${end})?`;

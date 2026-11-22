@@ -34,6 +34,7 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     ["a URL authority", "see https://docs.example/users/예시/api", "see https://docs.example/[home]/api"],
     ["a URL authority before a home", "see https://docs.example/home/bob/api", "see https://docs.example/[home]/api"],
     ["an encoded URL authority", "next=https%3A%2F%2Fdocs.example%2Fusers%2Fbob%2Fapi", "next=https%3A%2F%2Fdocs.example%2F[home]%2Fapi"],
+    ["a folder that looks like an escape", "open C:\\Users\\bob\\uface\\x now", "open [home]\\uface\\x now"],
   ])("redacts %s in text", async (_label, input, expected) => {
     const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
     expect(redactHomePathsInText(input)).toBe(expected);
@@ -49,6 +50,14 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
     const line = '{"p":"/home/bob\\u00e9/x","q":"\\u002fhome\\u002fbob/y","r":"/home/\\uc608\\uc81c/z","s":"\\\\\\\\example\\\\Users\\\\bob\\\\w","next":1}';
     expect(JSON.parse(redactHomePathsInText(line))).toEqual({ p: "[home]/x", q: "[home]/y", r: "[home]/z", s: String.raw`\\example\[home]\w`, next: 1 });
+  });
+
+  it("tells a JSON escape in a name from a folder after a backslash", async () => {
+    const { redactFsPath, redactHomePathsInText } = await loadHomeRedactors(home, platform);
+    const line = JSON.stringify({ p: "C:\\Users\\bob\\uface\\x" });
+    expect(JSON.parse(redactHomePathsInText(line))).toEqual({ p: "[home]\\uface\\x" });
+    const escaped = '{"c":"cat \\"/home/\\uc608\\uc81c\\"","d":"C:\\\\Users\\\\bob\\uc608\\\\x","e":"/home/bob\\uc608\\nx"}';
+    for (const redact of [redactHomePathsInText, redactFsPath]) expect(redact(escaped)).not.toMatch(/uc608|uc81c/u);
   });
 
   it("keeps the arguments of a serialized command", async () => {
@@ -77,6 +86,7 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     ["file:///home/bob%C3%A9/x?y=1", "file://[home]/x?y=1"],
     ["file:///C:/Users/Bobé/x", "file://[home]/x"],
     ["https://docs.example/users/bob/api", "https://docs.example/[home]/api"],
+    ["C:\\Users\\bob\\uface\\x", "[home]\\uface\\x"],
   ])("redacts any account's home in the path value %s", async (input, expected) => {
     const { redactFsPath } = await loadHomeRedactors(home, platform);
     expect(redactFsPath(input)).toBe(expected);
@@ -118,6 +128,7 @@ it("scans adversarial home text and paths in linear time", async () => {
     ["%2525", "/home/"], ["x ", "C:\\Users\\"], ["/users/x", "https://x.example"],
     ["\\\\a\\b", ""], ["a", "\\\\"], ["\\", ""], ["x y ", '"/home/'], ['"/home/x y ', ""], ["\\u00e9", "/home/"],
     ["\\u002fhome", ""], ["%27", "/home/"], ["%2D", "file://"],
+    ["\\uabcd", "/home/"], ["\\\\\\uabcd", "/home/"], ["\\uabcd\\x", "C:\\Users\\"], ["\\\\uabcd", "C:\\\\Users\\\\"],
   ] as const;
   for (const [unit, head] of families) {
     for (const redact of [redactHomePathsInText, redactFsPath]) {
