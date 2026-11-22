@@ -142,11 +142,13 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.mocked(stampWindowsAclAsync).mockImplementation(async () => {
       await new Promise<void>(resolve => setImmediate(resolve));
       now += 23;
-      assertionPending = true;
     });
     vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += 29; assertionPending = true; });
     const info = vi.spyOn(console, "log").mockImplementation(() => {});
-    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
+    const grant = await grantWindowsWorkerFilesystemAccess({
+      holderPid: () => { assertionPending = true; return process.pid + 1; },
+      allowWrite: [target],
+    });
     expect(assertions).toBe(2);
     expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(2);
     expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", {
