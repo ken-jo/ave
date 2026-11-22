@@ -24,7 +24,7 @@ import {
   canonicalizePathForMatch,
   caseFoldForMatch,
   resolvePathForPolicy,
-  createSensitivePathMatcher,
+  createSensitivePathCheck,
   allowKeyMaterialInspectionUnder,
 } from "../../permissions/sensitive-paths.js";
 import { listAuthorizedWorkspaceRoots } from "../../permissions/workspace-authorized-roots.js";
@@ -1002,7 +1002,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         const realRoot = root === null ? null : await fs.realpath(root.path).catch(() => null);
         // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
         // (folders first), and only the kept rows cost an lstat.
-        const isSensitiveEntry = createSensitivePathMatcher("write", undefined, undefined, { audience: "person" });
+        const isSensitiveEntry = createSensitivePathCheck("write", "person");
         const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
         let hidden = 0;
         for (const ent of dirents) {
