@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import { createTestRequestAnchor } from "../pipeline/__tests__/rationale-fixtures.js";
@@ -9,7 +9,7 @@ import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticke
 import { captureRationalePolicySnapshot } from "../pipeline/rationale-policy-epoch.js";
 import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,9 +40,12 @@ vi.mock("node:child_process", async (original) => ({
 }));
 const reviewResources = new PermissionTestResources();
 const originalPlatform = process.platform;
+const fixtureDirectories: string[] = [];
 let directory: string;
 beforeEach(() => {
-  directory = realpathSync.native(mkdtempSync(join(tmpdir(), "executor-sandbox-escalation-")));
+  const fixture = reviewResources.makeTmpDir("executor-sandbox-escalation-");
+  fixtureDirectories.push(fixture);
+  directory = realpathSync.native(fixture);
   vi.stubEnv("AVE_HOME", join(directory, "profile"));
   __resetShellResolverCache();
   processProbe.execFileSync.mockImplementation((_file, args: readonly string[]) =>
@@ -53,14 +56,21 @@ beforeEach(() => {
     confines: { filesystem: true, process: true, network: true } });
 });
 afterEach(async () => {
-  __resetActiveSandboxCapabilityForTest();
-  __resetSandboxRequestedAtBootForTest();
-  __resetShellResolverCache();
-  setProcessPlatform(originalPlatform);
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
-  await reviewResources.cleanup();
-  await cleanupTmpDir(directory);
+  try {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    __resetShellResolverCache();
+    setProcessPlatform(originalPlatform);
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  } finally {
+    await reviewResources.cleanup();
+  }
+});
+afterAll(async () => {
+  for (const fixture of fixtureDirectories) {
+    await expect(lstat(fixture), fixture).rejects.toMatchObject({ code: "ENOENT" });
+  }
 });
 
 function recordedAudit() {
