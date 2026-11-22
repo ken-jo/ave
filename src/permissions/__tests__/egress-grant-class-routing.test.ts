@@ -223,7 +223,7 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
   }
 
   async function launchFor(token: string) {
-    return prepareMxcShellLaunch({
+    const launch = await prepareMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",
       cwd: String.raw`C:\work\repo`,
@@ -232,6 +232,8 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
       timeoutMs: 5_000,
       exists: () => true,
     });
+    launch.activate();
+    return launch;
   }
 
   function laneFor(port: number) {

@@ -64,6 +64,7 @@ describe.runIf(process.platform === "win32")("container control-file write bound
           timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs, exists: existsSync,
           });
           const prepared = launch;
+          prepared.activate();
           return await new Promise<{ status: number | null; output: string }>((resolveRun, reject) => {
             const child = spawn(prepared.argv[0]!, prepared.argv.slice(1), { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
             prepared.bindChild(child);

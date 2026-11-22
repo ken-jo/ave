@@ -154,6 +154,7 @@ async function lane(token: string, kind: LaneKind) {
       exists: () => true,
     });
     listeners.push({ close: launch.release });
+    launch.activate();
     return { port: launch.proxyPort };
   }
   const relay = await openHostEgressListener(token);

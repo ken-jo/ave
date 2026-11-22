@@ -80,6 +80,7 @@ export interface EgressInvocationRelease {
 interface LiveInvocation {
   readonly owner: EgressInvocationOwner;
   readonly abortSignal: AbortSignal | undefined;
+  readonly release: () => void;
 }
 
 const live = new Map<string, LiveInvocation>();
@@ -92,9 +93,13 @@ export function openEgressInvocation(owner: EgressInvocationOwner, options: Egre
   let token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   // 128 random bits do not collide in practice; a collision would silently merge two owners, so it is re-drawn rather than assumed away.
   while (live.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
-  live.set(token, { owner, abortSignal: options.abortSignal });
-  let released = false;
   let processGroup: number | undefined;
+  const release = (): void => {
+    if (live.get(token)?.release !== release) return;
+    live.delete(token);
+    for (const listener of releaseListeners) listener(token, { owner, processGroup });
+  };
+  live.set(token, { owner, abortSignal: options.abortSignal, release });
   return {
     token,
     owner,
@@ -102,13 +107,12 @@ export function openEgressInvocation(owner: EgressInvocationOwner, options: Egre
       if (!Number.isInteger(pgid) || pgid <= 1) throw new Error(`egress invocation: invalid process group ${String(pgid)}`);
       processGroup = pgid;
     },
-    release: () => {
-      if (released) return;
-      released = true;
-      live.delete(token);
-      for (const listener of releaseListeners) listener(token, { owner, processGroup });
-    },
+    release,
   };
+}
+
+export function releaseEgressInvocation(token: string): void {
+  live.get(token)?.release();
 }
 
 // The live owner of a token, or undefined for a released or foreign key.

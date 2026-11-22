@@ -18,6 +18,7 @@ const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
+  activate: vi.fn(),
   bindChild: vi.fn(),
   release: vi.fn(async () => undefined),
 }));
@@ -213,6 +214,7 @@ describe("builtin shell — Windows MXC containers", () => {
     mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }) => ({
       argv: [WXC_EXEC, "--config-base64", isParserLaunch(input) ? PARSER_REQUEST : "eyJ9"],
       proxyPort: 51234,
+      activate: mxcLaunchMock.activate,
       bindChild: mxcLaunchMock.bindChild,
       release: mxcLaunchMock.release,
     }));
@@ -392,7 +394,7 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it.each([false, true])("fails closed on policy delivery failure with headless=%s", async (headless) => {
     bootMxcShells();
-    mxcLaunchMock.prepare.mockResolvedValueOnce({ argv: [WXC_EXEC, "--config-base64", PARSER_REQUEST], proxyPort: 51234, bindChild: mxcLaunchMock.bindChild, release: mxcLaunchMock.release });
+    mxcLaunchMock.prepare.mockResolvedValueOnce({ argv: [WXC_EXEC, "--config-base64", PARSER_REQUEST], proxyPort: 51234, activate: mxcLaunchMock.activate, bindChild: mxcLaunchMock.bindChild, release: mxcLaunchMock.release });
     const message = "Windows sandbox policy is too large: 40324 characters, limit 24574";
     mxcLaunchMock.prepare.mockRejectedValueOnce(new Error(message));
     const result = await executePowerShell({ ...context("policy-delivery-failure"), headless });
@@ -489,6 +491,7 @@ describe("builtin shell — Windows MXC containers", () => {
       return {
         argv: [WXC_EXEC, "--config-base64", parser ? PARSER_REQUEST : "eyJ9"],
         proxyPort: 51234,
+        activate: mxcLaunchMock.activate,
         bindChild: mxcLaunchMock.bindChild,
         release: rejects === undefined ? mxcLaunchMock.release : async () => { await mxcLaunchMock.release(); throw rejects; },
       };

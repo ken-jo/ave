@@ -93,6 +93,7 @@ let windowsShellLocalNetworkRevision = 0;
 const windowsShellPlanRevisions = new WeakMap<HostShellExecutionPlan, number>();
 let windowsShellStartProbe: (() => void) | undefined;
 let _statusChangeListener: (() => void) | undefined;
+const sandboxStatusObservers = new Set<() => void>();
 
 // The one observer of status-snapshot changes: the desktop IPC layer, which turns each change into a renderer hint so a
 // surface that read the snapshot before a late change (the Windows MXC start probe settling after boot) re-reads it.
@@ -101,7 +102,13 @@ export function setSandboxStatusChangeListener(listener: (() => void) | undefine
   _statusChangeListener = listener;
 }
 
+export function onSandboxStatusChanged(listener: () => void): () => void {
+  sandboxStatusObservers.add(listener);
+  return () => sandboxStatusObservers.delete(listener);
+}
+
 function notifySandboxStatusChanged(): void {
+  for (const listener of sandboxStatusObservers) listener();
   _statusChangeListener?.();
 }
 

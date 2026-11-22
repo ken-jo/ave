@@ -42,6 +42,7 @@ describe.runIf(process.platform === "win32")("native pipe policy lifetime", () =
       expect(launch.argv[1]).toBe("--config");
       expect(launch.argv[2]).toMatch(/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/);
       const started = performance.now();
+      launch.activate();
       const result = await new Promise<{ stdout: string; stderr: string }>((resolveRun, reject) => {
         const child = execFile(launch!.argv[0]!, [...launch!.argv.slice(1)], {
           cwd: win32.dirname(launch!.argv[0]!), windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,

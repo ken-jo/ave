@@ -93,7 +93,11 @@ describe("prepareMxcShellLaunch", () => {
     h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
     const launch = await prepareMxcShellLaunch(INPUT);
     try {
-      expect(h.openRelay).toHaveBeenCalledWith("tok");
+      expect(h.openRelay).toHaveBeenCalledWith("tok", expect.objectContaining({ signal: expect.any(AbortSignal) }));
+      const admission = h.openRelay.mock.calls[0]?.[1];
+      expect(admission.acceptsConnections()).toBe(false);
+      launch.activate();
+      expect(admission.acceptsConnections()).toBe(true);
       expect(launch.argv[0]).toBe(String.raw`C:\Ave\resources\mxc\x64\wxc-exec.exe`);
       const request = decodeRequest(launch.argv);
       expect(request["runtimeConfig"]).toEqual({ networkProxy: `http://127.0.0.1:${launch.proxyPort}` });

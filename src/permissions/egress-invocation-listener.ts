@@ -22,9 +22,16 @@ export interface InvocationProxyListener {
   close(): Promise<void>;
 }
 
+export interface InvocationProxyAdmission {
+  readonly signal: AbortSignal;
+  assertCanBind(): void;
+  acceptsConnections(): boolean;
+}
+
 export interface OpenInvocationProxyListenerOptions {
   // The upstream for the next request, or undefined when the proxy is gone (the request is then refused with 502 rather than sent anywhere else).
   readonly upstream: () => InvocationProxyUpstream | undefined;
+  readonly admission?: InvocationProxyAdmission;
   // Called for each destination refused here, with the reason. Never throws into the listener.
   readonly onRefused?: (destination: string, reason: string) => void;
   // Upper bound on the CONNECT response head read back from the upstream.
@@ -232,9 +239,9 @@ export async function openInvocationProxyListener(
     up.on("data", onData);
   });
 
-  server.on("connection", (socket: net.Socket) => {
+  server.prependListener("connection", (socket: net.Socket) => {
     // A tentative bind inside the shared range must never accept a request.
-    if (!accepting) {
+    if (!accepting || options.admission?.acceptsConnections() === false) {
       socket.destroy();
       return;
     }
@@ -243,8 +250,21 @@ export async function openInvocationProxyListener(
   });
   server.on("clientError", (_err, socket) => socket.destroy());
 
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    accepting = false;
+    options.admission?.signal.removeEventListener("abort", handleAbort);
+    closing ??= new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
+    });
+    return closing;
+  };
+  const handleAbort = (): void => { void close(); };
   let port: number | undefined;
   for (let attempt = 0; attempt < MAX_LISTENER_BIND_ATTEMPTS; attempt++) {
+    options.admission?.assertCanBind();
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
@@ -264,18 +284,17 @@ export async function openInvocationProxyListener(
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
   if (port === undefined) throw new Error("invocation proxy listener could not bind outside shared proxy port range");
+  try {
+    options.admission?.assertCanBind();
+    options.admission?.signal.addEventListener("abort", handleAbort, { once: true });
+  } catch (error) {
+    await close();
+    throw error;
+  }
   accepting = true;
-  let closing: Promise<void> | undefined;
   return {
     port,
     url: `http://127.0.0.1:${port}`,
-    close: () => {
-      closing ??= new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        for (const socket of sockets) socket.destroy();
-        sockets.clear();
-      });
-      return closing;
-    },
+    close,
   };
 }

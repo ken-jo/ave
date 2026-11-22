@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxManager, type SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
-import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { deferred, useTempDirs } from "../../__tests__/test-helpers.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
@@ -13,6 +13,7 @@ import { createShellNetworkPermissionEvaluator } from "../egress-approval.js";
 import { createEgressAskCallback, EGRESS_DENY_REASONS, type EgressApprovalRequester } from "../egress-ask.js";
 import { EgressGrantStore } from "../egress-grants.js";
 import * as hostListener from "../egress-host-listener.js";
+import * as frontendListener from "../egress-invocation-listener.js";
 import { egressIdentityStrength } from "../egress-identity.js";
 import { egressInvocationOwner, openEgressInvocation, type EgressInvocation } from "../egress-invocations.js";
 import { PermissionManager } from "../permission-manager.js";
@@ -24,6 +25,7 @@ import {
   getWindowsSandboxSubstrate,
   setActiveSandboxCapability,
   setShellSandboxRequestedAtBoot,
+  setWindowsShellLocalNetworkAccess,
   setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
 
@@ -66,7 +68,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     return relay;
   }
 
-  async function launchShell(token = invocation.token) {
+  async function launchShell(token = invocation.token, activate = true) {
     const launch = await prepareMxcShellLaunch({
       egressToken: token,
       commandLine: "contained command",
@@ -78,6 +80,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
       list: () => [],
     });
     cleanups.push(launch.release);
+    if (activate) launch.activate();
     return launch;
   }
 
@@ -278,5 +281,63 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     vi.spyOn(hostListener, "openHostEgressListener").mockRejectedValueOnce(new Error("relay unavailable"));
     await expect(launchShell()).rejects.toThrow("relay unavailable");
     expect(observed).toEqual([]);
+  });
+
+  it.each(["consent", "cancel", "release"] as const)("keeps both endpoints closed to traffic when %s ends admission during a bind", async (revocation) => {
+    const controller = new AbortController();
+    const pendingInvocation = openEgressInvocation(invocation.owner, { abortSignal: controller.signal });
+    cleanups.push(pendingInvocation.release);
+    const frontendBound = deferred<number>();
+    const completeBind = deferred<void>();
+    const openFrontend = frontendListener.openInvocationProxyListener;
+    const openRelay = hostListener.openHostEgressListener;
+    const backendBound = deferred<Awaited<ReturnType<typeof openRelay>>>();
+    vi.spyOn(hostListener, "openHostEgressListener").mockImplementationOnce(async (...args) => {
+      const relay = await openRelay(...args);
+      backendBound.resolve(relay);
+      return relay;
+    });
+    vi.spyOn(frontendListener, "openInvocationProxyListener").mockImplementationOnce(async (...args) => {
+      const listener = await openFrontend(...args);
+      frontendBound.resolve(listener.port);
+      await completeBind.promise;
+      return listener;
+    });
+
+    const launch = launchShell(pendingInvocation.token, false);
+    const result = Promise.allSettled([launch]);
+    let responses: PromiseSettledResult<number | undefined>[];
+    let ownerRemoved: boolean;
+    let endpoints: [number, Awaited<ReturnType<typeof openRelay>>];
+    try {
+      endpoints = await Promise.race([
+        Promise.all([frontendBound.promise, backendBound.promise]),
+        launch.then(() => { throw new Error("Launch returned before the bind completed"); }),
+      ]);
+      const [frontend, backend] = endpoints;
+      responses = await Promise.allSettled([
+        request(frontend, "Basic ignored"),
+        request(backend.port, backend.proxyAuthorization),
+      ]);
+      if (revocation === "consent") {
+        setWindowsShellLocalNetworkAccess(false);
+        setWindowsShellLocalNetworkAccess(true);
+      } else if (revocation === "cancel") {
+        controller.abort();
+      } else {
+        pendingInvocation.release();
+      }
+      ownerRemoved = egressInvocationOwner(pendingInvocation.token) === undefined;
+    } finally {
+      completeBind.resolve();
+      await result;
+    }
+    expect(responses.map(({ status }) => status)).toEqual(["rejected", "rejected"]);
+    expect(observed).toEqual([]);
+    expect((await result)[0]?.status).toBe("rejected");
+    expect(ownerRemoved).toBe(true);
+    const [frontend, backend] = endpoints;
+    await expect(request(frontend, "Basic ignored")).rejects.toMatchObject({ code: "ECONNREFUSED" });
+    await expect(request(backend.port, backend.proxyAuthorization)).rejects.toMatchObject({ code: "ECONNREFUSED" });
   });
 });

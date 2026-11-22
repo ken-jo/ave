@@ -4075,6 +4075,7 @@ async function spawnPowerShellInMxc(
       if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
       assertManagedChildProcessAdmissionOpen("tool:powershell:mxc");
       if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
+      launch.activate();
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
         // nothing in the workspace sits beside it; the container's working

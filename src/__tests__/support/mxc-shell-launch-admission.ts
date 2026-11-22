@@ -8,14 +8,15 @@ export function registerMxcShellLaunchAdmissionFixture(...fixtureTokens: string[
   beforeEach(() => {
     const capability = vi.spyOn(sandbox, "detectMxcShellCapability").mockReturnValue(mxcShellCapability());
     const lookup = invocations.egressInvocationOwner;
+    const shellOwner: invocations.ShellEgressOwner = {
+      kind: "shell",
+      toolName: "powershell",
+      toolUseId: undefined,
+      requiresListener: true,
+      context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" },
+    };
     const owner = fixtureTokens.length === 0 ? undefined : vi.spyOn(invocations, "egressInvocationOwner")
-      .mockImplementation((token) => fixtureTokens.includes(token) ? {
-        kind: "shell",
-        toolName: "powershell",
-        toolUseId: undefined,
-        requiresListener: true,
-        context: { sessionId: undefined, workspaceRoot: undefined, approvalSurface: "unavailable" },
-      } : lookup(token));
+      .mockImplementation((token) => fixtureTokens.includes(token) ? shellOwner : lookup(token));
     return () => {
       owner?.mockRestore();
       capability.mockRestore();
