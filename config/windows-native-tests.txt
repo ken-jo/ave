@@ -1035,6 +1035,7 @@ src/work-board/workflow/__tests__/stage-workspaces-folder.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-git.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-open-race.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-ownership.test.ts
+src/work-board/workflow/__tests__/workspace-record.test.ts
 test/renderer/assistant-card-contrast.test.tsx
 test/renderer/plugin-load-refusal-visibility.test.tsx
 test/scripts/asrt-bwrap-ownership.test.ts

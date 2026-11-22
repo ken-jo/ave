@@ -12,7 +12,7 @@ import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId,
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
-import { isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, registeredIn, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
+import { isWorkspaceRecord, type OutputFile, offMachine, ownerOf, recordFits, type Registration, registeredIn, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -141,7 +141,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const text = held?.readFile("gitdir")?.toString("utf8");
       if (held === undefined || text === undefined) return undefined;
       const gitdir = resolve(admin, text.trimEnd());
-      const own = basename(gitdir) === ".git" && realDirId(dirname(gitdir)) === folder.id && realDirId(dirname(dirname(gitdir))) === at.run.id;
+      // A registration no later call would take is not recorded.
+      const own = !offMachine(gitdir) && basename(gitdir) === ".git" && realDirId(dirname(gitdir)) === folder.id && realDirId(dirname(dirname(gitdir))) === at.run.id;
       return own ? { admin, id: held.id, gitdir } : undefined;
     } catch {
       return undefined;

@@ -94,12 +94,17 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
     && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined));
 }
 
+/** A path that starts with two separators: a network share or a device. Looking at one reaches off this machine. */
+export const offMachine = (path: string): boolean => /^[\\/]{2}/u.test(path);
+
 /**
  * Whether a registration's `gitdir` names the `.git` file of the run's folder for `key`. Git writes that path as it really is on disk,
  * which need not be the text the host reached the run folder by (a link above the home). So the run folder is told by which directory
- * it is, and only the folder's own name is compared; a path whose run folder cannot be identified names nothing.
+ * it is, and only the folder's own name is compared; a path whose run folder cannot be identified names nothing. Neither does a network
+ * or device path, which is refused before anything is asked of it: a record is read from disk and may name any path.
  */
 export function registeredIn(run: NodeId, key: string, gitdir: string): boolean {
+  if (offMachine(gitdir)) return false;
   const folder = dirname(gitdir);
   const fold = (name: string): string => process.platform === "win32" ? name.toLowerCase() : name;
   return basename(gitdir) === ".git" && fold(basename(folder)) === fold(key === JOIN_DIR ? JOIN_DIR : stageDirName(key)) && realDirId(dirname(folder)) === run;
