@@ -5,10 +5,11 @@ import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } 
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { RunWorkspace, TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
+import { plainFolderIgnore } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
-import { IGNORE_DIR, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
+import { IGNORE_PREFIX, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { copySeedFiles, hashSeedFile, isInside, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 type Refusal = typeof WORKSPACE_REFUSALS[number];
@@ -66,9 +67,6 @@ const plainDirectory = (path: string): boolean => {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   return stat?.isDirectory() === true && !stat.isSymbolicLink();
 };
-/** A plain folder's matcher takes its rules from the folder's own ignore files alone, and its case rule from the platform's file names:
- * neither comes from a configuration file, a variable or the repository the host made for it. */
-const PLAIN_FOLDER_CONFIG = ["-c", "core.excludesFile=", "-c", `core.ignoreCase=${process.platform === "win32" || process.platform === "darwin"}`] as const;
 const nul = (text: string): string[] => text.split("\0").filter(entry => entry !== "");
 const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 
@@ -127,6 +125,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     rmSync(target, { recursive: true, force: true, maxRetries: 3 });
   }
 
+  /** What a stop while a stage folder was seeded left of the ignore matcher. */
+  function clearIgnoreFolders(runRoot: string): void {
+    for (const name of readdirSync(runRoot)) if (name.startsWith(IGNORE_PREFIX)) removeFolder(runRoot, join(runRoot, name));
+  }
+
   async function gitOut(cwd: string, args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> {
     const result = await git.run(cwd, args, call);
     if (result.code !== 0) throw new Error(`git ${args[0] ?? ""} failed (${result.code}): ${result.stderr.trim().slice(0, 300)}`);
@@ -177,42 +180,6 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       // Exit 1: none of them is ignored.
       if (checked.code !== 0 && checked.code !== 1) throw new Error("the project's ignore rules could not be read");
       return new Set(nul(checked.stdout));
-    };
-  }
-
-  /** A plain folder honours its own `.gitignore` files, read by git's matcher. `check-ignore` runs only against a repository, so an
-   * empty one is made in the run root on first need and removed by `done`; the folder is its work tree for that call and nothing is
-   * written into it. Without an ignore file above a path git is not run, and the user's own excludes file never applies. */
-  function plainFolderIgnore(runRoot: string, root: string): { ignored: NonNullable<SeedRules["ignored"]>; done: () => void } {
-    const scratch = join(runRoot, IGNORE_DIR);
-    let made = false;
-    const ruled = new Map<string, boolean>();
-    const hasRules = (directory: string): boolean => {
-      let known = ruled.get(directory);
-      if (known === undefined) {
-        known = lstatSync(join(root, directory, ".gitignore"), { throwIfNoEntry: false }) !== undefined;
-        ruled.set(directory, known);
-      }
-      return known;
-    };
-    return {
-      ignored: async (paths) => {
-        const reached = paths.some((path) => {
-          const segments = path.replace(/\/$/u, "").split("/");
-          return segments.some((_, depth) => hasRules(segments.slice(0, depth).join("/")));
-        });
-        if (!reached) return new Set<string>();
-        if (!made) {
-          removeFolder(runRoot, scratch);
-          await gitOut(runRoot, ["init", "-q", "--template=", scratch], { isolated: true });
-          made = true;
-        }
-        const checked = await git.run(root, [`--git-dir=${join(scratch, ".git")}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
-          { stdin: paths.map(path => `${path}\0`).join(""), isolated: true, drivers: PLAIN_FOLDER_CONFIG });
-        if (checked.code !== 0 && checked.code !== 1) throw new Error("the folder's ignore rules could not be read");
-        return new Set(nul(checked.stdout));
-      },
-      done: () => { try { removeFolder(runRoot, scratch); } catch { /* the next seeding removes it first */ } },
     };
   }
 
@@ -316,7 +283,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     let files = 0;
     let bytes = 0;
     const limits = options.seedLimits ?? { files: MAX_SEED_FILES, bytes: MAX_SEED_BYTES };
-    const plain = file.projectRoot !== undefined && file.ignoreRules !== true ? plainFolderIgnore(runRoot, file.projectRoot) : undefined;
+    const plain = file.projectRoot !== undefined && file.ignoreRules !== true ? plainFolderIgnore(git, runRoot, file.projectRoot, scratch => removeFolder(runRoot, scratch)) : undefined;
     try {
       for (const input of inputs) {
         let source: string;
@@ -552,7 +519,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (file.stages[stageId] !== undefined) await removeStage(runRoot, file, stageId);
     }
     if (stageIds !== "all") return;
-    removeFolder(runRoot, join(runRoot, IGNORE_DIR));
+    clearIgnoreFolders(runRoot);
     const root = file.projectRoot;
     if (file.kind === "git" && root !== undefined && file.branch !== undefined && file.baseCommit !== undefined) {
       const joinDir = join(runRoot, JOIN_DIR);

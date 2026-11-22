@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
-import { createHostGit, HostGitError } from "../host-git.js";
+import { plainFolderIgnore } from "../folder-ignore.js";
+import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE } from "../workspace-layout.js";
@@ -41,6 +42,20 @@ async function stageRoot(handle: Handle, stageId: string, over: Parameters<typeo
   if (!prepared.ok) throw new Error(`prepare refused: ${prepared.code}`);
   expect(prepared.workspace.kind).toBe("folder");
   return prepared.workspace.root;
+}
+
+/** The real host git, noting where each ignore matcher's repository is made; `broken` makes a call fail after it ran, or throw instead. */
+function watchedGit(broken?: (args: readonly string[]) => "fails" | HostGitError | undefined): { git: HostGit; made: string[] } {
+  const real = createHostGit({ env });
+  const made: string[] = [];
+  const run: HostGit["run"] = async (cwd, args, call) => {
+    if (args[0] === "init") made.push(args.at(-1) ?? "");
+    const how = broken?.(args);
+    if (how instanceof HostGitError) throw how;
+    const result = await real.run(cwd, args, call);
+    return how === "fails" ? { ...result, code: 128 } : result;
+  };
+  return { made, git: { run, drivers: real.drivers } };
 }
 
 beforeEach(() => {
@@ -190,6 +205,83 @@ describe("folder stage workspaces", () => {
       expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] })), `inherited core.ignoreCase=${inherited}`).toEqual(expected);
     }
     expect(readdirSync(elsewhere)).toEqual([".git"]);
+  });
+
+  it("each seeding makes the ignore matcher's repository in a folder of its own under its run, and it is gone afterwards", async () => {
+    write(project, "debug.log", "log\n");
+    write(project, ".gitignore", "*.log\n");
+    const watched = watchedGit();
+    const [first, second] = [await start(project, { git: watched.git }), await start(project, { git: watched.git })];
+    const seeded = await Promise.all([
+      stageRoot(first, "s1", { inputFiles: [fromProject("**")] }),
+      stageRoot(first, "s2", { inputFiles: [fromProject("**")] }),
+      stageRoot(second, "s1", { inputFiles: [fromProject("**")] }),
+    ]);
+    for (const root of seeded) expect(tree(root)).toEqual([".gitignore", "docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts"]);
+    expect(new Set(watched.made).size).toBe(3);
+    expect(watched.made.map(folder => relative(first.runRoot, folder)).filter(path => /^_ignore-[^\\/]+$/u.test(path))).toHaveLength(2);
+    expect(watched.made.map(folder => relative(second.runRoot, folder)).filter(path => /^_ignore-[^\\/]+$/u.test(path))).toHaveLength(1);
+    expect(watched.made.filter(folder => existsSync(folder))).toEqual([]);
+    expect(readdirSync(first.runRoot).sort()).toEqual(["_out", "_run.json", "s1", "s2"]);
+    expect(readdirSync(second.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
+  });
+
+  it("git failing after the matcher's repository was made refuses the stage as unreadable and leaves no repository behind", async () => {
+    write(project, "debug.log", "log\n");
+    write(project, ".gitignore", "*.log\n");
+    const failures: [string, (args: readonly string[]) => "fails" | HostGitError | undefined][] = [
+      ["the repository cannot be made", args => args[0] === "init" ? "fails" : undefined],
+      ["the matcher exits with an error", args => args.includes("check-ignore") ? "fails" : undefined],
+      ["the matcher does not finish in time", args => args.includes("check-ignore") ? new HostGitError("timeout", "fixture") : undefined],
+      ["the matcher writes too much", args => args.includes("check-ignore") ? new HostGitError("output-limit", "fixture") : undefined],
+      ["the matcher is ended from outside", args => args.includes("check-ignore") ? new HostGitError("terminated", "fixture") : undefined],
+    ];
+    for (const [name, broken] of failures) {
+      const there: boolean[] = [];
+      const watched = watchedGit((args) => {
+        const how = broken(args);
+        if (how !== undefined && args[0] !== "init") there.push(existsSync(join(watched.made.at(-1) ?? "", ".git")));
+        return how;
+      });
+      const handle = await start(project, { git: watched.git });
+      expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1), name).toEqual({ ok: false, code: "seed-unreadable" });
+      expect(watched.made.map(folder => relative(handle.runRoot, folder)), name).toEqual([expect.stringMatching(/^_ignore-[^\\/]+$/u)]);
+      expect(there.every(Boolean), name).toBe(true);
+      expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.json"]);
+    }
+  });
+
+  it("the matcher takes each path whole: a name with a line break in it is one path", async () => {
+    write(project, ".gitignore", "*.log\n");
+    const runRoot = join(base, "run");
+    mkdirSync(runRoot);
+    const removed: string[] = [];
+    const rules = plainFolderIgnore(createHostGit({ env }), runRoot, project, (scratch) => { removed.push(scratch); rmSync(scratch, { recursive: true }); });
+    expect([...await rules.ignored(["line\nbreak.log", "line\nbreak.txt", "plain.log", "notes.txt", "src/"])].sort()).toEqual(["line\nbreak.log", "plain.log"]);
+    rules.done();
+    expect(removed).toHaveLength(1);
+    expect(readdirSync(runRoot)).toEqual([]);
+  });
+
+  it("a plain folder's negation and nested-directory rules seed exactly what git leaves unignored in a repository of the same tree", async () => {
+    const twin = join(base, "twin");
+    const files: Record<string, string> = {
+      ".gitignore": "*.log\n!keep.log\n/top.txt\nbuild/\ndeep/**/cache/\n!deep/a/cache/kept.txt\ndocs/**/draft-*.md\n",
+      "docs/.gitignore": "!important.log\n/guide.md\nsub/\n!sub/readme.md\n!draft-keep.md\n",
+      "a.log": "", "keep.log": "", "top.txt": "", "src/top.txt": "", "build/out.js": "", "src/build/out.js": "", "src/builder.ts": "",
+      "deep/a/cache/kept.txt": "", "deep/a/b/cache/x.bin": "", "deep/cache.txt": "", "deep/a/kept.txt": "",
+      "docs/draft-1.md": "", "docs/draft-keep.md": "", "docs/x/y/draft-2.md": "", "docs/x/y/final.md": "", "docs/important.log": "", "docs/other.log": "",
+      "docs/sub/readme.md": "", "docs/sub/more.md": "", "docs/guide.md": "guide\n", "docs/x/guide.md": "", "notes.txt": "notes\n", "src/a.ts": "a\n", "src/deep/b.ts": "b\n",
+    };
+    for (const [path, text] of Object.entries(files)) { write(project, path, text); write(twin, path, text); }
+    execFileSync("git", ["init", "-q", "--template="], { cwd: twin, env });
+    const unignored = execFileSync("git", ["-c", "core.excludesFile=", "ls-files", "-z", "--others", "--exclude-standard"], { cwd: twin, env, encoding: "utf8" }).split("\0").filter(Boolean).sort();
+    // The fixture does exercise both: a negation that takes effect, one under an excluded folder that cannot, and rules that prune folders.
+    expect(unignored).toEqual(expect.arrayContaining(["keep.log", "docs/important.log", "docs/draft-keep.md", "src/top.txt", "docs/x/guide.md"]));
+    for (const path of ["a.log", "top.txt", "build/out.js", "src/build/out.js", "deep/a/cache/kept.txt", "deep/a/b/cache/x.bin", "docs/sub/readme.md", "docs/x/y/draft-2.md", "docs/guide.md"]) expect(unignored, path).not.toContain(path);
+
+    const handle = await start(project);
+    expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }))).toEqual(unignored);
   });
 
   it("a plain folder with no ignore file seeds every declared file and needs no git; with one and no git it refuses", async () => {
