@@ -457,6 +457,28 @@ describe("setupPluginToolExecutor production auth wiring", () => {
     expect(handler).not.toHaveBeenCalled();
     expect(ledger.pendingToolInvocationCount()).toBe(0);
   });
+
+  it("refuses a trusted-panel handler admitted while the audit closes without failing the shutdown", async () => {
+    vi.resetModules();
+    const { setupPluginToolExecutor: setup } = await import("../plugin-tool-executor.js");
+    const ledger = await import("../../../tools/invocation-ledger.js");
+    const ctx = makeContext();
+    const handler = vi.fn();
+    mocks.dispatchAppOnlyRuntimeInvocation.mockImplementation(async () => { handler(); return { refreshed: true }; });
+    await setup(ctx);
+    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn;
+    if (!invoke) throw new Error("Plugin invoker missing");
+    ledger.sealToolInvocations();
+    await expect(ledger.closeToolInvocationAudit(async () => {
+      await expect(invoke("panel_refresh", {}, {
+        origin: "ui",
+        ownerPluginId: pluginId,
+        ownerGenerationId: activeGenerationId,
+        appInvocation: { surface: "trusted-panel", sessionId: "window-1" },
+      })).rejects.toThrow("application shutdown");
+    })).resolves.toBe(0);
+    expect(handler).not.toHaveBeenCalled();
+  });
 });
 
 /** The effective origin, including nested hops, selects interactive versus headless approval handling. */

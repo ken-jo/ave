@@ -35,6 +35,11 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal): {
   };
 }
 
+/** True once the seal aborted admission; a caller refusing work then has no denial to record. */
+export function toolInvocationsSealed(): boolean {
+  return shutdown.signal.aborted;
+}
+
 export function trackToolInvocationSettlement(settlement: Promise<unknown>): void {
   pending.add(settlement);
   void settlement.then(

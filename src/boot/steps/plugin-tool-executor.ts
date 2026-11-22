@@ -1,5 +1,5 @@
-import { admitToolInvocation, appendToolInvocationAudit } from "../../tools/invocation-ledger.js";
-import { isHostExitAbort } from "../../shared/host-exit-abort.js";
+import { admitToolInvocation, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
+import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
@@ -336,6 +336,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
       if (appOnlyRuntimeInvocation) {
         let releaseAuthTransitionDeferred = false;
         // Admission ends at handler entry: the bypass has no audit obligation for the join to wait on.
+        if (toolInvocationsSealed()) throw new HostExitAbortError();
         const admission = admitToolInvocation(toolName);
         try {
           if (authInvocation && ownerPluginId && ownerGenerationId) {
