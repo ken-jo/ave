@@ -248,8 +248,9 @@ function askGitIgnores(repoRoot: string, path: string): boolean {
   const git = resolveHostGit({ packaged: isConfigured() ? getIsPackaged() : isPackagedElectronProcess() });
   if (git === null) return false;
   const env = { ...process.env };
-  // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
-  for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  // Inherited Git settings can redirect the query. Windows matches environment names without case.
+  const gitVariable = process.platform === "win32" ? /^GIT_/iu : /^GIT_/u;
+  for (const key of Object.keys(env)) if (gitVariable.test(key)) delete env[key];
   env.GIT_ALLOW_PROTOCOL = "";
   try {
     // Older Git must refuse the option before it can read a missing object.

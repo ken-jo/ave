@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
+  lastEnv: undefined as NodeJS.ProcessEnv | undefined,
   traceEnv: undefined as NodeJS.ProcessEnv | undefined,
   intercept: false,
 }));
@@ -14,6 +15,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     execFileSync: ((file: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
       if (args.includes("check-ignore")) {
         gitCalls.checkIgnore.push(file);
+        gitCalls.lastEnv = options.env;
         if (gitCalls.intercept) return Buffer.alloc(0);
         if (gitCalls.traceEnv) options = { ...options, env: { ...options.env, ...gitCalls.traceEnv } };
       }
@@ -33,6 +35,7 @@ import {
   PROJECT_INSTRUCTIONS_MAX_IMPORT_DEPTH,
 } from "../project-agents-md.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { holdSandboxGitWrites } from "../../shared/host-git.js";
 
 function initIgnoredBuild(project: string, patterns: string, layout: "nested" | "recursive" | "plain") {
@@ -113,6 +116,31 @@ it("keeps the ignore query local when a skip-worktree ignore blob is missing", a
   } finally {
     gitCalls.traceEnv = undefined;
     await cleanupTmpDir(root);
+  }
+});
+
+it("strips inherited Git variables case-insensitively on Windows", async () => {
+  const project = mkdtempSync(join(tmpdir(), "ave-ignore-env-"));
+  const originalPlatform = process.platform;
+  try {
+    mkdirSync(join(project, ".git"));
+    mkdirSync(join(project, "build"));
+    writeFileSync(join(project, "build", "AGENTS.md"), "fixture instructions");
+    gitCalls.intercept = true;
+    discoverDirectoryInstructions(project, join("build", "x.js"), new Set());
+    setProcessPlatform("win32");
+    vi.stubEnv("Git_ExeC_PatH", join(project, "helper"));
+    vi.stubEnv("GIT_DIR", join(project, "elsewhere"));
+    gitCalls.lastEnv = undefined;
+    discoverDirectoryInstructions(project, join("build", "x.js"), new Set());
+    expect(gitCalls.lastEnv).toBeDefined();
+    expect(gitCalls.lastEnv).not.toHaveProperty("Git_ExeC_PatH");
+    expect(gitCalls.lastEnv).not.toHaveProperty("GIT_DIR");
+  } finally {
+    setProcessPlatform(originalPlatform);
+    gitCalls.intercept = false;
+    vi.unstubAllEnvs();
+    await cleanupTmpDir(project);
   }
 });
 
