@@ -222,13 +222,22 @@ export async function stageRunHarness(opts: {
       workflow,
     });
     /** An accepted retry or decision clears the failure it superseded, unless a newer one arrived while it ran. */
-    function restarted<T extends { ok: boolean }>(itemId: number, result: T, before: Error | undefined): T {
+    // A retry or decision supersedes the item's standing failure for the length of the call; a refusal brings it back.
+    async function restart<T extends { ok: boolean }>(itemId: number, call: () => Promise<T>): Promise<T> {
       const origin = workBoardOriginSessionId(itemId);
-      if (result.ok && engine === wrapped) {
-        inFlight.add(origin);
-        if (failures.get(origin) === before) failures.delete(origin);
+      const before = engine === wrapped ? failures.get(origin) : undefined;
+      if (before !== undefined) failures.delete(origin);
+      let result: T | undefined;
+      try {
+        result = await call();
+        return result;
+      } finally {
+        if (result?.ok && engine === wrapped) inFlight.add(origin);
+        else if (before !== undefined && engine === wrapped && !failures.has(origin)) {
+          failures.set(origin, before);
+          for (const changed of childChanges) changed({ error: before, originSessionId: origin });
+        }
       }
-      return result;
     }
     const wrapped = {
       ...current,
@@ -258,13 +267,11 @@ export async function stageRunHarness(opts: {
           throw error;
         }
       },
-      async retryStage(...args: Parameters<typeof current.retryStage>) {
-        const before = failures.get(workBoardOriginSessionId(args[0]));
-        return restarted(args[0], await current.retryStage(...args), before);
+      retryStage(...args: Parameters<typeof current.retryStage>) {
+        return restart(args[0], () => current.retryStage(...args));
       },
-      async decideStageGate(...args: Parameters<typeof current.decideStageGate>) {
-        const before = failures.get(workBoardOriginSessionId(args[0]));
-        return restarted(args[0], await current.decideStageGate(...args), before);
+      decideStageGate(...args: Parameters<typeof current.decideStageGate>) {
+        return restart(args[0], () => current.decideStageGate(...args));
       },
       cancelRun(itemId: number) {
         const result = current.cancelRun(itemId);

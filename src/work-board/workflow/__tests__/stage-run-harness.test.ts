@@ -712,3 +712,48 @@ it("an accepted retry puts its item back in flight for aggregate child waits", a
     await h.cleanup();
   }
 });
+
+it.each(["accepted", "refused"] as const)("a %s retry sets aside the item's standing failure only while the call runs", async outcome => {
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (...args) => {
+          if (args[2] === 2) throw new Error("relaunch preparation failed");
+          return workspace.prepare(...args);
+        },
+      },
+    }),
+  });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    runs.push(h.start(id, h.local(version)));
+    (await h.untilLive(1, id))[0].finish({ ok: false, summary: "failed", error: "failed" });
+    expect(await runs[0]).toMatchObject({ status: "awaiting_approval" });
+    const { runId } = await h.item(id);
+    // The first retry's relaunch fails, which leaves a standing failure for the item.
+    expect(await h.engine.retryStage(id, { runId: runId ?? "", stageId: "a" })).toEqual({ ok: true });
+    await h.drainRunWork();
+    await expect(h.untilLive(1, id)).rejects.toThrow(/stage_failed/);
+    const retry = h.engine.retryStage(id, { runId: outcome === "accepted" ? runId ?? "" : "run-other", stageId: "a" });
+    const wait = Promise.allSettled([h.untilLive(1, id)]);
+    if (outcome === "accepted") expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
+    expect(await retry).toMatchObject({ ok: outcome === "accepted" });
+    if (outcome === "accepted") {
+      expect(await wait).toEqual([{ status: "fulfilled", value: [expect.anything()] }]);
+    } else {
+      expect(await wait).toEqual([
+        { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
+      ]);
+      await expect(h.untilLive(1, id)).rejects.toThrow(/stage_failed/);
+    }
+  } finally {
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
