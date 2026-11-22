@@ -12,6 +12,7 @@ export interface InstallerGitInstall {
 }
 
 const MINGIT_PREFIXES = ["ucrt64", "clangarm64"] as const;
+const BUNDLED_GIT_HELPER_RETRY_MS = 10_000;
 export const DARWIN_GIT_SHIM = "/usr/bin/git";
 export const DARWIN_CLT_PROBE = "/usr/bin/xcode-select";
 const VERIFIED_GIT_INSTALLATIONS: Readonly<Partial<Record<NodeJS.Platform, readonly VerifiedExecutableCandidate[]>>> = Object.freeze({
@@ -116,10 +117,19 @@ interface HostGitLaunch {
   options: { cwd?: string; env: NodeJS.ProcessEnv };
 }
 
+let retrySystemDirectoryAt = 0;
+
 function probeInstallerGit(install: InstallerGitInstall): HostGitLaunch | undefined {
+  if (performance.now() < retrySystemDirectoryAt) return undefined;
+  let systemDirectory: string;
+  try {
+    systemDirectory = queryWindowsSystemDirectorySync();
+  } catch {
+    retrySystemDirectoryAt = performance.now() + BUNDLED_GIT_HELPER_RETRY_MS;
+    return undefined;
+  }
   try {
     const cwd = dirname(install.path);
-    const systemDirectory = queryWindowsSystemDirectorySync();
     const systemRoot = win32.dirname(systemDirectory);
     const pathEntries = [
       cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin"),

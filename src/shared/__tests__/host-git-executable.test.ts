@@ -126,6 +126,45 @@ describe("resolveHostGit", () => {
     }
   });
 
+  it.each(["a valid helper reply", "system Git"])("bounds failed helper attempts and discovers %s", async (recovery) => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    const originalExecPath = process.execPath;
+    Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
+    setProcessPlatform("win32");
+    const now = vi.spyOn(performance, "now").mockReturnValue(100);
+    const bundled = join("C:/Ave", "git", "cmd", "git.exe");
+    const system = "D:\\Tools\\Git\\cmd\\git.exe";
+    vi.stubEnv("PATH", "D:\\Tools\\Git\\cmd");
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(statSync).mockImplementation((path) => ({ isFile: () => path === bundled }) as ReturnType<typeof statSync>);
+    vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("relative"));
+    try {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        expect(resolveHostGit({ packaged: true })).toBeNull();
+      }
+      expect.soft(spawnSync).toHaveBeenCalledTimes(1);
+      expect(execFileSync).not.toHaveBeenCalled();
+
+      if (recovery === "a valid helper reply") {
+        vi.mocked(spawnSync).mockReturnValue(systemDirectoryReply("C:\\Windows\\System32"));
+        vi.mocked(execFileSync).mockReturnValue("git version 2.56.0");
+        now.mockReturnValue(10_099);
+        expect(resolveHostGit({ packaged: true })).toBeNull();
+        now.mockReturnValue(10_100);
+        expect(resolveHostGit({ packaged: true })?.path).toBe(bundled);
+        expect(spawnSync).toHaveBeenCalledTimes(2);
+      } else {
+        vi.mocked(statSync).mockImplementation((path) => ({ isFile: () => path === bundled || path === system }) as ReturnType<typeof statSync>);
+        expect(resolveHostGit({ packaged: true })?.path).toBe(system);
+        expect(spawnSync).toHaveBeenCalledTimes(1);
+        expect(execFileSync).not.toHaveBeenCalled();
+      }
+    } finally {
+      now.mockRestore();
+      Object.defineProperty(process, "execPath", { value: originalExecPath });
+    }
+  });
+
   it("uses the verified OS directory for both the bundled probe and project query", async () => {
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
     const { setIsPackaged } = await import("../../boot/dev-flags.js");
