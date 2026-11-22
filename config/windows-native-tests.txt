@@ -439,6 +439,7 @@ src/main/chatgpt-plan/__tests__/runtime-transport.test.ts
 src/main/host-api/__tests__/resolve-api-key.test.ts
 src/main/memory-map/__tests__/host.test.ts
 src/main/memory-map/__tests__/inference-child-native.test.ts
+src/main/memory-map/__tests__/inference-child.test.ts
 src/main/memory-map/__tests__/model-manager.test.ts
 src/main/memory-map/__tests__/provider-embeddings.test.ts
 src/main/memory-map/__tests__/real-model.test.ts
