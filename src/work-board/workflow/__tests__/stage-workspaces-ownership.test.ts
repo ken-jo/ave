@@ -115,6 +115,8 @@ const refused: Row[] = [
 /** A field that names the project or its repository: the run folder is still the run's and goes; the repository is left as it is. */
 const repositoryLeft: Row[] = [
   ["project.id", ["project", "id"], () => "1:1"],
+  ["repo.gitDir", ["repo", "gitDir"], at => join(at.elsewhere, ".git")],
+  ["repo.id", ["repo", "id"], () => "1:1"],
   ["registrations._join.admin", ["registrations", "_join", "admin"], at => at.userAdmin],
   ["registrations._join.id", ["registrations", "_join", "id"], () => "1:1"],
   ["registrations._join.gitdir", ["registrations", "_join", "gitdir"], at => join(at.otherRoot, JOIN_DIR, ".git")],
@@ -342,5 +344,39 @@ describe("worktree registrations", () => {
     expect(ours.map(admin => existsSync(admin))).toEqual([false, false]);
     expect(admins()).toEqual(["_joincopy", "broken", "dupwt", "dupwt2"]);
     expect(existsSync(open.workspace.runRoot)).toBe(false);
+  });
+});
+
+describe("the repository's identity", () => {
+  it("rev-parse --path-format=absolute --git-common-dir names the common dir from a linked worktree too", () => {
+    const { repo, userGit } = fx;
+    const linked = join(fx.base, "linked");
+    userGit(repo, "worktree", "add", "-q", "--detach", linked);
+    for (const cwd of [repo, linked]) {
+      const named = userGit(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir");
+      expect(isAbsolute(named), cwd).toBe(true);
+      expect(realpathSync.native(named), cwd).toBe(realpathSync.native(join(repo, ".git")));
+    }
+  });
+
+  it("a child repository replaced by a plain folder leaves the parent's ref alone", async () => {
+    const { repo, userGit } = fx;
+    const child = join(repo, "child");
+    userGit(repo, "clone", "-q", repo, child);
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, child);
+    if (!open.ok || open.workspace.kind !== "git") throw new Error("expected a git workspace");
+    await stageRoot(handle, "s1");
+    // The child is now a plain folder of the parent's work tree, and the parent has a branch of the run's name at the run's commit.
+    rmSync(join(child, ".git"), { recursive: true, force: true });
+    const branch = runBranch(handle.run.runId);
+    userGit(repo, "update-ref", `refs/heads/${branch}`, open.workspace.baseCommit);
+    const listed = userGit(repo, "worktree", "list", "--porcelain");
+    await handle.provider.release(handle.run, "all");
+    await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => () => true }).sweep([]);
+    expect(userGit(repo, "rev-parse", `refs/heads/${branch}`)).toBe(open.workspace.baseCommit);
+    expect(userGit(repo, "worktree", "list", "--porcelain")).toBe(listed);
+    expect(existsSync(open.workspace.runRoot)).toBe(false);
+    expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining("repo.gitDir")]);
   });
 });

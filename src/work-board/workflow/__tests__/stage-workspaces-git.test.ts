@@ -349,9 +349,10 @@ describe("git stage workspaces", () => {
     };
     try {
       await createStageWorkspaceProvider({ git: { run, drivers: real.drivers } }).release(handle.run, "all").catch(() => undefined);
-      // What was still there when the link took the folder's place stays; the repository's worktree list is the host's to edit, not git's.
-      expect(readdirSync(restored)).toEqual([RUN_FILE]);
-      expect(calls.filter(call => /^worktree|^branch/u.test(call))).toEqual([]);
+      expect(readFileSync(join(restored, "s2", "sentinel.txt"), "utf8")).toBe("outside\n");
+      expect(existsSync(join(restored, "s2", "a.txt"))).toBe(true);
+      expect(existsSync(join(restored, JOIN_DIR, "a.txt"))).toBe(true);
+      expect(calls.filter(call => /^worktree|^branch|^update-ref/u.test(call))).toEqual([]);
     } finally {
       if (existsSync(restored)) {
         rmSync(runRoot);

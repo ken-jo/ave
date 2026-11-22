@@ -181,6 +181,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   async function removeRegistration(at: Held, key: string): Promise<void> {
     const registration = at.file.registrations[key];
     if (registration === undefined) return;
+    await assertRepository(at);
     const found = ownRegistration(at, registration);
     if (found !== undefined) await found.worktrees.remove(found.name, registration.id);
     delete at.file.registrations[key];
@@ -259,6 +260,26 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return { gitDir, id };
   }
 
+  /**
+   * Which field of the record the project or its repository no longer answers to, asked of git and the disk right now. A project root
+   * can come to lie in another repository (its own `.git` removed inside a parent's work tree); git would then act on that one.
+   */
+  async function repositoryMismatch(at: Held): Promise<string | undefined> {
+    const { project, repo } = at.file;
+    if (project === undefined || repo === undefined) return undefined;
+    if (realDirId(project.root) !== project.id) return "project.id";
+    const now = await commonDirOf(project.root).catch(() => undefined);
+    at.run.check();
+    if (now === undefined || !samePath(now.gitDir, repo.gitDir)) return "repo.gitDir";
+    return now.id === repo.id ? undefined : "repo.id";
+  }
+
+  /** Before each step that changes the repository. */
+  async function assertRepository(at: Held): Promise<void> {
+    const field = await repositoryMismatch(at);
+    if (field !== undefined) throw new Error(`the repository is not the one the run was opened in (${field})`);
+  }
+
   function open(run: RunRef, projectRoot: string | undefined): ReturnType<StageWorkspaceProvider["open"]> {
     return serial(run.runId, () => openIn(run, projectRoot));
   }
@@ -329,10 +350,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       // The branch is made only where no ref has its name: one that is already there is not this run's and stays as it is. A ref is
       // recorded once git answered that it made it, and only a recorded ref is ever deleted.
       const ref = `refs/heads/${branch}`;
-      at.run.check();
+      await assertRepository(at);
       if ((await git.run(project.root, ["update-ref", ref, baseCommit, ""])).code !== 0) throw new Error("the run's branch is taken");
       file.refs = [{ name: ref, oid: baseCommit }];
       writeRunFile(at, file);
+      await assertRepository(at);
       joined.check();
       const added = await git.run(project.root, ["worktree", "add", joined.path, branch], { drivers: [...gitRun.drivers, ...ABSOLUTE_LINKS] }).catch(() => undefined);
       if (recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, joined.id)) === undefined || added?.code !== 0) throw new Error("the integration worktree was not made");
@@ -371,6 +393,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const drivers = await git.drivers(root);
       const head = (await gitOut(root, ["rev-parse", "--verify", `refs/heads/${file.branch}^{commit}`])).trim();
       // The stage folder is the host's own before git fills it, and still that folder each time something is removed from it.
+      await assertRepository(at);
       held.check();
       const added = await git.run(root, ["worktree", "add", "--detach", held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS] }).catch(() => undefined);
       if (recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
@@ -494,19 +517,26 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     });
   }
 
-  async function sealGit(run: RunRef, file: WorkspaceRecord, stageId: string, entry: StageEntry, stage: OwnedDir): Promise<{ ok: true; sealCommit?: string } | { ok: false; code: Refusal }> {
-    const root = file.project?.root;
+  async function sealGit(run: RunRef, at: Held, stageId: string, entry: StageEntry, stage: OwnedDir): Promise<{ ok: true; sealCommit?: string } | { ok: false; code: Refusal }> {
+    const root = at.file.project?.root;
     const dir = stage.path;
     // The worktree link decides which repository the host's git writes to; a changed one is not followed.
     if (root === undefined || entry.base === undefined || stage.readFile(".git")?.toString("utf8") !== entry.link) return { ok: false, code: "workspace-unavailable" };
     if (!(await identityOf(root))) return { ok: false, code: "identity-missing" };
     const drivers = (await git.drivers(root)).config;
+    await assertRepository(at);
     await gitOut(dir, ["add", "-A"], { drivers });
     // A secret path never enters the commit, as a deletion (the host removed it) or as a new file.
     const staged = nul(await gitOut(dir, ["diff", "--cached", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"], { drivers }));
-    for (const paths of chunked(staged.filter(path => sensitive(join(dir, path))))) await gitOut(dir, ["reset", "-q", "HEAD", "--", ...paths], { drivers });
+    for (const paths of chunked(staged.filter(path => sensitive(join(dir, path))))) {
+      await assertRepository(at);
+      await gitOut(dir, ["reset", "-q", "HEAD", "--", ...paths], { drivers });
+    }
     const dirty = await git.run(dir, ["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD"], { drivers });
-    if (dirty.code !== 0) await gitOut(dir, ["commit", "-q", "--no-verify", "--no-gpg-sign", "-m", `Stage ${stageId}\n\n${trailers(run, stageId)}`], { drivers });
+    if (dirty.code !== 0) {
+      await assertRepository(at);
+      await gitOut(dir, ["commit", "-q", "--no-verify", "--no-gpg-sign", "-m", `Stage ${stageId}\n\n${trailers(run, stageId)}`], { drivers });
+    }
     const head = (await gitOut(dir, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
     return head === entry.base ? { ok: true } : { ok: true, sealCommit: head };
   }
@@ -532,7 +562,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       // One seal per attempt: a repeated call returns it without another snapshot.
       if (entry.sealed === true) return { ok: true as const, ...(entry.sealCommit !== undefined ? { sealCommit: entry.sealCommit } : {}) };
       try {
-        const sealed: { ok: true; sealCommit?: string } | { ok: false; code: Refusal } = found.file.kind === "git" ? await sealGit(run, found.file, stageId, entry, held) : await sealFolder(entry, held);
+        const sealed: { ok: true; sealCommit?: string } | { ok: false; code: Refusal } = found.file.kind === "git" ? await sealGit(run, found, stageId, entry, held) : await sealFolder(entry, held);
         if (!sealed.ok) return sealed;
         entry.sealed = true;
         if (sealed.sealCommit !== undefined) entry.sealCommit = sealed.sealCommit;
@@ -566,6 +596,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         // The user is in the middle of resolving here; their work is left exactly as it is.
         return conflictOf(run, joinId, "merge-conflict", (await unmerged()).map(path => ({ path, stageIds: [...stageIds] })), seals, "a merge is still in progress in the integration folder");
       }
+      await assertRepository(at);
       joined.check();
       await git.run(joinDir, ["merge", "--abort"], { drivers });
     }
@@ -577,6 +608,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if ((await git.run(joinDir, ["merge-base", "--is-ancestor", sealCommit, "HEAD"])).code === 0) continue;
       file.merging = sealCommit;
       writeRunFile(at, file);
+      await assertRepository(at);
       joined.check();
       const merged = await git.run(joinDir, ["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, sealCommit], { drivers });
       if (merged.code !== 0) {
@@ -593,6 +625,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           files.push({ path, stageIds: stageIds.filter(id => touched.includes(id)) });
         }
         if (await merging()) {
+          await assertRepository(at);
           joined.check();
           await git.run(joinDir, ["merge", "--abort"], { drivers });
         }
@@ -685,6 +718,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const root = file.project?.root;
     if (root === undefined) return;
     for (const ref of [...file.refs]) {
+      await assertRepository(at);
       const deleted = await git.run(root, ["update-ref", "-d", ref.name, ref.oid]).catch(() => undefined);
       if (deleted?.code !== 0) continue;
       file.refs = file.refs.filter(entry => entry !== ref);
@@ -693,7 +727,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   /** What of the run is no longer what its record names, read before a removal starts. */
-  function preflight(at: Held): Mismatch[] {
+  async function preflight(at: Held): Promise<Mismatch[]> {
     const { file } = at;
     try { at.run.check(); } catch { return [{ field: "self", side: "host" }]; }
     if (readRunFile(at.runRoot, at.run) === null) return [{ field: "record", side: "host" }];
@@ -705,7 +739,13 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const [stageId, entry] of Object.entries(file.stages)) node(`stages.${stageId}.dir`, stageDirName(stageId), entry.dir);
     node("joinDir", JOIN_DIR, file.joinDir);
     node("outDir", OUT_DIR, file.outDir);
-    if (file.project !== undefined && realDirId(file.project.root) !== file.project.id) found.push({ field: "project.id", side: "repo" });
+    if (found.length > 0) return found;
+    try {
+      const field = await repositoryMismatch(at);
+      if (field !== undefined) found.push({ field, side: "repo" });
+    } catch {
+      return [{ field: "self", side: "host" }];
+    }
     for (const [key, registration] of Object.entries(file.registrations)) {
       try { ownRegistration(at, registration); } catch { found.push({ field: `registrations.${key}`, side: "repo" }); }
     }
@@ -724,7 +764,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       for (const stageId of stageIds) if (file.stages[stageId] !== undefined) await removeStage(at, stageId);
       return;
     }
-    const mismatches = preflight(at);
+    const mismatches = await preflight(at);
     const fields = (side: Mismatch["side"]): string => mismatches.filter(entry => entry.side === side).map(entry => entry.field).join(", ");
     if (fields("host") !== "") {
       log.warn("a run's workspace stays as it is: %s is not what its record names (run=%s)", fields("host"), file.runId);
