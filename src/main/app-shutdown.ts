@@ -1,3 +1,4 @@
+import { beginToolInvocationAuditShutdown, markToolInvocationAuditClosed, pendingToolInvocationCount, sealToolInvocations } from "../tools/invocation-ledger.js";
 import type { BootHost } from "../boot/host-runtime.js";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
@@ -259,6 +260,7 @@ export async function runAppShutdownCleanup(options: {
   if (appShutdownCleanupPromise) return appShutdownCleanupPromise;
 
   setAppShutdownStarted(true);
+  beginToolInvocationAuditShutdown();
   sealMxcHolderLifetimeAdmission(options.reason);
   sealManagedChildProcessAdmission(options.reason);
   const cleanupTimeoutMs = resolveShutdownCleanupTimeoutMs(
@@ -335,7 +337,7 @@ export async function runAppShutdownCleanup(options: {
       subscriptionRuntimesStopped = true;
       if (signal.aborted) return;
       // Plugin admission closes before services shut down — MCP disconnects there — so no post-commit MCP publication or new plugin dispatch can open after
-      // it. Calls already admitted keep running; the runtime itself stops further below.
+      // it. Service shutdown cancels and joins admitted tool invocations before the runtime stops.
       svc.pluginRuntime.beginShutdown();
       await svc.shutdown?.();
       if (signal.aborted) return;
@@ -392,14 +394,27 @@ export async function runAppShutdownCleanup(options: {
 
     if (!svc) return finishIncompleteBootShutdown(result);
 
+    const auditLogger = svc.auditLogger;
+    const closeAuditAfterForceKill = (): void => {
+      // The graceful deadline also bounds audit draining.
+      sealToolInvocations();
+      void (async () => { await auditLogger.close(); })().catch((error: unknown) => {
+        log.warn("shutdown: audit logger close failed: %s", errorMessage(error));
+      });
+      markToolInvocationAuditClosed();
+    };
+
     if (result.status === "timed-out") {
+      const pendingToolInvocations = pendingToolInvocationCount();
       // Force-kill BEFORE the log line so killedChildCount reflects what actually happened, not an optimistic pre-kill count.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup timeout`);
+      closeAuditAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup timeout`);
       await shutdownHost?.close();
       log.error({
         timeoutMs: cleanupTimeoutMs,
         killedChildCount,
+        pendingToolInvocations,
         reason: options.reason,
       }, "shutdown cleanup timed out");
       // Flush the logger so the diagnostic above (and any preceding warn about which subsystem hung) makes it to disk before the process leaves.
@@ -419,6 +434,7 @@ export async function runAppShutdownCleanup(options: {
       // A failed lifecycle stage may have prevented a runtime-owned child from acknowledging its graceful stop. The normal stop ran in the cleanup finally
       // block; this is only the last-resort descendant-safe backstop.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup failed`);
+      closeAuditAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup failed`);
       await shutdownHost?.close();
       log.error(

@@ -138,6 +138,7 @@ async function configuredShutdown() {
 function makeServices() {
   return {
     shutdown: vi.fn(async () => { calls.push("servicesShutdown"); }),
+    auditLogger: { close: vi.fn(async () => { calls.push("closeAudit"); }) },
     pluginRuntime: {
       beginShutdown: vi.fn(() => { calls.push("closePluginAdmission"); }),
       stopAll: vi.fn(async () => { calls.push("stopPluginRuntime"); }),
@@ -158,6 +159,24 @@ beforeEach(() => {
 });
 
 describe("OS sandbox release at quit", () => {
+  it("reports a failed audit join and finishes quit even if the fallback close remains pending", async () => {
+    const services = makeServices();
+    services.shutdown.mockRejectedValueOnce(new Error("shutdown invocation audit failed"));
+    services.auditLogger.close.mockImplementationOnce(() => {
+      calls.push("closeAudit");
+      return new Promise<void>(() => {});
+    });
+    getServices.mockReturnValue(services);
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("failed");
+    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(shutdownCompleted).toBe(true);
+    expect(logError).toHaveBeenCalledWith(
+      expect.anything(), "%s: shutdown cleanup failed: %s", "before-quit", "shutdown invocation audit failed",
+    );
+  });
+
   // The private srt-win copy is removed by an exit handler; every quit path must reset the runtime first, once its confined children are down.
   it("resets the runtime after the child drain and before the host closes on a clean quit", async () => {
     getServices.mockReturnValue(makeServices());
@@ -251,6 +270,10 @@ describe("OS sandbox release at quit", () => {
       }
     }
     expect(await stopping).toBe("timed-out");
+    expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("closeAudit"));
+    expect(logError).toHaveBeenCalledWith(
+      expect.objectContaining({ pendingToolInvocations: 0 }), "shutdown cleanup timed out",
+    );
     expect(calls.slice(-3)).toEqual(["sandboxResetFinished", "closeFileLogSink", "hostExit"]);
     expect(releaseAsrtSandboxForExit).toHaveBeenCalledTimes(2);
   });
