@@ -463,6 +463,35 @@ describe("workspace.listDir folder-view entries", () => {
     }, onTestFinished);
   });
 
+  it("refuses an Ave home that another directory is renamed into before confirming any spelling below it", async ({ onTestFinished }) => {
+    // Live resolution gives the same entries, so only the realpath of the home's child shows that its identity was checked.
+    const scratch = mkdtempSync(join(root, "row-identity-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    const next = join(scratch, "next");
+    const packages = join(home, "packages");
+    for (const path of [dir, packages, join(next, "packages")]) mkdirSync(path, { recursive: true });
+    for (const name of ["a-1.txt", "a-2.txt", "a-3.txt"]) writeFileSync(join(dir, name), "");
+    // Both package records exist after the rename, so live resolution of their roots never walks up through `packages`.
+    for (const name of ["ledger.json", "mcp-installs.json"]) writeFileSync(join(next, "packages", name), "");
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const realpath = vi.spyOn(fsModule.realpathSync, "native");
+    onTestFinished(() => realpath.mockRestore());
+    let replaced = Number.POSITIVE_INFINITY;
+    const changed = changeWithinRow(dir, 2, scratch, join(packages, "ledger.json"), () => {
+      replaced = realpath.mock.calls.length;
+      renameSync(home, `${home}-old`);
+      renameSync(next, home);
+    }, onTestFinished);
+    const res = await listDir(dir);
+    const spellings = realpath.mock.calls.slice(replaced).filter(([path]) => relative(String(path), packages) === "").length;
+    expect(changed()).toBe(true);
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 0 });
+    expect(spellings).toBe(0);
+  });
+
   it("confirms a changed ancestor's child again when the ancestor's change time moves between two lookups of one row", async ({ onTestFinished }) => {
     // No route changes, so only the realpath of the ancestor's child shows that the earlier confirmation was not reused.
     // POSIX limit: if the shared /tmp changes while a row seeds, live walk-ups also realpath the home and can hide a reuse.
