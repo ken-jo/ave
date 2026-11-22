@@ -1490,14 +1490,17 @@ describe("construct negotiates the host protocol", () => {
 
   it("caps that warning at a count and the first five names, each clipped to 64 code points", async () => {
     const long = `pilot_${"x".repeat(200)}`;
-    const extras = [long, ...Array.from({ length: 6 }, (_, index) => `pilot_extra_${index}`)];
+    // Astral code points take two UTF-16 units each: 70 of them clip to 64, and exactly 64 stay whole.
+    const astral = "\u{1F9EA}".repeat(70);
+    const astralAtCap = "\u{1F9EA}".repeat(64);
+    const extras = [long, astral, astralAtCap, ...Array.from({ length: 6 }, (_, index) => `pilot_extra_${index}`)];
     sessionWarnings.length = 0;
     await constructNaming(["pilot_echo", ...extras]);
     expect(sessionWarnings).toEqual([[
       {
         pluginId: PLUGIN_ID,
-        undeclaredCount: 7,
-        undeclared: [`${long.slice(0, 64)}…`, "pilot_extra_0", "pilot_extra_1", "pilot_extra_2", "pilot_extra_3"],
+        undeclaredCount: 9,
+        undeclared: [`${long.slice(0, 64)}…`, `${astralAtCap}…`, astralAtCap, "pilot_extra_0", "pilot_extra_1"],
       },
       expect.stringMatching(/undeclared tools/),
     ]]);

@@ -318,6 +318,10 @@ provide:
 - execution handler;
 - required capabilities.
 
+Write `handlers` as a plain object whose tools are its own function properties.
+The host binds only own keys, so a handler inherited through a prototype — a
+class instance's method, say — counts as missing, and its tool stays disabled.
+
 The Host classifies risk for each invocation. An extension cannot assign its own
 permission category or lower a Host verdict. Tools are executed only after
 permission resolution; the extension runtime does not own the approval gate.
