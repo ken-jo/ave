@@ -10,6 +10,16 @@ const MODEL_SLOT_PARENT = 'multilingual-e5-small';
 const SLOT_ID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const RECOVERY_SLOT_NAME = new RegExp(`^${LOCAL_MODEL_REVISION}-${SLOT_ID_PATTERN}$`, 'iu');
 const STAGING_SLOT_NAME = new RegExp(`^${LOCAL_MODEL_REVISION}\\.tmp-${SLOT_ID_PATTERN}$`, 'iu');
+const buildsByModelPath = new Map<string, number>();
+
+export function registerModelBuild(folder: string): () => void {
+  buildsByModelPath.set(folder, (buildsByModelPath.get(folder) ?? 0) + 1);
+  return () => {
+    const count = buildsByModelPath.get(folder) ?? 0;
+    if (count > 1) buildsByModelPath.set(folder, count - 1);
+    else buildsByModelPath.delete(folder);
+  };
+}
 
 function isWithinDirectory(directory: string, path: string): boolean {
   const fromDirectory = relative(directory, path);
@@ -90,7 +100,8 @@ export class LocalModelManager {
     const path = this.options.readPath();
     if (!path) throw new MemoryModelError('model-folder-invalid');
     const folder = await verifyModelFolder(path, this.files);
-    if (!(await this.isManagedPath(folder))) throw new MemoryModelError('model-integrity-failed');
+    // A save during validation may have retired this slot.
+    if (!(await this.isManagedPath(folder)) || this.options.readPath() !== path) throw new MemoryModelError('model-integrity-failed');
     return folder;
   }
   async status(): Promise<MemoryModelStatus> {
@@ -201,6 +212,9 @@ export class LocalModelManager {
       if (managedParent === undefined || relative(managedParent, parent) !== '') return;
       const path = join(parent, name);
       if (!(await lstat(path)).isDirectory()) return;
+      for (const folder of buildsByModelPath.keys()) {
+        if (isWithinDirectory(path, folder)) return;
+      }
       await rm(path, { recursive: true, force: true });
     } catch (error) {
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== 'ENOENT') logModelCleanupError(error);

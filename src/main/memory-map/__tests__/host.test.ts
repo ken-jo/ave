@@ -1,10 +1,13 @@
-import { mkdtemp, mkdir, open, readFile, writeFile, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, mkdtemp, mkdir, open, readFile, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryMapHost } from '../host.js';
 import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
 import { checkedInferenceFrameBytes, INFERENCE_FILES, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
+import { LocalModelManager } from '../model-manager.js';
+import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
 import type { MemoryMapCatalog } from '../catalog.js';
 import type { MemoryWorkerRunner } from '../worker-client.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
@@ -42,6 +45,52 @@ async function fixture() {
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
+  it.each(['succeeds', 'fails'] as const)('keeps a replaced model slot until the pending build %s', async outcome => {
+    const f = await fixture();
+    const parent = join(f.root, 'multilingual-e5-small');
+    const previousSlot = join(parent, `${LOCAL_MODEL_REVISION}-11111111-1111-4111-8111-111111111111`);
+    const previousFolder = join(previousSlot, 'onnx');
+    const replacement = join(parent, LOCAL_MODEL_REVISION);
+    const file = { name: 'weights.bin', bytes: 5, sha256: createHash('sha256').update('model').digest('hex') };
+    for (const folder of [previousFolder, replacement]) {
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, file.name), 'model');
+    }
+    let savedPath = previousSlot;
+    const model = new LocalModelManager({ namespace: f.namespace, files: [file],
+      readPath: () => savedPath, savePath: path => { savedPath = path; },
+    });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started!: (folder: string) => void;
+    const start = new Promise<string>(resolve => { started = resolve; });
+    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [folder, task] = args;
+      if (task.kind === 'embed-batch') {
+        started(folder);
+        await gate;
+        expect(await readFile(join(folder, file.name), 'utf8')).toBe('model');
+        if (outcome === 'fails') throw new Error('Inference failed');
+      }
+      return f.runWorker<T>(...args);
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: () => model.validatedPath(), runWorker });
+    const build = host.build(() => f.catalog);
+    try {
+      expect(await Promise.race([start, build])).toBe(await realpath(previousFolder));
+      expect(await model.adoptExistingFolder(replacement)).toMatchObject({ status: 'ready' });
+      expect(savedPath).toBe(await realpath(replacement));
+      await expect(readFile(join(previousFolder, file.name), 'utf8')).resolves.toBe('model');
+      release();
+      if (outcome === 'fails') await expect(build).rejects.toThrow('Inference failed');
+      else await expect(build).resolves.toMatchObject({ status: 'ready' });
+      expect(await model.adoptExistingFolder(replacement)).toMatchObject({ status: 'ready' });
+      await expect(lstat(previousSlot)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      release();
+      await build.catch(() => {});
+    }
+  });
   it('embeds a first build across multiple inference frames in catalog order', async () => {
     const f = await fixture();
     const body = '\0'.repeat(512 * 1024 - 32);

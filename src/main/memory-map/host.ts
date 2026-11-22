@@ -10,6 +10,7 @@ import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import type { MemoryMapCatalog, ReadMemoryMapCatalog } from './catalog.js';
 import { MemoryMapHostError } from './errors.js';
 import { MAX_INFERENCE_TASK_BYTES } from './inference-request.js';
+import { registerModelBuild } from './model-manager.js';
 export { MemoryMapHostError } from './errors.js';
 import type { ProviderEmbeddings } from './provider-embeddings.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
@@ -162,6 +163,7 @@ export class MemoryMapHost {
       }
     };
     let stopWatching: (() => void) | undefined;
+    let releaseModel: (() => void) | undefined;
     this.pending = {
       snapshotId: randomUUID(), catalogRevision: revision, authorizationScopeId: catalog.authorizationScopeId,
       model: { id: selected.modelId, revision: selected.modelRevision, dimensions: selected.dimensions, preprocessingRevision: selected.preprocessingRevision, namespace: selected },
@@ -169,7 +171,11 @@ export class MemoryMapHost {
       status: 'building', coverage: { eligible: catalog.records.length, embedded: 0, pending: catalog.records.length, excluded: catalog.excluded }, points: [], edges: [],
     };
     try {
-    const folder = selected.source === 'local' ? await this.options.validatedModelPath() : '';
+    let folder = '';
+    if (selected.source === 'local') {
+      folder = await this.options.validatedModelPath();
+      releaseModel = registerModelBuild(folder);
+    }
     if (!current()) throw new MemoryMapHostError('request-stale');
     const saved = await this.readSaved();
     const cache: VectorCache = {};
@@ -195,7 +201,10 @@ export class MemoryMapHost {
       if (generation !== this.generation || controller.signal.aborted) throw new MemoryMapHostError('request-stale');
       if (this.pending) this.pending = { ...this.pending, status: error instanceof MemoryMapHostError && error.code === 'model-unconfigured' ? 'unconfigured' : 'failed' };
       throw error;
-    } finally { stopWatching?.(); }
+    } finally {
+      releaseModel?.();
+      stopWatching?.();
+    }
   }
   async retrieve(readCatalog: ReadMemoryMapCatalog, request: { question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }): Promise<RetrievalAnswer> {
     const catalog = readCatalog(); this.activate(catalog);
