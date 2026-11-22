@@ -9,6 +9,7 @@ import { catalogRevision, LOCAL_NAMESPACE, vectorKey, type VectorCache } from '.
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import type { MemoryMapCatalog, ReadMemoryMapCatalog } from './catalog.js';
 import { MemoryMapHostError } from './errors.js';
+import { MAX_INFERENCE_TASK_BYTES } from './inference-request.js';
 export { MemoryMapHostError } from './errors.js';
 import type { ProviderEmbeddings } from './provider-embeddings.js';
 const sameNamespace = (a: EmbeddingNamespace, b: EmbeddingNamespace) => a.source === b.source && a.providerId === b.providerId && a.modelId === b.modelId && a.modelRevision === b.modelRevision && a.preprocessingRevision === b.preprocessingRevision && (!b.dimensions || a.dimensions === b.dimensions);
@@ -108,17 +109,32 @@ export class MemoryMapHost {
     }
     const cached = total - missing.length;
     if (cached) report({ jobId, phase: 'embedding', completed: cached, total });
-    if (missing.length) {
-      const texts = missing.map(({ record }) => `${record.title}\n${record.text}`);
-      const vectors = await this.runWorker<number[][]>(folder, { kind: 'embed-batch', texts, jobId }, signal, progress => {
+    for (let offset = 0; offset < missing.length;) {
+      const start = offset;
+      const texts: string[] = [];
+      const task = { kind: 'embed-batch' as const, texts, jobId };
+      let taskBytes = Buffer.byteLength(JSON.stringify(task));
+      for (let index = start; index < missing.length; index++) {
+        const { record } = missing[index];
+        const text = `${record.title}\n${record.text}`;
+        const bytes = Buffer.byteLength(JSON.stringify(text)) + (texts.length ? 1 : 0);
+        if (taskBytes + bytes > MAX_INFERENCE_TASK_BYTES) break;
+        taskBytes += bytes;
+        texts.push(text);
+      }
+      if (!texts.length) throw new MemoryMapHostError('catalog-too-large');
+
+      assertCurrent();
+      const vectors = await this.runWorker<number[][]>(folder, task, signal, progress => {
         const completed = progress.completed;
-        const entry = missing[completed - 1];
-        if (progress.phase === 'embedding' && entry) {
-          report({ jobId, phase: 'embedding', completed: cached + completed, total, memoryId: entry.record.memoryId });
+        if (progress.phase === 'embedding' && texts[completed - 1] !== undefined) {
+          const { record } = missing[start + completed - 1];
+          report({ jobId, phase: 'embedding', completed: cached + start + completed, total, memoryId: record.memoryId });
         }
       });
-      if (vectors.length !== missing.length) throw new Error('Memory and vector counts differ');
-      missing.forEach(({ key }, index) => { cache[key] = vectors[index]; });
+      if (vectors.length !== texts.length) throw new Error('Memory and vector counts differ');
+      vectors.forEach((vector, index) => { cache[missing[start + index].key] = vector; });
+      offset += texts.length;
     }
     assertCurrent();
     return this.runWorker<GraphBuildResult>('', { kind: 'project', input: { ...catalog, cache, namespace: LOCAL_NAMESPACE, jobId } }, signal, progress => {

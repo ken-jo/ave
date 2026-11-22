@@ -137,10 +137,13 @@ Local inference runs only in a separate child process that the OS sandbox keeps 
 
 Without an active sandbox (turned off, still starting, or a Windows extension plan that would refuse the confined start) local embeddings are unavailable with that reason; the host never falls back to in-process inference. The projection worker thread shares the host process and only projects cached vectors.
 
-Local builds send only uncached title and body strings to the inference child.
-The host merges the returned vectors by memory identity, content revision and
-model namespace before handing them to the projection worker. Cached vectors
-and note metadata do not count toward the inference request limit.
+Local builds send only uncached title and body strings to the inference child
+in sequential batches that fit the request budget. The host merges the returned
+vectors by memory identity, content revision and model namespace before handing
+them to the projection worker. Cached vectors and note metadata do not count
+toward the inference request limit. The host commits the snapshot and cache
+together after all batches and projection succeed. A failed build leaves the
+previously stored snapshot and cache intact.
 
 The batch JSON budget is 194,900,080 bytes. It covers 4,000 uncached managed
 notes at the 120 UTF-16 unit title and 8,000 unit body limits. The worst-case
@@ -149,7 +152,7 @@ two quotes and one comma per note. The empty batch envelope with a UUID is
 80 bytes. Legacy notes can come from files up to 512 KiB, so the budget can
 hold fewer of them. The catalog has no count limit. Both endpoints check the
 actual UTF-8 task length and the exact model file lengths before accepting the
-frame. Oversized requests return `catalog-too-large`.
+frame. A note that cannot fit in its own request returns `catalog-too-large`.
 
 On Windows the child starts in the system directory, which the sandbox account can already read. It receives the usual fresh process HOME environment without an ACL grant to that profile.
 

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MemoryMapHost } from '../host.js';
 import { buildGraph, catalogRevision, LOCAL_NAMESPACE, vectorKey } from '../graph.js';
-import { checkedInferenceFrameBytes, INFERENCE_FILES } from '../inference-request.js';
+import { checkedInferenceFrameBytes, INFERENCE_FILES, MAX_INFERENCE_TASK_BYTES } from '../inference-request.js';
 import type { MemoryMapCatalog } from '../catalog.js';
 import type { MemoryWorkerRunner } from '../worker-client.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
@@ -29,6 +29,53 @@ async function fixture() {
   return { root, namespace, catalog, runWorker };
 }
 describe('memory graph publication', () => {
+  it('embeds a first build across multiple inference frames in catalog order', async () => {
+    const f = await fixture();
+    const body = '\0'.repeat(512 * 1024 - 32);
+    const records = Array.from({ length: 63 }, (_, index) => ({
+      ...f.catalog.records[0], memoryId: `note-${index}`, title: `Note ${index}`, text: body,
+    }));
+    f.catalog.records = records;
+    const vectors = records.map((_, index) => Array.from({ length: 384 }, (_, dimension) => Number(dimension === index)));
+    const progress: { completed: number; total: number; memoryId?: string }[] = [];
+    const batches: number[] = [];
+    let embedded = 0;
+    const runWorker: MemoryWorkerRunner = async <T>(...args: Parameters<MemoryWorkerRunner>) => {
+      const [, task, , onProgress] = args;
+      if (task.kind !== 'embed-batch') return f.runWorker<T>(...args);
+      checkedInferenceFrameBytes([Buffer.byteLength(JSON.stringify(task)), ...INFERENCE_FILES.map(file => file.bytes)]);
+      batches.push(task.texts.length);
+      return task.texts.map((text, index) => {
+        const record = records[embedded];
+        expect(text === `${record.title}\n${record.text}`).toBe(true);
+        onProgress?.({ jobId: task.jobId, phase: 'embedding', completed: index + 1, total: task.texts.length });
+        return vectors[embedded++];
+      }) as T;
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker,
+      onProgress: event => { if (event.phase === 'embedding') progress.push(event); },
+    });
+
+    const result = await host.build(() => f.catalog);
+    expect(batches).toHaveLength(2);
+    expect(result.coverage.embedded).toBe(records.length);
+    expect(progress).toEqual(records.map(({ memoryId }, index) => expect.objectContaining({
+      memoryId, completed: index + 1, total: records.length,
+    })));
+    const { cache } = JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8'));
+    for (const [index, record] of records.entries()) expect(cache[vectorKey(record, LOCAL_NAMESPACE)]).toEqual(vectors[index]);
+  });
+
+  it('refuses a single note that cannot fit in an inference frame', async () => {
+    const f = await fixture();
+    f.catalog.records[0].text = '\0'.repeat(Math.ceil(MAX_INFERENCE_TASK_BYTES / 6));
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model',
+      runWorker: async () => { throw new Error('Unexpected inference request'); },
+    });
+    await expect(host.build(() => f.catalog)).rejects.toMatchObject({ code: 'catalog-too-large' });
+    await expect(readFile(join(f.root, 'snapshot.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('rebuilds with 4,000 cached vectors and only sends uncached note text to inference', async () => {
     const f = await fixture();
     const base = await buildGraph({ ...f.catalog, records: [], namespace: LOCAL_NAMESPACE, cache: {}, jobId: 'seed' }, {
