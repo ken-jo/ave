@@ -386,7 +386,10 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     const signal = deps.abortSignalOf(token);
     const identity: object = signal ?? owner;
     let generation = generations.get(identity);
-    if (generation === undefined) generations.set(identity, (generation = ++generationCount));
+    if (generation === undefined) {
+      generation = ++generationCount;
+      generations.set(identity, generation);
+    }
     const invocation: LiveInvocation = {
       signal,
       generation,
