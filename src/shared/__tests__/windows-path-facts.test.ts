@@ -234,4 +234,19 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
       }));
     }
   });
+  it("reports a helper's non-zero exit by its status alone and keeps system errors", () => {
+    const leaked = String.raw`D:\example\alice\ave-path-kind.exe`;
+    vi.mocked(execFileSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error(`Command failed: ${leaked} --dacl\n${leaked}`), { status: 3, signal: null, stderr: Buffer.from(leaked) });
+    });
+    let failure: unknown;
+    try { readWindowsDacls([join(fixture, "directory")]); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("Windows path facts helper failed (exit 3)");
+    expect((failure as Error).cause).toBeUndefined();
+    expect(Object.values(failure as object).map(String).join("\n")).not.toContain("alice");
+    const system = Object.assign(new Error(`spawnSync ${leaked} ETIMEDOUT`), { code: "ETIMEDOUT", syscall: `spawnSync ${leaked}`, status: null });
+    vi.mocked(execFileSync).mockImplementationOnce(() => { throw system; });
+    expect(() => readWindowsDacls([join(fixture, "directory")])).toThrow(system);
+  });
 });
