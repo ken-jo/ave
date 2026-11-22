@@ -10,8 +10,7 @@ import { captureRationalePolicySnapshot } from "../pipeline/rationale-policy-epo
 import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -28,7 +27,6 @@ import { attachSandboxBlock, issueFilesystemSandboxBlock } from "../../shared/sa
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { type AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
@@ -42,10 +40,13 @@ const reviewResources = new PermissionTestResources();
 const originalPlatform = process.platform;
 const fixtureDirectories: string[] = [];
 let directory: string;
-beforeEach(() => {
-  const fixture = reviewResources.makeTmpDir("executor-sandbox-escalation-");
+function makeFixtureDirectory(prefix: string): string {
+  const fixture = reviewResources.makeTmpDir(prefix);
   fixtureDirectories.push(fixture);
-  directory = realpathSync.native(fixture);
+  return realpathSync.native(fixture);
+}
+beforeEach(() => {
+  directory = makeFixtureDirectory("executor-sandbox-escalation-");
   vi.stubEnv("AVE_HOME", join(directory, "profile"));
   __resetShellResolverCache();
   processProbe.execFileSync.mockImplementation((_file, args: readonly string[]) =>
@@ -68,9 +69,15 @@ afterEach(async () => {
   }
 });
 afterAll(async () => {
+  const failures: string[] = [];
   for (const fixture of fixtureDirectories) {
-    await expect(lstat(fixture), fixture).rejects.toMatchObject({ code: "ENOENT" });
+    try {
+      await expect(lstat(fixture), fixture).rejects.toMatchObject({ code: "ENOENT" });
+    } catch (error) {
+      failures.push(`${fixture}: ${String(error)}`);
+    }
   }
+  expect(failures).toEqual([]);
 });
 
 function fixtureAuditLogger(): AuditLogger {
@@ -163,30 +170,26 @@ it("denies a headless host escalation without a second native effect", async () 
 });
 
 it("requires a normal card before expanding sandbox filesystem scope", async () => {
-  const outside = realpathSync.native(mkdtempSync(join(tmpdir(), "executor-sandbox-outside-")));
-  try {
-    const command = `mkdir '${join(outside, "new-folder")}'`;
-    const native = new BashTool();
-    const execute = vi.spyOn(native, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
-    const registry = new ToolRegistry(); registry.register(native);
-    const cards: ApprovalRequest[] = [];
-    let gate: ApprovalGate;
-    const contents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
-      if (channel !== IPC_APPROVAL_REQUEST) return;
-      cards.push(request);
-      expect(execute).not.toHaveBeenCalled();
-      expect(request.allowedChoices).toBeUndefined();
-      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac }, contents as never);
-    } };
-    gate = new ApprovalGate(contents as never);
-    const executor = new ToolExecutor(registry, undefined, manager(), undefined, gate, undefined, fixtureAuditLogger());
-    const [result] = await invoke(executor, "outside-sandbox-scope", "bash", { command });
-    expect(result?.is_error).toBe(true);
-    expect(cards).toHaveLength(1);
+  const outside = makeFixtureDirectory("executor-sandbox-outside-");
+  const command = `mkdir '${join(outside, "new-folder")}'`;
+  const native = new BashTool();
+  const execute = vi.spyOn(native, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
+  const registry = new ToolRegistry(); registry.register(native);
+  const cards: ApprovalRequest[] = [];
+  let gate: ApprovalGate;
+  const contents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    if (channel !== IPC_APPROVAL_REQUEST) return;
+    cards.push(request);
     expect(execute).not.toHaveBeenCalled();
-  } finally {
-    await cleanupTmpDir(outside);
-  }
+    expect(request.allowedChoices).toBeUndefined();
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac }, contents as never);
+  } };
+  gate = new ApprovalGate(contents as never);
+  const executor = new ToolExecutor(registry, undefined, manager(), undefined, gate, undefined, fixtureAuditLogger());
+  const [result] = await invoke(executor, "outside-sandbox-scope", "bash", { command });
+  expect(result?.is_error).toBe(true);
+  expect(cards).toHaveLength(1);
+  expect(execute).not.toHaveBeenCalled();
 });
 
 it("reviews a headless auto host escalation before permitting its single host effect", async () => {
