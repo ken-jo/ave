@@ -214,8 +214,8 @@ const QUOTE_OPENED = String.raw`(?<=(?:^|[^\p{L}\p{N}])["'\x60])`;
  * Any account's profile: letters, marks, digits, `._-` and apostrophes before a letter or digit, each also
  * percent-encoded up to the decode bound or a JSON `\u` escape, after separators encoded the same ways, under a
  * drive, UNC, `/users/` or `/home/` root. Words after a space join the name before a separator in a path value
- * (or at its end) and in a quoted span that starts with the home (or at its closing quote); in other text the
- * name stops at whitespace.
+ * (or a quote, or its end) and in a quoted span that starts with the home (or at its closing quote); in other
+ * text the name stops at whitespace.
  */
 function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
   const json = (hex: string): string => String.raw`\\{1,7}u00(?:${hex})`;
@@ -247,7 +247,7 @@ function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
   const forms = (name: string, opened = ""): HomeForm[] =>
     roots.map(([prefix, marker, keep]) => ({ literal: new RegExp(opened + prefix + name, "giu"), marker, keep }));
   return mode === "path"
-    ? forms(joined(`(?=${separator}|[?#]|$)`))
+    ? forms(joined(`(?=${separator}|[?#"'\\x60]|$)`))
     : [...forms(joined(`(?=${separator}|["'\\x60])`), QUOTE_OPENED), ...forms(`${nameUnit(percent("20"))}+`)];
 }
 

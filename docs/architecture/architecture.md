@@ -3561,7 +3561,7 @@ an odd backslash run; a single backslash followed by a raw folder separator
 is a separator, so `C:\Users\bob\uface\x` keeps the folder `uface`. Its
 separators may be encoded either way too. Encodings deeper than three
 layers are outside the contract. Words after a space join the name in a path
-value, before a separator, the value's end, or a query or fragment. In display
+value, before a separator, a quote, the value's end, or a query or fragment. In display
 text they join only inside a quoted or backtick span that starts with the home,
 before a separator or the closing quote. Elsewhere in text a name stops at
 whitespace, a JSON-escaped space (`\u0020`) included, so a following command

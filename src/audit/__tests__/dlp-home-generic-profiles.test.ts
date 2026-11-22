@@ -92,6 +92,8 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     ["file:///C:/Users/Bobé/x", "file://[home]/x"],
     ["https://docs.example/users/bob/api", "https://docs.example/[home]/api"],
     ["C:\\Users\\bob\\uface\\x", "[home]\\uface\\x"],
+    ['"/home/Demo Smith"', '"[home]"'],
+    ["'C:\\Users\\Demo Smith'\\x", "'[home]'\\x"],
   ])("redacts any account's home in the path value %s", async (input, expected) => {
     const { redactFsPath } = await loadHomeRedactors(home, platform);
     expect(redactFsPath(input)).toBe(expected);
