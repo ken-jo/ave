@@ -79,6 +79,8 @@ export function trackDetachedToolInvocation(
       if (detached.delete(entry)) recordToolInvocationAuditFailure(error);
     },
   );
+  // After the seal the interruption's indeterminate row is already written, so this entry ends with a second
+  // indeterminate row, the host-shutdown deny, as its terminal record.
   if (shutdown.signal.aborted) closeDetachedToolInvocations();
 }
 
