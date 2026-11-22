@@ -1,7 +1,7 @@
 /** Exercise config delivery across a real JSON process boundary; in-memory sharing cannot prove marshalling. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter, once } from "node:events";
 import { createServer, type Server, type Socket } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -11,6 +11,7 @@ import { createInterface } from "node:readline";
 import { PassThrough, Writable } from "node:stream";
 import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
 import { aveHome } from "../../../shared/ave-home.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
 import { derivePluginChildEnvelope } from "../out-of-process-plugin.js";
@@ -19,7 +20,7 @@ import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
 import { CHILD_LOOPBACK_TRANSPORT_ARG, CHILD_PRIVATE_STDIO_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from "../child-loopback-link.js";
 import { OUTBOUND_QUEUE_BYTES_MAX } from "../child-stream-multiplex.js";
-import { pacePluginChildInput, PLUGIN_CHILD_INPUT_FD } from "../plugin-child-credit.js";
+import { pacePluginChildInput, PLUGIN_CHILD_INPUT_FD, pluginChildInputCredit } from "../plugin-child-credit.js";
 import { SECRET_REDACTED_SENTINEL } from "../host-api-wire.js";
 import {
   emitPluginConfigChange,
@@ -575,6 +576,96 @@ export const createPlugin = async () => ({
     },
     180_000,
   );
+
+  it("refuses forged credit and exits after host loss with the parser, message and MCP paths mutated", async () => {
+    const root = temporaryRoot;
+    if (!root) throw new Error("missing plugin fixture directory");
+    const entryPath = join(root, "pipe-loss-mutations.mjs");
+    const forgedCredit = pluginChildInputCredit(randomBytes(16), 1).toString("base64");
+    writeFileSync(entryPath, `import { writeSync } from "node:fs";
+import { Readable } from "node:stream";
+
+const MCP_CALL = '"method":"tools/call"';
+
+function mutateRealm() {
+  const from = Buffer.from;
+  const toString = Buffer.prototype.toString;
+  const isMcpCall = (value) => Buffer.isBuffer(value) && toString.call(value).includes(MCP_CALL);
+  Buffer.from = (...args) => {
+    const bytes = from(...args);
+    return isMcpCall(bytes) ? from("{}\\n") : bytes;
+  };
+  Buffer.prototype.toString = function (...args) {
+    return isMcpCall(this) ? "{}" : toString.apply(this, args);
+  };
+  const parse = JSON.parse;
+  JSON.parse = (text, ...args) => parse(typeof text === "string" && text.includes(MCP_CALL) ? "{}" : text, ...args);
+  const on = Readable.prototype.on;
+  Readable.prototype.on = function (event, listener) {
+    return event === "end" || event === "close" ? this : on.call(this, event, listener);
+  };
+  const push = Readable.prototype.push;
+  Readable.prototype.push = function (chunk, ...args) {
+    return chunk === null || isMcpCall(chunk) || push.call(this, chunk, ...args);
+  };
+
+  // The input owner reports host loss as null; turn it into a write acknowledgement.
+  const data = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
+  Object.defineProperty(MessageEvent.prototype, "data", {
+    ...data,
+    get() {
+      const message = data.get.call(this);
+      return message === null ? {} : message;
+    },
+  });
+
+  // Credit input the owner never received, then hand the MCP server an empty request.
+  const stringify = JSON.stringify;
+  JSON.stringify = function (value, ...args) {
+    if (value?.method !== "tools/call") return stringify.call(this, value, ...args);
+    writeSync(1, from(${JSON.stringify(forgedCredit)}, "base64"));
+    return "{}";
+  };
+}
+
+export const createPlugin = async () => ({
+  handlers: { probe_changes: () => [] },
+  start: mutateRealm,
+});
+`);
+    const { hostApi } = hostApiFor();
+    const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+    const link = await spawnPlainChild(childEntryPath, false);
+    const terminations: string[] = [];
+    const instance = await plainSessionFactory({
+      manifest: MANIFEST,
+      entryPath,
+      childEntryPath,
+      link: { ...link, terminate: (reason) => { terminations.push(reason); } },
+    })({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    const child = [...spawnedChildren][0];
+    const probe = instance.handlers.probe_changes;
+    if (!child || !instance.start || !probe) throw new Error("missing child or fixture handlers");
+    const state = observeStall(child);
+    await instance.start();
+
+    await expect(probe()).rejects.toThrow(/Invalid plugin child input credit/);
+    expect(terminations).toEqual([expect.stringMatching(/Invalid plugin child input credit/)]);
+
+    // The realm never learns of the loss, so only the owner's deadline can end the child. The host's
+    // force-kill bound caps the wait; the recording link never signals.
+    const exited = once(child, "exit", { signal: AbortSignal.timeout(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs) });
+    link.disconnect();
+    expect(await state.outcomeAfterExit(exited)).toEqual({
+      exit: process.platform === "win32" ? [1, null] : [null, "SIGKILL"],
+      resumed: false,
+    });
+    expect(terminations).toHaveLength(1);
+  }, 180_000);
 
   it.each(["stdio", "loopback"])("paces %s while stalled and delivers beyond the previous queue bound in order", async (transport) => {
     const root = temporaryRoot;
