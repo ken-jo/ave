@@ -611,7 +611,11 @@ it("a second start of a running item keeps the item's standing failure", async (
       workspace: {
         ...workspace,
         prepare: async (...args) => {
-          if (args[1].id === "a") throw new Error("preparation failed");
+          // Stage a fails only once stage b's child is linked, so the order the test reads is fixed.
+          if (args[1].id === "a") {
+            await linked.promise;
+            throw new Error("preparation failed");
+          }
           return workspace.prepare(...args);
         },
       },
@@ -743,7 +747,12 @@ it.each(["accepted", "refused"] as const)("a %s retry sets aside the item's stan
     if (outcome === "accepted") expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
     expect(await retry).toMatchObject({ ok: outcome === "accepted" });
     if (outcome === "accepted") {
-      expect(await wait).toEqual([{ status: "fulfilled", value: [expect.anything()] }]);
+      const settled = await wait;
+      const relaunched = h.children.at(-1);
+      expect(settled).toEqual([{ status: "fulfilled", value: [relaunched] }]);
+      expect(relaunched).toMatchObject({ ended: false, input: { originSessionId: workBoardOriginSessionId(id) } });
+      expect(h.children).toHaveLength(2);
+      expect(h.workspaceCalls).toContain("prepare:a#3");
     } else {
       expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
         { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
