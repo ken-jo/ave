@@ -323,7 +323,7 @@ export async function openPluginProtocolSession(
       requestMcp: (method, params, timeoutMs) => transport.requestMcp(method, params, timeoutMs),
       probe: (method, params) => transport.probe(method, params),
       runStopHook: async () => {
-        if (!construction.lifecycleHooks.includes("stop")) return;
+        if (transport.channelClosing || !construction.lifecycleHooks.includes("stop")) return;
         await transport.request(
           PLUGIN_INSTANCE_METHODS.stop,
           {},

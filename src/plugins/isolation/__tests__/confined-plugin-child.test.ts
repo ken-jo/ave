@@ -68,6 +68,7 @@ import {
 import { connect } from "node:net";
 import { createServer } from "node:http";
 import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import { PLUGIN_CHILD_INPUT_FD } from "../plugin-child-credit.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
 import { runOneHookScript } from "../../../hooks/script-hook-runner.js";
 import { flattenAgentPluginsManifest } from "../../public-contract.js";
@@ -2437,7 +2438,7 @@ interface UnixProbeSession {
 async function openUnixProbeSession(plugin: ShortRootedPlugin): Promise<UnixProbeSession> {
   const probePath = join(plugin.pluginRoot, "unix-probe.mjs");
   writeFileSync(probePath, `import { createServer } from "node:http";
-import { connect } from "node:net";
+import { connect, Socket } from "node:net";
 import { createInterface } from "node:readline";
 import { unlinkSync } from "node:fs";
 const servers = new Set();
@@ -2483,7 +2484,13 @@ async function run(request) {
     socket.once("error", error => { socket.destroy(); resolve({ ok: false, code: error.code ?? error.name }); });
   });
 }
-for await (const line of createInterface({ input: process.stdin })) {
+const input = new Socket({ fd: ${PLUGIN_CHILD_INPUT_FD}, readable: true, writable: false });
+input.on("data", (chunk) => {
+  const credit = Buffer.alloc(5);
+  credit.writeUInt32BE(chunk.length, 1);
+  process.stdout.write(credit);
+});
+for await (const line of createInterface({ input })) {
   const request = JSON.parse(line);
   report(request.id, await run(request));
 }

@@ -202,9 +202,13 @@ export class PluginChildTransport {
     }
   }
 
+  get channelClosing(): boolean {
+    return this.pipeLossGrace !== undefined || this.closedReason !== undefined;
+  }
+
   closeInput(reason: string): Promise<void> {
     const grace = this.beginPipeLossGrace(reason);
-    this.link.output.end();
+    if (!this.link.output.writableEnded && !this.link.output.destroyed) this.link.output.end();
     return grace;
   }
 

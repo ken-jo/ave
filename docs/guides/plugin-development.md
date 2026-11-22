@@ -165,9 +165,9 @@ at each app release, so it describes what the host actually serves. To validate 
 `#/$defs/methods/ave~1host~1storage~1read/params`), not the method entry, which
 groups them under names that are not JSON Schema keywords; with Ajv, set
 `allowUnionTypes: true`, because a field that takes more than one type (a
-request id, a nullable value) is a type array. The host does not yet admit a
-extension that speaks the protocol without its JavaScript runtime; every extension
-today is a JavaScript `entry`.
+request id, a nullable value) is a type array. JavaScript `entry` plugins use the
+reference runtime. Admitted `process` plugins speak the same protocol over their
+executable’s stdio.
 
 Authors implementing their own transport use the JSON schema directly. The host
 does not maintain a generated TypeScript protocol client.

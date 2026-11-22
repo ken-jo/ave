@@ -2154,7 +2154,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     }, { own });
   });
 
-  it("gives the wrapped child the full grace after a clean socket close", async ({ onTestFinished }) => {
+  it.for([false, true])("uses one deadline after a clean wrapped socket close, with session stop: %s", async (stopDuringGrace, { onTestFinished }) => {
     const own = testResources(onTestFinished);
     const layout = aveLayout(undefined, own);
     const { entryPath } = writePluginModule(own);
@@ -2172,7 +2172,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         return result;
       });
       const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
-      await factory(hostContext(fakeHostApi(), layout.context));
+      const instance = await factory(hostContext(fakeHostApi(), layout.context));
       if (!peer || !wrapper) throw new Error("missing wrapped child or peer");
       const socket = peer;
       const child = wrapper;
@@ -2181,10 +2181,19 @@ describe("on Windows a confined child holds a grant on its own directories for e
         const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
         socket.end();
         await closed;
-        await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs - 1);
+        const { pluginShutdownKillGraceMs: grace, pluginChildForceKillMs: force } = TOOL_TIMEOUT_POLICY;
+        await vi.advanceTimersByTimeAsync(grace - 1);
+        const stop = stopDuringGrace ? instance.stop?.().catch((error: unknown) => error) : undefined;
+        await vi.advanceTimersByTimeAsync(0);
         expect(child.kill.mock.calls).toEqual([]);
         await vi.advanceTimersByTimeAsync(1);
         expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+        await vi.advanceTimersByTimeAsync(force - 1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+        end(child, 0, null);
+        expect(await stop).toBeUndefined();
       } finally {
         end(child, 0, null);
         vi.useRealTimers();

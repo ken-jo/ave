@@ -921,7 +921,7 @@ describe("the four escapes, against the production factory under the real wrap",
   );
 
   it.runIf(WRAP_PLATFORM)(
-    "4: a patched child cannot touch the host's objects; a stray line is dropped and a forged frame answers under the spawn-bound id",
+    "4: a patched child leaves host objects and connection identity intact",
     async () => {
       if (!(await sandboxCasesRun())) return;
       expect(controls.patch, "the patch control did not hold").toBe("held");
@@ -937,25 +937,28 @@ describe("the four escapes, against the production factory under the real wrap",
           otherPluginId: NEIGHBOUR_ID,
         });
         expect(result.patched).toEqual({ fetch: true, stdoutWrite: true });
-        // A forged request keeps this connection identity; it cannot claim another plugin secret.
-        expect(result.forged).toMatchObject({ key: `plugin.${NEIGHBOUR_ID}.key`, answered: true, result: null });
         const audit = await auditTexts(spawned.host.audit);
-        expect(audit).toContain(
-          `[plugin:${PLUGIN_ID}] hostSecret_denied reason=not-allowlisted key=plugin.${NEIGHBOUR_ID}.key`,
-        );
-        expect(audit.filter((row) => row.startsWith(`[plugin:${NEIGHBOUR_ID}]`))).toEqual([]);
-        // Ignore and log identity fields outside the method contract.
+        const denied = `[plugin:${PLUGIN_ID}] hostSecret_denied reason=not-allowlisted key=plugin.${NEIGHBOUR_ID}.key`;
         const warnings = sessionWarnings.slice(warningsBefore);
-        expect(
-          warnings.some(([meta, message]) =>
-            message === "ignored an undeclared params field"
-            && (meta as { pluginId?: string; method?: string; field?: string }).pluginId === PLUGIN_ID
-            && (meta as { field?: string }).field === "pluginId",
-          ),
-          JSON.stringify(warnings),
-        ).toBe(true);
-        // Malformed raw frames must be dropped without poisoning the next valid call.
-        expect(spawned.stdout().split("\n")).toContain("this line is not JSON");
+        const lines = spawned.stdout().split("\n");
+        if (process.platform === "win32") {
+          expect(result.forged).toMatchObject({ key: `plugin.${NEIGHBOUR_ID}.key`, answered: false });
+          expect(audit).not.toContain(denied);
+          expect(lines).not.toContain("this line is not JSON");
+        } else {
+          expect(result.forged).toMatchObject({ key: `plugin.${NEIGHBOUR_ID}.key`, answered: true, result: null });
+          expect(audit).toContain(denied);
+          expect(
+            warnings.some(([meta, message]) =>
+              message === "ignored an undeclared params field"
+              && (meta as { pluginId?: string; method?: string; field?: string }).pluginId === PLUGIN_ID
+              && (meta as { field?: string }).field === "pluginId",
+            ),
+            JSON.stringify(warnings),
+          ).toBe(true);
+          expect(lines).toContain("this line is not JSON");
+        }
+        expect(audit.filter((row) => row.startsWith(`[plugin:${NEIGHBOUR_ID}]`))).toEqual([]);
         await expect(call(spawned, "escape_electron", { expectConfined: true })).resolves.toMatchObject({
           outcome: "no-usable-api",
         });

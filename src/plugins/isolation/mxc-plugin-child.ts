@@ -41,7 +41,7 @@ export interface MxcPluginChild {
   onTerminating(handler: () => void): void;
 }
 
-/** Adapt owned streams directly; neither the supervisor PID nor stream payloads select the recipient. */
+/** Adapt the owned streams without letting stream payloads or the supervisor PID select the recipient. */
 export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">, pluginId: string): MxcPluginChild {
   // Always take diagnostics, even when protocol construction has not begun.
   capturePluginStderr(owned.stderr, pluginId);
@@ -100,8 +100,7 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
       if (terminating) handler();
     },
     link: {
-      input: owned.stdout,
-      output: owned.stdin,
+      ...pacePluginChildInput(owned.stdout, owned.stdin),
       terminate: (reason) => { void stop(reason); },
       onGone: (handler) => { void exited.then(handler).catch(() => {}); },
       onFault: (handler) => {
@@ -211,8 +210,7 @@ export async function spawnMxcPluginChild(
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
-    const { link } = child;
-    return { ...child, link: { ...link, ...pacePluginChildInput(link.input, link.output) } };
+    return child;
   } catch (error) {
     child.link.terminate(`refused after spawn: ${errorMessage(error)}`);
     try {

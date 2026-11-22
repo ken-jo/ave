@@ -213,7 +213,13 @@ describe("an observed exit is not a requested termination", () => {
 });
 
 describe("host pipe loss", () => {
-  it("starts one graceful shutdown and escalates from the first pipe loss", async () => {
+  it.each([
+    ["finish", "end"],
+    ["end", "close"],
+    ["close", "finish"],
+    ["end", "exit"],
+    ["finish", "stop"],
+  ] as const)("starts one graceful shutdown when %s arrives first and %s arrives during grace", async (first, next) => {
     vi.useFakeTimers();
     const { link, childToHost, fireGone } = recordedLink();
     const kill = vi.fn(() => true);
@@ -223,17 +229,32 @@ describe("host pipe loss", () => {
       terminate: () => { terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs); },
     });
     const grace = TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs;
+    const force = TOOL_TIMEOUT_POLICY.pluginChildForceKillMs;
+    const loss = {
+      finish: () => link.output.end(),
+      end: () => childToHost.emit("end"),
+      close: () => childToHost.emit("close"),
+    };
 
-    link.output.end();
+    loss[first]();
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(grace - 1);
-    childToHost.emit("end");
+    let stop: Promise<void> | undefined;
+    if (next === "exit") fireGone("child exited");
+    else if (next === "stop") stop = transport.closeInput("session stopped");
+    else loss[next]();
     expect(kill).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
+    if (next === "exit") {
+      await vi.advanceTimersByTimeAsync(force);
+      expect(kill.mock.calls).toEqual([]);
+      await expect(transport.exited).resolves.toBe("child exited");
+      return;
+    }
     expect(kill.mock.calls).toEqual([["SIGTERM"]]);
+    await stop;
 
-    const force = TOOL_TIMEOUT_POLICY.pluginChildForceKillMs;
     await vi.advanceTimersByTimeAsync(force - 1);
     expect(kill.mock.calls).toEqual([["SIGTERM"]]);
     await vi.advanceTimersByTimeAsync(1);

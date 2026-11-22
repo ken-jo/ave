@@ -39,7 +39,7 @@ export function openPluginChildInput(
   const deliver = input.push.bind(input);
   const observers = new EventEmitter();
   const observe = observers.emit.bind(observers);
-  const hasObservers = observers.listenerCount.bind(observers);
+  const observerListeners = observers.rawListeners.bind(observers);
   const stdin: PluginStdinView = Object.freeze({
     on(event: StdinEvent, listener: StdinListener) {
       observers.on(event, listener);
@@ -91,8 +91,12 @@ export function openPluginChildInput(
     }
     if (message instanceof Uint8Array) {
       const bytes = Buffer.from(message.buffer, message.byteOffset, message.byteLength);
+      const listeners = observerListeners("data");
       deliver(bytes);
-      if (hasObservers("data") > 0) observe("data", Buffer.from(bytes));
+      if (listeners.length > 0) {
+        const observed = Buffer.from(bytes);
+        for (const listener of listeners) Reflect.apply(listener, stdin, [observed]);
+      }
       acknowledgeBytes(queuedBytes, 0, message.byteLength);
       if (!input.destroyed) sendCredit(pluginChildInputCredit(message.byteLength));
     } else if ("announce" in message) {
