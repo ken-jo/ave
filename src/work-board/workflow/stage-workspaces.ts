@@ -49,6 +49,9 @@ interface RunFileV1 {
   out: Record<string, { sha256: string; size: number; stageId: string }>;
 }
 
+/** A run folder as one call holds it: its record, and which directories `<worktrees>/<project>/<run>` were when it was read. */
+interface Held { runRoot: string; file: RunFileV1; identity: string }
+
 export interface StageWorkspaceOptions {
   git?: HostGit;
   /** The secret-file test; the default is the permission layer's own. */
@@ -67,6 +70,17 @@ const plainDirectory = (path: string): boolean => {
   const stat = lstatSync(path, { throwIfNoEntry: false });
   return stat?.isDirectory() === true && !stat.isSymbolicLink();
 };
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Every field a later call relies on, so a partial or foreign file is no record. */
+function isRunFile(value: unknown): value is RunFileV1 {
+  if (!isObject(value) || value.v !== 1 || typeof value.runId !== "string" || value.runId === "" || !Number.isInteger(value.itemId)) return false;
+  if (value.kind !== "git" && value.kind !== "folder") return false;
+  const text = [value.projectRoot, value.branch, value.baseCommit, value.merging];
+  if (text.some(field => field !== undefined && typeof field !== "string") || (value.ignoreRules !== undefined && typeof value.ignoreRules !== "boolean")) return false;
+  if (value.kind === "git" && text.slice(0, 3).includes(undefined)) return false;
+  if (!isObject(value.stages) || !isObject(value.joins) || !isObject(value.out)) return false;
+  return Object.entries(value.stages).every(([id, entry]) => isStageId(id) && isObject(entry) && typeof entry.ready === "boolean" && Number.isInteger(entry.attempt));
+}
 const nul = (text: string): string[] => text.split("\0").filter(entry => entry !== "");
 const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
 
@@ -88,46 +102,73 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   const worktreesRoot = (): string => join(aveHome(), WORKTREES_DIR);
 
+  /** The three levels of a run folder as device and file ids. Null when one is no real directory (a link is none) or the folder is not
+   * two levels below the home's `worktrees`. */
+  function folderIdentity(runRoot: string): string | null {
+    const levels = [dirname(dirname(runRoot)), dirname(runRoot), runRoot];
+    if (!samePath(levels[0] as string, worktreesRoot())) return null;
+    const ids: string[] = [];
+    for (const level of levels) {
+      const stat = lstatSync(level, { bigint: true, throwIfNoEntry: false });
+      if (stat === undefined || !stat.isDirectory() || stat.isSymbolicLink()) return null;
+      ids.push(`${stat.dev}:${stat.ino}`);
+    }
+    return ids.join("/");
+  }
+
+  /** Before each removal or write, however long ago the folder was read: every level is still the directory it was. */
+  function assertHeld(at: Pick<Held, "runRoot" | "identity">): void {
+    if (folderIdentity(at.runRoot) !== at.identity) throw new Error("the run folder is no longer the one that was read");
+  }
+
   function readRunFile(runRoot: string): RunFileV1 | null {
+    const path = join(runRoot, RUN_FILE);
     try {
-      const file = JSON.parse(readFileSync(join(runRoot, RUN_FILE), "utf8")) as RunFileV1;
-      return file.v === 1 && typeof file.runId === "string" ? file : null;
+      // A link, or a file that has a second name, is not the record the host wrote here.
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.nlink !== 1) return null;
+      const file: unknown = JSON.parse(readFileSync(path, "utf8"));
+      return isRunFile(file) ? file : null;
     } catch {
       return null;
     }
   }
 
-  function writeRunFile(runRoot: string, file: RunFileV1): void {
-    const target = join(runRoot, RUN_FILE);
+  function writeRunFile(at: Pick<Held, "runRoot" | "identity">, file: RunFileV1): void {
+    assertHeld(at);
+    const target = join(at.runRoot, RUN_FILE);
     writeFileSync(`${target}.tmp`, JSON.stringify(file), { mode: 0o600 });
     renameSync(`${target}.tmp`, target);
   }
 
   /** The run's folder and record, found again after a restart by the run's slug. */
-  function locate(run: Pick<RunRef, "runId">): { runRoot: string; file: RunFileV1 } | null {
+  function locate(run: Pick<RunRef, "runId">): Held | null {
     const slug = runSlug(run.runId);
     const known = roots.get(run.runId);
     const candidates = known !== undefined ? [known]
       : plainDirectory(worktreesRoot()) ? readdirSync(worktreesRoot()).map(project => join(worktreesRoot(), project, slug)) : [];
     for (const runRoot of candidates) {
-      if (!plainDirectory(dirname(runRoot)) || !plainDirectory(runRoot)) continue;
-      const file = readRunFile(runRoot);
-      if (file?.runId !== run.runId) continue;
+      const identity = folderIdentity(runRoot);
+      const file = identity === null ? null : readRunFile(runRoot);
+      if (identity === null || file?.runId !== run.runId) continue;
       roots.set(run.runId, runRoot);
-      return { runRoot, file };
+      return { runRoot, file, identity };
     }
     return null;
   }
 
-  /** Removes one folder the provider made. Anything outside the run root, or the run root itself, is refused. */
-  function removeFolder(runRoot: string, target: string): void {
-    if (!isInside(runRoot, target) || !isInside(worktreesRoot(), runRoot)) throw new Error("refusing to remove a path outside the run root");
+  /** Removes one folder the provider made, directly under a run root the call holds. Anything else is refused, and so is every removal
+   * once a level above it is no longer the directory it was. */
+  function removeFolder(at: Pick<Held, "runRoot" | "identity">, target: string): void {
+    if (!isInside(at.runRoot, target) || !samePath(dirname(target), at.runRoot)) throw new Error("refusing to remove a path outside the run root");
+    assertHeld(at);
     rmSync(target, { recursive: true, force: true, maxRetries: 3 });
   }
 
   /** What a stop while a stage folder was seeded left of the ignore matcher. */
-  function clearIgnoreFolders(runRoot: string): void {
-    for (const name of readdirSync(runRoot)) if (name.startsWith(IGNORE_PREFIX)) removeFolder(runRoot, join(runRoot, name));
+  function clearIgnoreFolders(at: Held): void {
+    assertHeld(at);
+    for (const name of readdirSync(at.runRoot)) if (name.startsWith(IGNORE_PREFIX)) removeFolder(at, join(at.runRoot, name));
   }
 
   async function gitOut(cwd: string, args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> {
@@ -211,48 +252,59 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     if (!plainDirectory(worktreesRoot()) || !plainDirectory(dirname(runRoot))) return { ok: false, code: "home-boundary-unverified" };
     try { mkdirSync(runRoot, { mode: 0o700 }); } catch { return { ok: false, code: "workspace-unavailable" }; }
+    const identity = folderIdentity(runRoot);
+    if (identity === null) return { ok: false, code: "home-boundary-unverified" };
+    const at = { runRoot, identity };
+    let gitKind = false;
 
     const file: RunFileV1 = { v: 1, runId: run.runId, itemId: run.itemId, kind: "folder", ...(canonical !== undefined ? { projectRoot: canonical } : {}), stages: {}, joins: {}, out: {} };
     try {
       const project = canonical === undefined ? { inWorkTree: false } : await gitProject(canonical);
       if (canonical !== undefined && "baseCommit" in project) {
+        gitKind = true;
         const drivers = await git.drivers(canonical);
         // A filter the repository requires for checkout is never run, so such a repository gets no git workspace.
         if (drivers.requiredFilters.length > 0 && await usesFilter(canonical, drivers.requiredFilters)) throw new HostGitError("unavailable", "a required filter driver");
         const branch = runBranch(run.runId);
         await gitOut(canonical, ["worktree", "add", "-b", branch, join(runRoot, JOIN_DIR), project.baseCommit], { drivers: drivers.config });
         Object.assign(file, { kind: "git", branch, baseCommit: project.baseCommit });
-        writeRunFile(runRoot, file);
+        writeRunFile(at, file);
         roots.set(run.runId, runRoot);
         return { ok: true, workspace: { kind: "git", runRoot, branch, baseCommit: project.baseCommit } };
       }
       if ("inWorkTree" in project && project.inWorkTree) file.ignoreRules = true;
+      assertHeld(at);
       mkdirSync(join(runRoot, OUT_DIR), { mode: 0o700 });
-      writeRunFile(runRoot, file);
+      writeRunFile(at, file);
       roots.set(run.runId, runRoot);
       return { ok: true, workspace: { kind: "folder", runRoot, outputDir: join(runRoot, OUT_DIR) } };
     } catch {
-      if (canonical !== undefined) {
+      // The folder this call made goes only while it is still that folder; a plain folder's project sees no git call here.
+      const discardRoot = (): void => { if (folderIdentity(runRoot) === identity) rmSync(runRoot, { recursive: true, force: true }); };
+      if (canonical !== undefined && gitKind) {
         await git.run(canonical, ["worktree", "prune"]).catch(() => undefined);
-        rmSync(runRoot, { recursive: true, force: true });
+        discardRoot();
         await git.run(canonical, ["worktree", "prune"]).catch(() => undefined);
         await git.run(canonical, ["branch", "-D", runBranch(run.runId)]).catch(() => undefined);
-      } else rmSync(runRoot, { recursive: true, force: true });
+      } else discardRoot();
       return { ok: false, code: canonical !== undefined ? "git-unavailable" : "workspace-unavailable" };
     }
   }
 
-  async function removeStage(runRoot: string, file: RunFileV1, stageId: string): Promise<void> {
+  async function removeStage(at: Held, stageId: string): Promise<void> {
+    const { runRoot, file } = at;
     const dir = join(runRoot, stageDirName(stageId));
+    assertHeld(at);
     if (file.kind === "git" && file.projectRoot !== undefined && existsSync(dir)) {
       await git.run(file.projectRoot, ["worktree", "remove", "--force", dir]).catch(() => undefined);
     }
-    if (existsSync(dir)) removeFolder(runRoot, dir);
+    if (existsSync(dir)) removeFolder(at, dir);
     delete file.stages[stageId];
-    writeRunFile(runRoot, file);
+    writeRunFile(at, file);
   }
 
-  async function prepareGit(runRoot: string, file: RunFileV1, stage: TemplateStage, dir: string): Promise<Refusal | null> {
+  async function prepareGit(at: Held, stage: TemplateStage, dir: string): Promise<Refusal | null> {
+    const { file } = at;
     const root = file.projectRoot;
     if (root === undefined || file.branch === undefined) return "workspace-unavailable";
     try {
@@ -266,16 +318,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       }
       const entry = file.stages[stage.id];
       if (entry) Object.assign(entry, { ready: true, base: head, link: readFileSync(join(dir, ".git"), "utf8") });
-      writeRunFile(runRoot, file);
+      writeRunFile(at, file);
       return null;
     } catch {
-      await removeStage(runRoot, file, stage.id).catch(() => undefined);
+      await removeStage(at, stage.id).catch(() => undefined);
       await git.run(root, ["worktree", "prune"]).catch(() => undefined);
       return "git-unavailable";
     }
   }
 
-  async function prepareFolder(runRoot: string, file: RunFileV1, stage: TemplateStage, dir: string): Promise<Refusal | null> {
+  async function prepareFolder(at: Held, stage: TemplateStage, dir: string): Promise<Refusal | null> {
+    const { runRoot, file } = at;
     const inputs = stage.inputFiles ?? [];
     if (file.projectRoot === undefined && inputs.some(input => input.from === "project")) return "inputs-need-project";
     mkdirSync(dir, { mode: 0o700 });
@@ -283,7 +336,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     let files = 0;
     let bytes = 0;
     const limits = options.seedLimits ?? { files: MAX_SEED_FILES, bytes: MAX_SEED_BYTES };
-    const plain = file.projectRoot !== undefined && file.ignoreRules !== true ? plainFolderIgnore(git, runRoot, file.projectRoot, scratch => removeFolder(runRoot, scratch)) : undefined;
+    const plain = file.projectRoot !== undefined && file.ignoreRules !== true ? plainFolderIgnore(git, runRoot, file.projectRoot, scratch => removeFolder(at, scratch)) : undefined;
     try {
       for (const input of inputs) {
         let source: string;
@@ -312,7 +365,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     const entry = file.stages[stage.id];
     if (entry) Object.assign(entry, { ready: true, seeded, outputs: stage.outputs ?? ["**"] });
-    writeRunFile(runRoot, file);
+    writeRunFile(at, file);
     return null;
   }
 
@@ -329,18 +382,18 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         // The same folder again: a repeated call, or a rerun after `Request changes`.
         if (existing.attempt !== attempt) {
           Object.assign(existing, { attempt, sealed: false, manifest: undefined });
-          writeRunFile(runRoot, file);
+          writeRunFile(found, file);
         }
         return { ok: true as const, workspace: { root: dir, kind: file.kind, ...(existing.base !== undefined ? { baseCommit: existing.base } : {}) } };
       }
       // A folder nobody recorded is not the provider's to replace.
       if (existing === undefined && existsSync(dir)) return { ok: false as const, code: "workspace-unavailable" as const };
-      if (existing !== undefined) await removeStage(runRoot, file, stage.id);
+      if (existing !== undefined) await removeStage(found, stage.id);
       file.stages[stage.id] = { ready: false, attempt };
-      writeRunFile(runRoot, file);
-      const refused = file.kind === "git" ? await prepareGit(runRoot, file, stage, dir) : await prepareFolder(runRoot, file, stage, dir);
+      writeRunFile(found, file);
+      const refused = file.kind === "git" ? await prepareGit(found, stage, dir) : await prepareFolder(found, stage, dir);
       if (refused !== null) {
-        if (file.stages[stage.id] !== undefined) await removeStage(runRoot, file, stage.id).catch(() => undefined);
+        if (file.stages[stage.id] !== undefined) await removeStage(found, stage.id).catch(() => undefined);
         return { ok: false as const, code: refused };
       }
       const base = file.stages[stage.id]?.base;
@@ -386,7 +439,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         if (!sealed.ok) return sealed;
         entry.sealed = true;
         if (sealed.sealCommit !== undefined) entry.sealCommit = sealed.sealCommit;
-        writeRunFile(found.runRoot, found.file);
+        writeRunFile(found, found.file);
         return sealed;
       } catch {
         return { ok: false as const, code: "workspace-unavailable" as const };
@@ -399,7 +452,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     conflict: { conflictHash: resultHashOf(canonicalWorkflowJson({ runId: run.runId, joinId, reason, files, bound })), reason, files, ...(excerpt ? { excerpt } : {}) },
   });
 
-  async function integrateGit(run: RunRef, runRoot: string, file: RunFileV1, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  async function integrateGit(run: RunRef, at: Held, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+    const { runRoot, file } = at;
     const root = file.projectRoot;
     const joinDir = join(runRoot, JOIN_DIR);
     if (root === undefined || !plainDirectory(joinDir)) throw new Error("the run has no integration worktree");
@@ -416,14 +470,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       }
       await git.run(joinDir, ["merge", "--abort"], { drivers });
     }
-    if (file.merging !== undefined) { delete file.merging; writeRunFile(runRoot, file); }
+    if (file.merging !== undefined) { delete file.merging; writeRunFile(at, file); }
     for (const stageId of stageIds) {
       const sealCommit = file.stages[stageId]?.sealCommit;
       if (sealCommit === undefined) continue;
       // Already on the run branch: an earlier call merged it, or the user did while resolving.
       if ((await git.run(joinDir, ["merge-base", "--is-ancestor", sealCommit, "HEAD"])).code === 0) continue;
       file.merging = sealCommit;
-      writeRunFile(runRoot, file);
+      writeRunFile(at, file);
       const merged = await git.run(joinDir, ["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, sealCommit], { drivers });
       if (merged.code !== 0) {
         const paths = await unmerged().catch(() => []);
@@ -440,17 +494,18 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         }
         if (await merging()) await git.run(joinDir, ["merge", "--abort"], { drivers });
         delete file.merging;
-        writeRunFile(runRoot, file);
+        writeRunFile(at, file);
         const said = (merged.stderr.trim() || merged.stdout.trim()).split(/\r?\n/u)[0]?.slice(0, 300);
         return conflictOf(run, joinId, "merge-conflict", files, seals, files.length === 0 ? said : undefined);
       }
       delete file.merging;
-      writeRunFile(runRoot, file);
+      writeRunFile(at, file);
     }
     return { ok: true };
   }
 
-  async function integrateFolder(run: RunRef, runRoot: string, file: RunFileV1, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+  async function integrateFolder(run: RunRef, at: Held, joinId: string, stageIds: readonly string[]): ReturnType<StageWorkspaceProvider["integrate"]> {
+    const { runRoot, file } = at;
     if (file.joins[joinId] === true) return { ok: true };
     if (stageIds.some(stageId => file.stages[stageId]?.sealed !== true)) throw new Error("a stage of the join is not sealed");
     const outDir = join(runRoot, OUT_DIR);
@@ -500,7 +555,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const copy of wanted) await copySeedFiles(join(runRoot, stageDirName(copy.stageId)), outDir, runRoot, [copy.path]);
     file.out = Object.fromEntries(next);
     file.joins[joinId] = true;
-    writeRunFile(runRoot, file);
+    writeRunFile(at, file);
     return { ok: true };
   }
 
@@ -508,24 +563,25 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return serial(run.runId, async () => {
       const found = locate(run);
       if (!found) throw new Error("the run has no workspace");
-      return found.file.kind === "git" ? integrateGit(run, found.runRoot, found.file, joinId, stageIds) : integrateFolder(run, found.runRoot, found.file, joinId, stageIds);
+      return found.file.kind === "git" ? integrateGit(run, found, joinId, stageIds) : integrateFolder(run, found, joinId, stageIds);
     });
   }
 
   /** Stage folders, and for "all" the integration worktree and the record; the run branch stays, and so does the output folder with
    * its record unless `output` is "drop". */
-  async function releaseIn(runRoot: string, file: RunFileV1, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<void> {
+  async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<void> {
+    const { runRoot, file } = at;
     for (const stageId of stageIds === "all" ? Object.keys(file.stages) : stageIds) {
-      if (file.stages[stageId] !== undefined) await removeStage(runRoot, file, stageId);
+      if (file.stages[stageId] !== undefined) await removeStage(at, stageId);
     }
     if (stageIds !== "all") return;
-    clearIgnoreFolders(runRoot);
+    clearIgnoreFolders(at);
     const root = file.projectRoot;
     if (file.kind === "git" && root !== undefined && file.branch !== undefined && file.baseCommit !== undefined) {
       const joinDir = join(runRoot, JOIN_DIR);
       if (existsSync(joinDir)) {
         await git.run(root, ["worktree", "remove", "--force", joinDir]).catch(() => undefined);
-        if (existsSync(joinDir)) removeFolder(runRoot, joinDir);
+        if (existsSync(joinDir)) removeFolder(at, joinDir);
       }
       await git.run(root, ["worktree", "prune"]).catch(() => undefined);
       // The branch is the run's result; it goes only when nothing was collected onto it.
@@ -533,8 +589,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     if (file.kind === "folder" && existsSync(join(runRoot, OUT_DIR))) {
       if (output === "keep") return;
-      removeFolder(runRoot, join(runRoot, OUT_DIR));
+      removeFolder(at, join(runRoot, OUT_DIR));
     }
+    assertHeld(at);
     rmSync(join(runRoot, RUN_FILE), { force: true });
     // Only empty folders go from here on.
     for (const folder of [runRoot, dirname(runRoot)]) {
@@ -546,38 +603,48 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return serial(run.runId, async () => {
       const found = locate(run);
       if (!found) return;
-      await releaseIn(found.runRoot, found.file, stageIds);
+      await releaseIn(found, stageIds);
       if (stageIds === "all") roots.delete(run.runId);
     });
   }
 
   /** Every run folder that holds its own record. A folder without one was not made by a run the host can name; it is left alone. */
-  function recordedRuns(): { runRoot: string; file: RunFileV1 }[] {
+  function recordedRuns(): Held[] {
     const base = worktreesRoot();
     if (!plainDirectory(base)) return [];
-    const found: { runRoot: string; file: RunFileV1 }[] = [];
+    const found: Held[] = [];
     for (const project of readdirSync(base)) {
       if (!plainDirectory(join(base, project))) continue;
       for (const slug of readdirSync(join(base, project))) {
         const runRoot = join(base, project, slug);
-        if (!plainDirectory(runRoot)) continue;
-        const file = readRunFile(runRoot);
-        if (file !== null && runSlug(file.runId) === slug && Number.isInteger(file.itemId)) found.push({ runRoot, file });
+        const identity = folderIdentity(runRoot);
+        const file = identity === null ? null : readRunFile(runRoot);
+        if (identity !== null && file !== null && runSlug(file.runId) === slug) found.push({ runRoot, file, identity });
       }
     }
     return found;
   }
 
+  /** Inside the run's queue, a run folder seen earlier: the same directories holding the same run's record, as it reads now. Null for any
+   * other, which is then left as it is. */
+  function heldStill(seen: Held): Held | null {
+    if (folderIdentity(seen.runRoot) !== seen.identity) return null;
+    const file = readRunFile(seen.runRoot);
+    const same = file !== null && (["runId", "itemId", "kind", "projectRoot"] as const).every(field => file[field] === seen.file[field]);
+    return same ? { ...seen, file } : null;
+  }
+
   async function discard(): Promise<void> {
     const removable = await options.removable?.();
     if (removable === undefined) return;
-    for (const { runRoot, file } of recordedRuns()) {
-      if (!removable({ runId: file.runId, itemId: file.itemId })) continue;
-      await serial(file.runId, async () => {
-        const current = readRunFile(runRoot);
-        if (current?.runId === file.runId) await releaseIn(runRoot, current, "all", "drop");
+    for (const seen of recordedRuns()) {
+      const { runId, itemId } = seen.file;
+      if (!removable({ runId, itemId })) continue;
+      await serial(runId, async () => {
+        const current = heldStill(seen);
+        if (current !== null) await releaseIn(current, "all", "drop");
       });
-      roots.delete(file.runId);
+      roots.delete(runId);
     }
   }
 
@@ -585,11 +652,15 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const active = new Set(activeRunIds.map(runSlug));
     // What a stop between a record's removal and the discard left behind goes here; an answer that could not be had keeps it.
     const removable = await options.removable?.().catch(() => undefined);
-    for (const { runRoot, file } of recordedRuns()) {
-      if (active.has(runSlug(file.runId))) continue;
-      const output = removable?.({ runId: file.runId, itemId: file.itemId }) === true ? "drop" : "keep";
-      await serial(file.runId, () => releaseIn(runRoot, file, "all", output)).catch(() => undefined);
-      roots.delete(file.runId);
+    for (const seen of recordedRuns()) {
+      const { runId, itemId } = seen.file;
+      if (active.has(runSlug(runId))) continue;
+      const output = removable?.({ runId, itemId }) === true ? "drop" : "keep";
+      await serial(runId, async () => {
+        const current = heldStill(seen);
+        if (current !== null) await releaseIn(current, "all", output);
+      }).catch(() => undefined);
+      roots.delete(runId);
     }
   }
 

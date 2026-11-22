@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
@@ -440,5 +440,76 @@ describe("folder stage workspaces", () => {
     expect(existsSync(other.out)).toBe(true);
     await restarted.discard();
     expect(read(project, "notes.txt")).toBe("notes\n");
+  });
+
+  it("a run record that is a link, has a second name or lacks a field authorizes no cleanup", async () => {
+    const handle = await start(project);
+    await stageRoot(handle, "s1");
+    write(handle.out, "result.md", "collected\n");
+    const record = join(handle.runRoot, RUN_FILE);
+    const written = readFileSync(record, "utf8");
+    const elsewhere = join(base, "restored-record.json");
+    const records: [string, () => void][] = [
+      ["a second name", () => { writeFileSync(elsewhere, written); linkSync(elsewhere, record); }],
+      ["a link", () => {
+        writeFileSync(elsewhere, written);
+        // Where the account may not make a file link, the second name above stands for it.
+        try { symlinkSync(elsewhere, record, "file"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error; linkSync(elsewhere, record); }
+      }],
+      ["no stages", () => writeFileSync(record, JSON.stringify({ v: 1, runId: handle.run.runId, itemId: handle.run.itemId }))],
+      ["no kind", () => writeFileSync(record, JSON.stringify({ ...JSON.parse(written) as object, kind: undefined }))],
+      ["a stage that is no stage", () => writeFileSync(record, JSON.stringify({ ...JSON.parse(written) as object, stages: { "../_out": { ready: true, attempt: 1 } } }))],
+    ];
+    for (const [name, plant] of records) {
+      rmSync(record);
+      rmSync(elsewhere, { force: true });
+      plant();
+      const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
+      await restarted.discard();
+      await restarted.sweep([]);
+      expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.json", "s1"]);
+      expect(read(handle.out, "result.md"), name).toBe("collected\n");
+      expect(await restarted.prepare(handle.run, stageOf("s2"), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
+    }
+    rmSync(record);
+    writeFileSync(record, written);
+  });
+
+  it("a run or project folder replaced by a link after it was listed is not cleaned through", async () => {
+    const settled = async (root: string): Promise<Handle> => {
+      const handle = await start(root);
+      await stageRoot(handle, "s1");
+      write(handle.out, "result.md", "collected\n");
+      return handle;
+    };
+    const second = join(base, "second");
+    const third = join(base, "third");
+    for (const root of [second, third]) write(root, "notes.txt", "notes\n");
+    // Two runs of one project, then two of two projects: whichever is asked about first, the other's folder is swapped meanwhile.
+    for (const [level, roots] of [["run", [project, project]], ["project", [second, third]]] as const) {
+      const handles = [await settled(roots[0]), await settled(roots[1])];
+      const restored = join(base, `restored-${level}`);
+      let swapped: Handle | undefined;
+      const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => (run) => {
+        const mine = handles.find(handle => handle.run.runId === run.runId);
+        if (mine !== undefined && swapped === undefined) {
+          swapped = handles.find(handle => handle !== mine) as Handle;
+          const replaced = level === "run" ? swapped.runRoot : dirname(swapped.runRoot);
+          // As a restore of the home does: the folder is moved away and a link to the copy stands in its place.
+          renameSync(replaced, restored);
+          symlinkSync(restored, replaced, "junction");
+        }
+        return mine !== undefined;
+      } });
+      await restarted.discard();
+      await restarted.sweep([]);
+      if (swapped === undefined) throw new Error("no folder was swapped");
+      const kept = level === "run" ? restored : join(restored, relative(dirname(swapped.runRoot), swapped.runRoot));
+      expect(readdirSync(kept).sort(), level).toEqual(["_out", "_run.json", "s1"]);
+      expect(read(join(kept, "_out"), "result.md"), level).toBe("collected\n");
+      // The run that was not swapped went as usual.
+      expect(handles.filter(handle => handle !== swapped).map(handle => existsSync(handle.runRoot)), level).toEqual([false]);
+      rmSync(level === "run" ? swapped.runRoot : dirname(swapped.runRoot));
+    }
   });
 });
