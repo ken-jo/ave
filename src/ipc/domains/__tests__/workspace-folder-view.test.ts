@@ -147,17 +147,23 @@ function changeDuringListing(dir: string, rows: number, change: () => void, onTe
 }
 // After the first `rows` entries, models sibling writes that move `bumped`'s change time, and runs `change` right after the
 // row's first read of `watched`, between two policy-root lookups of that row. The modeled change time moves again then.
+// The returned check rethrows a failed `change`, which the policy read that ran it would otherwise swallow.
 function changeWithinRow(dir: string, rows: number, bumped: string, watched: string, change: () => void, onTestFinished: TestFinished): () => boolean {
   const armed = changeDuringListing(dir, rows, () => {}, onTestFinished);
   const at = (path: unknown, expected: string) => typeof path === "string" && relative(path, expected) === "";
   let changed = false;
+  let failure: { error: unknown } | undefined;
   const statPath = fsModule.lstatSync;
   const lstat = vi.spyOn(fsModule, "lstatSync").mockImplementation((...args) => {
     const stat = statPath(...args);
     if (armed() && at(args[0], bumped) && stat && "ctimeNs" in stat) stat.ctimeNs += changed ? 2n : 1n;
     if (armed() && !changed && at(args[0], watched)) {
       changed = true;
-      change();
+      try {
+        change();
+      } catch (error) {
+        failure = { error };
+      }
     }
     return stat;
   });
@@ -166,7 +172,10 @@ function changeWithinRow(dir: string, rows: number, bumped: string, watched: str
     lstat.mockRestore();
     syncBuiltinESMExports();
   });
-  return () => changed;
+  return () => {
+    if (failure !== undefined) throw failure.error;
+    return changed;
+  };
 }
 
 beforeAll(() => {
