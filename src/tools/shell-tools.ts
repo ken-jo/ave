@@ -2445,8 +2445,9 @@ function logReleaseFailures(label: string, failures: readonly unknown[]): void {
 // A fault inside finalization still settles the spawn, as an error result.
 function finalizationFault(label: string, settle: (result: SpawnResult) => void, prefix = ""): (err: unknown) => void {
   return (err) => {
-    shellTaskLog.error({ label, err: errorMessage(err) }, "shell finalization failed");
-    settle({ output: `${prefix}spawn failed: ${errorMessage(err)}`, isError: true, metadata: {} });
+    const details = shellFailureText([err]);
+    shellTaskLog.error({ label, err: details }, "shell finalization failed");
+    settle({ output: `${prefix}spawn failed: ${details}`, isError: true, metadata: {} });
   };
 }
 
@@ -4130,9 +4131,10 @@ async function spawnPowerShellInMxc(
   try { observation = parserResponse === undefined ? startShellObservation(command, cwd,
     { mode: "isolated", detail: "filesystem/process confinement" }, egress.token) : undefined; }
   catch (error) {
-    void runReleaseSteps([() => launch.release()]).then((failures) => logReleaseFailures("tool:powershell:mxc", failures));
-    sandboxHome.cleanup();
-    egress.release();
+    const launchRelease = runReleaseSteps([() => launch.release()]);
+    const invocationRelease = runReleaseSteps([() => sandboxHome.cleanup(), () => egress.release()]);
+    void Promise.all([launchRelease, invocationRelease]).then(([launchFailures, invocationFailures]) =>
+      logReleaseFailures("tool:powershell:mxc", [...launchFailures, ...invocationFailures]));
     throw error;
   }
 
@@ -4157,7 +4159,7 @@ async function spawnPowerShellInMxc(
     } catch (err) {
       observation?.finish(null, "failed");
       void releaseContainerResources().then((released) => resolveResult(withReleaseFailures({
-        output: `PowerShell spawn failed: ${(err as Error).message}`,
+        output: `PowerShell spawn failed: ${shellFailureText([err])}`,
         isError: true,
         metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
       }, released)));
@@ -4172,14 +4174,14 @@ async function spawnPowerShellInMxc(
     child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
-    let lifecycleCleaned = false;
+    let releasing: Promise<unknown[]> | undefined;
     // After wxc-exec exits the container is gone, so the listener can close:
     // nothing is left that could reach its port.
-    const cleanupAfterTermination = async (): Promise<unknown[]> => {
-      if (lifecycleCleaned) return [];
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
-      lifecycleCleaned = true;
-      return await releaseContainerResources();
+    const cleanupAfterTermination = (): Promise<unknown[]> | undefined => {
+      if (releasing !== undefined) return releasing.then(() => []);
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return undefined;
+      releasing = Promise.resolve().then(releaseContainerResources);
+      return releasing;
     };
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
 
@@ -4187,7 +4189,7 @@ async function spawnPowerShellInMxc(
       if (closed !== undefined) await closed;
       lifetime.dispose();
       if (settled) {
-        logReleaseFailures("tool:powershell:mxc", await cleanupAfterTermination());
+        logReleaseFailures("tool:powershell:mxc", await cleanupAfterTermination() ?? []);
         return;
       }
       settled = true;
@@ -4210,11 +4212,16 @@ async function spawnPowerShellInMxc(
       }]);
       const released = await cleanupAfterTermination();
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
-      const result = withReleaseFailures(completed, [...finalized, ...released]);
+      const result = withReleaseFailures(completed, [...finalized, ...(released ?? [])]);
       resolveResult(!lifetime.aborted && !lifetime.timedOut && code !== null && code !== 0
         ? await attachFilesystemBlock(result, egress.token, command, cwd) : result);
     };
-    const fault = finalizationFault("tool:powershell:mxc", resolveResult, "PowerShell ");
+    const settleFault = finalizationFault("tool:powershell:mxc", resolveResult, "PowerShell ");
+    const fault = async (err: unknown): Promise<void> => {
+      const released = await cleanupAfterTermination();
+      settleFault(released === undefined ? FAILURE_UNAVAILABLE : err);
+      logReleaseFailures("tool:powershell:mxc", released ?? []);
+    };
 
     void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
     child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
@@ -4224,24 +4231,22 @@ async function spawnPowerShellInMxc(
         // A spawn that fails (no pid) may never emit "close": release the
         // listener, the egress token and the sandbox HOME here. A running
         // child keeps its timeout and abort watch, and "close" releases its
-        // resources (cleanupAfterTermination's guard waits for the exit).
-        let released: unknown[] = [];
-        if (child.pid === undefined) {
-          lifetime.dispose();
-          released = await cleanupAfterTermination();
-        }
+        // resources. Its error result uses generic details while it runs.
+        if (child.pid === undefined) lifetime.dispose();
+        const release = cleanupAfterTermination();
+        const released = release === undefined ? undefined : await release;
         if (settled) {
-          logReleaseFailures("tool:powershell:mxc", released);
+          logReleaseFailures("tool:powershell:mxc", released ?? []);
           return;
         }
         settled = true;
         const artifactMetadata = await outputCollector.finish(true);
         outputCollector.finishObservation(null, "failed");
         resolveResult(withReleaseFailures({
-          output: `PowerShell spawn failed: ${err.message}`,
+          output: `PowerShell spawn failed: ${released === undefined ? FAILURE_UNAVAILABLE : shellFailureText([err])}`,
           isError: true,
           metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        }, released));
+        }, released ?? []));
       })().catch(fault);
     });
   });

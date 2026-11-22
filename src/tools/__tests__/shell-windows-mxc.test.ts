@@ -15,6 +15,7 @@ const childProcessMock = vi.hoisted(() => ({
   execFileSync: vi.fn(),
 }));
 const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
+const sandboxHomeMock = vi.hoisted(() => ({ onCleanup: vi.fn<(home: string) => void>() }));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -44,7 +45,10 @@ vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
       return {
         path: home,
         env: { HOME: home, USERPROFILE: home, LOCALAPPDATA: join(home, "AppData", "Local"), TEMP: join(home, "tmp"), TMP: join(home, "tmp") },
-        cleanup: () => rmSync(home, { recursive: true, force: true }),
+        cleanup: () => {
+          rmSync(home, { recursive: true, force: true });
+          sandboxHomeMock.onCleanup(home);
+        },
       };
     },
   };
@@ -60,7 +64,7 @@ import { permissionsFilePath } from "../../permissions/permissions-store.js";
 import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
 import { egressGrantFilePath } from "../../permissions/egress-grants.js";
 import * as egressHostListener from "../../permissions/egress-host-listener.js";
-import { egressInvocationOwner, onEgressInvocationReleased } from "../../permissions/egress-invocations.js";
+import { egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as mxcWindows from "../../permissions/mxc-windows.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -107,6 +111,14 @@ function fakeChild(output: string, code: number): EventEmitter & Record<string, 
     child.emit("exit", code, null);
     child.emit("close", code, null);
   });
+  return child;
+}
+
+function childWithSpawnError(error: Error): EventEmitter {
+  // A failed spawn can emit an error with no pid or close event.
+  const child = new EventEmitter();
+  Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null, pid: undefined, kill: vi.fn(() => false) });
+  queueMicrotask(() => child.emit("error", error));
   return child;
 }
 
@@ -237,6 +249,7 @@ describe("builtin shell — Windows MXC containers", () => {
     childProcessMock.execFileSync.mockReset();
     mxcLaunchMock.prepare.mockReset();
     mxcLaunchMock.release.mockClear();
+    sandboxHomeMock.onCleanup.mockReset();
     installationMock.resolve.mockReset();
     vi.restoreAllMocks();
   });
@@ -436,11 +449,7 @@ describe("builtin shell — Windows MXC containers", () => {
         const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
         return fakeChild(parser ? PARSED : "", 0);
       }
-      // ENOENT-style failure: no pid, an "error" and no "close".
-      const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
-      Object.assign(child, { stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, signalCode: null, pid: undefined, kill: vi.fn(() => false) });
-      queueMicrotask(() => child.emit("error", Object.assign(new Error("spawn wxc-exec.exe ENOENT"), { code: "ENOENT" })));
-      return child;
+      return childWithSpawnError(Object.assign(new Error("spawn wxc-exec.exe ENOENT"), { code: "ENOENT" }));
     });
     const result = await executePowerShell(context("ps-mxc-enoent"));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
@@ -635,6 +644,90 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
     expect(egressInvocationOwner(container.token())).toBeUndefined();
     expect(existsSync(container.home())).toBe(false);
+  });
+
+  it("releases egress when HOME cleanup throws after observation start fails", async () => {
+    bootMxcShells();
+    const container = failCommandContainerRelease({});
+    const setupError = new Error("could not start shell observation");
+    const cleanupError = new Error("HOME cleanup failed");
+    sandboxHomeMock.onCleanup.mockImplementation((home) => {
+      if (home === container.home()) throw cleanupError;
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    setAgentTerminalObservationSink({ start: () => { throw setupError; }, egress: vi.fn(), releaseSessions: vi.fn() });
+    const identity = { sessionId: "observed-shell", turnId: "observed-turn", toolUseId: "ps-mxc-observation-start-fails" };
+    try {
+      const execution = runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+        () => executePowerShell(context(identity.toolUseId))));
+      const outcome = await execution.catch((error: unknown) => error);
+      expect(sandboxHomeMock.onCleanup).toHaveBeenCalledWith(container.home());
+      expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+      expect(egressInvocationOwner(container.token())).toBeUndefined();
+      expect(outcome).toBe(setupError);
+    } finally {
+      releaseEgressInvocation(container.token());
+    }
+  });
+
+  const SIGNATURE = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
+  const SIGNED_URL = "https://objects.example/policy.json?X-Amz-Signature=";
+  const ERROR_MESSAGES = [
+    { kind: "a throwing message getter", message: undefined, rendered: "failure details unavailable" },
+    { kind: "a 1M-character message", message: "x".repeat(1_000_000), rendered: "failure message omitted (1000000 characters)" },
+    {
+      kind: "a signed URL and home path",
+      message: `upload to ${SIGNED_URL}${SIGNATURE} from D:\\Users\\alice\\observer failed`,
+      rendered: `upload to ${SIGNED_URL}[REDACTED:TOKEN] from [home]\\observer failed`,
+    },
+  ];
+
+  describe.each(["spawn catch", "child error", "finalization"] as const)("MXC %s diagnostics", (stage) => {
+    it.each(ERROR_MESSAGES)("settles with bounded, redacted details for $kind after releasing resources", async ({ message, rendered }) => {
+      bootMxcShells();
+      const container = failCommandContainerRelease({});
+      const error = new Error();
+      const releaseState = vi.fn(() => ({
+        egressLive: egressInvocationOwner(container.token()) !== undefined,
+        homeExists: existsSync(container.home()),
+        launchReleases: mxcLaunchMock.release.mock.calls.length,
+      }));
+      Object.defineProperty(error, "message", { get: () => {
+        releaseState();
+        if (message === undefined) throw new Error("message read failed");
+        return message;
+      } });
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      const identity = { sessionId: "observed-shell", turnId: "observed-turn", toolUseId: "ps-mxc-error-diagnostics" };
+      if (stage === "finalization") {
+        setAgentTerminalObservationSink({
+          start: () => ({ signal: new AbortController().signal, write: vi.fn(), finish: () => { throw error; },
+            bindEgress: vi.fn(), releaseHeldOutput: vi.fn(), revoke: vi.fn() }),
+          egress: vi.fn(),
+          releaseSessions: vi.fn(),
+        });
+      } else {
+        const spawn = childProcessMock.spawn.getMockImplementation();
+        if (spawn === undefined) throw new Error("Missing child spawn fixture");
+        childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
+          if (file !== WXC_EXEC || args.includes(PARSER_REQUEST)) return spawn(file, args, options);
+          if (stage === "spawn catch") throw error;
+          return childWithSpawnError(error);
+        });
+      }
+
+      const result = await runWithAgentObservationTurn(identity, () => runWithAgentObservationInvocation(identity,
+        () => executePowerShell(context(identity.toolUseId))));
+      expect(result.isError).toBe(true);
+      expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(500);
+      expect(result.output === `PowerShell spawn failed: ${rendered}`).toBe(true);
+      expect(releaseState.mock.results.map(({ value }) => value)).toEqual([
+        { egressLive: false, homeExists: false, launchReleases: 2 },
+      ]);
+      if (stage === "finalization") {
+        expect(log).toHaveBeenCalledWith("[shell-tasks] shell finalization failed", { label: "tool:powershell:mxc", err: rendered });
+      }
+    });
   });
 
   const FAILURE_STAGES = ["preparation", "launch release"] as const;
