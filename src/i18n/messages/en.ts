@@ -4305,7 +4305,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsExtensionReasonAncestorAlreadyAdmitted": "its parent process already runs under a different backend",
   "permissionsTab.osSandboxWindowsExtensionReasonRuntimeUnavailable": "the Windows sandbox runtime did not start this session",
   "permissionsTab.osSandboxWindowsExtensionsDisclosureHeading": "What a Windows container does not hide or block",
-  "permissionsTab.osSandboxWindowsExtensionsNetwork": "Each contained process has a dedicated proxy endpoint whose owner is unverified. The container requests loopback in both directions, and inbound protection relies on the host firewall.",
+  "permissionsTab.osSandboxWindowsExtensionsNetwork": "Each extension container has a dedicated proxy endpoint shared by its processes. The endpoint's owner is unverified. The container requests loopback in both directions. Inbound isolation is unverified.",
   "permissionsTab.osSandboxWindowsExtensionsWindows": "Windows: contained processes can open windows on your desktop; treat them as untrusted. Clipboard access and input injection stay off.",
   "permissionsTab.osSandboxWindowsExtensionsFolderNames": "Folder names: a container can list the names and metadata, not the contents, of folders along the path to its own folders, and listing reaches into folders nested below them. This can reveal names in your user profile (for example Documents), in Ave's data folder, and other extensions' IDs.",
   "permissionsTab.osSandboxWindowsExtensionsTemp": "Temporary files: Windows places a container's temporary files in that container's own profile folder inside its private staging folder under Ave's data folder.",

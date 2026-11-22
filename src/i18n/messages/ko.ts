@@ -4307,7 +4307,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.osSandboxWindowsExtensionReasonAncestorAlreadyAdmitted": "상위 프로세스가 이미 다른 백엔드에서 실행 중입니다",
   "permissionsTab.osSandboxWindowsExtensionReasonRuntimeUnavailable": "이번 세션에 Windows 샌드박스 런타임이 시작되지 않았습니다",
   "permissionsTab.osSandboxWindowsExtensionsDisclosureHeading": "Windows 컨테이너가 숨기거나 막지 않는 것",
-  "permissionsTab.osSandboxWindowsExtensionsNetwork": "컨테이너 안 프로세스는 소유자가 확인되지 않은 전용 프록시 엔드포인트를 사용합니다. 컨테이너는 양방향 루프백을 요청하며, 들어오는 연결은 호스트 방화벽이 보호합니다.",
+  "permissionsTab.osSandboxWindowsExtensionsNetwork": "각 익스텐션 컨테이너 안의 프로세스는 전용 프록시 엔드포인트를 공유합니다. 엔드포인트의 소유자는 확인되지 않았습니다. 컨테이너는 양방향 루프백을 요청합니다. 인바운드 격리는 확인되지 않았습니다.",
   "permissionsTab.osSandboxWindowsExtensionsWindows": "창: 컨테이너 안 프로세스도 데스크톱에 창을 띄울 수 있으니 신뢰하지 마세요. 클립보드 접근과 입력 주입은 꺼져 있습니다.",
   "permissionsTab.osSandboxWindowsExtensionsFolderNames": "폴더 이름: 컨테이너는 자기 폴더까지 이어지는 경로의 폴더 이름과 메타데이터(내용은 아님)를 볼 수 있고, 그 아래 하위 폴더까지 목록이 보입니다. 사용자 프로필 안의 이름(예: Documents), Ave 데이터 폴더 안의 이름, 다른 익스텐션 ID 가 드러날 수 있습니다.",
   "permissionsTab.osSandboxWindowsExtensionsTemp": "임시 파일: Windows 는 컨테이너의 임시 파일을 Ave 데이터 폴더 아래 그 컨테이너 전용 스테이징 폴더 안의 프로필 폴더에 둡니다.",

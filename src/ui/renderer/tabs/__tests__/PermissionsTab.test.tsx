@@ -1733,6 +1733,20 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
     });
 
+    it.each([
+      ["en", "Each extension container has a dedicated proxy endpoint shared by its processes. The endpoint's owner is unverified. The container requests loopback in both directions. Inbound isolation is unverified."],
+      ["ko", "각 익스텐션 컨테이너 안의 프로세스는 전용 프록시 엔드포인트를 공유합니다. 엔드포인트의 소유자는 확인되지 않았습니다. 컨테이너는 양방향 루프백을 요청합니다. 인바운드 격리는 확인되지 않았습니다."],
+    ] as const)("discloses the shared container endpoint and unverified inbound isolation in %s", async (locale, expected) => {
+      const previous = getLocale();
+      setLocale(locale);
+      try {
+        await renderWithPlan(plan("ready", "ready"));
+        expect(screen.getByTestId("os-sandbox-windows-extension-disclosure-network")).toHaveTextContent(expected);
+      } finally {
+        setLocale(previous);
+      }
+    });
+
     it("keeps container disclosures off the srt-win fallback and names its shared account and reason", async () => {
       const fixture = plan("fallback", "native-validation-required");
       assertSandboxWindowsExtensionPlan(fixture);
