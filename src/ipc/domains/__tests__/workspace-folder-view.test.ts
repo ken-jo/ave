@@ -253,11 +253,18 @@ describe("workspace.listDir folder-view entries", () => {
     writeFileSync(join(dir, "first.txt"), "");
     const realpath = vi.spyOn(fsModule.realpathSync, "native");
     const rows: Array<{ name: string; realpaths: number; lstats: number }> = [];
+    // Record where a path's own change time moved during a listing, so a red count names its cause.
+    const ctimes = new Map<string, bigint>();
+    const moved = new Map<string, string>();
     const statPath = fsModule.lstatSync;
     const lstat = vi.spyOn(fsModule, "lstatSync").mockImplementation((...args) => {
       const stat = statPath(...args);
+      if (typeof args[0] !== "string" || !stat || !("ctimeNs" in stat)) return stat;
+      const first = ctimes.get(args[0]);
+      if (first === undefined) ctimes.set(args[0], stat.ctimeNs);
+      else if (first !== stat.ctimeNs && !moved.has(args[0])) moved.set(args[0], rows.at(-1)?.name ?? "the listing setup");
       // Model sibling writes to the common ancestor while the listing yields between rows.
-      if (args[0] === scratch && stat && "ctimeNs" in stat) stat.ctimeNs += BigInt(rows.length);
+      if (args[0] === scratch) stat.ctimeNs += BigInt(rows.length);
       return stat;
     });
     syncBuiltinESMExports();
@@ -291,6 +298,8 @@ describe("workspace.listDir folder-view entries", () => {
       realpath.mockClear();
       lstat.mockClear();
       rows.length = 0;
+      ctimes.clear();
+      moved.clear();
       expect((await listDir(dir)).entries).toHaveLength(entries);
       expect(rows).toHaveLength(entries);
       return realpath.mock.calls.length;
@@ -301,16 +310,21 @@ describe("workspace.listDir folder-view entries", () => {
     for (let i = 1; i < 33; i += 1) writeFileSync(join(dir, `sibling-${i}.txt`), "");
     const many = await resolutions(33);
     const perEntry = (many - one) / 32;
+    const perRow = rows.map((row, index) => ({
+      name: row.name,
+      realpaths: realpath.mock.calls.slice(row.realpaths, rows[index + 1]?.realpaths),
+      lstats: lstat.mock.calls.slice(row.lstats, rows[index + 1]?.lstats),
+    }));
+    const [ancestor] = [...moved].sort(([a], [b]) => a.split(sep).length - b.split(sep).length);
+    const cause = ancestor === undefined ? "no unmodeled change" : `${ancestor[0]} changed in ${ancestor[1]}`;
+    const costs = perRow.map(({ realpaths, lstats }) => `${realpaths.length}/${lstats.length}`).join(" ");
     // An entry may pay a few checks of its own (about 8 here); resolving the policy roots again costs over a hundred.
-    expect(perEntry).toBeLessThanOrEqual(20);
+    expect(perEntry, `${cause}; realpaths/lstats per row: ${costs}`).toBeLessThanOrEqual(20);
     // Include cold resolutions and witness seeding in the row budgets.
     const later: number[] = [];
-    for (const [index, row] of rows.entries()) {
-      const next = rows[index + 1];
-      const realpaths = realpath.mock.calls.slice(row.realpaths, next?.realpaths).filter(isPolicyRoot).length;
-      const lstats = lstat.mock.calls.slice(row.lstats, next?.lstats);
-      expect(realpaths, `${row.name} policy-root realpaths`).toBeLessThanOrEqual(64);
-      expect(lstats.filter(isPolicyRoot).length, `${row.name} policy-root lstats`).toBeLessThanOrEqual(192);
+    for (const [index, { name, realpaths, lstats }] of perRow.entries()) {
+      expect(realpaths.filter(isPolicyRoot).length, `${name} policy-root realpaths`).toBeLessThanOrEqual(64);
+      expect(lstats.filter(isPolicyRoot).length, `${name} policy-root lstats`).toBeLessThanOrEqual(192);
       if (index >= 2) later.push(lstats.length);
     }
     // Later rows reread each changed route in full, about 40 lstats per component of the scratch path (477 at ten). The
