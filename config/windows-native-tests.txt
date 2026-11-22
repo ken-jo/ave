@@ -25,6 +25,7 @@ src/audit/__tests__/audit-search.test.ts
 src/audit/__tests__/audit-writer.test.ts
 src/audit/__tests__/dlp-home-encoder-chains.test.ts
 src/audit/__tests__/dlp-home-escape-boundaries.test.ts
+src/audit/__tests__/dlp-home-generic-profiles.test.ts
 src/audit/__tests__/dlp-home-paths.test.ts
 src/audit/__tests__/dlp-home-review-probes.test.ts
 src/audit/__tests__/dlp-stats.test.ts
