@@ -295,6 +295,11 @@ describe("pre-push fast source tier", () => {
       "src/ipc/__tests__/channel-inventory.test.ts": ["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"],
       "src/ipc/__tests__/domain-exports.test.ts": ["src/ipc/domains/", "src/shared/ipc-channels.ts"],
       "src/ipc/__tests__/host-renderer-only-channels.test.ts": ["src/contract/", "src/ipc/", "src/shared/ipc-channels.ts"],
+      "src/permissions/__tests__/sensitive-deny-platform-projection.test.ts": [
+        "src/permissions/asrt-sandbox.ts",
+        "src/permissions/sensitive-paths.ts",
+        "src/shared/ipc-channels.ts",
+      ],
       "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts": [
         "src/alerts/",
         "src/ipc/domains/",
@@ -324,6 +329,15 @@ describe("pre-push fast source tier", () => {
       "src/__tests__/preload.test.ts",
     ]);
     expect(selectTriggeredLockSuites(["scripts/hooks/run-local-checks.mjs"]).map(({ suite }) => suite)).toEqual(["test/scripts"]);
+  });
+
+  it.each([
+    "src/permissions/asrt-sandbox.ts",
+    "src/permissions/sensitive-paths.ts",
+  ])("selects the platform deny-floor contract for a change to %s", (path) => {
+    expect(selectTriggeredLockSuites([path])).toEqual([
+      { suite: "src/permissions/__tests__/sensitive-deny-platform-projection.test.ts", path },
+    ]);
   });
 
   it("bounds a shared module's related-test fan-out to its direct importers", () => {
@@ -367,6 +381,7 @@ describe("pre-push fast source tier", () => {
       "src/ipc/__tests__/channel-inventory.test.ts",
       "src/ipc/__tests__/domain-exports.test.ts",
       "src/ipc/__tests__/host-renderer-only-channels.test.ts",
+      "src/permissions/__tests__/sensitive-deny-platform-projection.test.ts",
     ]);
     const viaBarrel = [
       "src/__tests__/preload.test.ts",
