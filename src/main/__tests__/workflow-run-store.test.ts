@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -222,6 +222,46 @@ it.each([
   expect(await store.deleteIntents()).toEqual([]);
   const stored = JSON.parse(await readFile(file, "utf8"));
   expect([stored.deleteIntents, stored.unknownDeletes]).toEqual([undefined, undefined]);
+});
+
+it("announces the settled runs a write's retention removed once that write is on disk, and none for a write that stored nothing", async () => {
+  const seen: { runIds: string[]; onDisk: string[] }[] = [];
+  const listening = (): WorkflowRunStore => {
+    const store = new WorkflowRunStore(file);
+    store.onRunsRemoved = (runIds) => {
+      seen.push({ runIds: [...runIds], onDisk: (JSON.parse(readFileSync(file, "utf8")) as { runs: { runId: string }[] }).runs.map(entry => entry.runId) });
+    };
+    return store;
+  };
+  const drop = (): null => null;
+  let store = listening();
+  await store.put(run());
+  expect(await store.settleRun("run-1", value => ({ run: value, ends: "stopped", at: "2026-01-02T00:00:00.000Z" }), () => true)).toMatchObject({ status: "stored" });
+  await store.put(run({ runId: "run-2", itemId: 2 }));
+  // A write whose retention keeps every run announces none.
+  expect(await store.put(run({ runId: "run-3", itemId: 3 }), value => value)).toMatchObject({ status: "stored" });
+  expect(seen).toEqual([]);
+  const small = await readFile(file, "utf8");
+
+  // A write the size limit refuses stores nothing: the run it would have dropped is still there, and is not announced.
+  const filler = (id: number): WorkflowRunRecord => run({ runId: `fill-${id}`, itemId: 100 + id, stageRuns: run().stageRuns.map(entry => ({ ...entry, output: "x".repeat(40_000) })) });
+  const each = Buffer.byteLength(JSON.stringify(filler(1000)), "utf8") + 1;
+  const base = JSON.parse(small) as { runs: unknown[] };
+  const room = homeTrust.AVE_HOME_INPUT_MAX_BYTES - Buffer.byteLength(JSON.stringify(base), "utf8") - each / 2;
+  const full = { ...base, runs: [...base.runs, ...Array.from({ length: Math.floor(room / each) }, (_, index) => filler(1000 + index))] };
+  await writeFile(file, JSON.stringify(full));
+  store = listening();
+  expect(await store.get("run-1")).toMatchObject({ status: "found" });
+  expect(await store.put(filler(9000), drop)).toEqual({ status: "too-large" });
+  expect(seen).toEqual([]);
+  expect(await store.get("run-1")).toMatchObject({ status: "found" });
+
+  // The settled run goes with this write; a run that is not over is never dropped. The listener reads the file as already written.
+  await writeFile(file, small);
+  store = listening();
+  expect(await store.put(run({ runId: "run-4", itemId: 4 }), drop)).toMatchObject({ status: "stored" });
+  expect(seen).toEqual([{ runIds: ["run-1"], onDisk: ["run-2", "run-3", "run-4"] }]);
+  expect(await store.get("run-1")).toEqual({ status: "not-found" });
 });
 
 it("reads a delete as unknown while the file holds its marker or the store holds it in memory, and resolves it only as told, confirmed by reading the file again", async () => {
