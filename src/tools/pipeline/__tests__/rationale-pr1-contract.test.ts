@@ -1268,3 +1268,23 @@ describe("invocation audit and sealed resume", () => {
   });
 
 });
+
+it("redacts a home before display markup removal changes its spelling", async () => {
+  const { loadHomeRedactors, resetHomeRedactors } = await import("../../../__tests__/support/home-redaction-fixture.js");
+  const home = "/srv/fixtures/Al<ice>";
+  await loadHomeRedactors(home);
+  try {
+    const { createRationaleUiAuditProjection: project } = await import("../rationale-resume-contract.js");
+    const control = fixture({ canonicalTargets: [`${home}/output`] });
+    const requested = transitionRationaleTicket(
+      createRationaleReviewRequiredRecord(control, NOW),
+      event(control, "request-rationale"),
+    );
+    const failed = transitionRationaleTicket(requested, createRationaleGenerationProviderFailureEvent(control, "generation-error"));
+    const pending = transitionRationaleTicket(failed, event(control, "prompt-user"));
+    const projection = project({ control, response: null, reevaluation: null, ticket: pending, now: NOW });
+    expect(projection.canonicalTargets).toEqual(["[home]/output"]);
+  } finally {
+    resetHomeRedactors();
+  }
+});

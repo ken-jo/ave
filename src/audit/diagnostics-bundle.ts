@@ -3,7 +3,7 @@ import { readdirSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import AdmZip from "adm-zip";
-import { redactForLLM, redactAuditPayload, scrubSecretsForLLM } from "./dlp-filter.js";
+import { redactForLLM, redactAuditPayload, redactHomePathsInText, scrubSecretsForLLM } from "./dlp-filter.js";
 import { aveHome } from "../shared/ave-home.js";
 import { localDateKey, localDayRange, shiftLocalDateKey } from "../shared/local-date.js";
 import { parseLogFileDate } from "../lib/log-file-sink.js";
@@ -317,5 +317,5 @@ function redactAuditEntry(entry: AuditEntry): Record<string, unknown> {
 
 /** Every log line and audit input/output requires both PII and credential scrubbing; neither pass alone is sufficient. */
 function redactBundleText(text: string): string {
-  return scrubSecretsForLLM(redactForLLM(text).redacted);
+  return redactHomePathsInText(scrubSecretsForLLM(redactForLLM(text).redacted));
 }

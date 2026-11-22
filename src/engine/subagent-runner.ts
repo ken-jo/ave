@@ -212,6 +212,10 @@ export interface SubAgentSpawnInput {
   profileMode?: string;
   /** Trusted host execution mode; never accepted from the child model. */
   background?: boolean;
+  /** Host-only: the instructions quote data that came from files, so the child's first turn starts at that trust origin. */
+  hostInputTaint?: "file-content";
+  /** Host-only: marks the child as one stage of an unattended workflow run. Minted by the stage scheduler, never by a model or a renderer. */
+  unattendedStage?: { runKey: string; stageId: string };
 }
 
 export interface SubAgentActivityUpdate {
@@ -248,6 +252,8 @@ export interface SubAgentSpawnResult {
   /** Permanent exhausted or invalid refusals run no turn and must never suggest retrying the same ID.
    * Absent refusal means transient failure or a non-resume result; the discriminant accompanies ok === false. */
   resumeRefusal?: "invalid" | "exhausted";
+  /** The child's tool trust origin when its turn ended. Absent when the turn did not report one; a caller must then assume the worst. */
+  endTrustOrigin?: import("../tools/types.js").ToolTrustOrigin;
 }
 
 /** SOT for "can this persisted child be resumed": the resume gate in `resumeWithPolicy` accepts only INPUT_REQUIRED, and it consumes this same predicate. `agent_list` advertises resumability through
@@ -2565,6 +2571,7 @@ export class SubAgentRunner {
     authorizationRequired: AuthorizationRequiredState | undefined;
     inputRequired: TurnInputRequired | undefined;
     suspensionSessionId: string;
+    endTrustOrigin?: import("../tools/types.js").ToolTrustOrigin;
   }): SubAgentSpawnResult {
     return {
       summary: args.summary,
@@ -2575,6 +2582,7 @@ export class SubAgentRunner {
       ok: args.ok,
       ...(args.ok ? {} : { error: args.failureReason ?? args.summary }),
       ...(args.stopReason ? { stopReason: args.stopReason } : {}),
+      ...(args.endTrustOrigin ? { endTrustOrigin: args.endTrustOrigin } : {}),
       ...(args.authorizationRequired
         ? { authorizationRequired: args.authorizationRequired }
         : {}),
@@ -2963,6 +2971,7 @@ export class SubAgentRunner {
     let ok = false;
     let failureReason: string | undefined;
     let childStopReason: import("./turn/types.js").TurnStopReason | undefined;
+    let childEndTrustOrigin: import("../tools/types.js").ToolTrustOrigin | undefined;
     let childInputRequired: TurnInputRequired | undefined;
     let childAuthorizationRequired: AuthorizationRequiredState | undefined;
 
@@ -3008,7 +3017,8 @@ export class SubAgentRunner {
           ...(executionPolicy
             ? { approvalReasonPrefix: executionPolicy.approvalReasonPrefix }
             : {}),
-          inputOrigin: executionPolicy?.inputOrigin ?? "llm-tool-arg",
+          // A host caller that quoted file data into the instructions starts the child at that origin; nothing else replaces the default.
+          inputOrigin: executionPolicy?.inputOrigin ?? input.hostInputTaint ?? "llm-tool-arg",
           // A clean end dispatches SubagentStop inside the run, where a deliberate block continues the child; the finally then skips it.
           subagentStop: {
             ...(input.spawnId !== undefined ? { agentId: input.spawnId } : {}),
@@ -3022,6 +3032,7 @@ export class SubAgentRunner {
       totalToolCalls = result.toolCalls.length;
       lastText = result.text;
       childStopReason = result.stopReason;
+      childEndTrustOrigin = result.endTrustOrigin;
       childInputRequired = result.inputRequired;
       childAuthorizationRequired = authorizationRequiredStateForOutput(
         result.authorizationRequired,
@@ -3074,6 +3085,7 @@ export class SubAgentRunner {
       ok,
       failureReason,
       stopReason: childStopReason,
+      endTrustOrigin: childEndTrustOrigin,
       authorizationRequired: childAuthorizationRequired,
       inputRequired: childInputRequired,
       suspensionSessionId: child.sessionId,

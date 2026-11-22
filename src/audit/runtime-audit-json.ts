@@ -1,7 +1,10 @@
+import { stringifyHomeRedacted } from "./home-path-json.js";
+
 const MAX_RUNTIME_AUDIT_OUTPUT_LENGTH = 500;
 /** Keep ordinary payloads intact and make omitted content explicit in bounded, valid JSON. */
 export function serializeRuntimeAuditData(data: unknown): string | undefined {
-  const serialized = JSON.stringify(data);
+  let serialized: string | undefined;
+  try { serialized = stringifyHomeRedacted(data); } catch { return '{"unserializable":true}'; }
   if (serialized === undefined || serialized.length <= MAX_RUNTIME_AUDIT_OUTPUT_LENGTH) return serialized;
   const truncated = { truncated: true, originalLength: serialized.length, preview: "" };
   const { pluginId, reason } = (

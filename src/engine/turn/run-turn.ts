@@ -1028,7 +1028,7 @@ async function runTurnInSpan(
     }
 
     retainHostInjectedMessages = commitsHostInjectedMessages(result.stopReason);
-    return { ...result, route: routeResult.route };
+    return { ...result, route: routeResult.route, endTrustOrigin: lifecycleProvenance.toolTrustOrigin };
   } finally {
     try {
     let removedHostInjectionRows = 0;

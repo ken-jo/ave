@@ -1,0 +1,23 @@
+{
+  "cases": {
+    "linux:/srv/fixtures/habitat": ["[home][home]", "[home][home]", "[home][home]"],
+    "linux:/home/bob": ["[home][home]", "[home][home]", "[home][home]"],
+    "linux:/Users/Bob": ["[home][home]", "[home][home]", "[home][home]"],
+    "linux:/home/Demo Smith": ["[home][home]", "[home][home]", "[home][home]"],
+    "linux:/home/y'brien": ["[home][home]", "[home][home]", "[home][home]"],
+    "linux:/Users/Bobé": ["[home][home]", "[home][home]", "[home][home]"],
+    "darwin:/srv/fixtures/habitat": ["[home][home]", "[home][home]", "[home][home]"],
+    "darwin:/home/bob": ["[home][home]", "[home][home]", "[home][home]"],
+    "darwin:/Users/Bob": ["[home][home]", "[home][home]", "[home][home]"],
+    "darwin:/home/Demo Smith": ["[home][home]", "[home][home]", "[home][home]"],
+    "darwin:/home/y'brien": ["[home][home]", "[home][home]", "[home][home]"],
+    "darwin:/Users/Bobé": ["[home][home]", "[home][home]", "[home][home]"],
+    "win32:D:\\fixtures\\habitat": ["D:\\fixtures\\habitat[home]", "D:\\fixtures\\habitat[home]", "D:/fixtures/habitat[home]", "open D:\\fixtures\\habitat[home]\\x now"],
+    "win32:\\\\srv\\share\\habitat": ["[home][home]", "[home][home]", "[home][home]", "open [home][home]\\x now"],
+    "win32:C:\\Users\\bob": ["[home][home]", "[home][home]", "[home][home]", "open [home][home]\\x now"],
+    "win32:E:\\temp\\ted": ["E:\\temp\\ted[home]", "E:\\temp\\ted[home]", "E:/temp/ted[home]", "open E:\\temp\\ted[home]\\x now"],
+    "win32:D:\\fixtures\\bob": ["D:\\fixtures\\bob[home]", "D:\\fixtures\\bob[home]", "D:/fixtures/bob[home]", "open D:\\fixtures\\bob[home]\\x now"],
+    "win32:C:\\Users\\Demo Smith": ["[home] Smith[home]", "[home] Smith[home]", "[home] Smith[home]", "open [home] Smith[home]\\x now"],
+    "win32:C:\\Users\\Bobé": ["[home]é[home]", "[home]é[home]", "[home]é[home]", "open [home]é[home]\\x now"]
+  }
+}

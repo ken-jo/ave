@@ -537,6 +537,13 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       errors.push(error);
       auditLifecycleWarning(source, root, "revoke-live-scopes", error);
     }
+    try {
+      // A template run on the removed project loses its live stages now, not at their next tool call.
+      deps.workBoardEngine?.projectRootRevoked(root);
+    } catch (error: unknown) {
+      errors.push(error);
+      auditLifecycleWarning(source, root, "revoke-live-scopes", error);
+    }
     let liveScopeOwners: unknown[];
     try {
       liveScopeOwners = workspaceLiveScopeOwners();

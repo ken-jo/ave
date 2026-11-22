@@ -234,6 +234,8 @@ export interface TurnResult {
   projectWorkRevoked?: true;
   inputRequired?: TurnInputRequired;
   authorizationRequired?: AuthorizationRequiredState;
+  /** The tool trust origin when the turn ended. Set only by a turn that ran to its end; absent means unknown, never clean. */
+  endTrustOrigin?: import("../../tools/types.js").ToolTrustOrigin;
 }
 
 export interface ConversationLoopDeps {

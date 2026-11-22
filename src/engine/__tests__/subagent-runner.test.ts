@@ -3377,3 +3377,43 @@ describe("SubAgentRunner activity ordering", () => {
     }
   });
 });
+
+describe("SubAgentRunner — host input taint", () => {
+  const input = { toolScope: PARENT_ALL_TOOL_SCOPE, title: "stage", instructions: "do" };
+
+  it("hostInputTaint sets the child's first-turn origin", async () => {
+    const runner = makeRunner(new ToolRegistry());
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(new ScriptedProvider([]));
+    const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn").mockResolvedValue({ text: "done", toolCalls: [], route: "default", stopReason: "end_turn" });
+    try {
+      await runner.spawn({ ...input, hostInputTaint: "file-content" });
+      await runner.spawn(input);
+      expect(runTurn.mock.calls.map(call => call[3]?.inputOrigin)).toEqual(["file-content", "llm-tool-arg"]);
+    } finally {
+      runTurn.mockRestore();
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
+    }
+  });
+
+  it("reports endTrustOrigin", async () => {
+    const runner = makeRunner(new ToolRegistry());
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(new ScriptedProvider([
+      [{ type: "text_delta", text: "final answer" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]));
+    try {
+      // A real turn that ran to its end reports the origin it ended at.
+      expect((await runner.spawn(input)).endTrustOrigin).toBe("llm-tool-arg");
+      const runTurn = vi.spyOn(ConversationLoop.prototype, "runTurn");
+      runTurn.mockResolvedValueOnce({ text: "done", toolCalls: [], route: "default", stopReason: "end_turn", endTrustOrigin: "file-content" });
+      expect((await runner.spawn(input)).endTrustOrigin).toBe("file-content");
+      // A turn that reports none leaves the field absent; the caller reads that as unknown.
+      runTurn.mockResolvedValueOnce({ text: "done", toolCalls: [], route: "default", stopReason: "end_turn" });
+      expect(Object.hasOwn(await runner.spawn(input), "endTrustOrigin")).toBe(false);
+      runTurn.mockRestore();
+    } finally {
+      hasProviderSpy.mockRestore();
+      refreshProviderSpy.mockRestore();
+    }
+  });
+});

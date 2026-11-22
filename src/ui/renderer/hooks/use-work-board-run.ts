@@ -5,6 +5,7 @@ import type {
   RunTranscriptEvent,
   WorkBoardCancelIpcResult,
   WorkBoardRunToolStep,
+  WorkBoardStagePhase,
   WorkBoardSteerAck,
   WorkBoardSteerIpcResult,
   WorkItemResolved,
@@ -13,11 +14,12 @@ import type {
 } from "../../../shared/work-board-types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { t } from "../../../i18n/runtime.js";
 
 // Run state is derived only from host events and the persisted transcript. A plan waiting for the user's work approval is not in
 // flight: the run call has returned, and the decision continues it later through decide-plan. The board card and the step panel (LS-2) both read this one state.
 
-export type RunPhase = RunProgressEventPayload["phase"];
+export type RunPhase = Exclude<RunProgressEventPayload["phase"], WorkBoardStagePhase>;
 
 /** A phase in which the child agent takes turns. */
 type TurnPhase = "planning" | "executing";
@@ -56,6 +58,10 @@ export interface WorkItemRunState {
   turns: RunTurn[];
   /** Terminal failure / denial reason (error / denied phase or runFailed). */
   reason?: string;
+  /** A nonterminal pause notice, kept until the host reports recovery. */
+  heldNotice?: string;
+  /** A stopped run whose end the run file has not saved yet. */
+  endUnconfirmed?: boolean;
   /** Child session id, once an event or the run result carried it. */
   runSessionId?: string;
   /** Every phase child's session this run reported, in link order: the sessions whose tool approvals the board draws. */
@@ -86,6 +92,17 @@ function isActivePhase(phase: RunPhase | undefined): phase is TurnPhase {
 
 /** Terminal phases end the in-flight window; every phase is named so a new one cannot silently read as in flight or as finished.
  * `cancelled` is a run the user stopped (owner decision 2026-11-04): terminal, and never an error. */
+const END_UNCONFIRMED = "run-end-unconfirmed";
+const END_CONFIRMED = "run-end-confirmed";
+
+/** A reason the host sends as a refusal code is shown in the user's language; any other reason is shown as sent. */
+export function reasonText(reason: string | undefined): string | undefined {
+  if (reason === undefined) return undefined;
+  const key = `reasonCodes.${reason}`;
+  const text = t(key);
+  return text === key ? reason : text;
+}
+
 export function isTerminalPhase(phase: RunPhase): boolean {
   switch (phase) {
     case "planning":
@@ -415,16 +432,25 @@ export function useWorkBoardRun(
             }
             return;
           }
+          // A stage event of a template run is not the run's phase; the host sends an item change beside it and the board re-lists.
+          if (ev.phase === "stage_gate" || ev.phase === "stage_passed" || ev.phase === "stage_failed") return;
+          const runPhase = ev.phase;
           // A tool step update is not a phase entry either; it only revises that phase's steps.
           const tools = ev.tools;
           if (tools !== undefined) {
-            const phase = ev.phase;
+            const phase = runPhase;
             if (!isActivePhase(phase)) throw new Error(`work-board tool steps reported in phase ${phase}`);
             update(ev.itemId, (cur) => ({ ...cur, tools: mergeTools(cur.tools, tools.map((step) => ({ ...step, phase }))) }));
             return;
           }
           update(ev.itemId, (cur) => {
-            const phase = ev.phase;
+            const phase = runPhase;
+            if (phase === "cancelled") {
+              // A stop's end saved later clears its note and nothing else, so it never replaces the text of a start refused meanwhile.
+              if (ev.reasonCode === END_CONFIRMED) return { ...cur, endUnconfirmed: false };
+              // Nor does a cancelled event without a code replace error or denied text, or clear that note.
+              if (ev.reasonCode === undefined && (cur.phase === "error" || cur.phase === "denied" || cur.endUnconfirmed === true)) return cur;
+            }
             const turns =
               isActivePhase(phase) && typeof ev.turn === "number"
                 ? mergeTurns(cur.turns, [{ phase, turn: ev.turn, text: ev.text ?? "", at: ev.at }])
@@ -433,7 +459,10 @@ export function useWorkBoardRun(
               ...cur,
               phase,
               turns,
-              reason: phase === "error" || phase === "denied" ? ev.message : undefined,
+              reason: phase === "error" || phase === "denied" ? reasonText(ev.message) : undefined,
+              heldNotice: ev.reasonCode === "template-runs-board-unread" ? reasonText(ev.reasonCode)
+                : ev.message === "resumed" || isTerminalPhase(phase) ? undefined : cur.heldNotice,
+              endUnconfirmed: phase === "cancelled" && ev.reasonCode === END_UNCONFIRMED,
               runSessionId: ev.runSessionId ?? cur.runSessionId,
               sessionIds: withSession(cur.sessionIds, ev.runSessionId),
               phaseAt: cur.phaseAt[phase] === undefined ? { ...cur.phaseAt, [phase]: ev.at } : cur.phaseAt,
@@ -461,14 +490,15 @@ export function useWorkBoardRun(
     if (typeof api.onWorkBoardRunFinished === "function") {
       unsubs.push(
         api.onWorkBoardRunFinished(({ itemId, status }) => {
-          patch(itemId, { busy: false, stopping: false, phase: phaseForRunResult(status) });
+          const phase = phaseForRunResult(status);
+          update(itemId, cur => ({ ...cur, busy: false, stopping: false, phase, heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice }));
         }),
       );
     }
     if (typeof api.onWorkBoardRunFailed === "function") {
       unsubs.push(
         api.onWorkBoardRunFailed(({ itemId, reason }) => {
-          patch(itemId, { busy: false, stopping: false, phase: "error", reason });
+          patch(itemId, { busy: false, stopping: false, phase: "error", reason: reasonText(reason), heldNotice: undefined });
         }),
       );
     }
@@ -522,21 +552,28 @@ export function useWorkBoardRun(
       void api.runWorkBoardItem(id).then((result) => {
         if (!mountedRef.current) return;
         if (result && "ok" in result && result.ok === false) {
-          patch(id, { busy: false, phase: "error", reason: result.error });
+          patch(id, { busy: false, phase: "error", reason: reasonText(result.error), heldNotice: undefined });
           return;
         }
         if (result && "status" in result) {
-          update(id, (cur) => ({
-            ...cur,
-            busy: false,
-            phase: phaseForRunResult(result.status),
-            reason: result.reason,
-            runSessionId: result.runSessionId ?? cur.runSessionId,
-          }));
+          update(id, (cur) => {
+            const phase = phaseForRunResult(result.status);
+            // A result that names no reason keeps the text its event already showed for the same end.
+            const kept = result.reason === undefined && phase === cur.phase && (phase === "error" || phase === "denied") ? cur.reason : undefined;
+            return {
+              ...cur,
+              busy: false,
+              phase,
+              reason: reasonText(result.reason) ?? kept,
+              heldNotice: phase !== undefined && isTerminalPhase(phase) ? undefined : cur.heldNotice,
+              endUnconfirmed: phase === "cancelled" && result.reasonCode === END_UNCONFIRMED,
+              runSessionId: result.runSessionId ?? cur.runSessionId,
+            };
+          });
         }
       }).catch((err: unknown) => {
         if (!mountedRef.current) return;
-        patch(id, { busy: false, phase: "error", reason: errorMessage(err) });
+        patch(id, { busy: false, phase: "error", reason: errorMessage(err), heldNotice: undefined });
       });
     },
     [api, patch, resetRun, update],

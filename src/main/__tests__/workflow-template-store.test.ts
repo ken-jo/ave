@@ -102,12 +102,12 @@ describe("canonical graph hash", () => {
     const a = input(); const b = input();
     if (field === "edges") { b.edges = []; b.stages[1].inputs = []; }
     else if (field === "inputs") b.stages[1].inputs = [];
-    else Object.assign(b.stages[1], { [field]: ({ name: "Other", goal: "Other", toolScope: "read", allowSubAgents: false, agentName: "reviewer", gate: { type: "auto", pass: { kind: "check_exit_zero", command: "check" } } } as Record<string, unknown>)[field] });
+    else Object.assign(b.stages[1], { [field]: ({ name: "Other", goal: "Other", toolScope: "read", allowSubAgents: false, agentName: "reviewer", gate: { type: "auto", pass: { kind: "model_verdict" } } } as Record<string, unknown>)[field] });
     expect(graphHashOf(b)).not.toBe(graphHashOf(a));
   });
-  it("binds stage identity, gate type and check command bytes", () => {
-    const a = input(); a.stages[1].gate = { type: "auto", pass: { kind: "check_exit_zero", command: "check-a" } };
-    const b = structuredClone(a); b.stages[1].gate = { type: "auto", pass: { kind: "check_exit_zero", command: "check-b" } };
+  it("binds stage identity, gate type and pass condition", () => {
+    const a = input(); a.stages[1].gate = { type: "auto", pass: { kind: "stage_ok" } };
+    const b = structuredClone(a); b.stages[1].gate = { type: "auto", pass: { kind: "model_verdict" } };
     expect(graphHashOf(a)).not.toBe(graphHashOf(b));
     b.stages[1].gate = { type: "human" }; expect(graphHashOf(a)).not.toBe(graphHashOf(b));
     const c = input(); c.stages[1].id = "implement"; c.edges[0].to = "implement";

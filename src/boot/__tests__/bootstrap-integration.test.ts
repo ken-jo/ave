@@ -474,7 +474,7 @@ vi.mock("../../tools/write-diff-cache.js", () => ({
 }));
 
 vi.mock("../../core/work-board-engine.js", () => ({
-  createWorkBoardEngine: vi.fn(() => ({})),
+  createWorkBoardEngine: vi.fn(() => ({ adoptParkedTemplateRuns: vi.fn(async () => {}) })),
 }));
 vi.mock("../../work-board/sample-data.js", () => ({
   seedSampleWorkBoard: vi.fn(async () => {}),

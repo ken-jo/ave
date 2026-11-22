@@ -3,24 +3,26 @@ import { describe, it, expect, vi } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import {
   mkdtempSync,
+  promises as fsPromises,
   readFileSync,
   writeFileSync,
   readdirSync,
 } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore, itemDigestOf, planHashOf } from "../work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { localDateKey } from "../../shared/local-date.js";
 
-// Lets a test fail the next board write; every other write goes to disk as usual.
-const writeFault = vi.hoisted(() => ({ failNext: false }));
+// Lets a test fail the next board write, or every write to a path holding `failPath`; every other write goes to disk as usual.
+const writeFault = vi.hoisted(() => ({ failNext: false, failPath: "" }));
 vi.mock("../storage/feature-namespace.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../storage/feature-namespace.js")>();
   return {
     ...actual,
     writeFileAtomicAtPath: async (...args: Parameters<typeof actual.writeFileAtomicAtPath>) => {
-      if (writeFault.failNext) {
+      if (writeFault.failNext || (writeFault.failPath !== "" && args[0].includes(writeFault.failPath))) {
         writeFault.failNext = false;
         throw new Error("disk full");
       }
@@ -317,7 +319,73 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
     }
   });
 
-  it("drops tampered records but keeps the valid rest and repairs nextId", async () => {
+  for (const [how, text] of [["null", "null"], ["without an items list", '{"version":1,"nextId":9,"items":{}}'], ["a list", "[]"]] as const) {
+    it(`moves a board file that is ${how} aside as corrupt JSON before a create, never writing over it`, async () => {
+      const { store, dir, path, cleanup } = tempBoard();
+      try {
+        writeFileSync(path, text, "utf-8");
+        expect(await store.create({ title: "after" })).toMatchObject({ status: "created", itemId: 1 });
+        const backups = readdirSync(dir).filter((f) => /\.corrupt-\d+-[0-9a-f]{8}\.bak$/.test(f));
+        expect(backups.map((f) => readFileSync(join(dir, f), "utf-8"))).toEqual([text]);
+        expect(JSON.parse(readFileSync(path, "utf-8")).items.map((item: { id: number }) => item.id)).toEqual([1]);
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+
+  it("keeps only the board's fields in its cache after a read that changed nothing: never what the read marked or the file bytes it kept", async () => {
+    const { store, path, cleanup } = tempBoard();
+    const cached = () => Object.keys((store as unknown as { cache: object }).cache).sort();
+    const fields = ["items", "nextId", "unreadable", "version"];
+    try {
+      // Absent: the read marks the board unread.
+      expect(await store.remove(1)).toEqual({ status: "not_found", itemId: 1 });
+      expect(cached()).toEqual(fields);
+      // A row that does not validate, spaced by hand: the read keeps the file's bytes.
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 3, items: [{ id: 2, title: 5 }] }), "utf-8");
+      expect(await store.remove(1)).toEqual({ status: "not_found", itemId: 1 });
+      expect(await store.removeUnreadable({ position: 0, hash: "0".repeat(64) }, () => true)).toEqual({ status: "invalid", reason: "work-board-row-changed" });
+      expect(cached()).toEqual(fields);
+      // Damaged and held open: the read marks it as not moved aside.
+      writeFileSync(path, "{ damaged", "utf-8");
+      vi.spyOn(fsPromises, "rename").mockRejectedValue(Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" }));
+      expect(await store.remove(1)).toEqual({ status: "not_found", itemId: 1 });
+      expect(cached()).toEqual(fields);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanup();
+    }
+  });
+
+  it("refuses a create over a damaged board file it could not move aside, issues no id and leaves that file byte for byte as it was", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      expect(await store.create({ title: "first" })).toMatchObject({ status: "created", itemId: 1 });
+      const damaged = `${readFileSync(path, "utf-8").slice(0, -5)} damaged by hand`;
+      writeFileSync(path, damaged, "utf-8");
+      const rename = fsPromises.rename.bind(fsPromises);
+      const moves = vi.spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
+        if (String(to).includes(".corrupt-")) throw Object.assign(new Error("EBUSY: resource busy or locked"), { code: "EBUSY" });
+        return rename(from, to);
+      });
+      const corrupt = () => readdirSync(dir).filter((f) => /\.corrupt-\d+-[0-9a-f]{8}\.bak$/.test(f));
+      for (let i = 0; i < 2; i += 1) {
+        expect(await store.create({ title: "second" })).toEqual({ status: "invalid", reason: "work-board-file-not-set-aside" });
+        expect(readFileSync(path, "utf-8")).toBe(damaged);
+        expect(corrupt()).toEqual([]);
+      }
+      moves.mockRestore();
+      // Once the file can be moved, the next create goes on as over any damaged board, with the next id.
+      expect(await store.create({ title: "third" })).toMatchObject({ status: "created", itemId: 2 });
+      expect(corrupt().map((f) => readFileSync(join(dir, f), "utf-8"))).toEqual([damaged]);
+    } finally {
+      vi.restoreAllMocks();
+      await cleanup();
+    }
+  });
+
+  it("lists only the valid records, keeps the tampered ones in the file and repairs nextId", async () => {
     const { store, path, cleanup } = tempBoard();
     try {
       writeFileSync(
@@ -339,10 +407,262 @@ describe("WorkBoardStore — corrupt board.json recovery", () => {
       expect(listed.items).toHaveLength(1);
       expect(listed.items[0].id).toBe(5);
 
-      // nextId must be repaired to exceed the surviving max id (5) → new id 6.
+      // nextId must be repaired to exceed every row id in the file, valid or not (7) → new id 8.
       const created = await store.create({ title: "next" });
       if (created.status !== "created") throw new Error("unreachable");
-      expect(created.itemId).toBe(6);
+      expect(created.itemId).toBe(8);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("puts an unrelated row that does not validate back unchanged on every board write, and lists it by its id", async () => {
+    const { store, path, cleanup } = tempBoard();
+    try {
+      const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+      const invalid = { id: 2, title: "hand-edited", status: "planned", priority: 42, created_at: "x", updated_at: "x", note: { kept: [1, "two"] } };
+      const text = `${JSON.stringify({ version: 1, nextId: 3, items: [valid, invalid] }, null, 2)}\n`;
+      // The row as the file holds it, at its depth in the items list.
+      const rowText = JSON.stringify(invalid, null, 2).split("\n").map((line) => `    ${line}`).join("\n");
+      expect(text).toContain(rowText);
+      writeFileSync(path, text, "utf-8");
+
+      const listed = await store.list();
+      expect(listed).toMatchObject({ status: "ok", unreadableRows: [{ id: 2 }] });
+      if (listed.status !== "ok") throw new Error("unreachable");
+      expect(listed.items.map((item) => item.id)).toEqual([1]);
+      const created = await store.create({ title: "next" });
+      expect(created).toMatchObject({ status: "created", itemId: 3 });
+      expect(readFileSync(path, "utf-8")).toContain(rowText);
+      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+      expect(await store.remove(3)).toMatchObject({ status: "deleted" });
+      const after = readFileSync(path, "utf-8");
+      expect(after).toContain(rowText);
+      expect(JSON.parse(after).items).toEqual([{ ...valid, title: "renamed", updated_at: expect.any(String) }, invalid]);
+      // Written back byte for byte: no copy of the file is kept.
+      expect(readdirSync(dirname(path)).filter((name) => name.includes(".invalid-rows-"))).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("deletes from an invalid card only its own entry, named by its place among the entries that do not validate and its content: a twin stays, every entry without an id has a card too, and a delete whose entry changed is refused", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      const valid = (id: number, title: string) => ({ id, title, status: "planned", priority: "medium", created_at: "x", updated_at: "x" });
+      const rows = [valid(1, "one"), valid(2, "a"), valid(2, "b"), valid(3, "three"), { id: 3, title: 5 }, { id: 4, title: "damaged", status: "nope" }, null, "text", 7, []];
+      // Written as a board write writes it, so no read of it keeps a copy on its own.
+      const text = `${JSON.stringify({ version: 1, nextId: 5, items: [rows[0], rows[3], ...rows.filter((_, i) => i !== 0 && i !== 3)] }, null, 2)}
+`;
+      writeFileSync(path, text, "utf-8");
+      const hashOf = (entry: unknown) => createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+      const cards = async () => {
+        const listed = await store.list();
+        if (listed.status !== "ok") throw new Error("unreachable");
+        return listed.unreadableRows ?? [];
+      };
+      const items = () => JSON.parse(readFileSync(path, "utf-8")).items;
+      const shown = await cards();
+      expect(shown).toEqual([
+        { id: 2, position: 0, hash: hashOf(rows[1]) }, { id: 2, position: 1, hash: hashOf(rows[2]) }, { id: 3, position: 2, hash: hashOf(rows[4]) },
+        { id: 4, position: 3, hash: hashOf(rows[5]) }, ...[null, "text", 7, []].map((entry, i) => ({ position: 4 + i, hash: hashOf(entry) })),
+      ]);
+      // Refused, and nothing written: a place past the last entry, another entry's content at that place, a project not authorized.
+      for (const target of [{ position: 8, hash: shown[0].hash }, { position: 0, hash: shown[1].hash }, { position: 1.5, hash: shown[1].hash }]) {
+        expect(await store.removeUnreadable(target, () => true)).toEqual({ status: "invalid", reason: "work-board-row-changed" });
+      }
+      expect(await store.removeUnreadable(shown[3], () => false)).toEqual({ status: "not_found" });
+      expect(readFileSync(path, "utf-8")).toBe(text);
+      // One of two valid twins: the other stays, and is listed once it is alone with its id.
+      expect(await store.removeUnreadable(shown[0], () => true)).toEqual({ status: "deleted", itemId: 2 });
+      expect(items()).toEqual([rows[0], rows[3], rows[2], rows[4], rows[5], null, "text", 7, []]);
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([3, 2, 1]);
+      // A card shown before that delete names the entry by a place that now holds another: refused.
+      expect(await store.removeUnreadable(shown[1], () => true)).toEqual({ status: "invalid", reason: "work-board-row-changed" });
+      for (const entry of [[], 7, "text", null]) {
+        const card = (await cards()).find((row) => row.hash === hashOf(entry));
+        if (!card) throw new Error("no card");
+        expect(await store.removeUnreadable(card, () => true)).toEqual({ status: "deleted" });
+      }
+      expect(items()).toEqual([rows[0], rows[3], rows[2], rows[4], rows[5]]);
+      expect((await cards()).map(({ id, position }) => ({ id, position }))).toEqual([{ id: 3, position: 0 }, { id: 4, position: 1 }]);
+      const copies = readdirSync(dir).filter((f) => f.includes(".invalid-rows-")).map((f) => readFileSync(join(dir, f), "utf-8"));
+      expect(copies).toHaveLength(5);
+      expect(copies).toContain(text);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps a row with run fields edited in by hand or a plan approval that does not read as it was written, unlisted, and copies nothing over a file written as a board write writes it", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    const copies = () => readdirSync(dir).filter((f) => f.includes(".invalid-rows-"));
+    const row = (id: number, extra: object = {}) => ({ id, title: `row ${id}`, status: "planned", priority: "medium", created_at: "x", updated_at: "x", ...extra });
+    try {
+      for (const second of [
+        row(2, { stageRuns: [{ stageId: "a", attempt: 1, status: "running" }] }),
+        row(2, { planApproval: { decision: 7 } }),
+        row(2, { runHistory: [{ runId: "run-0", stageRuns: [] }] }),
+      ]) {
+        writeFileSync(path, `${JSON.stringify({ version: 1, nextId: 3, items: [row(1), second] }, null, 2)}\n`, "utf-8");
+        const listed = await store.list();
+        expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([1]);
+        expect(listed.status === "ok" && listed.unreadableRows?.map(({ id }) => id)).toEqual([2]);
+        expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+        expect(JSON.parse(readFileSync(path, "utf-8")).items[1]).toEqual(second);
+      }
+      expect(copies()).toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("lists each row that does not validate with its id, and one without a usable id without it", async () => {
+    const { store, path, cleanup } = tempBoard();
+    try {
+      const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 9, items: [valid, { id: 4 }, "text", { id: 0 }, { id: "5" }, null, { id: 8, title: 1 }] }), "utf-8");
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.unreadableRows?.map(({ id, position }) => ({ id, position }))).toEqual(
+        [4, undefined, undefined, undefined, undefined, 8].map((id, position) => ({ id, position })),
+      );
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("lists no valid row whose id another valid row has too and keeps them all on a write; a valid row with an invalid twin is listed", async () => {
+    const { store, path, cleanup } = tempBoard();
+    try {
+      const valid = (id: number, title: string) => ({ id, title, status: "planned", priority: "medium", created_at: "x", updated_at: "x" });
+      const rows = [valid(1, "one"), valid(2, "a"), valid(2, "b"), valid(3, "three"), { id: 3, title: 5 }];
+      writeFileSync(path, JSON.stringify({ version: 1, nextId: 4, items: rows }), "utf-8");
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([3, 1]);
+      expect(listed.status === "ok" && listed.unreadableRows?.map(({ id }) => id)).toEqual([2, 2, 3]);
+      const standing = await store.runRowsOnDisk();
+      expect([2, 3].map((itemId) => standing?.({ itemId, runId: "run-1" }))).toEqual(["unreadable", "unnamed"]);
+      expect(await store.create({ title: "next" })).toMatchObject({ status: "created", itemId: 4 });
+      expect(JSON.parse(readFileSync(path, "utf-8")).items).toEqual([rows[0], rows[3], expect.objectContaining({ id: 4 }), rows[1], rows[2], rows[4]]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  // A row whose number is past the safe-integer limit parses to another value: the file would lose its bytes on the next write.
+  const bigIntBoard = () => {
+    const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+    const text = `${JSON.stringify({ version: 1, nextId: 3, items: [valid, { id: 2, title: "hand-edited", size: 0 }] }, null, 2)}
+`;
+    return text.replace('"size": 0', '"size": 12345678901234567890');
+  };
+
+  it("keeps the file as it was beside it before a write that would change the bytes of a row that does not validate, once per content", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      const text = bigIntBoard();
+      writeFileSync(path, text, "utf-8");
+      for (let i = 0; i < 3; i += 1) expect(await store.create({ title: `next ${i}` })).toMatchObject({ status: "created" });
+      const copies = readdirSync(dir).filter((name) => name.includes(".invalid-rows-"));
+      expect(copies).toEqual([`board.json.invalid-rows-${createHash("sha256").update(text).digest("hex")}.bak`]);
+      expect(readFileSync(join(dir, copies[0]))).toEqual(Buffer.from(text, "utf-8"));
+      // The row itself is written back with its parsed value, after the valid rows.
+      expect(JSON.parse(readFileSync(path, "utf-8")).items.at(-1)).toEqual(JSON.parse(text).items[1]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("refuses a write over a board whose rows that do not validate would change bytes with work-board-backup-failed, and writes nothing, while the copy of it cannot be made", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    try {
+      const text = bigIntBoard();
+      writeFileSync(path, text, "utf-8");
+      await store.load();
+      writeFault.failPath = ".invalid-rows-";
+      await expect(store.update(1, { title: "renamed" })).rejects.toMatchObject({ code: "work-board-backup-failed" });
+      expect(readFileSync(path, "utf-8")).toBe(text);
+      expect(readdirSync(dir).filter((name) => name.includes(".invalid-rows-"))).toEqual([]);
+    } finally {
+      writeFault.failPath = "";
+      await cleanup();
+    }
+  });
+
+  it("writes back every top-level key of the file it does not know as parsed, through every write, and copies the file aside once before a write changes its bytes", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    const copies = () => readdirSync(dir).filter((name) => name.includes(".invalid-rows-"));
+    const valid = { id: 1, title: "valid", status: "planned", priority: "medium", created_at: "x", updated_at: "x", note: { kept: [1, "two"] } };
+    // Keys named as what the store keeps of a board in memory, and one JSON parses as a plain key.
+    const unknown = '"archive":[{"id":99,"title":"archived","runId":"run-9"}],"unreadable":["kept"],"prior":{"nested":[1,"two",null]},"extra":true,"__proto__":{"polluted":1}';
+    const keysOf = (text: string) => {
+      const { version: _v, nextId: _n, items: _i, ...rest } = JSON.parse(text) as Record<string, unknown>;
+      return rest;
+    };
+    try {
+      // Written as a board write writes it: version, nextId, then the keys it does not know, then items.
+      const text = `${JSON.stringify(JSON.parse(`{"version":1,"nextId":2,${unknown},"items":${JSON.stringify([valid])}}`), null, 2)}\n`;
+      writeFileSync(path, text, "utf-8");
+      const kept = keysOf(text);
+      expect(Object.keys(kept)).toEqual(["archive", "unreadable", "prior", "extra", "__proto__"]);
+      expect(await store.create({ title: "next" })).toMatchObject({ status: "created", itemId: 2 });
+      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+      expect(await store.transition(2, "in_progress")).toMatchObject({ status: "transitioned" });
+      expect(await store.remove(2)).toMatchObject({ status: "deleted" });
+      const after = readFileSync(path, "utf-8");
+      expect(keysOf(after)).toEqual(kept);
+      expect(Object.keys(keysOf(after))).toEqual(Object.keys(kept));
+      expect(JSON.parse(after).items).toEqual([{ ...valid, title: "renamed", updated_at: expect.any(String) }]);
+      expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+      const listed = await store.list();
+      expect(listed.status === "ok" && listed.items.map((item) => item.id)).toEqual([1]);
+      expect(copies()).toEqual([]);
+
+      // Keys after items, and a number past the safe-integer limit in one: the next write changes the bytes, so the file is kept first.
+      const moved = `{"version":1,"nextId":3,"items":${JSON.stringify([valid])},"archive":{"size":12345678901234567890}}\n`;
+      writeFileSync(path, moved, "utf-8");
+      expect(await store.update(1, { title: "again" })).toMatchObject({ status: "updated" });
+      expect(copies()).toEqual([`board.json.invalid-rows-${createHash("sha256").update(moved).digest("hex")}.bak`]);
+      expect(readFileSync(join(dir, copies()[0]), "utf-8")).toBe(moved);
+      expect(keysOf(readFileSync(path, "utf-8"))).toEqual({ archive: JSON.parse(moved).archive });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("copies the board file aside, once per content, before any write over bytes it would not give back, and never one written as a write writes it", async () => {
+    const { store, dir, path, cleanup } = tempBoard();
+    const copies = () => readdirSync(dir).filter((name) => name.includes(".invalid-rows-"));
+    const row = (id: number, extra: object = {}) => ({ id, title: `row ${id}`, status: "planned", priority: "medium", created_at: "x", updated_at: "x", ...extra });
+    const canonical = (file: object) => `${JSON.stringify(file, null, 2)}\n`;
+    const items = [row(1), row(2)];
+    try {
+      writeFileSync(path, canonical({ version: 1, nextId: 3, items }), "utf-8");
+      expect(await store.update(1, { title: "renamed" })).toMatchObject({ status: "updated" });
+      expect(copies()).toEqual([]);
+      const cases = [
+        // A valid row's numbers JSON reads as other values.
+        canonical({ version: 1, nextId: 3, items: [row(1), row(2, { estimate: 0, ratio: 1 })] })
+          .replace('"estimate": 0', '"estimate": 123456789012345678901234567890').replace('"ratio": 1', '"ratio": 1e400'),
+        // What the read repairs: another version, a nextId that is not a number or not above every row id.
+        canonical({ version: 2, nextId: 3, items }),
+        canonical({ version: 1, nextId: "seven", items }),
+        canonical({ version: 1, nextId: 1, items }),
+        // Other spacing. A key twice is never written over (work-board-write-guard.test.ts).
+        JSON.stringify({ version: 1, nextId: 3, items }),
+      ];
+      for (const text of cases) {
+        writeFileSync(path, text, "utf-8");
+        for (let i = 0; i < 2; i += 1) expect(await store.update(1, { title: `renamed ${i}` })).toMatchObject({ status: "updated" });
+        const copy = `board.json.invalid-rows-${createHash("sha256").update(text).digest("hex")}.bak`;
+        expect(copies()).toContain(copy);
+        expect(readFileSync(join(dir, copy))).toEqual(Buffer.from(text, "utf-8"));
+      }
+      expect(copies()).toHaveLength(cases.length);
+      writeFileSync(path, cases[0], "utf-8");
+      expect(await store.update(1, { title: "again" })).toMatchObject({ status: "updated" });
+      expect(copies()).toHaveLength(cases.length);
     } finally {
       await cleanup();
     }
@@ -521,7 +841,7 @@ describe("WorkBoardStore — plan approval", () => {
     }
   });
 
-  it("drops only an unreadable decision and keeps the item", async () => {
+  it("keeps an item whose decision does not read as it was written, unlisted", async () => {
     const { store, path, cleanup } = tempBoard(fixedClock);
     try {
       const { id } = await planned(store);
@@ -529,10 +849,12 @@ describe("WorkBoardStore — plan approval", () => {
       board.items[0].planApproval.status = "allow-always";
       writeFileSync(path, JSON.stringify(board));
       const reloaded = new WorkBoardStore(path, fixedClock);
-      const got = await reloaded.get(id);
-      if (got.status !== "found") throw new Error("item dropped");
-      expect(got.item.planApproval).toBeUndefined();
-      expect(await reloaded.reconcileInterruptedRuns()).toBe(1);
+      expect((await reloaded.get(id)).status).toBe("not_found");
+      const listed = await reloaded.list();
+      expect(listed.status === "ok" && listed.unreadableRows?.map((row) => row.id)).toEqual([id]);
+      expect(await reloaded.reconcileInterruptedRuns()).toBe(0);
+      expect((await reloaded.create({ title: "next" })).status).toBe("created");
+      expect(JSON.parse(readFileSync(path, "utf-8")).items.find((row: { id: number }) => row.id === id)).toEqual(board.items[0]);
     } finally {
       await cleanup();
     }

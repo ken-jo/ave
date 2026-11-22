@@ -9,6 +9,7 @@ import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../../../engine/parent-directive.js";
 import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
+import { registeredIpcHandlers } from "./test-helpers.js";
 
 const ipc = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -33,11 +34,7 @@ vi.mock("../../gated.js", () => ({
 
 const GESTURE = { inputOrigin: "user-keyboard", userActivation: true } as const;
 
-function handler(channel: string): (...args: unknown[]) => Promise<unknown> {
-  const h = ipc.handlers.get(channel);
-  if (!h) throw new Error(`missing handler for ${channel}`);
-  return h as (...args: unknown[]) => Promise<unknown>;
-}
+const handler = registeredIpcHandlers(ipc.handlers);
 
 function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: false }) {
   const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
@@ -50,7 +47,7 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
         ? { status: "found", item: { id: 7, title: "t", status: "in_progress", status_resolved: "in_progress", priority: "medium", created_at: "x", updated_at: "x" } }
         : { status: "not_found", itemId: id },
     },
-    workBoardEngine: { steerRun, cancelRun },
+    workBoardEngine: { steerRun, cancelRun, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
     settingsService: { get: (key: string) => (key === "privacy" ? privacy : undefined) },
     auditLogger: { log: vi.fn() },
     getMainWindow: () => window,
@@ -167,7 +164,7 @@ function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuati
         ? { status: "found", item: { id: 7, title: "t", status: "planned", status_resolved: "planned", priority: "medium", created_at: "x", updated_at: "x" } }
         : { status: "not_found", itemId: id },
     },
-    workBoardEngine: { decidePlan },
+    workBoardEngine: { decidePlan, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
     settingsService: { get: (key: string) => (key === "privacy" ? (opts.privacy ?? { piiRedactEnabled: false }) : undefined) },
     auditLogger: { log },
     getMainWindow: () => window,

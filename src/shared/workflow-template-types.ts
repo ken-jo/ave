@@ -97,10 +97,10 @@ export type WorkflowTemplateErrorCode =
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
   | "bad-stage-id" | "too-many-entries" | "envelope-refused"
   | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
-  | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only";
+  | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };
 
-interface WorkItemStageRun {
+export interface WorkItemStageRun {
   stageId: string;
   attempt: number;
   status: "waiting" | "running" | "awaiting_gate" | "passed" | "failed" | "cancelled" | "rejected";
@@ -125,16 +125,23 @@ interface WorkItemStageRun {
 export type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor-target" | "secret-path" | "user-owned-surface"
   | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
 type RunPin = TemplateVersionPin;
-type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; projectRoot?: string }
+export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; projectRoot?: string }
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };
-interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
+export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
 interface OutputFile { path: string; sha256: string; size: number }
 export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }
 interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
-interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
+export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
 export interface TemplateRunStart extends RunPin { source: RunAuthoritySource; stageRuns: WorkItemStageRun[] }
+/** The first envelope entry that fails the unattended qualification: stages in graph order, then the collections in this order, then entry order. */
+export interface EnvelopeToolRef { stageId: string; collection: "tools" | "mcpReadOnlyTools" | "mcpGenerationTools" | "pluginGenerationTools"; name: string }
+/** One answer to "may this version run unattended"; a refusal names its code and, for the two effect codes, the tool. */
+export type UnattendedQualification =
+  | { ok: true }
+  | { ok: false; code: "unattended-not-read-only" }
+  | { ok: false; code: "outward-effect-tool" | "tool-effect-unknown"; tool: EnvelopeToolRef };
 /** Template-run state. It is stored only in the covered run file, keyed by runId; a board row names its run by runId alone. */
 export interface WorkflowRunRecord {
   runId: string;

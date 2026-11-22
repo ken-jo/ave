@@ -96,7 +96,7 @@ it("refuses a create-and-run project different from the approved project before 
   const file = join(dir, "board.json"); const store = new WorkBoardStore(file); const created = await store.create({ title: "Work", projectRoot: "/projects/a", templateId: "template" }); if (created.status !== "created") throw new Error("Missing item");
   const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) }; const before = await readFile(file, "utf8");
   for (const projectRoot of ["/projects/b", undefined]) await expect(store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin, projectRoot }, stageRuns: [] })).rejects.toMatchObject({ code: "project-mismatch" });
-  expect(await readFile(file, "utf8")).toBe(before); await expect(readFile(join(dir, "workflow-runs.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(file, "utf8")).toBe(before); expect(JSON.parse(await readFile(join(dir, "workflow-runs.json"), "utf8")).runs).toEqual([]);
   expect(await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin, projectRoot: "/projects/a" }, stageRuns: [] })).toMatchObject({ status: "updated", item: { runId: "run" } });
   expect(await store.getRun(created.itemId)).toMatchObject({ status: "found", run: { runStartedBy: { projectRoot: "/projects/a" } } });
 });

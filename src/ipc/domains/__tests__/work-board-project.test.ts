@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -9,6 +10,8 @@ import type { IpcDeps } from "../../types.js";
 import { WorkBoardStore } from "../../../main/work-board-store.js";
 import type { WorkItemResolved } from "../../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import * as namespace from "../../../main/storage/feature-namespace.js";
+import { createWorkBoardEngine } from "../../../core/work-board-engine.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME } from "../../gated.js";
 
 const ipc = vi.hoisted(() => {
@@ -91,7 +94,7 @@ describe("work-board project authorization", () => {
     const runBriefing = vi.fn(async () => ({ status: "empty", kind: "daily", reason: "no findings" }));
     registerWorkBoardHandlers({
       workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
-      workBoardEngine: { runItem, runBriefing }, auditLogger: { log: vi.fn() },
+      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} }, auditLogger: { log: vi.fn() },
       getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
@@ -111,7 +114,7 @@ describe("work-board project authorization", () => {
     const runBriefing = vi.fn();
     registerWorkBoardHandlers({
       workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
-      workBoardEngine: { runItem, runBriefing }, auditLogger: { log: vi.fn() },
+      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} }, auditLogger: { log: vi.fn() },
       getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender, senderFrame: kind === "subframe" ? { url: "file:///index.html" } : sender.mainFrame };
@@ -161,6 +164,8 @@ describe("work-board project authorization", () => {
     };
     const engine = {
       runItem: vi.fn(async () => ({ status: "completed", output: "done" })),
+      projectTemplateRuns: async (items: unknown[]) => items,
+      adoptParkedTemplateRuns: async () => {},
     };
     registerWorkBoardHandlers({
       workBoardStore: store,
@@ -235,5 +240,367 @@ describe("conditional board mutations", () => {
     for (const revision of [undefined, "unknown", 3]) {
       await expect(registeredHandler(WORK_BOARD.complete)({}, created.itemId, revision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
     }
+  });
+});
+
+describe("write refusals", () => {
+  it("returns a guard's refusal as its code, with the board file left as it was", async () => {
+    const path = join(root, "board.json");
+    const store = new WorkBoardStore(path);
+    const created = await store.create({ title: "Notes", detail: "live-r", projectRoot: workspace });
+    if (created.status !== "created") throw new Error("Create failed");
+    const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
+    const live = { runId: "live-r", itemId: 9, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01T00:00:00.000Z", stageRuns: [] };
+    writeFileSync(join(root, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 9, runs: [live] }));
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    const before = readFileSync(path, "utf8");
+    await expect(registeredHandler(WORK_BOARD.update)({}, created.itemId, { detail: "edited" })).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-board-run-id-held" });
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  it("returns a run file that holds a key twice as its code, to a list and an add, with that file left as it was", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    const text = '{"version":1,"rowIdFloor":0,"runs":[],"runs":[]}';
+    writeFileSync(join(root, "workflow-runs.json"), text);
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    await expect(registeredHandler(WORK_BOARD.list)({}, {})).resolves.toEqual({ ok: false, error: "workflow-runs-duplicate-key" });
+    await expect(registeredHandler(WORK_BOARD.add)({}, { title: "Notes", projectRoot: workspace })).resolves.toEqual({ status: "invalid", reason: "workflow-runs-duplicate-key" });
+    expect(readFileSync(join(root, "workflow-runs.json"), "utf8")).toBe(text);
+  });
+
+  it("never returns a create's raw failure", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    vi.spyOn(store, "create").mockRejectedValue(new Error("disk full at C:\\private"));
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    await expect(registeredHandler(WORK_BOARD.add)({}, { title: "Notes", projectRoot: workspace })).resolves.toEqual({ status: "invalid", reason: "work-board-write-failed" });
+  });
+});
+
+describe("a copy of a work board file that cannot be made", () => {
+  const AT = "2026-01-01T00:00:00.000Z";
+  const pin = { templateId: "template-1", version: 1, graphHash: "b".repeat(64) };
+  const fields = { status: "planned", priority: "medium", created_at: AT, updated_at: AT };
+  const keyboard = { inputOrigin: "user-keyboard", userActivation: true };
+  const revision = async (store: WorkBoardStore, id: number): Promise<string> => {
+    const got = await store.get(id);
+    if (got.status !== "found" || got.item.mutationRevision === undefined) throw new Error("Missing item");
+    return got.item.mutationRevision;
+  };
+  const card = async (store: WorkBoardStore, kind: "unreadableRows" | "unreadableRuns") => {
+    const listed = await store.list();
+    const found = listed.status === "ok" ? listed[kind]?.[0] : undefined;
+    if (!found) throw new Error("no card");
+    return { position: found.position, hash: found.hash };
+  };
+  const awaitingPlan = async (store: WorkBoardStore): Promise<string> => {
+    await store.beginRun(2, "plain-run", AT);
+    const asked = await store.setPlanAwaitingApproval(2, { runId: "plain-run", plan: "plan", runSessionId: "session-1", revision: 1, itemDigest: "d" });
+    const planHash = asked?.status === "updated" ? asked.item.planApproval?.planHash : undefined;
+    if (planHash === undefined) throw new Error("no plan");
+    return planHash;
+  };
+
+  // Both files hold bytes Ave would not write back (compact JSON), so every write over either is copied beside it first.
+  it.each<[string, string, (store: WorkBoardStore) => Promise<[string, unknown[]]>]>([
+    ["an add, by the row id the run file gives it", "workflow-runs.json", async () => [WORK_BOARD.add, [{ title: "New", projectRoot: workspace }]]],
+    ["a proposal's accept", "workflow-runs.json", async store => {
+      const filed = await store.fileBriefingProposals([{ kind: "stale-index", key: "folder:reports", title: "Re-index", summary: "s", state: "t", taskBrief: "b" }]);
+      return [WORK_BOARD.acceptProposal, [filed.filed[0], workspace]];
+    }],
+    ["an edit", "board.json", async () => [WORK_BOARD.update, [2, { detail: "edited" }]]],
+    ["a move", "board.json", async store => [WORK_BOARD.transition, [2, "in_progress", await revision(store, 2)]]],
+    ["a complete", "board.json", async store => [WORK_BOARD.complete, [2, await revision(store, 2)]]],
+    ["a reopen", "board.json", async store => [WORK_BOARD.reopen, [3, await revision(store, 3)]]],
+    ["a delete", "board.json", async store => [WORK_BOARD.remove, [2, { revision: await revision(store, 2) }]]],
+    ["a delete of the row naming a run, by its delete intent", "workflow-runs.json", async store => [WORK_BOARD.remove, [4, { revision: await revision(store, 4) }]]],
+    ["an invalid card's delete", "board.json", async store => [WORK_BOARD.remove, [null, { invalidRow: await card(store, "unreadableRows") }]]],
+    ["an unreadable run record's discard", "workflow-runs.json", async store => [WORK_BOARD.remove, [null, { runRecord: await card(store, "unreadableRuns") }]]],
+    ["a missing run's clear", "board.json", async store => [WORK_BOARD.clearRun, [6, { revision: await revision(store, 6), runId: "missing-1" }]]],
+    ["a run, by its error-state write", "board.json", async () => [WORK_BOARD.run, [2, {}]]],
+    ["a plan decision", "board.json", async store => [WORK_BOARD.decidePlan, [2, { runId: "plain-run", planHash: await awaitingPlan(store), decision: "reject" }, keyboard]]],
+  ])("answers %s with work-board-backup-failed, never a raw failure, and leaves both files as they were", async (_, file, prepare) => {
+    const path = join(root, "board.json");
+    const runsPath = join(root, "workflow-runs.json");
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 7, items: [{ id: 2, title: "row 2", ...fields }, { id: 3, title: "row 3", ...fields, status: "completed", completed_at: AT },
+      { id: 4, title: "row 4", ...fields, templateId: pin.templateId, runId: "run-a", runStatus: "executing" }, { id: 5, title: 0 },
+      { id: 6, title: "row 6", ...fields, templateId: pin.templateId, runId: "missing-1", runStatus: "executing" }] }));
+    writeFileSync(runsPath, JSON.stringify({ version: 1, rowIdFloor: 6, runs: [
+      { runId: "run-a", itemId: 4, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: AT, stageRuns: [] },
+      { runId: "run-1", itemId: 1, runStartedBy: { kind: "local-create-and-run" } }] }));
+    const store = new WorkBoardStore(path);
+    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: vi.fn() };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const engine = createWorkBoardEngine({ store, getRunner: () => undefined, emitProgress: () => {} });
+    // A missing run's clear is the template engine's pass-through to the store.
+    const workBoardEngine = { ...engine, clearMissingRun: (id: number, at: { revision: string; runId: string }) => store.clearMissingRun(id, at.revision, at.runId) };
+    registerWorkBoardHandlers({ workBoardStore: store, workBoardEngine, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const [channel, args] = await prepare(store);
+    for (const written of [path, runsPath]) writeFileSync(written, JSON.stringify(JSON.parse(readFileSync(written, "utf8"))));
+    const before = [readFileSync(path), readFileSync(runsPath)];
+    const kept = () => readdirSync(root).filter(name => name.endsWith(".bak"));
+    const keptBefore = kept();
+    const write = namespace.writeFileAtomicAtPath;
+    const copies: string[] = [];
+    vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementation(async (target, body) => {
+      if (!target.endsWith(".bak")) return write(target, body);
+      copies.push(target);
+      throw Object.assign(new Error("EACCES: permission denied, open 'C:\\private'"), { code: "EACCES" });
+    });
+    try {
+      const answer = JSON.stringify(await registeredHandler(channel)({ sender: owner, senderFrame: owner.mainFrame }, ...args));
+      expect(answer).toContain("\"work-board-backup-failed\"");
+      expect(answer).not.toMatch(/EACCES|private/);
+      expect(copies.map(copy => copy.slice(root.length + 1).split(".").slice(0, 2).join("."))).toEqual([file]);
+      expect([readFileSync(path), readFileSync(runsPath)]).toEqual(before);
+      expect(kept()).toEqual(keptBefore);
+    } finally { vi.restoreAllMocks(); }
+  });
+});
+
+describe("listed row delete", () => {
+  it("deletes a listed row only by its id with the revision its card showed, and returns the run that row named", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    const created = await store.create({ title: "Export notes", projectRoot: workspace });
+    if (created.status !== "created") throw new Error("Create failed");
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    for (const target of [undefined, {}, { revision: "unknown" }, { revision: created.item.mutationRevision, more: 1 }, "revision"]) {
+      await expect(remove({}, created.itemId, target)).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-item-changed" });
+    }
+    await store.beginRun(created.itemId, "run-1", new Date().toISOString());
+    await expect(remove({}, created.itemId, { revision: created.item.mutationRevision })).resolves.toEqual({ status: "invalid", itemId: created.itemId, reason: "work-item-changed" });
+    const current = await store.get(created.itemId);
+    if (current.status !== "found") throw new Error("Missing item");
+    await expect(remove({}, created.itemId, { revision: current.item.mutationRevision })).resolves.toEqual({ status: "deleted", itemId: created.itemId, runId: "run-1" });
+    await expect(store.get(created.itemId)).resolves.toEqual({ status: "not_found", itemId: created.itemId });
+  });
+});
+
+describe("invalid row delete", () => {
+  it("deletes an entry that does not validate only as its invalid card names it, by its place and content, and only while the project it names is authorized", async () => {
+    const path = join(root, "board.json");
+    const valid = { id: 1, title: "kept", status: "planned", priority: "medium", created_at: "x", updated_at: "x" };
+    const here = { id: 2, title: 5, projectRoot: workspace };
+    const denied = { id: 3, title: 5, projectRoot: join(root, "denied-project") };
+    const unscoped = { id: 4, title: 5 };
+    const unnamed = { id: 5, title: 5, projectRoot: 7 };
+    const idless = [null, 7, "text", []];
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 6, items: [valid, here, denied, unscoped, unnamed, ...idless] }));
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send: broadcast } };
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    const card = async (entry: unknown) => {
+      const listed = await store.list();
+      const hash = createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+      const found = listed.status === "ok" ? listed.unreadableRows?.find((row) => row.hash === hash) : undefined;
+      if (!found) throw new Error("no card");
+      return { invalidRow: { position: found.position, hash: found.hash } };
+    };
+    await expect(remove({}, 2)).resolves.toEqual({ status: "not_found", itemId: 2 });
+    const named = await card(here);
+    for (const [id, target] of [
+      [2, named], [null, undefined], [null, { invalidRow: true }], [null, { ...named, more: 1 }], [null, { invalidRow: { ...named.invalidRow, more: 1 } }],
+      [null, { invalidRow: { position: "0", hash: named.invalidRow.hash } }], [null, { invalidRow: { position: -1, hash: named.invalidRow.hash } }],
+      [null, { invalidRow: { position: 0.5, hash: named.invalidRow.hash } }], [null, { invalidRow: { position: 0, hash: "A".repeat(64) } }], [null, "invalidRow"],
+    ]) {
+      await expect(remove({}, id, target)).resolves.toEqual({ ok: false, error: "invalid-input" });
+    }
+    await expect(remove({}, null, { invalidRow: { position: named.invalidRow.position, hash: "0".repeat(64) } })).resolves.toEqual({ status: "invalid", reason: "work-board-row-changed" });
+    for (const entry of [denied, unnamed]) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "not_found" });
+    expect(broadcast).not.toHaveBeenCalled();
+    await expect(remove({}, null, named)).resolves.toEqual({ status: "deleted", itemId: 2 });
+    await expect(remove({}, null, await card(unscoped))).resolves.toEqual({ status: "deleted", itemId: 4 });
+    for (const entry of idless) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "deleted" });
+    expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([valid, denied, unnamed]);
+    expect(broadcast.mock.calls.map(([, payload]) => payload)).toEqual([
+      { itemId: 2, change: "removed", changedAt: expect.any(String) }, { itemId: 4, change: "removed", changedAt: expect.any(String) },
+      ...idless.map(() => ({ change: "removed", changedAt: expect.any(String) })),
+    ]);
+  });
+});
+
+describe("missing run clear", () => {
+  it("refuses a run of a row whose run has no record, and clears only the row its card showed, naming that run, in an authorized project, telling every window it was updated", async () => {
+    const path = join(root, "board.json");
+    const stale = (id: number, projectRoot: string) => ({
+      id, title: "Work", status: "in_progress", priority: "medium", projectRoot, templateId: "template-1", runId: `run-${id}`, runStatus: "executing",
+      runHistory: [{ runId: `run-${id}`, startedAt: "2026-01-01T00:00:00.000Z", status: "executing" }], created_at: "x", updated_at: "x",
+    });
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 3, items: [stale(1, workspace), stale(2, join(root, "denied-project"))] }));
+    writeFileSync(join(root, "workflow-runs.json"), JSON.stringify({ version: 1, rowIdFloor: 2, runs: [] }));
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: broadcast };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const runItem = vi.fn();
+    const clearMissingRun = vi.fn((id: number, input: { revision: string; runId: string }) => store.clearMissingRun(id, input.revision, input.runId));
+    registerWorkBoardHandlers({
+      workBoardStore: store, workBoardEngine: { runItem, clearMissingRun, projectTemplateRuns: async (items: unknown[]) => items, adoptParkedTemplateRuns: async () => {} },
+      auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    const shown = await store.get(1);
+    if (shown.status !== "found") throw new Error("Missing item");
+    expect(shown.item).toMatchObject({ runStatus: "error", templateRunError: "template-run-not-found" });
+    await expect(registeredHandler(WORK_BOARD.run)(event, 1)).resolves.toEqual({ status: "error", reason: "template-run-not-found", reasonCode: "template-run-not-found" });
+    expect(runItem).not.toHaveBeenCalled();
+    const clear = registeredHandler(WORK_BOARD.clearRun);
+    const target = { revision: shown.item.mutationRevision, runId: "run-1" };
+    for (const [id, named] of [
+      ["1", target], [1.5, target], [1, undefined], [1, { revision: target.revision }], [1, { ...target, more: 1 }],
+      [1, { ...target, revision: "A".repeat(64) }], [1, { ...target, runId: "../run" }], [1, "run-1"],
+    ]) {
+      await expect(clear(event, id, named)).resolves.toEqual({ ok: false, error: "invalid-input" });
+    }
+    await expect(clear(event, 2, { revision: "0".repeat(64), runId: "run-2" })).resolves.toEqual({ status: "not_found", itemId: 2 });
+    await expect(clear(event, 1, { ...target, revision: "0".repeat(64) })).resolves.toEqual({ status: "invalid", itemId: 1, reason: "work-item-changed" });
+    expect(clearMissingRun).toHaveBeenCalledTimes(1);
+    expect(broadcast).not.toHaveBeenCalled();
+    await expect(clear(event, 1, target)).resolves.toMatchObject({ status: "updated", itemId: 1, item: { runStatus: "error", runId: "run-1" } });
+    expect(clearMissingRun).toHaveBeenLastCalledWith(1, target);
+    expect(broadcast.mock.calls.map(([, payload]) => payload)).toEqual([{ itemId: 1, change: "updated", changedAt: expect.any(String) }]);
+  });
+});
+
+describe("unreadable run record discard", () => {
+  const localStart = { kind: "local-create-and-run" };
+
+  it("discards an entry of the run file that does not read as a run only as its card names it, by its place and content, and tells every window", async () => {
+    const path = join(root, "board.json");
+    const runsPath = join(root, "workflow-runs.json");
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 2, items: [] }));
+    const text = JSON.stringify({ version: 1, rowIdFloor: 1, runs: [{ runId: "run-1", itemId: 1, runStartedBy: localStart }, null] });
+    writeFileSync(runsPath, text);
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send: broadcast } };
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    const listed = await store.list();
+    const [first, second] = listed.status === "ok" ? listed.unreadableRuns ?? [] : [];
+    expect([first, second]).toEqual([
+      { itemId: 1, position: 0, hash: createHash("sha256").update(JSON.stringify({ runId: "run-1", itemId: 1, runStartedBy: localStart })).digest("hex") },
+      { position: 1, hash: createHash("sha256").update("null").digest("hex") },
+    ]);
+    const target = { runRecord: { position: first.position, hash: first.hash } };
+    for (const [id, named] of [
+      [1, target], [null, { runRecord: true }], [null, { ...target, invalidRow: target.runRecord }], [null, { runRecord: { ...target.runRecord, more: 1 } }],
+      [null, { runRecord: { position: -1, hash: first.hash } }], [null, { runRecord: { position: 0, hash: "A".repeat(64) } }], [null, "runRecord"],
+    ]) {
+      await expect(remove({}, id, named)).resolves.toEqual({ ok: false, error: "invalid-input" });
+    }
+    await expect(remove({}, null, { runRecord: { position: 0, hash: second.hash } })).resolves.toEqual({ status: "invalid", reason: "work-board-row-changed" });
+    expect(readFileSync(runsPath, "utf8")).toBe(text);
+    expect(broadcast).not.toHaveBeenCalled();
+    await expect(remove({}, null, target)).resolves.toEqual({ status: "deleted" });
+    expect(JSON.parse(readFileSync(runsPath, "utf8")).runs).toEqual([null]);
+    expect(broadcast.mock.calls.map(([, payload]) => payload)).toEqual([{ change: "removed", changedAt: expect.any(String) }]);
+  });
+
+  it("discards an unreadable run record only while the project it was started in and every board row it could belong to are authorized", async () => {
+    const path = join(root, "board.json");
+    const runsPath = join(root, "workflow-runs.json");
+    const denied = join(root, "denied-project");
+    const row = (id: number, projectRoot: string) => ({ id, title: "Work", status: "planned", priority: "medium", projectRoot, created_at: "x", updated_at: "x" });
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 4, items: [row(1, workspace), row(2, denied), { id: 3, title: 5, projectRoot: denied }] }));
+    const own = { runId: "run-own", itemId: 1, runStartedBy: localStart };
+    const ownToo = { runId: "run-own-too", itemId: 1, runStartedBy: localStart };
+    const free = { runId: "run-free", itemId: 9, runStartedBy: localStart };
+    const foreign = [
+      { runId: "run-listed", itemId: 2, runStartedBy: localStart }, { runId: "run-invalid", itemId: 3, runStartedBy: localStart },
+      { runId: "run-started", itemId: 9, runStartedBy: { kind: "local-create-and-run", projectRoot: denied } },
+    ];
+    const text = JSON.stringify({ version: 1, rowIdFloor: 9, runs: [own, ownToo, free, ...foreign] });
+    writeFileSync(runsPath, text);
+    const store = new WorkBoardStore(path);
+    const broadcast = vi.fn();
+    const window = { isDestroyed: () => false, webContents: { send: broadcast } };
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
+    const remove = registeredHandler(WORK_BOARD.remove);
+    const card = async (entry: unknown) => {
+      const listed = await store.list();
+      const hash = createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+      const found = listed.status === "ok" ? listed.unreadableRuns?.find((run) => run.hash === hash) : undefined;
+      if (!found) throw new Error("no card");
+      return { runRecord: { position: found.position, hash: found.hash } };
+    };
+    for (const entry of foreign) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "not_found" });
+    expect(readFileSync(runsPath, "utf8")).toBe(text);
+    expect(broadcast).not.toHaveBeenCalled();
+    for (const entry of [own, free]) await expect(remove({}, null, await card(entry))).resolves.toEqual({ status: "deleted" });
+    // One naming a row is refused while the board file cannot be read.
+    const ownTooCard = await card(ownToo);
+    writeFileSync(path, "{");
+    await expect(remove({}, null, ownTooCard)).resolves.toEqual({ status: "not_found" });
+    expect(JSON.parse(readFileSync(runsPath, "utf8")).runs).toEqual([ownToo, ...foreign]);
+  });
+
+  // The project comes from the entry's own start, never from the row id it holds; a board row that names its run is checked too.
+  const discardOne = async (entry: Record<string, unknown>, attachments?: unknown) => {
+    const path = join(root, "board.json");
+    const runsPath = join(root, "workflow-runs.json");
+    const denied = join(root, "denied-project");
+    writeFileSync(path, JSON.stringify({ version: 1, nextId: 51, items: [{
+      id: 1, title: "Foreign work", status: "planned", priority: "medium", projectRoot: denied, templateId: "template-1", runId: "foreign-run",
+      created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+    }] }));
+    const text = JSON.stringify({ version: 1, rowIdFloor: 50, runs: [entry] });
+    writeFileSync(runsPath, text);
+    const window = { isDestroyed: () => false, webContents: { send: vi.fn() } };
+    registerWorkBoardHandlers({
+      workBoardStore: new WorkBoardStore(path), auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window],
+      ...(attachments === undefined ? {} : { workflowTemplateStore: attachments }),
+    } as unknown as IpcDeps);
+    const hash = createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+    const result = await registeredHandler(WORK_BOARD.remove)({}, null, { runRecord: { position: 0, hash } });
+    return { result, kept: readFileSync(runsPath, "utf8") === text };
+  };
+  const ownerUnknown = { status: "invalid", reason: "work-board-run-owner-unknown" };
+  const itemIds = [{}, { itemId: "1" }, { itemId: null }, { itemId: 0 }, { itemId: -1 }, { itemId: 9 }];
+
+  it.each(itemIds)("refuses as owner unknown the discard of an unreadable run record with no start it can read, whatever row id it holds: %j", async (itemId) => {
+    expect(await discardOne({ runId: "foreign-run", ...itemId })).toEqual({ result: ownerUnknown, kept: true });
+  });
+
+  it.each(itemIds)("refuses the discard of a run record a board row of a project that is not authorized names, whatever row id it holds: %j", async (itemId) => {
+    expect(await discardOne({ runId: "foreign-run", ...itemId, runStartedBy: { kind: "local-create-and-run", projectRoot: workspace } }))
+      .toEqual({ result: { status: "not_found" }, kept: true });
+    expect(await discardOne({ runId: "own-run", ...itemId, runStartedBy: { kind: "local-create-and-run", projectRoot: workspace } }))
+      .toEqual({ result: { status: "deleted" }, kept: false });
+  });
+
+  it("takes the project of a run record from its start: the card's root for Create and run, the approved scope of its schedule attachment", async () => {
+    const denied = join(root, "denied-project");
+    const scopes: Record<string, unknown> = {
+      "att-own": { approvedScope: { kind: "project", projectRoot: workspace } }, "att-all": { approvedScope: { kind: "all" } },
+      "att-denied": { approvedScope: { kind: "project", projectRoot: denied } }, "att-missing": null, "att-odd": { approvedScope: { kind: "some" } },
+    };
+    const attachments = { changed: { subscribe: () => () => undefined }, getAttachment: async (id: string) => {
+      if (id === "att-broken") throw new Error("EIO");
+      return scopes[id];
+    } };
+    const start = (runStartedBy: unknown) => ({ runId: "run-1", itemId: 9, runStartedBy });
+    const scheduled = (attachmentId: unknown) => start({ kind: "schedule-attachment", attachmentId });
+    for (const [entry, result] of [
+      [start({ kind: "local-create-and-run", projectRoot: workspace }), { status: "deleted" }],
+      [start({ kind: "local-create-and-run" }), { status: "deleted" }],
+      [start({ kind: "local-create-and-run", projectRoot: denied }), { status: "not_found" }],
+      [start({ kind: "local-create-and-run", projectRoot: 5 }), ownerUnknown],
+      [start({ kind: "local-create-and-run", projectRoot: "" }), ownerUnknown],
+      [start({ kind: "other", projectRoot: workspace }), ownerUnknown],
+      [start("local-create-and-run"), ownerUnknown],
+      [scheduled("att-own"), { status: "deleted" }],
+      [scheduled("att-all"), { status: "deleted" }],
+      [scheduled("att-denied"), { status: "not_found" }],
+      [scheduled("att-missing"), ownerUnknown],
+      [scheduled("att-odd"), ownerUnknown],
+      [scheduled("att-broken"), ownerUnknown],
+      [scheduled(7), ownerUnknown],
+    ] as const) {
+      expect(await discardOne(entry, attachments), JSON.stringify(entry)).toEqual({ result, kept: result.status !== "deleted" });
+    }
+    expect(await discardOne(scheduled("att-own"))).toEqual({ result: ownerUnknown, kept: true });
   });
 });

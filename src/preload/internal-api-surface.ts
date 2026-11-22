@@ -1007,9 +1007,15 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkItemReopenResult
       | { ok: false; error: string }
     >,
-  removeWorkBoardItem: async (id: number) =>
-    ipcRenderer.invoke(WORK_BOARD.remove, id) as Promise<
+  removeWorkBoardItem: async (id: number | null, target?: import("../shared/work-board-types.js").WorkItemDeleteTarget) =>
+    ipcRenderer.invoke(WORK_BOARD.remove, id, target) as Promise<
       | import("../shared/work-board-types.js").WorkItemDeleteResult
+      | import("../shared/work-board-types.js").WorkBoardEntryDeleteResult
+      | { ok: false; error: string }
+    >,
+  clearWorkBoardRun: async (id: number, target: { revision: string; runId: string }) =>
+    ipcRenderer.invoke(WORK_BOARD.clearRun, id, target) as Promise<
+      | import("../shared/work-board-types.js").WorkItemUpdateResult
       | { ok: false; error: string }
     >,
   // Board view live refresh: emitted by the work-board IPC domain after any successful mutation
@@ -1023,8 +1029,9 @@ export function buildInternalApiSurface() {
   },
   // Agent-orchestration run: kick off plan→approve→execute for one item. The promise resolves with the terminal WorkItemRunResult, but live phase updates flow over
   // onWorkBoardRunProgress; coarse started/finished/failed markers (for the per-item running indicator) flow over the on* siblings. `opts.agentName` selects a named agent profile (drives the child model).
-  runWorkBoardItem: async (id: number, opts?: { agentName?: string }) =>
-    ipcRenderer.invoke(WORK_BOARD.run, id, opts) as Promise<
+  // A template run also names the tuple (and project) the card showed and carries the click's own activation; other runs send neither.
+  runWorkBoardItem: async (id: number, opts?: { agentName?: string; template?: import("../shared/work-board-types.js").TemplateRunRequest }) =>
+    (opts?.template ? ipcRenderer.invoke(WORK_BOARD.run, id, opts, ipcUserKeyboardIntent()) : ipcRenderer.invoke(WORK_BOARD.run, id, opts)) as Promise<
       | import("../shared/work-board-types.js").WorkItemRunResult
       | { ok: false; error: string }
     >,
@@ -1062,11 +1069,11 @@ export function buildInternalApiSurface() {
 
   // Steer the item's running execute child at its next round boundary. The snapshot was minted at the user's gesture and is consumed here
   // once, so a replayed or scripted call reaches main without userActivation and is refused (no downgrade to another principal).
-  steerWorkBoardRun: async (itemId: number, text: string, userIntent?: UserKeyboardIntentSnapshot) =>
+  steerWorkBoardRun: async (itemId: number, text: string, userIntent?: UserKeyboardIntentSnapshot, stageId?: string) =>
     ipcRenderer.invoke(WORK_BOARD.steerRun, itemId, text, {
       inputOrigin: "user-keyboard",
       userActivation: consumeUserKeyboardIntent(userIntent),
-    }) as Promise<
+    }, ...(stageId === undefined ? [] : [{ stageId }])) as Promise<
       | import("../shared/work-board-types.js").WorkBoardSteerIpcResult
       | { ok: false; error: string }
     >,
@@ -1075,6 +1082,23 @@ export function buildInternalApiSurface() {
   decideWorkPlan: async (itemId: number, input: import("../shared/work-board-types.js").WorkPlanDecideInput) =>
     ipcRenderer.invoke(WORK_BOARD.decidePlan, itemId, input, ipcUserKeyboardIntent()) as Promise<
       | import("../shared/work-board-types.js").WorkPlanDecideIpcResult
+      | { ok: false; error: string }
+    >,
+  // The user's decision at a stage gate or on a join of a template run, and a retry of a failed stage: the click's own activation is the
+  // gesture. Each input names the run and the hash the card showed, never the output.
+  decideWorkStage: async (itemId: number, input: import("../shared/work-board-types.js").StageGateDecideInput) =>
+    ipcRenderer.invoke(WORK_BOARD.decideStage, itemId, input, ipcUserKeyboardIntent()) as Promise<
+      | import("../shared/work-board-types.js").StageGateDecideIpcResult
+      | { ok: false; error: string }
+    >,
+  decideWorkJoin: async (itemId: number, input: import("../shared/work-board-types.js").StageJoinDecideInput) =>
+    ipcRenderer.invoke(WORK_BOARD.decideJoin, itemId, input, ipcUserKeyboardIntent()) as Promise<
+      | import("../shared/work-board-types.js").StageJoinDecideIpcResult
+      | { ok: false; error: string }
+    >,
+  retryWorkStage: async (itemId: number, input: import("../shared/work-board-types.js").StageRetryInput) =>
+    ipcRenderer.invoke(WORK_BOARD.retryStage, itemId, input, ipcUserKeyboardIntent()) as Promise<
+      | import("../shared/work-board-types.js").StageRetryIpcResult
       | { ok: false; error: string }
     >,
   // Stop the item's running execute child; the click's own activation is the gesture, as for the other required-gesture controls.
