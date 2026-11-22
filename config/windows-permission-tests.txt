@@ -341,6 +341,7 @@ src/plugins/__tests__/storage-rejection-audit.test.ts
 src/plugins/isolation/__tests__/adversarial-escapes.test.ts
 src/plugins/isolation/__tests__/host-api-service-members.test.ts
 src/plugins/isolation/__tests__/mxc-plugin-child.test.ts
+src/plugins/isolation/__tests__/out-of-process-plugin-holder-release.test.ts
 src/plugins/isolation/__tests__/out-of-process-plugin.test.ts
 src/plugins/isolation/__tests__/python-smoke-launcher.test.ts
 src/plugins/runtime/__tests__/out-of-process-routing.test.ts
