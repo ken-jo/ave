@@ -35,7 +35,7 @@ type IntegrateResult = { ok: true } | { ok: false; conflict: JoinConflict };
 export type StageRunView = WorkItemResolved & { stageRuns: WorkItemStageRun[]; stageJoins: StageJoin[]; record: RunRecord | null };
 type WorkflowDeps = NonNullable<WorkBoardEngineDeps["workflow"]>;
 type ObservedLaunch = { linked(): void; resume(): void };
-type ChildWaitFailure = { error: Error; itemId?: number };
+type ChildWaitFailure = { error: Error; originSessionId?: string };
 
 function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
   const pending = new Set<Promise<unknown>>();
@@ -80,6 +80,7 @@ export async function stageRunHarness(opts: {
   const templates = new WorkflowTemplateStore(join(dir, "templates.json"));
   const events: WorkBoardRunEvent[] = [];
   const children: FakeChild[] = [];
+  const liveChildren = new Set<FakeChild>();
   const interrupts: string[] = [];
   const audits: Parameters<NonNullable<WorkflowDeps["audit"]>>[0][] = [];
   const unauthorised = new Set<string>();
@@ -94,9 +95,9 @@ export async function stageRunHarness(opts: {
   const progressChanges = new Set<() => void>();
   let closed = false;
 
-  function failChildWaits(reason: string, itemId?: number): void {
+  function failChildWaits(reason: string, originSessionId?: string): void {
     const error = new Error(`Child wait ended: ${reason}`);
-    for (const changed of childChanges) changed({ error, itemId });
+    for (const changed of childChanges) changed({ error, originSessionId });
   }
 
   const runner = {
@@ -113,15 +114,25 @@ export async function stageRunHarness(opts: {
           child.ended = true;
           launch?.resume();
           end({ summary: `output of ${sessionId}`, toolCallCount: 0, turnCount: 1, childSessionId: sessionId, entries: [], ok: true, endTrustOrigin: "llm-tool-arg", ...result });
-          for (const changed of childChanges) changed();
+          if (liveChildren.delete(child)) for (const changed of childChanges) changed();
         },
       };
       children.push(child);
-      hooks?.onLinked?.({ childSessionId: sessionId });
-      const scripted = opts.script?.(input);
-      if (scripted) child.finish(scripted);
-      if (!child.ended) for (const changed of childChanges) changed();
-      launch?.linked();
+      try {
+        hooks?.onLinked?.({ childSessionId: sessionId });
+        const scripted = opts.script?.(input);
+        if (scripted) child.finish(scripted);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        child.finish({ ok: false, error: message });
+        failChildWaits(message, input.originSessionId);
+        throw error;
+      }
+      if (!child.ended) {
+        liveChildren.add(child);
+        launch?.linked();
+      }
+      for (const changed of childChanges) changed();
       return done;
     },
     interruptRun(id: string) {
@@ -176,9 +187,9 @@ export async function stageRunHarness(opts: {
           if (phase === "stage_failed") {
             const prior = events.findLast(candidate => candidate.itemId === itemId && candidate.phase === "executing"
               && (candidate.stageId === undefined ? candidate.message === undefined : candidate.stageId === stageId && candidate.attempt === attempt));
-            if (!prior?.runSessionId) failChildWaits(`${phase}: ${event.message ?? "child did not register"}`, itemId);
+            if (!prior?.runSessionId) failChildWaits(`${phase}: ${event.message ?? "child did not register"}`, workBoardOriginSessionId(itemId));
           } else if (phase === "done" || phase === "denied" || phase === "cancelled" || phase === "error") {
-            failChildWaits(`${phase}: ${event.reasonCode ?? event.message ?? "run ended"}`, itemId);
+            failChildWaits(`${phase}: ${event.reasonCode ?? event.message ?? "run ended"}`, workBoardOriginSessionId(itemId));
           }
         }
         events.push(event);
@@ -196,17 +207,17 @@ export async function stageRunHarness(opts: {
           const result = await current.runItem(...args);
           if (engine === wrapped && (result.status !== "awaiting_approval"
             || !children.slice(first).some(child => child.input.originSessionId === origin))) {
-            failChildWaits(`${result.status}: ${"reason" in result ? result.reason : "run ended without the requested child"}`, itemId);
+            failChildWaits(`${result.status}: ${"reason" in result ? result.reason : "run ended without the requested child"}`, origin);
           }
           return result;
         } catch (error) {
-          if (engine === wrapped) failChildWaits(String(error), itemId);
+          if (engine === wrapped) failChildWaits(String(error), origin);
           throw error;
         }
       },
       cancelRun(itemId: number) {
         const result = current.cancelRun(itemId);
-        if (result.ok && engine === wrapped) failChildWaits("run cancelled", itemId);
+        if (result.ok && engine === wrapped) failChildWaits("run cancelled", workBoardOriginSessionId(itemId));
         return result;
       },
     };
@@ -276,7 +287,7 @@ export async function stageRunHarness(opts: {
   }
   const statusOf = (current: StageRunView, stageId: string) => current.stageRuns.find(run => run.stageId === stageId)?.status;
   const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) => until(itemId, current => statusOf(current, stageId) === status);
-  const live = () => children.filter(child => !child.ended);
+  const live = () => [...liveChildren];
   function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description?: string): Promise<T> {
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
@@ -299,9 +310,10 @@ export async function stageRunHarness(opts: {
     if (closed) return Promise.reject(new Error("Child wait ended: harness cleaned up"));
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
+    const origin = itemId === undefined ? undefined : workBoardOriginSessionId(itemId);
     return new Promise((resolve, reject) => {
       function changed(failure?: ChildWaitFailure) {
-        if (failure && itemId !== undefined && failure.itemId !== undefined && itemId !== failure.itemId) return;
+        if (origin !== undefined && failure?.originSessionId !== undefined && origin !== failure.originSessionId) return;
         const value = get();
         if (value === undefined && !failure) return;
         childChanges.delete(changed);

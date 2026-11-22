@@ -59,6 +59,62 @@ it.each(["refused", "failed", "ended", "cancelled"] as const)("settles child wai
   }
 });
 
+it.each(["hook failure", "script failure", "scripted exit", "interrupt"] as const)("settles an allocated child after %s", async outcome => {
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    workflow: {
+      runScope: {
+        sessionLinked: () => {
+          if (outcome === "hook failure") throw new Error("linkage hook failed");
+        },
+        sessionEnded: () => {},
+        runEnded: () => {},
+      },
+    },
+    script: () => {
+      if (outcome === "script failure") throw new Error("child script failed");
+      return outcome === "scripted exit" ? { summary: "scripted result" } : undefined;
+    },
+  });
+  let running: ReturnType<typeof h.start> | undefined;
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    running = h.start(id, h.local(version));
+    const live = h.untilLive(1, id);
+    const waits = Promise.allSettled([h.untilSpawned(1, id), live]);
+    if (outcome === "interrupt") {
+      expect((await live)[0].ended).toBe(false);
+      expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    }
+    const run = await running;
+    await h.drainRunWork();
+
+    const result = await Promise.race([waits, setImmediate("still pending")]);
+    expect(h.children).toHaveLength(1);
+    const [child] = h.children;
+    const reason = { "hook failure": /linkage hook failed/, "script failure": /child script failed/, "scripted exit": /done/ };
+    expect(result).toEqual([
+      { status: "fulfilled", value: [child] },
+      outcome === "interrupt" ? { status: "fulfilled", value: [child] } : {
+        status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(reason[outcome]) }),
+      },
+    ]);
+    expect(child.ended).toBe(true);
+    expect(h.live()).toEqual([]);
+    if (outcome === "scripted exit") expect(run).toMatchObject({ status: "completed", output: "scripted result" });
+    else if (outcome === "interrupt") {
+      expect(run.status).toBe("cancelled");
+      expect(h.interrupts).toEqual([child.sessionId]);
+    } else expect(await h.stageRun(id, "a")).toMatchObject({ status: "failed", failure: "error" });
+  } finally {
+    for (const child of h.live()) child.finish();
+    await running;
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
 it("waits for child registration while stage preparation is held", async () => {
   const preparing = deferred<void>();
   const release = deferred<void>();
