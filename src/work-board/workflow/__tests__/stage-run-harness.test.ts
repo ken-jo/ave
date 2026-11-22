@@ -940,3 +940,57 @@ it.each(["links", "fails to start"] as const)("a child the replaced engine %s do
     await h.cleanup();
   }
 });
+
+it("an accepted continue puts its item back in flight for aggregate child waits", async () => {
+  const preparing = deferred<void>();
+  const release = deferred<void>();
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    wiring: (_store, { workspace }) => ({
+      workspace: {
+        ...workspace,
+        prepare: async (...args) => {
+          if (args[1].id === "d") {
+            preparing.resolve();
+            await release.promise;
+            throw new Error("continued stage preparation failed");
+          }
+          return workspace.prepare(...args);
+        },
+      },
+    }),
+  });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([stageOf("a"), stageOf("b"), stageOf("c"), stageOf("d")]);
+    const single = await h.confirm([stageOf("x")]);
+    const id = await h.addItem(version);
+    const other = await h.addItem(single);
+    runs.push(h.start(id, h.local(version)));
+    await h.untilLive(3, id);
+    await h.until(id, item => item.stageRuns.filter(stage => stage.childSessionId !== undefined).length === 3);
+    h.makeEngine();
+    await h.engine.adoptParkedTemplateRuns();
+    // The other item stays in flight, parked on its failed stage with no live child.
+    runs.push(h.start(other, h.local(single)));
+    (await h.untilLive(1, other))[0].finish({ ok: false, summary: "failed", error: "failed" });
+    expect(await runs[1]).toMatchObject({ status: "awaiting_approval" });
+    const { runId = "" } = await h.item(id);
+    expect(await h.engine.continueRun(id, { runId })).toEqual({ ok: true });
+    await preparing.promise;
+    // A spawn count: the replaced engine's live children would put the item in a live count's scope by themselves.
+    const wait = Promise.allSettled([h.untilSpawned(h.children.length + 1)]);
+    release.resolve();
+    await h.drainRunWork();
+    expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
+      { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
+    ]);
+  } finally {
+    release.resolve();
+    await h.drainRunWork();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});

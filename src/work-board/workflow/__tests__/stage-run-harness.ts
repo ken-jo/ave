@@ -306,6 +306,12 @@ export async function stageRunHarness(opts: {
       decideStageGate(...args: Parameters<typeof current.decideStageGate>) {
         return accepted(args[0], () => current.decideStageGate(...args));
       },
+      decideStageJoin(...args: Parameters<typeof current.decideStageJoin>) {
+        return accepted(args[0], () => current.decideStageJoin(...args));
+      },
+      continueRun(...args: Parameters<typeof current.continueRun>) {
+        return accepted(args[0], () => current.continueRun(...args));
+      },
       cancelRun(itemId: number) {
         const result = current.cancelRun(itemId);
         // An accepted Stop ends the run for waits even while the run's class holds its end.
