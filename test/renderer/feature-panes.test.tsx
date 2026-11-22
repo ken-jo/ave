@@ -1,7 +1,7 @@
 // Routed views share pane framing, title and controls without duplicate headings or padding.
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { atHome, renderApp } from "./render-app.js";
 import {
   activeSettingsTab,
@@ -50,7 +50,7 @@ const VIEWS: ReadonlyArray<readonly [PaneViewKey, string]> = [
   ["work-board", "work-board-panel"],
   ["routines", "schedule-panel"],
   ["insights", "insights-scroll-root"],
-  ["memory", "memory-search-panel"],
+  ["memory", "memory-view"],
 ];
 
 describe("built-in views are pane bodies", () => {
@@ -121,11 +121,14 @@ describe("a view's global actions live in the pane header", () => {
   });
 
   it("gives memory no action it does not have", async () => {
-    const { container } = await openView("memory", "memory-search-panel");
+    const { container } = await openView("memory", "memory-view");
     const header = pane(container)?.querySelector('[data-testid="pane-header"]');
 
     expect(header?.querySelector('[data-testid^="pane-action-"]')).toBeNull();
-    expect(container.querySelector('[data-testid="memory-search-panel"] input')).not.toBeNull();
+    const view = container.querySelector<HTMLElement>('[data-testid="memory-view"]');
+    if (!view) throw new Error("Missing memory view");
+    fireEvent.mouseDown(within(view).getByRole("tab", { name: t("memoryMap.manage") }), { button: 0, ctrlKey: false });
+    expect(view.querySelector('[data-testid="memory-search-panel"] input')).not.toBeNull();
   });
 });
 

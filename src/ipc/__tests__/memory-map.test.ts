@@ -2,16 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../types.js';
 import { CHANNELS } from '../../contract/app-contract.js';
+import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 const state = vi.hoisted(() => ({
   handles: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>>(),
-  get: vi.fn(async () => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
+  get: vi.fn(async (_readCatalog: ReadMemoryMapCatalog) => null), build: vi.fn(async () => ({ snapshotId: 'snapshot' })), cancel: vi.fn(), invalidate: vi.fn(), retrieve: vi.fn(async () => ({ queryId: 'query' })),
   status: vi.fn(async () => ({ status: 'unconfigured' })), download: vi.fn(async () => ({ status: 'ready' })), modelCancel: vi.fn(), useExisting: vi.fn(async () => ({ status: 'ready' })),
   dialog: vi.fn(async () => ({ canceled: true, filePaths: [] as string[] })), audit: vi.fn(),
 }));
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => state.handles.set(channel, handler) }, dialog: { showOpenDialog: state.dialog } }));
 vi.mock('../../main/memory-map/host.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/host.js')>(), MemoryMapHost: class { get = state.get; build = state.build; cancel = state.cancel; invalidate = state.invalidate; retrieve = state.retrieve; } }));
 vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...await importOriginal<typeof import('../../main/memory-map/model-manager.js')>(), LocalModelManager: class { status = state.status; download = state.download; cancel = state.modelCancel; useExisting = state.useExisting; } }));
-vi.mock('../../main/memory-map/catalog.js', () => ({ readGraphCatalog: () => ({ records: [], excluded: 0, authorizationScopeId: 'scope' }), memoryFacets: () => ({ sources: [], projects: [], playbooks: [] }) }));
 import { registerMemoryMapHandlers } from '../domains/memory-map.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
 const invoke = (key: keyof typeof CHANNELS.memoryMap, raw?: unknown, event = hostEvent) => state.handles.get(CHANNELS.memoryMap[key])!(event, ...(raw === undefined ? [] : [raw]));
@@ -21,6 +21,29 @@ beforeEach(() => {
     raw => (raw as { projectRoot?: string } | undefined)?.projectRoot === '/denied' ? { ok: false, error: 'project-not-allowed' } : { ok: true, options: {} });
 });
 describe('memory map host boundary', () => {
+  it('locates a selected revision through its authorized graph scope and refuses edited or revoked sources', async () => {
+    const note = { id: '11111111-1111-4111-8111-111111111111', filename: 'selected.md', title: 'Selected', content: 'Original body' };
+    const revision = graphMemoryRevision(note);
+    const readManagedMemoryAt = vi.fn(() => note);
+    const readMemoryPanelCatalog = vi.fn(() => ({ notes: [note] }));
+    const options = { projectRoot: 'D:/workspace/example' };
+    let authorized = true;
+    const readSource = registerMemoryMapHandlers({
+      auditLogger: { log: state.audit },
+      settingsService: { get: () => undefined },
+      memoryManager: { readMemoryPanelCatalog, readManagedMemoryAt },
+    } as unknown as IpcDeps, () => authorized ? { ok: true, options } : { ok: false, error: 'project-not-allowed' });
+    state.get.mockImplementationOnce(async readCatalog => { readCatalog(); return null; });
+    expect(await invoke('get', options)).toMatchObject({ ok: true });
+    expect(readSource(note.id, options, revision)).toBe(note);
+    expect(readManagedMemoryAt).toHaveBeenCalledWith(note.filename, note.id, options);
+    note.content = 'Edited body';
+    expect(readSource(note.id, options, revision)).toBeUndefined();
+    authorized = false;
+    expect(readSource(note.id, options, graphMemoryRevision(note))).toBeUndefined();
+    expect(readManagedMemoryAt).toHaveBeenCalledTimes(2);
+    expect(readMemoryPanelCatalog).toHaveBeenCalledOnce();
+  });
   it('persists only host-versioned consent and clears it when returning to local', async () => {
     let config: unknown;
     const set = vi.fn(async (_key: string, value: unknown) => { config = value; });

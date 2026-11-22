@@ -89,20 +89,24 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   const visible = useMemo(() => new Set(visiblePoints.map(point => point.memoryId)), [visiblePoints]);
   const linkCount = snapshot?.edges.filter(edge => visible.has(edge.a) && visible.has(edge.b)).length ?? 0;
   const selectedPoint = snapshot?.points.find(point => point.memoryId === selected);
+  const selectedRevision = selectedPoint?.contentRevision;
   useEffect(() => { setPage(0); setSelected(null); }, [filters, snapshot]);
   useEffect(() => {
-    if (!selected || !snapshot) return;
+    if (!selected || !selectedRevision) return;
     let active = true;
     setDetail(undefined); setBody(null);
     closeButton.current?.focus();
-    void Promise.all([api.memoryGetDetail(selected, scope), api.memoryGetSummaries(scope)]).then(([result, summaries]) => {
+    void api.memoryGetDetail(selected, scope, selectedRevision).then(result => {
       if (!active) return;
+      if (result.ok && result.source?.contentRevision !== selectedRevision) {
+        setDetail({ ok: false, error: 'not-found' });
+        return;
+      }
       setDetail(result);
-      const note = summaries.ok ? summaries.notes.find(row => row.id === selected) : undefined;
-      setBody(note?.content ? stripTopHeading(note.content) : null);
+      setBody(result.ok && result.source ? stripTopHeading(result.source.content) : null);
     }).catch(() => { if (active) setDetail({ ok: false, error: 'read-failed' }); });
     return () => { active = false; };
-  }, [api, selected, scope, snapshot]);
+  }, [api, selected, scope, selectedRevision]);
   const handleSelect = useCallback((id: string) => {
     if (!visible.has(id)) return;
     selectionReturn.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -129,7 +133,7 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
   };
   const toggleSource = (source: MemoryMapSource) => setFilters(previous => ({ ...previous, sources: previous.sources?.includes(source) ? previous.sources.filter(value => value !== source) : [...previous.sources ?? [], source] }));
   const toggleProject = (id: string) => setFilters(previous => ({ ...previous, projectIds: previous.projectIds?.includes(id) ? previous.projectIds.filter(value => value !== id) : [...previous.projectIds ?? [], id] }));
-  return <Tabs value={tab} onValueChange={setTab} className="@container flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+  return <Tabs data-testid="memory-view" value={tab} onValueChange={setTab} className="@container flex min-h-0 min-w-0 flex-1 flex-col gap-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <TabsList aria-label={t('memoryMap.views')}>
         <TabsTrigger value="map">{t('memoryMap.map')}</TabsTrigger>

@@ -10,13 +10,13 @@ import type { MemoryMapScope, MemoryEmbeddingSettings, MemoryMapError } from '..
 import { MemoryMapScopeSchema, MemoryRetrievalSchema, MemoryEmbeddingSettingsSchema } from '../../shared/memory-map-validation.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
-import { readGraphCatalog, memoryFacets, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
+import { readGraphCatalog, memoryFacets, graphMemoryRevision, isGraphMemory, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
 import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
 import { getLlmVendorSettings, LLM_VENDORS } from '../../shared/llm-vendor-defaults.js';
 import { defaultWorkspaceProject } from '../../main/project-root-authorization.js';
 import { sendToWebContents } from '../safe-send.js';
-import type { ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
+import type { NoteEntry, ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
 const MEMORY_EMBEDDING_ALLOWED_DOMAINS = [
   'api.openai.com',
   'generativelanguage.googleapis.com',
@@ -26,7 +26,7 @@ const MEMORY_EMBEDDING_ALLOWED_DOMAINS = [
   }),
 ];
 type ScopeResolver = (raw: unknown) => { ok: true; options: ProjectScopedMemoryOptions } | { ok: false; error: string };
-export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeResolver): void {
+export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeResolver) {
   const send = createMemoryProviderEgress(deps.singleHopNetworkFetch, MEMORY_EMBEDDING_ALLOWED_DOMAINS, entry => {
     deps.auditLogger.log({
       timestamp: new Date().toISOString(),
@@ -63,13 +63,16 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
   const host = new MemoryMapHost({ provider, watchAuthority, validatedModelPath: () => { if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured'); return model.validatedPath(); }, onProgress: progress => {
     if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
   } });
+  let sourceIndex: { scopeId: string; filenames: Map<string, string> } | undefined;
   const catalog = (scope?: MemoryMapScope): ReadMemoryMapCatalog => {
     const filenames = new Map<string, string>();
     const read: ReadMemoryMapCatalog = () => {
       const result = resolveScope(scope);
       if (!result.ok) { host.cancel(); throw new MemoryMapHostError('project-not-allowed'); }
       filenames.clear();
-      return readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot, filenames);
+      const current = readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot, filenames);
+      sourceIndex = { scopeId: current.authorizationScopeId, filenames };
+      return current;
     };
     read.recordsAreCurrent = (scopeId, records) => {
       const result = resolveScope(scope);
@@ -139,4 +142,12 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     settingsWrite = pending;
     return pending;
   });
+  return (id: string, rawScope: unknown, contentRevision: string): NoteEntry | undefined => {
+    const result = resolveScope(rawScope);
+    if (!result.ok || sourceIndex?.scopeId !== memoryMapScopeId(result.options)) return undefined;
+    const filename = sourceIndex.filenames.get(id);
+    if (!filename) return undefined;
+    const note = deps.memoryManager.readManagedMemoryAt(filename, id, result.options);
+    return isGraphMemory(note) && graphMemoryRevision(note) === contentRevision ? note : undefined;
+  };
 }

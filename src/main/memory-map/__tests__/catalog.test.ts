@@ -23,9 +23,10 @@ describe('memory map catalog boundary', () => {
     expect(normalizeMemoryEmbeddingConfig({ localModelPath: '/example/model' })).toEqual({ localModelPath: '/example/model' });
     expect(normalizeMemoryEmbeddingConfig({ localModelPath: '/example/model', source: 'provider' })).toBeUndefined();
     expect(normalizeMemoryEmbeddingConfig({ localModelPath: 5 })).toBeUndefined();
-    const selected = { source: 'provider', providerId: 'configured', modelId: 'embed', consent: { version: 1, providerId: 'configured', modelId: 'embed', timestamp: '2026-11-16T00:00:00.000Z' } };
-    expect(normalizeMemoryEmbeddingConfig(selected)).toEqual(selected);
-    expect(normalizeMemoryEmbeddingConfig({ ...selected, consent: { ...selected.consent, version: 0 } })).toBeUndefined();
+    const selection = { source: 'provider', providerId: 'configured', modelId: 'embed', localModelPath: 'models/example' };
+    const consent = { version: 2, endpointId: 'a'.repeat(64), providerId: 'configured', modelId: 'embed', timestamp: '2026-11-16T00:00:00.000Z' };
+    expect(normalizeMemoryEmbeddingConfig({ ...selection, consent })).toEqual({ ...selection, consent });
+    expect(normalizeMemoryEmbeddingConfig({ ...selection, consent: { ...consent, version: 1 } })).toEqual(selection);
     for (const key of Object.values(MEMORY_MAP_ERROR_KEYS)) { expect(en[key]).toBeTruthy(); expect(ko[key]).toBeTruthy(); }
   });
 });

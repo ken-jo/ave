@@ -5,7 +5,7 @@ export type MemoryEmbeddingConsent = z.infer<typeof MemoryEmbeddingConsentSchema
 const ConfigSchema = z.object({
   localModelPath: z.string().min(1).max(32768).refine(value => !value.includes('\0')).optional(),
   source: z.enum(['local', 'provider']).optional(), providerId: z.string().min(1).max(128).optional(), modelId: z.string().min(1).max(256).optional(),
-  consent: z.unknown().optional().transform(value => MemoryEmbeddingConsentSchema.safeParse(value).data),
+  consent: z.unknown().transform(value => MemoryEmbeddingConsentSchema.safeParse(value).data).optional(),
 }).strict().refine(value => value.source !== 'provider' || Boolean(value.providerId && value.modelId), 'Provider selection is incomplete');
 export type MemoryEmbeddingConfig = z.infer<typeof ConfigSchema>;
 export function normalizeMemoryEmbeddingConfig(value: unknown): MemoryEmbeddingConfig | undefined {

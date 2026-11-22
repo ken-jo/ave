@@ -807,7 +807,7 @@ export type AvePreloadApi = {
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
   memoryMap: MemoryMapApi;
-  memoryGetDetail: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryDetailResult>;
+  memoryGetDetail: (id: string, opts?: ProjectQueryOptions, contentRevision?: string) => Promise<MemoryDetailResult>;
   memoryGetSummaries: (opts?: ProjectQueryOptions) => Promise<MemorySummariesResult>;
 
   memoryDeleteEntry: (f: string, opts?: ProjectQueryOptions) => Promise<MemoryDeleteResult>;

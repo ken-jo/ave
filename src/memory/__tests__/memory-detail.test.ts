@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appendFileSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { open } from "node:fs/promises";
@@ -25,6 +25,31 @@ function saveMessages(sessionId: string, messages: GenericMessage[]): Promise<vo
 }
 
 describe("memory detail", () => {
+  it("reads one indexed source and its bounded detail in a 6000-note catalog", async () => {
+    const body = "x".repeat(7_900);
+    const { entry } = await manager.saveMemory("Selected", body, {}, "user");
+    const selectedPath = join(dir, "memories", entry.filename);
+    const template = readFileSync(selectedPath, "utf8");
+    const marker = template.match(/ave:memory-meta:([A-Za-z0-9_-]+)/)?.[1];
+    if (!marker || !entry.id) throw new Error("Missing managed memory metadata");
+    const selectedId = entry.id;
+    const json = Buffer.from(marker, "base64url").toString("utf8");
+    for (let index = 1; index < 6_000; index++) {
+      const id = `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      const metadata = Buffer.from(json.replace(selectedId, id)).toString("base64url");
+      writeFileSync(join(dir, "memories", `filler-${index}.md`), template.replace(marker, metadata));
+    }
+    const catalogRead = vi.spyOn(manager, "listMemoryEntries").mockImplementation(() => { throw new Error("Unexpected catalog scan"); });
+    const readOne = vi.spyOn(manager, "readManagedMemoryAt");
+    const source = { contentRevision: "revision", read: () => manager.readManagedMemoryAt(entry.filename, selectedId, {}) };
+    const result = await readMemoryDetail(manager, selectedId, {}, {}, source);
+    expect(result).toMatchObject({ ok: true, source: { content: expect.stringContaining(body), contentRevision: "revision" } });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(10_000);
+    expect(catalogRead).not.toHaveBeenCalled();
+    expect(readOne.mock.calls.map(([filename]) => filename)).toEqual(Array(3).fill(entry.filename));
+    unlinkSync(selectedPath);
+    await expect(readMemoryDetail(manager, selectedId, {}, {}, source)).resolves.toEqual({ ok: false, error: "not-found" });
+  });
   it.each(["deleted", "missing-metadata", "invalid-metadata"] as const)("marks the list origin unavailable for a %s conversation source", async (state) => {
     const sessionId = "11111111-1111-4111-8111-111111111111";
     await saveMessages(sessionId, [{ role: "user", meta: { messageId: "source" }, content: "Remember this fact" }]);

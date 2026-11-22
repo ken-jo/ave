@@ -30,7 +30,7 @@ function setup() {
   map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
   map.facets.mockResolvedValue({ ok: true, value: { sources: [{ sourceKind: 'user', count: 1 }, { sourceKind: 'assistant', count: 2 }], projects: [{ projectId: 'alpha', name: 'Alpha', count: 1 }, { projectId: 'beta', name: 'Beta', count: 1 }], playbooks: [] } });
   const { api: mockApi } = makeMockAveApi();
-  const api = Object.assign(mockApi, { memoryMap: map, memoryGetDetail: vi.fn(async () => ({ ok: true, origin: { status: 'resolved', sessionId: 'source', title: 'Original source', quote: 'Source quote' }, history: { entries: [] }, usage: { entries: [] } })), memoryGetSummaries: vi.fn(async () => ({ ok: true, notes: [{ id: 'a', content: '# Alpha\n\nCurrent body' }], entries: [], scopeCounts: { project: 1, global: 0, defaultProject: 0, defaultProjectApplicable: false } })) }) as unknown as AveApi;
+  const api = Object.assign(mockApi, { memoryMap: map, memoryGetDetail: vi.fn(async () => ({ ok: true, origin: { status: 'resolved', sessionId: 'source', title: 'Original source', quote: 'Source quote' }, source: { content: '# Alpha\n\nCurrent body', contentRevision: 'r' }, history: { entries: [] }, usage: { entries: [] } })), memoryGetSummaries: vi.fn(async () => ({ ok: true, notes: [{ id: 'a', content: '# Alpha\n\nCurrent body' }], entries: [], scopeCounts: { project: 1, global: 0, defaultProject: 0, defaultProjectApplicable: false } })) }) as unknown as AveApi;
   const props = { api, onAskAveToFix: vi.fn(async () => true), onOpenEmbeddingSettings: vi.fn(), onOpenSession: vi.fn() };
   return { map, api, props };
 }
@@ -67,7 +67,8 @@ describe('memory map view', () => {
     act(() => renderer.callbacks!.onSelect('a'));
     expect(await screen.findByText('Source quote')).toBeTruthy();
     expect(screen.getByText('Current body')).toBeTruthy();
-    expect(api.memoryGetDetail).toHaveBeenCalledWith('a', undefined);
+    expect(api.memoryGetDetail).toHaveBeenCalledWith('a', undefined, 'r');
+    expect(api.memoryGetSummaries).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByRole('complementary', { name: '메모리 소스 상세' }), { key: 'Escape' });
     expect(screen.queryByRole('complementary', { name: '메모리 소스 상세' })).toBeNull();
     selectTab('메모리 카드');

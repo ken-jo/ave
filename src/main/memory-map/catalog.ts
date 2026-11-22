@@ -1,4 +1,4 @@
-import type { MemoryManager, ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
+import type { MemoryManager, NoteEntry, ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
 import type { MemoryFacets, MemoryMapRecord } from '../../shared/memory-map.js';
 import { projectRootKey } from '../../shared/project-identity.js';
 import { digest } from './graph.js';
@@ -13,17 +13,23 @@ export type ReadMemoryMapCatalog = (() => MemoryMapCatalog) & {
 export function memoryMapScopeId(options: ProjectScopedMemoryOptions): string {
   return digest(JSON.stringify([options.projectRoot ? projectRootKey(options.projectRoot) : 'global', options.includeUnscoped === true]));
 }
-export function matchesGraphRecord(note: ReturnType<MemoryManager['readManagedMemoryAt']>, record: MemoryMapRecord): boolean {
-  return Boolean(note && note.origin?.store !== 'subagent' && (note.state === undefined || note.state === 'active')
+export function isGraphMemory(note: NoteEntry | undefined): note is NoteEntry & { id: string } {
+  return Boolean(note?.id && note.origin?.store !== 'subagent' && (note.state === undefined || note.state === 'active'));
+}
+export function graphMemoryRevision(note: NoteEntry): string {
+  return digest(`${note.title}\n${note.content}`);
+}
+export function matchesGraphRecord(note: NoteEntry | undefined, record: MemoryMapRecord): boolean {
+  return Boolean(isGraphMemory(note)
     && (note.projectRoot ? digest(projectRootKey(note.projectRoot)!) : undefined) === record.projectId
-    && digest(note.title + '\n' + note.content) === record.contentRevision);
+    && graphMemoryRevision(note) === record.contentRevision);
 }
 export function readGraphCatalog(manager: MemoryManager, options: ProjectScopedMemoryOptions, defaultProjectRoot: string, filenames?: Map<string, string>): MemoryMapCatalog {
   const { notes } = manager.readMemoryPanelCatalog(options, defaultProjectRoot);
   const records = notes.flatMap<MemoryMapRecord>(note => {
-    if (!note.id || note.origin?.store === 'subagent' || (note.state !== undefined && note.state !== 'active')) return [];
+    if (!isGraphMemory(note)) return [];
     filenames?.set(note.id, note.filename);
-    return [{ memoryId: note.id, contentRevision: digest(note.title + '\n' + note.content), title: note.title, text: note.content, sourceKind: note.source ?? 'unknown',
+    return [{ memoryId: note.id, contentRevision: graphMemoryRevision(note), title: note.title, text: note.content, sourceKind: note.source ?? 'unknown',
       ...(note.projectRoot ? { projectId: digest(projectRootKey(note.projectRoot)!), projectName: note.projectName ?? note.projectRoot.split(/[\\/]/).at(-1)! } : {}) }];
   }).sort((a, b) => a.memoryId.localeCompare(b.memoryId));
   return { records, excluded: notes.length - records.length, authorizationScopeId: memoryMapScopeId(options) };

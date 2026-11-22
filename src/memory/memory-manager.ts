@@ -955,8 +955,12 @@ export class MemoryManager implements PromptMemorySource {
   }
 
   /** One memory's change history; the memory must exist in the caller's scope, like any id-based operation. */
-  async getMemoryHistory(id: string, options: ProjectScopedMemoryOptions): Promise<MemoryHistoryRead> {
+  async getMemoryHistory(id: string, options: ProjectScopedMemoryOptions, filename?: string): Promise<MemoryHistoryRead> {
     const safeId = this.validateManagedMemoryId(id, "getMemoryHistory");
+    if (filename !== undefined) {
+      if (!this.readManagedMemoryAt(filename, safeId, options)) throw new Error("getMemoryHistory: memory not found");
+      return this.history.read(safeId);
+    }
     const found = this.findManagedMemoryById(safeId);
     const scopeEntry = found
       ? this.entryFromMemoryMetadata(found.filename, found.title, found.content, found.metadata, "")

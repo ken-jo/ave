@@ -415,8 +415,9 @@ export function buildInternalApiSurface() {
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
   memoryMap: memoryMapApiSurface,
-  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions): Promise<MemoryDetailResult> =>
-    opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
+  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions, contentRevision?: string): Promise<MemoryDetailResult> =>
+    contentRevision !== undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts, contentRevision)
+      : opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
   memoryGetSummaries: async (opts?: MemoryProjectOptions): Promise<MemorySummariesResult> =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.summariesGet, opts),
 
