@@ -31,9 +31,10 @@ function gitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /** Every git call of a stage workspace goes through here: an argument vector with no shell, a timeout and a bounded output. */
-export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): HostGit {
+export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxOutputBytes?: number } = {}): HostGit {
   const env = gitEnv(options.env ?? process.env);
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
+  const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
 
   function run(cwd: string, args: readonly string[], call: { stdin?: string; drivers?: readonly string[] } = {}): Promise<HostGitResult> {
     if (!isHostGitWorkspaceAvailable(cwd)) return Promise.reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
@@ -48,7 +49,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
       const timer = setTimeout(() => stop(new HostGitError("timeout", "git did not finish in time")), timeoutMs);
       const collect = (into: Buffer[]) => (chunk: Buffer): void => {
         size += chunk.length;
-        if (size > GIT_MAX_OUTPUT_BYTES) stop(new HostGitError("output-limit", "git wrote more than the host reads"));
+        if (size > maxOutputBytes) stop(new HostGitError("output-limit", "git wrote more than the host reads"));
         else into.push(chunk);
       };
       child.stdout.on("data", collect(out));
