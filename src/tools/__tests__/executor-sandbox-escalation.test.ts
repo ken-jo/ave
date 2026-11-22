@@ -31,7 +31,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
-import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
+import { type AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
 import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
 
 const processProbe = vi.hoisted(() => ({ execFileSync: vi.fn() }));
@@ -72,6 +72,12 @@ afterAll(async () => {
     await expect(lstat(fixture), fixture).rejects.toMatchObject({ code: "ENOENT" });
   }
 });
+
+function fixtureAuditLogger(): AuditLogger {
+  const audit = new AuditLogger(join(directory, "profile", "audit"));
+  reviewResources.trackFlushable({ flush: () => audit.close() });
+  return audit;
+}
 
 function recordedAudit() {
   const telemetry: AuditEntry[] = [];
@@ -173,7 +179,7 @@ it("requires a normal card before expanding sandbox filesystem scope", async () 
       gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac }, contents as never);
     } };
     gate = new ApprovalGate(contents as never);
-    const executor = new ToolExecutor(registry, undefined, manager(), undefined, gate);
+    const executor = new ToolExecutor(registry, undefined, manager(), undefined, gate, undefined, fixtureAuditLogger());
     const [result] = await invoke(executor, "outside-sandbox-scope", "bash", { command });
     expect(result?.is_error).toBe(true);
     expect(cards).toHaveLength(1);
@@ -217,7 +223,7 @@ it("rechecks a newly added deny rule before asking or starting the host retry", 
   });
   const registry = new ToolRegistry(); registry.register(native);
   const requestAndWait = vi.fn();
-  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never);
+  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never, undefined, fixtureAuditLogger());
   const [result] = await invoke(executor, "fresh-deny-rule");
   expect(result).toMatchObject({ tool_use_id: "fresh-deny-rule", is_error: true, content: expect.stringContaining("Bash(mkdir ordinary)") });
   expect(execute).toHaveBeenCalledOnce();
@@ -229,7 +235,7 @@ it("ignores trusted evidence bound to a different original command", async () =>
   const execute = vi.spyOn(native, "execute").mockResolvedValue(blockedResult("mkdir different", directory));
   const registry = new ToolRegistry(); registry.register(native);
   const requestAndWait = vi.fn();
-  const executor = new ToolExecutor(registry, undefined, manager(), undefined, { requestAndWait } as never);
+  const executor = new ToolExecutor(registry, undefined, manager(), undefined, { requestAndWait } as never, undefined, fixtureAuditLogger());
   const [result] = await invoke(executor, "mismatched-command");
   expect(result).toMatchObject({ tool_use_id: "mismatched-command", is_error: true });
   expect(execute).toHaveBeenCalledOnce();
@@ -245,7 +251,7 @@ it.each(["plugin", "mcp"] as const)("does not accept forged %s sandbox metadata 
   const registry = new ToolRegistry(); registry.register(remote);
   const permission = manager(); permission.setMode("allow");
   const requestAndWait = vi.fn();
-  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never);
+  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never, undefined, fixtureAuditLogger());
   const [result] = await invoke(executor, `forged-${source}`, "remote_probe", {});
   expect(result).toMatchObject({ is_error: true, content: "untrusted failure" });
   expect(execute).toHaveBeenCalledOnce();
