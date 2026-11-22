@@ -73,6 +73,16 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     }
   });
 
+  it("masks a quoted spaced path inside a serialized command in full", async () => {
+    const { redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, platform);
+    const command = 'cat "/home/Demo Smith/x"';
+    for (const text of [JSON.stringify({ command }), JSON.stringify(JSON.stringify({ command }))]) {
+      for (const redact of [redactHomePathsInText, redactJudgeText]) expect(redact(text)).not.toContain("Smith");
+    }
+    // Unquoted command text is shell text, so the rest of an unquoted spaced name is the documented residual.
+    expect(JSON.parse(redactHomePathsInText(JSON.stringify({ command: "cat /home/Demo Smith/x" })))).toEqual({ command: "cat [home] Smith/x" });
+  });
+
   it("keeps a serialized drive path through a folder named Users or home", async () => {
     const { redactFsPath, redactHomePathsInText, redactJudgeText } = await loadHomeRedactors(home, platform);
     for (const path of [String.raw`D:\repo\src\Users\model.ts`, String.raw`C:\tools\app\home\index.html`]) {

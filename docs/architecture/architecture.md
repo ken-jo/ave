@@ -3572,7 +3572,11 @@ before a separator or the closing quote. Elsewhere in text a name stops at
 whitespace, a JSON-escaped space (`\u0020`) included, so a following command
 argument stays visible, and the rest of an
 unquoted spaced name of another account (`/home/Demo Smith` as `[home] Smith`)
-is a known residual. The configured home matches literally, spaces included.
+is a known residual. Command text inside a JSON string value is unquoted shell
+text too, so `{"command":"cat /home/Demo Smith/x"}` becomes
+`cat [home] Smith/x`, while a quoted path inside it, as in
+`cat \"/home/Demo Smith/x\"`, is masked in full. The configured home matches
+literally, spaces included.
 A name stops where a drive profile joins it directly, so the joined home is
 redacted too. A home path right after a URL authority, plain or percent-encoded
 and with escaped host bytes, keeps the separator that ends the authority, for
