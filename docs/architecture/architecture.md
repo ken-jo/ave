@@ -3564,7 +3564,8 @@ layers are outside the contract. Words after a space join the name in a path
 value, before a separator, the value's end, or a query or fragment. In display
 text they join only inside a quoted or backtick span that starts with the home,
 before a separator or the closing quote. Elsewhere in text a name stops at
-whitespace, so a following command argument stays visible, and the rest of an
+whitespace, a JSON-escaped space (`\u0020`) included, so a following command
+argument stays visible, and the rest of an
 unquoted spaced name of another account (`/home/Demo Smith` as `[home] Smith`)
 is a known residual. The configured home matches literally, spaces included.
 A name stops where a drive profile joins it directly, so the joined home is

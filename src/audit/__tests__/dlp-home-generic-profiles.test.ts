@@ -65,6 +65,11 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     const line = JSON.stringify({ a: "cp /home/bob src/x", b: 'cp "/home/Demo Smith" src/x' });
     expect(JSON.parse(redactHomePathsInText(line))).toEqual({ a: "cp [home] src/x", b: 'cp "[home]" src/x' });
     expect(redactJudgeText("cp /home/bob src/x")).toBe("cp [home] src/x");
+    for (const redact of [redactHomePathsInText, redactJudgeText]) {
+      expect(redact('{"command":"cp /home/bob\\u0020src/x"}')).toBe('{"command":"cp [home]\\u0020src/x"}');
+      expect(redact('{"path":"/home/Demo\\u0020Smith/x"}')).toBe('{"path":"[home]/x"}');
+      expect(redact('{"command":"cat \\"/home/Demo\\u0020Smith/x\\""}')).toBe('{"command":"cat \\"[home]/x\\""}');
+    }
   });
 
   it("keeps a serialized drive path through a folder named Users or home", async () => {

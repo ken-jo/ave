@@ -219,18 +219,21 @@ const QUOTE_OPENED = String.raw`(?<=(?:^|[^\p{L}\p{N}])["'\x60])`;
  */
 function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
   const json = (hex: string): string => String.raw`\\{1,7}u00(?:${hex})`;
-  const escaped = (hex: string): string => `(?:%(?:25){0,${HOME_DECODE_LAYERS - 1}}(?:${hex})|${json(hex)})`;
+  const percent = (hex: string): string => `%(?:25){0,${HOME_DECODE_LAYERS - 1}}(?:${hex})`;
+  const escaped = (hex: string): string => `(?:${percent(hex)}|${json(hex)})`;
   const slash = `(?:\\/|${escaped("2f")})`;
   const separator = `(?:[\\\\/]|${escaped("2f|5c")})`;
   const colon = `(?::|${escaped("3a")})`;
   const letter = String.raw`3\d|[46][1-9a-f]|[57][\da]|[89a-f][\da-f]`;
   // A JSON escape is an odd backslash run. A single backslash before a raw folder separator is a separator itself.
   const wide = String.raw`(?:\\{3}|\\{5}|\\{7})u(?!00)[\da-f]{4}|\\u(?!00)[\da-f]{4}(?!\\[^"\\/bfnrtu])`;
-  const unit = `(?:[\\p{L}\\p{M}\\p{N}._-]|'(?=[\\p{L}\\p{N}])|${escaped(`2[0de]|5f|${letter}`)}`
-    + `|${escaped("27")}(?=[\\p{L}\\p{N}]|${escaped(letter)})|${wide})`;
+  // Unquoted text reads a JSON-escaped space as whitespace; elsewhere an encoded space joins the name.
+  const unit = (space: string): string => `(?:[\\p{L}\\p{M}\\p{N}._-]|'(?=[\\p{L}\\p{N}])|${escaped(`2[de]|5f|${letter}`)}`
+    + `|${space}|${escaped("27")}(?=[\\p{L}\\p{N}]|${escaped(letter)})|${wide})`;
   // A drive profile joined directly to a name starts the next home.
-  const nameUnit = `(?:(?![a-z]${colon}${separator}+users${separator}+${unit})${unit})`;
-  const joined = (end: string): string => `${nameUnit}+(?:(?: +[\\p{L}\\p{N}]${nameUnit}*)+${end})?`;
+  const nameUnit = (space = escaped("20")): string =>
+    `(?:(?![a-z]${colon}${separator}+users${separator}+${unit(space)})${unit(space)})`;
+  const joined = (end: string): string => `${nameUnit()}+(?:(?: +[\\p{L}\\p{N}]${nameUnit()}*)+${end})?`;
   const roots: [prefix: string, marker: string, keep?: boolean][] = [
     [`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]"],
     [`file${colon}${slash}{3}users${slash}`, "file://[home]"],
@@ -245,7 +248,7 @@ function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
     roots.map(([prefix, marker, keep]) => ({ literal: new RegExp(opened + prefix + name, "giu"), marker, keep }));
   return mode === "path"
     ? forms(joined(`(?=${separator}|[?#]|$)`))
-    : [...forms(joined(`(?=${separator}|["'\\x60])`), QUOTE_OPENED), ...forms(`${nameUnit}+`)];
+    : [...forms(joined(`(?=${separator}|["'\\x60])`), QUOTE_OPENED), ...forms(`${nameUnit(percent("20"))}+`)];
 }
 
 const GENERIC_HOME_FORMS = genericHomeForms("text");
