@@ -962,7 +962,7 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
         const chain = [...entries];
         if (chain.every(([path, entry]) => sameChainEntry(readChainEntry(path), entry))) {
           const direct = canonical === foldCanonicalPathSeparators(pathResolve(path))
-            && chain.every(([path, entry], index) => entry?.link === undefined && (index === 0 || dirname(path) === chain[index - 1]![0]));
+            && chain.every(([path, entry], index) => entry?.link === undefined && (index === 0 || dirname(path) === chain[index - 1]?.[0]));
           resolved.set(path, { canonical, entries: chain, direct });
         }
       }
