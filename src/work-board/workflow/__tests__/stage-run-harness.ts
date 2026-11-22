@@ -266,10 +266,7 @@ export async function stageRunHarness(opts: {
       cancelRun(itemId: number) {
         const result = current.cancelRun(itemId);
         // An accepted Stop ends the run for waits even while the run's class holds its end.
-        if (result.ok && engine === wrapped) {
-          failChildWaits("run cancelled", workBoardOriginSessionId(itemId));
-          inFlight.delete(workBoardOriginSessionId(itemId));
-        }
+        if (result.ok && engine === wrapped) endRun("run cancelled", workBoardOriginSessionId(itemId));
         return result;
       },
     };

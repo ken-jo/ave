@@ -1,4 +1,6 @@
 import { expect, it, vi } from "vitest";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
@@ -628,6 +630,31 @@ it("a second start of a running item keeps the item's standing failure", async (
   } finally {
     for (const child of h.live()) child.finish();
     await running;
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
+
+it("an accepted Stop whose end the run's class holds still settles a child wait created afterwards", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1, id);
+    const runId = (await h.item(id)).runId ?? "";
+    h.editRow(id, row => ({ ...row, runId: "run-other" }));
+    const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
+    writeFileSync(runsPath, JSON.stringify({ ...JSON.parse(readFileSync(runsPath, "utf8")), deleteIntents: [{ itemId: id, runId }] }));
+    const stopped = h.events.length;
+    expect(h.engine.cancelRun(id)).toEqual({ ok: true });
+    child.finish();
+    await run;
+    await h.drainRunWork();
+    expect(h.events.slice(stopped).filter(event => event.itemId === id && (event.phase === "cancelled" || event.phase === "error"))).toEqual([]);
+    await expect(Promise.race([h.untilLive(1, id), setImmediate("still pending")])).rejects.toThrow(/run cancelled/);
+  } finally {
+    for (const child of h.live()) child.finish();
     await h.drainRunWork();
     await h.cleanup();
   }
