@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, open, readFile, readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LocalModelManager, verifyModelFolder } from '../model-manager.js';
@@ -22,7 +22,7 @@ async function fixture(body = 'model') {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   const manager = new LocalModelManager({ namespace, files, readPath: () => saved, savePath: path => { saved = path; }, downloadFile: (_, signal) => fetch(`http://127.0.0.1:${port}`, { signal }) });
-  return { manager, root, files, saved: () => saved, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
+  return { manager, root, files, saved: () => saved, setSaved: (path: string) => { saved = path; }, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 describe('local model lifecycle', () => {
   it('does not request files on status, and commits only a complete verified download', async () => {
@@ -48,11 +48,27 @@ describe('local model lifecycle', () => {
   it('accepts direct and nested files and refuses a bad existing folder', async () => {
     const f = await fixture();
     try {
-      const nested = join(f.root, 'existing/onnx'); await mkdir(nested, { recursive: true }); await writeFile(join(nested, 'weights.bin'), 'model');
-      expect(await verifyModelFolder(join(f.root, 'existing'), f.files)).toBe(await verifyModelFolder(nested, f.files));
-      expect((await f.manager.adoptExistingFolder(join(f.root, 'existing'))).status).toBe('ready');
+      const external = await mkdtemp(join(tmpdir(), 'existing-model-')); roots.push(external);
+      const nested = join(external, 'onnx'); await mkdir(nested); await writeFile(join(nested, 'weights.bin'), 'model');
+      expect(await verifyModelFolder(external, f.files)).toBe(await verifyModelFolder(nested, f.files));
+      expect((await f.manager.adoptExistingFolder(external)).status).toBe('ready');
+      const active = await f.manager.validatedPath();
+      expect(isAbsolute(relative(f.root, active))).toBe(false);
+      expect(relative(f.root, active)).not.toMatch(/^\.\./u);
+      expect(active).toBe(f.saved());
       await writeFile(join(nested, 'weights.bin'), 'wrong');
       expect(await f.manager.adoptExistingFolder(nested)).toMatchObject({ status: 'failed', error: 'model-integrity-failed' });
+      expect(await readFile(join(active, 'weights.bin'), 'utf8')).toBe('model');
+    } finally { await f.close(); }
+  });
+  it('refuses a saved external path until the folder is adopted', async () => {
+    const f = await fixture();
+    try {
+      const external = await mkdtemp(join(tmpdir(), 'previous-model-')); roots.push(external);
+      await writeFile(join(external, 'weights.bin'), 'model');
+      f.setSaved(external);
+      await expect(f.manager.validatedPath()).rejects.toMatchObject({ code: 'model-integrity-failed' });
+      expect(f.saved()).toBe(external);
     } finally { await f.close(); }
   });
   it('cancels in-flight streaming and cannot commit the partial folder', async () => {

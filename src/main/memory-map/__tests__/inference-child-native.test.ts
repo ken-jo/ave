@@ -1,6 +1,6 @@
 // The local inference child through the real launch path: it starts with the telemetry opt-out and reaches no listener, directly or through the proxy, that the host reaches in the same run.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, createServer, type Server } from 'node:net';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
@@ -59,8 +59,8 @@ beforeAll(async () => {
     vi.mocked(userInfo).mockReturnValue({ ...userInfo(), homedir: join(root, 'home') });
     mkdirSync(join(root, 'home'));
   }
-  modelDir = join(root, 'model');
-  mkdirSync(modelDir);
+  modelDir = join(aveHome, 'models', 'fixture');
+  mkdirSync(modelDir, { recursive: true, mode: 0o700 });
   for (const file of MODEL_FILES) writeFileSync(join(modelDir, file.name), Buffer.alloc(file.bytes));
   const outdir = childBundleDir('memory-map-inference-child');
   await buildMainBoundaryBundle({ entryPoints: { 'memory-map-child': PROBE_SOURCE }, outdir, splitting: false });
@@ -130,9 +130,11 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
       await registerWorkerUnixSocketDir(unixRoot, {});
     }
 
+    const modelFile = join(modelDir, MODEL_FILES[0]!.name);
+    expect(readFileSync(modelFile)).toEqual(Buffer.alloc(MODEL_FILES[0]!.bytes));
     const before = listenerConnections.length;
-    const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; unix?: string; runtime: string }>(
-      modelDir, { kind: 'embed', text: JSON.stringify({ port: listenerPort, unixPath }) }, AbortSignal.timeout(120_000));
+    const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; unix?: string; modelRead: string; runtime: string }>(
+      modelDir, { kind: 'embed', text: JSON.stringify({ port: listenerPort, unixPath, modelFile }) }, AbortSignal.timeout(120_000));
     console.info(`[memory-map-child] ${JSON.stringify(report)} decisions=${JSON.stringify(decisions)}`);
     expect(report.telemetryAtStart).toBe('1');
     expect(report.direct, JSON.stringify(report)).not.toBe('connected');
@@ -140,6 +142,7 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
     expect(report.proxy, JSON.stringify(report)).not.toMatch(/^HTTP\/1\.[01] 200/u);
     expect(listenerConnections.length, 'the listener recorded a connection from the inference child').toBe(before);
     expect(decisions, JSON.stringify(report)).toContainEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
+    expect(report.modelRead).toMatch(/^(?:EACCES|EPERM|ENOENT)$/u);
     expect(report.runtime, 'the native runtime did not load inside the sandbox').toMatch(/^session-refused:.*protobuf parsing failed/iu);
   }, 180_000);
 });
