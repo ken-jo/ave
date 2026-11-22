@@ -8,7 +8,11 @@ export type MemoryWorkerTask = { kind: 'build' | 'project'; input: GraphBuildInp
 export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void) => Promise<T>;
 export const runMemoryWorker: MemoryWorkerRunner = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> => {
   signal.throwIfAborted();
-  if (task.kind !== 'project') assertLocalEmbeddingRuntime();
+  if (task.kind !== 'project') {
+    assertLocalEmbeddingRuntime();
+    // Native add-ons observe the host environment, outside the worker's copy.
+    process.env.ORT_DISABLE_TELEMETRY = '1';
+  }
   const entry = join(mainDir, 'memory-map-worker.js');
   const worker = new Worker(entry, { workerData: { folder, task }, env: { ...process.env, ORT_DISABLE_TELEMETRY: '1' } });
   return new Promise<T>((resolve, reject) => {

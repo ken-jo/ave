@@ -22,6 +22,25 @@ describe('memory worker lifecycle', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+  it('sets the native telemetry opt-out in the parent before starting a local worker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'memory-worker-'));
+    state.mainDir = root;
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (!platform) throw new Error('Missing platform descriptor');
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+      vi.stubEnv('ORT_DISABLE_TELEMETRY', '0');
+      await writeFile(join(root, 'memory-map-worker.js'), `require('node:worker_threads').parentPort.postMessage({ kind: 'result', value: process.env.ORT_DISABLE_TELEMETRY });`);
+      const embedding = runMemoryWorker(root, { kind: 'embed', text: 'question' }, new AbortController().signal);
+      const parentOptOut = process.env.ORT_DISABLE_TELEMETRY;
+      await expect(embedding).resolves.toBe('1');
+      expect(parentOptOut).toBe('1');
+    } finally {
+      vi.unstubAllEnvs();
+      Object.defineProperty(process, 'platform', platform);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it('keeps projection available, forwards counts and terminates cancelled workers', async () => {
     const root = await mkdtemp(join(tmpdir(), 'memory-worker-')); state.mainDir = root;
     try {
