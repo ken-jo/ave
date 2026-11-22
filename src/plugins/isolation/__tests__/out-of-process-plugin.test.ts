@@ -40,6 +40,7 @@ const windowsGrant = vi.hoisted(() => ({
   alive: true,
   /** Labels whose turn applied a grant. */
   granted: [] as string[],
+  holders: new Set<symbol>(),
   /** Holds the queue on a turn ahead until it settles. */
   ahead: undefined as Promise<void> | undefined,
   /** Holds the turn pending after its grant was applied. */
@@ -60,6 +61,8 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
         opts.assertStillValid?.();
         windowsGrant.granted.push(opts.label);
         if (windowsGrant.blockingMs > 0) blockMainThread(windowsGrant.blockingMs);
+        const holder = Symbol(opts.label);
+        windowsGrant.holders.add(holder);
         windowsGrant.events.push("grant");
         await windowsGrant.applying;
         return {
@@ -69,7 +72,7 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
           onLost: (listener: (reason: Error) => void) => void windowsGrant.lost.push(listener),
           // Grant release must be idempotent across every child termination path.
           release: () => {
-            if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
+            if (windowsGrant.holders.delete(holder)) windowsGrant.events.push("release");
           },
         };
       });
@@ -134,6 +137,7 @@ import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactory
 import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
@@ -1465,6 +1469,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     windowsGrant.lost.length = 0;
     windowsGrant.alive = true;
     windowsGrant.granted.length = 0;
+    windowsGrant.holders.clear();
     windowsGrant.ahead = undefined;
     windowsGrant.applying = undefined;
     windowsGrant.blockingMs = 0;
@@ -1765,14 +1770,13 @@ describe("on Windows a confined child holds a grant on its own directories for e
   });
 
   /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
-  function loopbackChild(opts: { readonly onAnnounce?: (port: number) => void; readonly ignoresEof?: boolean } = {}) {
+  function loopbackChild(opts: {
+    readonly onAnnounce?: (port: number) => void;
+    readonly ignoresEof?: { readonly child: FakeChild; readonly onEof: () => void };
+  } = {}) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
-      const child = fakeChild();
-      if (opts.ignoresEof) child.kill.mockImplementation((signal: NodeJS.Signals) => {
-        setTimeout(() => end(child, null, signal), 50);
-        return true;
-      });
+      const child = opts.ignoresEof?.child ?? fakeChild();
       const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
       const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
@@ -1784,7 +1788,11 @@ describe("on Windows a confined child holds a grant on its own directories for e
         acceptTimeoutMs: 5_000,
         handshakeTimeoutMs: 5_000,
       }).then((socket) => {
-        if (opts.ignoresEof) socket.allowHalfOpen = true;
+        if (opts.ignoresEof) {
+          socket.allowHalfOpen = true;
+          socket.once("end", opts.ignoresEof.onEof);
+          child.once("exit", () => socket.destroy());
+        }
         const service = servePluginChild(socket, socket);
         socket.resume();
         socket.on("close", () => {
@@ -1926,16 +1934,46 @@ describe("on Windows a confined child holds a grant on its own directories for e
     }
   });
 
-  it("finishes releasing the grant before stop returns when the child ignores socket EOF", async () => {
+  it("keeps stop pending until a force-terminated child exits and releases its grant", async () => {
     const layout = aveLayout();
     const { dir, entryPath } = writePluginModule();
     try {
       await asWindows(layout, async () => {
-        spawnConfinedChild.mockImplementation(loopbackChild({ ignoresEof: true }));
+        const eof = deferred<void>();
+        const exit = deferred<void>();
+        const child = fakeChild();
+        child.kill.mockImplementation((signal: NodeJS.Signals) => {
+          if (signal === "SIGKILL") void exit.promise.then(() => end(child, null, signal));
+          return true;
+        });
+        spawnConfinedChild.mockImplementation(loopbackChild({ ignoresEof: { child, onEof: () => eof.resolve() } }));
         const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
         const instance = await factory(hostContext(fakeHostApi(), layout.context));
-        await instance.stop?.();
-        expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+
+        expect(instance.stop).toBeTypeOf("function");
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const stopped = Promise.resolve(instance.stop?.()).then(() => windowsGrant.events.push("stop resolved"));
+        try {
+          await eof.promise;
+          expect(child.kill).not.toHaveBeenCalled();
+
+          await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs);
+          expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+
+          await vi.advanceTimersToNextTimerAsync();
+          expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+          expect([...windowsGrant.events]).toEqual(["grant", "spawn"]);
+          expect(windowsGrant.holders.size).toBe(1);
+
+          exit.resolve();
+          await stopped;
+          expect(windowsGrant.events).toEqual(["grant", "spawn", "release", "stop resolved"]);
+          expect(windowsGrant.holders.size).toBe(0);
+        } finally {
+          exit.resolve();
+          end(child, null, "SIGKILL");
+          vi.useRealTimers();
+        }
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
