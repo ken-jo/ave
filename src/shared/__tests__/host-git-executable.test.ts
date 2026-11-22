@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, existsSync, mkdtempSync, statSync } from "node:fs";
+import { accessSync, existsSync, mkdtempSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, parse, win32 } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
@@ -126,6 +126,41 @@ describe("resolveHostGit", () => {
       if (file === selected) throw Object.assign(new Error("missing"), { code: "ENOENT" });
     });
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(replacement, binary));
+  });
+
+  it.each(["cannot start", "rejects the required option"])("rediscovers when a cached file is replaced and %s", async (failure) => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    const fixture = mkdtempSync(join(tmpdir(), "ave-replaced-git-"));
+    try {
+      const first = fs.mkdtempSync(join(fixture, "first-"));
+      const second = fs.mkdtempSync(join(fixture, "second-"));
+      const selected = join(first, binary);
+      const fallback = join(second, binary);
+      const staged = join(first, "replacement");
+      writeFileSync(selected, "first fixture", { mode: 0o755 });
+      writeFileSync(fallback, "second fixture", { mode: 0o755 });
+      vi.stubEnv("PATH", [first, second].join(delimiter));
+      vi.mocked(statSync).mockImplementation((file) => fs.statSync(file, { bigint: true }));
+      expect(resolveHostGit({ packaged: false })?.path).toBe(selected);
+
+      writeFileSync(staged, "replacement fixture with different size", { mode: 0o755 });
+      renameSync(staged, selected);
+      vi.mocked(execFileSync).mockImplementation((file, args) => {
+        if (file !== selected) return "git version 2.56.0";
+        if (failure === "cannot start") throw Object.assign(new Error("cannot start"), { code: "ENOEXEC" });
+        if (Array.isArray(args) && args.includes("--no-lazy-fetch")) {
+          throw Object.assign(new Error("unknown option"), { status: 129 });
+        }
+        return "git version 2.56.0";
+      });
+      expect(resolveHostGit({ packaged: false })?.path).toBe(fallback);
+      expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(
+        failure === "cannot start" ? [selected, selected, fallback] : [selected, selected, selected, fallback],
+      );
+    } finally {
+      await cleanupTmpDir(fixture);
+    }
   });
 
   it.each([

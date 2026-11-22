@@ -46,10 +46,15 @@ export function installerGitRoot(
 }
 
 export function findInstallerGit(root: string | null): InstallerGitInstall | null {
+  const install = installerGitLayout(root);
+  return install && executableIdentity(install.path) !== null ? install : null;
+}
+
+function installerGitLayout(root: string | null): InstallerGitInstall | null {
   const path = installerGitPath(root);
   if (root === null || path === null) return null;
   const prefix = MINGIT_PREFIXES.find((name) => existsSync(join(root, name, "libexec", "git-core")));
-  return prefix && isExecutableFile(path) ? { path, root, prefix } : null;
+  return prefix ? { path, root, prefix } : null;
 }
 
 function installerGitPath(root: string | null): string | null {
@@ -113,12 +118,13 @@ export function systemGitCandidates(
   });
 }
 
-function isExecutableFile(path: string): boolean {
+function executableIdentity(path: string): string | null {
   try {
     accessSync(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-    return statSync(path).isFile();
+    const stat = statSync(path, { bigint: true });
+    return stat.isFile() ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}` : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -228,25 +234,27 @@ function probeSystemGit(path: string): { version: GitVersion; supported: boolean
   }
 }
 
-const discoveredGit = new Map<string | null, GitDiscovery>();
+const discoveredGit = new Map<string | null, { identity: string; selection: GitDiscovery & { git: DiscoveredGit } }>();
 
 export function discoverHostGit(installerRoot: string | null): GitDiscovery {
   const cached = discoveredGit.get(installerRoot);
-  if (cached?.git && isExecutableFile(cached.git.path)) return cached;
+  if (cached && executableIdentity(cached.selection.git.path) === cached.identity) return cached.selection;
   discoveredGit.delete(installerRoot);
 
   const bundledPath = installerGitPath(installerRoot);
-  const bundled = findInstallerGit(installerRoot);
-  const git = bundled === null ? null : probeInstallerGit(bundled);
-  if (git) {
+  const bundled = installerGitLayout(installerRoot);
+  const bundledIdentity = bundled && executableIdentity(bundled.path);
+  const git = bundled && bundledIdentity !== null ? probeInstallerGit(bundled) : null;
+  if (git && bundledIdentity !== null) {
     const found = { git };
-    discoveredGit.set(installerRoot, found);
+    discoveredGit.set(installerRoot, { identity: bundledIdentity, selection: found });
     return found;
   }
   const selection: GitDiscovery = { git: null };
   let cltInstalled: boolean | undefined;
   for (const path of systemGitCandidates(process.platform, process.env.PATH)) {
-    if (!isExecutableFile(path) || (bundledPath !== null && sameFile(path, bundledPath))) continue;
+    const identity = executableIdentity(path);
+    if (identity === null || (bundledPath !== null && sameFile(path, bundledPath))) continue;
     if (process.platform === "darwin" && sameFile(path, DARWIN_GIT_SHIM)) {
       cltInstalled ??= commandLineToolsInstalled();
       if (!cltInstalled) continue;
@@ -254,9 +262,9 @@ export function discoverHostGit(installerRoot: string | null): GitDiscovery {
     const probe = probeSystemGit(path);
     if (!probe) continue;
     if (probe.supported) {
-      selection.git = { path, version: probe.version };
-      discoveredGit.set(installerRoot, selection);
-      break;
+      const found = { ...selection, git: { path, version: probe.version } };
+      discoveredGit.set(installerRoot, { identity, selection: found });
+      return found;
     }
     if (!meetsMinimumGitVersion(probe.version)) selection.systemTooOld ??= { path, version: probe.version.text };
   }
