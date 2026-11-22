@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import fsModule, { type Dirent } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -304,13 +304,20 @@ describe("workspace.listDir folder-view entries", () => {
     // An entry may pay a few checks of its own (about 8 here); resolving the policy roots again costs over a hundred.
     expect(perEntry).toBeLessThanOrEqual(20);
     // Include cold resolutions and witness seeding in the row budgets.
+    const later: number[] = [];
     for (const [index, row] of rows.entries()) {
       const next = rows[index + 1];
       const realpaths = realpath.mock.calls.slice(row.realpaths, next?.realpaths).filter(isPolicyRoot).length;
-      const lstats = lstat.mock.calls.slice(row.lstats, next?.lstats).filter(isPolicyRoot).length;
+      const lstats = lstat.mock.calls.slice(row.lstats, next?.lstats);
       expect(realpaths, `${row.name} policy-root realpaths`).toBeLessThanOrEqual(64);
-      expect(lstats, `${row.name} policy-root lstats`).toBeLessThanOrEqual(192);
+      expect(lstats.filter(isPolicyRoot).length, `${row.name} policy-root lstats`).toBeLessThanOrEqual(192);
+      if (index >= 2) later.push(lstats.length);
     }
+    // Later rows reread each changed route in full, about 40 lstats per component of the scratch path (477 at ten). The
+    // median skips a row that seeds again because a temp ancestor changed while the previous row seeded.
+    const depth = scratch.split(sep).length;
+    later.sort((a, b) => a - b);
+    expect(later[later.length >> 1], `median lstats after seeding, ${depth}-component scratch path`).toBeLessThanOrEqual(50 * depth + 100);
   });
 
   it("hides a folder that becomes the host's script resources partway through a listing", async ({ onTestFinished }) => {
