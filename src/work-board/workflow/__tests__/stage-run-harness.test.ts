@@ -994,3 +994,30 @@ it("an accepted continue puts its item back in flight for aggregate child waits"
     await h.cleanup();
   }
 });
+
+it("an accepted decision that ends the run before it returns leaves the item out of flight", async () => {
+  const h = await stageRunHarness({ observeRunWork: true });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    runs.push(h.start(id, h.local(version)));
+    (await h.untilLive(1, id))[0].finish();
+    await h.untilStage(id, "a", "awaiting_gate");
+    await runs[0];
+    h.makeEngine();
+    await h.engine.adoptParkedTemplateRuns();
+    expect(await h.decide(id, "a", "reject")).toMatchObject({ ok: true, status: "rejected" });
+    const ends = ["done", "denied", "cancelled", "error"];
+    expect(h.events).toContainEqual(expect.objectContaining({ itemId: id, phase: expect.toSatisfy((phase: string) => ends.includes(phase)) }));
+    await expect(h.untilLive(1, id)).rejects.toThrow(/Child wait ended/);
+    // Nothing is in flight, so an aggregate wait has no failure to take.
+    const wait = Promise.allSettled([h.untilLive(1)]);
+    expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
+  } finally {
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
