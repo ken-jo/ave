@@ -7,9 +7,10 @@ import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
 import { ko } from '../../../../i18n/messages/ko.js';
 import type { GraphSnapshot } from '../../../../shared/memory-map.js';
 import type { AveApi } from '../../types.js';
+import type { MemoryGraphRenderer } from '../memory-graph-renderer.js';
 import { MemoryView } from '../MemoryView.js';
 
-const renderer = vi.hoisted(() => ({ update: vi.fn(), zoom: vi.fn(), fit: vi.fn(), destroy: vi.fn(), callbacks: null as null | { onSelect: (id: string) => void; onError: () => void } }));
+const renderer = vi.hoisted(() => ({ update: vi.fn<MemoryGraphRenderer['update']>(), zoom: vi.fn(), fit: vi.fn(), destroy: vi.fn(), callbacks: null as null | { onSelect: (id: string) => void; onError: () => void } }));
 vi.mock('../memory-graph-renderer.js', () => ({
   MEMORY_SOURCE_TOKENS: { user: 'chart-1', assistant: 'chart-2', import: 'chart-3', capture: 'chart-4', unknown: 'chart-5' },
   createMemoryGraph: vi.fn((_container, callbacks) => { renderer.callbacks = callbacks; return renderer; }),
@@ -173,16 +174,31 @@ describe('memory map view', () => {
     fireEvent.click(screen.getByRole('button', { name: '사용자 1' }));
     const question = screen.getByRole('textbox', { name: '메모리에 물어보세요…' });
     fireEvent.change(question, { target: { value: 'What did I save?' } });
-    fireEvent.click(screen.getByRole('button', { name: '질문' }));
-    const citation = await screen.findByRole('button', { name: '소스 7: Alpha memory' });
+    const beforeSubmit = renderer.update.mock.calls.length;
+    // Flush the retrieval reply and the canvas effect that delivers its matches.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '질문' }));
+      await map.retrieve.mock.results[0].value;
+    });
+    const citation = screen.getByRole('button', { name: '소스 7: Alpha memory' });
     expect(map.retrieve.mock.calls[0][0]).toMatchObject({ question: 'What did I save?', scope: { projectRoot: 'C:/workspace/alpha', projectName: 'Alpha', includeUnscoped: false }, filters: { sources: ['user'] }, snapshotId: 'snapshot' });
     expect(map.retrieve.mock.calls[0][0].queryId).toBeTruthy();
-    expect(renderer.update.mock.lastCall?.[3]).toEqual(new Set(['a']));
+    const matchedAt = renderer.update.mock.calls.slice(beforeSubmit).findIndex(([, , , matches]) => matches?.has('a'));
+    expect(matchedAt).toBeGreaterThanOrEqual(0);
     fireEvent.click(citation); expect(await screen.findByText('Source quote')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '소스 상세 닫기' }));
-    fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }));
+    const updatesWithMatches = renderer.update.mock.calls.slice(beforeSubmit + matchedAt);
+    expect(updatesWithMatches.map(([, , selected]) => selected)).toContain('a');
+    for (const [, , , matches] of updatesWithMatches) expect(matches).toEqual(new Set(['a']));
+
+    const beforeClear = renderer.update.mock.calls.length;
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '필터 초기화' })); });
     expect(screen.queryByText('A grounded excerpt')).toBeNull();
-    expect(question).toHaveValue(''); expect(renderer.update.mock.lastCall?.[3]).toEqual(new Set());
+    expect(question).toHaveValue('');
+    const filterUpdates = renderer.update.mock.calls.slice(beforeClear);
+    const clearedAt = filterUpdates.findIndex(([, , , matches]) => matches?.size === 0);
+    expect(clearedAt).toBeGreaterThanOrEqual(0);
+    for (const [, , , matches] of filterUpdates.slice(clearedAt)) expect(matches).toEqual(new Set());
   });
   it('marks a live snapshot stale when the host invalidates it and clears open sources', async () => {
     const { map, props, api } = setup();
@@ -211,10 +227,14 @@ describe('memory map view', () => {
     map.get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const view = render(<MemoryView {...props} />);
     map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, snapshotId: 'new-scope' } });
-    view.rerender(<MemoryView {...props} project={{ projectRoot: 'C:/workspace/other', projectName: 'Other' }} />);
-    await waitFor(() => expect(renderer.update.mock.lastCall?.[0].snapshotId).toBe('new-scope'));
+    const beforeScopeChange = renderer.update.mock.calls.length;
+    await act(async () => {
+      view.rerender(<MemoryView {...props} project={{ projectRoot: 'C:/workspace/other', projectName: 'Other' }} />);
+    });
+    expect(renderer.update.mock.calls.slice(beforeScopeChange).map(([snapshot]) => snapshot.snapshotId)).toContain('new-scope');
+    const beforeStaleReply = renderer.update.mock.calls.length;
     await act(async () => finish({ ok: true, value: SNAPSHOT }));
-    expect(renderer.update.mock.lastCall?.[0].snapshotId).toBe('new-scope');
+    expect(renderer.update.mock.calls.slice(beforeStaleReply).map(([snapshot]) => snapshot.snapshotId)).not.toContain(SNAPSHOT.snapshotId);
   });
   it('observes the completion of a build that was running when this view mounted', async () => {
     const { map, props } = setup();
