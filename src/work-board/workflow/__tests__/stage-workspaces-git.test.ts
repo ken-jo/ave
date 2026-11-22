@@ -58,6 +58,38 @@ afterEach(async () => {
 });
 
 describe("git stage workspaces", () => {
+  it("a stage folder swapped after the tracked-file listing loses no outside file", async () => {
+    write(repo, ".env", "tracked\n");
+    write(repo, "conf/.env", "tracked\n");
+    commitAll("tracked secrets");
+    const outside = join(base, "outside");
+    write(outside, ".env", "outside\n");
+    write(outside, "conf/.env", "outside\n");
+    const real = createHostGit({ env });
+    let swap: "stage" | "folder" | undefined;
+    const run: HostGit["run"] = async (cwd, args, call) => {
+      const result = await real.run(cwd, args, call);
+      if (args[0] !== "ls-files" || swap === undefined) return result;
+      const target = swap === "stage" ? cwd : join(cwd, "conf");
+      renameSync(target, join(base, `away-${swap}`));
+      symlinkSync(swap === "stage" ? outside : join(outside, "conf"), target, "junction");
+      return result;
+    };
+    runs += 1;
+    const handle = { provider: createStageWorkspaceProvider({ git: { run, drivers: real.drivers }, sensitive: path => basename(path) === ".env" }), run: { itemId: 7, runId: `run-git-${process.pid}-${Date.now()}-${runs}`, runKey: "key" } };
+    opened.push(handle);
+    expect(await handle.provider.open(handle.run, repo)).toMatchObject({ ok: true });
+    for (swap of ["stage", "folder"] as const) {
+      expect(await handle.provider.prepare(handle.run, stageOf(`s-${swap}`), 1), swap).toEqual({ ok: false, code: "git-unavailable" });
+      expect(readFileSync(join(outside, ".env"), "utf8"), swap).toBe("outside\n");
+      expect(readFileSync(join(outside, "conf", ".env"), "utf8"), swap).toBe("outside\n");
+    }
+    swap = undefined;
+    const stage = await stageRoot(handle, "s1");
+    expect(readdirSync(stage).sort()).toEqual([".git", "a.txt", "b.txt", "conf"]);
+    expect(readdirSync(join(stage, "conf"))).toEqual([]);
+  });
+
   it("each stage gets its own worktree from the run branch head", async () => {
     const handle = start();
     const open = await handle.provider.open(handle.run, repo);

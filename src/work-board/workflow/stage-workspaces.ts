@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
@@ -330,13 +330,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     try {
       const drivers = await git.drivers(root);
       const head = (await gitOut(root, ["rev-parse", "--verify", `refs/heads/${file.branch}^{commit}`])).trim();
-      at.run.check();
+      // The stage folder is the host's own before git fills it, and still that folder each time something is removed from it.
+      const held = at.run.make(stageDirName(stage.id));
       await gitOut(root, ["worktree", "add", "--detach", dir, head], { drivers: drivers.config });
-      at.run.check();
+      held.check();
       // A tracked secret file is not handed to a stage.
-      for (const path of nul(await gitOut(dir, ["ls-files", "-z"]))) {
-        const target = join(dir, path);
-        if (isInside(dir, target) && sensitive(target)) rmSync(target, { force: true });
+      const tracked = nul(await gitOut(dir, ["ls-files", "-z"]));
+      held.check();
+      for (const path of tracked) {
+        if (!sensitive(join(dir, path))) continue;
+        const segments = path.split("/");
+        await held.walk(segments.slice(0, -1))?.remove(segments.at(-1) as string);
       }
       const entry = file.stages[stage.id];
       if (entry) Object.assign(entry, { ready: true, base: head, link: readFileSync(join(dir, ".git"), "utf8") });
