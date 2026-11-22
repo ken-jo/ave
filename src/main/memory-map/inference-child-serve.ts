@@ -3,39 +3,42 @@ import { acceptHostOverLoopback, parseChildLaunchArgs } from '../../plugins/isol
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import type { LocalModelBytes } from './embedding.js';
+import { MemoryMapHostError } from './errors.js';
+import { checkedInferenceFrameBytes, INFERENCE_PREFIX_BYTES } from './inference-request.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
-/** The request starts with four big-endian lengths: the task JSON, the model, the tokenizer and the tokenizer config. */
-export const INFERENCE_PREFIX_BYTES = 16;
 export type InferenceHandler = (task: MemoryInferenceTask, files: LocalModelBytes, onProgress: (progress: MemoryMapProgress) => void) => Promise<unknown>;
 
-function readRequest(input: Readable): Promise<{ task: MemoryInferenceTask; files: LocalModelBytes }> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let length = 0;
-    let total: number | undefined;
-    const lengths = (bytes: Buffer): [number, number, number, number] => [bytes.readUInt32BE(0), bytes.readUInt32BE(4), bytes.readUInt32BE(8), bytes.readUInt32BE(12)];
-    const onEnd = () => reject(new Error('The inference request ended early'));
-    const onData = (chunk: Buffer) => {
-      chunks.push(chunk); length += chunk.length;
-      if (total === undefined && length >= INFERENCE_PREFIX_BYTES) total = lengths(Buffer.concat(chunks)).reduce((sum, n) => sum + n, INFERENCE_PREFIX_BYTES);
-      if (total === undefined || length < total) return;
-      input.off('data', onData); input.off('end', onEnd);
-      if (length !== total) { reject(new Error('The inference request carries extra bytes')); return; }
-      const all = Buffer.concat(chunks, length);
-      const [taskLength, modelLength, tokenizerLength] = lengths(all);
-      const modelAt = INFERENCE_PREFIX_BYTES + taskLength;
-      const tokenizerAt = modelAt + modelLength;
-      const configAt = tokenizerAt + tokenizerLength;
-      resolve({
-        task: JSON.parse(all.subarray(INFERENCE_PREFIX_BYTES, modelAt).toString('utf8')) as MemoryInferenceTask,
-        files: { model: all.subarray(modelAt, tokenizerAt), tokenizer: all.subarray(tokenizerAt, configAt), tokenizerConfig: all.subarray(configAt) },
-      });
+async function readRequest(input: Readable): Promise<{ task: MemoryInferenceTask; files: LocalModelBytes }> {
+  const prefix = Buffer.alloc(INFERENCE_PREFIX_BYTES);
+  let prefixBytes = 0;
+  let payload: Buffer | undefined;
+  let payloadBytes = 0;
+  // The request and response can share a socket, so keep its write side open.
+  for await (const data of input.iterator({ destroyOnReturn: false })) {
+    const chunk = data as Buffer;
+    let offset = 0;
+    if (payload === undefined) {
+      offset = chunk.copy(prefix, prefixBytes);
+      prefixBytes += offset;
+      if (prefixBytes < prefix.length) continue;
+      const lengths = [prefix.readUInt32BE(0), prefix.readUInt32BE(4), prefix.readUInt32BE(8), prefix.readUInt32BE(12)];
+      const payloadSize = checkedInferenceFrameBytes(lengths) - prefix.length;
+      if (chunk.length - offset > payloadSize) throw new MemoryMapHostError('invalid-input');
+      payload = Buffer.allocUnsafe(payloadSize);
+    }
+    if (payloadBytes + chunk.length - offset > payload.length) throw new MemoryMapHostError('invalid-input');
+    payloadBytes += chunk.copy(payload, payloadBytes, offset);
+    if (payloadBytes !== payload.length) continue;
+    const modelAt = prefix.readUInt32BE(0);
+    const tokenizerAt = modelAt + prefix.readUInt32BE(4);
+    const configAt = tokenizerAt + prefix.readUInt32BE(8);
+    return {
+      task: JSON.parse(payload.subarray(0, modelAt).toString('utf8')) as MemoryInferenceTask,
+      files: { model: payload.subarray(modelAt, tokenizerAt), tokenizer: payload.subarray(tokenizerAt, configAt), tokenizerConfig: payload.subarray(configAt) },
     };
-    input.on('data', onData); input.once('end', onEnd); input.once('error', reject);
-    // The loopback channel arrives paused after its handshake.
-    input.resume();
-  });
+  }
+  throw new Error('The inference request ended early');
 }
 
 async function serve(input: Readable, output: Writable, handle: InferenceHandler): Promise<void> {
@@ -44,7 +47,9 @@ async function serve(input: Readable, output: Writable, handle: InferenceHandler
     const { task, files } = await readRequest(input);
     const value = await handle(task, files, progress => { void send({ kind: 'progress', progress }); });
     await send({ kind: 'result', value });
-  } catch { await send({ kind: 'error', error: 'graph-build-failed' }); }
+  } catch (error) {
+    await send({ kind: 'error', error: error instanceof MemoryMapHostError ? error.code : 'graph-build-failed' });
+  }
 }
 
 /** The child's side of one request: stdio where the host owns the pipes, the authenticated loopback channel under the Windows sandbox. */

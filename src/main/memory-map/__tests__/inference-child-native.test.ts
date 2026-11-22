@@ -66,7 +66,16 @@ beforeAll(async () => {
   mkdirSync(modelDir, { recursive: true, mode: 0o700 });
   for (const file of MODEL_FILES) writeFileSync(join(modelDir, file.name), Buffer.alloc(file.bytes));
   const outdir = childBundleDir('memory-map-inference-child');
-  await buildMainBoundaryBundle({ entryPoints: { 'memory-map-child': PROBE_SOURCE }, outdir, splitting: false });
+  await buildMainBoundaryBundle({
+    entryPoints: { 'memory-map-child': PROBE_SOURCE }, outdir, splitting: false,
+    plugins: [{
+      name: 'fixture-model-manifest',
+      setup(build) {
+        build.onResolve({ filter: /^\.\/model-manifest\.js$/ }, () => ({ path: 'model-manifest', namespace: 'fixture' }));
+        build.onLoad({ filter: /^model-manifest$/, namespace: 'fixture' }, () => ({ contents: `export const MODEL_FILES = ${JSON.stringify(MODEL_FILES)};` }));
+      },
+    }],
+  });
   renameSync(join(outdir, 'memory-map-child.mjs'), join(outdir, 'memory-map-child.js'));
   state.mainDir = outdir;
   const server = createServer(socket => { listenerConnections.push(socket.remoteAddress ?? 'unknown'); socket.destroy(); });

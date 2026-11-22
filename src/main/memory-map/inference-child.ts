@@ -15,21 +15,20 @@ import { win32SystemBinary } from '../../shared/windows-system-path.js';
 import { buildSafeChildEnv } from '../../tools/safe-env.js';
 import { mainDir } from '../main-paths.js';
 import { MemoryMapHostError } from './errors.js';
-import { INFERENCE_PREFIX_BYTES } from './inference-child-serve.js';
+import { checkedInferenceFrameBytes, INFERENCE_FILES, INFERENCE_PREFIX_BYTES } from './inference-request.js';
 import { assertLocalEmbeddingRuntime } from './local-runtime.js';
-import { MODEL_FILES, type ModelFile } from './model-manifest.js';
+import type { ModelFile } from './model-manifest.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
 // Set in the process environment at creation, where the native runtime reads it; the network block is the boundary, this is defense in depth.
 const TELEMETRY_OPT_OUT = { ORT_DISABLE_TELEMETRY: '1' } as const;
-const INFERENCE_FILES = MODEL_FILES.slice(0, 3);
 
 function write(output: Writable, chunk: Buffer): Promise<void> {
   return new Promise((resolve, reject) => { output.write(chunk, error => { if (error) reject(error); else resolve(); }); });
 }
 
 // The child reads no model file: the host streams the verified bytes, so no grant reaches the model folder.
-async function writeRequest(output: Writable, folder: string, task: MemoryInferenceTask): Promise<void> {
+async function writeRequest(output: Writable, folder: string, taskJson: string, lengths: readonly number[]): Promise<void> {
   const handles: FileHandle[] = [];
   const opened: { handle: FileHandle; file: ModelFile; initial: BigIntStats }[] = [];
   try {
@@ -40,10 +39,10 @@ async function writeRequest(output: Writable, folder: string, task: MemoryInfere
       if (!initial.isFile() || initial.size !== BigInt(file.bytes)) throw new MemoryMapHostError('model-integrity-failed');
       opened.push({ handle, file, initial });
     }
-    const header = Buffer.from(JSON.stringify(task), 'utf8');
     const prefix = Buffer.alloc(INFERENCE_PREFIX_BYTES);
-    for (const [index, n] of [header.length, ...INFERENCE_FILES.map(file => file.bytes)].entries()) prefix.writeUInt32BE(n, index * 4);
-    await write(output, prefix); await write(output, header);
+    for (const [index, bytes] of lengths.entries()) prefix.writeUInt32BE(bytes, index * 4);
+    await write(output, prefix);
+    await write(output, Buffer.from(taskJson, 'utf8'));
     let frameTail: Buffer | undefined;
     for (const { handle, file } of opened) {
       if (frameTail !== undefined) await write(output, frameTail);
@@ -131,6 +130,9 @@ async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Read
 export async function runInferenceChild<T>(folder: string, task: MemoryInferenceTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> {
   signal.throwIfAborted();
   assertLocalEmbeddingRuntime();
+  const taskJson = JSON.stringify(task);
+  const lengths = [Buffer.byteLength(taskJson, 'utf8'), ...INFERENCE_FILES.map(file => file.bytes)];
+  checkedInferenceFrameBytes(lengths);
   const { child, input, output } = await spawnInferenceChild();
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -150,13 +152,14 @@ export async function runInferenceChild<T>(folder: string, task: MemoryInference
     // The line reader re-emits its input's errors.
     lines.on('error', failed);
     lines.on('line', line => {
-      let message: { kind?: string; progress?: MemoryMapProgress; value?: unknown };
+      let message: { kind?: string; progress?: MemoryMapProgress; value?: unknown; error?: unknown };
       try { message = JSON.parse(line) as typeof message; } catch { finish(new Error('Memory worker failed')); return; }
       if (message.kind === 'progress') { if (message.progress !== undefined) onProgress?.(message.progress); }
       else if (message.kind === 'result') finish(undefined, message.value as T);
+      else if (message.kind === 'error' && (message.error === 'invalid-input' || message.error === 'model-integrity-failed')) finish(new MemoryMapHostError(message.error));
       else finish(new Error('Memory worker failed'));
     });
     lines.once('close', () => finish(new Error('Memory worker exited before completion')));
-    writeRequest(output, folder, task).catch((error: unknown) => finish(error instanceof Error ? error : new Error('Memory worker failed')));
+    writeRequest(output, folder, taskJson, lengths).catch((error: unknown) => finish(error instanceof Error ? error : new Error('Memory worker failed')));
   });
 }

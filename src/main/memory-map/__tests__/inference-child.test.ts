@@ -80,6 +80,28 @@ function serveReply(beforeWrite?: (received: number) => void) {
 }
 
 describe('inference model stream', () => {
+  it('refuses an oversized UTF-8 task before allocating its wire buffer or launching the child', async () => {
+    const task = { kind: 'embed', text: '한'.repeat(Math.ceil(32 * 1024 * 1024 / 3)) } as const;
+    spawn.mockRejectedValue(new Error('Unexpected child launch'));
+    await expect(runInferenceChild(folder, task, new AbortController().signal)).rejects.toMatchObject({ code: 'invalid-input' });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a file with a mismatched manifest length before writing any frame bytes', async () => {
+    appendFileSync(join(folder, MODEL_FILES[1].name), 'x');
+    const { child } = serveReply();
+    const requestWrite = vi.spyOn(child.stdin, 'write');
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'model-integrity-failed' });
+    expect(requestWrite).not.toHaveBeenCalled();
+  });
+
+  it('preserves a typed refusal from the child', async () => {
+    const { child } = serveReply(received => {
+      if (received === 0) child.stdout.write('{"kind":"error","error":"model-integrity-failed"}\n');
+    });
+    await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'model-integrity-failed' });
+  });
+
   it.each(['linux', 'win32'] as const)('delivers the request through the protocol transport using exactly three pipes on %s', async platform => {
     setProcessPlatform(platform);
     vi.stubEnv('NODE_CHANNEL_FD', '3');
