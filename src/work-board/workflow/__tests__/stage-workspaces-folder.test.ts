@@ -1,15 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
 import { createHostGit } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR } from "../workspace-layout.js";
 import { copySeedFiles, listSeedFiles } from "../workspace-seed.js";
-import { stageOf } from "./stage-fixtures.js";
+import { stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 let base: string;
 let project: string;
@@ -18,10 +19,6 @@ let runs = 0;
 const opened: Handle[] = [];
 interface Handle { provider: ReturnType<typeof createStageWorkspaceProvider>; run: RunRef; runRoot: string; out: string }
 
-const write = (root: string, path: string, text: string): void => {
-  mkdirSync(join(root, path, ".."), { recursive: true });
-  writeFileSync(join(root, path), text);
-};
 const read = (root: string, path: string): string => readFileSync(join(root, path), "utf8");
 /** Every file under `root`, as sorted `/` paths. */
 const tree = (root: string, prefix = ""): string[] => readdirSync(join(root, prefix), { withFileTypes: true })
@@ -63,6 +60,35 @@ afterEach(async () => {
 });
 
 describe("folder stage workspaces", () => {
+  it("the layout carries no raw path, run id or title, and no stage is named like a host folder", async () => {
+    const home = realpathSync.native(aveHome());
+    const withProject = await start(project);
+    expect(relative(home, withProject.runRoot).split(sep)).toEqual(["worktrees", expect.stringMatching(/^project-[0-9a-f]{8}$/u), expect.stringMatching(/^[0-9a-f]{12}$/u)]);
+    expect(withProject.runRoot).not.toContain(withProject.run.runId);
+    expect(relative(home, await stageRoot(withProject, "s1")).split(sep)).toHaveLength(4);
+    const without = await start(undefined);
+    expect(relative(home, without.runRoot).split(sep).slice(0, 2)).toEqual(["worktrees", "board-7"]);
+    for (const name of ["_join", "_out", "_run.json", "..", "a/b", "S1"]) {
+      expect(await without.provider.prepare(without.run, stageOf(name), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
+    }
+    expect(readdirSync(without.runRoot).sort()).toEqual(["_out", "_run.json"]);
+  });
+
+  it("opens nothing while the privacy of the home is not established", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: aveHome(), category: "boundary-link", reason: "fixture" });
+    const listed = (): string[] => existsSync(join(aveHome(), "worktrees")) ? tree(join(aveHome(), "worktrees")) : [];
+    const before = listed();
+    try {
+      const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+      const run: RunRef = { itemId: 8, runId: `run-unverified-${process.pid}-${Date.now()}`, runKey: "key" };
+      expect(await provider.open(run, project)).toEqual({ ok: false, code: "home-boundary-unverified" });
+      expect(listed()).toEqual(before);
+      expect(await provider.prepare(run, stageOf("s1"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
+  });
+
   it("a folder project runs two stages in parallel in two folders", async () => {
     const handle = await start(project);
     expect(handle.out).toBe(join(handle.runRoot, OUT_DIR));

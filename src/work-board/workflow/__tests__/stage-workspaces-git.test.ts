@@ -7,7 +7,7 @@ import { createHostGit } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, runBranch } from "../workspace-layout.js";
-import { stageOf } from "./stage-fixtures.js";
+import { stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 let base: string;
 let repo: string;
@@ -17,10 +17,6 @@ const opened: { provider: ReturnType<typeof createStageWorkspaceProvider>; run: 
 
 /** Plain git, the way the user would run it: hooks and drivers active. */
 const userGit = (cwd: string, ...args: string[]): string => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-const write = (root: string, path: string, text: string): void => {
-  mkdirSync(join(root, path, ".."), { recursive: true });
-  writeFileSync(join(root, path), text);
-};
 const commitAll = (message: string): string => { userGit(repo, "add", "-A"); userGit(repo, "commit", "-q", "-m", message); return userGit(repo, "rev-parse", "HEAD"); };
 
 function start(): { provider: ReturnType<typeof createStageWorkspaceProvider>; run: RunRef } {

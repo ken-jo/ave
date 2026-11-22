@@ -1,5 +1,13 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { TemplateGraph, TemplateStage, TemplateVersion, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { graphHashOf } from "../../template-graph.js";
+
+/** Writes one fixture file under `root`, making its folders. */
+export function writeUnder(root: string, path: string, text: string): void {
+  mkdirSync(dirname(join(root, path)), { recursive: true });
+  writeFileSync(join(root, path), text);
+}
 
 export function stageOf(id: string, over: Partial<TemplateStage> = {}): TemplateStage {
   return { id, name: `Stage ${id}`, goal: `Do ${id}`, inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" }, ...over };

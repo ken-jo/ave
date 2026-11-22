@@ -4,6 +4,7 @@ import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } from "../../shared/ave-home.js";
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { RunWorkspace, TemplateStage } from "../../shared/workflow-template-types.js";
+import { isStageId } from "../template-graph.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
@@ -309,6 +310,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const found = locate(run);
       if (!found) return { ok: false as const, code: "workspace-unavailable" as const };
       const { runRoot, file } = found;
+      // `_join`, `_out` and the run record are the host's; nothing but a stage id names a stage folder.
+      if (!isStageId(stage.id)) return { ok: false as const, code: "workspace-unavailable" as const };
       const dir = join(runRoot, stageDirName(stage.id));
       const existing = file.stages[stage.id];
       if (existing?.ready === true && plainDirectory(dir)) {
