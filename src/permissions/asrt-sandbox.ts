@@ -31,7 +31,7 @@ import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.j
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
-import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
@@ -202,6 +202,8 @@ export interface TrustedSandboxSettings {
   };
   // The REAL Electron `app.getPath("userData")` for this process, threaded in from a TRUSTED main-process caller (boot.ts) that CAN import `electron`. When present: this EXACT path is denied (handles `--user-data-dir`, XDG_CONFIG_HOME, and future productName changes correctly). When absent: getDefaultSensitiveReadDenyPaths falls back to a per-platform os.homedir + literal derivation so there is always SOME coverage even without the threaded value (e.g. the mcp-client wrap path). do NOT derive this from plugin manifests, project config, or any untrusted source — only from `electron.app.getPath("userData")` in the main process.
   readonly userDataDir?: string;
+  // Trusted host lookup for the current user's Documents known folder.
+  readonly resolveWindowsDocumentsPath?: () => string;
 }
 
 // Per-command config may contain only filesystem scoping, never network or weakening flags. Windows rejects nonempty per-exec allow lists; long-lived workers need dedicated holder grants instead. Map to the exact filesystem slice before calling the runtime.
@@ -1858,9 +1860,29 @@ function getDefaultSensitiveDenyPaths(
   return out;
 }
 
+function windowsProfileWriteDenies(homes: readonly string[], resolveDocumentsPath: (() => string) | undefined): string[] {
+  let documents: string | undefined;
+  try {
+    const path = stripExtendedPathPrefix(resolveDocumentsPath?.() ?? "");
+    // Windows filesystem grants require a local drive path.
+    if (/^[a-z]:[\\/]/i.test(path) && !/[\0*?:]/.test(path.slice(2))) documents = win32.normalize(path);
+  } catch {
+    // Keep the default locations covered when the known folder is unavailable.
+  }
+  const roots = documents === undefined ? homes.map(home => win32.join(home, "Documents")) : [documents];
+  return roots.flatMap(root => ["WindowsPowerShell", "PowerShell"].flatMap(engine =>
+    ["profile.ps1", "Microsoft.PowerShell_profile.ps1"].flatMap(name => {
+      const path = win32.join(root, engine, name);
+      return [path, stripExtendedPathPrefix(resolvePathForPolicy(path))];
+    })));
+}
+
 // The write floor overrides write grants and includes sensitive stores, saved conversations and persistence/re-exec paths, including config, shell startup and scheduler files; reading secrets alone does not prevent sandbox escape through later execution.
 // Use literal host-derived paths without allow-if-missing behavior. Project the sensitive table directly, excluding private temp/HOME roots that each process must write; unlike read policy, config-wide write denial is deliberate.
-export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
+export function getDefaultSensitiveWriteDenyPaths(
+  userDataDir = _baseTrustedSettings?.userDataDir,
+  resolveDocumentsPath = _baseTrustedSettings?.resolveWindowsDocumentsPath,
+): string[] {
   const homes = sensitiveDenyHomes();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
   // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
@@ -1883,7 +1905,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
   ]);
   const writePersistence = [
     ...hostScriptWriteDenyPaths(),
-    ...(process.platform === "win32" ? srtWinPrivateDirectories() : []),
+    ...(process.platform === "win32" ? [...srtWinPrivateDirectories(), ...windowsProfileWriteDenies(homes, resolveDocumentsPath)] : []),
     ...homeWritePersistence,
     // Deny cron persistence paths because later scheduler execution escapes the sandbox.
     ...POSIX_CRON_DENIES,
@@ -1955,7 +1977,7 @@ export function buildSandboxConfig(
     }
   }
   // denyWrite floor: same boot-level belt as denyRead for callers that do not supply per-command filesystem.denyWrite. Per-command wraps still restate this SOT because ASRT's customConfig filesystem section replaces the shared arrays, but the session config now has a real persistence-vector floor too.
-  const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(trustedSettings.userDataDir);
+  const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(trustedSettings.userDataDir, trustedSettings.resolveWindowsDocumentsPath);
   const mandatory = buildMandatorySandboxWritePolicy(
     admittedWindowsPolicies.get(trustedSettings)?.allowWrite ?? trustedSettings.allowWrite ?? [],
     trustedSettings.userDataDir,
