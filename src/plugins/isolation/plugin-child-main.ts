@@ -15,6 +15,7 @@ import {
   classifyMultiplexedMessage,
   FramedMessageStream,
   PendingCallTable,
+  type DecodedMessageInput,
   type FramedMessageInput,
   type MultiplexedMessage,
 } from "./child-stream-multiplex.js";
@@ -82,7 +83,7 @@ function describeLifecycleHooks(instance: PluginChildRuntime["instance"]): Plugi
 
 /** Inject streams to exercise the same child runtime without subprocess setup. */
 export function servePluginChild(
-  input: FramedMessageInput & { destroy(): void },
+  input: (FramedMessageInput | DecodedMessageInput) & { destroy(): void },
   output: Writable,
 ): PluginChildService {
   let runtime: PluginChildRuntime | undefined;

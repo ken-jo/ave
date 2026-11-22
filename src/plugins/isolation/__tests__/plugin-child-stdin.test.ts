@@ -54,11 +54,12 @@ describe("plugin child input owner", () => {
       Atomics.store(owner.bytes, 0, PLUGIN_CHILD_INPUT_BYTES_MAX - 2);
       owner.stream.emit("data", Buffer.from("ok"));
       expect(Atomics.load(owner.bytes, 0)).toBe(PLUGIN_CHILD_INPUT_BYTES_MAX);
-      expect(owner.dispatch.mock.calls[0]?.[0]).toEqual(Uint8Array.from(Buffer.from("ok")));
+      const delivery = { frames: [], observation: Uint8Array.from(Buffer.from("ok")), byteLength: 2 };
+      expect(owner.dispatch.mock.calls[0]?.[0]).toEqual(delivery);
       expect(owner.schedule).not.toHaveBeenCalled();
 
       owner.stream.emit("data", Buffer.from("!"));
-      expect(owner.dispatch.mock.calls.map(([message]) => message)).toEqual([Uint8Array.from(Buffer.from("ok")), null]);
+      expect(owner.dispatch.mock.calls.map(([message]) => message)).toEqual([delivery, null]);
       expect(owner.report).toHaveBeenCalledExactlyOnceWith("host input exceeded the credit window");
       expect(owner.stream.destroyed).toBe(true);
       expect(owner.schedule).toHaveBeenCalledTimes(1);

@@ -421,23 +421,52 @@ export const createPlugin = async () => {
     return Reflect.apply(previousPost, this, args);
   };
   let parserDispatchReached = false;
+  const previousToString = Buffer.prototype.toString;
+  const containsMeasuredFrame = (value) => Buffer.isBuffer(value)
+    && Reflect.apply(previousToString, value, ["utf8"]).includes("/onPublished");
+  const previousFrom = Buffer.from;
+  Buffer.from = function (...args) {
+    const result = Reflect.apply(previousFrom, this, args);
+    if (containsMeasuredFrame(result)) parserDispatchReached = true;
+    return result;
+  };
+  for (const method of ["indexOf", "subarray", "toString"]) {
+    const previous = Buffer.prototype[method];
+    Buffer.prototype[method] = function (...args) {
+      if (containsMeasuredFrame(this)) parserDispatchReached = true;
+      return Reflect.apply(previous, this, args);
+    };
+  }
+  const previousParse = JSON.parse;
+  JSON.parse = function (text, ...args) {
+    if (typeof text === "string" && text.includes("/onPublished")) parserDispatchReached = true;
+    return Reflect.apply(previousParse, this, [text, ...args]);
+  };
   const previousEmit = EventEmitter.prototype.emit;
   EventEmitter.prototype.emit = function (event, ...args) {
-    if (event === "data" && Buffer.isBuffer(args[0]) && args[0].includes("/onPublished")) {
+    if (event === "data" && containsMeasuredFrame(args[0])) {
       parserDispatchReached = true;
     }
     return Reflect.apply(previousEmit, this, [event, ...args]);
   };
   const previousOn = Readable.prototype.on;
-  Readable.prototype.on = function (...args) { return Reflect.apply(previousOn, this, args); };
+  Readable.prototype.on = function (event, listener) {
+    if (event === "data") {
+      return Reflect.apply(previousOn, this, [event, function (chunk) {
+        if (containsMeasuredFrame(chunk)) parserDispatchReached = true;
+        return Reflect.apply(listener, this, [chunk]);
+      }]);
+    }
+    return Reflect.apply(previousOn, this, [event, listener]);
+  };
   const previousPush = Readable.prototype.push;
   Readable.prototype.push = function (chunk, ...args) {
-    if (chunk?.includes("/onPublished")) parserDispatchReached = true;
+    if (containsMeasuredFrame(chunk)) parserDispatchReached = true;
     return Reflect.apply(previousPush, this, [chunk, ...args]);
   };
   let seen = false;
   view.once("data", (chunk) => {
-    seen = chunk.includes("/onPublished");
+    seen = containsMeasuredFrame(chunk);
     chunk.fill(0);
   });
   view.on("end", () => {

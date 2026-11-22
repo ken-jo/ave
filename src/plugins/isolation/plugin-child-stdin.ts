@@ -2,13 +2,20 @@ import { write } from "node:fs";
 import { Socket } from "node:net";
 import { Writable, type Duplex } from "node:stream";
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
+import { StdioFrameDecoder } from "../../mcp/stdio-framing.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { acceptHostOverLoopback } from "./child-loopback-link.js";
-import type { FramedMessageInput } from "./child-stream-multiplex.js";
+import type { DecodedMessageInput, MultiplexedMessage } from "./child-stream-multiplex.js";
+import { FRAME_BYTES_MAX } from "./host-api-wire.js";
 import { PLUGIN_CHILD_INPUT_BYTES_MAX, PLUGIN_CHILD_INPUT_FD, pluginChildInputCredit } from "./plugin-child-credit.js";
 
-type OwnerMessage = Uint8Array | null | { readonly announce: string } | { readonly error?: string };
+type OwnerMessage =
+  | { readonly frames: MultiplexedMessage[]; readonly observation: Uint8Array; readonly byteLength: number }
+  | { readonly violation: string }
+  | { readonly announce: string }
+  | { readonly error?: string }
+  | null;
 type StdinEvent = "data" | "end";
 type StdinListener = (chunk: Buffer) => void;
 type StdinObserver = { readonly listener: StdinListener; readonly once: boolean };
@@ -32,19 +39,23 @@ export function openPluginChildInput(
   stdout: Writable,
   onHostGone: () => void,
 ): {
-  input: FramedMessageInput & { destroy(): void };
+  input: DecodedMessageInput & { destroy(): void };
   output: Writable;
   stdin: PluginStdinView;
 } {
   const queuedBytes = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const acknowledgeBytes = Atomics.sub;
+  const observationBuffer = Buffer.from;
   const { port1: receiver, port2: port } = new MessageChannel();
   const postToOwner = receiver.postMessage.bind(receiver);
   const closeReceiver = receiver.close.bind(receiver);
-  let receive: ((chunk: Buffer) => void) | undefined;
-  const input = {
-    on(_event: "data", listener: (chunk: Buffer) => void) { receive = listener; },
-    off(_event: "data", listener: (chunk: Buffer) => void) { if (receive === listener) receive = undefined; },
+  let receive: ((message: MultiplexedMessage) => void) | undefined;
+  let reject: ((reason: string) => void) | undefined;
+  const input: DecodedMessageInput & { destroy(): void } = {
+    subscribe(onMessage, onViolation) {
+      receive = onMessage;
+      reject = onViolation;
+    },
     destroy() {
       receive = undefined;
       if (!closed) postToOwner(null);
@@ -114,13 +125,19 @@ export function openPluginChildInput(
       observe("end", observers.end.slice());
       return;
     }
-    if (message instanceof Uint8Array) {
-      const bytes = Buffer.from(message.buffer, message.byteOffset, message.byteLength);
+    if ("frames" in message) {
       const listeners = observers.data.slice();
-      receive?.(bytes);
+      for (let index = 0; index < message.frames.length; index += 1) {
+        receive?.(message.frames[index]!);
+      }
       acknowledgeBytes(queuedBytes, 0, message.byteLength);
       if (receive) sendCredit(pluginChildInputCredit(message.byteLength));
-      if (listeners.length > 0) observe("data", listeners, Buffer.from(bytes));
+      if (listeners.length > 0) {
+        const { buffer, byteOffset, byteLength } = message.observation;
+        observe("data", listeners, observationBuffer(buffer, byteOffset, byteLength));
+      }
+    } else if ("violation" in message) {
+      reject?.(message.violation);
     } else if ("announce" in message) {
       stdout.write(message.announce);
     } else {
@@ -167,6 +184,7 @@ export function watchPluginChildInput(
   queuedBytes: Int32Array,
   control: PluginChildInputControl = inputControl,
 ): void {
+  const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
   let lost = false;
   const handleLoss = (): void => {
     if (lost) return;
@@ -197,8 +215,16 @@ export function watchPluginChildInput(
       fail("host input exceeded the credit window");
       return;
     }
-    const bytes = Uint8Array.from(chunk);
-    port.postMessage(bytes, [bytes.buffer]);
+    let frames: MultiplexedMessage[];
+    try {
+      frames = decoder.push(chunk);
+    } catch (error) {
+      port.postMessage({ violation: errorMessage(error) } satisfies OwnerMessage);
+      handleLoss();
+      return;
+    }
+    const observation = Uint8Array.from(chunk);
+    port.postMessage({ frames, observation, byteLength: chunk.byteLength } satisfies OwnerMessage, [observation.buffer]);
   });
   input.resume();
 }
