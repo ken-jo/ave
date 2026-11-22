@@ -86,48 +86,6 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(hostShutdownRows(rows(), "tu-queued-0")).toHaveLength(1);
   });
 
-  it("refuses a queued tool after the seal while the previous result callback waits on the journal", async () => {
-    const { ledger, executor, executes, toolUses, cancelled } = await freshExecutor(2);
-    let firstDelivered!: () => void;
-    const delivered = new Promise<void>((resolve) => { firstDelivered = resolve; });
-    let releaseJournal!: () => void;
-    const journal = new Promise<void>((resolve) => { releaseJournal = resolve; });
-    const resultIds: string[] = [];
-    const running = executor.executeAll(toolUses, {
-      sessionId: "sess-after-close",
-      permissionContext: userPermissionContext(),
-      onToolResult: async (result) => {
-        resultIds.push(result.tool_use_id);
-        if (result.tool_use_id === "tu-queued-0") { firstDelivered(); await journal; }
-      },
-    });
-    await delivered;
-    let releaseClose!: () => void;
-    const closeHeld = new Promise<void>((resolve) => { releaseClose = resolve; });
-    const close = vi.fn(async () => { await closeHeld; });
-    ledger.sealToolInvocations();
-    const join = ledger.closeToolInvocationAudit(close);
-    let results: Awaited<typeof running>;
-    try {
-      // The join closes while the first callback still waits on the journal.
-      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce(), { timeout: 10_000 });
-    } finally {
-      releaseJournal();
-      results = await running;
-      releaseClose();
-    }
-    await expect(join).resolves.toBeGreaterThanOrEqual(0);
-    expect(executes[0]).toHaveBeenCalledOnce();
-    expect(executes[1]).not.toHaveBeenCalled();
-    expect(results.map((result) => [result.tool_use_id, result.is_error === true])).toEqual([
-      ["tu-queued-0", false],
-      ["tu-queued-1", true],
-    ]);
-    expect(results[1].content).toBe(cancelled);
-    expect(resultIds).toEqual(["tu-queued-0", "tu-queued-1"]);
-    expect(ledger.pendingToolInvocationCount()).toBe(0);
-  });
-
   it.each(["executeAll", "executeConversationBatch"] as const)(
     "writes the host-shutdown row before close for a queued tool while the previous result waits on the journal (%s)",
     async (path) => {
