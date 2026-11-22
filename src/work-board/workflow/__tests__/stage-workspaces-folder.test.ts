@@ -423,6 +423,8 @@ describe("folder stage workspaces", () => {
     // No name with a letter to ask with, or no name: the root cannot tell.
     expect(projectFoldsCase(project, reader(["한글", "123"], { 한글: "1:7", 123: "1:8" }))).toBeUndefined();
     expect(projectFoldsCase(project, reader([], {}))).toBeUndefined();
+    // A sign that only folds to a letter is no letter to ask with.
+    expect(projectFoldsCase(project, reader(["\u212A", "\u017F"], { "\u212A": "1:7", "\u017F": "1:8" }))).toBeUndefined();
   });
 
   it("the ignore case rule comes from the project root, not the first nested ignore file", async () => {

@@ -25,7 +25,7 @@ const onDisk: NameReader = {
   },
 };
 
-const swapAsciiCase = (name: string): string => name.replace(/[a-z]/giu, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
+const swapAsciiCase = (name: string): string => name.replace(/[A-Za-z]/gu, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
 const asciiLower = (name: string): string => name.replace(/[A-Z]/gu, letter => letter.toLowerCase());
 
 /**
@@ -39,7 +39,7 @@ export function projectFoldsCase(root: string, reader: NameReader = onDisk): boo
   // Two names that differ by case alone stand side by side only where names do not fold.
   if (new Set(names.map(asciiLower)).size < names.length) return false;
   for (const name of names) {
-    if (!/[a-z]/iu.test(name)) continue;
+    if (!/[A-Za-z]/u.test(name)) continue;
     const own = reader.id(join(root, name));
     if (own === undefined) continue;
     const other = reader.id(join(root, swapAsciiCase(name)));
