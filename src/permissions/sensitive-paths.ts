@@ -843,8 +843,9 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write", a
 
 /**
  * A folder listing reuses the cached pattern index. Each row serially samples the recorded chains for reused policy
- * roots. If only a directory change time moved on a direct chain, confirm its child still resolves to the same spelling.
- * Failed validation falls back to live canonicalization.
+ * roots. If only a directory change time moved on a direct chain, that lookup reads its chain again and confirms the
+ * directory's next component still resolves to the same spelling. Failed validation, including a missing next component,
+ * falls back to live canonicalization.
  * A concurrent change after a sample can leave that row's observation stale. File-tool permission and execution keep
  * their own checks.
  */
@@ -914,26 +915,32 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
       if (!readings.has(path)) readings.set(path, readChainEntry(path));
       return readings.get(path);
     };
-    const spellings = new Map<string, boolean>();
-    const confirmsSpelling = (path: string): boolean => {
+    // Many policy roots share a changed directory. A confirmation serves the row while that directory reads the same.
+    const spellings = new Map<string, { directory: NonNullable<ChainEntry>; confirmed: boolean }>();
+    const confirmsSpelling = (path: string, directory: NonNullable<ChainEntry>): boolean => {
       const known = spellings.get(path);
-      if (known !== undefined) return known;
+      if (known !== undefined && sameChainEntry(directory, known.directory)) return known.confirmed;
       let confirmed = false;
       try {
         verifyLocalFilesystemChain(path);
         confirmed = foldCanonicalPathSeparators(realpathSync.native(path)) === foldCanonicalPathSeparators(path);
       } catch { /* Unconfirmed spellings require live resolution. */ }
-      spellings.set(path, confirmed);
+      spellings.set(path, { directory, confirmed });
       return confirmed;
     };
-    const holds = ({ entries, direct }: ResolutionWitness) => entries.every(([path, entry], index) => {
-      const current = read(path);
-      if (sameChainEntry(current, entry)) return true;
-      if (!direct || entry?.type !== BigInt(constants.S_IFDIR) || !sameChainEntry(current, entry, false)) return false;
-      // Many policy roots share this edge. Confirm it once per row after unrelated sibling writes.
-      const next = entries[index + 1];
-      return confirmsSpelling(next?.[1] ? next[0] : path);
-    });
+    const holds = ({ entries, direct }: ResolutionWitness) => {
+      if (entries.every(([path, entry]) => sameChainEntry(read(path), entry))) return true;
+      if (!direct) return false;
+      // The row's samples may predate a change along this route, so read the whole route again for this lookup.
+      return entries.every(([path, entry], index) => {
+        const current = readChainEntry(path);
+        if (sameChainEntry(current, entry)) return true;
+        if (!current || entry?.type !== BigInt(constants.S_IFDIR) || !sameChainEntry(current, entry, false)) return false;
+        // A spelling proves only its own prefix, and a missing child of a changed directory may now exist or be a link.
+        const next = entries[index + 1];
+        return next?.[1] !== null && confirmsSpelling(next?.[0] ?? path, current);
+      });
+    };
     return (path) => {
       const cached = resolved.get(path);
       if (cached !== undefined && holds(cached)) return cached.canonical;

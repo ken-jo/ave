@@ -145,6 +145,29 @@ function changeDuringListing(dir: string, rows: number, change: () => void, onTe
   onTestFinished(() => spy.mockRestore());
   return () => changed;
 }
+// After the first `rows` entries, models sibling writes that move `bumped`'s change time, and runs `change` right after the
+// row's first read of `watched`, between two policy-root lookups of that row.
+function changeWithinRow(dir: string, rows: number, bumped: string, watched: string, change: () => void, onTestFinished: TestFinished): () => boolean {
+  const armed = changeDuringListing(dir, rows, () => {}, onTestFinished);
+  const at = (path: unknown, expected: string) => typeof path === "string" && relative(path, expected) === "";
+  let changed = false;
+  const statPath = fsModule.lstatSync;
+  const lstat = vi.spyOn(fsModule, "lstatSync").mockImplementation((...args) => {
+    const stat = statPath(...args);
+    if (armed() && at(args[0], bumped) && stat && "ctimeNs" in stat) stat.ctimeNs += 1n;
+    if (armed() && !changed && at(args[0], watched)) {
+      changed = true;
+      change();
+    }
+    return stat;
+  });
+  syncBuiltinESMExports();
+  onTestFinished(() => {
+    lstat.mockRestore();
+    syncBuiltinESMExports();
+  });
+  return () => changed;
+}
 
 beforeAll(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "ave-folder-view-")));
@@ -337,6 +360,31 @@ describe("workspace.listDir folder-view entries", () => {
     expect(changed()).toBe(true);
     expect(isSensitivePath(target, "write", "person")).toBe("ave-home:certs");
     expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 1 });
+  });
+
+  // Each row looks up `packages/ledger.json` just before `packages/mcp-installs.json`; the third row reuses the second's witnesses.
+  async function listWhilePackagesBecomesLink(bumped: "home" | "scratch", onTestFinished: TestFinished): Promise<void> {
+    const scratch = mkdtempSync(join(root, "row-route-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    for (const path of [dir, home]) mkdirSync(path);
+    for (const name of ["a-1.txt", "a-2.txt", "mcp-installs.json"]) writeFileSync(join(dir, name), "");
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const target = join(dir, "mcp-installs.json");
+    const packages = join(home, "packages");
+    expect(isSensitivePath(target, "write", "person")).toBeNull();
+    const changed = changeWithinRow(dir, 2, bumped === "home" ? home : scratch, packages, () => symlinkSync(dir, packages, directoryLink), onTestFinished);
+    const res = await listDir(dir);
+    expect(changed()).toBe(true);
+    expect(isSensitivePath(target, "write", "person")).toBe("ave-home:packages/mcp-installs.json");
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt"], hidden: 1 });
+  }
+
+  it("hides an entry that a missing Ave home component starts routing to within one row", async ({ onTestFinished }) => {
+    // The home's own change time moved, so confirming the home's spelling says nothing about its missing child.
+    await listWhilePackagesBecomesLink("home", onTestFinished);
   });
 
   it("hides exactly the entries a separate sensitivity check of each one hides", async ({ onTestFinished }) => {
