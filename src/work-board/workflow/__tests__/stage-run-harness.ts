@@ -35,11 +35,12 @@ export type StageRunView = WorkItemResolved & { stageRuns: WorkItemStageRun[]; s
 type WorkflowDeps = NonNullable<WorkBoardEngineDeps["workflow"]>;
 type ObservedLaunch = { linked(): void; resume(): void };
 
-function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
+function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled?: () => void) {
   const pending = new Set<Promise<unknown>>();
   const launchesPending = new Set<Promise<unknown>>();
   function track(work: Promise<unknown>, queue = pending): void {
     queue.add(work);
+    onScheduled?.();
     const remove = () => { queue.delete(work); };
     void work.then(remove, remove);
   }
@@ -74,6 +75,7 @@ export async function stageRunHarness(opts: {
   workspace?: Partial<StageWorkspaceProvider>;
   /** Track detached work for the current engine. */
   observeRunWork?: boolean;
+  onRunWorkScheduled?: () => void;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
   const boardPath = join(dir, "board.json");
@@ -89,7 +91,7 @@ export async function stageRunHarness(opts: {
   const sweeps: string[][] = [];
   const registry = boardParentToolRegistry();
   const launches = new AsyncLocalStorage<ObservedLaunch>();
-  const observeEngineWork = () => opts.observeRunWork ? observeRunWork(launches) : undefined;
+  const observeEngineWork = () => opts.observeRunWork ? observeRunWork(launches, opts.onRunWorkScheduled) : undefined;
   let runWork = observeEngineWork();
   const childChanges = new Set<() => void>();
   const progressChanges = new Set<() => void>();

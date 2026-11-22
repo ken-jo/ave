@@ -20,14 +20,12 @@ interface Run { h: Harness; id: number; runId: string; children: FakeChild[]; lo
 async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSpawn?: (lose: (on: boolean) => void) => void, reason: "row-lost" | "board-unread" = "row-lost", passConditions?: PassConditionRegistry): Promise<void> {
   let losing = false;
   const lose = (on: boolean): void => { losing = on; };
-  const childrenLinked = deferred<void>();
-  let linkedCount = 0;
+  const scheduled = deferred<void>();
   const h = await stageRunHarness({
     observeRunWork: true,
+    onRunWorkScheduled: scheduled.resolve,
     script: () => {
       onSpawn?.(lose);
-      linkedCount += 1;
-      if (linkedCount === stages.length) childrenLinked.resolve();
       return undefined;
     },
     workflow: passConditions ? { passConditions } : undefined,
@@ -40,10 +38,8 @@ async function withRun(stages: string[], body: (run: Run) => Promise<void>, onSp
     const version = await h.confirm(stages.map(id => passConditions ? autoStageOf(id) : stageOf(id)));
     const id = await h.addItem(version);
     const started = h.start(id, h.local(version));
-    await Promise.race([
-      childrenLinked.promise,
-      started.then(result => { throw new Error(`Run ended before its children started: ${result.status}`); }),
-    ]);
+    // The startup work schedules the launches. The drain joins each until it links or exits.
+    await Promise.race([scheduled.promise, started]);
     await h.drainRunWork();
     const children = h.live();
     expect(children).toHaveLength(stages.length);
