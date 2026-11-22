@@ -2650,14 +2650,25 @@ other opaque secret) is masked only in these positions:
   `credential` or `bearer`, or has `auth` or `pat` as a
   whole segment (`AZURE_DEVOPS_EXT_PAT=…`, `pat=…`; not `path=`);
 - a query parameter `api_key`, `token`, `access_token` or `refresh_token`,
-  a session `security-token` or prefixed `x-<name>-security-token`, or a
-  prefixed `x-<name>-signature`; a bare `signature` or `sig` only when its
-  value starts with a hexadecimal digest of 32 or more characters or base64
-  text of 16 or more mixing upper case, lower case and digits, which is
-  masked whatever punctuation follows it, so `?sig=sha256` passes. Keys, `=` and `&` may be percent-encoded up to three layers, as in
-  a URL nested in another's query. A value ends at `&` (an encoded one for a
-  nested URL), whitespace, a quote, a backtick, `<`, `>` or an escaped
-  closing quote, so the JSON or shell text around it stays intact.
+  or a session `security-token` or prefixed `x-<name>-security-token`. Its
+  value runs to `&` (an encoded or JSON-escaped one for a nested URL) or
+  whitespace. A quote, backtick or `>` (or an escaped quote) ends it only
+  where it closes an opener earlier in the text and a serialization
+  delimiter or the end follows, so the JSON or shell text around the value
+  stays intact and a quote inside the value stays masked;
+- a signature parameter `signature`, `sig` or `x-<name>-signature`, in a
+  query that also carries signed-URL parameters (`Expires`, `Key-Pair-Id`,
+  `Policy`, `se`, `sv`, `SignatureVersion`, or `x-<name>-` `algorithm`,
+  `credential`, `date`, `expires`, `security-token` or `signedheaders`).
+  Outside such a query only a value that starts with a hexadecimal digest
+  of 32 or more characters, or base64 text of 16 or more mixing upper case,
+  lower case and digits, is masked, so `?sig=sha256` and
+  `?x-example-signature=sha256` pass. The signature run is masked whatever
+  punctuation follows it. Parameters of one query share its encoding
+  layer, and whitespace, quotes or `<>` between them start a new query.
+  In both rows the separators, keys and `=` may be percent-encoded up to
+  three layers, as in a URL nested in another's query, or JSON `\u00XX`
+  escapes up to three serialization layers, and keep their source spelling.
 
 Anywhere else such a value passes unchanged, so a 52-character base32 digest
 in build metadata (`1.0.0+<digest>`) is kept.

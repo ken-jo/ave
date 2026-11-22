@@ -3512,7 +3512,14 @@ Both scrubbers in `src/shared/dlp.ts` mask credential query values, signed-URL
 signatures and session tokens, by the credential detector contract in
 [multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md).
 A value ends before the delimiters of the text that carries it, so a scrubbed
-JSON log line in a diagnostics bundle stays one valid object.
+JSON log line in a diagnostics bundle stays one valid object. A quote ends a
+credential value only where it closes an earlier opener before a delimiter, so
+a quote inside the value never exposes the rest of it. An opaque signature is
+masked in a signed query, identified by its other parameters, and elsewhere
+only by a digest or mixed-case base64 shape, so a digest option such as
+`?sig=sha256` stays readable. Query syntax is read through up to three
+percent-encoding layers and three layers of JSON `\u00XX` escapes; a fourth
+layer is outside the contract.
 
 ### Home path redaction
 
@@ -3546,16 +3553,24 @@ consulting the working directory.
 
 The generic users/home rules redact any account's profile in display text and
 in audit path values (`redactFsPath`), after the configured home's own forms,
-with `[home]` or `file://[home]`. A profile name is letters, marks, digits,
-`._-` and apostrophes before a letter or digit, each also percent-encoded up
-to the same three layers; its separators may be percent-encoded too. Words
-after a space belong to the name only when a separator follows them, or, in a
-path value, when the value ends or a query or fragment starts. A name stops
-where a drive profile joins it directly, so the joined home is redacted too.
-A `/users/` or `/home/` path right after a URL authority keeps the separator
-that ends the authority. An escaped byte joined directly to a configured home,
-as in `/home/bob%C3%A9`, keeps the base literal boundary and stays after the
-marker.
+with `[home]` or `file://[home]`, under a drive, a UNC server and optional
+share (both kept), a `/users/` or a `/home/` root. A profile name is letters,
+marks, digits, `._-` and apostrophes before a letter or digit, each also
+percent-encoded up to the same three layers or written as a JSON `\u` escape;
+its separators may be encoded either way too. Encodings deeper than three
+layers are outside the contract. Words after a space join the name in a path
+value, before a separator, the value's end, or a query or fragment. In display
+text they join only inside a quoted or backtick span that starts with the home,
+before a separator or the closing quote. Elsewhere in text a name stops at
+whitespace, so a following command argument stays visible, and the rest of an
+unquoted spaced name of another account (`/home/Demo Smith` as `[home] Smith`)
+is a known residual. The configured home matches literally, spaces included.
+A name stops where a drive profile joins it directly, so the joined home is
+redacted too. A home path right after a URL authority, plain or percent-encoded
+and with escaped host bytes, keeps the separator that ends the authority, for
+the configured home and the generic rules alike. An escaped byte joined
+directly to a configured home, as in `/home/bob%C3%A9`, keeps the base literal
+boundary and stays after the marker.
 
 ### Windows object ownership
 
