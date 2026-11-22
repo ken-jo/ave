@@ -105,7 +105,7 @@ async function spawnInferenceChild(): Promise<{ child: ChildProcess; input: Read
       running.once('exit', (code, signal) => resolve(`code=${String(code)} signal=${String(signal)}`));
       running.once('error', error => resolve(error.message));
     });
-    const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsPluginChildConnectMs });
+    const socket = await connectToAnnouncedChild({ stdout, exited, timeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildConnectMs });
     return { child: running, input: socket, output: socket, release };
   } catch (error) {
     child?.kill();

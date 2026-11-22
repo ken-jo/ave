@@ -1,6 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 import { acceptHostOverLoopback, parseChildLaunchArgs } from '../../plugins/isolation/child-loopback-link.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
+import { TOOL_TIMEOUT_POLICY } from '../../shared/tool-timeout-policy.js';
 import type { LocalModelBytes } from './embedding.js';
 import type { MemoryInferenceTask } from './worker-client.js';
 
@@ -52,6 +53,10 @@ export async function serveInferenceChild(handle: InferenceHandler): Promise<voi
   if (mode.transport === 'relay') throw new Error('The inference child has no relay transport');
   if (mode.transport === 'stdio') return serve(process.stdin, process.stdout, handle);
   for (const [name, value] of Object.entries(mode.env)) process.env[name] = value;
-  const socket = await acceptHostOverLoopback({ announce: line => { process.stdout.write(line); }, acceptTimeoutMs: 60_000, handshakeTimeoutMs: 10_000 });
+  const socket = await acceptHostOverLoopback({
+    announce: line => { process.stdout.write(line); },
+    acceptTimeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildAcceptMs,
+    handshakeTimeoutMs: TOOL_TIMEOUT_POLICY.windowsInferenceChildHandshakeMs,
+  });
   await serve(socket, socket, handle);
 }

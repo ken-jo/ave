@@ -75,12 +75,13 @@ beforeAll(async () => {
   listenerPort = (server.address() as { port: number }).port;
   if (process.platform !== 'win32') {
     unixRoot = realpathSync(mkdtempSync(join(tmpdir(), 'mmu-')));
-    unixPath = join(unixRoot, 's');
+    const socketPath = join(unixRoot, 's');
+    unixPath = socketPath;
     const socketServer = createServer(socket => socket.destroy());
     unixListener = socketServer;
     await new Promise<void>((resolve, reject) => {
       socketServer.once('error', reject);
-      socketServer.listen(unixPath, resolve);
+      socketServer.listen(socketPath, resolve);
     });
   }
 }, 120_000);
@@ -133,8 +134,10 @@ describe.runIf(WRAP_PLATFORM)('memory map inference child (native)', () => {
       await registerWorkerUnixSocketDir(unixRoot, {});
     }
 
-    const modelFile = join(modelDir, MODEL_FILES[0]!.name);
-    expect(readFileSync(modelFile)).toEqual(Buffer.alloc(MODEL_FILES[0]!.bytes));
+    const [model] = MODEL_FILES;
+    if (model === undefined) throw new Error('The fixture model manifest is empty');
+    const modelFile = join(modelDir, model.name);
+    expect(readFileSync(modelFile)).toEqual(Buffer.alloc(model.bytes));
     const before = listenerConnections.length;
     const report = await runMemoryWorker<{ telemetryAtStart: string | null; direct: string; proxy: string; unix?: string; modelRead: string; windowsSystemCwd?: boolean; runtime: string }>(
       modelDir, { kind: 'embed', text: JSON.stringify({ port: listenerPort, unixPath, modelFile }) }, AbortSignal.timeout(120_000));

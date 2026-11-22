@@ -77,7 +77,9 @@ describe('inference model stream', () => {
     ['truncated', (file: string) => truncateSync(file, 31)],
     ['edited at the same size', (file: string) => writeFileSync(file, Buffer.alloc(32, 1))],
   ] as const)('rejects a model %s after the handle size check', async (_case, mutate) => {
-    const completed = serveReply(() => mutate(join(folder, MODEL_FILES[0]!.name)));
+    const [model] = MODEL_FILES;
+    if (model === undefined) throw new Error('The fixture model manifest is empty');
+    const completed = serveReply(() => mutate(join(folder, model.name)));
     await expect(runInferenceChild(folder, TASK, new AbortController().signal)).rejects.toMatchObject({ code: 'model-integrity-failed' });
     expect(completed).not.toHaveBeenCalled();
   });
