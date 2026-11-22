@@ -1274,6 +1274,7 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
   const roots = aveHomeReadBoundaryRoots()
     .map((root) => ({ root, key: caseFoldForMatch(canonicalizePathForMatch(root)).replace(/\/+$/, "") }))
     .sort((left, right) => right.key.length - left.key.length);
+  const sessionId = currentAveHomeBoundarySnapshot()?.sessionId;
   return (canonicalPath) => {
     const folded = caseFoldForMatch(canonicalPath);
     const owner = roots.find(({ key }) => folded === key || folded.startsWith(`${key}/`));
@@ -1281,8 +1282,8 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
     if (folded === owner.key) return owner.root;
     const segments = folded.slice(owner.key.length + 1).split("/");
     if (!isAveHomeReadReallowed(segments)) return owner.root;
-    // Beneath `worktrees` the ceiling row is open only while a live stage session is bound to that folder.
-    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(canonicalPath) ? owner.root : undefined;
+    // Beneath `worktrees` the ceiling row is open only to the session this composition is for, and only for the stage workspace it is bound to.
+    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(sessionId, canonicalPath) ? owner.root : undefined;
   };
 }
 

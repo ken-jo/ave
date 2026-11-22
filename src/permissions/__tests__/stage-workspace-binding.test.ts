@@ -6,7 +6,10 @@ import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { aveHome } from "../../shared/ave-home.js";
+import { GlobFilesTool, GrepFilesTool, ListFilesTool } from "../../tools/file-tools.js";
+import { createAveHomeBoundarySnapshot } from "../ave-home-boundary-snapshot.js";
 import { aveHomeReadBoundaryCovering, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
+import { decidePermission } from "../decision-pipeline.js";
 import { PermissionManager } from "../permission-manager.js";
 import { bindStageWorkspace, boundStageWorkspace, isOwnStageWorkspacePath, unbindStageWorkspace } from "../stage-workspace-binding.js";
 
@@ -45,6 +48,31 @@ async function floors(sessionId: string | undefined, target: string): Promise<(s
 const CARVED = [undefined, undefined, undefined];
 const FLOORED = ["protected-path", "protected-path", "protected-path"];
 
+type Checked = ReturnType<PermissionManager["checkDetailed"]>;
+/** The decision of one host read, asked as each read tool and as a shell command, on the host and sandboxed. */
+async function reads(sessionId: string | undefined, target: string, source: "builtin" | "mcp" | "plugin" = "builtin"): Promise<Checked[]> {
+  const session = sessionId === undefined ? {} : { sessionId };
+  const paths = [{ lexical: target, canonical: target, effect: "read" as const }];
+  if (source !== "builtin") return [manager.checkDetailed("mcp__server__read", source, "read", null, { ...session, paths })];
+  const cwd = dirname(target);
+  await manager.ensureProjectRulesLoaded(cwd);
+  const shell = (runsSandboxed: boolean): Checked => manager.checkDetailed(process.platform === "win32" ? "powershell" : "bash", "builtin", "shell", null, {
+    ...session,
+    ruleSubject: process.platform === "win32"
+      ? { kind: "shell", dialect: "powershell", command: `Get-Content -Path '${target}'`, cwd }
+      : { kind: "shell", dialect: "bash", command: `cat '${target}'`, cwd },
+    shellExecution: { runsSandboxed, environmentSnapshot: {} },
+  });
+  return [
+    ...["read_file", "list_files", "glob_files", "grep_files"].map(tool => manager.checkDetailed(tool, "builtin", "read", null, { ...session, paths })),
+    shell(false),
+    shell(true),
+  ];
+}
+const floorCodes = (results: Checked[]): (string | undefined)[] => results.map(result => result.pipelineRequest?.floor?.code);
+const everyRead = (code: string | undefined): (string | undefined)[] => Array.from({ length: 6 }, () => code);
+const inSession = <T>(sessionId: string | undefined, compose: () => T): T => createAveHomeBoundarySnapshot(sessionId).run(compose);
+
 beforeEach(() => {
   run += 1;
   home = realpathSync.native(aveHome());
@@ -67,7 +95,7 @@ describe("stage workspace binding", () => {
     expect(await floors(STAGE, join(own, "notes.txt"))).toEqual(CARVED);
     expect(await floors(STAGE, join(own, "src", "deep", "new.ts"))).toEqual(CARVED);
     // A read inside the home is stopped by the sandbox read boundary; the bound folder is re-allowed there.
-    expect(aveHomeReadBoundaryCovering(join(own, "notes.txt"))).toBeUndefined();
+    expect(inSession(STAGE, () => aveHomeReadBoundaryCovering(join(own, "notes.txt")))).toBeUndefined();
     const read = manager.checkDetailed("read_file", "builtin", "read", null, { sessionId: STAGE, paths: [{ lexical: join(own, "notes.txt"), canonical: join(own, "notes.txt"), effect: "read" }] });
     expect(read.pipelineRequest?.floor).toBeUndefined();
     // Repository control files and a nested application home stay protected inside it.
@@ -182,19 +210,105 @@ describe("stage workspace binding", () => {
   });
 
   it("the sandbox profile of a bound session re-opens its own folder and no sibling", () => {
-    const closed = [sibling, join(sibling, "notes.txt"), runRoot, join(runRoot, "_join"), join(runRoot, "_out"), join(runRoot, "_run.json"), dirname(runRoot), join(home, "worktrees")];
-    expect(aveHomeReadBoundaryCovering(own)).toBeUndefined();
-    expect(aveHomeReadBoundaryCovering(join(own, "src", "a.ts"))).toBeUndefined();
-    for (const path of closed) expect(aveHomeReadBoundaryCovering(path), path).toBeDefined();
-    const policy = getBuiltinShellReadPolicy([own, ...closed], homedir());
-    expect(policy.allowRead).toContain(own);
-    for (const path of closed) expect(policy.allowRead, path).not.toContain(path);
+    // The sibling is live too: each session's profile opens its own folder and never the other's.
+    bindStageWorkspace(OTHER, sibling);
+    const closed = [runRoot, join(runRoot, "_join"), join(runRoot, "_out"), join(runRoot, "_run.json"), dirname(runRoot), join(home, "worktrees")];
+    const grants = (sessionId: string | undefined): readonly string[] => getBuiltinShellReadPolicy([own, sibling, ...closed], homedir(), undefined, createAveHomeBoundarySnapshot(sessionId)).allowRead;
+    for (const [sessionId, mine, theirs] of [[STAGE, own, sibling], [OTHER, sibling, own]] as const) {
+      inSession(sessionId, () => {
+        expect(aveHomeReadBoundaryCovering(mine)).toBeUndefined();
+        expect(aveHomeReadBoundaryCovering(join(mine, "src", "a.ts"))).toBeUndefined();
+        for (const path of [theirs, join(theirs, "notes.txt"), ...closed]) expect(aveHomeReadBoundaryCovering(path), path).toBeDefined();
+      });
+      const granted = grants(sessionId);
+      expect(granted).toContain(mine);
+      for (const path of [theirs, ...closed]) expect(granted, path).not.toContain(path);
+    }
     // The deny over the home, or over its `worktrees` child, stays; the grant above is the only opening in it.
-    const denied = policy.denyRead.map(entry => entry.replace(/[\\/]+$/u, "").toLowerCase());
+    const denied = getBuiltinShellReadPolicy([own], homedir(), undefined, createAveHomeBoundarySnapshot(STAGE)).denyRead.map(entry => entry.replace(/[\\/]+$/u, "").toLowerCase());
     expect(denied.includes(home.toLowerCase()) || denied.includes(join(home, "worktrees").toLowerCase())).toBe(true);
-    // With the session over, nothing beneath `worktrees` is open.
+    // A composition for no session, or for a session bound to nothing, opens nothing beneath `worktrees`.
+    for (const sessionId of [undefined, "plain-session"]) {
+      const granted = grants(sessionId);
+      for (const path of [own, sibling]) {
+        expect(granted, path).not.toContain(path);
+        expect(inSession(sessionId, () => aveHomeReadBoundaryCovering(path)), path).toBeDefined();
+      }
+    }
+    for (const path of [own, sibling]) expect(getBuiltinShellReadPolicy([own, sibling], homedir()).allowRead, path).not.toContain(path);
+    // With the session over, its folder is closed to it again.
     unbindStageWorkspace(STAGE);
-    expect(aveHomeReadBoundaryCovering(own)).toBeDefined();
-    expect(getBuiltinShellReadPolicy([own], homedir()).allowRead).not.toContain(own);
+    expect(inSession(STAGE, () => aveHomeReadBoundaryCovering(own))).toBeDefined();
+    expect(grants(STAGE)).not.toContain(own);
+  });
+
+  it("a host read of another stage's workspace is a protected-path floor, and of its own is not", async () => {
+    const otherRun = join(dirname(runRoot), "ffff89abcdef", "s1");
+    mkdirSync(otherRun, { recursive: true });
+    bindStageWorkspace(OTHER, sibling);
+    bindStageWorkspace("other-run-session", otherRun);
+    try {
+      // Its own stage: read_file, list, glob, grep and both shells pass the floor.
+      expect(floorCodes(await reads(STAGE, join(own, "notes.txt")))).toEqual(everyRead(undefined));
+      expect(floorCodes(await reads(STAGE, own))).toEqual(everyRead(undefined));
+      // A sibling stage, another run, and the folders around the stage: floored, whoever else is bound to them.
+      for (const target of [join(sibling, "notes.txt"), sibling, join(otherRun, "notes.txt"), runRoot, join(runRoot, "_run.json"), join(runRoot, "_out", "notes.txt"), join(runRoot, "_join", "notes.txt"), dirname(runRoot), join(home, "worktrees")]) {
+        expect(floorCodes(await reads(STAGE, target)), target).toEqual(everyRead("protected-path"));
+      }
+      expect(floorCodes(await reads(OTHER, join(own, "notes.txt")))).toEqual(everyRead("protected-path"));
+      expect(floorCodes(await reads(OTHER, join(sibling, "notes.txt")))).toEqual(everyRead(undefined));
+      // A grandchild reads its stage's folder and no other.
+      bindStageWorkspace(GRANDCHILD, own);
+      expect(floorCodes(await reads(GRANDCHILD, join(own, "notes.txt")))).toEqual(everyRead(undefined));
+      expect(floorCodes(await reads(GRANDCHILD, join(sibling, "notes.txt")))).toEqual(everyRead("protected-path"));
+      // A session bound to nothing, and no session at all.
+      expect(floorCodes(await reads("plain-session", join(own, "notes.txt")))).toEqual(everyRead("protected-path"));
+      expect(floorCodes(await reads(undefined, join(own, "notes.txt")))).toEqual(everyRead("protected-path"));
+      // A plugin or MCP read carries no stage session.
+      for (const source of ["mcp", "plugin"] as const) {
+        expect(floorCodes(await reads(undefined, join(own, "notes.txt"), source))).toEqual(["protected-path"]);
+        expect(floorCodes(await reads(undefined, join(sibling, "notes.txt"), source))).toEqual(["protected-path"]);
+      }
+      // The floor is a forced ask, and a denial where nobody can answer: the unattended lane splits off after it.
+      const request = (await reads(STAGE, join(sibling, "notes.txt")))[0]?.pipelineRequest;
+      if (request === undefined) throw new Error("the read was decided without a pipeline request");
+      expect(request.floor).toEqual({ code: "protected-path", reason: "application-home" });
+      for (const mode of ["strict", "default", "auto", "allow"] as const) {
+        expect(decidePermission({ ...request, mode, headless: false }).outcome).toBe("ask-forced");
+        expect(decidePermission({ ...request, mode, headless: true }).outcome).toBe("deny");
+      }
+      // A spelling through `..`, and a link from outside the home, do not get around it.
+      expect(floorCodes(await reads(STAGE, `${own}/../s2/notes.txt`))).not.toContain(undefined);
+      const link = join(mkdtempSync(join(tmpdir(), "swb-link-")), "to-sibling");
+      symlinkSync(sibling, link, "junction");
+      const linked = manager.checkDetailed("read_file", "builtin", "read", null, { sessionId: STAGE, paths: [{ lexical: join(link, "notes.txt"), canonical: join(sibling, "notes.txt"), effect: "read" }] });
+      expect(linked.pipelineRequest?.floor?.code).toBe("protected-path");
+      // A folder that only looks like it is no stage workspace.
+      for (const target of [join(home, "worktrees-old", "notes.txt"), join(home, "workspace", "worktrees", "notes.txt"), join(tmpdir(), "worktrees", "notes.txt")]) {
+        expect(floorCodes(await reads(STAGE, target)), target).toEqual(everyRead(undefined));
+      }
+    } finally {
+      unbindStageWorkspace("other-run-session");
+    }
+  });
+
+  it("a listing or a search from above the stage workspaces passes over them", async () => {
+    writeFileSync(join(own, "needle-own.txt"), "needle\n");
+    writeFileSync(join(sibling, "needle-sibling.txt"), "needle\n");
+    mkdirSync(join(home, "workspace"), { recursive: true });
+    writeFileSync(join(home, "workspace", "needle-plain.txt"), "needle\n");
+    const context = { cwd: own, extraAllowedDirectories: [], metadata: { sessionId: STAGE } };
+    const outputs = async (path: string): Promise<string[]> => [
+      (await new ListFilesTool().execute({ path, depth: 8 }, context)).output,
+      (await new GlobFilesTool().execute({ pattern: "**/needle-*.txt", path }, context)).output,
+      (await new GrepFilesTool().execute({ pattern: "needle", path }, context)).output,
+    ].map(String);
+    for (const output of await outputs(home)) {
+      expect(output).toContain("needle-plain.txt");
+      expect(output).not.toContain("needle-sibling.txt");
+      expect(output).not.toContain("needle-own.txt");
+    }
+    // Asked for by name, the stage's own folder is listed and searched in full.
+    for (const output of await outputs(own)) expect(output).toContain("needle-own.txt");
   });
 });

@@ -93,7 +93,7 @@ import {
   caseFoldForMatch,
   protectedControlEntryFor,
 } from "./sensitive-paths.js";
-import { boundStageWorkspace, isOwnStageWorkspacePath } from "./stage-workspace-binding.js";
+import { boundStageWorkspace, isOwnStageWorkspacePath, isStageWorkspacesPath } from "./stage-workspace-binding.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js";
 import { isPathAllowedForEffect, type PathEffect } from "./allowed-directories.js";
@@ -1598,8 +1598,14 @@ export class PermissionManager {
     const stageBound = !activeBrokerGuest && context.sessionId !== undefined && boundStageWorkspace(context.sessionId) !== undefined;
     const ownStagePath = (...spellings: string[]): boolean => stageBound && spellings.every(spelling =>
       protectedControlEntryFor(spelling) === "application-home" && isOwnStageWorkspacePath(context.sessionId, spelling));
+    // Reads: every stage workspace, and the run folders around them, is a protected path for every principal. Only the session bound to a
+    // workspace, or a grandchild bound to the same one, reads inside it.
+    const otherStageRead = (evidence: PermissionPathEvidence): boolean => !activeBrokerGuest && evidence.effect === "read"
+      && [evidence.lexical, evidence.canonical].some(isStageWorkspacesPath)
+      && ![evidence.lexical, evidence.canonical].every(spelling => isOwnStageWorkspacePath(context.sessionId, spelling));
     const withoutOwnStageFloor = <T extends PermissionPathEvidence>(evidence: T): T =>
-      evidence.protectedControl === "application-home" && ownStagePath(evidence.lexical, evidence.canonical) ? { ...evidence, protectedControl: undefined } : evidence;
+      evidence.protectedControl === "application-home" && ownStagePath(evidence.lexical, evidence.canonical) ? { ...evidence, protectedControl: undefined }
+        : evidence.protectedControl === undefined && otherStageRead(evidence) ? { ...evidence, protectedControl: "application-home" } : evidence;
     const evidenceForPath = createPermissionPathEvidence(projectRulesCwd ?? requestedRuleSubject?.cwd ?? process.cwd(), undefined, {
       inspectHostFiles: !activeBrokerGuest,
     });

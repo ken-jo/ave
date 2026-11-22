@@ -699,6 +699,7 @@ src/permissions/__tests__/shell-read-classification-evasion.test.ts
 src/permissions/__tests__/shell-rule-version.test.ts
 src/permissions/__tests__/shell-static-analysis.test.ts
 src/permissions/__tests__/stage-workspace-binding.test.ts
+src/permissions/__tests__/stage-workspace-sandbox-profile.test.ts
 src/permissions/__tests__/terminal-egress-observation.test.ts
 src/permissions/__tests__/test-resources.test.ts
 src/permissions/__tests__/upstream-proxy-native.test.ts

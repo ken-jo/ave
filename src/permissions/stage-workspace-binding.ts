@@ -70,8 +70,19 @@ export function isOwnStageWorkspacePath(sessionId: string | undefined, path: str
   return inside !== null && !inside.some(segment => segment.toLowerCase() === ".ave");
 }
 
-/** Whether a canonical path lies inside a stage workspace some live session is bound to; the sandbox ceiling opens nothing else beneath `worktrees`. */
-export function isBoundStageWorkspacePath(path: string): boolean {
-  for (const root of bindings.values()) if (below(root, path) !== null) return true;
-  return false;
+/** Whether a canonical path lies inside the stage workspace this session is bound to; the sandbox ceiling opens nothing else beneath `worktrees`. */
+export function isBoundStageWorkspacePath(sessionId: string | undefined, path: string): boolean {
+  const root = sessionId === undefined ? undefined : bindings.get(sessionId);
+  return root !== undefined && below(root, path) !== null;
+}
+
+/** Whether an absolute path, as spelled, is `<home>/worktrees` or lies beneath it, for the home's given and physical spelling. */
+export function createStageWorkspacesMatcher(): (path: string) => boolean {
+  const homes = [resolve(aveHome())];
+  try { homes.push(realpathSync.native(aveHome())); } catch { /* A home that is not there has no second spelling. */ }
+  return path => isAbsolute(path) && homes.some(home => below(home, resolve(path))?.[0] === "worktrees");
+}
+
+export function isStageWorkspacesPath(path: string): boolean {
+  return createStageWorkspacesMatcher()(path);
 }

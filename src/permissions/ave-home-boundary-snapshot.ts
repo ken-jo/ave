@@ -5,6 +5,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export class AveHomeBoundarySnapshot {
   taken?: { readonly key: string; readonly children: ReadonlyMap<string, readonly string[]> } | { readonly key: string; readonly error: unknown };
 
+  // The session this composition confines a process for. Beneath `worktrees` only that session's own stage workspace is re-opened; with
+  // none, nothing is.
+  constructor(readonly sessionId?: string) {}
+
   // Run a synchronous or asynchronous composition step against this snapshot.
   run<T>(fn: () => T): T {
     return inAveHomeBoundarySnapshot(this, fn);
@@ -13,8 +17,8 @@ export class AveHomeBoundarySnapshot {
 
 const boundarySnapshotScope = new AsyncLocalStorage<AveHomeBoundarySnapshot>();
 
-export function createAveHomeBoundarySnapshot(): AveHomeBoundarySnapshot {
-  return new AveHomeBoundarySnapshot();
+export function createAveHomeBoundarySnapshot(sessionId?: string): AveHomeBoundarySnapshot {
+  return new AveHomeBoundarySnapshot(sessionId);
 }
 
 export function currentAveHomeBoundarySnapshot(): AveHomeBoundarySnapshot | undefined {

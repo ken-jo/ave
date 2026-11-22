@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { z } from "zod";
 import type { ToolExecutionResult } from "./base.js";
-import { admissionDeniedFilePattern, createFilePathPolicy, sensitiveFilePattern } from "./file-access-policy.js";
+import { admissionDeniedFilePattern, createFilePathPolicy, createStageWorkspacesSkip, sensitiveFilePattern } from "./file-access-policy.js";
 import { isSensitiveContent, judgedPathNamesOpenedFile, KEY_MATERIAL_SCAN_BYTES } from "../permissions/sensitive-paths.js";
 import { buildSafeChildEnv } from "./safe-env.js";
 import { resolvePinnedRipgrepExecutable } from "./ripgrep-executable.js";
@@ -260,6 +260,7 @@ async function runRipgrep(
   const explicitRealRoot = explicitSecretRoot === undefined ? undefined : realRoot;
   // One policy pass for every listed path and real path of this search.
   const policy = createFilePathPolicy("read");
+  const skip = createStageWorkspacesSkip(realRoot);
   const listing: ListingState = { exitCode: null, stderr: "" };
   // A few files are searched ahead of the one whose results are taken next; they are cancelled once enough are found.
   const searches = new AbortController();
@@ -286,8 +287,8 @@ async function runRipgrep(
         searches.signal.throwIfAborted();
         // Check every result path: the search engine does not know the host's sensitive-path floor.
         const explicit = explicitSecretRoot !== undefined && isWithinAdmittedRoot(path, explicitSecretRoot);
-        if (policy.admissionDenied(path) !== null || (!explicit && policy.sensitive(path) !== null)) continue;
-        const search = searchBoundFile(executable, path, cwd, input, wanted, { real: realRoot, explicit: explicitRealRoot }, policy, searches.signal);
+        if (policy.admissionDenied(path) !== null || (!explicit && policy.sensitive(path) !== null) || skip(resolve(cwd, path))) continue;
+        const search = searchBoundFile(executable, path, cwd, input, wanted, { real: realRoot, explicit: explicitRealRoot, skip }, policy, searches.signal);
         // A search cancelled after enough results were found settles with nobody waiting for it.
         search.catch(() => {});
         ahead.push(search);
@@ -439,7 +440,7 @@ async function searchBoundFile(
   cwd: string,
   input: GrepFilesInput,
   needed: number,
-  roots: { readonly real: string; readonly explicit: string | undefined },
+  roots: { readonly real: string; readonly explicit: string | undefined; readonly skip: (path: string) => boolean },
   policy: ReturnType<typeof createFilePathPolicy>,
   signal: AbortSignal | undefined,
 ): Promise<GrepEntry[]> {
@@ -450,7 +451,7 @@ async function searchBoundFile(
     judged = await realpath(resolve(cwd, path));
     if (!liesUnderRealRoot(judged, roots.real)) return [];
     explicit = roots.explicit !== undefined && isWithinAdmittedRoot(judged, roots.explicit);
-    if (policy.admissionDenied(judged) !== null || (!explicit && policy.sensitive(judged) !== null)) return [];
+    if (policy.admissionDenied(judged) !== null || (!explicit && policy.sensitive(judged) !== null) || roots.skip(judged)) return [];
     handle = await open(judged, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch {
     signal?.throwIfAborted();

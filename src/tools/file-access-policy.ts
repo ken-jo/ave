@@ -8,6 +8,7 @@ import {
   isConfiguredSessionReadPath,
   resolvePathForPolicy,
 } from "../permissions/sensitive-paths.js";
+import { createStageWorkspacesMatcher } from "../permissions/stage-workspace-binding.js";
 import { validateSandboxPath } from "../sandbox/path-validator.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 
@@ -37,6 +38,15 @@ export function createFilePathPolicy(effect: PathEffect = "read"): {
     sensitive: asSpelledThenResolved(createSensitivePathMatcher(effect)),
     admissionDenied: asSpelledThenResolved(createAdmissionDeniedPathMatcher(effect)),
   };
+}
+
+/**
+ * For a walk down from `root`: whether an entry lies in the stage workspaces folder and is passed over, as a secret file is. A root
+ * inside that folder was decided at the permission floor, so nothing beneath it is passed over.
+ */
+export function createStageWorkspacesSkip(root: string): (path: string) => boolean {
+  const inside = createStageWorkspacesMatcher();
+  return inside(root) || inside(resolvePathForPolicy(root)) ? () => false : path => inside(path);
 }
 
 /** Execute-time sensitive and directory gates shared by native file operations. */

@@ -34,6 +34,19 @@ describe("shell ASRT source contracts", () => {
   });
 });
 
+describe("stage workspace session contract", () => {
+  // The Ave home boundary opens `worktrees` only for the session a wrap is composed for; a caller that drops the
+  // session composes the full deny.
+  it("every sandboxed shell composes its boundary snapshot for the calling session", () => {
+    expect(shellTools.match(/createAveHomeBoundarySnapshot\(/gu)).toHaveLength(3);
+    expect(shellTools.match(/const boundarySnapshot = createAveHomeBoundarySnapshot\(sessionId\);/gu)).toHaveLength(3);
+    expect(bashSection.match(/boundarySessionOf\(ctx\)/gu)).toHaveLength(1);
+    // Windows sandbox, POSIX sandbox, and the container route.
+    expect(powershellSection.match(/boundarySessionOf\(ctx\)/gu)).toHaveLength(3);
+    expect(powershellSection).toContain("launch = await boundarySnapshot.run(() => prepareMxcShellLaunch({");
+  });
+});
+
 describe("background shell lifetime contract", () => {
   // Background processes are managed children killed at shutdown; model-facing descriptions must disclose that lifetime.
   it("registers the background child with the managed-child registry", () => {
