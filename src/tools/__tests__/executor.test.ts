@@ -2269,9 +2269,11 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
 
     const turn = new AbortController();
     let signalGivenToGate: AbortSignal | undefined;
+    let abortedAtRequest: boolean | undefined;
     const approvalGate = {
       requestAndWait: vi.fn((req: { id: string; abortSignal?: AbortSignal }) => {
         signalGivenToGate = req.abortSignal;
+        abortedAtRequest = req.abortSignal?.aborted;
         queueMicrotask(() => turn.abort(new Error("user cancelled turn")));
         return new Promise<{ requestId: string; choice: "deny-once" }>((resolve) => {
           const denyOnce = () => resolve({ requestId: req.id, choice: "deny-once" });
@@ -2292,8 +2294,10 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
       },
     );
 
-    // The gate must observe turn cancellation to release the conversation lease immediately.
-    expect(signalGivenToGate).toBe(turn.signal);
+    // The gate gets the turn's stop through the invocation admission signal, which quit can also abort.
+    expect(abortedAtRequest).toBe(false);
+    expect(signalGivenToGate?.aborted).toBe(true);
+    expect(signalGivenToGate?.reason).toBe(turn.signal.reason);
     expect(executeSpy).not.toHaveBeenCalled();
     expect(results[0].is_error).toBe(true);
     // Stopping a turn must produce cancellation text rather than attributing a refusal to the user.
