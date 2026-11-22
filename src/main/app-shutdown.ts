@@ -398,7 +398,9 @@ export async function runAppShutdownCleanup(options: {
     const cardGates = [svc.approvalGate, svc.askUserQuestionGate];
     const closeAuditAfterForceKill = (): void => {
       // The graceful deadline also bounds audit draining.
-      sealToolInvocations();
+      try { sealToolInvocations(); } catch (error) {
+        log.warn("shutdown: tool invocation seal failed: %s", errorMessage(error));
+      }
       // Parked cards hold no admission signal; cancel them while their rows can still be written.
       for (const gate of cardGates) {
         try { gate?.disposeAll(); } catch (error) {

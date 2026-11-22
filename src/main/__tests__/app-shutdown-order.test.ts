@@ -201,6 +201,24 @@ describe("OS sandbox release at quit", () => {
     expect(calls.indexOf("cancelQuestions")).toBeLessThan(calls.indexOf("closeAudit"));
   });
 
+  it("still cancels parked cards and closes the audit when the fallback seal throws", async () => {
+    getServices.mockReturnValue(makeServices());
+    vi.resetModules();
+    vi.doMock("../../tools/invocation-ledger.js", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../tools/invocation-ledger.js")>(),
+      sealToolInvocations: () => { throw new Error("seal failed"); },
+    }));
+    try {
+      const shutdown = await configuredShutdown();
+      hardTimeoutFires = true;
+      expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("timed-out");
+    } finally {
+      hardTimeoutFires = false;
+      vi.doUnmock("../../tools/invocation-ledger.js");
+    }
+    expect(calls).toEqual(expect.arrayContaining(["cancelApprovals", "cancelQuestions", "closeAudit"]));
+  });
+
   // The private srt-win copy is removed by an exit handler; every quit path must reset the runtime first, once its confined children are down.
   it("resets the runtime after the child drain and before the host closes on a clean quit", async () => {
     getServices.mockReturnValue(makeServices());
