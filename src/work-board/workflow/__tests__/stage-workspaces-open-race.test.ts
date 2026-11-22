@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
@@ -52,4 +52,25 @@ it("an open whose project folder another run's release took away makes it again"
 it("an open whose project folder keeps going away is refused as unavailable, not as an unsafe home", async () => {
   between.act = projectFolder => rmdirSync(projectFolder);
   expect(await createStageWorkspaceProvider({ git: hostGit() }).open(run(), join(base, "project"))).toEqual({ ok: false, code: "workspace-unavailable" });
+});
+
+it("an open whose worktrees folder is swapped for another while the run folder is made is refused as an unsafe home", async () => {
+  const home = join(base, "home");
+  mkdirSync(home);
+  const before = process.env.AVE_HOME;
+  process.env.AVE_HOME = home;
+  let swaps = 0;
+  between.act = (projectFolder) => {
+    const worktrees = dirname(projectFolder);
+    renameSync(worktrees, join(base, `away-${swaps++}`));
+    mkdirSync(worktrees);
+  };
+  try {
+    expect(await createStageWorkspaceProvider({ git: hostGit() }).open(run(), join(base, "project"))).toEqual({ ok: false, code: "home-boundary-unverified" });
+    // Nothing is made in the folder that took the name.
+    expect(swaps).toBe(1);
+    expect(readdirSync(join(home, "worktrees"))).toEqual([]);
+  } finally {
+    if (before === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = before;
+  }
 });
