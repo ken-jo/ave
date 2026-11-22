@@ -1091,6 +1091,7 @@ async function loadSandboxManager() {
 // Whether initializeAsrtSandbox has run to completion in this process. This is the host-tool spawn path's gate: tool code (bash.ts/powershell.ts) asks THIS module — not the settings service — whether to route through ASRT, so the gate is decided once at boot and cannot be re-evaluated mid-run. That preserves the seal-after-boot security property the registry had: there is no runtime channel to flip the sandbox on/off after boot. Set to `true` only on a successful `initialize`; stays `false` after resetAsrtSandbox.
 let active = false;
 let sandboxInitializationPending = false;
+let sandboxResetPending: Promise<void> | undefined;
 // Set with `active` when boot initialized ASRT as the Windows proxy only.
 let windowsExternalConfinement = false;
 
@@ -2311,6 +2312,9 @@ export async function initializeAsrtSandbox(
   startupSignal?: AbortSignal,
 ): Promise<AsrtSandboxInitialization> {
   startupSignal?.throwIfAborted();
+  if (sandboxResetPending !== undefined) {
+    throw new Error("initializeAsrtSandbox: sandbox reset is pending");
+  }
   if (active || sandboxInitializationPending) {
     throw new Error("initializeAsrtSandbox: already active or initializing — refusing to re-initialize");
   }
@@ -3242,7 +3246,13 @@ export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
 }
 
 // Full teardown pass-through (`SandboxManager.reset`). Stops proxy servers and clears state.
-export async function resetAsrtSandbox(): Promise<void> {
+export function resetAsrtSandbox(): Promise<void> {
+  return sandboxResetPending ??= resetSandboxRuntime().finally(() => {
+    sandboxResetPending = undefined;
+  });
+}
+
+async function resetSandboxRuntime(): Promise<void> {
   // The host owns the processes. Their invocation release, after termination, still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
@@ -3281,8 +3291,7 @@ export async function resetAsrtSandbox(): Promise<void> {
 // Windows the session's ACEs are revoked and restored now rather than by the next boot's recovery. A failure propagates to the caller's shutdown outcome.
 export async function releaseAsrtSandboxForExit(): Promise<void> {
   // An initializing owner can already hold proxies or bridges without an active capability.
-  if (!active && !sandboxInitializationPending) return;
-  await resetAsrtSandbox();
+  if (active || sandboxInitializationPending || sandboxResetPending !== undefined) await resetAsrtSandbox();
 }
 
 // Introspection: whether the current platform supports ASRT sandboxing. Pass-through to `SandboxManager.isSupportedPlatform`.

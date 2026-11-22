@@ -95,16 +95,21 @@ vi.mock("../../permissions/asrt-sandbox.js", () => ({
 }));
 // A test that exercises the timed-out branch flips this; the body is not run then, exactly as a real deadline abandons a cleanup that never settles.
 let hardTimeoutFires = false;
+let gracefulDeadline: Promise<void> | undefined;
 vi.mock("../shutdown-timeout.js", () => ({
   resolveShutdownCleanupTimeoutMs: (_settingMs?: number) => 5000,
   runCleanupWithHardTimeout: async (fn: (signal: AbortSignal) => Promise<void>) => {
     if (hardTimeoutFires) return { status: "timed-out" as const };
-    try {
-      await fn(new AbortController().signal);
-      return { status: "completed" as const };
-    } catch (error) {
-      return { status: "failed" as const, error };
-    }
+    const controller = new AbortController();
+    const cleanup = fn(controller.signal).then(
+      () => ({ status: "completed" as const }),
+      error => ({ status: "failed" as const, error }),
+    );
+    if (gracefulDeadline === undefined) return cleanup;
+    return Promise.race([cleanup, gracefulDeadline.then(() => {
+      controller.abort();
+      return { status: "timed-out" as const };
+    })]);
   },
 }));
 
@@ -203,6 +208,48 @@ describe("OS sandbox release at quit", () => {
     expect(releaseAsrtSandboxForExit).toHaveBeenCalledOnce();
     expect(calls.indexOf("forceKillManagedChildren")).toBeLessThan(calls.indexOf("releaseOsSandbox"));
     expect(calls.indexOf("releaseOsSandbox")).toBeLessThan(calls.indexOf("hostExit"));
+  });
+
+  it("waits for the pending sandbox reset in the timeout fallback before the hard exit", async () => {
+    getServices.mockReturnValue(makeServices());
+    vi.resetModules();
+    const shutdown = await configuredShutdown();
+    const sandbox = await vi.importActual<typeof import("../../permissions/asrt-sandbox.js")>("../../permissions/asrt-sandbox.js");
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const resetting = deferred<void>();
+    const finishReset = deferred<void>();
+    const fallback = deferred<void>();
+    const deadline = deferred<void>();
+    const reset = vi.spyOn(SandboxManager, "reset").mockImplementation(async () => {
+      resetting.resolve();
+      await finishReset.promise;
+      calls.push("sandboxResetFinished");
+      return { windowsAclUnreleased: [] };
+    });
+    releaseAsrtSandboxForExit.mockImplementationOnce(sandbox.resetAsrtSandbox).mockImplementationOnce(() => {
+      fallback.resolve();
+      return sandbox.releaseAsrtSandboxForExit();
+    });
+    hostExit.mockImplementation(() => { calls.push("hostExit"); });
+    gracefulDeadline = deadline.promise;
+    const stopping = shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: true });
+    try {
+      await resetting.promise;
+      deadline.resolve();
+      await fallback.promise;
+      await afterQueuedCallbacks();
+      expect(hostExit).not.toHaveBeenCalled();
+    } finally {
+      finishReset.resolve();
+      try { await stopping; } finally {
+        gracefulDeadline = undefined;
+        hostExit.mockReset();
+        reset.mockRestore();
+      }
+    }
+    expect(await stopping).toBe("timed-out");
+    expect(calls.slice(-3)).toEqual(["sandboxResetFinished", "closeFileLogSink", "hostExit"]);
+    expect(releaseAsrtSandboxForExit).toHaveBeenCalledTimes(2);
   });
 
   it("does not hold a timed-out quit on a reset that never finishes", async () => {
