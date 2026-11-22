@@ -56,10 +56,10 @@ async function fixture(allowedDomains = ['127.0.0.1']) {
   const progress: MemoryMapProgress[] = [];
   const host = new MemoryMapHost({ namespace, provider, validatedModelPath: async () => { throw new Error('Local model must not load'); }, onProgress: value => progress.push(value) });
   return { changeEndpoint: () => {
-    const next = baseUrl + '/alternate';
+    const next = `${baseUrl}/alternate`;
     llm.vendors['openai-compatible'].baseUrl = next;
     llm.modelListCache.saved.baseUrl = next;
-    llm.modelListCache.saved.endpoint = next + '/models';
+    llm.modelListCache.saved.endpoint = `${next}/models`;
   }, pauseResponse: () => { let release!: () => void; responseWait = new Promise<void>(resolve => { release = resolve; }); return release; }, provider, host, settings, audit, namespace, catalog, requests, chokepoint, progress, key, consent, get config() { return config; }, set config(value) { config = value; }, set dimensions(value: number) { dimensions = value; }, set inconsistent(value: boolean) { inconsistent = value; }, set fail(value: boolean) { fail = value; } };
 }
 describe('provider memory embeddings', () => {
@@ -75,7 +75,8 @@ describe('provider memory embeddings', () => {
   it('refuses every send without matching current versioned consent', async () => {
     const f = await fixture(); const selected = f.provider.namespace();
     f.consent();
-    const valid = f.config.consent!;
+    const valid = f.config.consent;
+    if (!valid) throw new Error('Missing fixture consent');
     for (const consent of [undefined, { ...valid, providerId: 'other' }, { ...valid, modelId: 'other' }, { ...valid, version: 1 }]) {
       f.config.consent = consent as MemoryEmbeddingConfig['consent'];
       await expect(f.provider.embed(selected, ['Private'], new AbortController().signal)).rejects.toThrow('provider-consent-required');
@@ -123,8 +124,10 @@ describe('provider memory embeddings', () => {
   it.each(['deleted memory', 'revoked scope'])('blocks later batches after a %s while the first is in flight', async change => {
     const f = await fixture();
     f.consent();
+    const firstRecord = f.catalog.records[0];
+    if (!firstRecord) throw new Error('Missing fixture record');
     f.catalog.records = Array.from({ length: 33 }, (_, index) => ({
-      ...f.catalog.records[0]!, memoryId: `id-${String(index).padStart(2, '0')}`, text: `Private memory ${index}`,
+      ...firstRecord, memoryId: `id-${String(index).padStart(2, '0')}`, text: `Private memory ${index}`,
     }));
     let authorized = true;
     const release = f.pauseResponse();

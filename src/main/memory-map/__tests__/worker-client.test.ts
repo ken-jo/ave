@@ -10,7 +10,8 @@ describe('memory worker lifecycle', () => {
   it('refuses the unqualified Windows runtime before starting a local embedding worker', async () => {
     const root = await mkdtemp(join(tmpdir(), 'memory-worker-'));
     state.mainDir = root;
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    if (!platform) throw new Error('Missing platform descriptor');
     try {
       Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
       await writeFile(join(root, 'memory-map-worker.js'), `require('node:worker_threads').parentPort.postMessage({ kind: 'result', value: 'started' });`);

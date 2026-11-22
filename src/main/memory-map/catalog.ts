@@ -20,9 +20,10 @@ export function graphMemoryRevision(note: NoteEntry): string {
   return digest(`${note.title}\n${note.content}`);
 }
 export function matchesGraphRecord(note: NoteEntry | undefined, record: MemoryMapRecord): boolean {
-  return Boolean(isGraphMemory(note)
-    && (note.projectRoot ? digest(projectRootKey(note.projectRoot)!) : undefined) === record.projectId
-    && graphMemoryRevision(note) === record.contentRevision);
+  if (!isGraphMemory(note)) return false;
+  const projectKey = projectRootKey(note.projectRoot);
+  return (projectKey ? digest(projectKey) : undefined) === record.projectId
+    && graphMemoryRevision(note) === record.contentRevision;
 }
 export function readGraphCatalog(manager: MemoryManager, options: ProjectScopedMemoryOptions, defaultProjectRoot: string, filenames?: Map<string, string>): MemoryMapCatalog {
   const { notes } = manager.readMemoryPanelCatalog(options, defaultProjectRoot);

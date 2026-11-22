@@ -734,7 +734,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     memoryDeleteNote: vi.fn(async () => undefined),
     memorySearchNotes: vi.fn(async () => []),
 
-    memoryMap: createMemoryMapApi(),
+    memoryMap: createMemoryMapApi() as unknown as Mock,
     memoryGetDetail: vi.fn(async () => ({ ok: false as const, error: "not-found" as const })),
     memoryGetSummaries: vi.fn(async (options?: Parameters<AveApi["memoryGetSummaries"]>[0]): Promise<MemorySummariesResult> => {
       const notes: Extract<MemorySummariesResult, { ok: true }>["notes"] = [];
