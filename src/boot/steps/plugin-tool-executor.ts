@@ -335,10 +335,12 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
       const authInvocationEpoch = authInvocation?.epoch;
       if (appOnlyRuntimeInvocation) {
         let releaseAuthTransitionDeferred = false;
-        // Admission ends at handler entry: the bypass has no audit obligation for the join to wait on.
-        if (toolInvocationsSealed()) throw new HostExitAbortError();
-        const admission = admitToolInvocation(toolName);
+        let admission: ReturnType<typeof admitToolInvocation> | undefined;
         try {
+          // Admission ends at handler entry: the bypass has no audit obligation for the join to wait on.
+          if (toolInvocationsSealed()) throw new HostExitAbortError();
+          const admitted = admitToolInvocation(toolName);
+          admission = admitted;
           if (authInvocation && ownerPluginId && ownerGenerationId) {
             const exactGeneration =
               ctx.pluginBundleLifecycle?.getActive(ownerPluginId);
@@ -356,9 +358,9 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             context,
             authHandlerCeilingMs,
             () => {
-              admission.signal.throwIfAborted();
+              admitted.signal.throwIfAborted();
               authTransitionLease?.assertAuthorized();
-              admission.settle();
+              admitted.settle();
             },
           );
           if (context.ownerPluginId && context.ownerGenerationId) {
@@ -391,7 +393,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
           }
           throw error;
         } finally {
-          admission.settle();
+          admission?.settle();
           if (!releaseAuthTransitionDeferred) {
             authTransitionLease?.release();
           }

@@ -479,6 +479,35 @@ describe("setupPluginToolExecutor production auth wiring", () => {
     })).resolves.toBe(0);
     expect(handler).not.toHaveBeenCalled();
   });
+
+  it("releases the auth transition lease and invalidates the auth invocation when the seal refuses it", async () => {
+    vi.resetModules();
+    const { setupPluginToolExecutor: setup } = await import("../plugin-tool-executor.js");
+    const ledger = await import("../../../tools/invocation-ledger.js");
+    const ctx = makeContext();
+    mocks.beginPluginAuthInvocation.mockReturnValue({
+      epoch: 8,
+      accountTransitionScopeHash: "stable-account-scope",
+    });
+    await setup(ctx);
+    const invoke = ctx.lateBinding.pluginToolInvokerRef.fn;
+    if (!invoke) throw new Error("Plugin invoker missing");
+    ledger.sealToolInvocations();
+    await expect(invoke("auth_login", {}, invocationContext())).rejects.toThrow("application shutdown");
+    expect(mocks.dispatchAppOnlyRuntimeInvocation).not.toHaveBeenCalled();
+    expect(mocks.invalidateFailedPluginAuthInvocation).toHaveBeenCalledWith(pluginId, activeGenerationId, 8);
+    let acquired = false;
+    const next = ctx.pluginOperationGrants!.acquireAccountTransitionLease({
+      ownerPluginId: pluginId,
+      generationId: activeGenerationId,
+      appSessionId: "next-window",
+      accountScopeHash: "stable-account-scope",
+    }).then((lease) => { acquired = true; return lease; });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(acquired).toBe(true);
+    (await next).release();
+    expect(ledger.pendingToolInvocationCount()).toBe(0);
+  });
 });
 
 /** The effective origin, including nested hops, selects interactive versus headless approval handling. */
