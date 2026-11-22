@@ -642,7 +642,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("closing the tab ends its banner at once, with the requester's reason, not the timeout", async () => {
+  it("closing the tab ends its banner at once, not at the timeout, and its refusal is not the closed tab's", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const tab = new AbortController();
     signals.set(TERMINAL_TOKEN, tab.signal);
@@ -650,7 +650,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     const pending = callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     await untilAsked(1);
     tab.abort(new Error("terminal tab closed"));
-    expect(await pending).toEqual({ allow: false, reason: "network approval answer was rejected" });
+    expect(await pending).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -973,6 +973,21 @@ describe("egress ask callback — shell calls", () => {
     expect(await callback()(github, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(onNoApprover).toHaveBeenCalledOnce();
     expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
+  });
+
+  it.each(["denied answer", "failed ask"] as const)("does not attribute a %s to a call that ended while it was asked", async (path) => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    answer = async () => {
+      controller.abort();
+      if (path === "failed ask") throw new Error("approval surface failed");
+      return { allow: false, reason: "denied by the user" };
+    };
+    const result = await rawCallback()({ host: "github.com", port: 443 },
+      { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+    expect(asked).toHaveLength(1);
+    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
   });
 
   it.each([["held answer", SHELL_TOKEN], ["pending ask", TERMINAL_TOKEN]] as const)("never credits an earlier invocation's %s to a later one under the same token and owner", async (path, token) => {

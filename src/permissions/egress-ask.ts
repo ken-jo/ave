@@ -474,9 +474,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
           const answer = await ask(token, invocation.generation, owner, destination, network, strength, evaluation);
           if (answer === ASK_AGAIN) return decide(host, port, context, verified);
-          if (!answer.allow) return answer.decision;
-          // An answer that arrives after the invocation ended grants nothing.
+          // An answer that arrives after the invocation ended grants nothing, and its refusal is not the invocation's.
           if (!invocation.live()) return unattributed();
+          if (!answer.allow) return answer.decision;
           if (resolvedPhase) return await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes, invocation, answer.oneConnection);
           holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime(),
             ...(answer.oneConnection ? { oneConnection: true as const } : {}),
@@ -493,7 +493,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     try {
       decision = await decide(host, port, context, verified);
     } catch (error) {
-      decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
+      decision = verified.invocation?.live() === false ? unattributed() : deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
     }
     // Every allow, provisional, remembered and policy ones included, is given only to an invocation that is still live.
     if (decision.allow && verified.invocation?.live() !== true) decision = unattributed();
