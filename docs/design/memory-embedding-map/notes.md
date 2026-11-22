@@ -131,6 +131,14 @@ The demo's token scoring, content deduplication and project diversity are only i
 
 **Optional provider embedding API: explicit Settings opt-in.** The visible warning is **Memory text leaves the device**. Provider choice requires its radio option and a separate acknowledgement before the preview action is enabled. Local is initially selected. The mock collects no credentials, saves no settings, downloads no model and sends no text. A real host must default to local, validate a versioned consent record and authorised scope, separate embedding-provider configuration from chat credentials/subscriptions, keep secrets in the host store, apply DLP rules, disclose retention/region/cost, and stop new sends on opt-out. Provider/model changes create a new vector namespace and rebuild; local deletion cannot guarantee removal of provider logs.
 
+## Local inference confinement
+
+Local inference runs only in a separate child process that the OS sandbox keeps off the network, on every platform (`src/main/memory-map/inference-child.ts`). The host starts it through the shared confined-child launch path with an offline worker owner: srt-win on Windows, the platform sandbox on macOS and Linux. The egress decision refuses every connection from an offline owner before any allowlist is read ("outbound network is disabled for this service"), and on Windows the fence admits only the local proxy. The child gets no write root and no grant to the model folder. The host checks each file's size against the manifest and streams the bytes over the child's channel, so the model files are read-only inputs the child never opens. `ORT_DISABLE_TELEMETRY=1` is in the child's environment from creation as defence in depth; the network block is the boundary.
+
+Without an active sandbox (turned off, still starting, or a Windows extension plan that would refuse the confined start) local embeddings are unavailable with that reason; the host never falls back to in-process inference. The projection worker thread shares the host process and only projects cached vectors.
+
+**Windows residual:** the native runtime can emit ETW TraceLogging events. They go to the operating system's local event-tracing sessions, not through a socket the process opens, so the network block neither applies to them nor needs to. Whether the OS sends diagnostic data anywhere is governed by the system's diagnostic-data setting, not by Ave. Whether the runtime honours the environment opt-out for these events is not verified here.
+
 ## Validation boundary
 
 Both variants share one data model and backend contract. Only source-detail placement changes. Native glass, real source/session navigation, actual embedding quality, true semantic kNN, persistent consent, worker cancellation and production GPU throughput are outside this deliverable. The reference repository and image files remain untouched.
