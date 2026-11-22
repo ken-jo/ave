@@ -56,11 +56,10 @@ describe("systemGitCandidates", () => {
     ]);
   });
 
-  it("uses only the native executable extension when searching Windows PATH", () => {
+  it("uses the explicit native executable name when searching Windows PATH", () => {
     const path = ";;.;bin;C:drive-relative;\\root-relative;C:\\Tools\\Git\\cmd";
     const fallback = "C:\\Program Files\\Git\\cmd\\git.exe";
-    expect(systemGitCandidates("win32", path, ".CMD;.BAT;.eXe")).toEqual(["C:\\Tools\\Git\\cmd\\git.exe", fallback]);
-    expect(systemGitCandidates("win32", path, ".CMD;.BAT")).toEqual([fallback]);
+    expect(systemGitCandidates("win32", path)).toEqual(["C:\\Tools\\Git\\cmd\\git.exe", fallback]);
   });
 });
 
@@ -83,6 +82,23 @@ const INSTALLED: InstallerGitInstall = {
 };
 
 describe("detectGitRuntime", () => {
+  it.each(["2.50.1", "2.40.0"])("detects Windows PATH Git %s without .EXE in PATHEXT", async (version) => {
+    const searchPath = "D:\\Tools\\Git\\cmd";
+    const path = `${searchPath}\\git.exe`;
+    vi.stubEnv("PATHEXT", ".CMD;.BAT");
+    try {
+      const detection = await detectGitRuntime({
+        ...nodeGitDetectionDeps(null),
+        ...fakeDeps({ platform: "win32", searchPath, versions: { [path]: `git version ${version}` } }),
+      });
+      expect(detection).toMatchObject(version === "2.50.1"
+        ? { state: "ready", git: { kind: "system", path } }
+        : { state: "missing", systemTooOld: { path, version } });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("prefers the installer's copy over a usable system git", async () => {
     const detection = await detectGitRuntime(
       fakeDeps({

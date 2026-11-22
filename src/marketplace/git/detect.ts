@@ -32,7 +32,6 @@ export interface GitDetectionDeps {
   platform: NodeJS.Platform;
   /** The PATH value to search, usually `process.env.PATH`. */
   searchPath: string | undefined;
-  pathExt?: string;
   isExecutableFile(path: string): Promise<boolean>;
   /** Output of `<path> --version`, or null when it cannot be run. */
   readVersion(path: string): Promise<string | null>;
@@ -46,7 +45,7 @@ async function findSystemGit(
 ): Promise<{ git: GitExecutable | null; tooOld: TooOldGit | null }> {
   let tooOld: TooOldGit | null = null;
   let cltChecked: boolean | null = null;
-  for (const candidate of systemGitCandidates(deps.platform, deps.searchPath, deps.pathExt)) {
+  for (const candidate of systemGitCandidates(deps.platform, deps.searchPath)) {
     if (!(await deps.isExecutableFile(candidate))) continue;
     if (deps.platform === "darwin" && candidate === DARWIN_GIT_SHIM) {
       cltChecked ??= await deps.commandLineToolsInstalled();
@@ -115,7 +114,6 @@ export function nodeGitDetectionDeps(installerRoot: string | null): GitDetection
   return {
     platform: process.platform,
     searchPath: process.env.PATH,
-    pathExt: process.env.PATHEXT,
     async isExecutableFile(path) {
       try {
         await access(path, process.platform === "win32" ? constants.F_OK : constants.X_OK);

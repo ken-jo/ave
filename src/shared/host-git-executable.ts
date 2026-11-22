@@ -42,17 +42,14 @@ function isFullyQualified(path: string, platform: NodeJS.Platform): boolean {
 export function systemGitCandidates(
   platform: NodeJS.Platform,
   searchPath: string | undefined,
-  pathExt?: string,
 ): string[] {
   const windows = platform === "win32";
   const seen = new Set<string>();
   const fromPath: string[] = [];
-  if (!windows || (pathExt?.trim() || ".EXE").split(";").some((ext) => ext.trim().toLowerCase() === ".exe")) {
-    for (const rawEntry of (searchPath ?? "").split(windows ? ";" : ":")) {
-      const entry = rawEntry.trim().replace(/^"(.*)"$/u, "$1");
-      if (!isFullyQualified(entry, platform)) continue;
-      fromPath.push(windows ? `${entry.replace(/[\\/]+$/u, "")}\\git.exe` : posix.join(entry, "git"));
-    }
+  for (const rawEntry of (searchPath ?? "").split(windows ? ";" : ":")) {
+    const entry = rawEntry.trim().replace(/^"(.*)"$/u, "$1");
+    if (!isFullyQualified(entry, platform)) continue;
+    fromPath.push(windows ? `${entry.replace(/[\\/]+$/u, "")}\\git.exe` : posix.join(entry, "git"));
   }
   return [...fromPath, ...wellKnownLocations(platform)].filter((candidate) => {
     const key = windows ? candidate.toLowerCase() : candidate;
@@ -88,7 +85,7 @@ let hostGitPath: string | null | undefined;
 export function resolveHostGit(packaged: boolean): string | null {
   if (hostGitPath === undefined) {
     hostGitPath = findInstallerGit(installerGitRoot(packaged))?.path
-      ?? systemGitCandidates(process.platform, process.env.PATH, process.env.PATHEXT).find(canRunSystemGit)
+      ?? systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit)
       ?? null;
   }
   return hostGitPath;
