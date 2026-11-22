@@ -3528,11 +3528,6 @@ trailing separators removed, and the normalized spelling. Platform path
 normalization collapses dot segments and duplicate separators without
 consulting the working directory.
 
-The generic rules redact any account's profile, not only the configured home:
-`<drive>:\Users\<name>`, `/Users/<name>`, `/home/<name>` and their file URLs.
-The name is a run of letters, marks, digits, `.`, `_` and `-` in any script. It
-ends before a directly joined `<drive>:\Users\` path.
-
 ### Windows object ownership
 
 An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)

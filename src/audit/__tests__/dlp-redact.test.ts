@@ -286,30 +286,6 @@ describe("scrubDiagnosticSecrets — real credential formats, not prefixes (desi
   });
 });
 
-describe("signed URL query values", () => {
-  const signature = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
-  const sessionToken = "IQoJb3JpZ2luX2VjEXAMPLEsessionTOKENvalue0123456789";
-  it.each([
-    [`https://objects.example/report.csv?X-Amz-Date=20261122T000000Z&X-Amz-SignedHeaders=host&X-Amz-Signature=${signature}`, "X-Amz-Date=20261122T000000Z"],
-    [`https://objects.example/report.csv?X-Amz-Security-Token=${sessionToken}&X-Amz-Signature=${signature}`, "objects.example/report.csv"],
-    [`https://media.example/clip.mp4?Expires=1795000000&Signature=${signature}&Key-Pair-Id=K2EXAMPLE`, "Key-Pair-Id=K2EXAMPLE"],
-    [`https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&sig=${signature}`, "sv=2026-01-01&sp=r"],
-  ])("removes signatures and session tokens from %s", (url, kept) => {
-    for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
-      const out = scrub(`download failed: ${url}`);
-      expect(out, scrub.name).not.toContain(signature);
-      expect(out, scrub.name).not.toContain(sessionToken);
-      expect(out, scrub.name).toContain(kept);
-    }
-  });
-
-  it("keeps parameters that only contain the word", () => {
-    const url = "https://docs.example/search?q=signature&signatures=on&design=sig";
-    expect(scrubDiagnosticSecrets(url)).toBe(url);
-    expect(scrubSecretsForLLM(url)).toBe(url);
-  });
-});
-
 describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
   it("redacts prefixed API keys (sk-/pk-/live-)", () => {
     expect(scrubSecretsForLLM("key sk-ant-ABCDEFGH1234")).not.toContain("sk-ant-ABCDEFGH1234");

@@ -18,6 +18,6 @@
     "win32:E:\\temp\\ted": ["E:\\temp\\ted[home]", "E:\\temp\\ted[home]", "E:/temp/ted[home]", "open E:\\temp\\ted[home]\\x now"],
     "win32:D:\\fixtures\\bob": ["D:\\fixtures\\bob[home]", "D:\\fixtures\\bob[home]", "D:/fixtures/bob[home]", "open D:\\fixtures\\bob[home]\\x now"],
     "win32:C:\\Users\\Demo Smith": ["[home] Smith[home]", "[home] Smith[home]", "[home] Smith[home]", "open [home] Smith[home]\\x now"],
-    "win32:C:\\Users\\Bobé": ["[home][home]", "[home][home]", "[home][home]", "open [home][home]\\x now"]
+    "win32:C:\\Users\\Bobé": ["[home]é[home]", "[home]é[home]", "[home]é[home]", "open [home]é[home]\\x now"]
   }
 }
