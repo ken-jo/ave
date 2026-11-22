@@ -549,3 +549,44 @@ it("an aggregate spawn count outlives the normal end of an earlier item it count
     await h.cleanup();
   }
 });
+
+it.each(["cancelled", "completes while the other item has failed"] as const)("an aggregate spawn count settles when an earlier item it counted is %s", async outcome => {
+  const release = deferred<void>();
+  let later = 0;
+  const h = await stageRunHarness(holdingPrepare((itemId, stageId) => {
+    if (itemId !== later) return false;
+    if (stageId === "x") throw new Error("preparation failed");
+    return true;
+  }, release.promise));
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const other = await h.confirm(outcome === "cancelled" ? [stageOf("y")] : [stageOf("x")]);
+    const earlier = await h.addItem(version);
+    later = await h.addItem(other);
+    runs.push(h.start(earlier, h.local(version)));
+    const [child] = await h.untilLive(1, earlier);
+    runs.push(h.start(later, h.local(other)));
+    // The failed preparation parks the later run with its failure recorded and no child.
+    if (outcome !== "cancelled") expect(await runs[1]).toMatchObject({ status: "awaiting_approval" });
+    const wait = Promise.allSettled([h.untilSpawned(2)]);
+    if (outcome === "cancelled") expect(h.engine.cancelRun(earlier)).toEqual({ ok: true });
+    else {
+      expect(h.events).toContainEqual(expect.objectContaining({ itemId: later, phase: "stage_failed", stageId: "x" }));
+      child.finish();
+    }
+    await runs[0];
+    const reason = outcome === "cancelled" ? /cancelled/ : /done/;
+    expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
+      { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(reason) }) },
+    ]);
+  } finally {
+    h.engine.cancelRun(later);
+    release.resolve();
+    await h.drainRunWork();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});

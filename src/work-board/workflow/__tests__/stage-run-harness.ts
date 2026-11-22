@@ -34,7 +34,7 @@ type IntegrateResult = { ok: true } | { ok: false; conflict: JoinConflict };
 export type StageRunView = WorkItemResolved & { stageRuns: WorkItemStageRun[]; stageJoins: StageJoin[]; record: RunRecord | null };
 type WorkflowDeps = NonNullable<WorkBoardEngineDeps["workflow"]>;
 type ObservedLaunch = { linked(): void; resume(): void };
-type ChildWaitFailure = { error: Error; originSessionId?: string };
+type ChildWaitFailure = { error: Error; originSessionId?: string; completed?: boolean };
 
 function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
   const pending = new Set<Promise<unknown>>();
@@ -99,13 +99,13 @@ export async function stageRunHarness(opts: {
   /** Origins whose run was started or spawned a child and has not ended. */
   const inFlight = new Set<string>();
 
-  function failChildWaits(reason: string, originSessionId?: string, terminal = false): void {
+  function failChildWaits(reason: string, originSessionId?: string, terminal = false, completed = false): void {
     const error = new Error(`Child wait ended: ${reason}`);
     if (terminal && originSessionId !== undefined) failures.set(originSessionId, error);
-    for (const changed of childChanges) changed({ error, originSessionId });
+    for (const changed of childChanges) changed({ error, originSessionId, completed });
   }
-  function endRun(reason: string, originSessionId: string): void {
-    failChildWaits(reason, originSessionId, true);
+  function endRun(reason: string, originSessionId: string, completed = false): void {
+    failChildWaits(reason, originSessionId, true, completed);
     inFlight.delete(originSessionId);
   }
 
@@ -205,7 +205,7 @@ export async function stageRunHarness(opts: {
             if (!prior?.runSessionId) failChildWaits(`${phase}: ${event.message ?? "child did not register"}`, workBoardOriginSessionId(itemId), true);
           } else if (event.message !== "restored" && event.reasonCode !== "run-end-confirmed"
             && (phase === "done" || phase === "denied" || phase === "cancelled" || phase === "error")) {
-            endRun(`${phase}: ${event.reasonCode ?? event.message ?? "run ended"}`, workBoardOriginSessionId(itemId));
+            endRun(`${phase}: ${event.reasonCode ?? event.message ?? "run ended"}`, workBoardOriginSessionId(itemId), phase === "done");
           }
         }
         events.push(event);
@@ -236,7 +236,7 @@ export async function stageRunHarness(opts: {
           const result = await current.runItem(...args);
           // The run already in progress is unaffected by a second start.
           if (result.status === "already_running") return result;
-          if (engine === wrapped && result.status !== "awaiting_approval") endRun(`${result.status}: ${"reason" in result ? result.reason : "run ended"}`, origin);
+          if (engine === wrapped && result.status !== "awaiting_approval") endRun(`${result.status}: ${"reason" in result ? result.reason : "run ended"}`, origin, result.status === "completed");
           else if (engine === wrapped && !spawned()) failChildWaits("awaiting_approval: run ended without the requested child", origin);
           return result;
         } catch (error) {
@@ -351,8 +351,8 @@ export async function stageRunHarness(opts: {
     });
   }
   /** An aggregate wait (no `itemId`) takes failures of every item in flight while it waits, and is created failed only when each of them
-   * has failed. A live count also takes failures of items whose live child it counted; a spawn count ignores an item it has already
-   * counted a child of while another item is still in flight. */
+   * has failed. A live count also takes failures of items whose live child it counted; a spawn count ignores the normal completion of an
+   * item it has already counted a child of while another item without a failure is still in flight. */
   function waitForChildren(get: () => FakeChild[], done: (list: FakeChild[]) => boolean, countsLive: boolean, itemId?: number): Promise<FakeChild[]> {
     if (closed) return Promise.reject(new Error("Child wait ended: harness cleaned up"));
     const current = get();
@@ -380,8 +380,8 @@ export async function stageRunHarness(opts: {
         const from = failure.originSessionId;
         if (from !== undefined && origin !== undefined && from !== origin) return;
         if (from !== undefined && origin === undefined && scope.size > 0
-          && (!scope.has(from) || (!countsLive && value.some(child => child.input.originSessionId === from)
-            && [...inFlight].some(other => other !== from)))) return;
+          && (!scope.has(from) || (!countsLive && failure.completed && value.some(child => child.input.originSessionId === from)
+            && [...inFlight].some(other => other !== from && !failures.has(other))))) return;
         childChanges.delete(changed);
         reject(failure.error);
       }
