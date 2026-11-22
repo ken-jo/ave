@@ -756,10 +756,9 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
   const floor = getProtectedReadDenyPaths();
   const pierces = filesystem.floorPierces ?? [];
   const sensitiveWriteDenies = getDefaultSensitiveWriteDenyEntries();
-  const sensitiveWritePaths = spelledPathEntries(sensitiveWriteDenies, "denyWrite");
   const mandatory = buildMandatorySandboxWritePolicy(
     pinned.allowWrite ?? [], _baseTrustedSettings?.userDataDir,
-    sensitiveWritePaths, sensitiveWritePaths.filter(path => isAbsolute(path) && !containsGlobCharsWin(path)),
+    spelledPathEntries(sensitiveWriteDenies, "denyWrite"),
   );
   // Pattern denies cannot be represented by a fixed literal container policy, including future matches.
   const literalDenies = (entries: readonly FilesystemPathEntry[], write = false): readonly string[] => [...new Set(entries.flatMap(entry => {

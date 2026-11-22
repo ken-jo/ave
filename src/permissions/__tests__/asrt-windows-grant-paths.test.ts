@@ -22,7 +22,7 @@ import * as defaultWorkspace from "../../main/default-workspace-root.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
-import { buildSandboxConfig, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, buildSandboxConfig, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -93,6 +93,21 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     } finally {
       grant.release();
     }
+  });
+
+  it("admits an MXC extension output beside bracketed Documents and retains the profile deny", async () => {
+    const documents = join(fixture, "Work [Archive]", "Documents");
+    const engine = join(documents, "PowerShell");
+    const profile = join(engine, "profile.ps1");
+    mkdirSync(engine, { recursive: true });
+    writeFileSync(profile, "");
+    await initializeAsrtSandbox({ resolveWindowsDocumentsPath: () => documents });
+
+    const { policy } = admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [target] }, {
+      readRoots: [], writeRoots: [target], hostStorageRoots: [],
+    });
+    expect(policy.allowWrite).toEqual([target]);
+    expect(policy.denyWrite).toContain(profile);
   });
 
   it.each([0, 5000, 5001])("logs numeric grant and release timings without identities at %s ms", async duration => {
