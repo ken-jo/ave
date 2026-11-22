@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
 import { namesFoldCase, plainFolderIgnore } from "../folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
+import { holdDir } from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE } from "../workspace-layout.js";
@@ -281,9 +282,14 @@ describe("folder stage workspaces", () => {
     const runRoot = join(base, "run");
     mkdirSync(runRoot);
     const removed: string[] = [];
-    const rules = plainFolderIgnore(createHostGit({ env }), runRoot, project, { check: () => undefined, remove: (scratch) => { removed.push(scratch); rmSync(scratch, { recursive: true }); } });
+    const held = holdDir(runRoot);
+    const rules = plainFolderIgnore(createHostGit({ env }), runRoot, project, {
+      check: () => held.check(),
+      makeTemp: () => held.makeTemp("_ignore-"),
+      remove: async (scratch) => { removed.push(scratch.path); await held.remove(basename(scratch.path), scratch.id); },
+    });
     expect([...await rules.ignored(["line\nbreak.log", "line\nbreak.txt", "plain.log", "notes.txt", "src/"])].sort()).toEqual(["line\nbreak.log", "plain.log"]);
-    rules.done();
+    await rules.done();
     expect(removed).toHaveLength(1);
     expect(readdirSync(runRoot)).toEqual([]);
   });
@@ -564,6 +570,16 @@ describe("folder stage workspaces", () => {
     }
     rmSync(record);
     writeFileSync(record, written);
+  });
+
+  it("a planted record tmp link does not write through", async () => {
+    const handle = await start(project);
+    const victim = join(base, "victim.txt");
+    writeFileSync(victim, "outside\n");
+    linkSync(victim, join(handle.runRoot, `${RUN_FILE}.tmp`));
+    expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("notes.txt")] }))).toEqual(["notes.txt"]);
+    expect(readFileSync(victim, "utf8")).toBe("outside\n");
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
   });
 
   it("a run or project folder replaced by a link after it was listed is not cleaned through", async () => {

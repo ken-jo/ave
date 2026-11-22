@@ -1,9 +1,8 @@
-import { lstatSync, mkdtempSync, readdirSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import type { HostGit } from "./host-git.js";
-import { realWithin } from "./owned-fs.js";
-import { IGNORE_PREFIX } from "./workspace-layout.js";
+import { type OwnedDir, realWithin } from "./owned-fs.js";
 import type { SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -47,14 +46,14 @@ export function namesFoldCase(directory: string, fs: NameReader = onDisk): boole
 
 /**
  * A plain folder honours its own `.gitignore` files, read by git's matcher. `check-ignore` runs only against a repository, so an empty one
- * is made on first need in a folder of its own under the run root, and `done` removes it through `held.remove` whatever happened in between;
- * `held.check` throws once the run root is no longer the folder the caller holds, and is asked before the folder is made and each time
- * before git is pointed at it. The
+ * is made on first need in a folder of its own that `held.makeTemp` makes under the run root, and `done` removes it through `held.remove`
+ * whatever happened in between; `held.check` throws once the run root is no longer the folder the caller holds, and is asked each time
+ * before and after git is pointed at it. The
  * folder is its work tree for that call and nothing is written into it. Without an ignore file above a path git is not run. A run root that
  * lies inside the folder gets no repository: the call throws before anything is made.
  */
-export function plainFolderIgnore(git: HostGit, runRoot: string, root: string, held: { check: () => void; remove: (scratch: string) => void }): { ignored: NonNullable<SeedRules["ignored"]>; done: () => void } {
-  let scratch: string | undefined;
+export function plainFolderIgnore(git: HostGit, runRoot: string, root: string, held: { check: () => void; makeTemp: () => OwnedDir; remove: (scratch: OwnedDir) => Promise<void> }): { ignored: NonNullable<SeedRules["ignored"]>; done: () => Promise<void> } {
+  let scratch: OwnedDir | undefined;
   let folds: boolean | undefined;
   const ruled = new Map<string, boolean>();
   const hasRules = (directory: string): boolean => {
@@ -81,23 +80,23 @@ export function plainFolderIgnore(git: HostGit, runRoot: string, root: string, h
       if (scratch === undefined) {
         // A home relocated beneath the project would put the repository into the folder the host only reads.
         if (realWithin(root, runRoot)) throw new Error("the run root lies inside the project");
+        scratch = held.makeTemp();
+        const made = await git.run(runRoot, ["init", "-q", "--template=", scratch.path], { isolated: true });
         held.check();
-        scratch = mkdtempSync(join(runRoot, IGNORE_PREFIX));
-        held.check();
-        const made = await git.run(runRoot, ["init", "-q", "--template=", scratch], { isolated: true });
         if (made.code !== 0) throw new Error("the ignore matcher's repository could not be made");
       }
       held.check();
-      const checked = await git.run(root, [`--git-dir=${join(scratch, ".git")}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
+      const checked = await git.run(root, [`--git-dir=${join(scratch.path, ".git")}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
         { stdin: paths.map(path => `${path}\0`).join(""), isolated: true, drivers: [...MATCHER_CONFIG, "-c", `core.ignoreCase=${folds}`] });
       // Exit 1: none of them is ignored.
+      held.check();
       if (checked.code !== 0 && checked.code !== 1) throw new Error("the folder's ignore rules could not be read");
       return new Set(checked.stdout.split("\0").filter(entry => entry !== ""));
     },
-    done: () => {
+    done: async () => {
       if (scratch === undefined) return;
       // What stays is removed by the next boot sweep.
-      try { held.remove(scratch); } catch (error) { log.warn("the ignore matcher's folder was not removed: %s", (error as Error).message); }
+      try { await held.remove(scratch); } catch (error) { log.warn("the ignore matcher's folder was not removed: %s", (error as Error).message); }
     },
   };
 }
