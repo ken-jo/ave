@@ -57,6 +57,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryEmbeddings.chooseProvider": "설정된 제공자 선택",
   "memoryEmbeddings.chooseModel": "임베딩 모델 선택",
   "memoryEmbeddings.noProviders": "먼저 API 제공자를 설정하세요.",
+  "memoryEmbeddings.destination": "전송 대상: {origin}",
   "memoryEmbeddings.consent": "기억 텍스트와 기억에 질문하기의 질문을 이 기기 밖의 {provider}(으)로 전송하는 데 동의합니다.",
   "memoryEmbeddings.save": "저장",
   "memoryEmbeddings.rebuildNotice": "소스나 모델을 바꾸면 지도가 초기화되어 다시 구축해야 합니다. 로컬을 선택하면 제공자 전송이 즉시 중단됩니다.",

@@ -85,9 +85,9 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     return read;
   };
   const settings = async (): Promise<MemoryEmbeddingSettings> => {
-    const consent = provider.currentConsent();
     const providers = await provider.providers();
     const namespace = provider.namespace();
+    const consent = provider.currentConsent();
     return { source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0), ...(consent ? { consent } : {}) };
   };
   function handle<T>(channel: string, schema: z.ZodType<T>, action: (value: T, event: IpcMainInvokeEvent) => unknown) {
@@ -119,13 +119,17 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
   });
   handle(CHANNELS.memoryMap.settingsGet, z.undefined(), settings);
   handle(CHANNELS.memoryMap.settingsSet, MemoryEmbeddingSettingsSchema, async input => {
+    if (input.source === 'provider') {
+      if (!input.consent) throw new MemoryMapHostError('provider-consent-required');
+      provider.assertCurrentEndpoint(input.providerId, input.endpointId);
+    }
     const generation = ++settingsGeneration;
     provider.suspend(); host.cancel();
     const pending = settingsWrite.catch(() => {}).then(async () => {
       if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
-      if (input.source === 'provider' && !input.consent) throw new MemoryMapHostError('provider-consent-required');
-      const consent = input.source === 'provider' ? await provider.issueConsent(input.providerId, input.modelId) : undefined;
+      const consent = input.source === 'provider' ? await provider.issueConsent(input.providerId, input.modelId, input.endpointId) : undefined;
       if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
+      if (input.source === 'provider') provider.assertCurrentEndpoint(input.providerId, input.endpointId);
       const previous = deps.settingsService.get('memoryEmbedding');
       await deps.settingsService.set('memoryEmbedding', {
         ...(previous?.localModelPath ? { localModelPath: previous.localModelPath } : {}),

@@ -45,11 +45,16 @@ export class ProviderEmbeddings {
       || !Number.isFinite(Date.parse(consent.timestamp))) return undefined;
     return consent;
   }
-  async issueConsent(providerId: string, modelId: string): Promise<MemoryEmbeddingConsent> {
-    const endpointId = this.endpointId(providerId);
-    if (!endpointId) throw new MemoryMapHostError('provider-unavailable');
-    await this.validate(providerId, modelId);
+  assertCurrentEndpoint(providerId: string, endpointId: string): void {
     if (endpointId !== this.endpointId(providerId)) throw new MemoryMapHostError('request-stale');
+  }
+  async issueConsent(providerId: string, modelId: string, endpointId: string): Promise<MemoryEmbeddingConsent> {
+    this.assertCurrentEndpoint(providerId, endpointId);
+    try {
+      await this.validate(providerId, modelId);
+    } finally {
+      this.assertCurrentEndpoint(providerId, endpointId);
+    }
     return { version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId, modelId, endpointId, timestamp: new Date().toISOString() };
   }
   private assertConsent(namespace: EmbeddingNamespace, signal: AbortSignal): void {
@@ -60,10 +65,18 @@ export class ProviderEmbeddings {
   }
   private endpointId(providerId: string): string | undefined {
     try {
-      const { baseUrl, vendor, block, preset } = this.route(providerId);
-      if (baseUrl) return digest(JSON.stringify([new URL(baseUrl).href, vendor, block.wire, preset?.trust?.networkAccess]));
-    } catch { /* unavailable destination */ }
-    return undefined;
+      return this.describeRoute(this.route(providerId))?.endpointId;
+    } catch {
+      return undefined;
+    }
+  }
+  private describeRoute({ baseUrl, vendor, block, preset }: ReturnType<ProviderEmbeddings['route']>): MemoryEmbeddingProvider['route'] {
+    const url = URL.parse(baseUrl ?? '');
+    if (!url || url.origin === 'null') return undefined;
+    return {
+      endpointId: digest(JSON.stringify([url.href, vendor, block.wire, preset?.trust?.networkAccess])),
+      origin: url.origin,
+    };
   }
   private route(providerId: string) {
     const preset = (this.settings.get('marketplace')?.installedProviderPresets ?? []).find(value => value.providerId === providerId);
@@ -91,7 +104,8 @@ export class ProviderEmbeddings {
           for (const entry of cached.modelEntries ?? []) if (entry.outputModalities?.includes('embedding') && cached.models.includes(entry.id)) models.push(entry.id);
         }
       }
-      result.push({ id, models: [...new Set(models)], ...(!models.length ? { reason: 'provider-no-embedding-model' as const } : {}) });
+      const destination = this.describeRoute(route);
+      result.push({ id, models: [...new Set(models)], ...(destination ? { route: destination } : {}), ...(!models.length ? { reason: 'provider-no-embedding-model' as const } : {}) });
     }
     return result;
   }

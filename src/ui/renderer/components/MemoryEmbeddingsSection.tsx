@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
-import type { MemoryMapApi, MemoryMapError, MemoryEmbeddingSettings } from "../../../shared/memory-map.js";
+import type { MemoryMapApi, MemoryMapError, MemoryEmbeddingSettings, MemoryEmbeddingSelection } from "../../../shared/memory-map.js";
 import { MEMORY_EMBEDDING_CONSENT_VERSION } from '../../../shared/memory-embedding-config.js';
 import type { MemoryModelStatus } from "../../../shared/memory-model.js";
 
@@ -28,7 +28,12 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     void api.settingsGet().then(result => { if (active && result.ok) {
       setSettings(result.value); setRevision(result.value.namespace.modelRevision); setSource(result.value.source);
       setProviderId(result.value.namespace.providerId ?? ''); setModelId(result.value.source === 'provider' ? result.value.namespace.modelId : '');
-      setConsent(result.value.consent?.version === MEMORY_EMBEDDING_CONSENT_VERSION && result.value.consent.providerId === result.value.namespace.providerId && result.value.consent.modelId === result.value.namespace.modelId && result.value.consent.endpointId === result.value.namespace.modelRevision);
+      const route = result.value.providers.find(provider => provider.id === result.value.namespace.providerId)?.route;
+      const savedConsent = result.value.consent;
+      setConsent(savedConsent?.version === MEMORY_EMBEDDING_CONSENT_VERSION
+        && savedConsent.providerId === result.value.namespace.providerId
+        && savedConsent.modelId === result.value.namespace.modelId
+        && savedConsent.endpointId === route?.endpointId);
     } }).catch(() => {});
     return () => { active = false; generation.current++; stop(); };
   }, [api]);
@@ -45,12 +50,32 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     } catch { setError(action === "existing" ? "model-folder-invalid" : "model-download-failed"); }
     finally { setBusy(false); }
   };
+  const selectedProvider = settings?.providers.find(value => value.id === providerId);
+  const route = selectedProvider?.route;
+  const canAcknowledge = Boolean(route && selectedProvider?.models.includes(modelId));
   const handleSave = async (nextSource = source) => {
+    let selection: MemoryEmbeddingSelection = { source: 'local' };
+    if (nextSource === 'provider') {
+      if (!route || !canAcknowledge || !consent) return;
+      selection = { source: 'provider', providerId, modelId, endpointId: route.endpointId, consent };
+    }
     setBusy(true); setError(null);
     try {
-      const result = await api.settingsSet(nextSource === 'local' ? { source: 'local' } : { source: 'provider', providerId, modelId, consent });
-      if (!result.ok) setError(result.error);
-      else {
+      const result = await api.settingsSet(selection);
+      if (!result.ok) {
+        setError(result.error);
+        if (result.error === 'request-stale' && nextSource === 'provider') {
+          setConsent(false);
+          const refreshed = await api.settingsGet();
+          if (refreshed.ok) {
+            setSettings(refreshed.value);
+            const candidate = refreshed.value.providers.find(provider => provider.id === providerId);
+            if (!candidate?.models.includes(modelId)) setModelId('');
+          } else {
+            setSettings(null);
+          }
+        }
+      } else {
         setSettings(result.value);
         setSource(result.value.source);
         if (result.value.source === 'local') setConsent(false);
@@ -65,7 +90,6 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
     }
     setConsent(checked);
   };
-  const selectedProvider = settings?.providers?.find(value => value.id === providerId);
   const downloading = status?.status === "downloading";
   return <section data-settings-section="memory-embeddings" tabIndex={-1} aria-labelledby="memory-embeddings-heading" className="space-y-3 rounded-lg border p-4">
     <h2 id="memory-embeddings-heading" className="text-sm font-semibold">{t("memoryEmbeddings.title")}</h2>
@@ -86,8 +110,9 @@ export function MemoryEmbeddingsSection({ api }: { api: MemoryMapApi }) {
           {selectedProvider?.models.map(model => <option key={model} value={model}>{model}</option>)}
         </select></label>
         {(!settings?.providers?.length || selectedProvider?.reason) && <p role="status">{t(selectedProvider?.reason ? `memoryMap.error.${selectedProvider.reason}` : 'memoryEmbeddings.noProviders')}</p>}
-        <label className="flex items-start gap-2"><input type="checkbox" checked={consent} disabled={busy || !modelId} onChange={event => handleConsentChange(event.target.checked)}/><span>{t('memoryEmbeddings.consent', { provider: providerId || t('memoryEmbeddings.chooseProvider') })}</span></label>
-        <Button size="sm" disabled={busy || !consent || !selectedProvider?.models.includes(modelId)} onClick={() => void handleSave()}>{t('memoryEmbeddings.save')}</Button>
+        {route && <p className="break-all">{t('memoryEmbeddings.destination', { origin: route.origin })}</p>}
+        <label className="flex items-start gap-2"><input type="checkbox" checked={consent} disabled={busy || (!consent && !canAcknowledge)} onChange={event => handleConsentChange(event.target.checked)}/><span>{t('memoryEmbeddings.consent', { provider: providerId || t('memoryEmbeddings.chooseProvider') })}</span></label>
+        <Button size="sm" disabled={busy || !consent || !canAcknowledge} onClick={() => void handleSave()}>{t('memoryEmbeddings.save')}</Button>
         <p>{t('memoryEmbeddings.rebuildNotice')}</p>
       </>}
     </fieldset>

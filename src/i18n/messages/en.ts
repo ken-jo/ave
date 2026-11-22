@@ -55,6 +55,7 @@ export const en = {
   "memoryEmbeddings.chooseProvider": "Choose a configured provider",
   "memoryEmbeddings.chooseModel": "Choose an embedding model",
   "memoryEmbeddings.noProviders": "Configure an API provider first.",
+  "memoryEmbeddings.destination": "Destination: {origin}",
   "memoryEmbeddings.consent": "I agree to send memory text and questions from Ask your memory off this device to {provider}.",
   "memoryEmbeddings.save": "Save",
   "memoryEmbeddings.rebuildNotice": "Changing the source or model clears the map and requires a rebuild. Selecting Local immediately stops provider sends.",

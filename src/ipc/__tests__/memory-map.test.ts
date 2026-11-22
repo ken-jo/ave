@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../types.js';
+import type { MemoryMapApi } from '../../shared/memory-map.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { graphMemoryRevision, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 const state = vi.hoisted(() => ({
@@ -15,6 +16,12 @@ vi.mock('../../main/memory-map/model-manager.js', async importOriginal => ({ ...
 import { registerMemoryMapHandlers } from '../domains/memory-map.js';
 const hostEvent = { senderFrame: { url: 'file:///app/index.html' }, sender: { send: vi.fn(), isDestroyed: () => false } } as unknown as IpcMainInvokeEvent;
 const invoke = (key: keyof typeof CHANNELS.memoryMap, raw?: unknown, event = hostEvent) => state.handles.get(CHANNELS.memoryMap[key])!(event, ...(raw === undefined ? [] : [raw]));
+async function providerEndpointId() {
+  const result = await invoke('settingsGet') as Awaited<ReturnType<MemoryMapApi['settingsGet']>>;
+  const endpointId = result.ok && result.value.providers.find(entry => entry.id === 'openai')?.route?.endpointId;
+  if (!endpointId) throw new Error('Missing provider route');
+  return endpointId;
+}
 beforeEach(() => {
   vi.clearAllMocks(); state.handles.clear();
   registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: () => undefined, set: vi.fn(), hasStoredSecret: vi.fn(async () => false) } } as unknown as IpcDeps,
@@ -51,7 +58,7 @@ describe('memory map host boundary', () => {
       get: (key: string) => key === 'memoryEmbedding' ? config : key === 'llm' ? {} : {}, set,
       hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai',
     } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
-    const selection = { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small', consent: false };
+    const selection = { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small', endpointId: await providerEndpointId(), consent: false };
     expect(await invoke('settingsSet', selection)).toEqual({ ok: false, error: 'provider-consent-required' }); expect(set).not.toHaveBeenCalled();
     expect(await invoke('settingsSet', { ...selection, consent: true, timestamp: 'renderer-value' })).toEqual({ ok: false, error: 'invalid-input' });
     expect(await invoke('settingsSet', { ...selection, consent: true })).toMatchObject({ ok: true, value: { source: 'provider' } });
@@ -65,10 +72,38 @@ describe('memory map host boundary', () => {
     const waiting = new Promise<void>(resolve => { release = resolve; }); const entered = new Promise<void>(resolve => { started = resolve; });
     const set = vi.fn(async (_key: string, value: { source: string }) => { if (value.source === 'provider') { started(); await waiting; } config = value; });
     registerMemoryMapHandlers({ auditLogger: { log: state.audit }, settingsService: { get: (key: string) => key === 'memoryEmbedding' ? config : {}, set, hasStoredSecret: async (key: string) => key === 'llm.apiKey.openai' } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
-    const old = invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small', consent: true }); await entered;
+    const old = invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small', endpointId: await providerEndpointId(), consent: true }); await entered;
     const local = invoke('settingsSet', { source: 'local' }); release();
     expect(await old).toEqual({ ok: false, error: 'request-stale' }); expect(await local).toMatchObject({ ok: true });
     expect(config).toEqual({ source: 'local' });
+  });
+  it('rechecks the acknowledged route after asynchronous provider validation', async () => {
+    let baseUrl = 'https://api.openai.com/v1';
+    let pause = false;
+    let release!: () => void;
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const set = vi.fn();
+    const transport = vi.fn();
+    registerMemoryMapHandlers({ auditLogger: { log: state.audit }, singleHopNetworkFetch: transport, settingsService: {
+      get: (key: string) => key === 'llm' ? { vendors: { openai: { baseUrl } } } : undefined,
+      set,
+      hasStoredSecret: async (name: string) => {
+        if (name !== 'llm.apiKey.openai') return false;
+        if (pause) { started(); await waiting; }
+        return true;
+      },
+    } } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    const endpointId = await providerEndpointId();
+    pause = true;
+    const save = invoke('settingsSet', { source: 'provider', providerId: 'openai', modelId: 'text-embedding-3-small', endpointId, consent: true });
+    await entered;
+    baseUrl = 'https://api.mistral.ai/v1';
+    release();
+    expect(await save).toEqual({ ok: false, error: 'request-stale' });
+    expect(set).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
   });
   it.each(Object.keys(CHANNELS.memoryMap).filter(key => !['progress','modelProgress'].includes(key)) as (keyof typeof CHANNELS.memoryMap)[])('rejects an untrusted frame before parsing %s', async key => {
     const event = { ...hostEvent, senderFrame: { url: 'ave-mcp-app://isolated/index.html' } } as unknown as IpcMainInvokeEvent;
