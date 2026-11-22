@@ -1,24 +1,30 @@
 /** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
-const gitCalls = vi.hoisted(() => ({ checkIgnore: [] as string[], intercept: false }));
+const gitCalls = vi.hoisted(() => ({
+  checkIgnore: [] as string[],
+  traceEnv: undefined as NodeJS.ProcessEnv | undefined,
+  intercept: false,
+}));
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    execFileSync: ((file: string, args: readonly string[], options: object) => {
+    execFileSync: ((file: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
       if (args.includes("check-ignore")) {
         gitCalls.checkIgnore.push(file);
         if (gitCalls.intercept) return Buffer.alloc(0);
+        if (gitCalls.traceEnv) options = { ...options, env: { ...options.env, ...gitCalls.traceEnv } };
       }
       return actual.execFileSync(file, args, options);
     }) as typeof actual.execFileSync,
   };
 });
-import { mkdtempSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   discoverDirectoryInstructions,
@@ -64,6 +70,48 @@ it("uses an absolute host Git path even with an executable in the project and re
     gitCalls.intercept = false;
     vi.unstubAllEnvs();
     process.chdir(cwd);
+    await cleanupTmpDir(root);
+  }
+});
+
+it("keeps the ignore query local when a skip-worktree ignore blob is missing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ave-ignore-blob-"));
+  const source = join(root, "source");
+  const project = join(root, "project");
+  const trace = join(root, "git-trace.jsonl");
+  const disabledConfig = process.platform === "win32" ? "NUL" : "/dev/null";
+  const configEnv = { GIT_CONFIG_GLOBAL: disabledConfig, GIT_CONFIG_SYSTEM: disabledConfig };
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/iu.test(key))),
+    ...configEnv,
+  };
+  const git = (...args: string[]) => execFileSync("git", args, { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const hasBlob = () => spawnSync("git", ["--no-lazy-fetch", "-C", project, "cat-file", "-e", "HEAD:.gitignore"], { env }).status;
+  try {
+    git("init", "-q", source);
+    git("-C", source, "config", "uploadpack.allowFilter", "true");
+    git("-C", source, "config", "uploadpack.allowAnySHA1InWant", "true");
+    writeFileSync(join(source, ".gitignore"), "build/\n");
+    git("-C", source, "add", ".gitignore");
+    git("-C", source, "-c", "user.name=Example", "-c", "user.email=git@example.test", "commit", "-qm", "fixture");
+    git("clone", "-q", "--filter=blob:none", "--no-checkout", "-c", "protocol.file.allow=always", pathToFileURL(source).href, project);
+    git("-C", project, "read-tree", "HEAD");
+    git("-C", project, "update-index", "--skip-worktree", ".gitignore");
+    expect(git("-C", project, "ls-files", "-t", ".gitignore").trim()).toBe("S .gitignore");
+    expect(existsSync(join(project, ".gitignore"))).toBe(false);
+    expect(hasBlob()).toBeGreaterThan(0);
+    mkdirSync(join(project, "build"));
+    writeFileSync(join(project, "build", "AGENTS.md"), "fixture instructions");
+
+    gitCalls.traceEnv = { ...configEnv, GIT_TRACE2_EVENT: trace };
+    const layers = discoverDirectoryInstructions(project, join("build", "x.js"), new Set());
+    const events = readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ event: "cmd_name", name: "check-ignore" })]));
+    expect(events.filter((event) => event.event === "child_start").map((event) => event.argv)).toEqual([]);
+    expect(hasBlob()).toBeGreaterThan(0);
+    expect(layers.map((layer) => layer.content)).toEqual(["fixture instructions"]);
+  } finally {
+    gitCalls.traceEnv = undefined;
     await cleanupTmpDir(root);
   }
 });

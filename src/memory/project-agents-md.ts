@@ -250,8 +250,13 @@ function askGitIgnores(repoRoot: string, path: string): boolean {
   const env = { ...process.env };
   // A git hook's GIT_DIR / GIT_WORK_TREE would point the query at another repository.
   for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
+  env.GIT_ALLOW_PROTOCOL = "";
   try {
-    execFileSync(git, buildHostGitArgs(["-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)]), {
+    // Older Git must refuse the option before it can read a missing object.
+    const args = buildHostGitArgs(["--no-lazy-fetch", "-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
+      configArgs: ["-c", "protocol.allow=never"],
+    });
+    execFileSync(git, args, {
       windowsHide: true,
       stdio: "ignore",
       timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs,
