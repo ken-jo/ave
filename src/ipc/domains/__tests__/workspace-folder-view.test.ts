@@ -327,8 +327,9 @@ describe("workspace.listDir folder-view entries", () => {
     const [ancestor] = [...moved].sort(([a], [b]) => a.split(sep).length - b.split(sep).length);
     const cause = ancestor === undefined ? "no unmodeled change" : `${ancestor[0]} changed in ${ancestor[1]}`;
     const costs = perRow.map(({ realpaths, lstats }) => `${realpaths.length}/${lstats.length}`).join(" ");
+    const diagnosis = `${cause}; realpaths/lstats per row: ${costs}`;
     // An entry may pay a few checks of its own (about 8 here); resolving the policy roots again costs over a hundred.
-    expect(perEntry, `${cause}; realpaths/lstats per row: ${costs}`).toBeLessThanOrEqual(20);
+    expect(perEntry, diagnosis).toBeLessThanOrEqual(20);
     // Include cold resolutions and witness seeding in the row budgets.
     const later: number[] = [];
     for (const [index, { name, realpaths, lstats }] of perRow.entries()) {
@@ -340,7 +341,7 @@ describe("workspace.listDir folder-view entries", () => {
     // median skips a row that seeds again because a temp ancestor changed while the previous row seeded.
     const depth = scratch.split(sep).length;
     later.sort((a, b) => a - b);
-    expect(later[later.length >> 1], `median lstats after seeding, ${depth}-component scratch path`).toBeLessThanOrEqual(50 * depth + 100);
+    expect(later[later.length >> 1], `median lstats after seeding, ${depth}-component scratch path; ${diagnosis}`).toBeLessThanOrEqual(50 * depth + 100);
   });
 
   it("hides a folder that becomes the host's script resources partway through a listing", async ({ onTestFinished }) => {
