@@ -464,6 +464,7 @@ describe("workspace.listDir folder-view entries", () => {
 
   it("confirms a changed ancestor's child again when the ancestor's change time moves between two lookups of one row", async ({ onTestFinished }) => {
     // No route changes, so only the realpath of the ancestor's child shows that the earlier confirmation was not reused.
+    // POSIX limit: if the shared /tmp changes while a row seeds, live walk-ups also realpath the home and can hide a reuse.
     const scratch = mkdtempSync(join(root, "row-spelling-"));
     onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
     const dir = join(scratch, "list");
