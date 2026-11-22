@@ -93,6 +93,7 @@ export async function stageRunHarness(opts: {
 
   const runner = {
     async spawn(input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }): Promise<SubAgentSpawnResult> {
+      await Promise.resolve();
       const sessionId = `child-${children.length + 1}`;
       const launch = launches.getStore();
       let end: (result: SubAgentSpawnResult) => void = () => undefined;
@@ -108,11 +109,10 @@ export async function stageRunHarness(opts: {
         },
       };
       children.push(child);
-      for (const changed of childChanges) changed();
-      await Promise.resolve();
       hooks?.onLinked?.({ childSessionId: sessionId });
       const scripted = opts.script?.(input);
       if (scripted) child.finish(scripted);
+      if (!child.ended) for (const changed of childChanges) changed();
       launch?.linked();
       return done;
     },
@@ -233,11 +233,11 @@ export async function stageRunHarness(opts: {
   const statusOf = (current: StageRunView, stageId: string) => current.stageRuns.find(run => run.stageId === stageId)?.status;
   const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) => until(itemId, current => statusOf(current, stageId) === status);
   const live = () => children.filter(child => !child.ended);
-  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description: string): Promise<T> {
+  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description?: string): Promise<T> {
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
     return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const timeout = description === undefined ? undefined : setTimeout(() => {
         listeners.delete(changed);
         reject(new Error(`timed out waiting for ${description}`));
       }, 2_000);
@@ -251,24 +251,13 @@ export async function stageRunHarness(opts: {
       listeners.add(changed);
     });
   }
-  const waitForLive = (count: number) => waitForSignal(childChanges, () => {
+  const untilLive = (count: number) => waitForSignal(childChanges, () => {
     const active = live();
     return active.length === count ? active : undefined;
-  }, `${count} live children`);
-  async function untilLive(count: number): Promise<FakeChild[]> {
-    for (let i = 0; i < 400; i += 1) {
-      if (live().length === count) return live();
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    throw new Error(`timed out waiting for ${count} live children; have ${live().length}`);
-  }
-  async function untilSpawned(count: number): Promise<FakeChild[]> {
-    for (let i = 0; i < 400; i += 1) {
-      if (children.length >= count) return children;
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    throw new Error(`timed out waiting for ${count} children; have ${children.length}`);
-  }
+  });
+  const waitForLive = untilLive;
+  const untilSpawned = (count: number) =>
+    waitForSignal(childChanges, () => children.length >= count ? children : undefined);
   const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");
