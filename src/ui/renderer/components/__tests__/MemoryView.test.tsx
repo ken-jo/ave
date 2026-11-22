@@ -226,7 +226,7 @@ describe('memory map view', () => {
       expect(screen.getByText('메모리 지도 만드는 중…')).toBeTruthy();
       map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
       await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-      expect(screen.getByRole('group', { name: /메모리 지도 —/ })).toBeTruthy();
+      expect(screen.getByRole('region', { name: /메모리 지도 —/ })).toBeTruthy();
       const count = map.get.mock.calls.length;
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
       expect(map.get).toHaveBeenCalledTimes(count);
