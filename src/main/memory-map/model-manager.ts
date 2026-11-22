@@ -7,7 +7,14 @@ import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from 
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
 
 const MODEL_SLOT_PARENT = 'multilingual-e5-small';
-const RECOVERY_SLOT_NAME = new RegExp(`^${LOCAL_MODEL_REVISION}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, 'iu');
+const SLOT_ID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const RECOVERY_SLOT_NAME = new RegExp(`^${LOCAL_MODEL_REVISION}-${SLOT_ID_PATTERN}$`, 'iu');
+const STAGING_SLOT_NAME = new RegExp(`^${LOCAL_MODEL_REVISION}\\.tmp-${SLOT_ID_PATTERN}$`, 'iu');
+
+function isWithinDirectory(directory: string, path: string): boolean {
+  const fromDirectory = relative(directory, path);
+  return !isAbsolute(fromDirectory) && fromDirectory !== '..' && !fromDirectory.startsWith(`..${sep}`);
+}
 
 function recoverySlotName(parent: string, path: string | undefined): string | undefined {
   const name = path && relative(parent, path).split(sep)[0];
@@ -77,9 +84,7 @@ export class LocalModelManager {
   }
   private async isManagedPath(folder: string): Promise<boolean> {
     const root = await this.checkedDirectory(this.namespace.dir);
-    if (root === undefined) return false;
-    const fromRoot = relative(root, folder);
-    return !isAbsolute(fromRoot) && fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`);
+    return root !== undefined && isWithinDirectory(root, folder);
   }
   async validatedPath(): Promise<string> {
     const path = this.options.readPath();
@@ -99,7 +104,7 @@ export class LocalModelManager {
     }
     catch { return this.publish({ ...this.state, status: 'failed', error: 'model-integrity-failed' }); }
   }
-  private run(action: (signal: AbortSignal) => Promise<void>): Promise<MemoryModelStatus> {
+  private run(action: (signal: AbortSignal) => Promise<void>, sourceFolder?: string): Promise<MemoryModelStatus> {
     this.cancel();
     const generation = this.generation;
     const previous = this.task;
@@ -109,6 +114,8 @@ export class LocalModelManager {
       await previous;
       if (generation !== this.generation) return { ...this.state };
       try {
+        await this.sweepModelSlots([RECOVERY_SLOT_NAME, STAGING_SLOT_NAME], sourceFolder);
+        controller.signal.throwIfAborted();
         await action(controller.signal);
         controller.signal.throwIfAborted();
         return this.publish({ ...this.state, status: 'ready', error: undefined });
@@ -145,7 +152,7 @@ export class LocalModelManager {
         }
         await verifyModelFolder(staging, this.files, signal);
       });
-    });
+    }, folder);
   }
   download(): Promise<MemoryModelStatus> {
     return this.run(signal => this.install(signal, async name => {
@@ -187,8 +194,8 @@ export class LocalModelManager {
     return folder;
   }
 
-  private async removeRecoverySlot(parent: string, name: string): Promise<void> {
-    if (!RECOVERY_SLOT_NAME.test(name)) return;
+  private async removeModelSlot(parent: string, name: string): Promise<void> {
+    if (!RECOVERY_SLOT_NAME.test(name) && !STAGING_SLOT_NAME.test(name)) return;
     try {
       const managedParent = await this.recoveryParent();
       if (managedParent === undefined || relative(managedParent, parent) !== '') return;
@@ -205,21 +212,35 @@ export class LocalModelManager {
     return root === undefined ? undefined : this.checkedDirectory(join(root, MODEL_SLOT_PARENT));
   }
 
+  private async sweepModelSlots(patterns: readonly RegExp[], preservePath?: string): Promise<void> {
+    try {
+      const parent = await this.recoveryParent();
+      if (parent === undefined) return;
+      const namespaceParent = join(this.namespace.dir, MODEL_SLOT_PARENT);
+      const protectedPaths: string[] = [];
+      for (const path of [this.options.readPath(), preservePath]) {
+        if (!path) continue;
+        protectedPaths.push(path);
+        try { protectedPaths.push(await realpath(path)); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      }
+      for (const name of await readdir(parent)) {
+        if (!patterns.some(pattern => pattern.test(name))) continue;
+        const slot = join(parent, name);
+        const namespaceSlot = join(namespaceParent, name);
+        if (protectedPaths.some(path => isWithinDirectory(slot, path) || isWithinDirectory(namespaceSlot, path))) continue;
+        await this.removeModelSlot(parent, name);
+      }
+    } catch (error) { logModelCleanupError(error); }
+  }
+
   private async saveManagedPath(path: string): Promise<void> {
     try { await this.options.savePath(path); }
     finally {
       try {
         const saved = this.options.readPath();
         if (saved && relative(path, saved) === '') {
-          const parent = await this.recoveryParent();
-          if (parent !== undefined) {
-            const active = recoverySlotName(parent, saved);
-            for (const name of await readdir(parent)) {
-              if (active === undefined || relative(join(parent, active), join(parent, name)) !== '') {
-                await this.removeRecoverySlot(parent, name);
-              }
-            }
-          }
+          await this.sweepModelSlots([RECOVERY_SLOT_NAME], path);
         }
       } catch (error) { logModelCleanupError(error); }
     }
@@ -268,10 +289,10 @@ export class LocalModelManager {
       signal.throwIfAborted();
       await this.saveManagedPath(validated);
     } finally {
-      await rm(staging, { recursive: true, force: true }).catch(logModelCleanupError);
+      await this.removeModelSlot(parent, basename(name));
       try {
         if (createdRecovery !== undefined && recoverySlotName(parent, this.options.readPath()) !== createdRecovery) {
-          await this.removeRecoverySlot(parent, createdRecovery);
+          await this.removeModelSlot(parent, createdRecovery);
         }
       } catch (error) { logModelCleanupError(error); }
     }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, open, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, writeFile, open, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -97,6 +97,57 @@ describe('local model lifecycle', () => {
       expect((await readdir(parent)).sort()).toEqual([LOCAL_MODEL_REVISION, basename(busy)].sort());
       expect(log).toHaveBeenCalledWith('[memory-map] Could not clean up a model slot', 'EBUSY');
     } finally { log.mockRestore(); await f.close(); }
+  });
+
+  it.each(['staging', 'unpublished'] as const)('sweeps the %s folder left by failed cleanup on the next setup', async leftover => {
+    const f = await linkedFixture(() => { throw new Error('Save failed'); });
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const canonical = join(f.parent, LOCAL_MODEL_REVISION);
+      const published = join(f.parent, `${LOCAL_MODEL_REVISION}-11111111-1111-4111-8111-111111111111`);
+      const linked = join(f.parent, `${LOCAL_MODEL_REVISION}-22222222-2222-4222-8222-222222222222`);
+      await mkdir(published);
+      await writeFile(join(published, 'weights.bin'), 'wrong');
+      await symlink(f.external, linked, process.platform === 'win32' ? 'junction' : 'dir');
+      f.setSaved(published);
+      if (leftover === 'staging') await writeFile(join(canonical, 'weights.bin'), 'model');
+      const originalEntries = (await readdir(f.parent)).sort();
+      const prefix = leftover === 'staging' ? `${LOCAL_MODEL_REVISION}.tmp-` : `${LOCAL_MODEL_REVISION}-`;
+      const { rm: remove } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      await vi.mocked(rm).withImplementation(async (path, options) => {
+        const name = basename(String(path));
+        if (name.startsWith(prefix) && !originalEntries.includes(name)) {
+          throw Object.assign(new Error(`Busy path ${path}`), { code: 'EBUSY' });
+        }
+        await remove(path, options);
+      }, async () => {
+        expect(await f.manager.adoptExistingFolder(f.external)).toMatchObject({ status: 'failed', error: 'model-download-failed' });
+      });
+      const abandoned = (await readdir(f.parent)).filter(name => !originalEntries.includes(name));
+      expect(abandoned).toHaveLength(1);
+      expect(abandoned[0].startsWith(prefix)).toBe(true);
+      expect(log).toHaveBeenCalledWith('[memory-map] Could not clean up a model slot', 'EBUSY');
+
+      const nextSource = join(f.root, 'missing-model');
+      expect(await f.manager.adoptExistingFolder(nextSource)).toMatchObject({ status: 'failed', error: 'model-integrity-failed' });
+      expect((await readdir(f.parent)).sort()).toEqual(originalEntries);
+      expect(f.saved()).toBe(published);
+      expect((await lstat(linked)).isSymbolicLink()).toBe(true);
+      expect(await readFile(join(f.external, 'weights.bin'), 'utf8')).toBe('model');
+    } finally { log.mockRestore(); await f.close(); }
+  });
+
+  it('preserves an unpublished managed folder selected for adoption', async () => {
+    const f = await linkedFixture();
+    try {
+      const name = `${LOCAL_MODEL_REVISION}-11111111-1111-4111-8111-111111111111`;
+      const selected = join(f.parent, name);
+      await mkdir(selected);
+      await writeFile(join(selected, 'weights.bin'), 'model');
+      const alias = join(f.root, 'via-link', 'ave', 'models', 'multilingual-e5-small', name);
+      expect(await f.manager.adoptExistingFolder(alias)).toMatchObject({ status: 'ready' });
+      expect(f.saved()).toBe(selected);
+    } finally { await f.close(); }
   });
 
   it('does not request files on status, and commits only a complete verified download', async () => {
