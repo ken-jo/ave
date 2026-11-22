@@ -462,7 +462,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     answer.resolve({ allow: true, scope: "session" });
     expect(await response).toBeInstanceOf(Error);
     await vi.waitFor(() => expect(observed).toHaveLength(1));
-    expect(observed[0]?.decision).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(observed[0]?.decision).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     // No session grant was written: another call in the same conversation is asked again.
     const again = vi.fn<EgressApprovalRequester>(async () => ({ allow: false, reason: "denied by the user" }));
     requester = again;

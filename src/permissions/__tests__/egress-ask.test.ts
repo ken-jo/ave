@@ -878,13 +878,13 @@ describe("egress ask callback — shell calls", () => {
       expect(await raw(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
       controller.abort();
       expect(await raw(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" }))
-        .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+        .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     } else {
       // The person answers after the call was cancelled.
       answer = async () => { controller.abort(); return { allow: true, scope: "session" }; };
     }
-    expect(await callback()(github, connection)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
-    expect(audit.at(-1)).toMatchObject({ decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    expect(await callback()(github, connection)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
     if (path === "held answer" || path === "prompt answer") {
       // Nothing it answered became a grant another call in the conversation could use.
       answer = async () => ({ allow: false, reason: "denied by the user" });
@@ -909,7 +909,56 @@ describe("egress ask callback — shell calls", () => {
       audit: (entry) => audit.push(entry),
     });
     expect(await replaced(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" }))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" } });
+  });
+
+  it("grants nothing when the call ends while its persistent grant waits in the store's queue", async () => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    const notes = vi.spyOn(denyMonitor, "noteCallbackDecision");
+    const observations = vi.spyOn(terminalObservation, "observeAgentTerminalEgressDecision");
+    const store = grants as unknown as { loadPersistent(): Promise<unknown> };
+    const load = store.loadPersistent.bind(grants);
+    let rereading!: () => void;
+    const reread = new Promise<void>((resolve) => { rereading = resolve; });
+    let ungate!: () => void;
+    const gate = new Promise<void>((resolve) => { ungate = resolve; });
+    answer = async () => {
+      // The store's next read is the re-read inside its write queue.
+      vi.spyOn(store, "loadPersistent").mockImplementationOnce(async () => { rereading(); await gate; return load(); });
+      return { allow: true, scope: "always" };
+    };
+    const github = { host: "github.com", port: 443 };
+    const decision = rawCallback()(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+    await reread;
+    controller.abort();
+    ungate();
+    const result = await decision;
+    const stored = new EgressGrantStore(join(dir, "shell-egress-hosts.json"));
+    expect(await stored.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" },
+      { ...github, network: "public" }, matchingScopes)).toBeUndefined();
+    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    expect(notes.mock.calls.at(-1)).toEqual([undefined, "github.com", 443]);
+    expect(observations.mock.calls.at(-1)?.[0]).toBeUndefined();
+  });
+
+  it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    const github = { host: "github.com", port: 443 };
+    if (path === "remembered grant") {
+      await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
+    }
+    const noteUse = vi.spyOn(grants, "noteUse");
+    networkRule = async () => { controller.abort(); return undefined; };
+    answer = async () => ({ allow: true, scope: "session" });
+    const result = await rawCallback()(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+    expect(asked).toEqual([]);
+    expect(noteUse).not.toHaveBeenCalled();
+    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
   });
 
   it("hands the ask the call's abort signal", async () => {
