@@ -3544,6 +3544,19 @@ trailing separators removed, and the normalized spelling. Platform path
 normalization collapses dot segments and duplicate separators without
 consulting the working directory.
 
+The generic users/home rules redact any account's profile in display text and
+in audit path values (`redactFsPath`), after the configured home's own forms,
+with `[home]` or `file://[home]`. A profile name is letters, marks, digits,
+`._-` and apostrophes before a letter or digit, each also percent-encoded up
+to the same three layers; its separators may be percent-encoded too. Words
+after a space belong to the name only when a separator follows them, or, in a
+path value, when the value ends or a query or fragment starts. A name stops
+where a drive profile joins it directly, so the joined home is redacted too.
+A `/users/` or `/home/` path right after a URL authority keeps the separator
+that ends the authority. An escaped byte joined directly to a configured home,
+as in `/home/bob%C3%A9`, keeps the base literal boundary and stays after the
+marker.
+
 ### Windows object ownership
 
 An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)
