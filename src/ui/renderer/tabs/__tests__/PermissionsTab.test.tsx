@@ -1330,7 +1330,10 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     const block = screen.getByTestId("os-sandbox-windows-substrate");
     expect(block.dataset.shells).toBe("mxc");
     expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxc"));
-    expect(screen.getByTestId("os-sandbox-windows-shells-limits").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsMxcLimits"));
+    expect(screen.getByTestId("os-sandbox-windows-shells-limits").textContent).toBe([
+      t("permissionsTab.osSandboxWindowsEgressHostResolver"), t("permissionsTab.osSandboxWindowsEgressRawUnverified"),
+      t("permissionsTab.osSandboxWindowsShellsMxcLimits"),
+    ].join(" "));
     expect(screen.getByTestId("os-sandbox-windows-bash-note")).toBeTruthy();
     expect(document.body.textContent).not.toContain(t("permissionsTab.osSandboxCapabilityWindows"));
     expect(screen.getByTestId("os-sandbox-windows-substrate-extensions").textContent).toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
@@ -1425,7 +1428,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     };
     const extensionPlan: SandboxWindowsExtensionPlan = {
       requestedBackend: "mxc", selectedBackend: "none", fallbackVersion: null, uiPolicy: "ui-enabled", egressIdentity: "shared",
-      proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall", dnsProtection: "host-resolver",
+      proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall",
+      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
       ancestorAccess: "query-enumerate-only", ancestorNameExposure: true, readiness: "unavailable", reason: "native-validation-required",
     };
     assertSandboxWindowsExtensionPlan(extensionPlan);
@@ -1652,13 +1656,14 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   describe("extension backend plan (row 6 disclosure)", () => {
     const POSTURE = {
       uiPolicy: "ui-enabled", proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall",
-      dnsProtection: "host-resolver", ancestorAccess: "query-enumerate-only", ancestorNameExposure: true,
+      ancestorAccess: "query-enumerate-only", ancestorNameExposure: true,
     } as const;
     function plan(readiness: SandboxWindowsExtensionPlan["readiness"], reason: SandboxWindowsExtensionReason): SandboxWindowsExtensionPlan {
       const selectedBackend = readiness === "ready" ? "mxc" : readiness === "fallback" ? "srt-win" : "none";
       return {
         requestedBackend: readiness === "off" ? "none" : "mxc", selectedBackend, readiness, reason,
         fallbackVersion: selectedBackend === "srt-win" ? "0.0.80" : null,
+        egressProtocolCoverage: { dns: selectedBackend === "mxc" ? "host-resolver" : "unknown", rawIp: "unknown" },
         egressIdentity: selectedBackend === "mxc" ? "kernel-channel" : "shared", ...POSTURE,
       };
     }
@@ -1709,8 +1714,11 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(disclosure).toHaveAttribute("data-proxy-owner-verified", "false");
       expect(disclosure).toHaveAttribute("data-host-loopback", "bidirectional");
       expect(disclosure).toHaveAttribute("data-ancestor-access", "query-enumerate-only");
+      expect(screen.getByTestId("os-sandbox-windows-extension-disclosure-network").textContent).toBe([
+        t("permissionsTab.osSandboxWindowsExtensionsNetwork"), t("permissionsTab.osSandboxWindowsEgressHostResolver"),
+        t("permissionsTab.osSandboxWindowsEgressRawUnverified"),
+      ].join(" "));
       for (const [id, key] of [
-        ["network", "permissionsTab.osSandboxWindowsExtensionsNetwork"],
         ["windows", "permissionsTab.osSandboxWindowsExtensionsWindows"],
         ["folder-names", "permissionsTab.osSandboxWindowsExtensionsFolderNames"],
         ["temp", "permissionsTab.osSandboxWindowsExtensionsTemp"],

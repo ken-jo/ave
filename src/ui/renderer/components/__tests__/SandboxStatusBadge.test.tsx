@@ -114,7 +114,8 @@ describe("SandboxStatusBadge — extension backend", () => {
         : readiness === "rejected" ? "readiness-deadline" : "native-validation-required",
       fallbackVersion: selectedBackend === "srt-win" ? "0.0.80" : null, uiPolicy: "ui-enabled",
       egressIdentity: selectedBackend === "mxc" ? "kernel-channel" : "shared", proxyOwnerVerified: false,
-      hostLoopback: "bidirectional", inboundProtection: "host-firewall", dnsProtection: "host-resolver",
+      hostLoopback: "bidirectional", inboundProtection: "host-firewall",
+      egressProtocolCoverage: { dns: selectedBackend === "mxc" ? "host-resolver" : "unknown", rawIp: "unknown" },
       ancestorAccess: "query-enumerate-only", ancestorNameExposure: true,
     };
     // Healthy contained shells: the shell badge stays hidden, so only the extension state can show.

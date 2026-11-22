@@ -223,6 +223,31 @@ export function sandboxBootOutcomeView(outcome: SandboxBootOutcome): SandboxBoot
  * `egress-invocation-listener.ts`). A process cannot present another invocation's identity. - `shared`: confined processes share one proxy endpoint and the identity is a label the client presents (ASRT's proxy username). Attribution, not a boundary between concurrent invocations. */
 export type EgressIdentityStrength = "kernel-channel" | "shared";
 
+/** Protocol coverage is independent of proxy endpoint scoping and identity. */
+export interface EgressProtocolCoverage {
+  readonly dns: "host-resolver" | "brokered" | "unknown";
+  readonly rawIp: "unknown" | "blocked";
+}
+
+const MXC_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "host-resolver", rawIp: "unknown" });
+const UNKNOWN_EGRESS_PROTOCOL_COVERAGE: EgressProtocolCoverage = Object.freeze({ dns: "unknown", rawIp: "unknown" });
+
+export function egressProtocolCoverageFor(substrate: "mxc" | "asrt" | "srt-win" | "approved-host" | "none"): EgressProtocolCoverage {
+  return substrate === "mxc" ? MXC_EGRESS_PROTOCOL_COVERAGE : UNKNOWN_EGRESS_PROTOCOL_COVERAGE;
+}
+
+export const BROKERED_EGRESS_UNVERIFIED = "brokered-egress-unverified";
+
+/** Evaluate an explicit requirement on a host-selected plan without changing its route. */
+export function checkBrokeredEgressAdmission(
+  plan: { readonly egressProtocolCoverage: EgressProtocolCoverage } | undefined,
+): { readonly allowed: true } | { readonly allowed: false; readonly reason: typeof BROKERED_EGRESS_UNVERIFIED } {
+  const coverage = plan?.egressProtocolCoverage;
+  return coverage?.dns === "brokered" && coverage.rawIp === "blocked"
+    ? { allowed: true }
+    : { allowed: false, reason: BROKERED_EGRESS_UNVERIFIED };
+}
+
 /** The scopes an egress grant can be given. A shell tool call's card offers Deny plus once, session, project, always (owner 2026-10-25, five-choice network card); a workspace terminal
  * tab's ladder is once, tab, always (`tab` takes the place of `session`: a terminal belongs to no conversation, design F). */
 export type EgressGrantScope = "once" | "session" | "tab" | "project" | "always";
@@ -259,7 +284,7 @@ export interface SandboxWindowsExtensionPlan {
   readonly proxyOwnerVerified: false;
   readonly hostLoopback: "bidirectional";
   readonly inboundProtection: "host-firewall";
-  readonly dnsProtection: "host-resolver";
+  readonly egressProtocolCoverage: EgressProtocolCoverage;
   readonly ancestorAccess: "query-enumerate-only";
   /** Enumeration may reveal profile sibling names; descendant reach needs native measurement. */
   readonly ancestorNameExposure: true;
@@ -280,11 +305,11 @@ export function assertSandboxWindowsExtensionPlan(value: unknown): asserts value
   if (!value || typeof value !== "object" || Array.isArray(value)) fail();
   const plan = value as SandboxWindowsExtensionPlan;
   const keys: readonly (keyof SandboxWindowsExtensionPlan)[] = ["requestedBackend", "selectedBackend", "readiness", "reason", "fallbackVersion",
-    "uiPolicy", "egressIdentity", "proxyOwnerVerified", "hostLoopback", "inboundProtection", "dnsProtection", "ancestorAccess", "ancestorNameExposure"];
+    "uiPolicy", "egressIdentity", "proxyOwnerVerified", "hostLoopback", "inboundProtection", "egressProtocolCoverage", "ancestorAccess", "ancestorNameExposure"];
   if (Object.keys(plan).length !== keys.length || Object.keys(plan).some(key => !keys.includes(key as keyof SandboxWindowsExtensionPlan))
       || !Object.hasOwn(WINDOWS_EXTENSION_REASONS, plan.reason)
       || plan.uiPolicy !== "ui-enabled" || plan.proxyOwnerVerified !== false || plan.hostLoopback !== "bidirectional"
-      || plan.inboundProtection !== "host-firewall" || plan.dnsProtection !== "host-resolver"
+      || plan.inboundProtection !== "host-firewall"
       || plan.ancestorAccess !== "query-enumerate-only" || plan.ancestorNameExposure !== true) fail();
   if (plan.readiness === "off") {
     if (plan.requestedBackend !== "none" || plan.selectedBackend !== "none" || plan.reason !== "not-requested") fail();
@@ -299,7 +324,12 @@ export function assertSandboxWindowsExtensionPlan(value: unknown): asserts value
       default: fail();
     }
   }
-  if (plan.fallbackVersion !== (plan.selectedBackend === "srt-win" ? "0.0.80" : null)
+  const coverage = plan.egressProtocolCoverage;
+  const expectedCoverage = egressProtocolCoverageFor(plan.selectedBackend);
+  if (!coverage || typeof coverage !== "object" || Array.isArray(coverage)
+      || Object.keys(coverage).length !== 2 || !Object.hasOwn(coverage, "dns") || !Object.hasOwn(coverage, "rawIp")
+      || coverage.dns !== expectedCoverage.dns || coverage.rawIp !== expectedCoverage.rawIp
+      || plan.fallbackVersion !== (plan.selectedBackend === "srt-win" ? "0.0.80" : null)
       || plan.egressIdentity !== (plan.selectedBackend === "mxc" ? "kernel-channel" : "shared")) fail();
 }
 

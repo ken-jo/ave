@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as sandboxCapabilityInfo from "../../shared/sandbox-capability-info.js";
 import {
   HOST_SHELL_EXECUTION_PLAN_VERSION,
   buildHostShellExecutionPlan,
@@ -33,6 +34,32 @@ const NONE = {
 };
 
 describe("host shell execution plan", () => {
+  it("reports the protocol limits of the selected MXC route", () => {
+    const plan = buildHostShellExecutionPlan({
+      platform: "win32",
+      requestedSandbox: true,
+      activeCapability: { ...FULL_ASRT, platform: "win32" },
+      shellSubstrate: "mxc",
+    });
+    expect(plan).toMatchObject({
+      mode: "asrt", substrate: "mxc", requiresExplicitUserApproval: false,
+      egressProtocolCoverage: { dns: "host-resolver", rawIp: "unknown" },
+    });
+  });
+
+  it("refuses a brokered-egress requirement for MXC without changing the selected route", () => {
+    const plan = buildHostShellExecutionPlan({
+      platform: "win32",
+      requestedSandbox: true,
+      activeCapability: { ...FULL_ASRT, platform: "win32" },
+      shellSubstrate: "mxc",
+    });
+    expect(sandboxCapabilityInfo.checkBrokeredEgressAdmission(plan)).toEqual({
+      allowed: false, reason: "brokered-egress-unverified",
+    });
+    expect(plan.mode).toBe("asrt");
+  });
+
   it.each(["darwin", "linux"] as const)("reports the actual %s route in the existing plan and projection", (platform) => {
     for (const requestedSandbox of [false, true]) {
       for (const executionMode of ["default", "host"] as const) {
@@ -40,6 +67,7 @@ describe("host shell execution plan", () => {
         const sandboxed = requestedSandbox && executionMode === "default";
         expect(plan.sandboxed).toBe(sandboxed);
         expect(plan.mode === "asrt").toBe(sandboxed);
+        expect(plan.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
         expect(getHostShellExecutionPlanAuditProjection(plan).sandboxed).toBe(sandboxed);
       }
     }

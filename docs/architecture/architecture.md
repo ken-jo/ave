@@ -3315,11 +3315,17 @@ in its directory.
   patched proxy starts, an srt-win wrap is refused, a container reaches an
   allowed host through its listener and the proxy, and a refused host is
   recorded under that invocation's token only. Without MXC, shells keep the
-  approved host route. Without either, the gate degrades as before. The
-  persistent conversation PTY never runs in MXC (its background descendants
-  outlive individual commands), including the side-chat terminal; it reads
-  only the process-wide capability. Extension holders and all MCP stdio
-  wraps keep their separate confinement selection and D2 local-network policy.
+  approved host route. Without either, the gate degrades as before. Extension
+  holders and all MCP stdio wraps keep their separate confinement selection
+  and D2 local-network policy.
+
+  The persistent conversation PTY, including the side-chat terminal, stays off
+  MXC and reads the process-wide capability so its background descendants can
+  survive individual commands. An MXC shell, its proxy listener, and its
+  process tree are scoped to one invocation. There is no managed MXC shell job,
+  so background processes in that container end with the invocation's
+  containment.
+
 - **Filesystem.** The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a
   pierce, a write grant under a `denyWrite` path becomes read-only, a deny
@@ -3367,9 +3373,9 @@ in its directory.
   the server; teardown waits for helper close, and delivery failure also
   terminates a bound launcher.
 - **Outbound connections and identity.** Each command gets its own loopback
-  proxy listener (`egress-invocation-listener.ts`). The container's only
-  outbound connection path is that port: MXC's per-container WFP filter, with
-  `egress.default: "deny"` and `hostLoopback: "allow"`. The listener forwards
+  proxy listener (`egress-invocation-listener.ts`). The request scopes the
+  proxy endpoint to that port with `egress.default: "deny"` and
+  `hostLoopback: "allow"`. The listener forwards
   to ASRT's proxy and stamps the command's egress token on every request it
   forwards, replacing any `Proxy-Authorization` the client sent, so refusals
   are attributed to the command that made them. It refuses loopback and
@@ -3380,8 +3386,8 @@ in its directory.
   (`1.1.1.1:443`, `8.8.8.8:53`); a forged identity was replaced by the
   listener's; a container could not terminate a host process of the same user;
   and when its process timeout fires or `wxc-exec.exe` is killed, every process
-  in the container ends with it. Shell egress identity is therefore
-  `kernel-channel`; extension identity stays `shared`.
+  in the container ends with it. MXC shell egress identity is
+  `kernel-channel`, and extension identity follows the selected backend.
   `egressGrantScopesFor` applies `maxEgressGrantScope` (`kernel-channel` →
   `always`, `shared` → `conversation`) to both approval choices and grant
   reuse. Origin and destination class further limit the scopes; terminal
@@ -3392,7 +3398,14 @@ in its directory.
   the query left the host. A command can therefore carry data out to an
   external authoritative DNS server by looking up names it chooses under a
   domain that server answers for, without touching the proxy: an exfiltration
-  channel the proxy never sees. Settings says so.
+  channel the proxy never sees. MXC shell and extension plans report
+  `dns: "host-resolver"` and `rawIp: "unknown"`. Direct UDP port 53 and ICMP
+  blocking remain unverified. Protocol-level verification needs administrator
+  access for WFP observation, and the direct connection checks above do not
+  establish coverage for either protocol. Settings reads the coverage to
+  disclose both limits. A caller that explicitly requires fully brokered
+  egress gets `brokered-egress-unverified` unless DNS is brokered and raw IP is
+  blocked.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`. The pinned SDK describes
   host-loopback allow as stateful outbound connectivity at baseline; native
@@ -3436,10 +3449,10 @@ in its directory.
   confined. Every closed reason maps to a catalog key. A ready MXC plan is
   described as a selection, not proof that a process runs contained (a
   plugin's Doctor card shows its own `windows-mxc` confinement, labelled
-  "Windows container (MXC)"). Only that selection lists what a container does
-  not hide or block: egress only through the holder's own proxy endpoint, whose
-  owner Windows does not verify (D2); loopback requested in both directions,
-  inbound left to Windows Firewall, DNS through the host resolver; untrusted
+  "Windows container (MXC)"). That selection discloses the holder's dedicated
+  proxy endpoint and its unverified owner (D2), the requested bidirectional
+  loopback, the host firewall's role in inbound protection, and the protocol
+  limits reported by the plan. It also discloses untrusted
   windows with clipboard and input injection off (D3); ancestor
   query/enumerate grants that expose names and metadata, cascading into nested
   folders, including profile and `AVE_HOME` sibling names and other plugin IDs
