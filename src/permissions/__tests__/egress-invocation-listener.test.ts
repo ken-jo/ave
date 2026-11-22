@@ -233,7 +233,7 @@ describe("openInvocationProxyListener", () => {
     });
     const failure = new Error("listener unbind failed");
     const close = http.Server.prototype.close;
-    let releaseTentative: (() => void) | undefined;
+    let releaseTentative = (): void => { throw new Error("the tentative unbind never ran"); };
     vi.spyOn(http.Server.prototype, "close").mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
       // The tentative bind's unbind is still in flight when the owner's close runs.
       releaseTentative = () => close.call(this, callback);
@@ -244,16 +244,16 @@ describe("openInvocationProxyListener", () => {
     }).mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
       return close.call(this, callback);
     });
-    let adopted: (() => Promise<void>) | undefined;
+    let adopted = (): Promise<void> => Promise.reject(new Error("the listener was never adopted"));
     const opening = openInvocationProxyListener({
       upstream: () => undefined,
       admission: { signal: new AbortController().signal, assertCanBind: () => {}, acceptsConnections: () => true, adopt: (c) => { adopted = c; } },
     });
     opening.then((listener) => cleanups.push(listener.close), () => {});
-    await expect(adopted!()).rejects.toBe(failure);
-    releaseTentative!();
+    await expect(adopted()).rejects.toBe(failure);
+    releaseTentative();
     await expect(opening).rejects.toThrow(/closed while binding/);
-    await expect(adopted!()).resolves.toBeUndefined();
+    await expect(adopted()).resolves.toBeUndefined();
     expect([...servers].every((server) => !server.listening)).toBe(true);
   });
 
