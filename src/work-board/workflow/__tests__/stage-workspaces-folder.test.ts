@@ -5,7 +5,7 @@ import { dirname, join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
-import { plainFolderIgnore } from "../folder-ignore.js";
+import { namesFoldCase, plainFolderIgnore } from "../folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
@@ -44,18 +44,21 @@ async function stageRoot(handle: Handle, stageId: string, over: Parameters<typeo
   return prepared.workspace.root;
 }
 
-/** The real host git, noting where each ignore matcher's repository is made; `broken` makes a call fail after it ran, or throw instead. */
-function watchedGit(broken?: (args: readonly string[]) => "fails" | HostGitError | undefined): { git: HostGit; made: string[] } {
+/** The real host git, noting where each ignore matcher's repository is made and the case rule each matcher call is given; `broken` makes
+ * a call fail after it ran, or throw instead. */
+function watchedGit(broken?: (args: readonly string[]) => "fails" | HostGitError | undefined): { git: HostGit; made: string[]; matched: string[] } {
   const real = createHostGit({ env });
   const made: string[] = [];
+  const matched: string[] = [];
   const run: HostGit["run"] = async (cwd, args, call) => {
     if (args[0] === "init") made.push(args.at(-1) ?? "");
+    if (args.includes("check-ignore")) matched.push(...(call?.drivers ?? []).filter(entry => entry.startsWith("core.ignoreCase=")));
     const how = broken?.(args);
     if (how instanceof HostGitError) throw how;
     const result = await real.run(cwd, args, call);
     return how === "fails" ? { ...result, code: 128 } : result;
   };
-  return { made, git: { run, drivers: real.drivers } };
+  return { made, matched, git: { run, drivers: real.drivers } };
 }
 
 beforeEach(() => {
@@ -306,6 +309,40 @@ describe("folder stage workspaces", () => {
 
     const handle = await start(project);
     expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }))).toEqual(unignored);
+  });
+
+  it("rules and names that differ by case alone seed what git leaves unignored in a repository in the same place, by the folder's own file name rule", async () => {
+    const twin = join(base, "twin");
+    const files: Record<string, string> = {
+      ".gitignore": "secret.txt\n!SECRET.TXT\nUpper/\n*.LOG\n!Kept.Log\n/Docs/Draft.md\n",
+      "secret.txt": "", "sub/Secret.txt": "", "upper/in.txt": "", "Upper2/in.txt": "", "a.log": "", "B.LOG": "", "kept.log": "", "docs/draft.md": "", "notes.txt": "notes\n",
+      "docs/guide.md": "guide\n", "src/a.ts": "a\n", "src/deep/b.ts": "b\n",
+    };
+    for (const [path, text] of Object.entries(files)) { write(project, path, text); write(twin, path, text); }
+    execFileSync("git", ["init", "-q", "--template="], { cwd: twin, env });
+    // What git found out about the place by writing into its own repository there, the host reads off the folder without writing.
+    const folds = execFileSync("git", ["config", "--get", "core.ignorecase"], { cwd: twin, env, encoding: "utf8" }).trim() === "true";
+    expect(namesFoldCase(project)).toBe(folds);
+    const status = execFileSync("git", ["-c", "core.excludesFile=", "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: twin, env, encoding: "utf8" });
+    const unignored = status.split("\0").filter(Boolean).map(entry => entry.slice(3)).sort();
+    expect(unignored).toEqual(expect.arrayContaining([".gitignore", "notes.txt", "Upper2/in.txt"]));
+    const watched = watchedGit();
+    const handle = await start(project, { git: watched.git });
+    expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }))).toEqual(unignored);
+    expect([...new Set(watched.matched)]).toEqual([`core.ignoreCase=${folds}`]);
+  });
+
+  it("the file name rule is read off the ignore file under its name in the other case, and is no rule at all when that cannot be told", () => {
+    const reader = (names: string[], ids: Record<string, string>): Parameters<typeof namesFoldCase>[1] => ({ list: () => names, id: path => ids[path.slice(path.lastIndexOf(sep) + 1)] });
+    // Names fold: the other case names the same file. They do not: it names nothing, or a second file stands beside the first.
+    expect(namesFoldCase(project, reader([".gitignore", "src"], { ".gitignore": "1:7", ".GITIGNORE": "1:7" }))).toBe(true);
+    expect(namesFoldCase(project, reader([".GitIgnore"], { ".GitIgnore": "1:7", ".gitignore": "1:7" }))).toBe(true);
+    expect(namesFoldCase(project, reader([".gitignore"], { ".gitignore": "1:7" }))).toBe(false);
+    expect(namesFoldCase(project, reader([".gitignore", ".GITIGNORE"], { ".gitignore": "1:7", ".GITIGNORE": "1:8" }))).toBe(false);
+    // Another file under the other case that the listing does not show, or no ignore file: no answer.
+    expect(() => namesFoldCase(project, reader([".gitignore"], { ".gitignore": "1:7", ".GITIGNORE": "1:8" }))).toThrow();
+    expect(() => namesFoldCase(project, reader(["src"], {}))).toThrow();
+    expect(() => namesFoldCase(project, reader([".gitignore"], {}))).toThrow();
   });
 
   it("a plain folder with no ignore file seeds every declared file and needs no git; with one and no git it refuses", async () => {
