@@ -224,6 +224,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     expect(manager).toContain("allowUnixSockets: options?.denyUnixSockets ? [] : getAllowUnixSockets(),");
     expect(manager.match(/allowAllUnixSockets: options\?\.denyUnixSockets \? false : getAllowAllUnixSockets\(\),/gu)).toHaveLength(2);
     expect(readInstalled("dist/sandbox/sandbox-manager.d.ts")).toContain("denyUnixSockets?: boolean;");
+    expect(manager).toContain("denyUnixSockets: options?.denyUnixSockets,");
   });
 
   it("mounts Linux mandatory Git controls only when they exist", () => {
