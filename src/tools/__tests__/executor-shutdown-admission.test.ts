@@ -32,15 +32,17 @@ async function freshExecutor(toolCount: number) {
   await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
   const executes = Array.from({ length: toolCount }, (_, index) => vi.fn(async () => `done ${index}`));
   const registry = new ToolRegistry();
-  executes.forEach((execute, index) => registry.register(createDynamicTool({
-    name: `queued_probe_${index}`,
-    description: "Shutdown admission probe",
-    source: "builtin",
-    category: "write",
-    isReadOnly: () => false,
-    jsonSchema: { type: "object", properties: { value: { type: "string" } } },
-    execute: async () => ({ output: String(await execute()), isError: false }),
-  })));
+  for (const [index, execute] of executes.entries()) {
+    registry.register(createDynamicTool({
+      name: `queued_probe_${index}`,
+      description: "Shutdown admission probe",
+      source: "builtin",
+      category: "write",
+      isReadOnly: () => false,
+      jsonSchema: { type: "object", properties: { value: { type: "string" } } },
+      execute: async () => ({ output: String(await execute()), isError: false }),
+    }));
+  }
   const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
   const rows = (): Array<Record<string, unknown>> => {
     const file = audit.getPermissionAuditLogFile();
