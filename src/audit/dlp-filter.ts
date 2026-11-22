@@ -237,8 +237,8 @@ function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
   const nameUnit = (space = escaped("20")): string =>
     `(?:(?![a-z]${colon}${separator}+users${separator}+${unit(space)})${unit(space)})`;
   const joined = (end: string): string => `${nameUnit()}+(?:(?: +[\\p{L}\\p{N}]${nameUnit()}*)+${end})?`;
-  const usersRoot = /users/iu;
-  const homeRoot = /home/iu;
+  const usersRoot = /(?:users)/iu;
+  const homeRoot = /(?:home)/iu;
   const roots: [prefix: string, marker: string, root: RegExp, keep?: boolean][] = [
     [`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]", usersRoot],
     [`file${colon}${slash}{3}users${slash}`, "file://[home]", usersRoot],
