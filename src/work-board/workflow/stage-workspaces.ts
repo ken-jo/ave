@@ -41,6 +41,8 @@ const realDirId = (path: string): NodeId | undefined => {
   try { return holdDir(path).id; } catch { return undefined; }
 };
 
+/** The mismatches already reported in this process, by run folder. */
+const warnedOnce = new Set<string>();
 /** Git writes the two files that tie a worktree to its registration as absolute paths, whatever the repository is configured to. */
 const ABSOLUTE_LINKS = ["-c", "worktree.useRelativePaths=false"];
 const NUL = "\0";
@@ -769,12 +771,19 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     const mismatches = await preflight(at);
     const fields = (side: Mismatch["side"]): string => mismatches.filter(entry => entry.side === side).map(entry => entry.field).join(", ");
+    // Said once for a run folder: a folder that stays is found again at every boot.
+    const once = (said: string, side: Mismatch["side"]): void => {
+      const key = `${side}\n${at.runRoot}\n${fields(side)}`;
+      if (warnedOnce.has(key)) return;
+      warnedOnce.add(key);
+      log.warn(said, fields(side), file.runId);
+    };
     if (fields("host") !== "") {
-      log.warn("a run's workspace stays as it is: %s is not what its record names (run=%s)", fields("host"), file.runId);
+      once("a run's workspace stays as it is: %s is not what its record names (run=%s)", "host");
       return;
     }
     const repo = fields("repo") === "";
-    if (!repo) log.warn("a run's repository is left as it is: %s is not what its record names (run=%s)", fields("repo"), file.runId);
+    if (!repo) once("a run's repository is left as it is: %s is not what its record names (run=%s)", "repo");
     for (const stageId of Object.keys(file.stages)) await removeStage(at, stageId, repo);
     await clearIgnoreFolders(at);
     const root = file.project?.root;

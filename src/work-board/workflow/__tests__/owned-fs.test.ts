@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -107,6 +107,20 @@ describe("owned folders", () => {
     expect(readdirSync(outside)).toEqual(["victim.txt"]);
     expect(run.removeSelfIfEmpty()).toBe(true);
     expect(existsSync(run.path)).toBe(false);
+  });
+
+  it("remove leaves a read-only file's other name read-only", async () => {
+    const run = holdDir(join(base, "home")).ensure("run");
+    const stage = run.make("s1");
+    const victim = join(outside, "victim.txt");
+    chmodSync(victim, 0o444);
+    linkSync(victim, join(stage.path, "second.txt"));
+    try {
+      await run.remove("s1", stage.id).catch(() => undefined);
+      expect(statSync(victim).mode & 0o200).toBe(0);
+    } finally {
+      chmodSync(victim, 0o644);
+    }
   });
 
   it("remove refuses an entry whose id changed", async () => {

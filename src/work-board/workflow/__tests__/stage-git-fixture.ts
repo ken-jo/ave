@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostGit } from "../host-git.js";
@@ -46,7 +46,10 @@ export function gitFixture(): GitFixture {
       opened.push(handle);
       return handle;
     },
-    done: async () => { for (const { provider, run } of opened.splice(0)) await provider.release(run, "all"); },
+    done: async () => {
+      for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
+      rmSync(base, { recursive: true, force: true, maxRetries: 3 });
+    },
   };
 }
 

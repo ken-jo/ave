@@ -92,6 +92,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
+  rmSync(base, { recursive: true, force: true, maxRetries: 3 });
 });
 
 describe("folder stage workspaces", () => {

@@ -258,8 +258,9 @@ class Dir implements OwnedDir {
       try { act(); return; } catch (error) {
         const code = codeOf(error);
         if (code === "ENOENT") return;
-        if (code === "EPERM" && !writable && stats(path)?.isFile() === true) {
-          // A read-only file.
+        const stat = code === "EPERM" && !writable ? stats(path) : undefined;
+        if (stat?.isFile() === true && stat.nlink === 1n) {
+          // A read-only file. One with a second name is left as it is: the mode is the other name's too.
           writable = true;
           this.own();
           chmodSync(path, 0o666);

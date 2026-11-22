@@ -171,6 +171,17 @@ describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run"
   });
 });
 
+it("a run folder that stays is reported once, however often it is found again", async () => {
+  const at = await scene();
+  setPath(at.record, ["joinDir"], "1:1");
+  try {
+    for (const operation of ["sweep", "discard", "sweep"] as const) await operate(operation);
+    expect(warned.filter(line => line.includes("workspace stays as it is"))).toEqual([expect.stringContaining("joinDir")]);
+  } finally {
+    writeFileSync(at.record, at.written);
+  }
+});
+
 /** The call that makes the run's branch. */
 const makesBranch = (args: readonly string[]): boolean => args.includes("-b") || (args[0] === "update-ref" && args.length === 4 && args[3] === "");
 
