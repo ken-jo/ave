@@ -9,7 +9,7 @@ import { marketplaceProviderPresetSecretKey } from '../../shared/marketplace-pac
 import { createSafeLlmFetch } from '../safe-llm-fetch.js';
 import { isDefaultModelListEndpoint } from '../../engine/llm/model-list.js';
 import { MEMORY_EMBEDDING_CONSENT_VERSION, type MemoryEmbeddingConfig } from '../../shared/memory-embedding-config.js';
-import type { EmbeddingNamespace, MemoryEmbeddingProvider, MemoryMapProgress, GraphSnapshot } from '../../shared/memory-map.js';
+import type { EmbeddingNamespace, MemoryEmbeddingProvider, MemoryMapProgress, GraphSnapshot, MemoryMapRecord } from '../../shared/memory-map.js';
 import type { MemoryMapCatalog } from './catalog.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
 import { LOCAL_NAMESPACE, vectorKey, type VectorCache } from './graph.js';
@@ -76,7 +76,7 @@ export class ProviderEmbeddings {
     if (!provider) throw new MemoryMapHostError('provider-unavailable');
     if (!provider.models.includes(modelId)) throw new MemoryMapHostError('provider-no-embedding-model');
   }
-  async embed(namespace: EmbeddingNamespace, values: string[], signal: AbortSignal): Promise<number[][]> {
+  async embed(namespace: EmbeddingNamespace, values: string[], signal: AbortSignal, assertAuthority?: () => void): Promise<number[][]> {
     const providerId = namespace.providerId ?? ''; const modelId = namespace.modelId;
     this.consent(providerId, modelId, signal);
     if (!values.length || values.length > EMBEDDING_BATCH_SIZE) throw new MemoryMapHostError('invalid-input');
@@ -87,6 +87,7 @@ export class ProviderEmbeddings {
     const presetAtStart = JSON.stringify(route.preset);
     const assertCurrent = () => {
       this.consent(providerId, modelId, signal);
+      assertAuthority?.();
       if (configAtStart !== JSON.stringify(this.settings.get('llm')) || presetAtStart !== JSON.stringify(this.route(providerId).preset)) throw new MemoryMapHostError('request-stale');
     };
     let egressError: MemoryMapHostError | undefined;
@@ -126,7 +127,7 @@ export class ProviderEmbeddings {
       throw new MemoryMapHostError(signal.aborted ? 'request-stale' : 'provider-embedding-failed');
     }
   }
-  async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void) {
+  async build(catalog: MemoryMapCatalog, namespace: EmbeddingNamespace, saved: { snapshot: { model: { namespace: EmbeddingNamespace } } | null; cache: VectorCache }, signal: AbortSignal, onProgress: (progress: MemoryMapProgress) => void, assertAuthority: (batch: readonly MemoryMapRecord[]) => void) {
     this.consent(namespace.providerId ?? '', namespace.modelId, signal);
     const records = [...catalog.records].sort((a, b) => a.memoryId.localeCompare(b.memoryId));
     let selected = { ...namespace };
@@ -141,7 +142,8 @@ export class ProviderEmbeddings {
     });
     for (let offset = 0; offset < missing.length; offset += EMBEDDING_BATCH_SIZE) {
       const batch = missing.slice(offset, offset + EMBEDDING_BATCH_SIZE);
-      const vectors = await this.embed(selected, batch.map(record => record.title + '\n' + record.text), signal);
+      assertAuthority(batch);
+      const vectors = await this.embed(selected, batch.map(record => record.title + '\n' + record.text), signal, () => assertAuthority(batch));
       selected = { ...selected, dimensions: selected.dimensions || vectors[0]!.length };
       batch.forEach((record, index) => { cache[vectorKey(record, selected)] = vectors[index]!; });
       completed += batch.length; onProgress({ jobId, phase: 'embedding', completed, total: records.length });

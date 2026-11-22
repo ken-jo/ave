@@ -94,6 +94,28 @@ describe('provider memory embeddings', () => {
     const rebuilt = await f.host.build(() => f.catalog);
     expect(rebuilt.model.namespace.preprocessingRevision).toBe('text-l2-v1'); expect(f.requests).toHaveLength(2);
   });
+  it.each(['deleted memory', 'revoked scope'])('blocks later batches after a %s while the first is in flight', async change => {
+    const f = await fixture();
+    f.consent();
+    f.catalog.records = Array.from({ length: 33 }, (_, index) => ({
+      ...f.catalog.records[0]!, memoryId: `id-${String(index).padStart(2, '0')}`, text: `Private memory ${index}`,
+    }));
+    let authorized = true;
+    const release = f.pauseResponse();
+    const pending = f.host.build(() => {
+      if (!authorized) return { authorizationScopeId: 'revoked', records: [], excluded: 0 };
+      return f.catalog;
+    }).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(f.requests).toHaveLength(1));
+      if (change === 'deleted memory') f.catalog.records = f.catalog.records.filter(value => value.memoryId !== 'id-18');
+      else authorized = false;
+      release();
+      expect(await pending).toMatchObject({ code: 'request-stale' });
+      expect(f.requests.flatMap(value => value.input)).toHaveLength(16);
+      expect(f.requests.flatMap(value => value.input)).not.toContain('Title 0\nPrivate memory 18');
+    } finally { release(); }
+  });
   it('bounds batches and stops the next batch after opting out', async () => {
     const f = await fixture(); f.consent(); f.catalog.records = Array.from({ length: 33 }, (_, i) => ({ ...f.catalog.records[0]!, memoryId: 'id-' + i }));
     const host = new MemoryMapHost({ namespace: f.namespace, provider: f.provider, validatedModelPath: async () => '', onProgress: () => { f.config.source = 'local'; host.cancel(); } });

@@ -1,5 +1,8 @@
 import { ipcMain, dialog, type IpcMainInvokeEvent } from 'electron';
 import { z } from 'zod';
+import { watch } from 'node:fs';
+import { basename, dirname } from 'node:path';
+import { permissionSettingsPath } from '../../permissions/permission-settings-store.js';
 import { CHANNELS } from '../../contract/app-contract.js';
 import { validateHostRendererSender, auditUnauthorized, UNAUTHORIZED_FRAME } from '../gated.js';
 import type { IpcDeps } from '../types.js';
@@ -7,7 +10,7 @@ import type { MemoryMapScope, MemoryEmbeddingSettings, MemoryMapError } from '..
 import { MemoryMapScopeSchema, MemoryRetrievalSchema, MemoryEmbeddingSettingsSchema } from '../../shared/memory-map-validation.js';
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
-import { readGraphCatalog, memoryFacets } from '../../main/memory-map/catalog.js';
+import { readGraphCatalog, memoryFacets, matchesGraphRecord, memoryMapScopeId, type ReadMemoryMapCatalog } from '../../main/memory-map/catalog.js';
 import { MEMORY_EMBEDDING_CONSENT_VERSION } from '../../shared/memory-embedding-config.js';
 import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
 import { createMemoryProviderEgress } from '../../main/memory-map/provider-egress.js';
@@ -42,13 +45,42 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     savePath: path => deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path }),
     onProgress: status => { if (modelEvent && validateHostRendererSender(modelEvent)) sendToWebContents(modelEvent.sender, CHANNELS.memoryMap.modelProgress, status); },
   });
-  const host = new MemoryMapHost({ provider, validatedModelPath: () => { if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured'); return model.validatedPath(); }, onProgress: progress => {
+  const watchAuthority = (cancel: () => void) => {
+    const stopNotes = deps.memoryManager.watchMemoryNotes(cancel);
+    const policyPath = permissionSettingsPath();
+    try {
+      const policyName = basename(policyPath);
+      const policyWatcher = watch(dirname(policyPath), { persistent: false }, (_eventType, filename) => {
+        if (filename === null || filename === policyName) cancel();
+      });
+      policyWatcher.on('error', cancel);
+      return () => { stopNotes(); policyWatcher.close(); };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return stopNotes;
+      stopNotes();
+      throw error;
+    }
+  };
+  const host = new MemoryMapHost({ provider, watchAuthority, validatedModelPath: () => { if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured'); return model.validatedPath(); }, onProgress: progress => {
     if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
   } });
-  const catalog = (scope?: MemoryMapScope) => () => {
-    const result = resolveScope(scope);
-    if (!result.ok) { host.cancel(); throw new MemoryMapHostError('project-not-allowed'); }
-    return readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot);
+  const catalog = (scope?: MemoryMapScope): ReadMemoryMapCatalog => {
+    const filenames = new Map<string, string>();
+    const read: ReadMemoryMapCatalog = () => {
+      const result = resolveScope(scope);
+      if (!result.ok) { host.cancel(); throw new MemoryMapHostError('project-not-allowed'); }
+      filenames.clear();
+      return readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot, filenames);
+    };
+    read.recordsAreCurrent = (scopeId, records) => {
+      const result = resolveScope(scope);
+      if (!result.ok || memoryMapScopeId(result.options) !== scopeId) return false;
+      return records.every(record => {
+        const filename = filenames.get(record.memoryId);
+        return filename !== undefined && matchesGraphRecord(deps.memoryManager.readManagedMemoryAt(filename, record.memoryId, result.options), record);
+      });
+    };
+    return read;
   };
   const settings = async (): Promise<MemoryEmbeddingSettings> => {
     const config = deps.settingsService.get('memoryEmbedding');

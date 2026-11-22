@@ -675,6 +675,25 @@ export class MemoryManager implements PromptMemorySource {
     };
   }
 
+  readManagedMemoryAt(filename: string, id: string, options: ProjectScopedMemoryOptions): NoteEntry | undefined {
+    const safeFilename = this.validateDeletableMemoryFilename(filename);
+    const snapshot = readUtf8FileSnapshotIfPresent(join(this.memoryDir, safeFilename), MAX_MANAGED_MEMORY_FILE_BYTES);
+    if (!snapshot || snapshot.tooLarge) return undefined;
+    const parsed = this.parseMemoryNote(snapshot.content);
+    if (parsed.invalidMetadata || !parsed.metadata || parsed.metadata.id !== id) return undefined;
+    const title = parsed.content.match(/^#\s+([^\r\n]+)/)?.[1]?.trim() || safeFilename.replace(/\.md$/i, "");
+    const entry = this.entryFromMemoryMetadata(safeFilename, title, parsed.content, parsed.metadata, snapshot.mtime.toISOString());
+    return this.matchesMemoryRead(entry, options) ? entry : undefined;
+  }
+
+  watchMemoryNotes(onChange: () => void): () => void {
+    const watcher = watch(this.memoryDir, { persistent: false }, (_eventType, filename) => {
+      if (filename === null || filename.endsWith(".md")) onChange();
+    });
+    watcher.on("error", onChange);
+    return () => watcher.close();
+  }
+
   // Global refresh includes unscoped legacy records but never project-scoped managed memories.
   listGlobalMemoryEntries(): NoteEntry[] {
     return this.listMemoryEntries().filter((entry) => !entry.projectRoot);
