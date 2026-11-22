@@ -1,13 +1,14 @@
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { mainDir } from '../main-paths.js';
+import { assertLocalEmbeddingRuntime } from './local-runtime.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import type { GraphBuildInput } from './graph.js';
 export type MemoryWorkerTask = { kind: 'build' | 'project'; input: GraphBuildInput } | { kind: 'embed'; text: string };
 export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void) => Promise<T>;
-export const runMemoryWorker: MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> => {
+export const runMemoryWorker: MemoryWorkerRunner = async <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> => {
   signal.throwIfAborted();
-  process.env.ORT_DISABLE_TELEMETRY = '1';
+  if (task.kind !== 'project') assertLocalEmbeddingRuntime();
   const entry = join(mainDir, 'memory-map-worker.js');
   const worker = new Worker(entry, { workerData: { folder, task }, env: { ...process.env, ORT_DISABLE_TELEMETRY: '1' } });
   return new Promise<T>((resolve, reject) => {

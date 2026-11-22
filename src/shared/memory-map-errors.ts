@@ -4,6 +4,7 @@ export const MEMORY_MAP_ERROR_KEYS = {
   'invalid-input': 'memoryMap.error.invalid-input',
   'project-not-allowed': 'memoryMap.error.project-not-allowed',
   'model-unconfigured': 'memoryMap.error.model-unconfigured',
+  'local-runtime-unavailable': 'memoryMap.error.local-runtime-unavailable',
   'model-integrity-failed': 'memoryMap.error.model-integrity-failed',
   'graph-unavailable': 'memoryMap.error.graph-unavailable',
   'graph-stale': 'memoryMap.error.graph-stale',

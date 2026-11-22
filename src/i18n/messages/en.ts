@@ -78,6 +78,7 @@ export const en = {
   "memoryMap.error.invalid-input": "Invalid memory map request.",
   "memoryMap.error.project-not-allowed": "This memory scope is unavailable.",
   "memoryMap.error.model-unconfigured": "Set up a local embedding model first.",
+  "memoryMap.error.local-runtime-unavailable": "Local embeddings are unavailable on this platform because its native runtime cannot guarantee telemetry is disabled.",
   "memoryMap.error.model-integrity-failed": "Model files do not match the pinned version.",
   "memoryMap.error.graph-unavailable": "Build the memory map first.",
   "memoryMap.error.graph-stale": "Memories changed. Rebuild the map.",

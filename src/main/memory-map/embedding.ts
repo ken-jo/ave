@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Tokenizer } from '@huggingface/tokenizers';
-import { InferenceSession, Tensor } from 'onnxruntime-node';
+import { assertLocalEmbeddingRuntime } from './local-runtime.js';
 import { MODEL_FILES } from './model-manifest.js';
 export interface Embedder { embed(text: string): Promise<number[]>; dispose(): Promise<void> }
 export function normalizeVector(vector: number[]): number[] {
@@ -11,6 +11,9 @@ export function normalizeVector(vector: number[]): number[] {
   return vector.map(n => n / norm);
 }
 export async function createLocalEmbedder(folder: string): Promise<Embedder> {
+  assertLocalEmbeddingRuntime();
+  process.env.ORT_DISABLE_TELEMETRY = '1';
+  const { InferenceSession, Tensor } = await import('onnxruntime-node');
   const tokenizer = new Tokenizer(JSON.parse(await readFile(join(folder, 'tokenizer.json'), 'utf8')), JSON.parse(await readFile(join(folder, 'tokenizer_config.json'), 'utf8')));
   const session = await InferenceSession.create(join(folder, MODEL_FILES[0]!.name), { executionProviders: ['cpu'], intraOpNumThreads: 1, interOpNumThreads: 1 });
   if (session.inputNames.join(',') !== 'input_ids,attention_mask,token_type_ids' || !session.outputNames.includes('last_hidden_state')) {

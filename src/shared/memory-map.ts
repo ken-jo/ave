@@ -41,7 +41,7 @@ export interface MemoryMapProgress { jobId: string; phase: 'embedding' | 'neighb
 export interface MemoryEmbeddingProvider { id: string; models: string[]; reason?: 'provider-no-embedding-model' }
 export type MemoryEmbeddingSelection = { source: 'local' } | { source: 'provider'; providerId: string; modelId: string; consent: boolean };
 export interface MemoryEmbeddingSettings { source: 'local' | 'provider'; namespace: EmbeddingNamespace; providerAvailable: boolean; providers: MemoryEmbeddingProvider[]; consent?: MemoryEmbeddingConsent }
-export type MemoryMapError = 'unauthorized-frame' | 'invalid-input' | 'project-not-allowed' | 'model-unconfigured' | 'model-integrity-failed' | 'graph-unavailable' | 'graph-stale' | 'graph-build-failed' | 'request-stale' | 'provider-unavailable' | 'provider-no-embedding-model' | 'provider-consent-required' | 'provider-embedding-failed' | 'provider-dimension-mismatch' | 'model-download-failed' | 'model-folder-invalid' | 'model-cancelled';
+export type MemoryMapError = 'unauthorized-frame' | 'invalid-input' | 'project-not-allowed' | 'model-unconfigured' | 'model-integrity-failed' | 'local-runtime-unavailable' | 'graph-unavailable' | 'graph-stale' | 'graph-build-failed' | 'request-stale' | 'provider-unavailable' | 'provider-no-embedding-model' | 'provider-consent-required' | 'provider-embedding-failed' | 'provider-dimension-mismatch' | 'model-download-failed' | 'model-folder-invalid' | 'model-cancelled';
 export type MemoryMapResult<T> = { ok: true; value: T } | { ok: false; error: MemoryMapError };
 export interface MemoryMapScope { projectRoot?: string; projectName?: string; includeUnscoped?: boolean }
 export interface MemoryMapApi {
