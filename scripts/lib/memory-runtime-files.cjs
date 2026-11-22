@@ -4,13 +4,8 @@ const { createHash } = require('node:crypto');
 const notices = require('./memory-runtime-notices.json');
 const PLATFORMS = ['darwin', 'linux', 'win32'];
 const ARCHES = ['x64', 'arm64'];
-function memoryRuntimeExclusions(platform, arch) {
-  if (!PLATFORMS.includes(platform) || !ARCHES.includes(arch)) throw new Error('Unsupported memory runtime target');
-  return [...PLATFORMS.filter(p => p !== platform).map(p => '!node_modules/onnxruntime-node/bin/napi-v6/' + p + '{,/**/*}'),
-    ...ARCHES.filter(a => a !== arch).map(a => '!node_modules/onnxruntime-node/bin/napi-v6/' + platform + '/' + a + '{,/**/*}')];
-}
 function assertMemoryRuntimeFiles(nodeModules, platform, arch) {
-  memoryRuntimeExclusions(platform, arch);
+  if (!PLATFORMS.includes(platform) || !ARCHES.includes(arch)) throw new Error('Unsupported memory runtime target: ' + platform + '/' + arch);
   const root = join(nodeModules, 'onnxruntime-node/bin/napi-v6');
   for (const p of readdirSync(root)) {
     if (p !== platform) throw new Error('Unexpected memory runtime platform: ' + p);
@@ -26,4 +21,4 @@ function assertMemoryNotices(resources) {
     if (createHash('sha256').update(bytes).digest('hex') !== row.sha256) throw new Error('Memory runtime notice mismatch: ' + row.packageName);
   }
 }
-module.exports = { memoryRuntimeExclusions, assertMemoryRuntimeFiles, assertMemoryNotices };
+module.exports = { assertMemoryRuntimeFiles, assertMemoryNotices };

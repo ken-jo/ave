@@ -277,6 +277,7 @@
       "!node_modules/node-pty/third_party{,/**/*}",
       "!node_modules/node-pty/node_modules/node-addon-api{,/**/*}",
       "!node_modules/node-addon-api{,/**/*}",
+      "!node_modules/onnxruntime-node/bin/napi-v6/*/!(${arch}){,/**/*}",
       "!node_modules/node-pty/prebuilds/win32-*/**/*.pdb",
       "!node_modules/better-sqlite3/deps{,/**/*}",
       "!node_modules/better-sqlite3/src{,/**/*}",
@@ -441,6 +442,7 @@
       }
     ],
     "mac": {
+      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}"],
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
@@ -477,6 +479,7 @@
       ]
     },
     "linux": {
+      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(linux){,/**/*}"],
       "category": "Office",
       "icon": "build/icons",
       "target": [
@@ -520,6 +523,7 @@
       ]
     },
     "win": {
+      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"],
       "signExts": [
         "!srt-win.exe",
         "!wxc-exec.exe",

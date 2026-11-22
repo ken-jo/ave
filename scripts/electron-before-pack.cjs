@@ -4,8 +4,6 @@ const { pathToFileURL } = require("node:url");
 const { readFileSync } = require("node:fs");
 const { assertSrtWinVendor, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
 module.exports = async function beforePack(context) {
-  const { memoryRuntimeExclusions } = require('./lib/memory-runtime-files.cjs');
-  context.packager.config.files.push(...memoryRuntimeExclusions(context.electronPlatformName, { 0: 'ia32', 1: 'x64', 3: 'arm64' }[context.arch]));
   const { assertMxcVerificationPayload } = await import("./lib/mxc-verification-build.mjs");
   assertMxcVerificationPayload(join(context.packager.projectDir, "dist", "src", "main"));
   const { assertSkillScriptInventory } = await import("./lib/skill-script-inventory.mjs");
