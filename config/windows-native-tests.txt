@@ -239,6 +239,7 @@ src/ipc/__tests__/hook-trust-review.test.ts
 src/ipc/__tests__/marketplace-content-handlers.test.ts
 src/ipc/__tests__/mcp-app-download.test.ts
 src/ipc/__tests__/mcp-app-model-context.test.ts
+src/ipc/__tests__/memory-map.test.ts
 src/ipc/__tests__/permissions-sensitive-read-channels.test.ts
 src/ipc/__tests__/plugin-theme-notify.test.ts
 src/ipc/__tests__/terminal-domain.test.ts
@@ -436,6 +437,10 @@ src/main/chatgpt-plan/__tests__/host-and-callback.test.ts
 src/main/chatgpt-plan/__tests__/responses-fetch.test.ts
 src/main/chatgpt-plan/__tests__/runtime-transport.test.ts
 src/main/host-api/__tests__/resolve-api-key.test.ts
+src/main/memory-map/__tests__/host.test.ts
+src/main/memory-map/__tests__/model-manager.test.ts
+src/main/memory-map/__tests__/provider-embeddings.test.ts
+src/main/memory-map/__tests__/real-model.test.ts
 src/main/terminal/__tests__/manual-shell.test.ts
 src/main/terminal/__tests__/pty-manager-host-control.test.ts
 src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
@@ -972,6 +977,7 @@ src/tools/pipeline/__tests__/workload-broker-audit.test.ts
 src/ui/renderer/__tests__/TranscriptRenderer.test.tsx
 src/ui/renderer/__tests__/classify-turn-entries.test.ts
 src/ui/renderer/components/__tests__/MainSurfacePanels.test.tsx
+src/ui/renderer/components/__tests__/MemoryEmbeddingsSection.test.tsx
 src/ui/renderer/components/__tests__/SandboxStatusBadge.test.tsx
 src/ui/renderer/components/__tests__/ToolApprovalContent-host-execution.test.tsx
 src/ui/renderer/components/__tests__/sidechat-child-transcript.test.tsx
