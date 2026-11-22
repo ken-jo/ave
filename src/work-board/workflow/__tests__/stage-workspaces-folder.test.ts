@@ -97,13 +97,14 @@ afterEach(async () => {
 
 describe("folder stage workspaces", () => {
   it("the layout carries no raw path, run id or title, and no stage is named like a host folder", async () => {
-    const home = realpathSync.native(aveHome());
+    // Both ends as they really are on disk: the home may be reached through a link.
+    const under = (path: string): string[] => relative(realpathSync.native(aveHome()), realpathSync.native(path)).split(sep);
     const withProject = await start(project);
-    expect(relative(home, withProject.runRoot).split(sep)).toEqual(["worktrees", expect.stringMatching(/^project-[0-9a-f]{8}$/u), expect.stringMatching(/^[0-9a-f]{12}$/u)]);
+    expect(under(withProject.runRoot)).toEqual(["worktrees", expect.stringMatching(/^project-[0-9a-f]{8}$/u), expect.stringMatching(/^[0-9a-f]{12}$/u)]);
     expect(withProject.runRoot).not.toContain(withProject.run.runId);
-    expect(relative(home, await stageRoot(withProject, "s1")).split(sep)).toHaveLength(4);
+    expect(under(await stageRoot(withProject, "s1"))).toHaveLength(4);
     const without = await start(undefined);
-    expect(relative(home, without.runRoot).split(sep).slice(0, 2)).toEqual(["worktrees", "board-7"]);
+    expect(under(without.runRoot).slice(0, 2)).toEqual(["worktrees", "board-7"]);
     for (const name of ["_join", "_out", "_run.json", "..", "a/b", "S1"]) {
       expect(await without.provider.prepare(without.run, stageOf(name), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
     }
