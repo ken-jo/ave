@@ -1,8 +1,8 @@
 /**
  * Held events (work-board-run-ending.md): a scheduler event whose run write finds the row not naming the run while its class holds it.
- * `testTimeout` bounds hangs caused by product regressions such as awaiting a detached launch in the startup handler
- * (rv-heldev3 P2 (a)) or skipping dispatch or the busy decrement (rv-heldev3 P2 (b)). `afterEach` releases the gates,
- * finishes fake children, and disposes fixtures even when the test body is stranded.
+ * `testTimeout` bounds hangs from regressions such as awaiting a detached launch during startup,
+ * skipping dispatch, or skipping the busy decrement. `afterEach` releases gates, finishes fake children,
+ * and drains tracked work before removing fixtures. `hookTimeout` bounds the teardown hook.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
