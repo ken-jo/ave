@@ -135,7 +135,7 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
   };
 });
 import { EventEmitter } from "node:events";
-import { connect, Server, type Socket } from "node:net";
+import { Server, type Socket } from "node:net";
 import { type ChildProcess, spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -211,12 +211,31 @@ const MANIFEST: PluginManifest = {
 };
 
 const RESOURCE_CLOSE_TIMEOUT_MS = 5_000;
+const CHILD_EXIT_TIMEOUT_MS = 5_000;
+const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
+
+async function withRealTimeout<T>(result: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      result,
+      new Promise<never>((_, reject) => {
+        timer = realSetTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    realClearTimeout(timer);
+  }
+}
 
 type OwnResource = (name: string, close: () => unknown) => () => Promise<void>;
 
 function testResources(onTestFinished: TestContext["onTestFinished"]): OwnResource {
   const disposers: Array<() => Promise<void>> = [];
-  onTestFinished(async () => {
+  let closed = false;
+  let lateDrainScheduled = false;
+  const drain = async () => {
     const errors: unknown[] = [];
     for (let dispose = disposers.pop(); dispose; dispose = disposers.pop()) {
       try {
@@ -225,27 +244,27 @@ function testResources(onTestFinished: TestContext["onTestFinished"]): OwnResour
         errors.push(error);
       }
     }
+    closed = true;
+    lateDrainScheduled = false;
     if (errors.length > 0) throw new AggregateError(errors, "Test resource cleanup failed");
-  });
+  };
+  onTestFinished(drain);
   return (name, close) => {
     let closing: Promise<void> | undefined;
     const run = async () => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([
-          Promise.resolve().then(close),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new Error("close timed out")), RESOURCE_CLOSE_TIMEOUT_MS);
-          }),
-        ]);
+        await withRealTimeout(Promise.resolve().then(close), RESOURCE_CLOSE_TIMEOUT_MS, "close timed out");
       } catch (error) {
         throw new Error(`Could not clean up ${name}`, { cause: error });
-      } finally {
-        clearTimeout(timer);
       }
     };
     const dispose = () => (closing ??= run());
     disposers.push(dispose);
+    if (closed && !lateDrainScheduled) {
+      lateDrainScheduled = true;
+      // Preserve reverse registration order for a resource and its event listeners.
+      queueMicrotask(() => { void drain().catch((error: unknown) => console.error(error)); });
+    }
     return dispose;
   };
 }
@@ -294,11 +313,11 @@ function ownChildProcess(own: OwnResource, child: ChildProcess): Promise<string>
 /** Import a real on-disk plugin module; replacing the loader would bypass the boundary under test. */
 function writePluginModule(own?: OwnResource): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "oop-plugin-"));
-  if (own) ownDirectory(own, dir);
   const entryPath = join(dir, "plugin.mjs");
-  writeFileSync(
-    entryPath,
-    `export const createPlugin = async (context) => {
+  try {
+    writeFileSync(
+      entryPath,
+      `export const createPlugin = async (context) => {
   const seen = [];
   context.hostApi.config.onChange("ping", (data) => seen.push(data));
   return {
@@ -317,8 +336,17 @@ function writePluginModule(own?: OwnResource): { dir: string; entryPath: string 
   };
 };
 `,
-    "utf-8",
-  );
+      "utf-8",
+    );
+  } catch (error) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Could not write or remove the plugin module fixture");
+    }
+    throw error;
+  }
+  if (own) ownDirectory(own, dir);
   return { dir, entryPath };
 }
 
@@ -1903,12 +1931,14 @@ describe("on Windows a confined child holds a grant on its own directories for e
     opts: Parameters<typeof acceptHostOverLoopback>[0],
     onAccepted: (socket: Socket) => void,
     onRejected: () => void,
-  ): void {
+  ): Server {
+    let server: Server | undefined;
     let serving: Promise<void> | undefined;
     const listen = Server.prototype.listen;
     // The loopback API hands out the socket only after authentication. Capture the
     // listener and pending peers while the real acceptor sets them up.
     const spy = vi.spyOn(Server.prototype, "listen").mockImplementation(function (this: Server, ...args) {
+      server = this;
       const { promise, resolve } = deferred<void>();
       const onConnection = (socket: Socket) => ownStream(own, socket);
       own("loopback connection listener", () => this.off("connection", onConnection));
@@ -1934,10 +1964,12 @@ describe("on Windows a confined child holds a grant on its own directories for e
     } finally {
       spy.mockRestore();
     }
+    if (!server) throw new Error("Expected a loopback server");
+    return server;
   }
 
   /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
-  function loopbackChild(own: OwnResource, opts: { readonly onAnnounce?: (port: number) => void; readonly ignoresEof?: boolean } = {}) {
+  function loopbackChild(own: OwnResource, opts: { readonly onAnnounce?: (server: Server, port: number) => void; readonly ignoresEof?: boolean } = {}) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
       const child = fakeChild(undefined, own);
@@ -1949,9 +1981,9 @@ describe("on Windows a confined child holds a grant on its own directories for e
       const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
       const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
-      serveOwnedLoopback(own, {
+      const server = serveOwnedLoopback(own, {
         announce: (line) => {
-          opts.onAnnounce?.(Number(line.split(" ")[1]));
+          opts.onAnnounce?.(server, Number(line.split(" ")[1]));
           child.stdout.write(line);
         },
         acceptTimeoutMs: 5_000,
@@ -1996,6 +2028,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         launch: { kind: "entry", entryPath },
         registerSandboxEnvelope: envelopeRegistration(layout.home),
       });
+      own("fake clock", () => vi.useRealTimers());
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
         const { deadline, late } = underFactoryDeadline(() => Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))));
@@ -2003,7 +2036,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         await vi.advanceTimersByTimeAsync(FACTORY_DEADLINE_MS + 1);
         expect(await deadline).toMatchObject(FACTORY_TIMEOUT);
         releaseAnnounce();
-        expect(await late()).toMatchObject(DEADLINE_PASSED);
+        expect(await vi.waitFor(late, { message: "Waiting for the late factory result" })).toMatchObject(DEADLINE_PASSED);
         await until(() => windowsGrant.events.includes("release"));
         expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
         const termination = factoryDebug.find((line) => line.includes("terminating child"));
@@ -2075,8 +2108,14 @@ describe("on Windows a confined child holds a grant on its own directories for e
     const layout = aveLayout(undefined, own);
     const { entryPath } = writePluginModule(own);
     let port = 0;
+    let server: Server | undefined;
     await asWindows(layout, async () => {
-      spawnConfinedChild.mockImplementation(loopbackChild(own, { onAnnounce: (announced) => (port = announced) }));
+      spawnConfinedChild.mockImplementation(loopbackChild(own, {
+        onAnnounce: (listening, announced) => {
+          server = listening;
+          port = announced;
+        },
+      }));
       const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
       const instance = await factory(hostContext(fakeHostApi(), layout.context));
       const stop = own("loopback session", () => instance.stop?.());
@@ -2086,20 +2125,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       // Stop resolves only after the child's exit released the grant: no release may trail the reported stop.
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
       expect(port).toBeGreaterThan(0);
-      const refused = await new Promise<string>((resolve) => {
-        const probe = connect({ host: "127.0.0.1", port });
-        ownStream(own, probe);
-        const onConnect = () => {
-          probe.destroy();
-          resolve("connected");
-        };
-        const onError = (error: NodeJS.ErrnoException) => resolve(error.code ?? "error");
-        own("probe connect listener", () => probe.off("connect", onConnect));
-        probe.on("connect", onConnect);
-        own("probe error listener", () => probe.off("error", onError));
-        probe.on("error", onError);
-      });
-      expect(refused).toBe("ECONNREFUSED");
+      expect(server?.listening).toBe(false);
     }, { own });
   });
 
@@ -2140,10 +2166,14 @@ describe("on Windows a confined child holds a grant on its own directories for e
   });
 
   /** Simulate process death before return or at acceptance while descendant listener and channel remain alive. */
-  function deadLoopbackChild(own: OwnResource, when: "before-return" | "at-accept", served: { count: number }) {
-    return async (spec: { args: string[] }) => {
+  function deadLoopbackChild(own: OwnResource, when: "before-return" | "at-accept") {
+    const { promise: exited, resolve: observeExit } = deferred<number | null>();
+    let exitAtAccept: (() => Promise<void>) | undefined;
+    const spawn = async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
       const child = fakeChild(undefined, own);
+      child.once("exit", observeExit);
+      own("fake child exit listener", () => child.off("exit", observeExit));
       const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
       const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
@@ -2154,14 +2184,11 @@ describe("on Windows a confined child holds a grant on its own directories for e
       }, (socket) => {
         if (when === "at-accept") {
           child.exitCode = 3;
-          const exit = own("pending fake child exit", () => {
+          exitAtAccept = own("pending fake child exit", () => {
             child.exitCode = null;
             end(child, 3, null);
           });
-          const timer = setTimeout(() => { void exit().catch(() => undefined); }, 150);
-          own("fake child exit timer", () => clearTimeout(timer));
         }
-        served.count += 1;
         const service = servePluginChild(socket, socket);
         own("dead loopback child service", () => service.hostGone());
         socket.resume();
@@ -2169,6 +2196,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       if (when === "before-return") end(child, 3, null);
       return { child, confinement: "windows-srt" };
     };
+    return { spawn, exited, exit: () => exitAtAccept?.() };
   }
 
   it.for(["before-return", "at-accept"] as const)(
@@ -2177,9 +2205,9 @@ describe("on Windows a confined child holds a grant on its own directories for e
       const own = testResources(onTestFinished);
       const layout = aveLayout(undefined, own);
       const { entryPath } = writePluginModule(own);
-      const served = { count: 0 };
+      const child = deadLoopbackChild(own, when);
       await asWindows(layout, async () => {
-        spawnConfinedChild.mockImplementation(deadLoopbackChild(own, when, served));
+        spawnConfinedChild.mockImplementation(child.spawn);
         const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
         const outcome = await Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))).then(
           () => "constructed",
@@ -2187,6 +2215,8 @@ describe("on Windows a confined child holds a grant on its own directories for e
         );
         expect(outcome).toBeInstanceOf(Error);
         expect((outcome as Error).message).toContain(`${PLUGIN_ID}: child exited code=3`);
+        await child.exit();
+        await expect(withRealTimeout(child.exited, CHILD_EXIT_TIMEOUT_MS, "Fake child did not emit exit")).resolves.toBe(3);
         await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
       }, { own });
     },
@@ -2243,7 +2273,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     own("real child session", () => instance.stop?.());
     await expect(instance.handlers.probe_env!()).resolves.toBe("from the argument");
     socket.end();
-    await expect(exited).resolves.toBe("code=0");
+    await expect(withRealTimeout(exited, CHILD_EXIT_TIMEOUT_MS, "Real child did not exit after channel EOF")).resolves.toBe("code=0");
   }, 30_000);
 
   it.skipIf(process.platform === "win32")("makes no ACL grant off Windows, where the wrap carries the allow-list", async () => {
