@@ -8,7 +8,7 @@ import * as sandboxUtils from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbo
 import * as windowsHelpers from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deferred } from "../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -356,15 +356,18 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const workspace = join(root, "delayed-stamp");
     mkdirSync(workspace);
     await initializeAsrtSandbox({ denyRead: [join(workspace, "secret")] });
-    let finishStamp!: () => void;
-    const stamp = new Promise<void>(resolve => { finishStamp = resolve; });
+    const entered = deferred<void>();
+    const finishStamp = deferred<void>();
     const spawn = vi.fn();
-    vi.mocked(windowsHelpers.stampWindowsAclAsync).mockReturnValueOnce(stamp);
+    vi.mocked(windowsHelpers.stampWindowsAclAsync).mockImplementationOnce(() => {
+      entered.resolve();
+      return finishStamp.promise;
+    });
     const spawning = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [workspace] })
       .then(held => { spawn(); return held; });
     try {
-      await vi.waitFor(() => expect(windowsHelpers.stampWindowsAclAsync).toHaveBeenCalledOnce(), { timeout: 1000 });
-      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(await Promise.race([entered.promise.then(() => "stamping"), spawning.then(() => "settled")])).toBe("stamping");
+      await afterQueuedCallbacks();
       expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(1);
       expect(runtime.stampWindowsAcl).not.toHaveBeenCalled();
       expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
@@ -374,7 +377,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
         expect(runtime.grantWindowsAcl).toHaveBeenCalledOnce();
       });
     } finally {
-      finishStamp();
+      finishStamp.resolve();
       (await spawning).release();
     }
     expect(spawn).toHaveBeenCalledOnce();
@@ -416,33 +419,69 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     await expect(outcome).rejects.toThrow("Windows filesystem grant refuses an ancestor of the workspace or Ave home");
   });
 
-  it("invalidates a pending grant and waits for the stamp before restoring the session ACLs", async () => {
+  it.each([0, 2])("restores the session ACEs after a pending stamp exits with code %i", async (exitCode) => {
     captureRuntime();
     const workspace = join(root, "reset-stamp");
     mkdirSync(workspace);
-    await initializeAsrtSandbox({ denyRead: [join(workspace, "secret")] });
-    let finishStamp!: () => void;
-    const stamp = new Promise<void>(resolve => { finishStamp = resolve; });
-    vi.mocked(windowsHelpers.stampWindowsAclAsync).mockReturnValueOnce(stamp);
+    const first = join(workspace, "first");
+    const second = join(workspace, "second");
+    const targets = [first, second];
+    await initializeAsrtSandbox({ denyRead: targets });
+    const initialAcls = new Map<string, denyAcl.WindowsDenyAcl>([
+      [first, { denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false }],
+      [second, { denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false }],
+    ]);
+    const nativeAcls = new Map(initialAcls);
+    const ledger = new Map<string, denyAcl.WindowsDenyAcl>();
+    const entered = deferred<void>();
+    const finishStamp = deferred<void>();
+    const readAcl = (path: string): denyAcl.WindowsDenyAcl => {
+      const acl = nativeAcls.get(path);
+      if (acl === undefined) throw new Error(`Unexpected ACL path: ${path}`);
+      return acl;
+    };
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(readAcl));
+    const stampedPaths: string[] = [];
+    vi.mocked(windowsHelpers.stampWindowsAclAsync).mockImplementationOnce(async ({ denyWrite }) => {
+      entered.resolve();
+      await finishStamp.promise;
+      const writes = [...(denyWrite ?? [])];
+      stampedPaths.push(...(exitCode === 2 ? writes.slice(0, 1) : writes));
+      for (const path of stampedPaths) {
+        const original = readAcl(path);
+        ledger.set(path, original);
+        nativeAcls.set(path, { ...original, denyMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40 });
+      }
+      if (exitCode === 2) throw new windowsHelpers.WindowsSandboxError("acl_stamp_failed", "Fixture stamp exited 2");
+    });
+    vi.mocked(manager.reset).mockImplementationOnce(async () => {
+      for (const [path, original] of ledger) nativeAcls.set(path, original);
+      ledger.clear();
+      config = undefined;
+      return { windowsAclUnreleased: [] };
+    });
     const holder = vi.fn(() => process.pid + 1);
     const granting = grantWindowsWorkerFilesystemAccess({ holderPid: holder, allowWrite: [workspace] });
     const outcome = granting.then(held => { held.release(); return undefined; }, error => error);
     let resetting: Promise<void> | undefined;
     try {
-      await vi.waitFor(() => expect(windowsHelpers.stampWindowsAclAsync).toHaveBeenCalledOnce(), { timeout: 1000 });
+      expect(await Promise.race([entered.promise.then(() => "stamping"), outcome.then(() => "settled")])).toBe("stamping");
       resetting = resetAsrtSandbox();
-      await new Promise<void>(resolve => setImmediate(resolve));
+      await afterQueuedCallbacks();
       expect(isAsrtSandboxActive()).toBe(false);
-      expect(manager.reset).not.toHaveBeenCalled();
     } finally {
-      finishStamp();
+      finishStamp.resolve();
       await outcome;
       await resetting;
     }
-    expect(await outcome).toMatchObject({ message: "Windows sandbox session was reset" });
+    expect(stampedPaths).toEqual(exitCode === 2 ? targets.slice(0, 1) : targets);
+    expect(nativeAcls).toEqual(initialAcls);
+    expect(ledger.size).toBe(0);
+    expect(await outcome).toMatchObject({
+      message: exitCode === 2 ? "Windows deny DACL verification failed; reset the sandbox session" : "Windows sandbox session was reset",
+    });
     expect(holder).not.toHaveBeenCalled();
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
-    expect(manager.reset).toHaveBeenCalledOnce();
   });
 
   it.each([

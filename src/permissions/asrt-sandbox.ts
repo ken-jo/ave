@@ -3247,9 +3247,10 @@ export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
 
 // Full teardown pass-through (`SandboxManager.reset`). Stops proxy servers and clears state.
 export function resetAsrtSandbox(): Promise<void> {
-  return sandboxResetPending ??= resetSandboxRuntime().finally(() => {
+  sandboxResetPending ??= resetSandboxRuntime().finally(() => {
     sandboxResetPending = undefined;
   });
+  return sandboxResetPending;
 }
 
 async function resetSandboxRuntime(): Promise<void> {
