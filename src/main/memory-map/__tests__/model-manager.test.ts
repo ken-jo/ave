@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, open, readFile, readdir, rm, symlink } from 'node:fs/promises';
-import { isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LocalModelManager, verifyModelFolder } from '../model-manager.js';
+import { LOCAL_MODEL_REVISION } from '../model-manifest.js';
 import type { FeatureNamespaceHandle } from '../../storage/feature-namespace.js';
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function fixture(body = 'model', namespaceName = '') {
+async function fixture(body = 'model', namespaceName = '', beforeSave?: () => void) {
   const root = await mkdtemp(join(tmpdir(), 'memory-model-')); roots.push(root);
   const files = [{ name: 'weights.bin', bytes: 5, sha256: createHash('sha256').update('model').digest('hex') }];
   const namespaceDir = join(root, namespaceName);
@@ -22,7 +23,7 @@ async function fixture(body = 'model', namespaceName = '') {
   const server = createServer((_, response) => { response.end(body); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
-  const manager = new LocalModelManager({ namespace, files, readPath: () => saved, savePath: path => { saved = path; }, downloadFile: (_, signal) => fetch(`http://127.0.0.1:${port}`, { signal }) });
+  const manager = new LocalModelManager({ namespace, files, readPath: () => saved, savePath: path => { beforeSave?.(); saved = path; }, downloadFile: (_, signal) => fetch(`http://127.0.0.1:${port}`, { signal }) });
   return { manager, root, files, saved: () => saved, setSaved: (path: string) => { saved = path; }, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 describe('local model lifecycle', () => {
@@ -92,6 +93,71 @@ describe('local model lifecycle', () => {
       expect(await f.manager.download()).toMatchObject({ status: 'ready' });
       expect(await f.manager.validatedPath()).toBe(installed);
       expect(await readdir(join(f.root, 'multilingual-e5-small'))).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+  it('reuses the verified recovery slot across adoption, download and adoption', async () => {
+    const f = await fixture();
+    try {
+      const parent = join(f.root, 'multilingual-e5-small');
+      const canonical = join(parent, LOCAL_MODEL_REVISION);
+      await mkdir(canonical, { recursive: true });
+      await writeFile(join(canonical, 'weights.bin'), 'wrong');
+      const orphan = join(parent, `${LOCAL_MODEL_REVISION}-11111111-1111-4111-8111-111111111111`);
+      await mkdir(orphan);
+      await writeFile(join(orphan, 'weights.bin'), 'model');
+      const external = await mkdtemp(join(tmpdir(), 'legacy-model-')); roots.push(external);
+      await writeFile(join(external, 'weights.bin'), 'model');
+
+      expect(await f.manager.adoptExistingFolder(external)).toMatchObject({ status: 'ready' });
+      const recovery = await f.manager.validatedPath();
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      expect(await f.manager.adoptExistingFolder(external)).toMatchObject({ status: 'ready' });
+      expect(await f.manager.validatedPath()).toBe(recovery);
+      expect((await readdir(parent)).sort()).toEqual([LOCAL_MODEL_REVISION, basename(recovery)].sort());
+      expect(await readFile(join(canonical, 'weights.bin'), 'utf8')).toBe('wrong');
+    } finally { await f.close(); }
+  });
+  it('removes a superseded corrupt recovery slot and preserves external paths and junction targets', async () => {
+    const f = await fixture();
+    try {
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      const canonical = await f.manager.validatedPath();
+      await writeFile(join(canonical, 'weights.bin'), 'wrong');
+      const outside = await mkdtemp(join(tmpdir(), 'outside-model-')); roots.push(outside);
+      const name = `${LOCAL_MODEL_REVISION}-22222222-2222-4222-8222-222222222222`;
+      const external = join(outside, name);
+      await mkdir(external);
+      await writeFile(join(external, 'weights.bin'), 'model');
+      const parent = dirname(canonical);
+      await symlink(external, join(parent, name), process.platform === 'win32' ? 'junction' : 'dir');
+      f.setSaved(external);
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      const recovery = await f.manager.validatedPath();
+      await writeFile(join(recovery, 'weights.bin'), 'wrong');
+
+      expect(await f.manager.adoptExistingFolder(external)).toMatchObject({ status: 'ready' });
+      const replacement = await f.manager.validatedPath();
+      expect(replacement).not.toBe(recovery);
+      expect((await readdir(parent)).sort()).toEqual([LOCAL_MODEL_REVISION, name, basename(replacement)].sort());
+      expect(await readFile(join(external, 'weights.bin'), 'utf8')).toBe('model');
+      expect(await readFile(join(parent, name, 'weights.bin'), 'utf8')).toBe('model');
+    } finally { await f.close(); }
+  });
+  it('removes an unpublished recovery slot when saving the replacement fails', async () => {
+    let failSave = false;
+    const f = await fixture('model', '', () => { if (failSave) throw new Error('Save failed'); });
+    try {
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      const canonical = await f.manager.validatedPath();
+      await writeFile(join(canonical, 'weights.bin'), 'wrong');
+      expect(await f.manager.download()).toMatchObject({ status: 'ready' });
+      const recovery = await f.manager.validatedPath();
+      await writeFile(join(recovery, 'weights.bin'), 'wrong');
+      failSave = true;
+
+      expect(await f.manager.download()).toMatchObject({ status: 'failed', error: 'model-download-failed' });
+      expect(f.saved()).toBe(recovery);
+      expect((await readdir(dirname(canonical))).sort()).toEqual([LOCAL_MODEL_REVISION, basename(recovery)].sort());
     } finally { await f.close(); }
   });
   it('reports a valid legacy model location in settings and refuses it for inference', async () => {

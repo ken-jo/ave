@@ -1,10 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, realpath, rename, rm } from 'node:fs/promises';
+import { lstat, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from './model-manifest.js';
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
+
+const MODEL_SLOT_PARENT = 'multilingual-e5-small';
+const RECOVERY_SLOT_NAME = new RegExp(`^${LOCAL_MODEL_REVISION}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, 'iu');
+
+function recoverySlotName(parent: string, path: string | undefined): string | undefined {
+  const name = path && relative(parent, path).split(sep)[0];
+  return name && RECOVERY_SLOT_NAME.test(name) ? name : undefined;
+}
+
 export class MemoryModelError extends Error {
   constructor(readonly code: ModelErrorCode) { super(code); this.name = 'MemoryModelError'; }
 }
@@ -111,7 +120,7 @@ export class LocalModelManager {
       const path = await verifyModelFolder(folder, this.files, signal);
       if (await this.isManagedPath(path)) {
         signal.throwIfAborted();
-        await this.options.savePath(path);
+        await this.saveManagedPath(path);
         return;
       }
       await this.install(signal, async (name, staging) => {
@@ -167,18 +176,69 @@ export class LocalModelManager {
   private async verifyManagedSlot(path: string, signal: AbortSignal): Promise<string> {
     const directory = await this.checkedDirectory(path);
     if (directory === undefined) throw new MemoryModelError('model-integrity-failed');
+    await this.checkedDirectory(join(directory, 'onnx'));
     const folder = await verifyModelFolder(directory, this.files, signal);
     if (!(await this.isManagedPath(folder))) throw new MemoryModelError('model-integrity-failed');
     return folder;
   }
+
+  private async removeRecoverySlot(parent: string, name: string): Promise<void> {
+    if (!RECOVERY_SLOT_NAME.test(name)) return;
+    const managedParent = await this.recoveryParent();
+    if (managedParent === undefined || relative(managedParent, parent) !== '') return;
+    const path = join(parent, name);
+    try {
+      if (!(await lstat(path)).isDirectory()) return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    await rm(path, { recursive: true, force: true });
+  }
+
+  private async recoveryParent(): Promise<string | undefined> {
+    const root = await this.checkedDirectory(this.namespace.dir);
+    return root === undefined ? undefined : this.checkedDirectory(join(root, MODEL_SLOT_PARENT));
+  }
+
+  private async saveManagedPath(path: string): Promise<void> {
+    try { await this.options.savePath(path); }
+    finally {
+      const saved = this.options.readPath();
+      if (saved && relative(path, saved) === '') {
+        const parent = await this.recoveryParent();
+        if (parent !== undefined) {
+          const active = recoverySlotName(parent, saved);
+          for (const name of await readdir(parent)) {
+            if (active === undefined || relative(join(parent, active), join(parent, name)) !== '') {
+              await this.removeRecoverySlot(parent, name);
+            }
+          }
+        }
+      }
+    }
+  }
+
   private async install(signal: AbortSignal, stage: (name: string, folder: string) => Promise<void>): Promise<void> {
     await this.checkedDirectory(this.namespace.dir);
-    await this.checkedDirectory(join(this.namespace.dir, 'multilingual-e5-small'));
-    const parent = await this.namespace.childDir('multilingual-e5-small');
+    await this.checkedDirectory(join(this.namespace.dir, MODEL_SLOT_PARENT));
+    const parent = await this.namespace.childDir(MODEL_SLOT_PARENT);
+    const previousRecovery = recoverySlotName(parent, this.options.readPath());
+    if (previousRecovery !== undefined) {
+      let validated: string | undefined;
+      try { validated = await this.verifyManagedSlot(join(parent, previousRecovery), signal); }
+      catch (error) { if (!(error instanceof MemoryModelError)) throw error; }
+      signal.throwIfAborted();
+      if (validated !== undefined) {
+        await this.saveManagedPath(validated);
+        return;
+      }
+    }
     const id = randomUUID();
-    const name = `multilingual-e5-small/${LOCAL_MODEL_REVISION}.tmp-${id}`;
+    const name = `${MODEL_SLOT_PARENT}/${LOCAL_MODEL_REVISION}.tmp-${id}`;
     const staging = await this.namespace.childDir(name, { exclusive: true });
     let final = join(parent, LOCAL_MODEL_REVISION);
+    let createdRecovery: string | undefined;
     try {
       await stage(name, staging);
       signal.throwIfAborted();
@@ -190,13 +250,20 @@ export class LocalModelManager {
         catch (validationError) {
           signal.throwIfAborted();
           if (!(validationError instanceof MemoryModelError)) throw validationError;
-          final = join(parent, `${LOCAL_MODEL_REVISION}-${id}`);
+          const recovery = `${LOCAL_MODEL_REVISION}-${id}`;
+          final = join(parent, recovery);
           await rename(staging, final);
+          createdRecovery = recovery;
         }
       }
       validated ??= await this.verifyManagedSlot(final, signal);
       signal.throwIfAborted();
-      await this.options.savePath(validated);
-    } finally { await rm(staging, { recursive: true, force: true }); }
+      await this.saveManagedPath(validated);
+    } finally {
+      await rm(staging, { recursive: true, force: true });
+      if (createdRecovery !== undefined && recoverySlotName(parent, this.options.readPath()) !== createdRecovery) {
+        await this.removeRecoverySlot(parent, createdRecovery);
+      }
+    }
   }
 }
