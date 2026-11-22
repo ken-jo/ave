@@ -1,4 +1,5 @@
-import { admitToolInvocation } from "./invocation-ledger.js";
+import { admitToolInvocation, toolInvocationsSealed } from "./invocation-ledger.js";
+import { t } from "../i18n/index.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
 import type { ToolRegistry } from "./registry.js";
@@ -625,6 +626,17 @@ export class ToolExecutor {
     rationaleBatchContext?: RationaleBatchExecutionContext,
     rationaleResumeContext?: RationaleResumeExecutionContext,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
+    if (toolInvocationsSealed()) {
+      // Refused before admission: it never starts, so the closing audit holds no row for it.
+      const refused: ToolResult = {
+        tool_use_id: toolUse.id,
+        content: t("be_executor.toolExecutionCancelled"),
+        is_error: true,
+        durationMs: 0,
+      };
+      await opts.onToolResult?.(refused);
+      return refused;
+    }
     const admission = admitToolInvocation(toolUse.name, opts.abortSignal);
     let result: Awaited<ReturnType<typeof runToolInvocation>>;
     try {

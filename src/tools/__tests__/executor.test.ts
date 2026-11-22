@@ -5080,3 +5080,68 @@ describe("privacy toggle governs tool-output masking", () => {
     expect(on.modelContent).toBe(PII_AND_CREDENTIAL);
   });
 });
+
+// Seals the process-wide ledger, so it stays the last test in this file.
+describe("ToolExecutor — batch admission after the quit seal", () => {
+  it("refuses a queued tool after the seal while the previous result callback waits on the journal", async () => {
+    const ledger = await import("../invocation-ledger.js");
+    const executes = [vi.fn(async () => "first done"), vi.fn(async () => "second done")];
+    const registry = new ToolRegistry();
+    executes.forEach((execute, index) => registry.register(createDynamicTool({
+      name: `queued_probe_${index}`,
+      description: "Queued batch probe",
+      source: "builtin",
+      category: "write",
+      isReadOnly: () => false,
+      jsonSchema: { type: "object", properties: { value: { type: "string" } } },
+      execute: async () => ({ output: String(await execute()), isError: false }),
+    })));
+    const permMgr = fixtureManager();
+    permMgr.checkDetailed = () => ({ decision: "allow", reason: "queued batch probe" });
+    const executor = new ToolExecutor(registry, undefined, permMgr);
+    let firstDelivered!: () => void;
+    const delivered = new Promise<void>((resolve) => { firstDelivered = resolve; });
+    let releaseJournal!: () => void;
+    const journal = new Promise<void>((resolve) => { releaseJournal = resolve; });
+    const resultIds: string[] = [];
+    const running = executor.executeAll(
+      [
+        { id: "tu-queued-0", name: "queued_probe_0", input: { value: "a" } },
+        { id: "tu-queued-1", name: "queued_probe_1", input: { value: "b" } },
+      ],
+      {
+        sessionId: "sess-queued-probe",
+        permissionContext: userPermissionContext(),
+        onToolResult: async (result) => {
+          resultIds.push(result.tool_use_id);
+          if (result.tool_use_id === "tu-queued-0") { firstDelivered(); await journal; }
+        },
+      },
+    );
+    await delivered;
+    let releaseClose!: () => void;
+    const closeHeld = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const close = vi.fn(async () => { await closeHeld; });
+    ledger.sealToolInvocations();
+    const join = ledger.closeToolInvocationAudit(close);
+    let results: Awaited<typeof running>;
+    try {
+      // The join closes while the first callback still waits on the journal.
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    } finally {
+      releaseJournal();
+      results = await running;
+      releaseClose();
+    }
+    await expect(join).resolves.toBe(0);
+    expect(executes[0]).toHaveBeenCalledOnce();
+    expect(executes[1]).not.toHaveBeenCalled();
+    expect(results.map((result) => [result.tool_use_id, result.is_error === true])).toEqual([
+      ["tu-queued-0", false],
+      ["tu-queued-1", true],
+    ]);
+    expect(results[1].content).toContain("취소");
+    expect(resultIds).toEqual(["tu-queued-0", "tu-queued-1"]);
+    expect(ledger.pendingToolInvocationCount()).toBe(0);
+  });
+});
