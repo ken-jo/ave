@@ -35,6 +35,7 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     ["a URL authority before a home", "see https://docs.example/home/bob/api", "see https://docs.example/[home]/api"],
     ["an encoded URL authority", "next=https%3A%2F%2Fdocs.example%2Fusers%2Fbob%2Fapi", "next=https%3A%2F%2Fdocs.example%2F[home]%2Fapi"],
     ["a folder that looks like an escape", "open C:\\Users\\bob\\uface\\x now", "open [home]\\uface\\x now"],
+    ["a device path", "open \\\\?\\C:\\Users\\bob\\x or \\\\.\\D:\\Users\\bob\\y", "open \\\\?\\[home]\\x or \\\\.\\[home]\\y"],
   ])("redacts %s in text", async (_label, input, expected) => {
     const { redactHomePathsInText } = await loadHomeRedactors(home, platform);
     expect(redactHomePathsInText(input)).toBe(expected);
@@ -94,6 +95,7 @@ describe.each(CONFIGURED)("any account's home on %s with %s configured", (platfo
     ["C:\\Users\\bob\\uface\\x", "[home]\\uface\\x"],
     ['"/home/Demo Smith"', '"[home]"'],
     ["'C:\\Users\\Demo Smith'\\x", "'[home]'\\x"],
+    ["\\\\?\\C:\\Users\\bob\\x", "\\\\?\\[home]\\x"],
   ])("redacts any account's home in the path value %s", async (input, expected) => {
     const { redactFsPath } = await loadHomeRedactors(home, platform);
     expect(redactFsPath(input)).toBe(expected);

@@ -3553,8 +3553,9 @@ consulting the working directory.
 
 The generic users/home rules redact any account's profile in display text and
 in audit path values (`redactFsPath`), after the configured home's own forms,
-with `[home]` or `file://[home]`, under a drive, a UNC server and optional
-share (both kept), a `/users/` or a `/home/` root. A profile name is letters,
+with `[home]` or `file://[home]`, under a drive (also after a `\\?\` or `\\.\`
+device prefix, which is kept), a UNC server and optional share (both kept), a
+`/users/` or a `/home/` root. A profile name is letters,
 marks, digits, `._-` and apostrophes before a letter or digit, each also
 percent-encoded up to the same three layers or written as a JSON `\u` escape,
 an odd backslash run; a single backslash followed by a raw folder separator

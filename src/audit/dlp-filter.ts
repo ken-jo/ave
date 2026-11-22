@@ -238,9 +238,10 @@ function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
     [`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]"],
     [`file${colon}${slash}{3}users${slash}`, "file://[home]"],
     [`file${colon}${slash}{3}home${slash}`, "file://[home]"],
+    // A drive profile goes first, so a device path such as `\\?\C:\Users\bob` keeps its drive in the marker.
+    [`[a-z]${colon}${separator}+users${separator}+`, "[home]"],
     // A UNC root keeps its server and share. Its leading run is twice its separator, also when serialized.
     [String.raw`((?<!\\)(\\{1,8})\2[^\s\\/]+\2(?:[^\s\\/]+\2)?)(?:users|home)\2`, "[home]", true],
-    [`[a-z]${colon}${separator}+users${separator}+`, "[home]"],
     [`${slash}users${slash}`, "[home]"],
     [`${slash}home${slash}`, "[home]"],
   ];
