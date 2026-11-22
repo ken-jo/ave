@@ -162,17 +162,13 @@ let retryBundledGitAt = 0;
 function probeInstallerGit(install: InstallerGitInstall): DiscoveredGit | null {
   if (performance.now() < retryBundledGitAt) return null;
   let selected: DiscoveredGit | null = null;
-  let invalidPath = false;
   try {
-    const systemDirectory = queryWindowsSystemDirectorySync();
     const cwd = dirname(install.path);
     const pathEntries = [cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin")];
-
+    if (pathEntries.some((entry) => entry.includes(";"))) return null;
+    const systemDirectory = queryWindowsSystemDirectorySync();
     const systemRoot = win32.dirname(systemDirectory);
-    if ([...pathEntries, systemDirectory].some((entry) => entry.includes(";"))) {
-      invalidPath = true;
-      return null;
-    }
+    if (systemDirectory.includes(";")) return null;
     const options = {
       cwd,
       env: {
@@ -192,7 +188,7 @@ function probeInstallerGit(install: InstallerGitInstall): DiscoveredGit | null {
   } catch {
     return null;
   } finally {
-    if (!selected && !invalidPath) retryBundledGitAt = performance.now() + BUNDLED_GIT_RETRY_MS;
+    if (!selected) retryBundledGitAt = performance.now() + BUNDLED_GIT_RETRY_MS;
   }
   return selected;
 }

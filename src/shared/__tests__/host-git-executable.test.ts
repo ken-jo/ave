@@ -152,6 +152,28 @@ describe("resolveHostGit", () => {
     }
   });
 
+  it("rejects a semicolon in the bundle directory before calling the helper", async () => {
+    const { resolveHostGit } = await import("../host-git-executable.js");
+    const originalExecPath = process.execPath;
+    const install = join("C:/Ave;Test", "Ave.exe");
+    Object.defineProperty(process, "execPath", { value: install });
+    try {
+      setProcessPlatform("win32");
+      vi.stubEnv("PATH", "D:\\system");
+      vi.mocked(existsSync).mockReturnValue(true);
+      vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+      vi.mocked(accessSync).mockImplementation((file) => {
+        if (file !== join("C:/Ave;Test", "git", "cmd", "git.exe")) throw new Error("missing");
+      });
+      expect(resolveHostGit({ packaged: true })).toBeNull();
+      expect(resolveHostGit({ packaged: true })).toBeNull();
+      expect(spawnSync).not.toHaveBeenCalled();
+      expect(vi.mocked(accessSync).mock.calls.filter(([path]) => path === "D:\\system\\git.exe")).toHaveLength(2);
+    } finally {
+      Object.defineProperty(process, "execPath", { value: originalExecPath });
+    }
+  });
+
   it("rejects Windows UNC and device PATH entries before filesystem probes", async () => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     setProcessPlatform("win32");
