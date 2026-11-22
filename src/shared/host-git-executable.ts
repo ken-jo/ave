@@ -94,6 +94,18 @@ function canRunSystemGit(path: string): boolean {
   }
 }
 
+function canRunInstallerGit(path: string): boolean {
+  try {
+    const output = execFileSync(path, ["--no-lazy-fetch", "--version"], {
+      cwd: dirname(path), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
+      timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 4096,
+    });
+    return output.startsWith("git version ");
+  } catch {
+    return false;
+  }
+}
+
 let hostGitPath: string | null | undefined;
 
 /** Verified calls require a protected installation. Discovery caches its own result. */
@@ -103,9 +115,10 @@ export function resolveHostGit(policy: "verified" | { packaged: boolean }): stri
     return candidates === undefined ? null : resolveVerifiedExecutable(candidates)?.executable ?? null;
   }
   if (hostGitPath === undefined) {
-    hostGitPath = findInstallerGit(installerGitRoot(policy.packaged))?.path
-      ?? systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit)
-      ?? null;
+    const bundled = findInstallerGit(installerGitRoot(policy.packaged));
+    hostGitPath = bundled !== null && canRunInstallerGit(bundled.path)
+      ? bundled.path
+      : systemGitCandidates(process.platform, process.env.PATH).find(canRunSystemGit) ?? null;
   }
   return hostGitPath;
 }
