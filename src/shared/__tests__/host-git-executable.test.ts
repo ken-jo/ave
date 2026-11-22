@@ -208,9 +208,9 @@ describe("resolveHostGit", () => {
       vi.stubEnv("GIT_TRACE2_EVENT", trace);
       vi.stubEnv("GIT_TRACE", trace);
       vi.stubEnv("Git_Exec_Path", join(install, "other"));
-      vi.mocked(execFileSync).mockImplementation((_file, args, options) => {
-        // Forward Git settings to a real probe without searching the test's hostile PATH.
-        return childProcess.execFileSync(systemGit.path, args as readonly string[], {
+      vi.mocked(execFileSync).mockImplementation((_file, _args, options) => {
+        // Exercise the child environment on any installed version.
+        return childProcess.execFileSync(systemGit.path, ["--version"], {
           ...options,
           cwd: install,
           env: options?.env ?? { ...process.env, PATH: safePath },
@@ -232,8 +232,10 @@ describe("resolveHostGit", () => {
           GIT_ALLOW_PROTOCOL: "",
         },
       };
+      expect(selected?.path).toBe(bundled);
+      expect(Object.keys(selected?.options.env ?? {}).sort()).toEqual(Object.keys(expectedOptions.env).sort());
+      expect(selected?.options).toEqual(expectedOptions);
       expect(execFileSync).toHaveBeenCalledWith(bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
-      expect(selected).toEqual({ path: bundled, options: expectedOptions });
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath });
       setProcessPlatform(platform);
