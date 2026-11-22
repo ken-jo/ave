@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
+import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { buildHostGitArgs, isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 
 const GIT_TIMEOUT_MS = 120_000;
 const GIT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+/** How long a process that was stopped, or that has exited, may keep its pipes open before the call is refused without it. */
+const GIT_TEARDOWN_MS = 5_000;
 
 /** On top of the host floor: no credential, prompt, signing, external diff, transport, submodule recursion or background maintenance. */
 const HARDENED_CONFIG = [
@@ -20,7 +23,7 @@ export class HostGitError extends Error {
 
 export interface HostGit {
   /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws: one
-   * that ended without an exit code is `terminated`. `isolated` runs it on no configuration but the repository's own and the call's. */
+   * that ended without an exit code, or whose pipes stayed open after it ended, is `terminated`. `isolated` runs it on no configuration but the repository's own and the call's. */
   run(cwd: string, args: readonly string[], options?: HostGitCall): Promise<HostGitResult>;
   /** `-c` entries that switch off every filter and merge driver the repository's configuration names, and the filter drivers it marks required. */
   drivers(cwd: string): Promise<{ config: string[]; requiredFilters: string[] }>;
@@ -38,11 +41,12 @@ function isolatedEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 /** Every git call of a stage workspace goes through here: an argument vector with no shell, a timeout and a bounded output. */
-export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxOutputBytes?: number } = {}): HostGit {
+export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxOutputBytes?: number; teardownMs?: number } = {}): HostGit {
   const env = gitEnv(options.env ?? process.env);
   const isolated = isolatedEnv(options.env ?? process.env);
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
+  const teardownMs = options.teardownMs ?? GIT_TEARDOWN_MS;
 
   function run(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<HostGitResult> {
     if (!isHostGitWorkspaceAvailable(cwd)) return Promise.reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
@@ -53,7 +57,29 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
       const err: Buffer[] = [];
       let size = 0;
       let failure: HostGitError | undefined;
-      const stop = (error: HostGitError): void => { failure ??= error; child.kill(); };
+      let settled = false;
+      let abandoning: NodeJS.Timeout | undefined;
+      const settle = (how: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(abandoning);
+        how();
+      };
+      // The call ends here even when the process never reports its end: a descendant that holds a pipe, or a process the kill did not
+      // reach, would otherwise hold the caller, and with it the run's queue, for good.
+      const abandon = (): void => {
+        abandoning ??= setTimeout(() => {
+          for (const stream of [child.stdin, child.stdout, child.stderr]) stream.destroy();
+          settle(() => reject(failure ?? new HostGitError("terminated", "git ended and left its pipes open")));
+        }, teardownMs);
+      };
+      const stop = (error: HostGitError): void => {
+        if (failure) return;
+        failure = error;
+        // The whole tree, within the bound that kill has of its own; then the wait for the pipes begins.
+        void Promise.resolve().then(() => forceKillManagedChildProcess(child, `host git ${error.reason}`)).then(abandon, abandon);
+      };
       const timer = setTimeout(() => stop(new HostGitError("timeout", "git did not finish in time")), timeoutMs);
       const collect = (into: Buffer[]) => (chunk: Buffer): void => {
         size += chunk.length;
@@ -62,14 +88,14 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
       };
       child.stdout.on("data", collect(out));
       child.stderr.on("data", collect(err));
-      child.on("error", (error) => { clearTimeout(timer); reject(new HostGitError("unavailable", error.message)); });
-      child.on("close", (code) => {
-        clearTimeout(timer);
+      child.on("error", (error) => settle(() => reject(new HostGitError("unavailable", error.message))));
+      child.on("exit", abandon);
+      child.on("close", (code) => settle(() => {
         if (failure) reject(failure);
         // Ended by something other than the host: what it wrote is not a whole answer.
         else if (code === null) reject(new HostGitError("terminated", "git ended without an exit code"));
         else resolve({ code, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
-      });
+      }));
       child.stdin.on("error", () => undefined);
       child.stdin.end(call.stdin ?? "");
     });

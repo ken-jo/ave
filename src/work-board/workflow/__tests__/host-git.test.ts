@@ -49,6 +49,38 @@ describe("host git", () => {
     expect(hanging.killed()).toBe(1);
   });
 
+  it("a git process that never reports its end still ends the call: stopped, or exited with its pipes held open", async () => {
+    // Nothing the host does makes it close.
+    const deaf = (): { child: ChildProcess; kills: () => number } => {
+      let kills = 0;
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => { kills += 1; return true; } });
+      return { child: child as unknown as ChildProcess, kills: () => kills };
+    };
+    const stopped = deaf();
+    spawned.fake = () => stopped.child;
+    expect(await reasonOf(createHostGit({ env, timeoutMs: 20, teardownMs: 20 }).run(base, ["status"]))).toBe("timeout");
+    expect(stopped.kills()).toBe(1);
+    expect([stopped.child.stdin?.destroyed, stopped.child.stdout?.destroyed, stopped.child.stderr?.destroyed]).toEqual([true, true, true]);
+
+    // It exits with a status, and something it started keeps the pipes: what was read is not known to be whole.
+    const exited = deaf();
+    spawned.fake = () => exited.child;
+    const run = reasonOf(createHostGit({ env, teardownMs: 20 }).run(base, ["status"]));
+    exited.child.stdout?.emit("data", Buffer.from("partial"));
+    exited.child.emit("exit", 0);
+    expect(await run).toBe("terminated");
+    expect(exited.child.stdout?.destroyed).toBe(true);
+
+    // One that closes in time after its exit is read as before.
+    const closing = deaf();
+    spawned.fake = () => closing.child;
+    const whole = createHostGit({ env, teardownMs: 1_000 }).run(base, ["status"]);
+    closing.child.stdout?.emit("data", Buffer.from("whole"));
+    closing.child.emit("exit", 0);
+    closing.child.emit("close", 0);
+    expect(await whole).toMatchObject({ code: 0, stdout: "whole" });
+  });
+
   it("output past the bound kills the process and rejects; output within it is returned", async () => {
     const version = await createHostGit({ env }).run(base, ["--version"]);
     expect(version.code).toBe(0);
