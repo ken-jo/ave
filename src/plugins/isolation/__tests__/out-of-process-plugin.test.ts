@@ -383,13 +383,15 @@ function fakeHostApi(): PluginHostApi & {
   return hostApi;
 }
 
-function pairedChild(): {
+function pairedChild(own?: OwnResource): {
   child: { link: ChildLink };
   kill: (reason: string) => void;
   sendAsChild: (frame: Record<string, unknown>) => void;
 } {
   const hostToChild = new PassThrough();
+  if (own) ownStream(own, hostToChild);
   const childToHost = new PassThrough();
+  if (own) ownStream(own, childToHost);
   const service = servePluginChild(hostToChild, childToHost);
   const goneHandlers: Array<(reason: string) => void> = [];
   const link: ChildLink = {
@@ -399,12 +401,14 @@ function pairedChild(): {
     onGone: (handler) => goneHandlers.push(handler),
     onFault: () => undefined,
   };
+  function kill(reason: string): void {
+    service.hostGone();
+    for (const handler of goneHandlers.splice(0)) handler(reason);
+  }
+  own?.("paired child service", () => kill("test finished"));
   return {
     child: { link },
-    kill: (reason) => {
-      service.hostGone();
-      for (const handler of goneHandlers) handler(reason);
-    },
+    kill,
     sendAsChild: (frame) => { childToHost.write(`${JSON.stringify(frame)}\n`); },
   };
 }
@@ -934,17 +938,20 @@ describe("a message too large to frame fails its call, not the channel", () => {
   });
 });
 
-function writeModule(prefix: string, source: string): { dir: string; entryPath: string } {
+function writeModule(prefix: string, source: string, own?: OwnResource): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
+  if (own) ownDirectory(own, dir);
   const entryPath = join(dir, "plugin.mjs");
   writeFileSync(entryPath, source, "utf-8");
   return { dir, entryPath };
 }
 
-function hostFrames(link: ChildLink): Array<Record<string, unknown>> {
+function hostFrames(link: ChildLink, own?: OwnResource): Array<Record<string, unknown>> {
   const frames: Array<Record<string, unknown>> = [];
   const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
-  link.output.on("data", (chunk: Buffer) => frames.push(...decoder.push(chunk)));
+  const onData = (chunk: Buffer) => frames.push(...decoder.push(chunk));
+  own?.("frame listener", () => link.output.off("data", onData));
+  link.output.on("data", onData);
   return frames;
 }
 
