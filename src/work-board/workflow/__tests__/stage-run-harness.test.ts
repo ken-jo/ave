@@ -893,3 +893,50 @@ it("refused retries of a failed item leave an aggregate wait on another item's c
     await h.cleanup();
   }
 });
+
+it.each(["links", "fails to start"] as const)("a child the replaced engine %s does not settle the current engine's child waits", async outcome => {
+  const preparing = deferred<void>();
+  const release = deferred<void>();
+  const spawning = deferred<void>();
+  let engines = 0;
+  const h = await stageRunHarness({
+    script: () => {
+      spawning.resolve();
+      if (outcome === "fails to start") throw new Error("child script failed");
+      return undefined;
+    },
+    wiring: (_store, { workspace }) => {
+      const engine = engines++;
+      return {
+        workspace: {
+          ...workspace,
+          prepare: async (...args) => {
+            if (engine === 0) {
+              preparing.resolve();
+              await release.promise;
+            }
+            return workspace.prepare(...args);
+          },
+        },
+      };
+    },
+  });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    runs.push(h.start(id, h.local(version)).catch(() => undefined));
+    await preparing.promise;
+    h.makeEngine();
+    const waits = Promise.allSettled([h.untilSpawned(1), h.untilLive(1)]);
+    release.resolve();
+    await spawning.promise;
+    expect(h.children).toHaveLength(1);
+    expect(await Promise.race([waits, setImmediate("still pending")])).toBe("still pending");
+  } finally {
+    release.resolve();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.cleanup();
+  }
+});

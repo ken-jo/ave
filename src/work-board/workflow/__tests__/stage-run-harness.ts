@@ -148,41 +148,47 @@ export async function stageRunHarness(opts: {
     };
   }
 
+  /** Children a replaced engine spawned after its replacement. Waits never count them, while `children` and `live()` keep every child. */
+  const strays = new WeakSet<FakeChild>();
+  let generation = 0;
+  const ofCurrentEngine = (list: FakeChild[]) => list.filter(child => !strays.has(child));
+  async function spawnChild(by: number, input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }): Promise<SubAgentSpawnResult> {
+    await Promise.resolve();
+    const sessionId = `child-${children.length + 1}`;
+    const launch = launches.getStore();
+    let end: (result: SubAgentSpawnResult) => void = () => undefined;
+    const done = new Promise<SubAgentSpawnResult>(resolve => { end = resolve; });
+    const child: FakeChild = {
+      input, sessionId, ended: false, steers: [],
+      finish: (result = {}) => {
+        if (child.ended) return;
+        child.ended = true;
+        launch?.resume();
+        end({ summary: `output of ${sessionId}`, toolCallCount: 0, turnCount: 1, childSessionId: sessionId, entries: [], ok: true, endTrustOrigin: "llm-tool-arg", ...result });
+        if (liveChildren.delete(child)) notify();
+      },
+    };
+    children.push(child);
+    if (by !== generation) strays.add(child);
+    try {
+      hooks?.onLinked?.({ childSessionId: sessionId });
+      const scripted = opts.script?.(input);
+      if (scripted) child.finish(scripted);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      child.finish({ ok: false, error: message });
+      if (by === generation) pulse(message, input.originSessionId);
+      throw error;
+    }
+    if (!child.ended) {
+      liveChildren.add(child);
+      launch?.linked();
+    }
+    notify();
+    return done;
+  }
   const runner = {
-    async spawn(input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }): Promise<SubAgentSpawnResult> {
-      await Promise.resolve();
-      const sessionId = `child-${children.length + 1}`;
-      const launch = launches.getStore();
-      let end: (result: SubAgentSpawnResult) => void = () => undefined;
-      const done = new Promise<SubAgentSpawnResult>(resolve => { end = resolve; });
-      const child: FakeChild = {
-        input, sessionId, ended: false, steers: [],
-        finish: (result = {}) => {
-          if (child.ended) return;
-          child.ended = true;
-          launch?.resume();
-          end({ summary: `output of ${sessionId}`, toolCallCount: 0, turnCount: 1, childSessionId: sessionId, entries: [], ok: true, endTrustOrigin: "llm-tool-arg", ...result });
-          if (liveChildren.delete(child)) notify();
-        },
-      };
-      children.push(child);
-      try {
-        hooks?.onLinked?.({ childSessionId: sessionId });
-        const scripted = opts.script?.(input);
-        if (scripted) child.finish(scripted);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        child.finish({ ok: false, error: message });
-        pulse(message, input.originSessionId);
-        throw error;
-      }
-      if (!child.ended) {
-        liveChildren.add(child);
-        launch?.linked();
-      }
-      notify();
-      return done;
-    },
+    spawn: (input: SubAgentSpawnInput, hooks?: { onLinked?: (link: { childSessionId: string }) => void }) => spawnChild(generation, input, hooks),
     interruptRun(id: string) {
       interrupts.push(id);
       const child = children.find(candidate => candidate.sessionId === id && !candidate.ended);
@@ -228,6 +234,7 @@ export async function stageRunHarness(opts: {
     } satisfies WorkflowDeps;
     // A replaced engine's later events never show that this engine's child registered.
     const own: WorkBoardRunEvent[] = [];
+    const by = generation;
     // Only this engine's spawns, while it is current, start an origin.
     const engineRunner = Object.assign(Object.create(runner) as SubAgentRunner, {
       spawn: (...args: Parameters<SubAgentRunner["spawn"]>) => {
@@ -235,7 +242,7 @@ export async function stageRunHarness(opts: {
         if (engine === wrapped && origin !== undefined) {
           flightOf(origin).startedAt = ++seq;
         }
-        return runner.spawn(...args);
+        return spawnChild(by, ...args);
       },
     });
     const current = createWorkBoardEngine({
@@ -277,7 +284,7 @@ export async function stageRunHarness(opts: {
         lastRequestedOrigin = origin;
         const close = openCall(origin);
         const first = children.length;
-        const spawned = () => children.slice(first).some(child => child.input.originSessionId === origin);
+        const spawned = () => ofCurrentEngine(children.slice(first)).some(child => child.input.originSessionId === origin);
         let result: Awaited<ReturnType<typeof current.runItem>>;
         try {
           result = await current.runItem(...args);
@@ -314,6 +321,7 @@ export async function stageRunHarness(opts: {
     pulse("engine replaced");
     lastRequestedOrigin = undefined;
     flights = new Map();
+    generation += 1;
     board = new WorkBoardStore(boardPath);
     runWork = observeEngineWork();
     engine = engineOn(board);
@@ -462,9 +470,9 @@ export async function stageRunHarness(opts: {
   }
   const forItem = (list: FakeChild[], itemId?: number) =>
     itemId === undefined ? list : list.filter(child => child.input.originSessionId === workBoardOriginSessionId(itemId));
-  const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(live(), itemId), active => active.length === count, true, itemId);
+  const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(live()), itemId), active => active.length === count, true, itemId);
   const waitForLive = untilLive;
-  const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(children, itemId), spawned => spawned.length >= count, false, itemId);
+  const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(children), itemId), spawned => spawned.length >= count, false, itemId);
   const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");
