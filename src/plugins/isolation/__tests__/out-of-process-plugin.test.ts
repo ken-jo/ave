@@ -1433,6 +1433,8 @@ describe("construct negotiates the host protocol", () => {
     ["lifecycleHooks is a bare string", { lifecycleHooks: "start" }, /construct answered no lifecycleHooks list/],
     ["lifecycleHooks has a non-string entry", { lifecycleHooks: ["start", 1] }, /construct answered no lifecycleHooks list/],
     ["lifecycleHooks is missing", { lifecycleHooks: undefined }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks names an unknown hook", { lifecycleHooks: ["start", "restart"] }, /construct answered an unknown lifecycle hook/],
+    ["lifecycleHooks names an inherited key", { lifecycleHooks: ["constructor"] }, /construct answered an unknown lifecycle hook/],
     ["servesUiResources is a string", { servesUiResources: "yes" }, /construct answered no servesUiResources flag/],
     ["servesUiResources is missing", { servesUiResources: undefined }, /construct answered no servesUiResources flag/],
   ])("fails a construct reply whose %s", async (_case, fields, refusal) => {
@@ -1450,22 +1452,53 @@ describe("construct negotiates the host protocol", () => {
     expect(terminated()).toMatch(/startup failed/);
   });
 
+  it("binds every known lifecycle hook a construct reply names", async () => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      lifecycleHooks: ["start", "onPublished", "stop"],
+      pluginProtocol: { requires: [] },
+    });
+    const instance = await sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    })(hostContext(fakeHostApi()));
+    expect([typeof instance.start, typeof instance.onPublished]).toEqual(["function", "function"]);
+    expect(terminated()).toBeUndefined();
+  });
+
+  function constructNaming(implementedToolNames: readonly string[]): Promise<RuntimePlugin> {
+    const { child } = scriptedChild({ ...CONSTRUCTED, implementedToolNames, pluginProtocol: { requires: [] } });
+    return sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    })(hostContext(fakeHostApi()));
+  }
+
   it("warns once when a construct reply names undeclared tools, and not for a declared subset", async () => {
-    const construct = async (implementedToolNames: readonly string[]) => {
-      const { child } = scriptedChild({ ...CONSTRUCTED, implementedToolNames, pluginProtocol: { requires: [] } });
-      return sessionFactory({
-        manifest: MANIFEST,
-        entryPath: join(tmpdir(), "never-imported.mjs"),
-        link: child.link,
-      })(hostContext(fakeHostApi()));
-    };
     sessionWarnings.length = 0;
-    await construct(["pilot_echo"]);
+    await constructNaming(["pilot_echo"]);
     expect(sessionWarnings).toEqual([]);
-    const instance = await construct(["pilot_echo", "pilot_unlisted", "pilot_other"]);
+    const instance = await constructNaming(["pilot_echo", "pilot_unlisted", "pilot_other"]);
     expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
     expect(sessionWarnings).toEqual([[
-      { pluginId: PLUGIN_ID, undeclared: ["pilot_unlisted", "pilot_other"] },
+      { pluginId: PLUGIN_ID, undeclaredCount: 2, undeclared: ["pilot_unlisted", "pilot_other"] },
+      expect.stringMatching(/undeclared tools/),
+    ]]);
+  });
+
+  it("caps that warning at a count and the first five names, each clipped to 64 code points", async () => {
+    const long = `pilot_${"x".repeat(200)}`;
+    const extras = [long, ...Array.from({ length: 6 }, (_, index) => `pilot_extra_${index}`)];
+    sessionWarnings.length = 0;
+    await constructNaming(["pilot_echo", ...extras]);
+    expect(sessionWarnings).toEqual([[
+      {
+        pluginId: PLUGIN_ID,
+        undeclaredCount: 7,
+        undeclared: [`${long.slice(0, 64)}…`, "pilot_extra_0", "pilot_extra_1", "pilot_extra_2", "pilot_extra_3"],
+      },
       expect.stringMatching(/undeclared tools/),
     ]]);
   });

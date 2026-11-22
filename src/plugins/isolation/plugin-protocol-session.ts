@@ -20,6 +20,7 @@ import {
   PLUGIN_INSTANCE_METHODS,
   type PluginConstructParams,
   type PluginConstructResult,
+  type PluginLifecycleHookName,
 } from "./plugin-instance-wire.js";
 import {
   PluginChildTransport,
@@ -159,6 +160,21 @@ function requireServedCapabilities(
   }
 }
 
+/** Every hook name the wire defines; `satisfies` fails the build when the union and this table disagree. */
+const LIFECYCLE_HOOK_NAMES = { start: true, onPublished: true, stop: true } satisfies Record<
+  PluginLifecycleHookName,
+  true
+>;
+
+/** Undeclared names are child-chosen, so the warning carries a count and a clipped head, never the whole list. */
+const UNDECLARED_WARN_NAMES_MAX = 5;
+const UNDECLARED_WARN_NAME_CODE_POINTS_MAX = 64;
+
+function clipForLog(text: string, max: number): string {
+  const head = [...text.slice(0, max * 2)].slice(0, max).join("");
+  return head.length < text.length ? `${head}…` : text;
+}
+
 /** Refuse construct reply lists and flags outside the schema; a malformed field is not a default. */
 function requireConstructReplyFields(pluginId: string, construction: PluginConstructResult): void {
   for (const field of ["implementedToolNames", "lifecycleHooks"] as const) {
@@ -166,6 +182,9 @@ function requireConstructReplyFields(pluginId: string, construction: PluginConst
     if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
       throw new Error(`[out-of-process-plugin] ${pluginId}: construct answered no ${field} list`);
     }
+  }
+  if (!construction.lifecycleHooks.every((hook) => Object.hasOwn(LIFECYCLE_HOOK_NAMES, hook))) {
+    throw new Error(`[out-of-process-plugin] ${pluginId}: construct answered an unknown lifecycle hook`);
   }
   const servesUiResources: unknown = construction.servesUiResources;
   if (typeof servesUiResources !== "boolean") {
@@ -184,7 +203,16 @@ function declaredImplementedToolNames(
   const declaredNames = new Set(declared);
   const undeclared = implemented.filter((name) => !declaredNames.has(name));
   if (undeclared.length > 0) {
-    log.warn({ pluginId, undeclared }, "construct reply named undeclared tools; they stay unbound");
+    log.warn(
+      {
+        pluginId,
+        undeclaredCount: undeclared.length,
+        undeclared: undeclared
+          .slice(0, UNDECLARED_WARN_NAMES_MAX)
+          .map((name) => clipForLog(name, UNDECLARED_WARN_NAME_CODE_POINTS_MAX)),
+      },
+      "construct reply named undeclared tools; they stay unbound",
+    );
   }
   return implemented.filter((name) => declaredNames.has(name));
 }
