@@ -31,6 +31,7 @@ import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.j
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
+import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
@@ -1278,7 +1279,10 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
     const owner = roots.find(({ key }) => folded === key || folded.startsWith(`${key}/`));
     if (owner === undefined) return undefined;
     if (folded === owner.key) return owner.root;
-    return isAveHomeReadReallowed(folded.slice(owner.key.length + 1).split("/")) ? undefined : owner.root;
+    const segments = folded.slice(owner.key.length + 1).split("/");
+    if (!isAveHomeReadReallowed(segments)) return owner.root;
+    // Beneath `worktrees` the ceiling row is open only while a live stage session is bound to that folder.
+    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(canonicalPath) ? owner.root : undefined;
   };
 }
 
