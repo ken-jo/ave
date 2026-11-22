@@ -216,14 +216,17 @@ describe("prepareMxcShellLaunch", () => {
     const lifecycle = createContainedShellLifecycle();
     const listen = net.Server.prototype.listen;
     const bind = deferred<void>();
+    const binding = deferred<void>();
     const servers: net.Server[] = [];
     vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (this: net.Server, ...args: unknown[]) {
       servers.push(this);
+      binding.resolve();
       void bind.promise.then(() => listen.apply(this, args as Parameters<typeof listen>));
       return this;
     });
     const prepared = prepareMxcShellLaunch(INPUT, lifecycle).then(() => "prepared", (error: unknown) => error);
-    await vi.waitFor(() => expect(servers).toHaveLength(1));
+    await binding.promise;
+    expect(servers).toHaveLength(1);
     lifecycle.revoke();
     bind.resolve();
     expect(await prepared).toBeInstanceOf(Error);
@@ -279,7 +282,7 @@ describe("prepareMxcShellLaunch", () => {
       tunnel.write("after");
 
       await within(tunnelClosed, "tunnel teardown");
-      await vi.waitFor(() => expect(upstream.open).toBe(0));
+      await within(upstream.drained(), "parent tunnel close");
       expect(upstream.received).toBe("ping");
       expect(await probePort(launch.proxyPort)).toBe("dropped");
       // The job is still running: its ports stay reserved and nothing is closed yet.

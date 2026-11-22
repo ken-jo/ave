@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -537,6 +537,7 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
     bootMxcShells();
+    const container = captureCommandLaunch();
     let launcher: (EventEmitter & Record<string, unknown>) | undefined;
     childProcessMock.spawn.mockImplementation((command: string, args: readonly string[], options?: { stdio?: unknown }) => {
       if (args.includes(PARSER_REQUEST)) return fakeChild(PARSED, 0);
@@ -564,16 +565,18 @@ describe("builtin shell — Windows MXC containers", () => {
     launcher!["exitCode"] = 1;
     launcher!.emit("exit", 1, null);
     launcher!.emit("close", 1, null);
-    await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
+    await container.disposed();
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
   // Probes of the command container's lifecycle, egress and HOME, captured as its launch is prepared; `bindChild` binds only the command's child.
   function captureCommandLaunch(bindChild: (child: unknown) => void = mxcLaunchMock.bindChild) {
-    let captured: { lifecycle: ContainedShellLifecycle; token: string; home: string | undefined } | undefined;
+    let captured: { lifecycle: ContainedShellLifecycle; dispose: MockInstance<ContainedShellLifecycle["dispose"]>; token: string; home: string | undefined } | undefined;
     mxcLaunchMock.prepare.mockImplementation(async (input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle) => {
       const parser = isParserLaunch(input);
       if (!parser) {
-        captured = { lifecycle, token: input.egressToken, home: input.filesystem.allowWrite.find((path) => path.includes("ave-mxc-test-home-")) };
+        captured = { lifecycle, dispose: vi.spyOn(lifecycle, "dispose"), token: input.egressToken,
+          home: input.filesystem.allowWrite.find((path) => path.includes("ave-mxc-test-home-")) };
       }
       lifecycle.defer(mxcLaunchMock.release);
       return {
@@ -587,6 +590,12 @@ describe("builtin shell — Windows MXC containers", () => {
       revoked: () => captured?.lifecycle.signal.aborted === true,
       egressLive: () => captured !== undefined && egressInvocationOwner(captured.token) !== undefined,
       homeExists: () => captured?.home !== undefined && existsSync(captured.home),
+      // Settles when the shell's own disposal of the command's lifecycle has run every disposer.
+      disposed: (): Promise<readonly unknown[]> => {
+        const disposal = captured?.dispose.mock.results[0];
+        if (disposal?.type !== "return") throw new Error("The command's lifecycle was not disposed");
+        return disposal.value;
+      },
     };
   }
 
@@ -594,6 +603,7 @@ describe("builtin shell — Windows MXC containers", () => {
   function runningLauncher(kills: Array<{ revoked: boolean; egressLive: boolean; launchReleases: number; homeExists: boolean }>, command: ReturnType<typeof captureCommandLaunch>) {
     const launchers: Array<EventEmitter & { exitCode: number | null }> = [];
     const started = deferred<void>();
+    const killed = deferred<void>();
     const spawn = childProcessMock.spawn.getMockImplementation();
     if (spawn === undefined) throw new Error("Missing child spawn fixture");
     childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
@@ -604,6 +614,7 @@ describe("builtin shell — Windows MXC containers", () => {
           launchReleases: mxcLaunchMock.release.mock.calls.length,
           homeExists: command.homeExists(),
         });
+        killed.resolve();
       }
       if (file !== WXC_EXEC || args.includes(PARSER_REQUEST)) return spawn(file, args, options);
       const child = Object.assign(new EventEmitter(), {
@@ -615,6 +626,7 @@ describe("builtin shell — Windows MXC containers", () => {
     });
     return {
       started: started.promise,
+      killed: killed.promise,
       exit(code: number): void {
         for (const launcher of launchers) {
           launcher.exitCode = code;
@@ -649,7 +661,7 @@ describe("builtin shell — Windows MXC containers", () => {
         expect(command.revoked()).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
       }
-      await vi.waitFor(() => expect(kills).toHaveLength(1));
+      await launcher.killed;
       expect(kills).toEqual([{ revoked: true, egressLive: false, launchReleases: 1, homeExists: true }]);
       // The job has not exited: its launch and HOME are still held.
       expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
@@ -659,8 +671,9 @@ describe("builtin shell — Windows MXC containers", () => {
       expect(result.isError).toBe(true);
       expect(result.output).toMatch(ending === "timeout" ? /timed out/u : /cancelled/u);
       // A result that settled once the kill finished does not wait for the release that follows the job's exit.
-      await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
-      await vi.waitFor(() => expect(command.homeExists()).toBe(false));
+      await command.disposed();
+      expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+      expect(command.homeExists()).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -682,8 +695,9 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
     expect(command.homeExists()).toBe(true);
     launcher.exit(1);
-    await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(command.homeExists()).toBe(false));
+    await command.disposed();
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+    expect(command.homeExists()).toBe(false);
   });
 
   it("revokes the command's egress at the job's exit and releases its launch while output finalization is pending", async () => {

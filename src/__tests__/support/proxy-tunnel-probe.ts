@@ -39,11 +39,15 @@ export function probePort(port: number, sockets?: Set<net.Socket>): Promise<"ref
 /** A parent proxy stand-in: it answers every CONNECT and then echoes, recording what reached it through a tunnel. */
 export async function echoParentProxy() {
   const sockets = new Set<net.Socket>();
+  const drains: Array<() => void> = [];
   let received = "";
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.on("error", () => {});
-    socket.once("close", () => sockets.delete(socket));
+    socket.once("close", () => {
+      sockets.delete(socket);
+      if (sockets.size === 0) for (const drained of drains.splice(0)) drained();
+    });
     let head = "";
     socket.on("data", (chunk: Buffer) => {
       if (head.includes("\r\n\r\n")) {
@@ -59,7 +63,10 @@ export async function echoParentProxy() {
   return {
     port: (server.address() as net.AddressInfo).port,
     get received() { return received; },
-    get open() { return sockets.size; },
+    /** Settles once no tunnel socket is open. */
+    drained(): Promise<void> {
+      return sockets.size === 0 ? Promise.resolve() : new Promise((resolve) => { drains.push(resolve); });
+    },
     close(): Promise<void> {
       for (const socket of sockets) socket.destroy();
       return new Promise((resolve) => server.close(() => resolve()));

@@ -47,6 +47,8 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
   // Set by a test that dials through the relay; others exercise the resolved policy without dialing.
   let dial: boolean;
   let observed: Array<{ context: SandboxAskContext | undefined; decision: unknown }>;
+  // Settles when the policy callback records its first decision.
+  let decided: ReturnType<typeof deferred<void>>;
   let requester: EgressApprovalRequester;
   let sharedPort: number;
 
@@ -149,6 +151,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     const dir = policyFixture();
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([dir]);
     observed = [];
+    decided = deferred<void>();
     dial = false;
     requester = async () => ({ allow: true, scope: "once" });
     invocation = openInvocation({
@@ -179,6 +182,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     }, async (destination, context) => {
       const decision = await ask(destination, context);
       observed.push({ context, decision });
+      decided.resolve();
       if (decision !== true) return decision;
       // Exercise the resolved policy without dialing the test destination.
       return dial || context?.phase === "name";
@@ -397,16 +401,19 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     cleanups.push(pendingInvocation.release);
     const listen = net.Server.prototype.listen;
     const bind = deferred<void>();
+    const binding = deferred<void>();
     const servers: net.Server[] = [];
     vi.spyOn(net.Server.prototype, "listen").mockImplementationOnce(function (this: net.Server, ...args: unknown[]) {
       servers.push(this);
+      binding.resolve();
       void bind.promise.then(() => listen.apply(this, args as Parameters<typeof listen>));
       return this;
     });
     const open = vi.spyOn(hostListener, "openHostEgressListener");
     const launch = launchShell(pendingInvocation.token, false).then(() => "prepared", (error: unknown) => error);
     try {
-      await vi.waitFor(() => expect(servers).toHaveLength(1));
+      await binding.promise;
+      expect(servers).toHaveLength(1);
       endAdmission(revocation, controller, pendingInvocation);
       expect(egressInvocationOwner(pendingInvocation.token)).toBeUndefined();
     } finally {
@@ -442,7 +449,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(egressInvocationOwner(running.token)).toBeUndefined();
     for (const tunnel of [frontend, direct]) tunnel.write("after");
     await within(Promise.all([closed(frontend), closed(direct)]), "tunnel teardown");
-    await vi.waitFor(() => expect(parent.open).toBe(0));
+    await within(parent.drained(), "parent tunnel close");
     expect(parent.received).toBe("pingping");
     for (const port of [launch.proxyPort, relay.port]) expect(await probePort(port, sockets)).toBe("dropped");
 
@@ -467,7 +474,8 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect(approvalSignal?.aborted).toBe(true);
     answer.resolve({ allow: true, scope: "session" });
     expect(await response).toBeInstanceOf(Error);
-    await vi.waitFor(() => expect(observed).toHaveLength(1));
+    await decided.promise;
+    expect(observed).toHaveLength(1);
     expect(observed[0]?.decision).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     // No session grant was written: another call in the same conversation is asked again.
     const again = vi.fn<EgressApprovalRequester>(async () => ({ allow: false, reason: "denied by the user" }));

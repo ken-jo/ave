@@ -136,16 +136,23 @@ async function invocationFrontend(token: string) {
 
 function connect(port: number, authorization?: string) {
   let response = "";
+  let answered: (text: string) => void = () => {};
+  // The status line, or whatever arrived before the socket closed.
+  const status = new Promise<string>((resolve) => { answered = resolve; });
   const socket = track(net.connect(port, "127.0.0.1", () => {
     const auth = authorization === undefined ? "" : `Proxy-Authorization: ${authorization}\r\n`;
     socket.write(`CONNECT ${DESTINATION.host}:${DESTINATION.port} HTTP/1.1\r\nHost: ${DESTINATION.host}:${DESTINATION.port}\r\n${auth}\r\n`);
   }));
-  socket.on("data", (chunk: Buffer) => { response += chunk.toString("latin1"); });
-  return { socket, response: () => response };
+  socket.on("data", (chunk: Buffer) => {
+    response += chunk.toString("latin1");
+    if (response.includes("\r\n")) answered(response);
+  });
+  socket.once("close", () => answered(response));
+  return { socket, status };
 }
 
 async function expectResponse(client: ReturnType<typeof connect>, status: number): Promise<void> {
-  await expect.poll(client.response).toMatch(new RegExp(`^HTTP/1\\.1 ${status}\\b`, "u"));
+  expect(await client.status).toMatch(new RegExp(`^HTTP/1\\.1 ${status}\\b`, "u"));
 }
 
 describe.skipIf(process.platform !== "win32")("native proxy with production egress callback", () => {
@@ -185,6 +192,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     // A key its relay owns is learned from that relay alone: named by a proxy username it attributes nothing.
     runtime.observed.length = 0;
     await expectResponse(connect(runtime.sharedPort, proxyAuthorization(invocation.token, runtime.credential)), 403);
+    expect(runtime.observed.length).toBeGreaterThan(0);
     expect(runtime.observed.every(({ context }) => context?.attributionKey === undefined)).toBe(true);
     expect(runtime.requestAndWait).toHaveBeenCalledOnce();
 
@@ -192,6 +200,7 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     const shared = openShell();
     runtime.observed.length = 0;
     await expectResponse(connect(runtime.sharedPort, proxyAuthorization(shared.token, runtime.credential)), 200);
+    expect(runtime.observed.length).toBeGreaterThan(0);
     expect(runtime.observed.every(({ context }) => context?.identity === "username"
       && context.attributionKey === shared.token)).toBe(true);
     expect(runtime.requestAndWait).toHaveBeenCalledTimes(2);
