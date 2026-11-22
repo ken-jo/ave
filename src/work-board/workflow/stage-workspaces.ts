@@ -574,9 +574,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   async function sweep(activeRunIds: readonly string[]): Promise<void> {
     const active = new Set(activeRunIds.map(runSlug));
+    // What a stop between a record's removal and the discard left behind goes here; an answer that could not be had keeps it.
+    const removable = await options.removable?.().catch(() => undefined);
     for (const { runRoot, file } of recordedRuns()) {
       if (active.has(runSlug(file.runId))) continue;
-      await serial(file.runId, () => releaseIn(runRoot, file, "all")).catch(() => undefined);
+      const output = removable?.({ runId: file.runId, itemId: file.itemId }) === true ? "drop" : "keep";
+      await serial(file.runId, () => releaseIn(runRoot, file, "all", output)).catch(() => undefined);
       roots.delete(file.runId);
     }
   }

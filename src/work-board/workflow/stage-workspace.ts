@@ -26,6 +26,6 @@ export interface StageWorkspaceProvider {
   /** Everything left under the run root, the output folder included, of each run that has no record and whose item is gone. A run
    * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. */
   discard(): Promise<void>;
-  /** Boot: drop what no active run owns. */
+  /** Boot: drop what no active run owns, and with it what `discard` would remove. */
   sweep(activeRunIds: readonly string[]): Promise<void>;
 }
