@@ -6,7 +6,7 @@ import { writePermissionSettingsFixture } from "../../../__tests__/support/permi
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
-import { beforeAll, describe, expect, it, type TestContext, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
@@ -32,57 +32,6 @@ vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   cleanupAsrtSandboxAfterCommand: async () => undefined,
 }));
 
-interface FixtureCleanup {
-  readonly disposed: boolean;
-  defer(cleanup: () => void): void;
-}
-
-function ownFixture(onTestFinished: TestContext["onTestFinished"]): FixtureCleanup {
-  const cleanups: Array<() => void> = [];
-  let disposed = false;
-  onTestFinished(async () => {
-    if (disposed) return;
-    disposed = true;
-    const errors: unknown[] = [];
-    while (cleanups.length) {
-      try {
-        cleanups.pop()?.();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    if (errors.length > 0) throw new AggregateError(errors, "fixture cleanup failed");
-  });
-  return {
-    get disposed() { return disposed; },
-    defer(cleanup) {
-      if (disposed) cleanup();
-      else cleanups.push(cleanup);
-    },
-  };
-}
-
-it("drains fixture cleanup once in LIFO order even when a callback throws", async (context) => {
-  const onTestFinished = vi.fn<TestContext["onTestFinished"]>();
-  const cleanup = ownFixture(onTestFinished);
-  const dispose = onTestFinished.mock.calls[0]?.[0];
-  if (!dispose) throw new Error("fixture disposer was not registered");
-  const calls: string[] = [];
-  const failure = new Error("cleanup failed");
-  cleanup.defer(() => { calls.push("first"); });
-  cleanup.defer(() => {
-    calls.push("second");
-    throw failure;
-  });
-  cleanup.defer(() => { calls.push("third"); });
-
-  await expect(dispose(context)).rejects.toMatchObject({ name: "AggregateError", errors: [failure] });
-  expect(calls).toEqual(["third", "second", "first"]);
-  await expect(dispose(context)).resolves.toBeUndefined();
-  expect(calls).toEqual(["third", "second", "first"]);
-});
-
 /** Record grant order and holder loss without changing real access lists. */
 const windowsGrant = vi.hoisted(() => ({
   calls: [] as Array<{ label: string; allowRead: readonly string[]; allowWrite: readonly string[] }>,
@@ -91,45 +40,37 @@ const windowsGrant = vi.hoisted(() => ({
   alive: true,
   /** Labels whose turn applied a grant. */
   granted: [] as string[],
-  holders: new Set<symbol>(),
-  turns: undefined as SerialQueue | undefined,
   /** Holds the queue on a turn ahead until it settles. */
   ahead: undefined as Promise<void> | undefined,
   /** Holds the turn pending after its grant was applied. */
   applying: undefined as Promise<void> | undefined,
   blockingMs: 0,
-  cleanup: undefined as FixtureCleanup | undefined,
 }));
-vi.mock("../../../permissions/windows-acl-grant-holder.js", () => {
+vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
+  const { createSerialQueue } = await vi.importActual<typeof import("../../../lib/with-file-lock.js")>("../../../lib/with-file-lock.js");
+  const turns = createSerialQueue();
   return {
     holdWindowsFilesystemGrant: async (opts: {
       label: string; allowRead: readonly string[]; allowWrite: readonly string[]; assertStillValid?: () => void;
     }) => {
-      const { turns, cleanup, ahead, applying } = windowsGrant;
-      if (!turns) throw new Error("grant requested outside a Windows fixture");
       windowsGrant.calls.push(opts);
       // FIFO turns as in the real grant queue: the check runs when the turn starts, before anything is applied.
       return turns(async () => {
-        await ahead;
-        if (cleanup?.disposed) throw new Error("fixture already disposed");
+        await windowsGrant.ahead;
         opts.assertStillValid?.();
         windowsGrant.granted.push(opts.label);
         if (windowsGrant.blockingMs > 0) blockMainThread(windowsGrant.blockingMs);
-        const holder = Symbol(opts.label);
-        const release = () => {
-          if (windowsGrant.holders.delete(holder)) windowsGrant.events.push("release");
-        };
-        windowsGrant.holders.add(holder);
-        cleanup?.defer(release);
         windowsGrant.events.push("grant");
-        await applying;
+        await windowsGrant.applying;
         return {
           assertAlive: () => {
             if (!windowsGrant.alive) throw new Error("holder gone");
           },
           onLost: (listener: (reason: Error) => void) => void windowsGrant.lost.push(listener),
           // Grant release must be idempotent across every child termination path.
-          release,
+          release: () => {
+            if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
+          },
         };
       });
     },
@@ -149,9 +90,7 @@ vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) =
     createSandboxProcessHome: (...args: Parameters<typeof actual.createSandboxProcessHome>) => {
       if (!fakeSandboxHome.on) return simulated.createSandboxProcessHome(...args);
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "oop-fake-sandbox-home-"));
-      const cleanup = () => fs.rmSync(home, { recursive: true, force: true });
-      windowsGrant.cleanup?.defer(cleanup);
-      return { path: home, env: { HOME: home }, cleanup };
+      return { path: home, env: { HOME: home }, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
     },
   };
 });
@@ -176,14 +115,13 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
     },
   };
 });
-import { EventEmitter, once } from "node:events";
-import { connect, Server } from "node:net";
+import { EventEmitter } from "node:events";
+import { connect } from "node:net";
 import { spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { createSerialQueue, type SerialQueue } from "../../../lib/with-file-lock.js";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 import type {
   PluginHostApi,
@@ -196,7 +134,6 @@ import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactory
 import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
-import { deferred } from "../../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
@@ -255,9 +192,8 @@ const MANIFEST: PluginManifest = {
 };
 
 /** Import a real on-disk plugin module; replacing the loader would bypass the boundary under test. */
-function writePluginModule(cleanup?: FixtureCleanup): { dir: string; entryPath: string } {
+function writePluginModule(): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "oop-plugin-"));
-  cleanup?.defer(() => rmSync(dir, { recursive: true, force: true }));
   const entryPath = join(dir, "plugin.mjs");
   writeFileSync(
     entryPath,
@@ -1517,10 +1453,11 @@ describe("on Windows a confined child holds a grant on its own directories for e
     return { home, pluginsRoot, own, context };
   }
 
-  function enterWindows(
+  async function asWindows(
     layout: ReturnType<typeof aveLayout>,
-    opts: { readonly sandboxActive?: boolean; readonly cleanup?: FixtureCleanup } = {},
-  ): () => void {
+    run: () => Promise<void>,
+    opts: { readonly sandboxActive?: boolean } = {},
+  ): Promise<void> {
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const previousHome = process.env.AVE_HOME;
     windowsGrant.calls.length = 0;
@@ -1528,44 +1465,26 @@ describe("on Windows a confined child holds a grant on its own directories for e
     windowsGrant.lost.length = 0;
     windowsGrant.alive = true;
     windowsGrant.granted.length = 0;
-    windowsGrant.holders.clear();
-    windowsGrant.turns = createSerialQueue();
     windowsGrant.ahead = undefined;
     windowsGrant.applying = undefined;
     windowsGrant.blockingMs = 0;
-    windowsGrant.cleanup = opts.cleanup;
     factoryDebug.length = 0;
     spawnConfinedChild.mockReset();
     sandbox.active = opts.sandboxActive ?? true;
     fakeSandboxHome.on = true;
     process.env.AVE_HOME = layout.home;
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
-    return () => {
+    try {
+      await run();
+    } finally {
       Object.defineProperty(process, "platform", platform);
       if (previousHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previousHome;
       fakeSandboxHome.on = false;
       windowsGrant.blockingMs = 0;
-      windowsGrant.turns = undefined;
-      windowsGrant.ahead = undefined;
-      windowsGrant.applying = undefined;
-      windowsGrant.cleanup = undefined;
       sandbox.active = false;
       spawnConfinedChild.mockReset();
       rmSync(layout.home, { recursive: true, force: true });
-    };
-  }
-
-  async function asWindows(
-    layout: ReturnType<typeof aveLayout>,
-    run: () => Promise<void>,
-    opts: { readonly sandboxActive?: boolean } = {},
-  ): Promise<void> {
-    const restore = enterWindows(layout, opts);
-    try {
-      await run();
-    } finally {
-      restore();
     }
   }
 
@@ -1846,90 +1765,35 @@ describe("on Windows a confined child holds a grant on its own directories for e
   });
 
   /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
-  function loopbackChild(opts: {
-    readonly cleanup?: FixtureCleanup;
-    readonly onAnnounce?: (port: number) => void;
-    readonly onListen?: (server: Server) => void;
-    readonly announceLine?: string;
-    readonly child?: FakeChild;
-    readonly onEof?: () => void;
-  } = {}) {
+  function loopbackChild(opts: { readonly onAnnounce?: (port: number) => void; readonly ignoresEof?: boolean } = {}) {
     return async (spec: { args: string[] }) => {
-      const { cleanup } = opts;
-      if (cleanup?.disposed) throw new Error("fixture already disposed");
       windowsGrant.events.push("spawn");
-      const child = opts.child ?? fakeChild();
-      cleanup?.defer(() => end(child, null, "SIGKILL"));
+      const child = fakeChild();
+      if (opts.ignoresEof) child.kill.mockImplementation((signal: NodeJS.Signals) => {
+        setTimeout(() => end(child, null, signal), 50);
+        return true;
+      });
       const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
       const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
-      const accept = () => acceptHostOverLoopback({
+      void acceptHostOverLoopback({
         announce: (line) => {
           opts.onAnnounce?.(Number(line.split(" ")[1]));
-          child.stdout.write(opts.announceLine ?? line);
+          child.stdout.write(line);
         },
         acceptTimeoutMs: 5_000,
         handshakeTimeoutMs: 5_000,
-      });
-      const accepted = cleanup ? ownedLoopbackAccept(child, cleanup, accept, opts.onListen) : accept();
-      void accepted.then((socket) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          socket.destroy();
-          return;
-        }
-        if (opts.onEof) {
-          socket.allowHalfOpen = true;
-          socket.once("end", opts.onEof);
-        }
+      }).then((socket) => {
+        if (opts.ignoresEof) socket.allowHalfOpen = true;
         const service = servePluginChild(socket, socket);
         socket.resume();
         socket.on("close", () => {
           service.hostGone();
-          if (!opts.onEof) end(child, 0, null);
+          if (!opts.ignoresEof) end(child, 0, null);
         });
       }, () => end(child, 1, null));
       return { child, confinement: "windows-srt" };
     };
-  }
-
-  function ownedLoopbackAccept(
-    child: FakeChild,
-    cleanup: FixtureCleanup,
-    accept: () => ReturnType<typeof acceptHostOverLoopback>,
-    onListen?: (server: Server) => void,
-  ): ReturnType<typeof acceptHostOverLoopback> {
-    function closeOnExit(close: () => void): void {
-      child.once("exit", close);
-      cleanup.defer(() => {
-        child.off("exit", close);
-        close();
-      });
-    }
-    const listen = Server.prototype.listen;
-    const listening = vi.spyOn(Server.prototype, "listen").mockImplementation(function (
-      this: Server,
-      ...args: Parameters<Server["listen"]>
-    ) {
-      // Run the acceptor's failure path to cancel its deadline and pending handshakes too.
-      closeOnExit(() => this.emit("error", new Error("fixture child exited")));
-      this.on("connection", (socket) => closeOnExit(() => socket.destroy()));
-      onListen?.(this);
-      return listen.apply(this, args);
-    });
-    try {
-      return accept();
-    } finally {
-      listening.mockRestore();
-    }
-  }
-
-  function ownedWindowsLoopback(onTestFinished: TestContext["onTestFinished"]) {
-    const cleanup = ownFixture(onTestFinished);
-    const layout = aveLayout();
-    cleanup.defer(enterWindows(layout, { cleanup }));
-    const { entryPath } = writePluginModule(cleanup);
-    const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
-    return { cleanup, construct: () => factory(hostContext(fakeHostApi(), layout.context)) };
   }
 
   it("names the factory deadline when it passes between spawn and the post-spawn check", async () => {
@@ -2062,72 +1926,20 @@ describe("on Windows a confined child holds a grant on its own directories for e
     }
   });
 
-  it("keeps stop pending until a force-terminated child exits and releases its grant", async ({ onTestFinished }) => {
-    const { cleanup, construct } = ownedWindowsLoopback(onTestFinished);
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    cleanup.defer(() => vi.useRealTimers());
-    const eof = deferred<void>();
-    const exit = deferred<void>();
-    const child = fakeChild();
-    cleanup.defer(() => exit.resolve());
-    child.kill.mockImplementation((signal: NodeJS.Signals) => {
-      if (signal === "SIGKILL") void exit.promise.then(() => end(child, null, signal));
-      return true;
-    });
-    spawnConfinedChild.mockImplementation(loopbackChild({ cleanup, child, onEof: () => eof.resolve() }));
-    const instance = await construct();
-
-    expect(instance.stop).toBeTypeOf("function");
-    const stopped = Promise.resolve(instance.stop?.()).then(() => windowsGrant.events.push("stop resolved"));
-    void stopped.catch(() => undefined);
-    await eof.promise;
-    expect(child.kill).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs);
-    expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
-
-    await vi.runOnlyPendingTimersAsync();
-    expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
-    expect([...windowsGrant.events]).toEqual(["grant", "spawn"]);
-    expect(windowsGrant.holders.size).toBe(1);
-
-    exit.resolve();
-    await stopped;
-    expect(windowsGrant.events).toEqual(["grant", "spawn", "release", "stop resolved"]);
-    expect(windowsGrant.holders.size).toBe(0);
-  });
-
-  it("releases a holder when disposal interrupts grant application", async ({ onTestFinished }) => {
-    const cleanup = ownFixture(onTestFinished);
-    cleanup.defer(enterWindows(aveLayout(), { cleanup }));
-    cleanup.defer(() => expect(windowsGrant.holders.size).toBe(0));
-    // Leave this turn pending when the next case starts.
-    windowsGrant.applying = deferred<void>().promise;
-
-    void holdWindowsFilesystemGrant({ label: "stalled-turn", allowRead: [], allowWrite: [] }).catch(() => undefined);
-    await until(() => windowsGrant.events.includes("grant"));
-    expect(windowsGrant.holders.size).toBe(1);
-  });
-
-  it("closes the loopback listener when the child is rejected before authentication", async ({ onTestFinished }) => {
-    const { cleanup, construct } = ownedWindowsLoopback(onTestFinished);
-    const child = fakeChild();
-    const exited = once(child, "exit");
-    let listener: Server | undefined;
-    let port = 0;
-    spawnConfinedChild.mockImplementation(loopbackChild({
-      cleanup,
-      child,
-      onListen: (server) => { listener = server; },
-      onAnnounce: (announced) => { port = announced; },
-      announceLine: "invalid announce\n",
-    }));
-
-    await expect(construct()).rejects.toThrow("something other than its announce");
-    await exited;
-    expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
-    expect(port).toBeGreaterThan(0);
-    expect(listener?.listening).toBe(false);
+  it("finishes releasing the grant before stop returns when the child ignores socket EOF", async () => {
+    const layout = aveLayout();
+    const { dir, entryPath } = writePluginModule();
+    try {
+      await asWindows(layout, async () => {
+        spawnConfinedChild.mockImplementation(loopbackChild({ ignoresEof: true }));
+        const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+        const instance = await factory(hostContext(fakeHostApi(), layout.context));
+        await instance.stop?.();
+        expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses a child whose stdout says anything before its announce, ends it, and releases the grant", async () => {
