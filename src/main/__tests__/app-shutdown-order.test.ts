@@ -1,7 +1,9 @@
 import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
 // Global shortcuts must release before any shutdown step can fail; the log sink must close last on every exit path.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { join, relative, resolve, sep } from "node:path";
 import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 
@@ -199,6 +201,73 @@ describe("OS sandbox release at quit", () => {
     expect(calls.indexOf("cancelApprovals")).toBeLessThan(calls.indexOf("closeAudit"));
     expect(calls.indexOf("cancelQuestions")).toBeGreaterThan(-1);
     expect(calls.indexOf("cancelQuestions")).toBeLessThan(calls.indexOf("closeAudit"));
+  });
+
+  it("completes a quit before its deadline while ceiling-detached work never settles", async () => {
+    vi.resetModules();
+    const ledger = await import("../../tools/invocation-ledger.js");
+    const hostShutdownRow = vi.fn(async () => {});
+    ledger.trackDetachedToolInvocation(new Promise<void>(() => {}), async () => {}, hostShutdownRow);
+    const deadline = deferred<void>();
+    const services = makeServices();
+    services.shutdown.mockImplementation(async () => {
+      calls.push("servicesShutdown");
+      ledger.sealToolInvocations();
+      // A join that waited on the detached work would lose this race.
+      void afterQueuedCallbacks().then(afterQueuedCallbacks).then(() => deadline.resolve());
+      await ledger.closeToolInvocationAudit(async () => { calls.push("closeAudit"); });
+    });
+    getServices.mockReturnValue(services);
+    const shutdown = await configuredShutdown();
+    gracefulDeadline = deadline.promise;
+    try {
+      expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("completed");
+    } finally {
+      gracefulDeadline = undefined;
+    }
+    expect(hostShutdownRow).toHaveBeenCalledOnce();
+    expect(ledger.pendingToolInvocationCount()).toBe(0);
+  });
+
+  it("writes a real parked card's host-shutdown cancel row before the fallback audit close", async () => {
+    vi.resetModules();
+    const { AuditLogger } = await import("../../audit/audit-logger.js");
+    const { ApprovalGate } = await import("../../permissions/approval-gate.js");
+    const { makeMockWebContents } = await import("../../__tests__/test-helpers.js");
+    const root = mkdtempSync(join(tmpdir(), "ave-shutdown-fallback-"));
+    let parkedGate: { disposeAll(): void } | undefined;
+    try {
+      const audit = new AuditLogger(join(root, "audit"));
+      const gate = new ApprovalGate(makeMockWebContents() as never, undefined, undefined, audit);
+      parkedGate = gate;
+      const decision = gate.requestAndWait({
+        id: "parked-card", category: "tool", toolName: "write_file", toolCategory: "write", args: {},
+        reason: "fallback probe", source: "builtin", createdAt: Date.now(), trustOrigin: "user-keyboard",
+      });
+      await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+      const close = vi.spyOn(audit, "close");
+      getServices.mockReturnValue({ ...makeServices(), auditLogger: audit, approvalGate: gate });
+      const shutdown = await configuredShutdown();
+      hardTimeoutFires = true;
+      try {
+        expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("timed-out");
+      } finally {
+        hardTimeoutFires = false;
+      }
+      expect(gate.pendingCount).toBe(0);
+      expect(await decision).toMatchObject({ choice: "deny-once" });
+      expect(close).toHaveBeenCalled();
+      await close.mock.results[0]?.value;
+      const rows = readdirSync(join(root, "audit"), { recursive: true, withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => readFileSync(join(entry.parentPath, entry.name), "utf8"))
+        .join("");
+      expect(rows).toContain("[approval:cancelled] parked-card");
+      expect(rows).toContain("reason=host-shutdown");
+    } finally {
+      parkedGate?.disposeAll();
+      await cleanupTmpDir(root);
+    }
   });
 
   it("still cancels parked cards and closes the audit when the fallback seal throws", async () => {

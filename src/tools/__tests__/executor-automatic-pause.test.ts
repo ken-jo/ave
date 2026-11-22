@@ -293,7 +293,7 @@ describe("executor automated approval pause", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("cancels a pending late native card without entering the handler", async () => {
+  it.each(["caller", "quit"] as const)("cancels a pending late native card without entering the handler (%s)", async (by) => {
     const f = await subject();
     const controller = new AbortController();
     const execute = vi.fn(async () => "wrote");
@@ -311,7 +311,7 @@ describe("executor automated approval pause", () => {
     release();
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     expect(gate.pendingCount).toBe(1);
-    controller.abort(new Error("caller cancelled pending late card"));
+    controller.abort(by === "quit" ? new HostExitAbortError() : new Error("caller cancelled pending late card"));
     let settled = false;
     void pending.then(() => { settled = true; });
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 1_000 });
@@ -321,6 +321,10 @@ describe("executor automated approval pause", () => {
     expect(gate.pendingCount).toBe(0);
     expect(approve(cards[0])).toBeNull();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+    if (by === "quit") {
+      const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }] });
+    }
   });
 
   it("settles caller cancellation while a late PermissionRequest hook is still held", async () => {
@@ -799,6 +803,8 @@ describe("executor automated approval pause", () => {
     expect(turn.signal.aborted).toBe(true);
     expect(mint).toHaveBeenCalledTimes(1);
     expect(execute).not.toHaveBeenCalled();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "late-host-shutdown", denyReasons: [{ reason: "host-shutdown" }] });
   });
 
   it("preserves a rule-issued host permit when the reviewer pauses before the handler", async () => {
