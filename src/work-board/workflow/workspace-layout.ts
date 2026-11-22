@@ -7,6 +7,8 @@ export const WORKTREES_DIR = "worktrees";
 export const JOIN_DIR = "_join";
 export const OUT_DIR = "_out";
 export const RUN_FILE = "_run.json";
+/** An empty repository git's ignore matcher needs for a plain folder; it exists only while a stage folder is seeded. */
+export const IGNORE_DIR = "_ignore";
 
 const sha256 = (value: string): string => createHash("sha256").update(value, "utf8").digest("hex");
 

@@ -5,7 +5,7 @@ import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
-import { createHostGit } from "../host-git.js";
+import { createHostGit, HostGitError } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE } from "../workspace-layout.js";
@@ -142,23 +142,37 @@ describe("folder stage workspaces", () => {
     expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("linked/private.txt", "linked/**", ".env", "keys/id_rsa", "build/out.js", "debug.log")] }))).toEqual([]);
   });
 
-  it("a plain folder outside any git work tree seeds every declared file, whatever a stray ignore file says", async () => {
-    const outside = join(base, "outside");
-    write(outside, "private.txt", "outside the project\n");
-    symlinkSync(outside, join(project, "linked"), "junction");
-    write(project, ".env", "TOKEN=fixture\n");
-    write(project, "keys/id_rsa", "fixture\n");
+  it("a plain folder outside any git work tree honours its own ignore files: an ignored declared input is not copied", async () => {
     write(project, "build/out.js", "built\n");
     write(project, "debug.log", "log\n");
-    // No repository here: nothing reads this file as rules, and it is seeded like any other.
-    write(project, ".gitignore", "build/\n*.log\nnotes.txt\n");
+    write(project, "keep.log", "kept\n");
+    write(project, "docs/draft.md", "draft\n");
+    write(project, ".gitignore", "build/\n*.log\n!keep.log\nnotes.txt\n");
+    write(project, "docs/.gitignore", "draft.md\n");
 
     const handle = await start(project);
     const root = await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] });
-    expect(tree(root)).toEqual([".gitignore", "build/out.js", "debug.log", "docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts"]);
-    expect(read(root, "build/out.js")).toBe("built\n");
-    // Named one by one they are seeded too; a secret and a link never are.
-    expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("build/out.js", "debug.log", ".env", "keys/id_rsa", "linked/private.txt")] }))).toEqual(["build/out.js", "debug.log"]);
+    expect(tree(root)).toEqual([".gitignore", "docs/.gitignore", "docs/guide.md", "keep.log", "src/a.ts", "src/deep/b.ts"]);
+    // Named one by one, an ignored input is not copied either.
+    expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("build/out.js", "debug.log", "notes.txt", "docs/draft.md", "src/a.ts")] }))).toEqual(["src/a.ts"]);
+    // The matcher's repository is gone once the folder is seeded, and none was made in the project.
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1", "s2"]);
+    expect(existsSync(join(project, ".git"))).toBe(false);
+  });
+
+  it("a plain folder with no ignore file seeds every declared file and needs no git; with one and no git it refuses", async () => {
+    write(project, "build/out.js", "built\n");
+    write(project, "debug.log", "log\n");
+    const unavailable = async (): Promise<never> => { throw new HostGitError("unavailable", "no git on this machine"); };
+    const handle = await start(project, { git: { run: unavailable, drivers: unavailable } });
+    expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }))).toEqual(["build/out.js", "debug.log", "docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts"]);
+    expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("build/out.js", "debug.log")] }))).toEqual(["build/out.js", "debug.log"]);
+
+    // Rules that cannot be read copy nothing: the stage is refused, not seeded as if there were none.
+    write(project, "docs/.gitignore", "guide.md\n");
+    expect(await handle.provider.prepare(handle.run, stageOf("s3", { inputFiles: [fromProject("docs/guide.md")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+    expect(existsSync(join(handle.runRoot, "s3"))).toBe(false);
+    expect(tree(await stageRoot(handle, "s4", { inputFiles: [fromProject("src/**")] }))).toEqual(["src/a.ts", "src/deep/b.ts"]);
   });
 
   it("refuses a seed above the bounds", async () => {

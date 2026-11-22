@@ -8,7 +8,7 @@ import { isStageId } from "../template-graph.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
-import { JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
+import { IGNORE_DIR, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { copySeedFiles, hashSeedFile, isInside, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 type Refusal = typeof WORKSPACE_REFUSALS[number];
@@ -177,8 +177,43 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     };
   }
 
-  const seedRules = (file: RunFileV1, withIgnore: boolean): SeedRules => {
-    const ignored = withIgnore ? ignoreRulesOf(file) : undefined;
+  /** A plain folder honours its own `.gitignore` files, read by git's matcher. `check-ignore` runs only against a repository, so an
+   * empty one is made in the run root on first need and removed by `done`; the folder is its work tree for that call and nothing is
+   * written into it. Without an ignore file above a path git is not run. */
+  function plainFolderIgnore(runRoot: string, root: string): { ignored: NonNullable<SeedRules["ignored"]>; done: () => void } {
+    const scratch = join(runRoot, IGNORE_DIR);
+    let made = false;
+    const ruled = new Map<string, boolean>();
+    const hasRules = (directory: string): boolean => {
+      let known = ruled.get(directory);
+      if (known === undefined) {
+        known = lstatSync(join(root, directory, ".gitignore"), { throwIfNoEntry: false }) !== undefined;
+        ruled.set(directory, known);
+      }
+      return known;
+    };
+    return {
+      ignored: async (paths) => {
+        const reached = paths.some((path) => {
+          const segments = path.replace(/\/$/u, "").split("/");
+          return segments.some((_, depth) => hasRules(segments.slice(0, depth).join("/")));
+        });
+        if (!reached) return new Set<string>();
+        if (!made) {
+          removeFolder(runRoot, scratch);
+          await gitOut(runRoot, ["init", "-q", "--template=", scratch]);
+          made = true;
+        }
+        const checked = await git.run(root, [`--git-dir=${join(scratch, ".git")}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
+          { stdin: paths.map(path => `${path}\0`).join("") });
+        if (checked.code !== 0 && checked.code !== 1) throw new Error("the folder's ignore rules could not be read");
+        return new Set(nul(checked.stdout));
+      },
+      done: () => { try { removeFolder(runRoot, scratch); } catch { /* the next seeding removes it first */ } },
+    };
+  }
+
+  const seedRules = (ignored?: SeedRules["ignored"]): SeedRules => {
     return { sensitive, ...(ignored ? { ignored } : {}), ...(options.seedLimits ? { limits: options.seedLimits } : {}) };
   };
 
@@ -278,13 +313,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     let files = 0;
     let bytes = 0;
     const limits = options.seedLimits ?? { files: MAX_SEED_FILES, bytes: MAX_SEED_BYTES };
+    const plain = file.projectRoot !== undefined && file.ignoreRules !== true ? plainFolderIgnore(runRoot, file.projectRoot) : undefined;
     try {
       for (const input of inputs) {
         let source: string;
         let paths: string[];
         if (input.from === "project") {
           source = file.projectRoot as string;
-          const listed = await listSeedFiles(source, input.paths, seedRules(file, true));
+          const listed = await listSeedFiles(source, input.paths, seedRules(plain?.ignored ?? ignoreRulesOf(file)));
           if (!listed.ok) return listed.code;
           paths = listed.files.map(entry => entry.path);
           files += listed.files.length;
@@ -301,6 +337,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       }
     } catch {
       return "seed-unreadable";
+    } finally {
+      plain?.done();
     }
     const entry = file.stages[stage.id];
     if (entry) Object.assign(entry, { ready: true, seeded, outputs: stage.outputs ?? ["**"] });
@@ -356,8 +394,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return head === entry.base ? { ok: true } : { ok: true, sealCommit: head };
   }
 
-  async function sealFolder(file: RunFileV1, entry: StageEntry, dir: string): Promise<{ ok: true } | { ok: false; code: Refusal }> {
-    const listed = await listSeedFiles(dir, entry.outputs ?? ["**"], seedRules(file, false));
+  async function sealFolder(entry: StageEntry, dir: string): Promise<{ ok: true } | { ok: false; code: Refusal }> {
+    const listed = await listSeedFiles(dir, entry.outputs ?? ["**"], seedRules());
     if (!listed.ok) return listed;
     const manifest: OutputFile[] = [];
     for (const item of listed.files) manifest.push({ path: item.path, ...(await hashSeedFile(join(dir, item.path))) });
@@ -374,7 +412,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       // One seal per attempt: a repeated call returns it without another snapshot.
       if (entry.sealed === true) return { ok: true as const, ...(entry.sealCommit !== undefined ? { sealCommit: entry.sealCommit } : {}) };
       try {
-        const sealed: { ok: true; sealCommit?: string } | { ok: false; code: Refusal } = found.file.kind === "git" ? await sealGit(run, found.file, stageId, entry, dir) : await sealFolder(found.file, entry, dir);
+        const sealed: { ok: true; sealCommit?: string } | { ok: false; code: Refusal } = found.file.kind === "git" ? await sealGit(run, found.file, stageId, entry, dir) : await sealFolder(entry, dir);
         if (!sealed.ok) return sealed;
         entry.sealed = true;
         if (sealed.sealCommit !== undefined) entry.sealCommit = sealed.sealCommit;
@@ -511,6 +549,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (file.stages[stageId] !== undefined) await removeStage(runRoot, file, stageId);
     }
     if (stageIds !== "all") return;
+    removeFolder(runRoot, join(runRoot, IGNORE_DIR));
     const root = file.projectRoot;
     if (file.kind === "git" && root !== undefined && file.branch !== undefined && file.baseCommit !== undefined) {
       const joinDir = join(runRoot, JOIN_DIR);
