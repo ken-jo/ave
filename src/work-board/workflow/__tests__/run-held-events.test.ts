@@ -571,7 +571,7 @@ it("waits for held-event removal after a registered gate claims its effect and t
     try {
       // Keep the write paused until the reader joins the drain or tries to read the file.
       await Promise.race([drainStarted.promise, replayed]);
-      await dropStarted.promise;
+      await Promise.race([dropStarted.promise, replayed]);
       expect(evaluate).toHaveBeenCalledOnce();
       expect(runsOnDisk(h).heldEvents).toEqual([identity]);
     } finally {
