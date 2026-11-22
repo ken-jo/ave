@@ -272,7 +272,7 @@ it("a child wait created after a failed relaunch settles at once", async () => {
   }
 });
 
-it("a rerun's stage that fails before registration settles its child waits after the replaced engine links the same attempt", async () => {
+it.each(["before", "after"] as const)("a rerun's stage that fails before registration settles its child waits when the replaced engine links the same attempt %s it", async order => {
   const held = deferred<void>();
   const release = deferred<void>();
   const rerunPreparing = deferred<void>();
@@ -328,17 +328,26 @@ it("a rerun's stage that fails before registration settles its child waits after
     runs.push(h.start(id, h.local(version)));
     const waits = Promise.allSettled([h.untilSpawned(2, id), h.untilLive(2, id)]);
     await rerunPreparing.promise;
-    release.resolve();
-    await oldLinked.promise;
-    rerunRelease.resolve();
-    await h.drainRunWork();
+    if (order === "before") {
+      release.resolve();
+      await oldLinked.promise;
+      rerunRelease.resolve();
+      await h.drainRunWork();
+    } else {
+      rerunRelease.resolve();
+      await h.drainRunWork();
+      release.resolve();
+      await oldLinked.promise;
+    }
     const after = h.events.slice(rerun).filter(event => event.stageId === "a" && event.attempt === 1);
-    expect(after.map(event => event.phase)).toEqual(["executing", "stage_failed"]);
-    expect(after[0].runSessionId).toBeDefined();
+    expect(after.map(event => event.phase)).toEqual(order === "before" ? ["executing", "stage_failed"] : ["stage_failed", "executing"]);
+    expect(after.find(event => event.phase === "executing")?.runSessionId).toBeDefined();
     const result = await Promise.race([waits, setImmediate("still pending")]);
     expect(result).toEqual(Array.from({ length: 2 }, () => ({
       status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }),
     })));
+    // The replaced engine's child does not clear the rerun's failure for a wait created afterwards.
+    await expect(Promise.race([h.untilSpawned(3, id), setImmediate("still pending")])).rejects.toThrow(/stage_failed/);
   } finally {
     release.resolve();
     rerunRelease.resolve();

@@ -127,10 +127,6 @@ export async function stageRunHarness(opts: {
         },
       };
       children.push(child);
-      if (input.originSessionId !== undefined) {
-        failures.delete(input.originSessionId);
-        inFlight.add(input.originSessionId);
-      }
       try {
         hooks?.onLinked?.({ childSessionId: sessionId });
         const scripted = opts.script?.(input);
@@ -193,9 +189,20 @@ export async function stageRunHarness(opts: {
     } satisfies WorkflowDeps;
     // A replaced engine's later events never show that this engine's child registered.
     const own: WorkBoardRunEvent[] = [];
+    // Only this engine's spawns, while it is current, start an origin's flight and clear its failure.
+    const engineRunner = Object.assign(Object.create(runner) as SubAgentRunner, {
+      spawn: (...args: Parameters<SubAgentRunner["spawn"]>) => {
+        const origin = args[0].originSessionId;
+        if (engine === wrapped && origin !== undefined) {
+          failures.delete(origin);
+          inFlight.add(origin);
+        }
+        return runner.spawn(...args);
+      },
+    });
     const current = createWorkBoardEngine({
       store,
-      getRunner: () => runner,
+      getRunner: () => engineRunner,
       emitProgress: event => {
         const { itemId, phase, stageId, attempt } = event;
         if (engine === wrapped) {
