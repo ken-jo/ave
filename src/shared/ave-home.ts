@@ -758,9 +758,8 @@ export function isAveHomeBoundaryCategory(category: string | undefined): categor
   return category === "boundary-link" || category === "boundary-unlisted";
 }
 
-/** Boot published an unverifiable profile-child read boundary; host shells then ask a human for every command. */
-export function isAveHomeBoundaryUnverifiedAtBoot(): boolean {
-  return isAveHomeBoundaryCategory(getAveHomePrivacyFailure()?.category);
+export function isAveHomePrivacyUnverifiedAtBoot(): boolean {
+  return getAveHomePrivacyFailure() !== undefined;
 }
 
 /** Guard initialization and each confined extension effect boundary. */
