@@ -843,7 +843,8 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write", a
 
 /**
  * A folder listing reuses the cached pattern index. Each row serially samples the recorded chains for reused policy
- * roots, comparing device, inode, type, ctime, and readlink text. Failed validation falls back to live canonicalization.
+ * roots. If only a directory change time moved on a direct chain, confirm its child still resolves to the same spelling.
+ * Failed validation falls back to live canonicalization.
  * A concurrent change after a sample can leave that row's observation stale. File-tool permission and execution keep
  * their own checks.
  */
@@ -869,9 +870,9 @@ function readChainEntry(path: string): ChainEntry | undefined {
   }
 }
 
-function sameChainEntry(left: ChainEntry | undefined, right: ChainEntry): boolean {
+function sameChainEntry(left: ChainEntry | undefined, right: ChainEntry, compareChangeTime = true): boolean {
   if (left === undefined || left === null || right === null) return left === right;
-  return left.dev === right.dev && left.ino === right.ino && left.type === right.type && left.changed === right.changed
+  return left.dev === right.dev && left.ino === right.ino && left.type === right.type && (!compareChangeTime || left.changed === right.changed)
     && left.link === right.link;
 }
 
@@ -905,18 +906,37 @@ function recordResolutionChain(path: string, read: (path: string) => ChainEntry 
 // Seeding a cache entry compares the recorded witness with a fresh read after resolution.
 function createRevalidatingCanonicalizer(): () => (path: string) => string {
   const seen = new Set<string>();
-  const resolved = new Map<string, { canonical: string; entries: Map<string, ChainEntry> }>();
+  type ResolutionWitness = { canonical: string; entries: Array<[string, ChainEntry]>; direct: boolean };
+  const resolved = new Map<string, ResolutionWitness>();
   return () => {
     const readings = new Map<string, ChainEntry | undefined>();
     const read = (path: string): ChainEntry | undefined => {
       if (!readings.has(path)) readings.set(path, readChainEntry(path));
       return readings.get(path);
     };
-    const holds = (entries: Map<string, ChainEntry>, reader: (path: string) => ChainEntry | undefined) =>
-      [...entries].every(([path, entry]) => sameChainEntry(reader(path), entry));
+    const spellings = new Map<string, boolean>();
+    const confirmsSpelling = (path: string): boolean => {
+      const known = spellings.get(path);
+      if (known !== undefined) return known;
+      let confirmed = false;
+      try {
+        verifyLocalFilesystemChain(path);
+        confirmed = foldCanonicalPathSeparators(realpathSync.native(path)) === foldCanonicalPathSeparators(path);
+      } catch { /* Unconfirmed spellings require live resolution. */ }
+      spellings.set(path, confirmed);
+      return confirmed;
+    };
+    const holds = ({ entries, direct }: ResolutionWitness) => entries.every(([path, entry], index) => {
+      const current = read(path);
+      if (sameChainEntry(current, entry)) return true;
+      if (!direct || entry?.type !== BigInt(constants.S_IFDIR) || !sameChainEntry(current, entry, false)) return false;
+      // Many policy roots share this edge. Confirm it once per row after unrelated sibling writes.
+      const next = entries[index + 1];
+      return confirmsSpelling(next?.[1] ? next[0] : path);
+    });
     return (path) => {
       const cached = resolved.get(path);
-      if (cached !== undefined && holds(cached.entries, read)) return cached.canonical;
+      if (cached !== undefined && holds(cached)) return cached.canonical;
       resolved.delete(path);
       if (!seen.has(path)) {
         seen.add(path);
@@ -926,8 +946,13 @@ function createRevalidatingCanonicalizer(): () => (path: string) => string {
       const recorded = !isWindowsNetworkOrDevicePath(path) && recordResolutionChain(path, read, entries);
       const canonical = canonicalizePathForMatch(path);
       // Reuse only a resolution whose entries read the same before and after it.
-      if (recorded && recordResolutionChain(canonical, read, entries) && holds(entries, readChainEntry)) {
-        resolved.set(path, { canonical, entries });
+      if (recorded && recordResolutionChain(canonical, read, entries)) {
+        const chain = [...entries];
+        if (chain.every(([path, entry]) => sameChainEntry(readChainEntry(path), entry))) {
+          const direct = canonical === foldCanonicalPathSeparators(pathResolve(path))
+            && chain.every(([path, entry], index) => entry?.link === undefined && (index === 0 || dirname(path) === chain[index - 1]![0]));
+          resolved.set(path, { canonical, entries: chain, direct });
+        }
       }
       return canonical;
     };

@@ -229,7 +229,14 @@ describe("workspace.listDir folder-view entries", () => {
     useHostResources(join(scratch, "resources"), onTestFinished);
     writeFileSync(join(dir, "first.txt"), "");
     const realpath = vi.spyOn(fsModule.realpathSync, "native");
-    const lstat = vi.spyOn(fsModule, "lstatSync");
+    const rows: Array<{ name: string; realpaths: number; lstats: number }> = [];
+    const statPath = fsModule.lstatSync;
+    const lstat = vi.spyOn(fsModule, "lstatSync").mockImplementation((...args) => {
+      const stat = statPath(...args);
+      // Model sibling writes to the common ancestor while the listing yields between rows.
+      if (args[0] === scratch && stat && "ctimeNs" in stat) stat.ctimeNs += BigInt(rows.length);
+      return stat;
+    });
     syncBuiltinESMExports();
     onTestFinished(() => {
       realpath.mockRestore();
@@ -237,7 +244,6 @@ describe("workspace.listDir folder-view entries", () => {
       syncBuiltinESMExports();
     });
 
-    const rows: Array<{ name: string; realpaths: number; lstats: number }> = [];
     const readdir = fsModule.promises.readdir.bind(fsModule.promises) as (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
     const readEntries = vi.spyOn(fsModule.promises, "readdir").mockImplementation((async (path: string, options: { withFileTypes: true }) => {
       const entries = await readdir(path, options);
@@ -270,7 +276,8 @@ describe("workspace.listDir folder-view entries", () => {
     await resolutions(1);
     const one = await resolutions(1);
     for (let i = 1; i < 33; i += 1) writeFileSync(join(dir, `sibling-${i}.txt`), "");
-    const perEntry = (await resolutions(33) - one) / 32;
+    const many = await resolutions(33);
+    const perEntry = (many - one) / 32;
     // An entry may pay a few checks of its own (about 8 here); resolving the policy roots again costs over a hundred.
     expect(perEntry).toBeLessThanOrEqual(20);
     // Include cold resolutions and witness seeding in the row budgets.
