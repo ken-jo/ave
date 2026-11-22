@@ -323,8 +323,11 @@ describe("workspace.listDir folder-view entries", () => {
     const res = await listDir(dir);
     const decisions = Object.fromEntries((await fsModule.promises.readdir(dir)).map((name) =>
       [name, isSensitivePath(join(dir, name), "write", "person")]));
+    // Names differing only in case match where the platform folds case.
+    const folded = process.platform === "win32" || process.platform === "darwin";
     expect(decisions).toEqual({
-      ".AWS": "**/.aws/**", ".env": "**/.env", ".env.example": null, ".ENV.Production": "**/.env.*", ".SSH": "**/.ssh/**",
+      ".AWS": folded ? "**/.aws/**" : null, ".env": "**/.env", ".env.example": null,
+      ".ENV.Production": folded ? "**/.env.*" : null, ".SSH": folded ? "**/.ssh/**" : null,
       "innocent-link": null, "long.pem": null, "meeting.KEY": null, "ordinary.txt": null, "plain-folder": null,
       "private.pem": "**/*.pem", "relocated-certs": "ave-home:certs", "runtime-data.bin": "runtime-secret-key",
       "runtime-preferences.conf": "runtime-settings-file", "skill-scripts": "host-script-resources",
