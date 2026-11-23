@@ -382,7 +382,7 @@ threads.Worker = class extends BaseWorker {
   }
 };` },
         footer: { js: `
-const modules = new Map([["src/demo.test.ts", 'import { read } from "./windows-boundary"; read();'], ["src/windows-boundary.ts", "export function read() {}"]]);
+const modules = new Map([["src/__tests__/demo.test.ts", 'import { read } from "../windows-boundary"; read();'], ["src/windows-boundary.ts", "export function read() {}"]]);
 for (let i = 2; i < 260; i++) modules.set("src/pad" + i + ".ts", "");
 const started = performance.now();
 let error, result;
@@ -455,7 +455,7 @@ const elapsedMs = performance.now() - (armedAt ?? started);
       if (fault === "preload") {
         expect(receipt.preloadLoaded).toBe(true);
         expect(receipt.error).toBeUndefined();
-        expect(receipt.result).toEqual([["src/demo.test.ts", ["src/demo.test.ts", "src/windows-boundary.ts"]]]);
+        expect(receipt.result).toEqual([["src/__tests__/demo.test.ts", ["src/__tests__/demo.test.ts", "src/windows-boundary.ts"]]]);
         expect(receipt.batches).toBe(preloadBatchCount);
         expect(outcome.progress).toBe(preloadBatchCount);
       } else if (fault === "construction") {

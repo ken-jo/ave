@@ -8,8 +8,9 @@ export type WindowsDiffEntry = { path: string; status: string; oldMode?: string;
 export type ReadWindowsVersion = (path: string, side: "before" | "after") => string | null;
 export function windowsTestFiles(text: string): string[];
 export function hasWindowsInventoryMarker(source: string, marker: "windows-native" | "windows-permission"): boolean;
-export function windowsPermissionInventory(sources: ReadonlyMap<string, string>, isCollectedVitestFile: (path: string) => boolean): string;
-export function windowsInventoryDiff<T extends WindowsDiffEntry>(changes: readonly T[], readVersion: ReadWindowsVersion | undefined, isCollectedVitestFile: (path: string) => boolean): {
+export function assertWindowsMarkerPlacement(sources: ReadonlyMap<string, string>): void;
+export function windowsPermissionInventory(sources: ReadonlyMap<string, string>): string;
+export function windowsInventoryDiff<T extends WindowsDiffEntry>(changes: readonly T[], readVersion: ReadWindowsVersion | undefined): {
   ordinary: T[];
   suites: Map<string, Set<(typeof WINDOWS_TEST_LISTS)[0 | 1]>>;
   changed: boolean;

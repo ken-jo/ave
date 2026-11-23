@@ -7,13 +7,12 @@ import { describe, expect, it } from "vitest";
 import { windowsRegressionFiles } from "../../.github/scripts/check-windows-workflow.mjs";
 import { conditionalGates } from "./windows-test-gates.js";
 import { nativeBackedTestFiles, readWindowsSources, windowsNativeInventory } from "./windows-native-test-inventory.js";
-import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import { isCollectedVitestFile } from "../../scripts/lib/vitest-collection.mjs";
 import { windowsPermissionInventory } from "../../scripts/windows-test-inventory.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
 const EMPTY_WINDOWS_WORKFLOW = "jobs: { windows-permission-tests: { runs-on: windows-latest, steps: [] } }";
-const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
 const PERMISSION_TEST_LIST = "config/windows-permission-tests.txt";
 const windowsTestLists = new Map([NATIVE_TEST_LIST, PERMISSION_TEST_LIST, "config/windows-application-tests.txt"]
@@ -67,7 +66,7 @@ function listProblems(sources: Map<string, string>, workflow: string, inventorie
     nativeInventory.set(sources, native);
   }
   return [...sources].flatMap(([file, source]) => {
-    if (!TEST_FILE_RE.test(file)) return [];
+    if (!isCollectedVitestFile(file)) return [];
     const gates = conditionalGates(source);
     const unknown = gates.filter((gate) => gate.classification === "unclassifiable")
       .map((gate) => `${file}:${gate.line}: unclassifiable argument: ${gate.argument}`);
@@ -87,7 +86,7 @@ describe("Windows CI test list", () => {
   });
 
   it("matches the permission declarations in both directions", () => {
-    expect(windowsTestLists.get(PERMISSION_TEST_LIST)).toBe(windowsPermissionInventory(sources, isCollectedVitestFile));
+    expect(windowsTestLists.get(PERMISSION_TEST_LIST)).toBe(windowsPermissionInventory(sources));
   });
 
   it("collects only permission declarations in the header of runnable suites", () => {
@@ -95,10 +94,23 @@ describe("Windows CI test list", () => {
       ["src/main/__tests__/declared.test.ts", "// windows-native\n// windows-permission: exercise permission checks\nimport './fixture.js';"],
       ["src/main/__tests__/body.test.ts", "import './fixture.js';\n// windows-permission"],
       ["src/main/__tests__/native.test.ts", "// windows-native"],
-      ["src/main/__tests__/support.ts", "// windows-permission"],
-      ["test/e2e/declared.spec.ts", "// windows-permission"],
+      ["src/main/__tests__/support.ts", "export {};"],
     ]);
-    expect(windowsPermissionInventory(files, isCollectedVitestFile)).toBe("src/main/__tests__/declared.test.ts\n");
+    expect(windowsPermissionInventory(files)).toBe("src/main/__tests__/declared.test.ts\n");
+  });
+
+  it.each([
+    "src/main/window-input.test.ts",
+    "src/main/__tests__/fixtures/runtime-input.ts",
+    "src/main/__tests__/fixtures/nested/runtime-input.test.ts",
+    "test/e2e/declared.spec.ts",
+  ])("rejects either inventory marker outside Vitest collection at %s", file => {
+    expect(isCollectedVitestFile(file)).toBe(false);
+    for (const marker of ["windows-permission", "windows-native"]) {
+      const sources = new Map([[file, `// ${marker}\nexport {};\n`]]);
+      expect(() => windowsPermissionInventory(sources)).toThrow(file);
+      expect(() => windowsNativeInventory(sources)).toThrow(file);
+    }
   });
 
   it("keeps the real junction, symlink, reparse-point and ACL regressions in the native inventory", () => {

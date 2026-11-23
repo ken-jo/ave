@@ -5,9 +5,9 @@ import { createRequire } from "node:module";
 import { MessageChannel, receiveMessageOnPort, Worker } from "node:worker_threads";
 import { createScanner } from "typescript/unstable/ast/scanner";
 import { conditionalGates } from "./windows-test-gates.js";
-import { hasWindowsInventoryMarker } from "../../scripts/windows-test-inventory.mjs";
+import { isCollectedVitestFile } from "../../scripts/lib/vitest-collection.mjs";
+import { assertWindowsMarkerPlacement, hasWindowsInventoryMarker } from "../../scripts/windows-test-inventory.mjs";
 
-const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
 
 export function isInventorySource(file: string): boolean {
@@ -578,10 +578,11 @@ export function nativeBackedTestFiles(sources: ReadonlyMap<string, string>): Map
 }
 
 function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTimeoutMs: number): Map<string, string[]> {
+  assertWindowsMarkerPlacement(sources);
   const graph = windowsImportGraph(sources, replyTimeoutMs);
   const required = new Map<string, string[]>();
   for (const [file, module] of graph) {
-    if (!TEST_FILE.test(file) || !/\.(?:test|spec)\.tsx?$/u.test(file) || !/^(?:src|test)\//u.test(file)) continue;
+    if (!isCollectedVitestFile(file)) continue;
     const source = sources.get(file);
     if (source === undefined) throw new Error(`Missing Windows test source: ${file}`);
     if (hasWindowsInventoryMarker(source, "windows-native") || file.endsWith(".windows.test.ts")

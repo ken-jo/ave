@@ -1,3 +1,5 @@
+import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
+
 export const WINDOWS_TEST_LISTS = [
   "config/windows-permission-tests.txt",
   "config/windows-native-tests.txt",
@@ -44,9 +46,18 @@ export function hasWindowsInventoryMarker(source, marker) {
   return inventoryHeader(source).markers.has(marker);
 }
 
-export function windowsPermissionInventory(sources, isCollectedVitestFile) {
-  const files = [...sources].filter(([file, source]) =>
-    isCollectedVitestFile(file) && hasWindowsInventoryMarker(source, "windows-permission")).map(([file]) => file).sort();
+export function assertWindowsMarkerPlacement(sources) {
+  for (const [file, source] of sources) {
+    if (inventoryHeader(source).markers.size && !isCollectedVitestFile(file)) {
+      throw new Error(`Windows test marker is outside Vitest collection: ${file}`);
+    }
+  }
+}
+
+export function windowsPermissionInventory(sources) {
+  assertWindowsMarkerPlacement(sources);
+  const files = [...sources].filter(([, source]) => hasWindowsInventoryMarker(source, "windows-permission"))
+    .map(([file]) => file).sort();
   return `${files.join("\n")}\n`;
 }
 
@@ -55,7 +66,7 @@ function difference(left, right) {
 }
 
 /** Separate membership edits from changes to executable or general CI inputs. */
-export function windowsInventoryDiff(changes, readVersion, isCollectedVitestFile) {
+export function windowsInventoryDiff(changes, readVersion) {
   const ordinary = [];
   const suites = new Map();
   let changed = false;

@@ -7,7 +7,7 @@ import {
 } from "../test/scripts/windows-native-test-inventory.js";
 import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "./run-windows-test-list.mjs";
 import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
-import { isCollectedVitestFile } from "./hooks/pre-push-source-policy.mjs";
+import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
 import {
   assertWindowsRemovalRecords, windowsCoverageDepartures, windowsInventoryDiff, type ReadWindowsVersion, type WindowsInventoryPath,
 } from "./windows-test-inventory.mjs";
@@ -109,8 +109,11 @@ export function planWindowsTests({
   coverageVersion?: ReadWindowsVersion;
 }) {
   const eligible = new Set(Object.values(inventories).flat());
+  for (const file of eligible) {
+    if (!isCollectedVitestFile(file)) throw new Error(`Windows inventory names an uncollected test: ${file}`);
+  }
   for (const file of ALWAYS_RUN) if (!eligible.has(file)) throw new Error(`Missing Windows core test: ${file}`);
-  const inventoryDiff = windowsInventoryDiff((changes ?? []).map(entry => ({ ...entry, path: entry.file })), readVersion, isCollectedVitestFile);
+  const inventoryDiff = windowsInventoryDiff((changes ?? []).map(entry => ({ ...entry, path: entry.file })), readVersion);
   const ordinary = inventoryDiff.ordinary;
   const global = ordinary.find(({ file }) => GLOBAL_INPUT.test(file));
   const fixture = ordinary.find(({ file }) => /\/__tests__\/fixtures\//u.test(file));

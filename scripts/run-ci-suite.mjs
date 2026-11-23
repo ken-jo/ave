@@ -11,7 +11,6 @@ import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
 import { isCanonicalGitPath } from "./hooks/pre-push-markdown-policy.mjs";
 import {
   getRelatedCoverageFullReason,
-  isCollectedVitestFile,
   isTestHelperModule,
   isTestOnlyDiff,
   isTestSupportFile,
@@ -19,6 +18,7 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
+import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
 import { WINDOWS_INVENTORY_LOCK, windowsInventoryDiff } from "./windows-test-inventory.mjs";
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
@@ -216,7 +216,7 @@ function testNamesChangedPath(test, changedPaths, readText) {
 // Related-test discovery returns null on failure, not an empty successful result.
 // Integration bases retain the best traced selection when coverage is uncertain.
 export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTests, readText, readVersion, discoverRelated, selectCatalog, baseRef }) {
-  const inventory = windowsInventoryDiff(changes, readVersion, isCollectedVitestFile);
+  const inventory = windowsInventoryDiff(changes, readVersion);
   // Header-only declarations have no code impact on their containing domain.
   const mustRunTests = typeof requiredTests === "function"
     ? requiredTests(inventory.ordinary.map(({ path }) => path)) : requiredTests;
