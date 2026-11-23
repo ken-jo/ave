@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, unlinkSync, type BigIntStats } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
@@ -46,6 +46,8 @@ export class HeldFileHelperUnavailableError extends Error {
   passed: "ready" | "copied" | null = null;
   /** For a copy that ended after `ready` without its outcome: what removing its temporary file through the newly held chosen folder found. */
   partialCopy: "removed" | "absent" | "left" | null = null;
+  /** For such a copy: the identity its temporary file had while the helper wrote it, or null when it was never seen. */
+  partFile: FileIdentity | null = null;
   constructor(readonly helper: string, readonly why = "it is missing", message?: string) {
     super(message ?? `the download file helper ${helper} cannot be used: ${why}. Reinstall Ave; in a development checkout, build it (${HELPER_BUILD[process.platform] ?? "no build for this platform"}).`);
   }
@@ -53,8 +55,54 @@ export class HeldFileHelperUnavailableError extends Error {
 
 /** The helper stopped answering, or did not end once stopped, within the stall bound, and was killed. */
 export class HeldFileHelperStalledError extends HeldFileHelperUnavailableError {
+  /** When `stillRunning`: settles once the helper is seen to end after its run was given up. */
+  exited: Promise<void> | null = null;
   constructor(helper: string, why: string, readonly stillRunning: boolean) {
     super(helper, why, `the download file helper ${helper} ${why}; it was killed${stillRunning ? ", and has not been seen to end" : ""}`);
+  }
+}
+
+/** A file's identity: a file put at its name since (even one moved over it) has another. */
+export interface FileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly birthtimeNs: bigint;
+}
+
+/**
+ * What is at `name` in `folder` now, against `expected`: the same ordinary file, nothing (`absent`), or anything else, including a
+ * folder that is no longer the held one. Every failure to tell is `other`.
+ */
+export function compareFile(folder: HeldDirectory, name: string, expected: FileIdentity): "same" | "absent" | "other" {
+  let info: BigIntStats | null;
+  try {
+    info = entryIn(folder, name);
+  } catch {
+    return "other";
+  }
+  if (info === null) return "absent";
+  return info.isFile() && info.dev === expected.dev && info.ino === expected.ino && info.birthtimeNs === expected.birthtimeNs ? "same" : "other";
+}
+
+// The identity of the ordinary file `name` in `folder` while `folder` is still the held one, or null.
+function identityOf(folder: HeldDirectory, name: string): FileIdentity | null {
+  try {
+    const info = entryIn(folder, name);
+    return info?.isFile() ? { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs } : null;
+  } catch {
+    return null;
+  }
+}
+
+// The entry `name` in `folder`, or null when there is none; throws when `folder` is no longer the held one or cannot be read.
+function entryIn(folder: HeldDirectory, name: string): BigIntStats | null {
+  const held = lstatSync(folder.path, { bigint: true });
+  if (!held.isDirectory() || held.isSymbolicLink() || held.dev !== folder.dev || held.ino !== folder.ino) throw new HeldDirectoryRefusedError("to");
+  try {
+    return lstatSync(join(folder.path, name), { bigint: true });
+  } catch (error) {
+    if (codeOf(error) === "ENOENT") return null;
+    throw error;
   }
 }
 
@@ -317,7 +365,7 @@ function statusOf(last: string): number {
  * delivery order is independent of stdout. Killing and confirming exit share one independent `killMs` ceiling, including
  * when the platform's kill request does not finish. A valid outcome before a confirmed kill is retained only if the protocol stayed valid.
  */
-function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds): Promise<string> {
+function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, onProgress?: () => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawnManaged(helper, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: {} }, { label: "browser-download-files" });
     const { stdin, stdout, stderr } = child;
@@ -337,6 +385,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let settled = false;
     let startFailure: string | null = null;
     let timer: NodeJS.Timeout | undefined;
+    let lateExit: Promise<void> | null = null;
     const exited = (): boolean => child.exitCode !== null || child.signalCode !== null;
     const endInput = (): void => {
       if (!inputOpen) return;
@@ -378,7 +427,9 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           else resolve(answered);
           return;
         }
-        fail(new HeldFileHelperStalledError(helper, killed, stillRunning));
+        const stalled = new HeldFileHelperStalledError(helper, killed, stillRunning);
+        stalled.exited = lateExit;
+        fail(stalled);
         return;
       }
       const answered = pending === "" ? helperOutcome(helper, status, signal, last, errors)
@@ -398,7 +449,9 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (exited()) settle(child.exitCode, child.signalCode, false);
         else {
           log.error({ helper, pid: child.pid ?? null }, "the download file helper did not end when killed");
-          child.once("exit", () => log.warn({ helper }, "the download file helper ended after its run was given up"));
+          lateExit = new Promise((resolve) => {
+            child.once("exit", () => { log.warn({ helper }, "the download file helper ended after its run was given up"); resolve(); });
+          });
           settle(null, null, true);
         }
       }, bounds.killMs);
@@ -454,6 +507,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           const bytes = BigInt(progress);
           if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || bytes <= copiedBytes) { violate(); return; }
           copiedBytes = bytes;
+          onProgress?.();
           awaitLine("while copying");
           continue;
         }
@@ -514,7 +568,8 @@ export function _helperFileOperationsForTest(helper: string, bounds?: HelperBoun
 }
 
 function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
-  const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal): Promise<string> => runHelper(helper, args, proceed, stop, bounds);
+  const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onProgress?: () => void): Promise<string> =>
+    runHelper(helper, args, proceed, stop, bounds, onProgress);
   // A copy that ended after `ready` without its outcome may have left its temporary file. It is removed through the chosen folder, held
   // anew and checked to be the same one, unless the helper may still be running; nothing else of that name is touched.
   const removePartialCopy = async (to: HeldDirectory, part: string, ended: HeldFileHelperUnavailableError): Promise<"removed" | "absent" | "left"> => {
@@ -532,11 +587,21 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
       await run(["--dir-rename", ...directoryArguments(from), name, ...directoryArguments(to), target], proceed, stop),
       ["committed", "cancelled", "cross-volume"] as const),
     copy: async (from, name, to, target, part, proceed, stop) => {
+      // The temporary file's identity, taken once the helper says it is writing it, so a later cleanup removes only that file.
+      let partFile: FileIdentity | null = null;
+      const seen = (): void => { partFile ??= identityOf(to, part); };
+      const proceedSeeing: Proceed = (step) => {
+        if (step === "copied") seen();
+        return proceed(step);
+      };
       try {
-        return oneOf(helper, await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceed, stop),
+        return oneOf(helper, await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceedSeeing, stop, seen),
           ["committed", "cancelled"] as const);
       } catch (error) {
-        if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) error.partialCopy = await removePartialCopy(to, part, error);
+        if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
+          error.partFile = partFile;
+          error.partialCopy = await removePartialCopy(to, part, error);
+        }
         throw error;
       }
     },

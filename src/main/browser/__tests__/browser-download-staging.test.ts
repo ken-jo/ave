@@ -538,6 +538,104 @@ describe("what `done` reports when the staged file cannot be removed", () => {
   });
 });
 
+// A cross-volume copy whose helper stalled and was not seen to end (browser-download-files.test.ts drives that helper): the native helper
+// removes its recorded temporary file once that helper ends, or at the next start, and only while it is still the file the copy wrote.
+describe("a stalled copy's temporary file, removed through the native helper", () => {
+  const stalledCopy = async () => {
+    const prepared = prepare();
+    let end!: () => void;
+    const exited = new Promise<void>((resolve) => { end = resolve; });
+    const removed: string[] = [];
+    let onRemoved = (): void => {};
+    const root = withFiles(acrossVolumes(prepared), (files) => ({
+      copy: async (_from, _name, to, _target, part) => {
+        writeFileSync(join(to.path, part), "partial copy");
+        const info = statSync(join(to.path, part), { bigint: true });
+        const error = new HeldFileHelperStalledError("/helper", "did not end within 1 ms of being stopped", true);
+        Object.assign(error, { passed: "ready", partialCopy: "left", exited, partFile: { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs } });
+        throw error;
+      },
+      remove: async (directory, name, proceed, stop) => {
+        try {
+          return await files.remove(directory, name, proceed, stop);
+        } finally {
+          removed.push(name);
+          onRemoved();
+        }
+      },
+    }));
+    const removalOf = (name: string) => new Promise<void>((resolve) => {
+      const check = (): void => { if (removed.includes(name)) resolve(); else onRemoved = check; };
+      check();
+    });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("across");
+    expect(await done).toEqual({ state: "interrupted", cleanup: "part-left" });
+    const [part] = readdirSync(chosen);
+    const records = readdirSync(prepared.path);
+    expect(records).toEqual([expect.stringMatching(/^[0-9a-f]{32}\.cleanup\.json$/u)]);
+    return { prepared, chosen, part: join(chosen, part ?? ""), record: records[0] ?? "", end, removalOf };
+  };
+
+  it("sees the temporary file's identity while the native helper still holds it", async () => {
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    let identity: bigint | undefined;
+    const root = atStep(acrossVolumes(prepare()), "copy", "copied", ({ part }) => { identity = statSync(join(chosen, part ?? ""), { bigint: true }).ino; });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("across");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(identity).toBeGreaterThan(0n);
+  });
+
+  it("removes it once the stalled helper is seen to end, and then its record", async () => {
+    const { prepared, part, record, end, removalOf } = await stalledCopy();
+    expect(readFileSync(part, "utf8")).toBe("partial copy");
+    end();
+    await removalOf(record);
+    expect(existsSync(part)).toBe(false);
+    expect(readdirSync(prepared.path)).toEqual([]);
+  });
+
+  it("leaves it while the helper never ends, and the next start's sweep removes it", async () => {
+    const { prepared, chosen, part, record, end, removalOf } = await stalledCopy();
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
+    expect(existsSync(part)).toBe(false);
+    expect(readdirSync(prepared.path)).toEqual([]);
+    end();
+    await removalOf(record);
+    expect(readdirSync(chosen)).toEqual([]);
+  });
+
+  it("never removes a file put over the temporary file's name, when the helper ends or at the next start", async () => {
+    const { prepared, chosen, part, end } = await stalledCopy();
+    const mine = join(chosen, "mine.txt");
+    writeFileSync(mine, "the user's file");
+    moveAside(mine, part);
+    end();
+    await settled();
+    expect(readFileSync(part, "utf8")).toBe("the user's file");
+    expect(readdirSync(prepared.path)).toHaveLength(1);
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
+    expect(readFileSync(part, "utf8")).toBe("the user's file");
+    expect(readdirSync(prepared.path)).toEqual([]);
+  });
+});
+
 describe("a staging folder that cannot be verified", () => {
   it.each(["EACCES", "EPERM", "ENOTDIR", "ELOOP", "ENOENT"])("is a staging refusal at start when checking it fails with %s", (code) => {
     hooks.checkFault = { path: stagingPath(), code };

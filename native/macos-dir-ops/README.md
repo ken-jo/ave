@@ -84,12 +84,20 @@ chosen folder. The next start sweeps only the
 staging folder, so the host removes `part` at once with a new `--dir-remove`
 run, which holds the chosen folder anew and checks it is the bound one. The
 download is reported as failed, and the log records whether `part` was
-removed. It remains, logged as possibly left, when the killed helper was not
-seen to exit (a removal could race it), when the removal is refused or fails
-(the chosen folder was moved or replaced, or the helper is broken for every
-run), and when the app quits during a copy: shutdown kills the helper with
-every other owned process and starts no new one, so nothing removes `part`
-and the next start does not look in the chosen folder. A run killed after `copied`, or a rename killed after
+removed. It remains, logged as possibly left, when the removal is refused or
+fails (the chosen folder was moved or replaced, or the helper is broken for
+every run), and when the app quits during a copy: shutdown kills the helper
+with every other owned process and starts no new one, so nothing removes
+`part`. When the killed helper was not seen to exit, a removal could race it,
+so none starts then: the host keeps the identity `part` had while the helper
+wrote it (taken at its first `progress` line or at `copied`) and records the
+folder, the name and that identity in the staging folder. Once the helper is
+seen to end, or at the next start before the sweep, `part` is removed with a
+new `--dir-remove` run only while the file at that name still has that
+identity; anything else there is left and logged. The host checks the
+identity just before the run, and the helper does not check it again, so a
+file put at that name in between could still be removed. A `part` never seen
+while it was written has no identity and is left. A run killed after `copied`, or a rename killed after
 `ready`, may have reached the chosen path; the log says so instead of claiming
 the file was not saved.
 
