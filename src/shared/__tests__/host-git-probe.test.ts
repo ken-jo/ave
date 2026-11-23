@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { gitProbeChild } from "../../__tests__/support/git-probe-child.js";
+import { systemProcessProbe } from "../../__tests__/support/test-run-dirs.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { runGitProbeAsync, runGitProbeSync } from "../host-git-probe.js";
 
@@ -82,15 +83,6 @@ function waitForPidSync(pidFile: string): void {
   }
 }
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // Only the Windows tree kill reaches a helper, and only while its wrapper still runs: an orphan has no ancestry left to walk.
 const treeKill = process.platform === "win32";
 it.each([
@@ -116,10 +108,10 @@ it.each([
     expect(Date.now() - startedAt).toBeLessThan(mode === "overflow" ? TEST_DEADLINE_MS : TEST_DEADLINE_MS + 1_000);
     helperPid = readPid(pidFile);
     expect(helperPid).toBeGreaterThan(0);
-    if (reaped) await vi.waitFor(() => expect(alive(helperPid)).toBe(false), { timeout: 5_000, interval: 50 });
+    if (reaped) await vi.waitFor(() => expect(systemProcessProbe.exists(helperPid)).toBe(false), { timeout: 5_000, interval: 50 });
   } finally {
     helperPid = readPid(pidFile);
-    if (helperPid > 0 && alive(helperPid)) process.kill(helperPid, "SIGKILL");
+    if (helperPid > 0 && systemProcessProbe.exists(helperPid)) process.kill(helperPid, "SIGKILL");
     await cleanupTmpDir(fixture);
   }
 }, TEST_DEADLINE_MS + 8_000);
