@@ -277,7 +277,7 @@ describe("the run branch", () => {
     userGit(repo, "update-ref", "refs/heads/ave/workflow/pin", userGit(repo, "rev-parse", "HEAD"), "");
     const attached = join(fx.base, "attached");
     const detached = join(fx.base, "detached");
-    for (const [folder, args] of [[attached, [attached, "ave/workflow/pin"]], [detached, ["--detach", detached, "HEAD"]]] as const) {
+    for (const [folder, args] of [[attached, ["--no-checkout", "--end-of-options", attached, "ave/workflow/pin"]], [detached, ["--detach", "--no-checkout", "--end-of-options", detached, "HEAD"]]] as const) {
       mkdirSync(folder);
       const made = nodeIdOf(folder);
       expect(code(repo, "worktree", "add", ...args)).toBe(0);
@@ -525,7 +525,7 @@ it("a release that git gives no answer to about the repository leaves the run wh
   const at = await scene();
   const real = createHostGit({ env: fx.env });
   const git: HostGit = {
-    drivers: cwd => real.drivers(cwd),
+    drivers: real.drivers,
     run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call),
   };
   await createStageWorkspaceProvider({ git }).release(at.target.run, "all");
@@ -550,7 +550,7 @@ it("git in a folder of the run is given the registration the host checked: a lin
   // Every git call in a folder of the run finds that folder's link pointing into the other repository, from after the host's check
   // until the call is over.
   const git: HostGit = {
-    drivers: cwd => real.drivers(cwd),
+    drivers: real.drivers,
     run: async (cwd, args, call) => {
       if (runRoot === "" || !resolve(cwd).toLowerCase().startsWith(runRoot.toLowerCase())) return real.run(cwd, args, call);
       const link = readFileSync(join(cwd, ".git"), "utf8");

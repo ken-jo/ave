@@ -26,8 +26,10 @@ export interface HostGit {
   /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws: one
    * that ended without an exit code, or whose pipes stayed open after it ended, is `terminated`. `isolated` runs it on no configuration but the repository's own and the call's. */
   run(cwd: string, args: readonly string[], options?: HostGitCall): Promise<HostGitResult>;
-  /** `-c` entries that switch off every filter and merge driver the repository's configuration names, and the filter drivers it marks required. */
-  drivers(cwd: string): Promise<{ config: string[]; requiredFilters: string[] }>;
+  /** `-c` entries that switch off every filter and merge driver the repository's configuration names, and the filter drivers it marks
+   * required. With `worktree`, the configuration is read as a call given that worktree reads it: a file included for that
+   * registration or its branch, and the worktree's own, name drivers that git in the project root never sees. */
+  drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }>;
 }
 
 function gitEnv(base: NodeJS.ProcessEnv, dropped = DROPPED_ENV): NodeJS.ProcessEnv {
@@ -102,8 +104,8 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
     });
   }
 
-  async function drivers(cwd: string): Promise<{ config: string[]; requiredFilters: string[] }> {
-    const listed = await run(cwd, ["config", "--null", "--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$"]);
+  async function drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }> {
+    const listed = await run(cwd, ["config", "--null", "--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$"], worktree === undefined ? {} : { worktree });
     // Exit 1 with no output: nothing is configured.
     if (listed.code !== 0 && !(listed.code === 1 && listed.stdout === "")) throw new HostGitError("unavailable", "git configuration could not be read");
     const filters = new Set<string>();

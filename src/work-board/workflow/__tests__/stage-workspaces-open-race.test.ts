@@ -428,7 +428,7 @@ async function collectWithLink(fx: GitFixture, linkTo: (admin: string) => string
   let replaced = false;
   const handle = fx.start({
     git: {
-      drivers: cwd => git.drivers(cwd),
+      drivers: (cwd, worktree) => git.drivers(cwd, worktree),
       run: async (cwd, args, call) => {
         if (replaced && resolve(cwd).toLowerCase() === joinDir.toLowerCase()) throw new Error("git was run in a folder whose link is not the run's");
         const result = await git.run(cwd, args, call);

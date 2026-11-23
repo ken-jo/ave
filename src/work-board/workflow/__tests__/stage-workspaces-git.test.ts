@@ -238,6 +238,52 @@ describe("git stage workspaces", () => {
     expect(readdirSync(marks)).toEqual([]);
   });
 
+  it("a driver only a linked worktree's configuration names does not run when a folder is filled, sealed or collected", async () => {
+    const marks = join(base, "marks");
+    mkdirSync(marks);
+    const driver = (name: string, then: string): string => {
+      writeFileSync(join(base, `${name}.sh`), `echo ran >> '${join(marks, name).replace(/\\/g, "/")}'\n${then}\n`);
+      return `sh '${join(base, `${name}.sh`).replace(/\\/g, "/")}'`;
+    };
+    // Included only for git that runs as a linked worktree: git in the project root reads none of it.
+    const included = join(repo, ".git", "linked.cfg");
+    userGit(repo, "config", "-f", included, "filter.mark.clean", driver("clean", "cat"));
+    userGit(repo, "config", "-f", included, "filter.mark.smudge", driver("smudge", "cat"));
+    userGit(repo, "config", "-f", included, "merge.mark.driver", driver("merge", "exit 0"));
+    userGit(repo, "config", "includeIf.gitdir:**/worktrees/**.path", "linked.cfg");
+    write(repo, ".gitattributes", "*.txt filter=mark merge=mark\n");
+    write(repo, "a.txt", "two\n");
+    commitAll("drivers");
+    expect(readdirSync(marks)).toEqual([]);
+    // Control: the user's own git runs them in a linked worktree.
+    userGit(repo, "worktree", "add", "-q", "--detach", join(base, "control"));
+    expect(readdirSync(marks)).toEqual(["smudge"]);
+    rmSync(join(marks, "smudge"));
+
+    const handle = start();
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    const first = await stageRoot(handle, "s1");
+    const second = await stageRoot(handle, "s2");
+    expect(readFileSync(join(first, "a.txt"), "utf8")).toBe("two\n");
+    write(first, "a.txt", "from s1\n");
+    write(second, "a.txt", "from s2\n");
+    await sealed(handle, "s1");
+    await sealed(handle, "s2");
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false, conflict: { reason: "merge-conflict", files: [{ path: "a.txt" }] } });
+    expect(readdirSync(marks)).toEqual([]);
+  });
+
+  it("a filter that only a linked worktree's configuration requires gets no git workspace", async () => {
+    const included = join(repo, ".git", "linked.cfg");
+    for (const [key, value] of [["clean", "cat"], ["smudge", "cat"], ["required", "true"]]) userGit(repo, "config", "-f", included, `filter.need.${key}`, value);
+    userGit(repo, "config", "includeIf.gitdir:**/worktrees/**.path", "linked.cfg");
+    const handle = start();
+    expect(await handle.provider.open(handle.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+    expect(userGit(repo, "branch", "--list", "ave/*")).toBe("");
+    expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
+  });
+
   it("a repository that requires a filter driver gets no git workspace", async () => {
     userGit(repo, "config", "filter.need.clean", "cat");
     userGit(repo, "config", "filter.need.smudge", "cat");

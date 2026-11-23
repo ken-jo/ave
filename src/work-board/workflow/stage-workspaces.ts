@@ -226,13 +226,32 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * it never reads the `.git` file: one swapped after this check directs nothing.
    */
   function gitIn(at: Held, key: string, folder: OwnedDir): (args: readonly string[], call?: Parameters<HostGit["run"]>[2]) => ReturnType<HostGit["run"]> {
-    return async (args, call) => {
-      folder.check();
-      const admin = vetRecordPath("link", folder.readFile(".git")?.toString("utf8") ?? "", at.live);
-      const registration = at.file.registrations[key];
-      if (admin === undefined || registration === undefined || repoWorktrees(at)?.child(basename(admin), registration.id) === undefined) throw new Error(`the ${key === JOIN_DIR ? "integration" : "stage"} worktree is not the run's own`);
-      return git.run(folder.path, args, { ...call, worktree: { gitDir: admin, workTree: folder.path } });
-    };
+    return async (args, call) => git.run(folder.path, args, { ...call, worktree: ownWorktree(at, key, folder) });
+  }
+
+  function ownWorktree(at: Held, key: string, folder: OwnedDir): { gitDir: string; workTree: string } {
+    folder.check();
+    const admin = vetRecordPath("link", folder.readFile(".git")?.toString("utf8") ?? "", at.live);
+    const registration = at.file.registrations[key];
+    if (admin === undefined || registration === undefined || repoWorktrees(at)?.child(basename(admin), registration.id) === undefined) throw new Error(`the ${key === JOIN_DIR ? "integration" : "stage"} worktree is not the run's own`);
+    return { gitDir: admin, workTree: folder.path };
+  }
+
+  /** The drivers to switch off for git in a folder of the run, read the way git reads its configuration there, under the same check. */
+  async function driversIn(at: Held, key: string, folder: OwnedDir): ReturnType<HostGit["drivers"]> {
+    return git.drivers(folder.path, ownWorktree(at, key, folder));
+  }
+
+  /**
+   * Fills a folder git registered with nothing checked out. Git checks a worktree out as that worktree, where configuration the
+   * project root never reads can name a driver, so its drivers are read there first; a filter required there alone (`required` are the
+   * project root's) cannot be asked about the way `open` asks, and refuses the folder.
+   */
+  async function checkOut(at: Held, key: string, folder: OwnedDir, required: readonly string[]): Promise<void> {
+    await assertRepository(at);
+    const drivers = await driversIn(at, key, folder);
+    if (drivers.requiredFilters.some(name => !required.includes(name))) throw new Error("a filter is required in the worktree alone");
+    answered(["reset"], await gitIn(at, key, folder)(["reset", "--hard", "-q"], { drivers: drivers.config }));
   }
 
   /** The HEAD commit when `root` is the top level of a git work tree that has one; null for every other folder. */
@@ -350,7 +369,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       project = { root, id };
     }
     // Everything the record says of the project and its repository is read before anything is made.
-    let gitRun: { baseCommit: string; branch: string; drivers: readonly string[]; repo: NonNullable<WorkspaceRecord["repo"]> } | undefined;
+    let gitRun: { baseCommit: string; branch: string; drivers: Awaited<ReturnType<HostGit["drivers"]>>; repo: NonNullable<WorkspaceRecord["repo"]> } | undefined;
     let ignoreRules = false;
     try {
       const found = project === undefined ? { inWorkTree: false } : await gitProject(project.root);
@@ -361,7 +380,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         const repo = await commonDirOf(project.root);
         // A repository directory that is no plain path gets no git workspace: no later call would take the record's path for it.
         if (vetRecordPath("gitDir", repo.gitDir, { root: project.root, gitDir: repo.gitDir }) === undefined) return refused("git-unavailable");
-        gitRun = { baseCommit: found.baseCommit, branch: runBranch(run.runId), drivers: drivers.config, repo };
+        gitRun = { baseCommit: found.baseCommit, branch: runBranch(run.runId), drivers, repo };
       } else ignoreRules = "inWorkTree" in found && found.inWorkTree;
     } catch {
       return refused(project !== undefined ? "git-unavailable" : "workspace-unavailable");
@@ -422,8 +441,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       writeRunFile(at, file);
       await assertRepository(at);
       joined.check();
-      const added = await git.run(project.root, ["worktree", "add", END_OF_OPTIONS, joined.path, branch], { drivers: [...gitRun.drivers, ...ABSOLUTE_LINKS] }).catch(() => undefined);
+      const added = await git.run(project.root, ["worktree", "add", "--no-checkout", END_OF_OPTIONS, joined.path, branch], { drivers: [...gitRun.drivers.config, ...ABSOLUTE_LINKS] }).catch(() => undefined);
       if (recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, joined.id)) === undefined || added?.code !== 0) throw new Error("the integration worktree was not made");
+      joined.check();
+      await checkOut(at, JOIN_DIR, joined, gitRun.drivers.requiredFilters);
       joined.check();
       if (answered(["symbolic-ref"], await gitIn(at, JOIN_DIR, joined)(["symbolic-ref", "-q", "HEAD"])).trim() !== ref) throw new Error("the integration worktree is not on the run's branch");
       roots.set(basename(runRoot), runRoot);
@@ -467,8 +488,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       // The stage folder is the host's own before git fills it, and still that folder each time something is removed from it.
       await assertRepository(at);
       held.check();
-      const added = await git.run(root, ["worktree", "add", "--detach", END_OF_OPTIONS, held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS] }).catch(() => undefined);
+      const added = await git.run(root, ["worktree", "add", "--detach", "--no-checkout", END_OF_OPTIONS, held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS] }).catch(() => undefined);
       if (recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
+      held.check();
+      await checkOut(at, stage.id, held, drivers.requiredFilters);
       held.check();
       // A tracked secret file is not handed to a stage.
       const tracked = nul(answered(["ls-files"], await gitIn(at, stage.id, held)(["ls-files", "-z"])));
@@ -598,8 +621,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     // The worktree link decides which repository the host's git writes to; a changed one is not followed.
     if (root === undefined || entry.base === undefined || stage.readFile(".git")?.toString("utf8") !== entry.link) return { ok: false, code: "workspace-unavailable" };
     if (!(await identityOf(root))) return { ok: false, code: "identity-missing" };
-    const drivers = (await git.drivers(root)).config;
     await assertRepository(at);
+    const drivers = (await driversIn(at, stageId, stage)).config;
     const inStage = gitIn(at, stageId, stage);
     const out = async (args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> => answered(args, await inStage(args, call));
     await out(["add", "-A"], { drivers });
@@ -664,9 +687,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const seals = Object.fromEntries(stageIds.map(stageId => [stageId, file.stages[stageId]?.sealCommit ?? null]));
     if (stageIds.some(stageId => file.stages[stageId]?.sealed !== true)) throw new Error("a stage of the join is not sealed");
     if (!(await identityOf(root))) return conflictOf(run, joinId, "identity-missing", [], seals);
-    const drivers = (await git.drivers(root)).config;
     // Every git call in the folder goes through `gitIn`; before each merge and abort the repository is asked again as well.
     await assertRepository(at);
+    const drivers = (await driversIn(at, JOIN_DIR, joined)).config;
     const inJoin = gitIn(at, JOIN_DIR, joined);
     const merging = async (): Promise<boolean> => (await inJoin(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).code === 0;
     const unmerged = async (): Promise<string[]> => nul(answered(["diff"], await inJoin(["diff", "--name-only", "-z", "--diff-filter=U", "--no-ext-diff", "--no-textconv"], { drivers })));
