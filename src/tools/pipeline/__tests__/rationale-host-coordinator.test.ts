@@ -1600,7 +1600,7 @@ it.each([false, true])("records a final model-accepted denial once without openi
   expect(recordTerminalDenial).toHaveBeenCalledTimes(1);
 });
 
-it("does not record a denied tool while the card is pending or when its caller cancels", async () => {
+it("records no denial while the card is pending and one stop row when its caller cancels", async () => {
   const recordTerminalDenial = vi.fn(async (_reason: string) => {});
   const state = setup({ recordTerminalDenial, deferApproval: true });
   const { control } = materialize(state);
@@ -1612,7 +1612,8 @@ it("does not record a denied tool while the card is pending or when its caller c
   expect(recordTerminalDenial).not.toHaveBeenCalled();
   caller.abort();
   await expect(pending).resolves.toBeNull();
-  expect(recordTerminalDenial).not.toHaveBeenCalled();
+  // The cancelled card ends the attempt it holds: one stop row, never a user deny.
+  expect(recordTerminalDenial).toHaveBeenCalledExactlyOnceWith("The permission request was stopped; the action was not executed.", true);
 });
 
 it("requires the original non-headless approval callback instead of constructing a fallback card", async () => {

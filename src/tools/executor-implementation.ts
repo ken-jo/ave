@@ -709,7 +709,8 @@ export class ToolExecutor {
     rationaleResumeContext?: RationaleResumeExecutionContext,
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
     // Sealed-but-open work is admitted and writes its host-shutdown row; only a closed audit refuses without one.
-    const admission = admitToolInvocationWhileAuditOpen(toolUse.name, opts.abortSignal);
+    // A sealed start takes back the attempt its rationale card held.
+    const admission = admitToolInvocationWhileAuditOpen(toolUse.name, opts.abortSignal, rationaleResumeContext ? toolUse.id : undefined);
     if (!admission) {
       return {
         tool_use_id: toolUse.id,
@@ -740,7 +741,7 @@ export class ToolExecutor {
           pluginOperationGrants: this.pluginOperationGrants,
           pluginGenerationAccessProvider: this.pluginGenerationAccessProvider,
           pluginOperationIdentityProvider: this.pluginOperationIdentityProvider,
-          invocationTerminal: admission,
+          invocationTerminal: admission.terminal,
         },
         toolUse,
         groupId,
@@ -749,9 +750,13 @@ export class ToolExecutor {
         rationaleBatchContext,
         rationaleResumeContext,
       );
-    } finally {
-      admission.settle();
+    } catch (error) {
+      // An invocation that threw before its terminal row ends with the host's.
+      admission.settle(error);
+      throw error;
     }
+    if (isRationaleRequiredExecuteOneOutcome(result)) admission.suspend(toolUse.id);
+    admission.settle();
     return result;
   }
 

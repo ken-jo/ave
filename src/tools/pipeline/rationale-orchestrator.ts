@@ -51,7 +51,7 @@ export interface RationaleControlCandidate {
   readonly invocationTrustOrigin: ToolTrustOrigin;
   readonly canonicalTargets: readonly string[];
   readonly approvalCacheKey?: string;
-  readonly recordTerminalDenial?: (reason: string) => Promise<void>;
+  readonly recordTerminalDenial?: (reason: string, stopped?: boolean) => Promise<void>;
   readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: Readonly<SandboxCapability>;
   readonly sandboxExecutionPlan: Readonly<Record<string, unknown>>;
@@ -93,7 +93,7 @@ export interface RationaleControlProbe {
   readonly invocationTrustOrigin: ToolTrustOrigin;
   readonly canonicalTargets: readonly string[];
   readonly approvalCacheKey?: string;
-  readonly recordTerminalDenial?: (reason: string) => Promise<void>;
+  readonly recordTerminalDenial?: (reason: string, stopped?: boolean) => Promise<void>;
   readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: Readonly<SandboxCapability>;
   readonly sandboxExecutionPlan: Readonly<Record<string, unknown>>;
