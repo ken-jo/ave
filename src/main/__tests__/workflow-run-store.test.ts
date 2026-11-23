@@ -115,6 +115,115 @@ it("reports an asynchronous change listener rejection without waiting on deliver
   expect(report).toHaveBeenCalledWith(error);
 });
 
+it("signals keyed metadata when a delete intent is published or replaces an unknown marker", async () => {
+  const store = new WorkflowRunStore(file);
+  const pair = { runId: "run-1", itemId: 1 };
+  await store.put(run());
+  const read = vi.fn(async () => (await store.runFacts())?.of(pair));
+  store.runChanged.subscribe(read);
+  const write = vi.spyOn(namespace, "writeFileAtomicAtPath").mockRejectedValueOnce(new Error("persist refused"));
+
+  await expect(store.markDeleted(pair)).rejects.toThrow("persist refused");
+  expect(read).not.toHaveBeenCalled();
+  expect((await store.runFacts())?.of(pair)).toEqual({ readable: true, intent: false, unknown: false });
+  write.mockRestore();
+  expect(await store.markDeleted(pair)).toBe("marked");
+  expect(await store.markDeleted(pair)).toBe("marked");
+  expect(read.mock.calls).toHaveLength(1);
+  expect(await read.mock.results[0].value).toEqual({ readable: true, intent: true, unknown: false });
+  await store.markUnknown(pair);
+  read.mockClear();
+
+  expect(await store.markDeleted(pair, () => true)).toBe("marked");
+  expect(read.mock.calls).toHaveLength(1);
+  expect(await read.mock.results[0].value).toEqual({ readable: true, intent: true, unknown: false });
+});
+
+it("signals keyed metadata when an intent and its unknown marker are withdrawn", async () => {
+  const store = new WorkflowRunStore(file);
+  const pair = { runId: "run-1", itemId: 1 };
+  await store.put(run());
+  await store.markDeleted(pair);
+  await store.markUnknown(pair);
+  const read = vi.fn(async (runId: string) => (await store.runFacts())?.of({ ...pair, runId }));
+  store.runChanged.subscribe(read);
+  const write = vi.spyOn(namespace, "writeFileAtomicAtPath").mockRejectedValueOnce(new Error("persist refused"));
+
+  expect(await store.withdrawIntent(pair)).toBe(false);
+  expect(read).not.toHaveBeenCalled();
+  expect((await store.runFacts())?.of(pair)).toEqual({ readable: true, intent: true, unknown: true });
+  write.mockRestore();
+  expect(await store.withdrawIntent(pair)).toBe(true);
+  expect(await store.withdrawIntent(pair)).toBe(true);
+  expect(read.mock.calls).toEqual([["run-1"]]);
+  expect(await read.mock.results[0].value).toEqual({ readable: true, intent: false, unknown: false });
+});
+
+it("signals keyed metadata only once an unknown marker is persisted", async () => {
+  const store = new WorkflowRunStore(file);
+  const pair = { runId: "run-1", itemId: 1 };
+  await store.put(run());
+  const read = vi.fn(async (runId: string) => (await new WorkflowRunStore(file).runFacts())?.of({ ...pair, runId }));
+  store.runChanged.subscribe(read);
+  vi.spyOn(namespace, "writeFileAtomicAtPath").mockRejectedValueOnce(new Error("persist refused"));
+
+  await store.markUnknown(pair);
+  expect(read).not.toHaveBeenCalled();
+  expect((await store.runFacts())?.of(pair)).toEqual({ readable: true, intent: false, unknown: true });
+  await store.markUnknown(pair);
+  await store.markUnknown(pair);
+  expect(read.mock.calls).toEqual([["run-1"]]);
+  expect(await read.mock.results[0].value).toEqual({ readable: true, intent: false, unknown: true });
+});
+
+it("signals keyed metadata once per run after resolving unknown markers", async () => {
+  const store = new WorkflowRunStore(file);
+  const pairs = [1, 2, 3].map(itemId => ({ runId: `run-${itemId}`, itemId }));
+  for (const pair of pairs) {
+    await store.put(run(pair));
+    await store.markDeleted(pair);
+    await store.markUnknown(pair);
+  }
+  await store.markUnknown(pairs[0], { op: "card", ownIntent: true });
+  const read = vi.fn(async (runId: string) => {
+    const pair = pairs.find(candidate => candidate.runId === runId);
+    if (pair === undefined) throw new Error("Unexpected run id");
+    return [runId, (await store.runFacts())?.of(pair)] as const;
+  });
+  store.runChanged.subscribe(read);
+  const outcome = (marker: { itemId: number }) => marker.itemId === 1 ? "landed" : marker.itemId === 2 ? "unlanded" : "held";
+  vi.spyOn(namespace, "writeFileAtomicAtPath").mockRejectedValueOnce(new Error("persist refused"));
+
+  await store.resolveUnknown(outcome);
+  expect(read).not.toHaveBeenCalled();
+  await store.resolveUnknown(outcome);
+  await store.resolveUnknown(outcome);
+  expect(read.mock.calls.map(([runId]) => runId).sort()).toEqual(["run-1", "run-2"]);
+  expect(Object.fromEntries(await Promise.all(read.mock.results.map(result => result.value)))).toEqual({
+    "run-1": { readable: true, intent: true, unknown: false },
+    "run-2": { readable: true, intent: false, unknown: false },
+  });
+  expect((await store.runFacts())?.of(pairs[2])).toEqual({ readable: true, intent: true, unknown: true });
+});
+
+it("signals keyed metadata when held events are added and removed", async () => {
+  const store = new WorkflowRunStore(file);
+  const pair = { runId: "run-1", itemId: 1 };
+  const event = { ...pair, stage: "plan", attempt: 1, kind: "stage_ended" };
+  await store.put(run());
+  const read = vi.fn((runId: string) => store.heldEvents({ ...pair, runId }));
+  store.runChanged.subscribe(read);
+
+  expect(await store.holdEvent(event)).toBe(true);
+  expect(await store.holdEvent(event)).toBe(true);
+  expect(read.mock.calls).toEqual([["run-1"]]);
+  expect(await read.mock.results[0].value).toEqual([event]);
+  await store.dropHeld(pair, event);
+  await store.dropHeld(pair);
+  expect(read.mock.calls).toEqual([["run-1"], ["run-1"]]);
+  expect(await read.mock.results[1].value).toEqual([]);
+});
+
 it("stores a run by runId and returns copies", async () => {
   const store = new WorkflowRunStore(file);
   expect(await store.get("run-1")).toEqual({ status: "not-found" });
