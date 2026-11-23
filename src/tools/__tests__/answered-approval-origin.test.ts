@@ -160,6 +160,24 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     expect(rows.map(row => row.trustOrigin)).toEqual(expected.map(([, lifetime]) => choice === "allow-always" && lifetime === undefined ? "unknown" : "user-keyboard"));
   });
 
+  it("pairs the desk's saved folder grant with its terminal allow", async () => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const allowDirectory = vi.fn(async (directory: string) => [directory]);
+    const requestAndWait = answeringRequestAndWait((request: ApprovalRequestInput) => ({ choice: request.kind === "out-of-allowed-dir" ? "allow-always" as const : "allow-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit, undefined,
+      () => ({ allowDirectory, denyDirectory: vi.fn() }) as never);
+    const [result] = await executor.executeAll([{ id: "plugin-dir-kept", name: "write_file", input: { path: join(outside, "kept.txt"), content: "kept" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], onTurnDirectoryGrant: vi.fn(), onSessionDirectoryGrant: vi.fn() },
+    });
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(allowDirectory).toHaveBeenCalledOnce();
+    expect(await readFile(join(outside, "kept.txt"), "utf8")).toBe("kept");
+    expect((await ledger("plugin-dir-kept")).map(row => [row.decision, row.grantLifetime, row.trustOrigin]))
+      .toEqual([["allow", "always", "user-keyboard"], ["allow", undefined, "user-keyboard"]]);
+  });
+
   it.each([
     ["allow-always", "folder rule save failed: workspace lifecycle unavailable", [["allow", "always"], ["deny", undefined]]],
     ["allow-session", "session folder registration failed: session scope unavailable", [["deny", undefined]]],
