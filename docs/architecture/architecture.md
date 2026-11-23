@@ -2309,7 +2309,8 @@ Key boundaries:
   first interactive launch of this version shows one card listing every enabled
   extension with a declared scope and no approval, each with its own Allow, and
   a Later that leaves the Review badge in its settings. Only the first window
-  that lists it shows it while that window is open. Answering it is saved
+  that lists it shows it while that window is open; if that window closes
+  unanswered, the next window focused shows it. Answering it is saved
   with the approvals, so later launches show no such card; a headless launch has
   no window and leaves it owed. If any enabled extension cannot be read, the
   card lists the rest but answering it does not count, so the next launch asks

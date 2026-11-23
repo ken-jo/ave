@@ -166,26 +166,41 @@ export function PluginBackgroundEffectsPrompt() {
     }
     if (typeof api.getPluginBackgroundEffectsUpgrade !== "function") return;
     let cancelled = false;
-    // Taken before any runtime event can queue a per-plugin card.
-    holding.current = true;
+    let elsewhere = false;
     const release = () => {
       holding.current = false;
       void pump();
     };
-    Promise.resolve().then(() => api.getPluginBackgroundEffectsUpgrade()).then((result) => {
-      if (cancelled) return;
-      incomplete.current = result?.ok === true && result.incomplete === true;
-      if (result?.ok && result.reviews.length > 0) {
-        upgradeRows.current = result.reviews;
-        setUpgrade(result.reviews);
-        return;
-      }
-      if (result?.ok && !incomplete.current) void Promise.resolve().then(() => api.finishPluginBackgroundEffectsUpgrade()).catch(() => undefined);
-      release();
-    }, () => {
-      if (!cancelled) release();
-    });
-    return () => { cancelled = true; };
+    const list = () => {
+      // Taken before any runtime event can queue a per-plugin card.
+      holding.current = true;
+      Promise.resolve().then(() => api.getPluginBackgroundEffectsUpgrade()).then((result) => {
+        if (cancelled) return;
+        elsewhere = result?.ok === false && result.error === "background-effects-upgrade-elsewhere";
+        incomplete.current = result?.ok === true && result.incomplete === true;
+        if (result?.ok && result.reviews.length > 0) {
+          upgradeRows.current = result.reviews;
+          setUpgrade(result.reviews);
+          return;
+        }
+        if (result?.ok && !incomplete.current) void Promise.resolve().then(() => api.finishPluginBackgroundEffectsUpgrade()).catch(() => undefined);
+        release();
+      }, () => {
+        if (!cancelled) release();
+      });
+    };
+    // Another window held the card; if it closed unanswered, focusing this one lists it here.
+    const onFocus = () => {
+      if (!elsewhere || current.current) return;
+      elsewhere = false;
+      list();
+    };
+    window.addEventListener("focus", onFocus);
+    list();
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onFocus);
+    };
   }, [pump]);
 
   useEffect(() => {

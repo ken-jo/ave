@@ -299,6 +299,27 @@ describe("the first-launch background effects card", () => {
     expect(host.approvePluginBackgroundEffects).toHaveBeenCalledExactlyOnceWith({ pluginId: ID, reviewSha256: A });
   });
 
+  it("shows the card when this window is focused after the window that held it closed unanswered", async () => {
+    const host = fakeHost({ reviews: [{ pluginId: ID, name: "Digest Plugin", reviewSha256: A, effects }] });
+    host.getPluginBackgroundEffectsUpgrade.mockResolvedValueOnce({ ok: false, error: "background-effects-upgrade-elsewhere" });
+    const focus = () => act(() => { window.dispatchEvent(new Event("focus")); });
+    render(<PluginBackgroundEffectsPrompt />);
+    await waitFor(() => expect(host.getPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId(UPGRADE)).toBeNull();
+    expect(host.finishPluginBackgroundEffectsUpgrade).not.toHaveBeenCalled();
+
+    focus();
+    const dialog = await upgradeCard();
+    expect(host.getPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(2);
+    fireEvent.click(within(dialog).getByRole("button", { name: "나중에" }));
+    await upgradeClosed();
+    expect(host.finishPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1);
+    focus();
+    await act(async () => { await Promise.resolve(); });
+    expect(host.getPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(2);
+  });
+
   it("never answers a list the host says is incomplete, so the next launch asks again", async () => {
     const host = fakeHost({ reviews: [{ pluginId: ID, name: "Digest Plugin", reviewSha256: A, effects }], incomplete: true });
     render(<PluginBackgroundEffectsPrompt />);
