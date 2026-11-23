@@ -12,6 +12,7 @@ it.each(["held", "mutation"] as const)("an obsolete link keeps its original atte
   let refusing = false;
   const messages = vi.spyOn(console, "log");
   const h = await stageRunHarness({
+    observeRunWork: true,
     script: () => { linked = true; return undefined; },
     wiring: store => {
       const records = boardRunState(store);
@@ -35,7 +36,16 @@ it.each(["held", "mutation"] as const)("an obsolete link keeps its original atte
       } };
     },
   });
-  try {
+  await h.runThenEnd(async () => {
+    try {
+      await linkMovesOn();
+    } finally {
+      // The children end, and their run work drains, with the store writing again.
+      refusing = false;
+      vi.restoreAllMocks();
+    }
+  });
+  async function linkMovesOn() {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
@@ -53,10 +63,5 @@ it.each(["held", "mutation"] as const)("an obsolete link keeps its original atte
     expect(recovered.stageRuns[0].childSessionId).toBeUndefined();
     expect(child.ended).toBe(false);
     expect(messages.mock.calls.some(call => call.includes("its stage moved on to another attempt"))).toBe(true);
-  } finally {
-    refusing = false;
-    for (const child of h.children) child.finish();
-    vi.restoreAllMocks();
-    await h.cleanup();
   }
 });

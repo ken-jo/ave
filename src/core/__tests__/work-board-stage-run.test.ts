@@ -13,13 +13,10 @@ import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+/** Every engine's detached run work is observed and drained before cleanup, so none of it writes into a removed folder. */
 async function withHarness(run: (h: Harness) => Promise<void>, opts: Parameters<typeof stageRunHarness>[0] = {}): Promise<void> {
-  const h = await stageRunHarness(opts);
-  try {
-    await run(h);
-  } finally {
-    await h.cleanup();
-  }
+  const h = await stageRunHarness({ ...opts, observeRunWork: true });
+  await h.runThenEnd(() => run(h));
 }
 
 const auto = autoStageOf;

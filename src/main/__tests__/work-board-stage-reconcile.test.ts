@@ -25,8 +25,8 @@ async function restarted(h: Harness) {
 }
 
 it("keeps a pending stage gate across restart and fails running stages as interrupted", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const version = await h.confirm([stageOf("a"), stageOf("b"), stageOf("c", { inputs: ["a", "b"] })]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
@@ -49,14 +49,12 @@ it("keeps a pending stage gate across restart and fails running stages as interr
     await restarted(h);
     expect((await h.item(id)).record).toEqual(item.record);
     expect(h.children).toHaveLength(2);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("fails a gate whose stored output no longer matches its hash, and a kept stage whose workspace folder is gone", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const version = await h.confirm([stageOf("a"), stageOf("b")]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
@@ -70,17 +68,15 @@ it("fails a gate whose stored output no longer matches its hash, and a kept stag
     expect(item.runStatus).toBe("executing");
     expect(item.stageRuns).toMatchObject([{ stageId: "a", status: "failed", failure: "interrupted" }, { stageId: "b", status: "failed", failure: "workspace-lost" }]);
     expect(item.record && isAwaitingStageReview(item.record)).toBe(false);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("resumes an intact join after restart without manufacturing a conflict", async () => {
   let hold = true;
   let held = false;
   const integrating = deferred<void>();
-  const h = await stageRunHarness({ integrate: () => { if (!hold) return { ok: true }; held = true; integrating.resolve(); return new Promise(() => undefined); } });
-  try {
+  const h = await stageRunHarness({ observeRunWork: true, integrate: () => { if (!hold) return { ok: true }; held = true; integrating.resolve(); return new Promise(() => undefined); } });
+  await h.runThenEnd(async () => {
     const version = await h.confirm([stageOf("a", { gate: { type: "auto", pass: { kind: "stage_ok" } } })]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
@@ -98,12 +94,13 @@ it("resumes an intact join after restart without manufacturing a conflict", asyn
     await restarted(h);
     expect((await h.item(id)).record).toEqual(item.record);
     expect(h.children).toHaveLength(1);
-  } finally { await h.cleanup(); }
+    // The first engine's integration never returns: only the engines after it can drain.
+  }, { drain: "latest" });
 });
 
 it("a row deleted while its run is parked after a restart ends the run cancelled in the run file", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
@@ -122,9 +119,7 @@ it("a row deleted while its run is parked after a restart ends the run cancelled
     expect(await h.runOf(runId)).toBeNull();
     expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
     expect(h.children).toHaveLength(1);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 /** Remove a row from the board file while no process runs, as a deletion the engine never heard of. */
@@ -145,8 +140,8 @@ async function parkedRun(h: Harness) {
 }
 
 it("a run whose row was deleted while the app was down is cancelled at boot and its record pruned", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const { id, runId } = await parkedRun(h);
     const kept = await parkedRun(h);
     deleteRowOffline(h, id);
@@ -164,14 +159,12 @@ it("a run whose row was deleted while the app was down is cancelled at boot and 
     expect(engine.cancelRun(kept.id)).toEqual({ ok: true });
     expect(h.sweeps.at(-1)).toEqual([kept.runId]);
     expect(h.children).toHaveLength(2);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("a run whose row names another run is cancelled at boot and kept only as that row's history", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const { id, runId } = await parkedRun(h);
     h.editRow(id, row => ({ ...row, runId: "run-elsewhere" }));
     await restarted(h);
@@ -179,14 +172,12 @@ it("a run whose row names another run is cancelled at boot and kept only as that
     expect(record).toMatchObject({ status: "found", run: { runId, settled: { status: "cancelled" } } });
     expect(h.sweeps.at(-1)).toEqual([]);
     expect(h.children).toHaveLength(1);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("a boot that finds the run file awaiting review settles, sweeps and takes over nothing, and a later reader takes the run over", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const { id, runId, version, gate } = await parkedRun(h);
     const other = await h.addItem(version);
     const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
@@ -214,9 +205,7 @@ it("a boot that finds the run file awaiting review settles, sweeps and takes ove
     await h.untilObserved(() => expect(engine.cancelRun(id).ok).toBe(true));
     expect(h.sweeps.slice(swept)).toEqual([[runId]]);
     expect(h.children).toHaveLength(1);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 /** A parked run, then the board file as `edit` leaves it while the app is down; the next process boots over it. */
@@ -240,8 +229,8 @@ async function bootOverBoard(h: Harness, edit: (id: number) => void) {
 
 for (const board of ["missing", "corrupt"] as const) {
   it(`a boot over a ${board} board file changes no run record, sweeps nothing and refuses template starts`, async () => {
-    const h = await stageRunHarness();
-    try {
+    const h = await stageRunHarness({ observeRunWork: true });
+    await h.runThenEnd(async () => {
       const boot = await bootOverBoard(h, () => board === "missing" ? rmSync(h.boardPath) : writeFileSync(h.boardPath, "{ not json"));
       expect(await h.runOf(boot.runId)).toEqual(boot.before);
       expect(boot.update).not.toHaveBeenCalled();
@@ -253,28 +242,24 @@ for (const board of ["missing", "corrupt"] as const) {
       rmSync(h.boardPath);
       expect(await boot.engine.runItem(created.itemId, { templateSource: h.local(boot.version) })).toMatchObject({ status: "error", reasonCode: "template-runs-board-unread" });
       expect(await h.runOf(boot.runId)).toEqual(boot.before);
-    } finally {
-      await h.cleanup();
-    }
+    });
   });
 }
 
 it("a decision while the runs a restart left are not taken over is refused by its own reason, which has text", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const boot = await bootOverBoard(h, () => rmSync(h.boardPath));
     const decided = await boot.engine.decideStageGate(boot.id, { runId: boot.runId, stageId: "a", attempt: 1, resultHash: boot.gate.resultHash ?? "", decision: "approve" });
     expect(decided).toEqual({ ok: false, reason: "runs_not_adopted" });
     for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.runs-not-adopted")).toEqual(expect.stringMatching(/\S/));
     expect(await h.runOf(boot.runId)).toEqual(boot.before);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("a boot over a row on the board without naming its run, as a start whose row write never landed leaves it, ends that run error and keeps nothing of it", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const boot = await bootOverBoard(h, id => h.editRow(id, ({ runId: _, runHistory: __, ...row }) => row));
     expect(await endsWritten(boot.update, boot.runId)).toEqual(["error"]);
     expect(boot.prune).toHaveBeenCalled();
@@ -286,26 +271,22 @@ it("a boot over a row on the board without naming its run, as a start whose row 
     await again.adoptParkedTemplateRuns();
     expect(update).not.toHaveBeenCalled();
     expect(h.children).toHaveLength(1);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("a boot over a board file replaced by an empty one cancels the run, whose row it does not list, then prunes and sweeps it", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const boot = await bootOverBoard(h, () => writeFileSync(h.boardPath, JSON.stringify({ version: 1, nextId: 1, items: [] })));
     expect(await endsWritten(boot.update, boot.runId)).toEqual(["cancelled"]);
     expect(await h.runOf(boot.runId)).toBeNull();
     expect(h.sweeps.slice(boot.swept)).toEqual([[]]);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("a board written again after it went missing issues ids above the run's row, and the next start ends that run error as lost, never cancelled, and its record goes with the mark", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const boot = await bootOverBoard(h, () => rmSync(h.boardPath));
     // The id comes from the run file's floor, above the row the run names.
     const created = await h.board.create({ title: "Other", templateId: boot.version.templateId });
@@ -322,14 +303,12 @@ it("a board written again after it went missing issues ids above the run's row, 
     expect(h.sweeps.slice(boot.swept)).toEqual([[]]);
     expect(boot.engine.cancelRun(created.itemId)).toEqual({ ok: true });
     await started;
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 it("an orphaned run whose cancel write fails is neither pruned nor swept, and the next start cancels it", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const { id, runId, version } = await parkedRun(h);
     const other = await h.addItem(version);
     deleteRowOffline(h, id);
@@ -351,15 +330,13 @@ it("an orphaned run whose cancel write fails is neither pruned nor swept, and th
     expect(h.sweeps.slice(swept)).toEqual([[]]);
     expect(engine.cancelRun(other)).toEqual({ ok: true });
     await started;
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 for (const failing of ["reconcile", "row"] as const) {
   it(`a boot whose reconcile or row repair write fails takes nothing over: starts stay refused and nothing is swept until a later attempt succeeds (${failing})`, async () => {
-    const h = await stageRunHarness();
-    try {
+    const h = await stageRunHarness({ observeRunWork: true });
+    await h.runThenEnd(async () => {
       const { id, runId, version } = await parkedRun(h);
       if (failing === "reconcile") await h.board.runs.update(runId, run => ({ ...run, stageRuns: run.stageRuns.map(stage => stage.stageId === "a" ? { ...stage, status: "running" } : stage) }));
       else h.editRow(id, row => ({ ...row, runStatus: "error" }));
@@ -384,16 +361,14 @@ for (const failing of ["reconcile", "row"] as const) {
       expect(engine.cancelRun(id)).toEqual({ ok: true });
       expect(engine.cancelRun(other)).toEqual({ ok: true });
       await started;
-    } finally {
-      await h.cleanup();
-    }
+    });
   });
 }
 
 for (const event of ["start", "reader"] as const) {
   it(`a settled run whose row a crash left executing is restored by the next start or reader once a deferred boot adoption can run (${event})`, async () => {
-    const h = await stageRunHarness();
-    try {
+    const h = await stageRunHarness({ observeRunWork: true });
+    await h.runThenEnd(async () => {
       const version = await h.confirm([stageOf("a")]);
       const id = await h.addItem(version);
       const first = h.start(id, h.local(version));
@@ -417,15 +392,13 @@ for (const event of ["start", "reader"] as const) {
         expect((await engine.projectTemplateRuns([await h.item(id)]))[0]).toMatchObject({ runStatus: "completed" });
         await h.until(id, item => item.runStatus === "completed");
       }
-    } finally {
-      await h.cleanup();
-    }
+    });
   });
 }
 
 it("a deferred adoption is retried only by an event, never by time", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const { id } = await parkedRun(h);
     const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
     const read = homeTrust.readAveHomeInput;
@@ -450,9 +423,7 @@ it("a deferred adoption is retried only by an event, never by time", async () =>
     await engine.projectTemplateRuns([await h.item(id)]);
     await h.untilObserved(() => expect(engine.cancelRun(id).ok).toBe(true));
     expect(attempts).toHaveBeenCalledTimes(1);
-  } finally {
-    await h.cleanup();
-  }
+  });
 });
 
 /** An ordinary row started on the harness engine, once its plan child links. */
@@ -481,8 +452,8 @@ it.each<[string, (h: Harness, id: number) => Promise<unknown>]>([
   ["stage decision", (h, id) => h.engine.decideStageGate(id, { runId: "other-run", stageId: "a", attempt: 1, resultHash: "c".repeat(64), decision: "approve" })],
   ["missing run clear", (h, id) => h.engine.clearMissingRun(id, { revision: "c".repeat(64), runId: "other-run" })],
 ])("an ordinary run whose end was refused while the run file could not be read ends error at the next %s once the file reads, never by time", async (_, event) => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     await h.engine.adoptParkedTemplateRuns();
     const { id, child, running } = await ordinaryRun(h, "ordinary work");
     const restore = breakRunFile(h);
@@ -498,15 +469,12 @@ it.each<[string, (h: Harness, id: number) => Promise<unknown>]>([
     expect(rowOnDisk(h, id)).toMatchObject({ runStatus: "planning" });
     await event(h, id);
     expect(rowOnDisk(h, id)).toMatchObject({ runStatus: "error", runHistory: [{ status: "error" }] });
-  } finally {
-    for (const child of h.children) child.finish();
-    await h.cleanup();
-  }
+  });
 });
 
 it("a start of an ordinary row whose end was refused while the run file could not be read runs it again once the file reads", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const { id, child, running } = await ordinaryRun(h, "ordinary work");
     const restore = breakRunFile(h);
     child.finish({ ok: false, summary: "child failed", error: "child failed" });
@@ -517,15 +485,12 @@ it("a start of an ordinary row whose end was refused while the run file could no
     expect(next).not.toBe(child);
     next.finish({ ok: false, summary: "again failed", error: "again failed" });
     expect(await again).toMatchObject({ status: "error", reason: "again failed" });
-  } finally {
-    for (const child of h.children) child.finish();
-    await h.cleanup();
-  }
+  });
 });
 
 it("the recovery leaves an ordinary run in flight to end by its own write and replays no write the episode refused", async () => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const dead = await ordinaryRun(h, "dead work");
     const kept = await ordinaryRun(h, "kept work");
     const restore = breakRunFile(h);
@@ -540,10 +505,7 @@ it("the recovery leaves an ordinary run in flight to end by its own write and re
     kept.child.finish();
     expect(await kept.running).toMatchObject({ status: "awaiting_approval" });
     expect(rowOnDisk(h, kept.id)).toMatchObject({ title: "kept work", runStatus: "awaiting_approval", plan: `output of ${kept.child.sessionId}` });
-  } finally {
-    for (const child of h.children) child.finish();
-    await h.cleanup();
-  }
+  });
 });
 
 /** The run file as a hand edit leaves it: `edit` changes its top-level object. */
@@ -580,8 +542,8 @@ const PERMITTED_EVENTS: [string, (h: Harness, rows: Rows) => Promise<unknown>][]
 ];
 
 it.each(PERMITTED_EVENTS)("after the takeover, each %s reads a delete intent written since and ends that deleted row's run as item-removed", async (_, event) => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const rows = await adoptedWithRows(h);
     deleteRowOffline(h, rows.id);
     editRunFile(h, file => { file.deleteIntents = [{ itemId: rows.id, runId: rows.runId }]; });
@@ -589,15 +551,12 @@ it.each(PERMITTED_EVENTS)("after the takeover, each %s reads a delete intent wri
     await untilTrue(h, () => h.events.some(e => e.itemId === rows.id && e.phase === "cancelled" && e.message === "item-removed"));
     await untilTrue(h, async () => (await h.runOf(rows.runId)) === null);
     expect(runFileOnDisk(h)).not.toHaveProperty("deleteIntents");
-  } finally {
-    for (const child of h.children) child.finish();
-    await h.cleanup();
-  }
+  });
 });
 
 it.each(PERMITTED_EVENTS)("after the takeover, each %s reads an unknown marker written since, and withdraws it with its intent while the board lists the row", async (_, event) => {
-  const h = await stageRunHarness();
-  try {
+  const h = await stageRunHarness({ observeRunWork: true });
+  await h.runThenEnd(async () => {
     const rows = await adoptedWithRows(h);
     editRunFile(h, file => {
       file.deleteIntents = [{ itemId: rows.id, runId: rows.runId }];
@@ -608,8 +567,5 @@ it.each(PERMITTED_EVENTS)("after the takeover, each %s reads an unknown marker w
     expect((await h.runOf(rows.runId))?.settled).toBeUndefined();
     expect(rowOnDisk(h, rows.id)).toMatchObject({ runId: rows.runId });
     expect(h.events.some(e => e.itemId === rows.id && e.phase === "cancelled")).toBe(false);
-  } finally {
-    for (const child of h.children) child.finish();
-    await h.cleanup();
-  }
+  });
 });

@@ -1720,7 +1720,8 @@ it("writing unconfirmed run ends again keeps going past one that still fails: th
 it("a parked run whose end write throws once its row is taken out by hand keeps its record unconfirmed, and the next reader ends it cancelled as an orphan", () => withHarness(async (h) => {
   const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
   const id = await h.addItem(version);
-  void h.start(id, h.local(version)).catch(() => undefined);
+  // Its row is taken out by hand, so the start may fail; the run's work still runs to its end before the harness goes.
+  const started = outcomeOf(h.start(id, h.local(version)));
   const [a] = await h.untilLive(1);
   const runId = (await h.item(id)).runId ?? "";
   a.finish();
@@ -1751,6 +1752,7 @@ it("a parked run whose end write throws once its row is taken out by hand keeps 
   expect(ends().at(-1)).toMatchObject({ phase: "cancelled", reasonCode: "run-end-confirmed" });
   expect(stored).toEqual(["cancelled"]);
   expect(await h.runOf(runId)).toBeNull();
+  await within(started, "the start of the parked run to return");
 }));
 
 it("a live run whose row stops naming it while its delete intent is open is held when its stage write is refused: no lost end, and the intent stays", () => withHarness(async (h) => {

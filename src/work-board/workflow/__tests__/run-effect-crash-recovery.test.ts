@@ -16,6 +16,7 @@ it("a new engine consumes a durably applied gate once when the old write never r
   const conditions = createPassConditionRegistry();
   const evaluate = vi.spyOn(conditions, "evaluate");
   const h = await stageRunHarness({
+    observeRunWork: true,
     workflow: { passConditions: conditions },
     wiring: store => {
       const records = boardRunState(store);
@@ -41,7 +42,7 @@ it("a new engine consumes a durably applied gate once when the old write never r
       } } };
     },
   });
-  try {
+  await h.runThenEnd(async () => {
     const version = await h.confirm([autoStageOf("a")]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
@@ -72,5 +73,7 @@ it("a new engine consumes a durably applied gate once when the old write never r
     expect(evaluate).toHaveBeenCalledTimes(1);
     expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(1);
     expect(h.workspaceCalls.filter(call => call.startsWith("integrate:"))).toHaveLength(1);
-  } finally { vi.restoreAllMocks(); await h.cleanup(); }
+    vi.restoreAllMocks();
+    // The first engine's effect write never returns: only the engines after it can drain.
+  }, { drain: "latest" });
 });
