@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
@@ -39,7 +39,7 @@ export interface StageWorkspaceOptions {
   nameReader?: NameReader;
 }
 
-/** The mismatches already reported in this process, by run folder. */
+/** The mismatches already reported in this process, by record. */
 const warnedOnce = new Set<string>();
 /** Git writes the two files that tie a worktree to its registration as absolute paths, whatever the repository is configured to. */
 const ABSOLUTE_LINKS = ["-c", "worktree.useRelativePaths=false"];
@@ -255,17 +255,27 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     answered(["reset"], await gitIn(at, key, folder)(["reset", "--hard", "-q"], { drivers: drivers.config }));
   }
 
+  /** A folder is plain only when no folder from it up holds a `.git`: git failing to set a repository up, or having none to run, says
+   * nothing of the ignore rules and index one there holds. */
+  function plainOnly(root: string): { inWorkTree: false } {
+    for (let dir = root; ; dir = dirname(dir)) {
+      let found: boolean;
+      try { found = lstatSync(join(dir, ".git"), { throwIfNoEntry: false }) !== undefined; } catch { found = true; }
+      if (found) throw new Error("the folder lies in a repository git did not set up");
+      if (dirname(dir) === dir) return { inWorkTree: false };
+    }
+  }
+
   /** The HEAD commit when `root` is the top level of a git work tree that has one; null for every other folder. */
   async function gitProject(root: string): Promise<{ baseCommit: string } | { inWorkTree: boolean }> {
     let top: Awaited<ReturnType<HostGit["run"]>>;
     try {
       top = await git.run(root, ["rev-parse", "--show-toplevel"], { exact: true });
     } catch (error) {
-      // No git on this machine: every project is a plain folder.
-      if (error instanceof HostGitError && error.reason === "unavailable") return { inWorkTree: false };
+      if (error instanceof HostGitError && error.reason === "unavailable") return plainOnly(root);
       throw error;
     }
-    if (top.code !== 0) return { inWorkTree: false };
+    if (top.code !== 0) return plainOnly(root);
     // A top level that cannot be found says nothing of the folder: it is not thereby a plain one, whose ignore rules nobody asks.
     if (!samePath(realpathSync.native(top.stdout.replace(/\r?\n$/u, "")), root)) return { inWorkTree: true };
     const head = await git.run(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
@@ -702,17 +712,30 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     await assertRepository(at);
     const drivers = (await driversIn(at, JOIN_DIR, joined)).config;
     const inJoin = gitIn(at, JOIN_DIR, joined);
-    const merging = async (): Promise<boolean> => (await inJoin(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).code === 0;
-    const unmerged = async (): Promise<string[]> => nul(answered(["diff"], await inJoin(["diff", "--name-only", "-z", "--diff-filter=U", "--no-ext-diff", "--no-textconv"], { drivers })));
+    // Exit 1 with nothing written is no merge; any other failure is no answer, and nothing is taken from it.
+    const merging = async (): Promise<boolean> => {
+      const head = await inJoin(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]);
+      if (head.code === 0) return true;
+      if (head.code === 1 && head.stdout === "") return false;
+      throw new Error("git gave no answer whether a merge is in progress");
+    };
+    const unmerged = async (): Promise<string[]> => nul(answered(["diff"], await inJoin(["diff", "--name-only", "-z", "--diff-filter=U", "--no-ext-diff", "--no-textconv"], { drivers, exact: true })));
+    /** The retry marker goes only once git aborted the merge, or has none. */
+    const abort = async (): Promise<void> => {
+      if (await merging()) {
+        await assertRepository(at);
+        answered(["merge"], await inJoin(["merge", "--abort"], { drivers }));
+      }
+      delete file.merging;
+      writeRunFile(at, file);
+    };
     if (await merging()) {
       if (file.merging === undefined) {
         // The user is in the middle of resolving here; their work is left exactly as it is.
         return conflictOf(run, joinId, "merge-conflict", (await unmerged()).map(path => ({ path, stageIds: [...stageIds] })), seals, "a merge is still in progress in the integration folder");
       }
-      await assertRepository(at);
-      await inJoin(["merge", "--abort"], { drivers });
     }
-    if (file.merging !== undefined) { delete file.merging; writeRunFile(at, file); }
+    if (file.merging !== undefined) await abort();
     for (const stageId of stageIds) {
       const sealCommit = file.stages[stageId]?.sealCommit;
       if (sealCommit === undefined) continue;
@@ -723,24 +746,23 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       await assertRepository(at);
       const merged = await inJoin(["merge", "--no-edit", "--no-stat", "--no-verify", "--no-gpg-sign", "-m", `Collect stage ${stageId}\n\n${trailers(run, stageId)}`, END_OF_OPTIONS, sealCommit], { drivers });
       if (merged.code !== 0) {
-        const paths = await unmerged().catch(() => []);
+        // The files are read before the abort takes the merge state away; one that could not be read refuses the join.
+        const paths = await unmerged().catch((error: unknown) => error as Error);
         const files: ConflictFile[] = [];
-        for (const path of paths) {
+        let failed = paths instanceof Error ? paths : undefined;
+        for (const path of paths instanceof Error ? [] : paths) {
           const touched = [stageId];
           for (const other of stageIds) {
             const entry = file.stages[other];
             if (other === stageId || entry?.sealCommit === undefined || entry.base === undefined) continue;
             const changed = await inJoin(["diff", "--quiet", "--no-ext-diff", "--no-textconv", END_OF_OPTIONS, entry.base, entry.sealCommit], { drivers, paths: [path] });
             if (changed.code === 1) touched.push(other);
+            else if (changed.code !== 0) failed ??= new Error("git could not tell which stages changed a conflicting file");
           }
           files.push({ path, stageIds: stageIds.filter(id => touched.includes(id)) });
         }
-        if (await merging()) {
-          await assertRepository(at);
-          await inJoin(["merge", "--abort"], { drivers });
-        }
-        delete file.merging;
-        writeRunFile(at, file);
+        await abort();
+        if (failed !== undefined) throw failed;
         const said = (merged.stderr.trim() || merged.stdout.trim()).split(/\r?\n/u)[0]?.slice(0, 300);
         return conflictOf(run, joinId, "merge-conflict", files, seals, files.length === 0 ? said : undefined);
       }
@@ -867,8 +889,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
   }
 
-  /** What of the run is no longer what its record names, read before a removal starts. */
-  async function preflight(at: Held): Promise<Mismatch[]> {
+  /** What of the run folder itself is no longer what its record names; nothing of the project or its repository is asked. */
+  function hostMismatches(at: Held): Mismatch[] {
     const { file } = at;
     try { at.run.check(); } catch { return [{ field: "self", side: "host" }]; }
     if (readRunFile(at.runRoot, at.run) === null) return [{ field: "record", side: "host" }];
@@ -880,14 +902,22 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const [stageId, entry] of Object.entries(file.stages)) node(`stages.${stageId}.dir`, stageDirName(stageId), entry.dir);
     node("joinDir", JOIN_DIR, file.joinDir);
     node("outDir", OUT_DIR, file.outDir);
+    return found;
+  }
+
+  /** What of the run is no longer what its record names, read before a removal starts. */
+  async function preflight(at: Held): Promise<Mismatch[]> {
+    const { file } = at;
+    const found = hostMismatches(at);
     if (found.length > 0) return found;
     // With the repository not the one the record names, or not checked, nothing is asked about its registrations.
     let mismatch: Mismatch | undefined;
     try { mismatch = await repositoryMismatch(at); } catch { return [{ field: "self", side: "host" }]; }
     if (mismatch !== undefined) return [mismatch];
     for (const [key, registration] of Object.entries(file.registrations)) {
+      // Only an identity found to differ proves the registration another's; evidence that could not be read may still be the run's own.
       try { ownRegistration(at, key, registration); } catch (error) {
-        found.push({ field: `registrations.${key}`, side: error instanceof OwnedFsError && error.reason === "not-plain" ? "unverified" : "repo" });
+        found.push({ field: `registrations.${key}`, side: error instanceof OwnedFsError && error.reason === "changed" ? "repo" : "unverified" });
       }
     }
     return found;
@@ -899,30 +929,18 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * whole run stays as it is. It stays as well, record and registrations included, when a path of the record could not be checked
    * against an open project: nothing is asked of such a path, and what the run left in the repository is not lost with its record.
    * When it is the open project or its repository that is no longer what the record names, the run folder still goes, and nothing in
-   * the repository is touched: its branch and worktree list stay as they are. True when the whole run was left as it is.
+   * the repository is touched: its branch and worktree list stay as they are. What left the whole run as it is, or undefined.
    */
-  async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<boolean> {
+  async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<Mismatch[] | undefined> {
     const { file } = at;
     if (stageIds !== "all") {
       for (const stageId of stageIds) if (file.stages[stageId] !== undefined) await removeStage(at, stageId);
-      return false;
+      return undefined;
     }
     const mismatches = await preflight(at);
-    const fields = (side: Mismatch["side"]): string => mismatches.filter(entry => entry.side === side).map(entry => entry.field).join(", ");
-    // Said once for a run folder: a folder that stays is found again at every boot.
-    const first = (side: Mismatch["side"]): boolean => {
-      const key = `${side}
-${at.runRoot}
-${fields(side)}`;
-      return !warnedOnce.has(key) && warnedOnce.add(key).has(key);
-    };
-    for (const side of ["host", "unverified"] as const) {
-      if (fields(side) === "") continue;
-      if (first(side)) log.warn(side === "host" ? "a run's workspace stays as it is: %s is not what its record names (run=%s)" : "a run's cleanup is unverified and everything of it is left: %s is not the open project's (run=%s)", fields(side), file.runId);
-      return true;
-    }
-    const repo = fields("repo") === "";
-    if (!repo && first("repo")) log.warn("a run's repository is left as it is: %s is not what its record names (run=%s)", fields("repo"), file.runId);
+    if (reportLeft(at, mismatches)) return mismatches;
+    const repo = fields(mismatches, "repo") === "";
+    if (!repo && firstReport(at, "repo", fields(mismatches, "repo"))) log.warn("a run's repository is left as it is: %s is not what its record names (run=%s)", fields(mismatches, "repo"), file.runId);
     for (const stageId of Object.keys(file.stages)) await removeStage(at, stageId, repo);
     await clearIgnoreFolders(at);
     if (file.kind === "git") {
@@ -934,7 +952,7 @@ ${fields(side)}`;
       }
     }
     if (file.kind === "folder" && at.run.entryId(OUT_DIR) !== undefined) {
-      if (output === "keep") return false;
+      if (output === "keep") return undefined;
       await at.run.remove(OUT_DIR, file.outDir);
     }
     await at.run.remove(`${RUN_FILE}.tmp`);
@@ -943,6 +961,24 @@ ${fields(side)}`;
     try {
       if (at.run.removeSelfIfEmpty()) at.project.removeSelfIfEmpty();
     } catch { /* what could not go stays */ }
+    return undefined;
+  }
+
+  const fields = (mismatches: readonly Mismatch[], side: Mismatch["side"]): string => mismatches.filter(entry => entry.side === side).map(entry => entry.field).join(", ");
+  /** Said once for a record: a folder that stays is found again at every boot, and a record that takes its place is another. */
+  function firstReport(at: Held, side: Mismatch["side"], said: string): boolean {
+    const key = `${side}\n${ownerOf(at.file)}\n${said}`;
+    return !warnedOnce.has(key) && warnedOnce.add(key).has(key);
+  }
+
+  /** Tells what leaves the whole run as it is; true when something does. */
+  function reportLeft(at: Held, mismatches: readonly Mismatch[]): boolean {
+    for (const side of ["host", "unverified"] as const) {
+      const said = fields(mismatches, side);
+      if (said === "") continue;
+      if (firstReport(at, side, said)) log.warn(side === "host" ? "a run's workspace stays as it is: %s is not what its record names (run=%s)" : "a run's cleanup is unverified and everything of it is left: %s is not the open project's (run=%s)", said, at.file.runId);
+      return true;
+    }
     return false;
   }
 
@@ -1019,14 +1055,15 @@ ${fields(side)}`;
 
   /** Whether the stores let the run's output go, read now. A start publishes its folder before it stores its record, so only a read
    * begun after the folder was listed, with the run's queue held, decides: by then the run's row is on the board. */
-  /** The run folders a discard or a sweep left whole, each with the owner of the record it held and the root it was judged on: a
-   * discard's own entry for the run, or none. While the same record is held, only a root told anew has the run judged again. A
-   * discard given none for it would otherwise judge it with no project, and report as a second fault what is the first one still. */
+  /** The run folders a discard left whole on the root it was given for them, only for what the project or its repository answered, each
+   * with the owner of the record it held and that root. While the same record is held, a discard given no root anew does not judge the
+   * project again: with none it would report as a second fault what is the first one still. The run folder itself is still checked. */
   const leftWhole = new Map<string, { owner: string; root: RemovedRunProject | undefined }>();
   /** Takes the whole run apart, and remembers the one that was left whole. */
   async function dropWhole(current: Held, root: RemovedRunProject | undefined, live: string | undefined, output: "keep" | "drop"): Promise<void> {
     leftWhole.delete(current.runRoot);
-    if (await releaseIn({ ...current, ...liveOf(current.file, live) }, "all", output)) leftWhole.set(current.runRoot, { owner: ownerOf(current.file), root });
+    const left = await releaseIn({ ...current, ...liveOf(current.file, live) }, "all", output);
+    if (root !== undefined && left !== undefined && left.every(entry => entry.side === "unverified")) leftWhole.set(current.runRoot, { owner: ownerOf(current.file), root });
   }
 
   async function removableNow(run: { runId: string; itemId: number }): Promise<boolean> {
@@ -1039,6 +1076,8 @@ ${fields(side)}`;
     const selected = await options.removable?.();
     if (selected === undefined) return taken;
     const listed = recordedRuns();
+    // A run folder no longer listed holds no record the memo could still be of.
+    if (listed.whole) for (const runRoot of leftWhole.keys()) if (!listed.runs.some(seen => seen.runRoot === runRoot)) leftWhole.delete(runRoot);
     for (const seen of listed.runs) {
       const { runId, itemId } = seen.file;
       if (!selected({ runId, itemId })) continue;
@@ -1049,12 +1088,13 @@ ${fields(side)}`;
         waiting = waits?.(runId) === true;
         if (waiting) return;
         const current = heldStill(seen);
-        if (current === null) return;
+        if (current === null) { leftWhole.delete(seen.runRoot); return; }
         const root = projects.get(runId);
         const left = leftWhole.get(seen.runRoot);
         if (left !== undefined && left.owner === ownerOf(current.file) && (root === undefined || root === left.root)) {
           // Given the very root it was judged on, that root is used up all the same.
           if (root !== undefined) taken.push(runId);
+          reportLeft(current, hostMismatches(current));
           return;
         }
         taken.push(runId);

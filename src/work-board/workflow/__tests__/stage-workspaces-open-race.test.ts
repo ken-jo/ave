@@ -31,6 +31,8 @@ const between = vi.hoisted(() => ({
   child: undefined as ((path: string | undefined) => void) | undefined,
   /** A path the disk gives no answer about. */
   unread: undefined as string | undefined,
+  /** A file that cannot be opened. */
+  unopened: undefined as string | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -48,7 +50,11 @@ vi.mock("node:fs", async (original) => {
     if (between.unread !== undefined && String(path).toLowerCase() === between.unread.toLowerCase()) throw Object.assign(new Error("fixture: the path cannot be read"), { code: "EACCES" });
     return real.lstatSync(path, options as never);
   }) as typeof real.lstatSync;
-  return { ...real, lstatSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
+  const openSync = ((path: string, ...rest: unknown[]) => {
+    if (between.unopened !== undefined && String(path).toLowerCase() === between.unopened.toLowerCase()) throw Object.assign(new Error("fixture: the file cannot be opened"), { code: "EACCES" });
+    return (real.openSync as (...args: unknown[]) => number)(path, ...rest);
+  }) as typeof real.openSync;
+  return { ...real, lstatSync, openSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
 });
 
 vi.mock("../owned-fs.js", async (original) => {
@@ -303,6 +309,26 @@ it("a project root the disk gives no answer about may still be the recorded one:
     expect(existsSync(open.workspace.runRoot)).toBe(false);
   } finally {
     between.unread = undefined;
+    await fx.done();
+  }
+});
+
+it("a registration whose ownership cannot be read may still be the run's own: a release leaves the whole run, and takes it apart once it is read", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const stage = await stageRoot(handle, "s1");
+    const admin = realpathSync.native(resolve(stage, readFileSync(join(stage, ".git"), "utf8").replace(/^gitdir: /u, "").trim()));
+    between.unopened = join(admin, "gitdir");
+    await handle.provider.release(handle.run, "all");
+    between.unopened = undefined;
+    expect([existsSync(stage), existsSync(admin), existsSync(join(open.workspace.runRoot, RUN_FILE))]).toEqual([true, true, true]);
+    await handle.provider.release(handle.run, "all");
+    expect([existsSync(open.workspace.runRoot), existsSync(admin)]).toEqual([false, false]);
+  } finally {
+    between.unopened = undefined;
     await fx.done();
   }
 });

@@ -132,6 +132,59 @@ describe("git stage workspaces", () => {
     expect(again.ok === false && again.conflict.conflictHash).toBe(result.conflict.conflictHash);
   });
 
+  it("a conflicting name with pattern characters is told of the stages that changed that very file", async () => {
+    const handle = start();
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    const [first, second, third] = [await stageRoot(handle, "s1"), await stageRoot(handle, "s2"), await stageRoot(handle, "s3")];
+    write(first, "b[1].txt", "from s1\n");
+    write(second, "b[1].txt", "from s2\n");
+    write(third, "b1.txt", "from s3\n");
+    for (const stageId of ["s1", "s2", "s3"]) await sealed(handle, stageId);
+    expect(await handle.provider.integrate(handle.run, "j1", ["s3", "s1", "s2"])).toMatchObject({ ok: false, conflict: { reason: "merge-conflict", files: [{ path: "b[1].txt", stageIds: ["s1", "s2"] }] } });
+  });
+
+  /** A run with two sealed stages that conflict on `a.txt`, its provider's git failing the calls `fails` picks while `failing` is set. */
+  async function conflicting(fails: (args: readonly string[]) => boolean): Promise<{ handle: ReturnType<typeof start>; joinDir: string; record: string; failing: { on: boolean } }> {
+    const real = createHostGit({ env });
+    const failing = { on: false };
+    const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => failing.on && fails(args) ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: fixture" }) : real.run(cwd, args, call) };
+    const handle = fx.start({ git });
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    write(await stageRoot(handle, "s1"), "a.txt", "from s1\n");
+    write(await stageRoot(handle, "s2"), "a.txt", "from s2\n");
+    await sealed(handle, "s1");
+    await sealed(handle, "s2");
+    return { handle, joinDir: join(open.workspace.runRoot, JOIN_DIR), record: join(open.workspace.runRoot, RUN_FILE), failing };
+  }
+
+  it("a conflict whose files git could not list is refused, not told as a conflict of no file", async () => {
+    const { handle, joinDir, failing } = await conflicting(args => args.includes("--diff-filter=U"));
+    failing.on = true;
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).rejects.toThrow();
+    failing.on = false;
+    expect(() => userGit(joinDir, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")).toThrow();
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false, conflict: { files: [{ path: "a.txt", stageIds: ["s1", "s2"] }] } });
+  });
+
+  it("a merge whose abort failed keeps its retry marker, and the next call aborts it", async () => {
+    const { handle, joinDir, record, failing } = await conflicting(args => args[0] === "merge" && args[1] === "--abort");
+    failing.on = true;
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).rejects.toThrow();
+    failing.on = false;
+    expect(userGit(joinDir, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")).not.toBe("");
+    expect((JSON.parse(readFileSync(record, "utf8")) as { merging?: string }).merging).toBeDefined();
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false, conflict: { files: [{ path: "a.txt", stageIds: ["s1", "s2"] }] } });
+    expect(() => userGit(joinDir, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")).toThrow();
+  });
+
+  it("a merge state git gave no answer about is not taken for none", async () => {
+    const { handle, failing } = await conflicting(args => args.includes("MERGE_HEAD"));
+    failing.on = true;
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).rejects.toThrow();
+  });
+
   it("retry merge succeeds after the conflict is resolved", async () => {
     const handle = start();
     const open = await handle.provider.open(handle.run, repo);

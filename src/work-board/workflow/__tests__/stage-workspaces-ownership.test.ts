@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
@@ -7,7 +7,7 @@ import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { nodeIdOf } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch, runRootOf, runSlug } from "../workspace-layout.js";
-import { removeTree, setPath, writeUnder as write } from "./stage-fixtures.js";
+import { removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
 const warned = vi.hoisted(() => [] as string[]);
@@ -200,6 +200,40 @@ it("a run a discard left whole on the root it was given is not judged again by a
   expect(existsSync(at.runRoot)).toBe(false);
   expect(fx.userGit(fx.repo, "branch", "--list", at.branch)).toBe("");
   expectUsersOwn(at);
+});
+
+it("a run left whole on the root it was given is still checked by a later discard given none: a stage folder replaced since is told once", async () => {
+  const at = await scene();
+  const real = createHostGit({ env: fx.env });
+  const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call) };
+  const provider = createStageWorkspaceProvider({ git, removable: async () => run => run.itemId !== 8 });
+  await provider.discard(new Map([named(at.target)]));
+  renameSync(at.stage, `${at.stage}-away`);
+  mkdirSync(at.stage);
+  await provider.discard(new Map());
+  await provider.discard(new Map());
+  expect(warned.filter(line => line.includes("stays as it is") && line.includes("stages.s1.dir") && line.includes(at.target.run.runId))).toHaveLength(1);
+  expect(existsSync(at.record)).toBe(true);
+  rmdirSync(at.stage);
+  renameSync(`${at.stage}-away`, at.stage);
+});
+
+it("a folder run left whole because a stage folder was replaced is taken apart by a later discard once the folder is its own again", async () => {
+  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => () => true });
+  const run = { itemId: 9, runId: `run-folder-${process.pid}-${Date.now()}`, runKey: "key" };
+  const open = await provider.open(run, undefined);
+  if (!open.ok) throw new Error(open.code);
+  const prepared = await provider.prepare(run, stageOf("s1"), 1);
+  if (!prepared.ok) throw new Error(prepared.code);
+  const stage = prepared.workspace.root;
+  renameSync(stage, `${stage}-away`);
+  mkdirSync(stage);
+  await provider.discard(new Map());
+  expect(existsSync(join(open.workspace.runRoot, RUN_FILE))).toBe(true);
+  rmdirSync(stage);
+  renameSync(`${stage}-away`, stage);
+  await provider.discard(new Map());
+  expect(existsSync(open.workspace.runRoot)).toBe(false);
 });
 
 it("a discard tells of a run it was given a root for that has no folder left, whatever another run's folder it cannot read holds; not while a folder it cannot read carries the run's own name", async () => {

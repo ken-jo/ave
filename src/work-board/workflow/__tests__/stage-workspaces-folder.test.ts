@@ -236,6 +236,20 @@ describe("folder stage workspaces", () => {
     expect(existsSync(join(project, ".git"))).toBe(false);
   });
 
+  it("a folder in a repository git cannot set up is refused, not seeded as a plain folder without the repository's ignore rules; with no `.git` above it, it is one", async () => {
+    const outer = join(base, "outer");
+    const inner = join(outer, "inner");
+    write(inner, "kept.txt", "kept\n");
+    write(inner, "secret.txt", "secret\n");
+    execFileSync("git", ["init", "-q"], { cwd: outer, env });
+    write(outer, ".git/info/exclude", "secret.txt\n");
+    writeFileSync(join(outer, ".git", "config"), `${readFileSync(join(outer, ".git", "config"), "utf8")}[broken\n`);
+    const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-unset`, runKey: "key", projectRoot: inner };
+    expect(await createStageWorkspaceProvider({ git: createHostGit({ env }) }).open(run, inner)).toEqual({ ok: false, code: "git-unavailable" });
+    rmSync(join(outer, ".git"), { recursive: true, force: true });
+    expect(tree(await stageRoot(await start(inner), "s1", { inputFiles: [fromProject("**")] }))).toEqual(["kept.txt", "secret.txt"]);
+  });
+
   it("a plain folder's ignore rules do not change with the git configuration and variables the host process inherited", async () => {
     write(project, ".gitignore", "private.txt\n");
     write(project, "PRIVATE.TXT", "private\n");
