@@ -167,7 +167,7 @@ function replaceHomePrefix(path: string, prefixes: readonly HomePrefix[], decode
   return undefined;
 }
 
-/** Prefer the literal prefix. An encoded prefix is replaced in a decoded path value. */
+/** Prefer the literal prefix. An encoded prefix is replaced in a decoded path value. Any other account's home is replaced as in text. */
 export function redactFsPath(path: string): string {
   if (!path) return path;
   let out = replaceHomePrefix(path, homePrefixes.literal);
@@ -180,7 +180,7 @@ export function redactFsPath(path: string): string {
       out = replaceHomePrefix(decoded, homePrefixes.decoded, decodedUrlPath);
     }
   }
-  out ??= path;
+  out = replaceLiteralHomes(out ?? path, GENERIC_PATH_HOME_FORMS);
   // Iterate code points so truncation cannot split surrogate pairs.
   const codePoints = [...out];
   return codePoints.length > MAX_AUDIT_PATH ? codePoints.slice(0, MAX_AUDIT_PATH).join("") + "…" : out;
@@ -189,6 +189,10 @@ export function redactFsPath(path: string): string {
 interface HomeForm {
   literal: RegExp;
   marker: string;
+  /** The first group is a root kept before the marker. */
+  keep?: boolean;
+  /** Every match contains this root word, so text without it skips the form. The test is a substring test: a word such as `homepage` still runs the form. */
+  root?: RegExp;
 }
 
 interface HomeDetector extends HomeForm {
@@ -203,16 +207,58 @@ interface HomeRedaction {
   requiredPathCharacter: string;
 }
 
-const GENERIC_HOME_FORMS: readonly HomeForm[] = [
-  { literal: /file:\/\/\/[a-z]:\/users\/[a-z0-9._-]+/giu, marker: "file://[home]" },
-  { literal: /file:\/\/\/users\/[a-z0-9._-]+/giu, marker: "file://[home]" },
-  { literal: /file:\/\/\/home\/[a-z0-9._-]+/giu, marker: "file://[home]" },
-  { literal: /[a-z]:[\\/]+users[\\/]+[a-z0-9._-]+/giu, marker: "[home]" },
-  { literal: /\/users\/[a-z0-9._-]+/giu, marker: "[home]" },
-  { literal: /\/home\/[a-z0-9._-]+/giu, marker: "[home]" },
-];
-
 const HOME_DECODE_LAYERS = 3;
+
+/** A quote, apostrophe or backtick that opens a span right before the match. */
+const QUOTE_OPENED = String.raw`(?<=(?:^|[^\p{L}\p{N}])["'\x60])`;
+
+/**
+ * Any account's profile: letters, marks, digits, `._-` and apostrophes before a letter or digit, each also
+ * percent-encoded up to the decode bound or a JSON `\u` escape, after separators encoded the same ways, under a
+ * drive, UNC, `/users/` or `/home/` root. Words after a space join the name before a separator in a path value
+ * (or a quote, or its end) and in a quoted span that starts with the home (or at its closing quote); in other
+ * text the name stops at whitespace.
+ */
+function genericHomeForms(mode: "text" | "path"): readonly HomeForm[] {
+  const json = (hex: string): string => String.raw`\\{1,7}u00(?:${hex})`;
+  const percent = (hex: string): string => `%(?:25){0,${HOME_DECODE_LAYERS - 1}}(?:${hex})`;
+  const escaped = (hex: string): string => `(?:${percent(hex)}|${json(hex)})`;
+  const slash = `(?:\\/|${escaped("2f")})`;
+  const separator = `(?:[\\\\/]|${escaped("2f|5c")})`;
+  const colon = `(?::|${escaped("3a")})`;
+  const letter = String.raw`3\d|[46][1-9a-f]|[57][\da]|[89a-f][\da-f]`;
+  // A JSON escape doubles its backslashes per layer. A run followed by the same run before a folder is a separator.
+  const wide = Array.from({ length: 7 }, (_, index) => String.raw`\\{${index + 1}}u(?!00)[\da-f]{4}(?!\\{${index + 1}}[^\\"/bfnrtu])`)
+    .join("|");
+  // Unquoted text reads a JSON-escaped space as whitespace; elsewhere an encoded space joins the name.
+  const unit = (space: string): string => `(?:[\\p{L}\\p{M}\\p{N}._-]|'(?=[\\p{L}\\p{N}])|${escaped(`2[de]|5f|${letter}`)}`
+    + `|${space}|${escaped("27")}(?=[\\p{L}\\p{N}]|${escaped(letter)})|${wide})`;
+  // A drive profile joined directly to a name starts the next home.
+  const nameUnit = (space = escaped("20")): string =>
+    `(?:(?![a-z]${colon}${separator}+users${separator}+${unit(space)})${unit(space)})`;
+  const joined = (end: string): string => `${nameUnit()}+(?:(?: +[\\p{L}\\p{N}]${nameUnit()}*)+${end})?`;
+  const usersRoot = /(?:users)/iu;
+  const homeRoot = /(?:home)/iu;
+  const roots: [prefix: string, marker: string, root: RegExp, keep?: boolean][] = [
+    [`file${colon}${slash}{3}[a-z]${colon}${slash}users${slash}`, "file://[home]", usersRoot],
+    [`file${colon}${slash}{3}users${slash}`, "file://[home]", usersRoot],
+    [`file${colon}${slash}{3}home${slash}`, "file://[home]", homeRoot],
+    // A drive profile goes first, so a device path such as `\\?\C:\Users\bob` keeps its drive in the marker.
+    [`[a-z]${colon}${separator}+users${separator}+`, "[home]", usersRoot],
+    // A UNC root keeps its server and share. Its leading run is twice its separator, also when serialized.
+    [String.raw`((?<!\\)(\\{1,8})\2[^\s\\/]+\2(?:[^\s\\/]+\2)?)(?:users|home)\2`, "[home]", /users|home/iu, true],
+    [`${slash}users${slash}`, "[home]", usersRoot],
+    [`${slash}home${slash}`, "[home]", homeRoot],
+  ];
+  const forms = (name: string, opened = ""): HomeForm[] =>
+    roots.map(([prefix, marker, root, keep]) => ({ literal: new RegExp(opened + prefix + name, "giu"), marker, root, keep }));
+  return mode === "path"
+    ? forms(joined(`(?=${separator}|[?#"'\\x60]|$)`))
+    : [...forms(joined(`(?=${separator}|["'\\x60])`), QUOTE_OPENED), ...forms(`${nameUnit(percent("20"))}+`)];
+}
+
+const GENERIC_HOME_FORMS = genericHomeForms("text");
+const GENERIC_PATH_HOME_FORMS = genericHomeForms("path");
 const LARGE_ESCAPE_TOKEN = 4096;
 const HOME_TOKEN_MARKER = "[home-token]";
 const SINGLE_DECODE_FAMILY = ["full"] as const;
@@ -274,8 +320,24 @@ function hasJsonContainer(text: string): boolean {
   return false;
 }
 
+/** A URL authority, plain or percent-encoded and with escaped host bytes, ends here. */
+const AFTER_AUTHORITY = /(?<=(?:^|[^a-z\d+.-])[a-z][a-z\d+.-]*(?::\/\/|%(?:25){0,2}3a%(?:25){0,2}2f%(?:25){0,2}2f)(?:[^\s/\\?#%]|%(?:25){0,2}(?!2f|5c|3f|23)[\da-f]{2})+)/iuy;
+const LEADING_SLASH = /\/|%(?:25){0,2}2f|\\{1,7}u002f/iuy;
+
+/** The separator that ends a URL authority stays before the marker of a home path that follows it. */
+function keptRoot(text: string, match: RegExpExecArray | RegExpMatchArray, keep: boolean | undefined): string {
+  if (keep) return match[1] ?? "";
+  const start = match.index ?? 0;
+  LEADING_SLASH.lastIndex = start;
+  const slash = LEADING_SLASH.exec(text)?.[0];
+  if (slash === undefined) return "";
+  AFTER_AUTHORITY.lastIndex = start;
+  return AFTER_AUTHORITY.test(text) ? slash : "";
+}
+
 function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
-  for (const { literal, marker } of forms) {
+  for (const { literal, marker, keep, root } of forms) {
+    if (root && !root.test(text)) continue;
     let copied = 0;
     let pieces: string[] | undefined;
     let insideJson: boolean | undefined;
@@ -292,7 +354,7 @@ function replaceLiteralHomes(text: string, forms: readonly HomeForm[]): string {
         }
       }
       pieces ??= [];
-      pieces.push(text.slice(copied, start), marker);
+      pieces.push(text.slice(copied, start), `${keptRoot(text, match, keep)}${marker}`);
       copied = end;
     }
     if (pieces) text = pieces.join("") + text.slice(copied);
