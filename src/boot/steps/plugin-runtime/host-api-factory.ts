@@ -51,6 +51,7 @@ import {
 } from "../../../plugins/capabilities.js";
 import { appVersionSatisfiesMin } from "../../../shared/semver-compare.js";
 import { manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
+import { backgroundEffectPaths, type PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { effectivePluginConfig } from "../../../plugins/effective-config.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
@@ -236,6 +237,8 @@ export interface CreateHostApiFactoryDeps {
   stageInSuggestionsSession: () => void;
   /** Host-secret evidence contract: marketplace design, host-secret grant conditions. */
   grantEvidence: GrantEvidenceReader;
+  /** Absent approvals deny every standalone effect. */
+  backgroundEffectApprovals?: Pick<PluginBackgroundEffectApprovals, "isApproved">;
 }
 
 /** Invoked once per plugin during startAll. */
@@ -478,6 +481,10 @@ export function createHostApiFactory(
       );
       // Compare the parsed manifest document digest to the install pin; projections and unparsed manifests cannot match.
       const manifestSha256 = manifestDocumentSha256(manifest);
+      const backgroundPaths = backgroundEffectPaths(manifest);
+      // Looked up per effect, so an approval given or replaced while the plugin runs applies at once.
+      const standaloneScope = (methodPath: string): boolean =>
+        backgroundPaths.has(methodPath) && deps.backgroundEffectApprovals?.isApproved(pluginId, manifestSha256) === true;
       let boundApi: PluginHostApi;
       const credentialPayloadInits = new WeakSet<HostFetchInit>();
       const deviceAuthFetch = (credentialPayload: boolean): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -907,7 +914,7 @@ export function createHostApiFactory(
               ...(credentialPayload ? { reviewInput: [hop.url.toString(), {
                 method: hop.method, headers: Array.from(reviewHeaders.entries()), credentialAttached: true, body: "[host authorization material]",
               }] } : {}),
-              capabilityBound, approvalGate, permissionManager,
+              capabilityBound, approvalGate, permissionManager, standaloneScope,
             });
             assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
           },
@@ -1352,6 +1359,7 @@ export function createHostApiFactory(
           resolveStoragePath: (relativePath) => pluginStorage.resolve(relativePath),
           assertActive: () =>
             assertActiveHostApi(pluginId, hostIncarnation, "hostApi.approvedEffect"),
+          standaloneScope,
         },
       ));
       return boundApi;

@@ -137,7 +137,9 @@ interface Probe {
   onClosed: ReturnType<typeof vi.fn>;
 }
 
-async function openProbe(options: { watcherFailure?: boolean; subscriptionFailure?: boolean; allowMode?: boolean } = {}): Promise<Probe> {
+async function openProbe(options: {
+  watcherFailure?: boolean; subscriptionFailure?: boolean; allowMode?: boolean; standaloneScope?: (path: string) => boolean;
+} = {}): Promise<Probe> {
   const raised: Probe["raised"] = [];
   const requestAndWait = vi.fn(async () => ({ choice: "allow-once" as const }));
   let watcherFailure = options.watcherFailure === true;
@@ -168,6 +170,7 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
     approvalGate: { requestAndWait } as unknown as ApprovalGate,
     permissionManager,
     assertActive: () => undefined,
+    ...(options.standaloneScope ? { standaloneScope: options.standaloneScope } : {}),
   }) as unknown as PluginHostApi;
   const context: PluginRuntimeContext = {
     pluginId: PLUGIN_ID,
@@ -265,25 +268,48 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
   });
 });
 
-describe("standalone effects use their own approval", () => {
-  it.each<[string, Parameters<typeof runWithEffectGateContext>[0]]>([
+describe("standalone effects run only within the background scope approved at enable", () => {
+  const spawnContexts: Array<[string, Parameters<typeof runWithEffectGateContext>[0]]> = [
     ["headless", { headless: true, approvalSurface: "unavailable", toolName: "config_set" }],
     ["foreground", { headless: false, approvalSurface: "interactive", toolName: "config_set", sessionId: "session-3" }],
-  ])("ignores the %s invocation the child was spawned in", async (_label, spawnedIn) => {
-    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe({ allowMode: true }));
+  ];
+
+  it.each(spawnContexts)("runs an approved declared effect without asking, ignoring the %s invocation the child was spawned in", async (_label, spawnedIn) => {
+    const scoped: string[] = [];
+    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe({
+      allowMode: true,
+      standaloneScope: (path) => { scoped.push(path); return path === "raiseAlert"; },
+    }));
     try {
       await runWithEffectGateContext({ headless: false, toolName: "raise" }, async () => {
         await probe.session.instance.handlers.raise?.();
       });
-      expect(probe.requestAndWait).not.toHaveBeenCalled();
       await probe.session.instance.start!();
-      expect(probe.requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        toolName: "raiseAlert",
-        sourcePluginId: PLUGIN_ID,
-        forceExplicit: true,
-      }));
-      expect(probe.requestAndWait.mock.calls[0]?.[0]).not.toHaveProperty("sessionId");
+      expect(probe.requestAndWait).not.toHaveBeenCalled();
+      expect(scoped).toEqual(["raiseAlert"]);
       expect(probe.raised).toEqual([{ key: "now", toolName: "raise" }, { key: "start", toolName: "raiseAlert" }]);
+    } finally {
+      await probe.session.teardown("case over");
+    }
+  });
+
+  it.each(spawnContexts)("denies a standalone effect with no approval, without asking, under a %s spawn", async (_label, spawnedIn) => {
+    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe({ allowMode: true }));
+    try {
+      await expect(probe.session.instance.start?.()).rejects.toThrow();
+      expect(probe.requestAndWait).not.toHaveBeenCalled();
+      expect(probe.raised).toEqual([]);
+    } finally {
+      await probe.session.teardown("case over");
+    }
+  });
+
+  it("denies an undeclared standalone effect even when other effects are approved", async () => {
+    const probe = await openProbe({ allowMode: true, standaloneScope: (path) => path === "storage.write" });
+    try {
+      await expect(probe.session.instance.start?.()).rejects.toThrow();
+      expect(probe.requestAndWait).not.toHaveBeenCalled();
+      expect(probe.raised).toEqual([]);
     } finally {
       await probe.session.teardown("case over");
     }

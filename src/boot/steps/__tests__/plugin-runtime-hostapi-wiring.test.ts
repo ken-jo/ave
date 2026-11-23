@@ -19,6 +19,7 @@ import { HOSTAPI_DISPATCH_TABLE, HostApiDispatcher, createServiceHostApiPaths } 
 import { startPluginChildRuntime } from "../../../plugins/isolation/plugin-child-runtime.js";
 import type { PluginHostApi } from "../../../plugins/types.js";
 import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 import { SettingsService } from "../../../data/settings-store.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { CredentialIssuanceStage } from "../../../main/host-api/resolve-api-key.js";
@@ -143,7 +144,7 @@ import { initPluginRuntime } from "../plugin-runtime.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
 import type { PluginRegistryTrust } from "../../../plugins/types.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
-import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
+import { manifestDocumentSha256, recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
 import { resolvePluginHostStorageDir } from "../../../plugins/plugin-storage-layout.js";
 import type { PluginManifest } from "../../../plugins/types.js";
@@ -231,6 +232,7 @@ async function initAndGetFactory(
     permissionManager?: PermissionManager;
     onCredentialIssuanceStage?: (stage: CredentialIssuanceStage) => Promise<void> | void;
     getAuthPartition?: (partition: string) => unknown;
+    backgroundEffectApprovals?: PluginBackgroundEffectApprovals;
   } = {},
 ): Promise<CreateHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
@@ -267,6 +269,7 @@ async function initAndGetFactory(
     ...(options.permissionManager ? { permissionManager: options.permissionManager } : {}),
     routinesStore: { list: () => [] } as never,
     getAlertsService: () => undefined,
+    ...(options.backgroundEffectApprovals ? { backgroundEffectApprovals: options.backgroundEffectApprovals } : {}),
   });
   const createHostApi = (
     runtimeTestState.capturedRuntimeOptions as {
@@ -1386,7 +1389,7 @@ describe("HostApi incarnation authority", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it("carries a lease through child, dispatcher and factory into the gated transport", async () => {
+  it("carries a lease from a standalone child request only within the background effects approved for its manifest", async () => {
     const settings = makeSettingsService(new Map());
     settings.getSecret.mockImplementation((key: string) =>
       key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
@@ -1395,62 +1398,80 @@ describe("HostApi incarnation authority", () => {
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode("allow");
     const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
-    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, { requestAndWait }, { permissionManager });
-    const manifest = {
-      id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js",
-      description: "sample", tools: [], config: {},
-      capabilities: ["external-auth-consumer"],
-      networkAccess: { allowedDomains: ["api.openai.com"] },
-    } as PluginManifest;
-    const api = createHostApi(
-      "plugin-a", manifest,
-      pluginDataDirIn(root), activeIncarnation(), "plugin-a",
-    );
-    let host!: HostApiDispatcher;
-    let child!: Awaited<ReturnType<typeof startPluginChildRuntime>>;
-    const channel = directHostApiChannel({
-      handle: (request) => host.handle(request),
-      handleNotification: (notification) => host.handleNotification(notification),
+    const approvals = new PluginBackgroundEffectApprovals();
+    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, { requestAndWait }, {
+      permissionManager, backgroundEffectApprovals: approvals,
     });
-    host = new HostApiDispatcher({
-      pluginId: "plugin-a", isActive: () => true, reportUnknownField: vi.fn(),
-      notifications: { deliver: (notification) => { child.deliver(notification); } },
-      table: {
-        ...HOSTAPI_DISPATCH_TABLE,
-        ...createServiceHostApiPaths(api as unknown as PluginHostApi, { read: [], write: [] }),
-      },
-    });
-    child = await startPluginChildRuntime({
-      input: new PassThrough(), output: new PassThrough(), manifest,
-      context: {
-        pluginId: "plugin-a", pluginRoot: "/plugins/a", hostRoot: "/app",
-        pluginDataDir: "/plugins/a/data", userHome: "/Users/example",
-        aveHome: "/Users/example/.ave",
-      },
-      channel,
-      loadFactory: async () => () => ({ handlers: {} }),
-    });
-    const key = await child.hostApi.resolveApiKey!({ purpose: "llm", vendor: "openai" });
-    expect(key).toMatchObject({ ok: true, exposure: "lease" });
-    if (!key.ok || key.exposure !== "lease") throw new Error("expected lease");
+    const manifestOf = (version: string) => {
+      const manifest = {
+        id: "plugin-a", name: "Sample", version, entry: "dist/plugin.js",
+        description: "sample", tools: [], config: {},
+        capabilities: ["external-auth-consumer"],
+        networkAccess: { allowedDomains: ["api.openai.com"] },
+      } as PluginManifest;
+      recordManifestDocument(manifest, structuredClone(manifest));
+      const sha = manifestDocumentSha256(manifest);
+      if (sha === null) throw new Error("manifest hash not recorded");
+      return { manifest, sha };
+    };
+    const childFor = async (manifest: PluginManifest) => {
+      const api = createHostApi("plugin-a", manifest, pluginDataDirIn(root), activeIncarnation(), "plugin-a");
+      let child!: Awaited<ReturnType<typeof startPluginChildRuntime>>;
+      const host = new HostApiDispatcher({
+        pluginId: "plugin-a", isActive: () => true, reportUnknownField: vi.fn(),
+        notifications: { deliver: (notification) => { child.deliver(notification); } },
+        table: {
+          ...HOSTAPI_DISPATCH_TABLE,
+          ...createServiceHostApiPaths(api as unknown as PluginHostApi, { read: [], write: [] }),
+        },
+      });
+      child = await startPluginChildRuntime({
+        input: new PassThrough(), output: new PassThrough(), manifest,
+        context: {
+          pluginId: "plugin-a", pluginRoot: "/plugins/a", hostRoot: "/app",
+          pluginDataDir: "/plugins/a/data", userHome: "/Users/example",
+          aveHome: "/Users/example/.ave",
+        },
+        channel: directHostApiChannel({
+          handle: (request) => host.handle(request),
+          handleNotification: (notification) => host.handleNotification(notification),
+        }),
+        loadFactory: async () => () => ({ handlers: {} }),
+      });
+      return child;
+    };
+    const fetchWithLease = async (child: Awaited<ReturnType<typeof childFor>>) => {
+      const key = await child.hostApi.resolveApiKey!({ purpose: "llm", vendor: "openai" });
+      if (!key.ok || key.exposure !== "lease") throw new Error("expected lease");
+      try {
+        return await (await child.hostApi.hostFetch!("https://api.openai.com/v1/models", { auth: { lease: key.leaseId } })).text();
+      } finally {
+        await key.release();
+      }
+    };
+    const first = manifestOf("1.0.0");
+    const child = await childFor(first.manifest);
     await expect(child.hostApi.hostFetch!("https://refused.example.test")).rejects.toThrow("Host request failed.");
     expect(lastBootAuditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
       input: expect.stringContaining("not in networkAccess.allowedDomains"),
     }));
-    expect(requestAndWait).not.toHaveBeenCalled();
+    await expect(fetchWithLease(child)).rejects.toThrow();
     expect(transport).not.toHaveBeenCalled();
-    const response = await child.hostApi.hostFetch!("https://api.openai.com/v1/models", { auth: { lease: key.leaseId } });
-    expect(await response.text()).toBe("ok");
-    expect(requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      sourcePluginId: "plugin-a",
-      forceExplicit: true,
-      args: { effect: "read", methodPath: "hostFetch", target: "https://api.openai.com" },
-    }));
+    approvals.approve("plugin-a", first.sha);
+    await expect(fetchWithLease(child)).resolves.toBe("ok");
     const networkInit = (transport as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as RequestInit & { auth?: unknown };
     expect(networkInit.auth).toBeUndefined();
     expect(new Headers(networkInit.headers).get("authorization")).toBe("Bearer synthetic-secret");
-    expect(JSON.stringify(networkInit)).not.toContain(key.leaseId);
-    await key.release();
+    // An updated manifest is not covered by the earlier approval until it is approved itself.
+    const updated = manifestOf("1.1.0");
+    const updatedChild = await childFor(updated.manifest);
+    await expect(fetchWithLease(updatedChild)).rejects.toThrow();
+    expect(transport).toHaveBeenCalledOnce();
+    approvals.approve("plugin-a", updated.sha);
+    await expect(fetchWithLease(updatedChild)).resolves.toBe("ok");
+    await expect(fetchWithLease(child)).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(requestAndWait).not.toHaveBeenCalled();
   });
 
   it("revokes every callable HostApi surface when its incarnation is deactivated", async () => {

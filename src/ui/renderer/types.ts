@@ -104,9 +104,10 @@ import type {
 // Plugin / hook trust rows and perf stats are the host row types.
 import type { PluginPerfStats } from "../../plugins/runtime/index.js";
 import type { PluginContributionTrustRow } from "../../plugins/plugin-bundle-lifecycle.js";
+import type { PluginBackgroundEffects } from "../../plugins/plugin-background-effects.js";
 import type { HookTrustRow } from "../../hooks/hook-trust-commands.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../../shared/hook-trust-review.js";
-export type { PluginPerfStats, PluginContributionTrustRow, HookTrustRow };
+export type { PluginPerfStats, PluginContributionTrustRow, PluginBackgroundEffects, HookTrustRow };
 
 // Usage aggregates come from the engine/IPC owners; only the renderer-side
 // derived shapes (UsagePerX, UsageTrendPt, UsageConv) are declared here.
@@ -891,6 +892,16 @@ export type AvePreloadApi = {
   }) => Promise<
     | { ok: true; pluginId: string; localId: string; kind: "hook" | "mcpServer"; approved: boolean }
     | { ok: false; error: string; message?: string }
+  >;
+  /** What the plugin may do outside a tool call, and whether that is approved for its current manifest. */
+  getPluginBackgroundEffects: (pluginId: string) => Promise<
+    | { ok: true; pluginId: string; manifestSha256: string | null; approved: boolean; effects: PluginBackgroundEffects }
+    | { ok: false; error: string }
+  >;
+  /** Approve the reviewed manifest's background effects; a manifest that changed since review answers `background-effects-review-stale`. */
+  approvePluginBackgroundEffects: (input: { pluginId: string; manifestSha256: string }) => Promise<
+    | { ok: true; pluginId: string; manifestSha256: string }
+    | { ok: false; error: string }
   >;
   /**
    * Toggle a plugin active/inactive. Disable retires and unloads the active

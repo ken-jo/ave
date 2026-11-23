@@ -59,6 +59,8 @@ export interface EffectGateContext {
   readonly executionCwd?: string;
   readonly permissionContext?: Pick<PermissionCheckContext, "admissionDenial" | "floor" | "exfiltration" | "manualRerun" | "ownerUnattended" | "remoteControllerAuthority" | "permissionStoreError">;
   readonly abortSignal?: AbortSignal;
+  /** Plugin work outside any tool call: never asks; only the background scope approved for this manifest runs. */
+  readonly standalone?: true;
 }
 
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
@@ -272,6 +274,8 @@ export interface EffectEnforcementDeps {
   readonly resolveStoragePath?: (relativePath: string) => string;
   // Revalidate the exact HostApi incarnation after an async approval wait and immediately before the approved effect executes.
   readonly assertActive: () => void;
+  /** Whether a standalone effect on this path is inside the background scope approved for the running manifest. */
+  readonly standaloneScope?: (methodPath: string) => boolean;
 }
 
 // Standalone lifecycle work is outside tool policy. Tool effects are evaluated independently of their enclosing tool's approval.
@@ -287,6 +291,7 @@ export async function gateMutatingEffect(params: {
   resolveStoragePath?: (relativePath: string) => string;
   approvalGate: ApprovalGate;
   permissionManager?: PermissionManager;
+  standaloneScope?: (methodPath: string) => boolean;
 }): Promise<void> {
   if (params.effect !== "write" && params.methodPath !== "hostFetch" && !pathReadEffectPaths.has(params.methodPath)) return;
   const ctx = currentEffectGateContext();
@@ -329,6 +334,15 @@ export async function gateMutatingEffect(params: {
     ...(network ? { ruleSubject: issueHostNetworkSubject({ url: actualUrl as string }) } : workerCommand ? { ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command: workerCommand, cwd: process.cwd() }, shellExecution: { runsSandboxed: false } } : {}),
     ...(remembered === "deny-always" ? { admissionDenial: { code: "effect-denied", reason: "The user denied this exact effect." } } : {}),
   });
+  if (ctx.standalone) {
+    // A policy deny still wins; remembered grants and asks never widen the approved background scope.
+    if (permission.decision === "deny" || params.standaloneScope?.(params.methodPath) !== true) {
+      throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied",
+        permission.decision === "deny" ? permission.reason : "outside the background effects approved when the plugin was enabled");
+    }
+    assertEffectPaths(paths);
+    return;
+  }
   if (ctx.onceGrants.has(key) || remembered && remembered !== "deny-always") {
     permission = manager.resolveRememberedPermission(permission, "The user approved this exact effect.");
   }
@@ -483,6 +497,7 @@ export function enforceMutatingEffects<T extends object>(
             permissionManager: deps.permissionManager,
             input: snapshot.args,
             resolveStoragePath: deps.resolveStoragePath,
+            standaloneScope: deps.standaloneScope,
           });
           deps.assertActive();
           const effectContext = currentEffectGateContext();

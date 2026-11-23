@@ -342,6 +342,7 @@ describe("preload contextBridge world shape lock", () => {
             "setOsNotificationsEnabled",
           ],
           "applyClaudeDesktopMcpImport": "function",
+          "approvePluginBackgroundEffects": "function",
           "archiveWorkflowTemplate": "function",
           "attachWorkflowTemplateSchedule": "function",
           "audit": [
@@ -468,6 +469,7 @@ describe("preload contextBridge world shape lock", () => {
           "getAppUpdateState": "function",
           "getBootstrapStatus": "function",
           "getModelCatalog": "function",
+          "getPluginBackgroundEffects": "function",
           "getPricingOverrides": "function",
           "getRuntimeCounts": "function",
           "getSessionGoal": "function",

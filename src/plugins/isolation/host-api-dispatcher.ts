@@ -1467,14 +1467,7 @@ export class HostApiDispatcher {
     }
     return runOutsideInvocation(() => {
       if (!gatedWrite && path !== "hostFetch") return invoke();
-      return runWithEffectGateContext({
-        headless: false,
-        toolName: path,
-        abortSignal: signal,
-        permissionContext: {
-          floor: { code: "other-principal", reason: "A standalone plugin effect requires one-time approval." },
-        },
-      }, invoke);
+      return runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke);
     });
   }
 

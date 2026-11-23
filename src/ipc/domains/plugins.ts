@@ -4,6 +4,8 @@ import { isBackgroundE2eRuntime, showWindowForRuntime } from "../../main/e2e-win
 import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
+import { declaredBackgroundEffects } from "../../plugins/plugin-background-effects.js";
+import { manifestDocumentSha256 } from "../../plugins/runtime/manifest-validation.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { dialog, ipcMain } from "electron";
 import { t } from "../../i18n/index.js";
@@ -452,6 +454,48 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (error instanceof ContributionTrustReviewStaleError) return { ok: false, error: "contribution-trust-review-stale", message: errMessage(error) };
       return { ok: false, error: "contribution-trust-update-failed", message: errMessage(error) };
     }
+  });
+
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsGet, (e, pluginId: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsGet, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (typeof pluginId !== "string" || pluginId.length === 0) return { ok: false, error: "invalid-plugin-id" };
+    const manifest = deps.pluginRuntime.getPluginManifest(pluginId);
+    if (!manifest) return { ok: false, error: "no-such-plugin" };
+    const store = deps.pluginBackgroundEffects;
+    if (!store) return { ok: false, error: "background-effects-unavailable" };
+    const manifestSha256 = manifestDocumentSha256(manifest);
+    return {
+      ok: true, pluginId, manifestSha256,
+      approved: store.isApproved(pluginId, manifestSha256),
+      effects: declaredBackgroundEffects(manifest),
+    };
+  });
+
+  // The renderer names the manifest it showed; approval binds only if that is still the running one.
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsApprove, (e, input: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsApprove, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    const { pluginId, manifestSha256 } = asPlainRecord(input);
+    if (typeof pluginId !== "string" || !pluginId || typeof manifestSha256 !== "string" || !/^[a-f0-9]{64}$/u.test(manifestSha256)) {
+      return { ok: false, error: "invalid-background-effects-request" };
+    }
+    const manifest = deps.pluginRuntime.getPluginManifest(pluginId);
+    if (!manifest) return { ok: false, error: "no-such-plugin" };
+    const store = deps.pluginBackgroundEffects;
+    if (!store) return { ok: false, error: "background-effects-unavailable" };
+    if (manifestDocumentSha256(manifest) !== manifestSha256) return { ok: false, error: "background-effects-review-stale" };
+    try {
+      store.approve(pluginId, manifestSha256);
+    } catch (error) {
+      log.error(`background effect approval failed (${pluginId}): %s`, errMessage(error));
+      return { ok: false, error: "background-effects-update-failed" };
+    }
+    return { ok: true, pluginId, manifestSha256 };
   });
 
   ipcMain.handle(CHANNELS.runtime.counts, (e) => {

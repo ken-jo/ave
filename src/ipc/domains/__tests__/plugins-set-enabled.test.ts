@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { PluginDeploymentDeniedError } from "../../../plugins/deployment-guard.js";
 import { ContributionTrustReviewStaleError } from "../../../plugins/plugin-contribution-trust.js";
+import { PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
+import { manifestDocumentSha256, recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const hostEventMock = vi.hoisted(() => ({ emit: vi.fn() }));
@@ -112,6 +114,7 @@ async function setup() {
     getMainWindow: vi.fn(() => appWindows[0]),
     getAppWindows: vi.fn(() => appWindows),
     pluginBundleLifecycle,
+    pluginBackgroundEffects: new PluginBackgroundEffectApprovals(),
   };
   const { registerPluginsHandlers } = await import("../plugins.js");
   registerPluginsHandlers(deps as never);
@@ -248,6 +251,45 @@ describe("plugin bundled contribution trust IPC", () => {
       pluginId: "com.example.meeting", localId: "notes", kind: "mcpServer", approved: true,
       generationId: "a".repeat(64), approvalDigest: "c".repeat(64),
     })).toEqual(expect.objectContaining({ ok: false, error: "contribution-trust-review-stale" }));
+  });
+});
+
+describe("plugin background effects IPC", () => {
+  function recorded(networkAccess: { allowedDomains: string[] }) {
+    const manifest = { id: "plugin-config", networkAccess };
+    recordManifestDocument(manifest as never, structuredClone(manifest));
+    return { manifest, sha: manifestDocumentSha256(manifest as never) ?? "" };
+  }
+
+  it("shows the declared effects and approves only the manifest that was reviewed", async () => {
+    const { deps } = await setup();
+    const first = recorded({ allowedDomains: ["api.example.test"] });
+    deps.pluginRuntime.getPluginManifest.mockReturnValue(first.manifest as never);
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toEqual({
+      ok: true, pluginId: "plugin-config", manifestSha256: first.sha, approved: false,
+      effects: { ownStorage: true, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [] },
+    });
+    const updated = recorded({ allowedDomains: ["api.example.test", "upload.example.test"] });
+    deps.pluginRuntime.getPluginManifest.mockReturnValue(updated.manifest as never);
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", manifestSha256: first.sha }))
+      .toEqual({ ok: false, error: "background-effects-review-stale" });
+    expect(deps.pluginBackgroundEffects.isApproved("plugin-config", first.sha)).toBe(false);
+    expect(deps.pluginBackgroundEffects.isApproved("plugin-config", updated.sha)).toBe(false);
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", manifestSha256: updated.sha }))
+      .toEqual({ ok: true, pluginId: "plugin-config", manifestSha256: updated.sha });
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, approved: true });
+  });
+
+  it("refuses malformed requests and an unparsed manifest", async () => {
+    const { deps } = await setup();
+    for (const invalid of [undefined, { pluginId: "plugin-config" }, { pluginId: "plugin-config", manifestSha256: "x" }]) {
+      expect(await invoke("ave:plugins:background-effects:approve", invalid)).toEqual({ ok: false, error: "invalid-background-effects-request" });
+    }
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, manifestSha256: null, approved: false });
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", manifestSha256: "a".repeat(64) }))
+      .toEqual({ ok: false, error: "background-effects-review-stale" });
+    deps.pluginRuntime.getPluginManifest.mockReturnValue(undefined as never);
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toEqual({ ok: false, error: "no-such-plugin" });
   });
 });
 

@@ -25,6 +25,7 @@ import {
   tamperedVarsAtBoot,
 } from "../dev-flags.js";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
+import { backgroundEffectApprovalsPath, PluginBackgroundEffectApprovals } from "../../plugins/plugin-background-effects.js";
 import type {
   AuthWindowCookie,
   OpenAuthWindowBaseOptions,
@@ -147,6 +148,8 @@ export interface InitPluginRuntimeInput {
   refreshSandboxUnionDomains?: () => Promise<void>;
   /** Renderer authority revocation hook owned by the IPC layer. */
   onPluginUiRevisionChange?: (pluginId: string) => void;
+  /** Tests supply their own; production reads the protected approvals file. */
+  backgroundEffectApprovals?: PluginBackgroundEffectApprovals;
 }
 
 export interface InitPluginRuntimeOutput {
@@ -155,6 +158,8 @@ export interface InitPluginRuntimeOutput {
   lateBinding: LateBindingRefs;
   /** Share the marketplace deployment guard with the update detector. */
   pluginPaths: ReturnType<typeof resolvePluginPaths>;
+  /** The one store both the effect gate and the approval IPC read. */
+  backgroundEffectApprovals: PluginBackgroundEffectApprovals;
   /** Try plugin loopback hosts before external MCP clients when resolving UI resources. */
   loopbackManager: PluginLoopbackManager;
   /** Late-bind bundle projections after workflow, Hook, and MCP services exist. */
@@ -266,6 +271,8 @@ export async function initPluginRuntime(
   };
   /** The catcher registry must not outlive the runtime that owns its bound ports. */
   const authRedirectCatchers = new AuthRedirectCatchers();
+  const backgroundEffectApprovals = input.backgroundEffectApprovals
+    ?? new PluginBackgroundEffectApprovals(backgroundEffectApprovalsPath(pluginPaths.cacheRoot));
   const leaseDenialAudit = new LeaseDenialAudit(bootAuditLogger);
   const createHostApi = createHostApiFactory({
     host: input.host,
@@ -295,6 +302,7 @@ export async function initPluginRuntime(
     routinesStore,
     getAlertsService,
     stageInSuggestionsSession: () => stageInSuggestionsSession(input.memoryManager),
+    backgroundEffectApprovals,
   });
   const { preparePluginStart, onDisable, onActiveStateChange, onEnable } =
     createLifecycleCallbacks({
@@ -387,6 +395,7 @@ export async function initPluginRuntime(
     deploymentGuard,
     lateBinding,
     pluginPaths,
+    backgroundEffectApprovals,
     loopbackManager,
     setBundleLifecycleHandler: (handler) => {
       bundleLifecycle = handler;

@@ -130,6 +130,57 @@ describe("mandatory effect policy and standalone lifecycle", () => {
   });
 });
 
+describe("standalone frames run only the approved background scope", () => {
+  const standalone = { headless: false, standalone: true, toolName: "storage.write" } as const;
+
+  it("runs an in-scope effect without asking or reviewing", async () => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("deny-once");
+    const reviewer = vi.spyOn(permissionManager, "dispatchReviewer");
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: (path: string) => path === "storage.write" });
+    await runWithEffectGateContext(standalone, () => api.storage.write("a.txt", "x"));
+    expect(log).toEqual(["write"]);
+    expect(requests).toHaveLength(0);
+    expect(reviewer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no approved scope", undefined],
+    ["a path outside the scope", (path: string) => path === "storage.write"],
+  ])("denies with %s, without asking", async (_label, standaloneScope) => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), ...(standaloneScope ? { standaloneScope } : {}) });
+    await expect(runWithEffectGateContext(standalone, () => api.callLlm("hello"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    if (!standaloneScope) {
+      await expect(runWithEffectGateContext(standalone, () => api.storage.write("a.txt", "x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    }
+    expect(log).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("keeps a policy deny inside the scope", async () => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const real = permissionManager.checkDetailed.bind(permissionManager);
+    vi.spyOn(permissionManager, "checkDetailed").mockImplementation((...args) => ({ ...real(...args), decision: "deny", reason: "denied by rule" }));
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => true });
+    await expect(runWithEffectGateContext(standalone, () => api.storage.write("a.txt", "x"))).rejects.toThrow("denied by rule");
+    expect(log).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("never widens the scope with a grant remembered inside a tool call", async () => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-always");
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => false });
+    await runWithEffectGateContext({ headless: false, toolName: "t" }, () => api.storage.write("a.txt", "x"));
+    await expect(runWithEffectGateContext(standalone, () => api.storage.write("a.txt", "x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual(["write"]);
+    expect(requests).toHaveLength(1);
+  });
+});
+
 describe("foreground write permission at the actual effect", () => {
   it("ALLOW → the real impl proceeds and returns its value", async () => {
     const log: string[] = [];
