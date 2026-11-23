@@ -9,11 +9,13 @@ import { holdSandboxGitWrites } from "../../../shared/host-git.js";
 import { createHostGit, HostGitError } from "../host-git.js";
 import { removeTree } from "./stage-fixtures.js";
 
-const spawned = vi.hoisted(() => ({ fake: undefined as (() => unknown) | undefined, calls: 0 }));
+/** `env`: the environment the last git process was started with. */
+const spawned = vi.hoisted(() => ({ fake: undefined as (() => unknown) | undefined, calls: 0, env: undefined as NodeJS.ProcessEnv | undefined }));
 vi.mock("node:child_process", async (original) => {
   const real = await original<typeof import("node:child_process")>();
   const spawn = ((...args: Parameters<typeof spawnType>) => {
     spawned.calls += 1;
+    spawned.env = (args[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
     return spawned.fake ? spawned.fake() : real.spawn(...args);
   }) as typeof spawnType;
   return { ...real, spawn };
@@ -223,6 +225,44 @@ describe("host git", () => {
     expect.soft(written.code).toBe(0);
     // The repository's own store holds it, as git with no such variable finds.
     expect.soft(plain("cat-file", "-t", written.stdout.trim())).toBe("blob");
+  });
+
+  it("an object an inherited variable offers from another store is not the repository's: it is not found there, and a commit of the same content holds it", async () => {
+    const repo = repositoryWith('[user]\n\tname = Alice Example\n\temail = alice@example.com\n');
+    const other = join(base, "other");
+    mkdirSync(other);
+    const plain = (cwd: string, args: string[], input?: string): string => execFileSync("git", args, { cwd, env, input, encoding: "utf8", stdio: "pipe" }).trim();
+    plain(other, ["init", "-q"]);
+    const blob = plain(other, ["hash-object", "-w", "--stdin"], "shared\n");
+    const git = createHostGit({ env: { ...env, GIT_ALTERNATE_OBJECT_DIRECTORIES: join(other, ".git", "objects") } });
+    expect.soft((await git.run(repo, ["cat-file", "-e", blob])).code).not.toBe(0);
+    writeFileSync(join(repo, "a.txt"), "shared\n");
+    for (const args of [["add", "a.txt"], ["commit", "-q", "-m", "first"]]) expect.soft(await git.run(repo, args), args[0]).toMatchObject({ code: 0 });
+    // As git with no such variable reads the commit.
+    expect.soft(() => plain(repo, ["cat-file", "-p", "HEAD:a.txt"])).not.toThrow();
+  });
+
+  it("no inherited variable that names where the repository, its objects or its refs are kept, how a path is matched, or where git puts its answer, reaches git; what only configures it does", async () => {
+    const dropped = [
+      "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_IMPLICIT_WORK_TREE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY",
+      "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
+      "GIT_REFERENCE_BACKEND", "GIT_ATTR_SOURCE", "GIT_CONFIG", "GIT_REDIRECT_STDIN", "GIT_REDIRECT_STDOUT", "GIT_REDIRECT_STDERR",
+      "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
+      "GIT_ASK_YESNO", "GIT_PROXY_COMMAND", "GIT_ALLOW_PROTOCOL", "GIT_TEST_DEFAULT_REF_FORMAT",
+    ];
+    const kept = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CEILING_DIRECTORIES", "GIT_EXEC_PATH", "GIT_TRACE"];
+    // A name is one variable however it is spelled.
+    const inherited = Object.fromEntries([...dropped.map((name, index) => index % 2 === 0 ? name : name.toLowerCase()), ...kept].map(name => [name, "inherited"]));
+    replying({ code: 0 });
+    await createHostGit({ env: inherited }).run(base, ["--version"]);
+    const passed = Object.keys(spawned.env ?? {}).map(name => name.toUpperCase());
+    expect.soft(dropped.filter(name => passed.includes(name))).toEqual([]);
+    expect.soft(kept.filter(name => !passed.includes(name))).toEqual([]);
+    replying({ code: 0 });
+    await createHostGit({ env: inherited }).run(base, ["--version"], { isolated: true });
+    expect(Object.entries(spawned.env ?? {}).sort()).toEqual([
+      ["GIT_CONFIG_GLOBAL", process.platform === "win32" ? "NUL" : "/dev/null"], ["GIT_CONFIG_NOSYSTEM", "1"], ["GIT_OPTIONAL_LOCKS", "0"], ["GIT_TERMINAL_PROMPT", "0"],
+    ]);
   });
 
   it("a workspace a sandboxed command holds is refused before git starts, and runs again once released", async () => {

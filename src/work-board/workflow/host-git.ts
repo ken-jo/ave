@@ -12,10 +12,29 @@ const HARDENED_CONFIG = [
   "credential.helper=", "core.askPass=", "commit.gpgSign=false", "tag.gpgSign=false", "diff.external=", "protocol.allow=never",
   "submodule.recurse=false", "gc.auto=0", "maintenance.auto=false", "user.useConfigOnly=true",
 ] as const;
-/** Variables that would redirect the repository, its object store or the attributes read for a path, answer a prompt, supply an
- * identity or start a program, and the one that gives the configuration command alone another file to read: the drivers it lists
- * would not be the ones a checkout runs. */
-const DROPPED_ENV = /^(GIT_CONFIG|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_OBJECT_DIRECTORY|GIT_ATTR_SOURCE|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|GIT_SSH|GIT_SSH_COMMAND|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE))$/iu;
+/** Inherited variables git is never given, whatever their case. A call names its repository by its folder alone, and what it reads and
+ * writes there is that repository's own. */
+const DROPPED_ENV = new RegExp(`^(${[
+  // Where the repository, its work tree and its index are.
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+  // Where objects are read from or written to, and which ones stand in for others or end the history.
+  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS",
+  "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
+  // Where refs are kept and under which names.
+  "GIT_NAMESPACE", "GIT_REFERENCE_BACKEND",
+  // The attributes read for a path, and how the paths a call names are matched.
+  "GIT_ATTR_SOURCE", "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
+  // Gives the configuration command alone another file to read: the drivers it lists would not be the ones a checkout runs.
+  "GIT_CONFIG",
+  // Git's input and its answer, taken from the pipes of the call.
+  "GIT_REDIRECT_STDIN", "GIT_REDIRECT_STDOUT", "GIT_REDIRECT_STDERR",
+  // Answers a prompt, supplies an identity or starts a program.
+  "GIT_ASKPASS", "SSH_ASKPASS", "GIT_ASK_YESNO", "GIT_EXTERNAL_DIFF", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_SSH", "GIT_SSH_COMMAND",
+  "GIT_PROXY_COMMAND",
+  "GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)",
+  // Allows a transport the call forbids, and the switches of git's own test suite.
+  "GIT_ALLOW_PROTOCOL", "GIT_TEST_[^=]*",
+].join("|")})$`, "iu");
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
 /** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them. */
