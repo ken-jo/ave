@@ -3,6 +3,7 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi, type MockInstance } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
@@ -76,14 +77,16 @@ it("fails a gate whose stored output no longer matches its hash, and a kept stag
 it("resumes an intact join after restart without manufacturing a conflict", async () => {
   let hold = true;
   let held = false;
-  const h = await stageRunHarness({ integrate: () => { if (!hold) return { ok: true }; held = true; return new Promise(() => undefined); } });
+  const integrating = deferred<void>();
+  const h = await stageRunHarness({ integrate: () => { if (!hold) return { ok: true }; held = true; integrating.resolve(); return new Promise(() => undefined); } });
   try {
     const version = await h.confirm([stageOf("a", { gate: { type: "auto", pass: { kind: "stage_ok" } } })]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     (await h.untilLive(1))[0].finish();
     await h.until(id, item => item.stageJoins[0]?.status === "integrating");
-    await vi.waitFor(() => expect(held).toBe(true));
+    await integrating.promise;
+    expect(held).toBe(true);
     hold = false;
     await restarted(h);
     const item = await h.until(id, current => current.runStatus === "completed");
@@ -109,7 +112,7 @@ it("a row deleted while its run is parked after a restart ends the run cancelled
     const engine = await restarted(h);
     const update = vi.spyOn(h.board.runs, "settleRun");
     expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
-    for (let i = 0; i < 400 && !h.events.some(event => event.itemId === id && event.message === "item-removed"); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    await h.waitForProgress(event => event.itemId === id && event.message === "item-removed", "the removed run's end");
     expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "cancelled", message: "item-removed" });
     const settled = await update.mock.results.at(-1)?.value;
     expect(settled).toMatchObject({ status: "stored", run: { runId, settled: { status: "cancelled" } } });
@@ -205,8 +208,9 @@ it("a boot that finds the run file awaiting review settles, sweeps and takes ove
     expect((await h.runOf(runId))?.settled).toBeUndefined();
     const [shown] = await engine.projectTemplateRuns([(await h.item(id))]);
     expect(shown).toMatchObject({ runStatus: "executing", templateRunState: "resuming" });
-    for (let i = 0; i < 400 && engine.cancelRun(id).ok === false; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
-    expect(h.sweeps.slice(swept)).toEqual([[runId]]);
+    // The takeover sweeps with the run kept, then the run can be stopped.
+    await h.untilWorkspaceCalls(() => expect(h.sweeps.slice(swept)).toEqual([[runId]]));
+    await h.untilObserved(() => expect(engine.cancelRun(id).ok).toBe(true));
     expect(h.children).toHaveLength(1);
   } finally {
     await h.cleanup();
@@ -442,7 +446,7 @@ it("a deferred adoption is retried only by an event, never by time", async () =>
     expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
     // One reader is the event: one attempt, and the run is taken over.
     await engine.projectTemplateRuns([await h.item(id)]);
-    for (let i = 0; i < 400 && !engine.cancelRun(id).ok; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    await h.untilObserved(() => expect(engine.cancelRun(id).ok).toBe(true));
     expect(attempts).toHaveBeenCalledTimes(1);
   } finally {
     await h.cleanup();
@@ -548,13 +552,8 @@ function editRunFile(h: Harness, edit: (file: Record<string, unknown>) => void):
   writeFileSync(runsPath, JSON.stringify(file));
 }
 const runFileOnDisk = (h: Harness) => JSON.parse(readFileSync(join(h.dir, "workflow-runs.json"), "utf8")) as Record<string, unknown>;
-async function untilTrue(check: () => boolean | Promise<boolean>): Promise<boolean> {
-  for (let i = 0; i < 400; i += 1) {
-    if (await check()) return true;
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
-  return false;
-}
+const untilTrue = (h: Harness, check: () => boolean | Promise<boolean>): Promise<void> =>
+  h.untilObserved(async () => expect(await check()).toBe(true));
 
 /** A parked run this engine holds, an ordinary row and a completed one, once the takeover ran and read every intent. */
 async function adoptedWithRows(h: Harness) {
@@ -585,8 +584,8 @@ it.each(PERMITTED_EVENTS)("after the takeover, each %s reads a delete intent wri
     deleteRowOffline(h, rows.id);
     editRunFile(h, file => { file.deleteIntents = [{ itemId: rows.id, runId: rows.runId }]; });
     await event(h, rows);
-    expect(await untilTrue(() => h.events.some(e => e.itemId === rows.id && e.phase === "cancelled" && e.message === "item-removed"))).toBe(true);
-    expect(await untilTrue(async () => (await h.runOf(rows.runId)) === null)).toBe(true);
+    await untilTrue(h, () => h.events.some(e => e.itemId === rows.id && e.phase === "cancelled" && e.message === "item-removed"));
+    await untilTrue(h, async () => (await h.runOf(rows.runId)) === null);
     expect(runFileOnDisk(h)).not.toHaveProperty("deleteIntents");
   } finally {
     for (const child of h.children) child.finish();
@@ -603,7 +602,7 @@ it.each(PERMITTED_EVENTS)("after the takeover, each %s reads an unknown marker w
       file.unknownDeletes = [{ itemId: rows.id, runId: rows.runId, op: "row", ownIntent: true }];
     });
     await event(h, rows);
-    expect(await untilTrue(() => !("deleteIntents" in runFileOnDisk(h)) && !("unknownDeletes" in runFileOnDisk(h)))).toBe(true);
+    await untilTrue(h, () => !("deleteIntents" in runFileOnDisk(h)) && !("unknownDeletes" in runFileOnDisk(h)));
     expect((await h.runOf(rows.runId))?.settled).toBeUndefined();
     expect(rowOnDisk(h, rows.id)).toMatchObject({ runId: rows.runId });
     expect(h.events.some(e => e.itemId === rows.id && e.phase === "cancelled")).toBe(false);
