@@ -346,13 +346,16 @@ export async function initPluginRuntime(
     getAllWindows: () => input.host.desktop?.getAppWindows() ?? [],
   }));
 
-  // A removal whose write failed must not leave an approval that a reinstall from the same source would inherit; a registry
-  // that cannot vouch for its plugins prunes nothing.
+  // A removal whose write failed must not leave an approval that a reinstall from the same source would inherit. A registry
+  // that cannot vouch for its plugins prunes nothing, and neither does one with an entry that did not load, since only a
+  // loaded manifest names the id its approval is keyed by.
   const pruneBackgroundEffectApprovals = async (): Promise<void> => {
     try {
       const installed = await vouchedInstalledPluginIds(pluginPaths.registryPath);
       if (!installed) return;
-      backgroundEffectApprovals.retain(new Set([...installed].flatMap((id) => [id, pluginRuntime.resolvePluginId(id)])));
+      const pluginIds = [...installed].map((id) => [id, pluginRuntime.resolvePluginId(id)] as const);
+      if (pluginIds.some(([, pluginId]) => !pluginRuntime.getPluginManifest(pluginId))) return;
+      backgroundEffectApprovals.retain(new Set(pluginIds.flat()));
     } catch (error) {
       log.warn("boot: background effect approvals were not pruned: %s", error instanceof Error ? error.message : String(error));
     }

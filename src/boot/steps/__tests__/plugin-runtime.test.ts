@@ -1352,13 +1352,21 @@ describe("initPluginRuntime background effect approvals", () => {
     } },
   );
 
+  afterEach(() => {
+    runtimeTestState.runtime.getPluginManifest.mockImplementation(() => null);
+  });
+
+  // An entry that did not load has no manifest id to match its approval by, so nothing is pruned.
   it.each([
     ["a vouched registry", new Set(["kept", "install-alias"]), ["kept", "aliased"]],
     ["a registry that cannot vouch", undefined, ["kept", "aliased", "removed"]],
+    ["a registry with an entry that did not load", new Set(["kept", "install-alias", "broken-alias"]), ["kept", "aliased", "removed"]],
   ] as const)("keeps after load only the approvals %s still names", async (_label, vouched, approved) => {
     runtimeTestState.capturedRuntimeOptions = null;
     runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
     runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
+    runtimeTestState.runtime.getPluginManifest.mockImplementation(((pluginId: string) =>
+      ["kept", "aliased"].includes(pluginId) ? { id: pluginId } : null) as never);
     runtimeTestState.vouchedInstalledPluginIds.mockResolvedValueOnce(vouched);
     const path = join(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-prune-"))), "background-effects.json");
     const seeded = new PluginBackgroundEffectApprovals(path);

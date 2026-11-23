@@ -2293,7 +2293,7 @@ Key boundaries:
   install the manifest it installed) and the hash of the canonical declared set.
   A version-only update keeps it; a scope or source change asks again. Uninstall
   drops it and disable keeps it; boot also drops any approval whose extension the
-  registry no longer names, and a removal that failed to save is retried at the
+  registry no longer names (none while any entry fails to load), and a removal that failed to save is retried at the
   next save or start, so a reinstall does not inherit it. An install with no pinned source (admin, bundled
   or a legacy row) cannot be approved, and its Review row says the source is not
   pinned and asks for a reinstall from the marketplace. A missing or unreadable
