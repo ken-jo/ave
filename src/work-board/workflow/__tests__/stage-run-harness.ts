@@ -115,11 +115,16 @@ export async function stageRunHarness(opts: {
     workspaceCalls.push(call);
     wakeCalls();
   }
-  /** A replaced workspace part wakes the workspace-call waits as the harness's own parts do, as its call begins and once it settles. */
+  /** A replaced workspace part wakes the workspace-call waits as the harness's own parts do: once its synchronous part has run, and once
+   * its call settles. */
   function waking(call: (...args: never[]) => unknown): (...args: never[]) => unknown {
     return (...args) => {
-      wakeCalls();
-      const result = call(...args);
+      let result: unknown;
+      try {
+        result = call(...args);
+      } finally {
+        wakeCalls();
+      }
       void Promise.resolve(result).then(wakeCalls, wakeCalls);
       return result;
     };
