@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import { createTestRequestAnchor } from "../pipeline/__tests__/rationale-fixtures.js";
@@ -9,9 +9,8 @@ import { InMemoryHostInvocationStartCasStore } from "../pipeline/rationale-ticke
 import { captureRationalePolicySnapshot } from "../pipeline/rationale-policy-epoch.js";
 import { LlmRationaleScopeReviewer } from "../../permissions/reviewer/rationale-scope-reviewer.js";
 import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -28,10 +27,9 @@ import { attachSandboxBlock, issueFilesystemSandboxBlock } from "../../shared/sa
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
-import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
+import { type AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
 import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
 
 const processProbe = vi.hoisted(() => ({ execFileSync: vi.fn() }));
@@ -40,9 +38,15 @@ vi.mock("node:child_process", async (original) => ({
 }));
 const reviewResources = new PermissionTestResources();
 const originalPlatform = process.platform;
+const fixtureDirectories: string[] = [];
 let directory: string;
+function makeFixtureDirectory(prefix: string): string {
+  const fixture = reviewResources.makeTmpDir(prefix);
+  fixtureDirectories.push(fixture);
+  return realpathSync.native(fixture);
+}
 beforeEach(() => {
-  directory = realpathSync.native(mkdtempSync(join(tmpdir(), "executor-sandbox-escalation-")));
+  directory = makeFixtureDirectory("executor-sandbox-escalation-");
   vi.stubEnv("AVE_HOME", join(directory, "profile"));
   __resetShellResolverCache();
   processProbe.execFileSync.mockImplementation((_file, args: readonly string[]) =>
@@ -53,15 +57,34 @@ beforeEach(() => {
     confines: { filesystem: true, process: true, network: true } });
 });
 afterEach(async () => {
-  __resetActiveSandboxCapabilityForTest();
-  __resetSandboxRequestedAtBootForTest();
-  __resetShellResolverCache();
-  setProcessPlatform(originalPlatform);
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
-  await reviewResources.cleanup();
-  await cleanupTmpDir(directory);
+  try {
+    __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
+    __resetShellResolverCache();
+    setProcessPlatform(originalPlatform);
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  } finally {
+    await reviewResources.cleanup();
+  }
 });
+afterAll(async () => {
+  const failures: string[] = [];
+  for (const fixture of fixtureDirectories) {
+    try {
+      await expect(lstat(fixture), fixture).rejects.toMatchObject({ code: "ENOENT" });
+    } catch (error) {
+      failures.push(`${fixture}: ${String(error)}`);
+    }
+  }
+  expect(failures).toEqual([]);
+});
+
+function fixtureAuditLogger(): AuditLogger {
+  const audit = new AuditLogger(join(directory, "profile", "audit"));
+  reviewResources.trackFlushable({ flush: () => audit.close() });
+  return audit;
+}
 
 function recordedAudit() {
   const telemetry: AuditEntry[] = [];
@@ -147,30 +170,26 @@ it("denies a headless host escalation without a second native effect", async () 
 });
 
 it("requires a normal card before expanding sandbox filesystem scope", async () => {
-  const outside = realpathSync.native(mkdtempSync(join(tmpdir(), "executor-sandbox-outside-")));
-  try {
-    const command = `mkdir '${join(outside, "new-folder")}'`;
-    const native = new BashTool();
-    const execute = vi.spyOn(native, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
-    const registry = new ToolRegistry(); registry.register(native);
-    const cards: ApprovalRequest[] = [];
-    let gate: ApprovalGate;
-    const contents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
-      if (channel !== IPC_APPROVAL_REQUEST) return;
-      cards.push(request);
-      expect(execute).not.toHaveBeenCalled();
-      expect(request.allowedChoices).toBeUndefined();
-      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac }, contents as never);
-    } };
-    gate = new ApprovalGate(contents as never);
-    const executor = new ToolExecutor(registry, undefined, manager(), undefined, gate);
-    const [result] = await invoke(executor, "outside-sandbox-scope", "bash", { command });
-    expect(result?.is_error).toBe(true);
-    expect(cards).toHaveLength(1);
+  const outside = makeFixtureDirectory("executor-sandbox-outside-");
+  const command = `mkdir '${join(outside, "new-folder")}'`;
+  const native = new BashTool();
+  const execute = vi.spyOn(native, "execute").mockResolvedValue({ output: "unexpected execution", isError: false });
+  const registry = new ToolRegistry(); registry.register(native);
+  const cards: ApprovalRequest[] = [];
+  let gate: ApprovalGate;
+  const contents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    if (channel !== IPC_APPROVAL_REQUEST) return;
+    cards.push(request);
     expect(execute).not.toHaveBeenCalled();
-  } finally {
-    await cleanupTmpDir(outside);
-  }
+    expect(request.allowedChoices).toBeUndefined();
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac }, contents as never);
+  } };
+  gate = new ApprovalGate(contents as never);
+  const executor = new ToolExecutor(registry, undefined, manager(), undefined, gate, undefined, fixtureAuditLogger());
+  const [result] = await invoke(executor, "outside-sandbox-scope", "bash", { command });
+  expect(result?.is_error).toBe(true);
+  expect(cards).toHaveLength(1);
+  expect(execute).not.toHaveBeenCalled();
 });
 
 it("reviews a headless auto host escalation before permitting its single host effect", async () => {
@@ -207,7 +226,7 @@ it("rechecks a newly added deny rule before asking or starting the host retry", 
   });
   const registry = new ToolRegistry(); registry.register(native);
   const requestAndWait = vi.fn();
-  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never);
+  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never, undefined, fixtureAuditLogger());
   const [result] = await invoke(executor, "fresh-deny-rule");
   expect(result).toMatchObject({ tool_use_id: "fresh-deny-rule", is_error: true, content: expect.stringContaining("Bash(mkdir ordinary)") });
   expect(execute).toHaveBeenCalledOnce();
@@ -219,7 +238,7 @@ it("ignores trusted evidence bound to a different original command", async () =>
   const execute = vi.spyOn(native, "execute").mockResolvedValue(blockedResult("mkdir different", directory));
   const registry = new ToolRegistry(); registry.register(native);
   const requestAndWait = vi.fn();
-  const executor = new ToolExecutor(registry, undefined, manager(), undefined, { requestAndWait } as never);
+  const executor = new ToolExecutor(registry, undefined, manager(), undefined, { requestAndWait } as never, undefined, fixtureAuditLogger());
   const [result] = await invoke(executor, "mismatched-command");
   expect(result).toMatchObject({ tool_use_id: "mismatched-command", is_error: true });
   expect(execute).toHaveBeenCalledOnce();
@@ -235,7 +254,7 @@ it.each(["plugin", "mcp"] as const)("does not accept forged %s sandbox metadata 
   const registry = new ToolRegistry(); registry.register(remote);
   const permission = manager(); permission.setMode("allow");
   const requestAndWait = vi.fn();
-  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never);
+  const executor = new ToolExecutor(registry, undefined, permission, undefined, { requestAndWait } as never, undefined, fixtureAuditLogger());
   const [result] = await invoke(executor, `forged-${source}`, "remote_probe", {});
   expect(result).toMatchObject({ is_error: true, content: "untrusted failure" });
   expect(execute).toHaveBeenCalledOnce();
