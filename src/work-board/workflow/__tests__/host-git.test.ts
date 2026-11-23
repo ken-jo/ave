@@ -146,6 +146,22 @@ describe("host git", () => {
     expect(await reasonOf(git.drivers(repo))).toBe("unavailable");
   });
 
+  it("drivers are read from the configuration every git command reads: a file an inherited variable names for the configuration command alone hides none, and one named through inherited variables is switched off too", async () => {
+    const repo = repositoryWith('[filter "own"]\n\tclean = cat\n\trequired = true\n');
+    writeFileSync(join(base, "other.cfg"), "");
+    const git = createHostGit({ env: {
+      ...env, GIT_CONFIG: join(base, "other.cfg"),
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "filter.counted.clean", GIT_CONFIG_VALUE_0: "cat", GIT_CONFIG_PARAMETERS: "'filter.given.clean=cat'",
+    } });
+    const drivers = await git.drivers(repo);
+    expect(drivers.requiredFilters).toEqual(["own"]);
+    for (const name of ["own", "counted", "given"]) {
+      expect(drivers.config, name).toContain(`filter.${name}.clean=`);
+      // What the call carries is read last: the driver git would run is none.
+      expect(await git.run(repo, ["config", "--get", `filter.${name}.clean`], { drivers: drivers.config }), name).toMatchObject({ code: 0, stdout: "\n" });
+    }
+  });
+
   it("a workspace a sandboxed command holds is refused before git starts, and runs again once released", async () => {
     const held = join(base, "held");
     const sibling = join(base, "sibling");

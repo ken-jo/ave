@@ -12,8 +12,9 @@ const HARDENED_CONFIG = [
   "credential.helper=", "core.askPass=", "commit.gpgSign=false", "tag.gpgSign=false", "diff.external=", "protocol.allow=never",
   "submodule.recurse=false", "gc.auto=0", "maintenance.auto=false", "user.useConfigOnly=true",
 ] as const;
-/** Variables that would redirect the repository, answer a prompt, supply an identity or start a program. */
-const DROPPED_ENV = /^(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|GIT_SSH|GIT_SSH_COMMAND|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE))$/iu;
+/** Variables that would redirect the repository, answer a prompt, supply an identity or start a program, and the one that gives the
+ * configuration command alone another file to read: the drivers it lists would not be the ones a checkout runs. */
+const DROPPED_ENV = /^(GIT_CONFIG|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|GIT_SSH|GIT_SSH_COMMAND|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE))$/iu;
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
 /** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them. */
