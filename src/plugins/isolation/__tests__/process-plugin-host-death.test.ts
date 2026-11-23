@@ -1,9 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { posixProcessExists, spawnSacrificialHost, stopSacrificialHost, waitForFixture } from "../../../__tests__/support/sacrificial-host.js";
+import { posixProcessExists, spawnSacrificialHost, stopFixtureProcesses, stopSacrificialHost, waitForFixture, withFixtureCleanup } from "../../../__tests__/support/sacrificial-host.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../../lib/shell-resolver.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
@@ -131,31 +131,33 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
     const heartbeat = (role: Role): number => statSync(path(role), { throwIfNoEntry: false })?.size ?? 0;
     const readResult = <T>(name: string): T | undefined =>
       existsSync(path(name)) ? JSON.parse(readFileSync(path(name), "utf8")) as T : undefined;
-    mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
-    writeFileSync(outsidePath, "original");
-    writeFileSync(script, HEARTBEAT);
-    const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
-    writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(node)} ${shellQuote(script)} leader ${shellQuote(outsidePath)}\n`);
-    chmodSync(launcher, 0o700);
-
-    const host = spawnSacrificialHost(HOST, [
-      new URL("../out-of-process-plugin.ts", import.meta.url).href,
-      new URL("../../../permissions/asrt-sandbox.ts", import.meta.url).href,
-      new URL("../../../permissions/sandbox-capability.ts", import.meta.url).href,
-      new URL("../../../shared/ave-home.ts", import.meta.url).href,
-      new URL("../../plugin-storage-layout.ts", import.meta.url).href,
-      PLUGIN_ID, pluginRoot, pluginDataDir, launcher,
-    ], { AVE_HOME: home });
-    let started: { pgid: number; confinement: string } | undefined;
+    let activeHost: ChildProcess | undefined;
     let pgid: number | undefined;
-    let hostError: Error | undefined;
-    host.on("message", (message: { pgid: number; confinement: string }) => { started = message; pgid = message.pgid; });
-    host.on("error", (error) => { hostError = error; });
-    const assertHostRunning = (): void => {
-      if (hostError) throw hostError;
-      if (host.exitCode !== null || host.signalCode !== null) throw new Error("Sacrificial host exited before SIGKILL");
-    };
-    try {
+    await withFixtureCleanup(async () => {
+      mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
+      writeFileSync(outsidePath, "original");
+      writeFileSync(script, HEARTBEAT);
+      const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+      writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(node)} ${shellQuote(script)} leader ${shellQuote(outsidePath)}\n`);
+      chmodSync(launcher, 0o700);
+
+      const host = spawnSacrificialHost(HOST, [
+        new URL("../out-of-process-plugin.ts", import.meta.url).href,
+        new URL("../../../permissions/asrt-sandbox.ts", import.meta.url).href,
+        new URL("../../../permissions/sandbox-capability.ts", import.meta.url).href,
+        new URL("../../../shared/ave-home.ts", import.meta.url).href,
+        new URL("../../plugin-storage-layout.ts", import.meta.url).href,
+        PLUGIN_ID, pluginRoot, pluginDataDir, launcher,
+      ], { AVE_HOME: home });
+      activeHost = host;
+      let started: { pgid: number; confinement: string } | undefined;
+      let hostError: Error | undefined;
+      host.on("message", (message: { pgid: number; confinement: string }) => { started = message; pgid = message.pgid; });
+      host.on("error", (error) => { hostError = error; });
+      const assertHostRunning = (): void => {
+        if (hostError) throw hostError;
+        if (host.exitCode !== null || host.signalCode !== null) throw new Error("Sacrificial host exited before SIGKILL");
+      };
       const launch = await waitForFixture("confined host launch", () => {
         assertHostRunning();
         return started;
@@ -216,11 +218,11 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
         await waitForFixture("surviving heartbeat", () => heartbeat("new-session") > surviving ? true : undefined);
       }
       expect(reaped.map(heartbeat)).toEqual(stopped);
-    } finally {
-      await stopSacrificialHost(host);
-      if (pgid !== undefined && pgid > 1 && posixProcessExists(-pgid)) process.kill(-pgid, "SIGKILL");
-      for (const pid of heartbeatProcesses(script, outsidePath).values()) process.kill(pid, "SIGKILL");
-      await cleanupTmpDir(root);
-    }
+    }, [
+      async () => { if (activeHost) await stopSacrificialHost(activeHost); },
+      () => stopFixtureProcesses(pgid !== undefined && pgid > 1 ? [-pgid] : []),
+      () => stopFixtureProcesses([...heartbeatProcesses(script, outsidePath).values()]),
+      () => cleanupTmpDir(root),
+    ]);
   });
 });

@@ -21,7 +21,7 @@ export const PROCESS_GROUP_REAPER_SCRIPT = [
   "while IFS= read -r line; do",
   "  id=${line#?}",
   "  case $line in",
-  "    @*:*) request=${id%%:*}; id=${id#*:} ;;",
+  `    @*:*) request=\${id%%:*}; id=\${id#*:} ;;`,
   "  esac",
   "  case $id in ''|*[!0-9]*|0*|1) continue ;; esac",
   "  case $line in",

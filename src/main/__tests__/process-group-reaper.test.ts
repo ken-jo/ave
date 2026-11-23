@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { posixProcessExists, spawnSacrificialHost, stopSacrificialHost, waitForFixture } from "../../__tests__/support/sacrificial-host.js";
+import { posixProcessExists, spawnSacrificialHost, stopFixtureProcesses, stopSacrificialHost, waitForFixture, withFixtureCleanup } from "../../__tests__/support/sacrificial-host.js";
 import {
   createProcessGroupReaper,
   PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS,
@@ -143,34 +143,36 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
     "leaves no live group when the host is killed at %s", async (boundary) => {
       const dir = mkdtempSync(join(tmpdir(), "ave-launch-gate-"));
       const marker = join(dir, "executed");
-      const host = spawnSacrificialHost(GATED_HOST, [
-        new URL("../managed-child-processes.ts", import.meta.url).href,
-        new URL("../process-group-reaper.ts", import.meta.url).href,
-        boundary, marker,
-      ]);
+      let activeHost: ChildProcess | undefined;
       let pgid: number | undefined;
       let companion: number | undefined;
-      let reached: string | undefined;
-      let hostError: Error | undefined;
-      host.on("error", (error) => { hostError = error; });
-      host.on("message", (message: { pgid?: number; companion?: number; boundary?: string }) => {
-        if (message.pgid !== undefined) pgid = message.pgid;
-        if (message.companion !== undefined) companion = message.companion;
-        if (message.boundary !== undefined) reached = message.boundary;
-      });
-      try {
+      await withFixtureCleanup(async () => {
+        const host = spawnSacrificialHost(GATED_HOST, [
+          new URL("../managed-child-processes.ts", import.meta.url).href,
+          new URL("../process-group-reaper.ts", import.meta.url).href,
+          boundary, marker,
+        ]);
+        activeHost = host;
+        let reached: string | undefined;
+        let hostError: Error | undefined;
+        host.on("error", (error) => { hostError = error; });
+        host.on("message", (message: { pgid?: number; companion?: number; boundary?: string }) => {
+          if (message.pgid !== undefined) pgid = message.pgid;
+          if (message.companion !== undefined) companion = message.companion;
+          if (message.boundary !== undefined) reached = message.boundary;
+        });
         await waitForFixture(boundary, () => {
           if (hostError) throw hostError;
           if (host.exitCode !== null || host.signalCode !== null) throw new Error("Sacrificial host exited before the launch boundary");
           return reached;
         });
         expect(reached).toBe(boundary);
-        if (pgid === undefined) throw new Error("No launch group reported");
+        if (pgid === undefined || pgid <= 1) throw new Error("No launch group reported");
         const group = pgid;
         expect(groupAlive(group)).toBe(true);
         expect(existsSync(marker)).toBe(boundary === "released");
         if (boundary === "registration-written") {
-          if (companion === undefined) throw new Error("No companion group reported");
+          if (companion === undefined || companion <= 1) throw new Error("No companion group reported");
           expect(groupAlive(companion)).toBe(true);
         }
         host.kill("SIGKILL");
@@ -181,13 +183,11 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
         expect(existsSync(marker)).toBe(boundary === "released");
         pgid = undefined;
         companion = undefined;
-      } finally {
-        await stopSacrificialHost(host);
-        for (const group of [pgid, companion]) {
-          if (group !== undefined && groupAlive(group)) process.kill(-group, "SIGKILL");
-        }
-        rmSync(dir, { recursive: true, force: true });
-      }
+      }, [
+        async () => { if (activeHost) await stopSacrificialHost(activeHost); },
+        () => stopFixtureProcesses([pgid, companion].flatMap((group) => group !== undefined && group > 1 ? [-group] : [])),
+        () => rmSync(dir, { recursive: true, force: true }),
+      ]);
     },
   );
 });
@@ -229,6 +229,17 @@ function fakeReapers(): { fakes: FakeReaper[]; spawnReaper: () => ChildProcess }
 }
 
 describe("process group reaper bookkeeping", () => {
+  it("runs later cleanup steps and preserves the original fixture failure", async () => {
+    const failure = new Error("Fixture assertion failed");
+    const cleanupFailure = new Error("Fixture cleanup failed");
+    const laterCleanup = vi.fn();
+    await expect(withFixtureCleanup(async () => { throw failure; }, [
+      () => { throw cleanupFailure; },
+      laterCleanup,
+    ])).rejects.toMatchObject({ errors: [failure, cleanupFailure] });
+    expect(laterCleanup).toHaveBeenCalledOnce();
+  });
+
   it("requires a complete matching ack and the queued write callback", async () => {
     const fake = new FakeReaper();
     const reaper = createProcessGroupReaper(() => fake as unknown as ChildProcess);
@@ -281,16 +292,22 @@ describe("process group reaper bookkeeping", () => {
     const reaper = createProcessGroupReaper(spawnReaper);
     try {
       reaper.retain(5001);
-      fakes[0]!.die();
+      const [first] = fakes;
+      if (!first) throw new Error("Missing initial reaper");
+      first.die();
       expect(fakes).toHaveLength(2);
-      expect(fakes[1]!.lines).toEqual(["+5001"]);
+      const second = fakes[1];
+      if (!second) throw new Error("Missing first replacement");
+      expect(second.lines).toEqual(["+5001"]);
       vi.advanceTimersByTime(100);
-      fakes[1]!.die();
+      second.die();
       vi.advanceTimersByTime(PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS - 101);
       expect(fakes).toHaveLength(2);
       vi.advanceTimersByTime(1);
       expect(fakes).toHaveLength(3);
-      expect(fakes[2]!.lines).toEqual(["+5001"]);
+      const third = fakes[2];
+      if (!third) throw new Error("Missing second replacement");
+      expect(third.lines).toEqual(["+5001"]);
     } finally {
       reaper.shutdown();
       vi.useRealTimers();

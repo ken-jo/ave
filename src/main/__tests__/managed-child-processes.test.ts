@@ -73,6 +73,8 @@ describe("managed child process tracking", () => {
     const launchReaper = vi.mocked(spawn);
     launchReaper.mockClear();
     for (const reaper of reapers) launchReaper.mockReturnValueOnce(reaper as unknown as ChildProcess);
+    const [first, second] = reapers;
+    if (!first || !second) throw new Error("Missing reaper fixtures");
     const track = (pid: number, requireProcessGroupReaper: boolean) => {
       const child = Object.assign(makeChild(), { pid, spawnfile: "fixture", signalCode: null });
       trackManagedChildProcess(child, { killProcessGroup: true, requireProcessGroupReaper });
@@ -80,13 +82,13 @@ describe("managed child process tracking", () => {
 
     track(5001, true);
     track(6001, false);
-    reapers[0]!.emit("exit", 1, null);
+    first.emit("exit", 1, null);
     expect(signal).toHaveBeenCalledWith(-5001, "SIGKILL");
     expect(launchReaper).toHaveBeenCalledTimes(2);
     assertProcessGroupReaperAvailable();
     track(5002, true);
     vi.advanceTimersByTime(100);
-    reapers[1]!.emit("exit", 1, null);
+    second.emit("exit", 1, null);
     expect(signal).toHaveBeenCalledWith(-5002, "SIGKILL");
     expect(signal).not.toHaveBeenCalledWith(-6001, "SIGKILL");
     expect(() => assertProcessGroupReaperAvailable()).toThrow(/reaper is unavailable/);

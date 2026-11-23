@@ -42,3 +42,30 @@ export async function stopSacrificialHost(host: ChildProcess): Promise<void> {
     throw new Error("Sacrificial host cleanup watchdog failed", { cause: error });
   }
 }
+
+export async function stopFixtureProcesses(pids: readonly number[]): Promise<void> {
+  const results = await Promise.allSettled(pids.map(async (pid) => {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw error;
+    }
+    await waitForFixture(`cleanup of fixture process ${pid}`, () => posixProcessExists(pid) ? undefined : true);
+  }));
+  const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+  if (failures.length > 0) throw new AggregateError(failures, "Fixture process cleanup failed");
+}
+
+export async function withFixtureCleanup(run: () => Promise<void>, cleanup: readonly (() => void | Promise<void>)[]): Promise<void> {
+  const failures: unknown[] = [];
+  for (const step of [run, ...cleanup]) {
+    try {
+      await step();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Fixture execution or cleanup failed");
+}

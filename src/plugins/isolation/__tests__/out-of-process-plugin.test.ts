@@ -1624,7 +1624,9 @@ describe("the factory's launch reaches the spawn as decided", () => {
       sandbox.active = true;
       spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "unconfined" });
       try {
-        const refused = await attempt(processLaunch(roots.context.pluginRoot!), PROCESS_MANIFEST, roots);
+        const { pluginRoot } = roots.context;
+        if (!pluginRoot) throw new Error("Missing plugin root");
+        const refused = await attempt(processLaunch(pluginRoot), PROCESS_MANIFEST, roots);
         expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
         expect(kill).toHaveBeenCalledWith("SIGKILL");
       } finally {
@@ -1731,10 +1733,12 @@ it.each(["explicit stop", "clean EOF", "PGID reuse"])("stops a confined POSIX gr
   const dispose = trackManagedChildProcess(child as unknown as ChildProcess, { killProcessGroup: true });
   spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
   try {
+    const { pluginRoot, pluginSocketDir } = roots.context;
+    if (!pluginRoot || !pluginSocketDir) throw new Error("Missing plugin paths");
     const plugin = await spawnConfinedPluginChild({
       pluginId: "example",
-      socketDir: roots.context.pluginSocketDir!,
-      launch: { kind: "entry", childEntryPath: join(roots.context.pluginRoot!, "plugin.mjs") },
+      socketDir: pluginSocketDir,
+      launch: { kind: "entry", childEntryPath: join(pluginRoot, "plugin.mjs") },
       envelope: { read: [], write: [] },
     });
     if (mode === "explicit stop") plugin.link.terminate("explicit stop");
