@@ -1111,6 +1111,19 @@ describe("what a fixture's own removal takes", () => {
     expect.soft(existsSync(sentinel)).toBe(true);
   });
 
+  it("nothing through a link to a folder above the base, though the base is found below it", () => {
+    const owned = join(base, "owned");
+    const sentinel = join(owned, "inner", "sentinel.txt");
+    mkdirSync(join(owned, "inner"), { recursive: true });
+    writeFileSync(sentinel, "kept\n");
+    symlinkSync(base, join(base, "alias"), "junction");
+    expect.soft(() => removeTree(join(base, "alias", "owned", "inner"), owned)).toThrow();
+    expect.soft(() => removeLink(join(base, "alias", "owned", "inner"), owned)).toThrow();
+    expect.soft(existsSync(sentinel)).toBe(true);
+    removeLink(join(base, "alias"), base);
+    removeTree(owned);
+  });
+
   it("nothing at a path that can be read in two ways: one that steps back through a link, names the folder it is in, or mixes its separators", () => {
     const owned = join(base, "owned");
     const sibling = join(base, "sibling");

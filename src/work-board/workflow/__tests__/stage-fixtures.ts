@@ -26,16 +26,17 @@ function levels(path: string): string[] {
   return parts.map(part => (at = `${at}${sep}${part}`));
 }
 
-/** Refuses a path that is not below `base` through real folders alone: `base` is a folder the fixture made, found among the folders
- * the path names by which folder it is on disk, not by how it is spelled, and each folder from there down to the path is one itself
- * and no link to one. Returns the path, which is the text every one of those checks was made on. */
+/** Refuses a path that is not below `base` through real folders alone: `base` is a folder the fixture made, spelled as it was made,
+ * and the path names it by that very text; from it down to the path each folder is one itself and no link to one, each asked only
+ * once the one above it was. Nothing above the base is asked, so no other spelling of it, a link to a folder above it included, is
+ * taken. Returns the path, which is the text every one of those checks was made on. */
 function below(base: string, path: string): string {
-  levels(base);
-  const held = entryAt(base);
-  if (!realDir(held)) throw new Error(`a fixture's base is no real folder: ${base}`);
-  const above = levels(path).slice(0, -1);
-  const from = above.findIndex(level => sameDir(entryAt(level), held));
-  if (from < 0 || !above.slice(from).every(level => realDir(entryAt(level)))) throw new Error(`not below the fixture's base through real folders: ${path}`);
+  const own = levels(base);
+  if (!realDir(entryAt(base))) throw new Error(`a fixture's base is no real folder: ${base}`);
+  const all = levels(path);
+  if (all.length <= own.length || all[own.length - 1] !== base || !all.slice(own.length - 1, -1).every(level => realDir(entryAt(level)))) {
+    throw new Error(`not below the fixture's base through real folders: ${path}`);
+  }
   return path;
 }
 
