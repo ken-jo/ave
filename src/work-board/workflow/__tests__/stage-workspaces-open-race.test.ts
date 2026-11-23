@@ -1,13 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { JOIN_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
-import { stageOf } from "./stage-fixtures.js";
+import { JOIN_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
+import { removeLink, stageOf } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
 /** Runs before the run folder is made in its project folder, with that folder's path: where another process's release can come between. */
@@ -23,6 +23,8 @@ const between = vi.hoisted(() => ({
   asked: [] as string[],
   /** The home as the host names it, when that is not the path the test's home is at. */
   home: undefined as string | undefined,
+  /** The name of a held folder whose listing fails. */
+  unlisted: undefined as string | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -47,6 +49,7 @@ vi.mock("../owned-fs.js", async (original) => {
       if (key === "existing") return (name: string) => { const found = target.existing(name); return found === undefined ? undefined : held(found, depth + 1); };
       if (key === "remove") return async (name: string, expect?: string) => { await target.remove(name, expect); between.removed?.(join(target.path, name)); };
       if (key === "make" && depth === 2) return (name: string) => { between.act?.(target.path); return target.make(name); };
+      if (key === "list" && between.unlisted === basename(target.path)) return () => { throw Object.assign(new Error("fixture: the folder cannot be listed"), { code: "EACCES" }); };
       const value = Reflect.get(target, key) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },
@@ -91,6 +94,7 @@ afterEach(() => {
   between.removed = undefined;
   between.share = undefined;
   between.home = undefined;
+  between.unlisted = undefined;
   between.foreign.length = 0;
   between.asked.length = 0;
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
@@ -131,6 +135,72 @@ it("an open whose worktrees folder is swapped for another while the run folder i
     expect(readdirSync(join(home, "worktrees"))).toEqual([]);
   } finally {
     if (before === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = before;
+  }
+});
+
+it("a plain file under worktrees holds no run and keeps no root; a link there, or a worktrees that cannot be listed, may hold any run's", async () => {
+  const provider = createStageWorkspaceProvider({ git: hostGit(), removable: async () => () => false });
+  const worktrees = join(aveHome(), "worktrees");
+  const project = join(worktrees, "fixture-project");
+  mkdirSync(project, { recursive: true });
+  try {
+    // A run whose record went and that has no folder: what was held for it is told as used.
+    const gone = "run-gone";
+    const given = new Map([[gone, { projectRoot: join(base, "project"), itemId: 7 }]]);
+    expect(await provider.discard(given)).toEqual([gone]);
+    // Where a project's folder would be, and where the run's own would be.
+    for (const file of [join(worktrees, "fixture-file"), join(project, runSlug(7, gone))]) {
+      writeFileSync(file, "");
+      try {
+        expect(await provider.discard(given), file).toEqual([gone]);
+      } finally {
+        rmSync(file);
+      }
+    }
+    const link = join(worktrees, "fixture-link");
+    mkdirSync(join(base, "outside"));
+    symlinkSync(join(base, "outside"), link, "junction");
+    try {
+      expect(await provider.discard(given)).toEqual([]);
+    } finally {
+      removeLink(link);
+    }
+    between.unlisted = "worktrees";
+    expect(await provider.discard(given)).toEqual([]);
+    between.unlisted = undefined;
+    expect(await provider.discard(given)).toEqual([gone]);
+  } finally {
+    rmSync(project, { recursive: true });
+  }
+});
+
+it("a project's folder that cannot be listed keeps every root, and the runs of the other projects still go", async () => {
+  const first = run();
+  const runs = [first, { ...first, runId: `${first.runId}-second` }];
+  const provider = createStageWorkspaceProvider({ git: hostGit(), removable: async () => at => runs.some(one => one.runId === at.runId) });
+  mkdirSync(join(base, "second"));
+  const roots: string[] = [];
+  for (const [index, project] of ["project", "second"].entries()) {
+    const open = await provider.open(runs[index] as typeof first, join(base, project));
+    if (!open.ok) throw new Error(open.code);
+    roots.push(open.workspace.runRoot);
+  }
+  try {
+    // The project listed first is the one that cannot be read: the other one's run comes after it.
+    const listed = readdirSync(dirname(dirname(roots[0] as string)));
+    const order = (index: number): number => listed.indexOf(basename(dirname(roots[index] as string)));
+    const [unlisted, read] = order(0) < order(1) ? [0, 1] : [1, 0];
+    const gone = "run-gone";
+    const given = new Map([[gone, { projectRoot: join(base, "project"), itemId: 7 }]]);
+    between.unlisted = basename(dirname(roots[unlisted] as string));
+    expect(await provider.discard(given)).toEqual([runs[read]?.runId]);
+    expect(roots.map(root => existsSync(root))).toEqual(unlisted === 0 ? [true, false] : [false, true]);
+    between.unlisted = undefined;
+    expect(await provider.discard(given)).toEqual([runs[unlisted]?.runId, gone]);
+    expect(roots.map(root => existsSync(root))).toEqual([false, false]);
+  } finally {
+    between.unlisted = undefined;
+    for (const one of runs) await provider.release(one, "all");
   }
 });
 

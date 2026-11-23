@@ -8,7 +8,7 @@ import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
-import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
+import { holdDir, isFileAt, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
@@ -940,35 +940,45 @@ ${fields(side)}`;
   const unreadable = new Set<string>();
 
   /** Every run folder that holds its own record. A folder without one was not made by a run the host can name; it is left alone.
-   * `whole`: every level under `worktrees` was listed. `unread`: the names of the run folders that hold no record the host reads, in
+   * `whole`: every level under `worktrees` was listed, but for the files found where a folder would be: a file holds no run. `unread`: the names of the run folders that hold no record the host reads, in
    * lower case as a run's own name is, since a volume that folds case finds a run's folder under any spelling of it; a run that is
    * not among `runs` has no folder when its name is not among these either. */
   function recordedRuns(): { runs: Held[]; whole: boolean; unread: Set<string> } {
     const found: Held[] = [];
     const unread = new Set<string>();
     let whole = true;
-    const real = (parent: OwnedDir, name: string): OwnedDir | undefined => { try { return parent.existing(name); } catch { return undefined; } };
     try {
       const base = holdDir(aveHome()).existing(WORKTREES_DIR);
       if (base === undefined) return { runs: found, whole, unread };
       for (const name of base.list()) {
-        const project = real(base, name);
-        if (project === undefined) { whole = false; continue; }
-        for (const slug of project.list()) {
-          const run = real(project, slug);
-          if (run === undefined) { unread.add(slug.toLowerCase()); continue; }
-          const runRoot = join(worktreesRoot(), name, slug);
-          const file = readRunFile(runRoot, run);
-          if (file !== null) { found.push({ runRoot, file, project, run }); continue; }
-          unread.add(slug.toLowerCase());
-          if (!unreadable.has(runRoot)) {
-            unreadable.add(runRoot);
-            log.warn("a folder under worktrees holds no record of its own and is left as it is: %s/%s", name, slug);
+        try {
+          const project = base.existing(name);
+          // Gone since it was listed: what it held is not known.
+          if (project === undefined) { whole = false; continue; }
+          for (const slug of project.list()) {
+            let run: OwnedDir | undefined;
+            try { run = project.existing(slug); } catch { /* No real directory: told apart below. */ }
+            if (run === undefined) {
+              if (!isFileAt(join(project.path, slug))) unread.add(slug.toLowerCase());
+              continue;
+            }
+            const runRoot = join(worktreesRoot(), name, slug);
+            const file = readRunFile(runRoot, run);
+            if (file !== null) { found.push({ runRoot, file, project, run }); continue; }
+            unread.add(slug.toLowerCase());
+            if (!unreadable.has(runRoot)) {
+              unreadable.add(runRoot);
+              log.warn("a folder under worktrees holds no record of its own and is left as it is: %s/%s", name, slug);
+            }
           }
+        } catch {
+          // A file where a project's folder would be holds no run. Any other entry that could not be read may hold any run's, and
+          // the projects after it are read all the same.
+          if (!isFileAt(join(base.path, name))) whole = false;
         }
       }
     } catch {
-      // A level that is no real directory holds no run the host can name.
+      // A `worktrees` that is no real directory, or cannot be listed, may hold any run's folder.
       whole = false;
     }
     return { runs: found, whole, unread };

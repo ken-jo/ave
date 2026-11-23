@@ -45,6 +45,16 @@ export function realDirId(path: string): NodeId | undefined {
   }
 }
 
+/** Whether a path is known to be a file, itself and through no link: it then holds no entry. A link, a path that cannot be read and
+ * one with nothing at it are not known to be. */
+export function isFileAt(path: string): boolean {
+  try {
+    return stats(path)?.isFile() === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether `inner` is `outer` or lies beneath it, as both really are on disk. */
 export function realWithin(outer: string, inner: string): boolean {
   const real = (value: string): string => process.platform === "win32" ? realpathSync.native(value).toLowerCase() : realpathSync.native(value);
