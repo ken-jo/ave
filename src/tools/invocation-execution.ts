@@ -11,7 +11,7 @@ import type { PermissionEvaluationContext } from "../permissions/evaluation-cont
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
-import { abortSupersedesApprovalDecision, approvalFailureOutcome, hostShutdownDenial } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
@@ -1113,10 +1113,14 @@ export async function executeAuthorizedToolInvocation(
     }
     humanApproved = surfaceResolution.humanApproved ?? (decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision));
     if (!humanApproved && permissionResult.decision !== "allow") {
-      permissionResult = { ...permissionResult, decision: "deny", reason: request.reason };
+      const denied = { ...permissionResult, decision: "deny" as const, reason: request.reason };
+      // A recheck deny is the rule's; a deny the gate returned unchanged was answered.
+      permissionResult = surfaceResolution.humanApproved === false ? denied : answeredPermission(denied, decision);
       throw new Error(request.reason);
     }
-    if (humanApproved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
+    if (humanApproved) {
+      permissionResult = answeredPermission({ ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` }, decision);
+    }
     approvedPolicyEpoch = currentEpoch;
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
       const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,

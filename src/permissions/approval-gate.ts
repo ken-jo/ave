@@ -399,6 +399,13 @@ export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOr
   return answeredDecisionOrigins.get(decision) ?? "unknown";
 }
 
+/** The gate's record of who answered a decision a caller is treating as answered. A missing record breaks the gate's contract. */
+export function answeredApprovalTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
+  const origin = answeredDecisionOrigins.get(decision);
+  if (origin === undefined) throw new Error("approval: an answered decision carries no record of who answered");
+  return origin;
+}
+
 export function isAnsweredApprovalDenial(decision: ApprovalDecision): boolean {
   return decision.choice.startsWith("deny") && approvalDecisionTrustOrigin(decision) !== "unknown";
 }

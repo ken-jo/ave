@@ -131,8 +131,13 @@ export function permissionAuditEntryFromToolCall(args: {
   hookChain?: HookResult[];
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
-  // The row records who decided: a decision the host made carries its own origin.
-  const base = permissionAuditBase({ ...args, trustOrigin: args.permission?.trustOrigin ?? args.trustOrigin });
+  // The row records who decided: an answered decision carries who answered, a host decision its own origin, and a rule or
+  // automatic decision the invocation's.
+  const answer = args.permission?.answer;
+  const trustOrigin = answer !== undefined && answer.decision === args.permission?.decision
+    ? answer.trustOrigin
+    : args.permission?.trustOrigin ?? args.trustOrigin;
+  const base = permissionAuditBase({ ...args, trustOrigin });
   if (args.permission?.decision === "deny") {
     const denyReasons = args.permission.denyReasons?.length
       ? args.permission.denyReasons

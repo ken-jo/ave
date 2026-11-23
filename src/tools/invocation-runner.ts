@@ -63,10 +63,11 @@ import { PermissionManager, requiredTier, type PermissionCheckResult } from "../
 import {
   isRemoteControllerBoundToSession,
   remoteControllerOriginOf,
+  type TrustOriginWithUnknown,
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { approvalReasonFields, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
-import { abortSupersedesApprovalDecision, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
@@ -1589,7 +1590,7 @@ async function runToolInvocationAttempt(
             }
             if (resolution.approvalDecision === undefined) throw new Error("Directory approval did not produce an authenticated decision");
             if (resolution.allowed && resolution.scope !== "turn") {
-              await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+              await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.answer?.trustOrigin);
               const afterDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
               if (canonicalStringify([...new Set(beforeDirectories)].sort()) !== canonicalStringify([...new Set(afterDirectories)].sort())) {
                 const approvedIdentity = caseFoldForMatch(canonicalizePathForMatch(resolution.approvedDirectory));
@@ -1775,7 +1776,7 @@ async function runToolInvocationAttempt(
           const durationMs = Date.now() - startTime;
           emitToolStart(callbacks, toolUse.name, finalInput, meta);
           callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostFailure?.permission ?? { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostFailure?.permission ?? answeredPermission({ ...dirLayerResult, decision: "deny" }, decision), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
         }
         if (directoryPolicyEpoch !== manager.getPolicyEpoch()) {
@@ -1790,7 +1791,8 @@ async function runToolInvocationAttempt(
         decision = surfaceResolution.decision;
         if (abortSupersedesApprovalDecision(abortSignal, decision)) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
         if (decision.choice.startsWith("deny")) return { allowed: false, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: dirLayerResult.reason, is_error: true, durationMs: Date.now() - startTime }) };
-        const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult : { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
+        const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult
+          : answeredPermission({ ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." }, decision);
         // No remembered grant is kept while boot refuses the home folder (the card already answers once with a notice); an
         // allow-always that still arrives applies once, to the exact target.
         const persistRefused = decision.choice === "allow-always" && isAveHomeConfigurationRefused(aveHome());
@@ -1809,6 +1811,7 @@ async function runToolInvocationAttempt(
             directory: approvedDirectory,
             grantLifetime: "always",
             permissionContext: invocationPermissionContext,
+            ...(approvedPermissionResult.answer === undefined ? {} : { answeredTrustOrigin: approvedPermissionResult.answer.trustOrigin }),
             audit: currentAuditMetadata(),
           });
           if (abortSignal?.aborted) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
@@ -1898,7 +1901,7 @@ async function runToolInvocationAttempt(
     // dropping a grant is exactly the bug class this refactor eliminates,
     // so we log and degrade conservatively (session → turn) rather than
     // pretending the propagation succeeded.
-    const propagateGrantScope = async (approvedDirectory: string, scope: "turn" | "session" | "always"): Promise<void> => {
+    const propagateGrantScope = async (approvedDirectory: string, scope: "turn" | "session" | "always", answeredTrustOrigin: TrustOriginWithUnknown | undefined): Promise<void> => {
       const emitGrantAudit = (lifetime: "turn" | "session" | "always" | "degraded-to-turn"): Promise<void> => {
         // Finish the grant audit before execution checks chain writability.
         return services.auditWriter.auditPermissionGrant({
@@ -1908,6 +1911,7 @@ async function runToolInvocationAttempt(
           directory: approvedDirectory,
           grantLifetime: lifetime,
           permissionContext: invocationPermissionContext,
+          ...(answeredTrustOrigin === undefined ? {} : { answeredTrustOrigin }),
           audit: currentAuditMetadata(),
         });
       };
@@ -2059,7 +2063,7 @@ async function runToolInvocationAttempt(
               ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
           }
           applyApprovedDirectory(resolution.approvedDirectory);
-          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.answer?.trustOrigin);
           for (const path of resolution.permissionResult?.pipelineRequest?.paths ?? []) applyApprovedDirectory(path.canonical);
           continue;
         }
@@ -2385,7 +2389,7 @@ async function runToolInvocationAttempt(
             ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
         }
         applyApprovedDirectory(resolution.approvedDirectory);
-        if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope);
+        if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.answer?.trustOrigin);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
         for (const target of canonicalTargets) applyApprovedDirectory(target.runtimePath);
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;

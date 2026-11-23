@@ -92,6 +92,8 @@ export class AuditWriter {
     grantLifetime?: "turn" | "session" | "always" | "degraded-to-turn";
     policyRule?: string;
     permissionContext?: ToolPermissionContext;
+    // Who answered a grant the gate recorded; a policy grant keeps the invocation origin.
+    answeredTrustOrigin?: HookTrustOrigin;
     audit?: ToolExecutionAuditMetadata;
   }): Promise<void> {
     if (!this.auditLogger.isPermissionAuditChainReady()) {
@@ -116,7 +118,7 @@ export class AuditWriter {
       ...(args.audit?.toolUseId !== undefined ? { toolUseId: args.audit.toolUseId } : {}),
       ...(args.audit?.executionPlan !== undefined ? { executionPlan: args.audit.executionPlan } : {}),
       ...(args.audit?.executionRoute !== undefined ? { executionRoute: args.audit.executionRoute } : {}),
-      trustOrigin: auditTrustOrigin(args.permissionContext),
+      trustOrigin: args.answeredTrustOrigin ?? auditTrustOrigin(args.permissionContext),
     };
     try {
       await appendToolInvocationAudit(this.auditLogger, entry);

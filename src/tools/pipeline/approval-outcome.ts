@@ -1,6 +1,7 @@
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { t } from "../../i18n/index.js";
 import {
+  answeredApprovalTrustOrigin,
   isAnsweredApprovalDenial,
   isHostApprovalTimeoutDecision,
   isHostApprovalRejectedDecision,
@@ -13,6 +14,14 @@ import { maskSensitiveData } from "../../shared/dlp.js";
 /** The host's refusal of a call the quit seal stopped; no person decided it. */
 export function hostShutdownDenial(): PermissionCheckResult {
   return { decision: "deny", reason: "host-shutdown", trustOrigin: "unknown" };
+}
+
+/** A result an answerer decided: it carries the gate's record of who answered, and throws when the gate kept none. */
+export function answeredPermission(
+  permission: PermissionCheckResult & { decision: "allow" | "deny" },
+  decision: ApprovalDecision,
+): PermissionCheckResult {
+  return { ...permission, answer: { decision: permission.decision, trustOrigin: answeredApprovalTrustOrigin(decision) } };
 }
 
 /** Why the host ended an approval it produced itself, or undefined for a decision a person made. */

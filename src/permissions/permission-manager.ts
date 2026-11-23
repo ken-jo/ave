@@ -12,7 +12,7 @@ import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permiss
 import { UserOwnedSurfaceReviewError, type UserOwnedSurfaceReviewInput } from "./reviewer/user-owned-surface-reviewer.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
+import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin, type TrustOriginWithUnknown } from "../shared/chat-origin.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -206,6 +206,8 @@ export interface PermissionCheckResult {
   }>;
   // Set when the host, not the invocation's principal, made this decision; audit rows copy it instead of the invocation origin.
   trustOrigin?: "unknown";
+  // Set when an answerer gave this decision: who answered, bound to the decision they gave, so a later host deny spread from it is not theirs.
+  answer?: { decision: "allow" | "deny"; trustOrigin: TrustOriginWithUnknown };
 }
 
 export interface PermissionCheckContext {

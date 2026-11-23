@@ -719,7 +719,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }
   });
 
-  it("passes non-keyboard trustOrigin to ApprovalGate and permission audit entries", async () => {
+  it("passes non-keyboard trustOrigin to ApprovalGate and records the answered allow as the desk's", async () => {
     const executeSpy = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();
     registry.register(createDynamicTool({
@@ -789,7 +789,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     expect(appendPermissionAuditEntry).toHaveBeenCalledWith(
       expect.objectContaining({
         decision: "allow",
-        trustOrigin: "plugin-emitted",
+        trustOrigin: "user-keyboard",
         tool: "write_probe",
       }),
     );

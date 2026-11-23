@@ -38,7 +38,7 @@ import {
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { t } from "../i18n/index.js";
-import { abortSupersedesApprovalDecision, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import { createLogger } from "../lib/logger.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import {
@@ -1238,6 +1238,11 @@ export async function authorizeToolInvocation(
           const hostFailure = approvalFailureOutcome(
             decision, toolUse.name, permissionResult,
           );
+          // A deny the surface recheck substituted is the rule's; a deny the gate returned unchanged was answered.
+          const userDenied = { ...permissionResult, decision: "deny" as const, reason: "user denied approval request" };
+          const deniedPermission = hostFailure?.permission ?? (surfaceResolution.humanApproved === false
+            ? (permissionResult.decision === "deny" ? permissionResult : userDenied)
+            : answeredPermission(userDenied, decision));
           const msg = hostFailure?.content ?? (permissionResult.decision === "deny" ? permissionResult.reason : t("be_executor.approvalDeniedByUser", {
             name: toolUse.name,
           }));
@@ -1262,11 +1267,7 @@ export async function authorizeToolInvocation(
             msg,
             true,
             startTime,
-            hostFailure?.permission ?? (permissionResult.decision === "deny" ? permissionResult : {
-              ...permissionResult,
-              decision: "deny",
-              reason: "user denied approval request",
-            }),
+            deniedPermission,
             Infinity,
             invocationPermissionContext,
             invocationCategory,
@@ -1288,11 +1289,11 @@ export async function authorizeToolInvocation(
         // and retain their explicit reviewed-parent persistence contract.
         humanApproved = surfaceResolution.humanApproved ?? manuallyApproved;
         approvedPolicyEpoch = services.permissionManager?.getPolicyEpoch();
-        if (humanApproved) permissionResult = {
+        if (humanApproved) permissionResult = answeredPermission({
           ...permissionResult,
           decision: "allow",
           reason: `user approved approval request (${decision.choice})`,
-          };
+        }, decision);
         // allow-once / allow-always: 실행 계속
       } else {
         // §F4: approvalGate 미연결 시 fail-closed — 모든 ask 결정을 차단
