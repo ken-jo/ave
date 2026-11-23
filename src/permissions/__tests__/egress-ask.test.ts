@@ -3,9 +3,9 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 // The egress ask callback's decision table (egress-ask.ts): who opened the connection decides whether it is allowed outright, refused, or asked about, and every answer is the literal `true` or a deny with a reason, with one audit row each.
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxAskCallback, SandboxAskContext } from "@anthropic-ai/sandbox-runtime";
 import type { SandboxEgressDecisionAuditEntry } from "../../audit/sandbox-audit.js";
@@ -25,13 +25,20 @@ import * as denyMonitor from "../egress-deny-monitor.js";
 import * as terminalObservation from "../../tools/agent-terminal-observation.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
-import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
+import { _resetAveHomePrivacyForTest, ensureAveHomePrivate, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { createShellNetworkPermissionEvaluator } from "../egress-approval.js";
 import { PermissionManager } from "../permission-manager.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import * as projectRuleFiles from "../rules/project-rule-files.js";
 import * as featureNamespace from "../../main/storage/feature-namespace.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { setAveHomeConfigurationOwner } from "../../shared/ave-home-configuration-access.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
+import { requireSymlinkCapability } from "../../__tests__/support/symlink-capability.js";
+import { migrateAveHomeConfiguration } from "../../shared/ave-home-configuration.js";
+import * as homeTrust from "../../shared/ave-home-trust.js";
+import { _resetAveHomeTrustForTest, evaluateAveHomeTrustAtBoot, readAveHomeInputSync } from "../../shared/ave-home-trust.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -1134,7 +1141,7 @@ describe("egress ask callback — shell calls", () => {
   );
 
   describe.each(["remote", "local", "terminal"] as const)("persistent egress grant use by %s", origin => {
-    it.each(["unrelated save", "matching revoke"] as const)("checks the grant during a pending mutation (%s)", async mutation => {
+    it.each(["unrelated save", "unrelated save after its rename", "matching revoke"] as const)("checks the grant during a pending mutation (%s)", async mutation => {
       const terminal = origin === "terminal";
       const token = terminal ? TERMINAL_TOKEN : SHELL_TOKEN;
       const sessionId = "session-1";
@@ -1147,9 +1154,11 @@ describe("egress ask callback — shell calls", () => {
       const finishWrite = deferred<void>();
       const writeFile = featureNamespace.writeFileAtomicAtPath;
       const holdWriter = vi.spyOn(featureNamespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+        // Held after the rename, the file already holds the save while the store still caches the previous version.
+        if (mutation === "unrelated save after its rename") await writeFile(...args);
         staging.resolve();
         await finishWrite.promise;
-        return writeFile(...args);
+        if (mutation !== "unrelated save after its rename") await writeFile(...args);
       });
       let write: Promise<unknown> | undefined;
       const startMutation = async () => {
@@ -1184,7 +1193,7 @@ describe("egress ask callback — shell calls", () => {
         const result = await rawCallback(undefined, createShellNetworkPermissionEvaluator(manager))(destination, {
           attributionKey: token, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned",
         });
-        if (mutation === "unrelated save") {
+        if (mutation !== "matching revoke") {
           expect(result).toBe(true);
           expect(noteUse).toHaveBeenCalledWith("always", expect.objectContaining({ token }), { ...destination, network: "public" });
         } else {
@@ -1192,7 +1201,7 @@ describe("egress ask callback — shell calls", () => {
           expect(noteUse).not.toHaveBeenCalled();
         }
         expect(asked).toHaveLength(0);
-        expect(audit).toEqual([expect.objectContaining({ decision: mutation === "unrelated save" ? "allow" : "deny" })]);
+        expect(audit).toEqual([expect.objectContaining({ decision: mutation === "matching revoke" ? "deny" : "allow" })]);
       } finally {
         finishWrite.resolve();
         await write;
@@ -1200,6 +1209,112 @@ describe("egress ask callback — shell calls", () => {
       }
     });
   });
+
+  it.for(["removed grant", "unreadable grant", "untrusted grant", "linked user rules", "linked project rules", "unchanged",
+    "grant untrusted before the call"] as const)(
+    "proves the covered egress sources after the owner probe (%s)", async (change, { skip }) => {
+      if (change.startsWith("linked")) requireSymlinkCapability(dir, "file", skip);
+      const home = join(realpathSync(dir), ".ave");
+      configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+      setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => true });
+      setFixtureOwner(dir);
+      vi.stubEnv("AVE_HOME", home);
+      const privacy = ensureAveHomePrivate(home);
+      expect(privacy.enforcement).not.toBe("none");
+      migrateAveHomeConfiguration(home, privacy);
+      evaluateAveHomeTrustAtBoot(home);
+      const grantFile = join(home, "permissions", "shell-egress-hosts.json");
+      const userFile = join(home, "permissions.json");
+      const projectFile = projectRuleFiles.projectRulesLocation(home, PROJECT).filePath;
+      const manager = new PermissionManager(userFile);
+      const sessionId = "session-1";
+      const destination = { host: "github.com", port: 443 };
+      const probing = deferred<void>();
+      const finishProbe = deferred<void>();
+      const remoteControllerAuthority = bindRemoteControllerToSession({
+        kind: "tailnet-controller",
+        actorId: "tailnet:controller-digest",
+        pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+        pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => {
+          probing.resolve();
+          await finishProbe.promise;
+          return true;
+        } },
+      }, sessionId);
+      owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId,
+        permissionContext: { remoteControllerAuthority } } });
+      grants = new EgressGrantStore(grantFile);
+      let unreadable: { mockRestore(): void } | undefined;
+      try {
+        // The last case is allowed by its user rule alone: a grant file that read as absent supplied nothing to prove.
+        const userAllows = change === "linked user rules" || change === "grant untrusted before the call";
+        await manager.addRulePersist({ pattern: userAllows ? "Network(github.com:443)" : "Network(example.com)", action: "allow" }, { kind: "user" });
+        await manager.addRulePersist({ pattern: change === "linked project rules" ? "Network(github.com:443)" : "Network(example.org)", action: "allow" }, { kind: "project", projectCwd: PROJECT });
+        await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId, projectRoot: PROJECT, tabId: undefined, origin: "shell" }, destination);
+        for (const path of [grantFile, userFile, projectFile]) expect(readAveHomeInputSync(path).status).toBe("trusted");
+        if (change === "grant untrusted before the call") {
+          writeFileSync(grantFile, `${readFileSync(grantFile, "utf8")}\n`);
+          expect(readAveHomeInputSync(grantFile)).toMatchObject({ status: "untrusted", reason: "changed" });
+          // A fresh store loads the pending-review file, which reads as absent.
+          grants = new EgressGrantStore(grantFile);
+        }
+        const noteUse = vi.spyOn(grants, "noteUse");
+        const pending = rawCallback(undefined, createShellNetworkPermissionEvaluator(manager))(destination, {
+          attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned",
+        });
+        try {
+          await probing.promise;
+          if (change === "removed grant") {
+            rmSync(grantFile);
+            expect(readAveHomeInputSync(grantFile).status).toBe("absent");
+          } else if (change === "unreadable grant") {
+            const read = homeTrust.readAveHomeInputSync;
+            unreadable = vi.spyOn(homeTrust, "readAveHomeInputSync").mockImplementation((path, options) => {
+              if (path === grantFile) throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: "EACCES" });
+              return read(path, options);
+            });
+            expect(() => homeTrust.readAveHomeInputSync(grantFile)).toThrow("EACCES");
+          } else if (change === "untrusted grant") {
+            writeFileSync(grantFile, `${readFileSync(grantFile, "utf8")}\n`);
+            expect(readAveHomeInputSync(grantFile)).toMatchObject({ status: "untrusted", reason: "changed" });
+          } else if (change.startsWith("linked")) {
+            const file = change === "linked user rules" ? userFile : projectFile;
+            const original = readFileSync(file);
+            const sameBytes = join(dir, "same-bytes.json");
+            renameSync(file, sameBytes);
+            symlinkSync(sameBytes, file, "file");
+            expect(readFileSync(file)).toEqual(original);
+            expect(readAveHomeInputSync(file)).toMatchObject({ status: "untrusted", reason: "link" });
+          }
+        } finally {
+          finishProbe.resolve();
+        }
+        if (change === "unchanged") {
+          expect(await pending).toBe(true);
+          expect(noteUse).toHaveBeenCalledOnce();
+        } else if (change === "grant untrusted before the call") {
+          expect(await pending).toBe(true);
+          expect(noteUse).not.toHaveBeenCalled();
+        } else {
+          expect(await pending).toEqual({ allow: false, reason: "Permission policy changed before execution." });
+          expect(noteUse).not.toHaveBeenCalled();
+        }
+        if (change === "removed grant" || change === "untrusted grant") {
+          // The refused snapshot is not kept: the next lookup reads the file again and finds no usable grant.
+          expect(await grants.matchingScope({ token: SHELL_TOKEN, sessionId, projectRoot: PROJECT, tabId: undefined, origin: "shell" },
+            { ...destination, network: "public" }, ["always"])).toBeUndefined();
+        }
+        expect(asked).toHaveLength(0);
+        expect(audit).toEqual([expect.objectContaining({ decision: change === "unchanged" || change === "grant untrusted before the call" ? "allow" : "deny" })]);
+      } finally {
+        unreadable?.mockRestore();
+        setAveHomeConfigurationOwner(undefined);
+        _resetAveHomeTrustForTest();
+        _resetAveHomePrivacyForTest();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {
     const controller = new AbortController();

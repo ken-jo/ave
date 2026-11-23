@@ -97,7 +97,7 @@ import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "./persisted-policy-version.js";
+import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, STALE_PERMISSION_POLICY, type PersistedPolicyVersion } from "./persisted-policy-version.js";
 import {
   captureShellWorkingDirectoryIdentity,
   matchesShellWorkingDirectoryIdentity,
@@ -1179,7 +1179,7 @@ export class PermissionManager {
       if (versions.some(version => version === undefined || !isPersistedPolicyVersionCurrent(version))) {
         return this.evaluateNetworkPermission(destination, {
           ...context,
-          admissionDenial: context.admissionDenial ?? { code: "policy-changed", reason: "Permission policy changed before execution." },
+          admissionDenial: context.admissionDenial ?? STALE_PERMISSION_POLICY,
         }, subject, undefined);
       }
     }
@@ -1516,7 +1516,7 @@ export class PermissionManager {
     this.pipelineRequests.delete(result);
     const stale = issued.policyEpoch !== this.getPolicyEpoch();
     const refreshed = this.pipelineResult({ ...issued.request,
-      ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed before execution." } } : {}),
+      ...(stale ? { admissionDenial: STALE_PERMISSION_POLICY } : {}),
     }, issued.hostTerminalContext);
     const shellRule = issuedShellAllowRuleDecisions.get(result);
     issuedShellAllowRuleDecisions.delete(result);

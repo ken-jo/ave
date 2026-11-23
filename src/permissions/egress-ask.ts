@@ -4,6 +4,7 @@ import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import type { ToolApprovalWait } from "../tools/executor-ceiling.js";
 import type { NetworkPermissionEvaluation } from "./permission-manager.js";
+import { StalePermissionPolicyError } from "./persisted-policy-version.js";
 import {
   ApprovalPersistenceError,
   assertApprovalPersistenceCurrent,
@@ -371,7 +372,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
   };
 
   const recordGrantUse = (scope: EgressGrantScope, subject: EgressGrantSubject, destination: EgressGrantDestination): (() => Decision | undefined) => () => {
-    if (deps.grants.matchingLoadedScope(subject, destination, [scope]) === undefined) {
+    if (deps.grants.matchingLoadedScope(subject, destination, [scope], { verifyPersistent: true }) === undefined) {
       return deny("policy", "Network destination grant is no longer available.");
     }
     deps.grants.noteUse(scope, subject, destination);
@@ -506,7 +507,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         const resolved = (decision: Decision): Decision => {
           if (!resolvedPhase || !decision.allow || owner.kind !== "shell" || !evaluation || !owner.context.permissionContext?.remoteControllerAuthority) return pass(decision);
           return { ...decision, recheck: () => {
-            const currentGrant = deps.grants.matchingLoadedScope(subject, grantDestination, eligibleScopes);
+            const currentGrant = deps.grants.matchingLoadedScope(subject, grantDestination, eligibleScopes, { verifyPersistent: true });
             const current = evaluation.recheck(currentGrant, deps.shellAskEnabled() ? owner.context.approvalSurface : "unavailable");
             if (current.permission.decision === "deny") return networkDenial(current);
             if (current.permission.decision === "ask") {
@@ -584,6 +585,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           // A failing log sink leaves the refusal and its audit row unchanged.
         }
         decision = unattributed();
+      } else if (error instanceof StalePermissionPolicyError) {
+        decision = deny("policy", error.message);
       } else {
         decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
       }

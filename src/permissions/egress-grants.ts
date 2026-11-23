@@ -13,7 +13,9 @@ import {
 import { BlockList, isIP } from "node:net";
 import { openFeatureNamespace, preparePrivateFileDirectory, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
+import { isPersistedPolicyVersionCurrent, StalePermissionPolicyError } from "./persisted-policy-version.js";
 import { projectRuleRoot } from "./rules/project-rule-files.js";
 import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
@@ -183,6 +185,11 @@ interface GrantFile {
   readonly grants: PersistentEgressGrant[];
 }
 
+interface LoadedPersistentGrants {
+  readonly grants: readonly PersistentEgressGrant[];
+  readonly digest: string | null;
+}
+
 // A v1 `workspace` grant the v1 → v2 migration could not carry over exactly (see `migrateLegacyGrant`).
 export interface DroppedLegacyEgressGrant {
   readonly host: string;
@@ -297,8 +304,10 @@ export class EgressGrantStore {
   private readonly tab = new Map<string, Map<string, string>>();
   // Grant identity to the invocation tokens it let through (for closing them on revoke).
   private readonly uses = new Map<string, Set<string>>();
-  private persistent: PersistentEgressGrant[] | undefined;
+  private persistent: LoadedPersistentGrants | undefined;
   private readonly pendingPersistentRevocations = new Map<string, number>();
+  // The digest of the body being committed, set only while its write is in flight (the queue runs one at a time).
+  private landingDigest: string | undefined;
   private readonly writes = createSerialQueue();
 
   // Destination keys of v1 grants already reported dropped, so a re-read before the file is rewritten does not report them twice.
@@ -327,6 +336,7 @@ export class EgressGrantStore {
     subject: EgressGrantSubject,
     destination: EgressGrantDestination,
     eligibleScopes: readonly EgressGrantScope[],
+    { verifyPersistent = false } = {},
   ): EgressGrantScope | undefined {
     const key = destinationKey(destination);
     if (eligibleScopes.includes("once") && this.once.get(subject.token)?.has(key)) return "once";
@@ -334,15 +344,30 @@ export class EgressGrantStore {
     if (eligibleScopes.includes("session") && subject.sessionId !== undefined && !sessionAuthorityWithheld(subject.sessionId, approvalConversationRoot(subject.sessionId))
       && this.session.get(subject.sessionId)?.has(key)) return "session";
     if (eligibleScopes.includes("tab") && subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
+    if (!eligibleScopes.some(isPersistentScope)) return undefined;
+    const loaded = this.persistent;
+    if (loaded === undefined) return undefined;
     // Persistent grants of the subject's own origin only.
-    const persistent = (this.persistent ?? []).filter((grant) =>
+    const persistent = loaded.grants.filter((grant) =>
       eligibleScopes.includes(grant.scope) && grant.origin === subject.origin && destinationKey(grant) === key
       && !this.pendingPersistentRevocations.has(grantUseKey(grant))
       && egressScopesForNetwork([grant.scope], grantNetwork(destination)).length > 0);
     const projectRoot = subject.projectRoot === undefined ? undefined : canonicalProjectRoot(subject.projectRoot);
-    if (projectRoot !== undefined && persistent.some((g) => g.scope === "project" && g.projectRoot === projectRoot)) return "project";
-    if (persistent.some((g) => g.scope === "always")) return "always";
-    return undefined;
+    const matched = projectRoot !== undefined && persistent.some((g) => g.scope === "project" && g.projectRoot === projectRoot) ? "project"
+      : persistent.some((g) => g.scope === "always") ? "always" : undefined;
+    // A cached row authorizes only while its file is still the trusted version it was read from (or the save now landing).
+    if (matched !== undefined && verifyPersistent && !this.isPersistentSourceCurrent(loaded)) {
+      // Drop the unproven snapshot so the next lookup reloads the file instead of denying on the same rows again.
+      if (this.persistent === loaded) this.persistent = undefined;
+      throw new StalePermissionPolicyError();
+    }
+    return matched;
+  }
+
+  private isPersistentSourceCurrent(loaded: LoadedPersistentGrants): boolean {
+    if (isPersistedPolicyVersionCurrent({ filePath: this.filePath, digest: loaded.digest })) return true;
+    // Between the rename and the cache update the file holds the save in flight. The cached rows, less pending revocations, are a subset of it.
+    return this.landingDigest !== undefined && isPersistedPolicyVersionCurrent({ filePath: this.filePath, digest: this.landingDigest });
   }
 
   // Record a grant. `allowedScopes` is what the ask offered; a scope outside it, or one the subject cannot hold (a session grant without a conversation, a tab grant without a tab, a project grant without a project root), is an error, not a narrower grant.
@@ -490,7 +515,7 @@ export class EgressGrantStore {
 
   // The project and always grants, for Settings.
   async listPersistent(): Promise<readonly PersistentEgressGrant[]> {
-    return [...(this.persistent ?? await this.writes(() => this.loadPersistent()))];
+    return [...(this.persistent?.grants ?? await this.writes(() => this.loadPersistent()))];
   }
 
   // Remove one persistent grant. Resolves true when it existed.
@@ -513,21 +538,21 @@ export class EgressGrantStore {
   }
 
   private async loadPersistent(refresh = false): Promise<readonly PersistentEgressGrant[]> {
-    if (!refresh && this.persistent !== undefined) return this.persistent;
+    if (!refresh && this.persistent !== undefined) return this.persistent.grants;
     try {
       this.persistent = await this.readPersistent();
-      return this.persistent ?? [];
+      return this.persistent?.grants ?? [];
     } catch (error) {
       this.persistent = undefined;
       throw error;
     }
   }
 
-  private async readPersistent(): Promise<PersistentEgressGrant[] | undefined> {
+  private async readPersistent(): Promise<LoadedPersistentGrants | undefined> {
     // Remembered hosts grant network authority, so an unverified file (a refused home's, or one pending review) reads as absent (R2); none of it restricts.
     const input = await readAveHomeInput(this.filePath);
     if (input.status === "untrusted") return undefined;
-    if (input.status === "absent") return [];
+    if (input.status === "absent") return { grants: [], digest: null };
     const raw = input.bytes.toString("utf8");
     const parsed = parseGrantFile(this.filePath, raw);
     for (const dropped of parsed.droppedLegacy) {
@@ -536,7 +561,7 @@ export class EgressGrantStore {
       this.reportedLegacyDrops.add(key);
       this.onLegacyGrantDropped(dropped);
     }
-    return parsed.grants;
+    return { grants: parsed.grants, digest: sha256Hex(input.bytes) };
   }
 
   private mutatePersistent(
@@ -553,23 +578,27 @@ export class EgressGrantStore {
       signal?.throwIfAborted();
       const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
+      const body = `${JSON.stringify(file, null, 2)}\n`;
+      this.landingDigest = sha256Hex(body);
       try {
         if (authority || signal) {
           const isCurrent = () => signal?.aborted !== true && (authority?.isCurrent() ?? true);
           await preparePrivateFileDirectory(this.filePath);
           signal?.throwIfAborted();
-          await commitApprovalFile(this.filePath, `${JSON.stringify(file, null, 2)}\n`, {
+          await commitApprovalFile(this.filePath, body, {
             refresh: async () => isCurrent() && (authority === undefined || await authority.refresh()),
             isCurrent,
           });
         } else if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
-        else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
-        this.persistent = next;
+        else await writeFileAtomicAtPath(this.filePath, body);
+        this.persistent = { grants: next, digest: sha256Hex(body) };
       } catch (error) {
         // A write can report failure after its rename. Confirm what is on disk before a pending revoke is released.
         await this.loadPersistent(true).catch(() => undefined);
         signal?.throwIfAborted();
         throw error;
+      } finally {
+        this.landingDigest = undefined;
       }
     });
   }
