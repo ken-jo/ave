@@ -8,7 +8,7 @@ import {
 import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "./run-windows-test-list.mjs";
 import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
-import { windowsRuntimeInputScopes } from "./windows-runtime-input-scopes.js";
+import { windowsReaderDigest, windowsRuntimeInputScopes, type WindowsRuntimeInputScope } from "./windows-runtime-input-scopes.js";
 import {
   assertWindowsRemovalRecords, windowsCoverageDepartures, windowsInventoryDiff, type ReadWindowsVersion, type WindowsInventoryPath,
 } from "./windows-test-inventory.mjs";
@@ -61,8 +61,21 @@ function readCoverageVersions(root: string, base: string, head: string): ReadWin
   };
 }
 
-function affectedFiles(sources: ReadonlyMap<string, string>, changed: ReadonlySet<string>, eligible: ReadonlySet<string>) {
+type InputScopes = Readonly<Record<string, WindowsRuntimeInputScope>>;
+
+function affectedFiles(
+  sources: ReadonlyMap<string, string>, changed: ReadonlySet<string>, eligible: ReadonlySet<string>, inputScopes: InputScopes,
+) {
   const graph = windowsImportGraph(sources);
+  // A declared scope describes the reader source that was audited. After an
+  // edit the reader may read anything, so it is unbounded until re-audited.
+  const auditedInputs = (file: string) => {
+    const scope = inputScopes[file];
+    const tokens = graph.get(file)?.tokens;
+    return scope && tokens && windowsReaderDigest(tokens) === scope.digest ? scope.inputs : undefined;
+  };
+  const unbounded = (file: string, tokens: readonly string[]) => auditedInputs(file) === undefined
+    && (inputScopes[file] !== undefined || hasUnverifiedWindowsRuntimeInput(tokens));
   const indexInput = windowsRuntimeInputIndex(sources);
   const importers = new Map<string, string[]>();
   const runtimeCalls = new Map<string, Set<string>>();
@@ -70,8 +83,7 @@ function affectedFiles(sources: ReadonlyMap<string, string>, changed: ReadonlySe
   const directInputs = new Set<string>();
   for (const [file, { dependencies, tokens }] of graph) {
     const inputs = indexInput(tokens, file);
-    const scope = windowsRuntimeInputScopes[file];
-    const matchesScope = scope?.some(pattern => [...changed].some(input => posix.matchesGlob(input, pattern)));
+    const matchesScope = auditedInputs(file)?.some(pattern => [...changed].some(input => posix.matchesGlob(input, pattern)));
     if ([...inputs].some(input => changed.has(input)) || matchesScope) {
       affected.add(file);
       if (eligible.has(file)) directInputs.add(file);
@@ -88,7 +100,7 @@ function affectedFiles(sources: ReadonlyMap<string, string>, changed: ReadonlySe
   const reachable = new Set(eligible);
   for (const file of reachable) {
     const module = graph.get(file);
-    if (module && windowsRuntimeInputScopes[file] === undefined && hasUnverifiedWindowsRuntimeInput(module.tokens)) {
+    if (module && unbounded(file, module.tokens)) {
       // A reader discovered from a suite has known owners. Keep those suites
       // without letting uncertainty in one reader schedule unrelated suites.
       affected.add(file);
@@ -97,8 +109,7 @@ function affectedFiles(sources: ReadonlyMap<string, string>, changed: ReadonlySe
   }
   for (const file of changed) {
     const module = graph.get(file);
-    if (module && !reachable.has(file) && !isCollectedVitestFile(file)
-      && windowsRuntimeInputScopes[file] === undefined && hasUnverifiedWindowsRuntimeInput(module.tokens)) {
+    if (module && !reachable.has(file) && !isCollectedVitestFile(file) && unbounded(file, module.tokens)) {
       throw new Error(`a changed runtime reader in ${file} has no known suite owners`);
     }
   }
@@ -113,6 +124,7 @@ export function assertWindowsCoverage(required: Iterable<string>, planned: Itera
 
 export function planWindowsTests({
   event, inventories, changes, readVersion, readSources, durations = {}, departures = new Map(), coverageVersion,
+  inputScopes = windowsRuntimeInputScopes,
 }: {
   event: string;
   inventories: Inventory;
@@ -122,6 +134,7 @@ export function planWindowsTests({
   durations?: Record<string, number>;
   departures?: ReadonlyMap<string, WindowsInventoryPath>;
   coverageVersion?: ReadWindowsVersion;
+  inputScopes?: InputScopes;
 }) {
   const eligible = new Set(Object.values(inventories).flat());
   for (const file of eligible) {
@@ -146,7 +159,7 @@ export function planWindowsTests({
       else {
         const sources = readSources();
         if (ordinary.some(({ file }) => !sources.has(file))) throw new Error("PR source is absent from the checkout");
-        ({ affected, directInputs } = affectedFiles(sources, new Set(ordinary.map(({ file }) => file)), eligible));
+        ({ affected, directInputs } = affectedFiles(sources, new Set(ordinary.map(({ file }) => file)), eligible, inputScopes));
       }
     } catch (error) {
       reason = `full because the import graph is unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;

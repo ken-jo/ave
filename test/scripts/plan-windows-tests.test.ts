@@ -6,6 +6,7 @@ import { readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex } from
 import {
   assertWindowsRemovalRecords, windowsCoverageDepartures, WINDOWS_TEST_REMOVALS, type ReadWindowsVersion,
 } from "../../scripts/windows-test-inventory.mjs";
+import { windowsReaderDigest, windowsRuntimeInputScopes } from "../../scripts/windows-runtime-input-scopes.js";
 
 const [permission, native, application] = WINDOWS_TEST_LISTS;
 const inventories = {
@@ -146,17 +147,66 @@ describe("Windows regression planning", () => {
     expect(run(changed)).toMatchObject({ mode: "full", reason: expect.stringContaining("no known suite owners") });
   });
 
-  it("uses a shared bundler's declared input before considering unresolved readers", () => {
+  const readerDigest = (file: string, source: string) => {
+    const tokens = windowsImportGraph(new Map([[file, source]])).get(file)?.tokens;
+    if (!tokens) throw new Error(`No runtime tokens for ${file}`);
+    return windowsReaderDigest(tokens);
+  };
+
+  it.each([true, false])("uses a shared bundler's declared input only for its audited source (audited=%s)", audited => {
     const bundler = "src/plugins/isolation/__tests__/child-entry-bundle.ts";
     const entry = "src/plugins/isolation/plugin-child-main.ts";
+    const auditedSource = 'import { build } from "esbuild"; build(options);';
     const runtimeSources = new Map(readSources()).set(entry, "export {};")
       .set(permissionSuite, 'import "../../plugins/isolation/__tests__/child-entry-bundle.js";')
-      .set(bundler, 'import { build } from "esbuild"; build(options);');
+      .set(bundler, audited ? auditedSource : 'import { build } from "esbuild"; build(entryOptions);');
+    const inputScopes = { [bundler]: { digest: readerDigest(bundler, auditedSource), inputs: [entry] } };
     const run = (file: string) => planWindowsTests({
-      event: "pull_request", changes: [modified(file)], inventories, readSources: () => runtimeSources,
+      event: "pull_request", changes: [modified(file)], inventories, inputScopes, readSources: () => runtimeSources,
     });
-    expect(selected(run(changed))).toEqual(core());
+    // An edited reader may read anything, so its owning suites run until the scope is audited again.
+    expect(selected(run(changed))).toEqual(audited ? core() : [...core(), permissionSuite].sort());
     expect(selected(run(entry))).toEqual([...core(), permissionSuite].sort());
+  });
+
+  it("treats a changed declared reader without an audited source as having unknown owners", () => {
+    const reader = "src/shared/test-reader.ts";
+    const auditedSource = 'import { readFileSync } from "node:fs"; readFileSync(process.env.RUNTIME_SOURCE);';
+    const runtimeSources = new Map(readSources()).set(reader, `${auditedSource} readFileSync(process.env.OTHER_SOURCE);`);
+    const inputScopes = { [reader]: { digest: readerDigest(reader, auditedSource), inputs: [] } };
+    expect(planWindowsTests({
+      event: "pull_request", changes: [modified(reader)], inventories, inputScopes, readSources: () => runtimeSources,
+    })).toMatchObject({ mode: "full", reason: expect.stringContaining("no known suite owners") });
+  });
+
+  it.each([false, true])("keeps the packaging suite when the real input changes (computed path=%s)", computed => {
+    // Only the suite and its input: fallback owners elsewhere in the tree cannot select it.
+    const suite = "src/__tests__/packaging-discipline-source.test.ts";
+    const input = "src/lib/log-file-sink.ts";
+    const audited = readFileSync(suite, "utf8");
+    const source = computed
+      ? audited.replace(`readRepoFile("${input}")`, `readRepoFile(\`src/lib/\${"log-file-sink"}.ts\`)`) : audited;
+    expect(source === audited).toBe(!computed);
+    expect(inventories[permission]).toContain(suite);
+    const result = planWindowsTests({
+      event: "pull_request", changes: [modified(input)], inventories,
+      readSources: () => new Map([[suite, source], [input, readFileSync(input, "utf8")]]),
+    });
+    expect(result.mode).toBe("affected");
+    expect(selected(result)).toEqual([...core(), suite].sort());
+  });
+
+  it("binds every declared runtime input scope to the audited reader source", () => {
+    const files = Object.keys(windowsRuntimeInputScopes);
+    expect(files.length).toBeGreaterThan(0);
+    const graph = windowsImportGraph(new Map(files.map(file => [file, readFileSync(file, "utf8")])));
+    // Re-audit what a changed reader can read, then record the digest printed here.
+    const drifted = files.flatMap(file => {
+      const tokens = graph.get(file)?.tokens;
+      const digest = tokens ? windowsReaderDigest(tokens) : "missing";
+      return digest === windowsRuntimeInputScopes[file]?.digest ? [] : [`${file}: ${digest}`];
+    });
+    expect(drifted).toEqual([]);
   });
 
   it.each([
